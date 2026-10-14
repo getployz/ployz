@@ -34,9 +34,7 @@ pub struct EnvironmentRef {
 /// An Environment as every result names it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentSummary {
-    /// Its durable identity.
     pub id: EnvironmentId,
-    /// The Project it belongs to.
     pub project: ProjectName,
     /// Its name within the Project.
     pub name: EnvironmentName,

@@ -20,6 +20,8 @@ export type ObservedPlacement = {
   readonly primary: MachineRef | null;
   readonly copies: readonly ObservedCopy[];
   readonly unanswered: readonly MachineRef[];
+  /** Every Server in the cluster, answering or not. */
+  readonly members: readonly MachineId[];
 };
 
 /** One snapshot a mirror holds, which a new Volume can be restored from. */
@@ -107,14 +109,19 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     primary: primary?.machine ?? null,
     copies,
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
+    members: members.map((member) => member.machine.id),
   };
 }
 
-/** The copies that refresh, by Server. */
+/** The copies that refresh, by Server. A removed Server's reset deleted its mirror, so a recorded one drops out. */
 export function appliedMirrors(observed: ObservedPlacement, row: PlacementRow | null): readonly MachineId[] {
-  if (row?.mirrors != null) return row.mirrors;
+  if (row?.mirrors != null) return row.mirrors.filter((id) => observed.members.includes(id));
   return observed.copies.filter((copy) => copy.kind === "slot").map((copy) => copy.server.id);
 }
+
+/** The staged placement among the members: a removed Server's reset deleted its mirror, so a staged one drops out too. */
+const stagedPlacement = (observed: ObservedPlacement, staged: Placement): Placement =>
+  ({ ...staged, mirrors: staged.mirrors.filter((id) => observed.members.includes(id)) });
 
 export const detachedName = (volume: PlacementVolume) => `${volume.name}-old`;
 
@@ -134,7 +141,7 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
  * Server is presumed to hold it. Null when no Server holds the Volume.
  */
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
-  if (row?.staged != null) return row.staged;
+  if (row?.staged != null) return stagedPlacement(observed, row.staged);
   const primary = observed.primary ?? observed.unanswered[0] ?? null;
   if (primary === null) return null;
   return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
@@ -159,9 +166,9 @@ export function editPlacement(target: Placement, edit: PlacementEdit): Placement
 }
 
 export function placementChanges(volume: PlacementVolume, members: readonly Member[], row: PlacementRow | null): PlacementChange[] {
-  const staged = row?.staged;
-  if (staged == null) return [];
+  if (row?.staged == null) return [];
   const observed = observePlacement(members);
+  const staged = stagedPlacement(observed, row.staged);
   const machine = (id: MachineId): MachineRef =>
     members.find((member) => member.machine.id === id)?.machine ?? { id, name: id };
   // Once any root of the new Volume answers, the copy landed; a second seed would make a second root.

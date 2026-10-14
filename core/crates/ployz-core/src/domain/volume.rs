@@ -375,13 +375,13 @@ impl VolumeDriver {
         Ok(Self { name, options })
     }
 
-    /// Borrow the Docker driver name.
+    /// The driver name, never the reserved `ployz` Provisioned Volume driver.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Borrow the Docker driver options.
+    /// The driver's options; empty when none were given.
     #[must_use]
     pub fn options(&self) -> &BTreeMap<String, String> {
         &self.options

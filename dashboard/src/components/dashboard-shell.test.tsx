@@ -140,11 +140,9 @@ it("puts the logo, the four places, the way back to the organization and the acc
   expect(links[0]?.getAttribute("href")).toBe("/cloud/acme/~");
   expect(links[0]?.getAttribute("title")).toBe("Projects");
   expect(links.filter((link) => link.getAttribute("aria-current") === "page").map((link) => link.textContent)).toEqual(["Logs"]);
-  // The wide rail's account row names you and the organization beside the avatar.
   const account = within(rail).getByRole("button", { name: "Open account menu" });
   expect(within(account).getByText("Test User")).toBeTruthy();
   expect(within(account).getByText("Acme")).toBeTruthy();
-  // The top bar names the place after the crumbs; no second title row.
   const banner = screen.getByRole("banner");
   expect(within(banner).getByText("Logs")).toBeTruthy();
   expect(screen.queryByRole("heading")).toBeNull();
@@ -156,7 +154,6 @@ it("narrows the rail to named icons wherever the canvas shows", async () => {
   const architecture = within(rail).getByRole("link", { name: "Architecture" });
   expect(architecture.getAttribute("aria-current")).toBe("page");
   expect(within(architecture).getByText("Architecture").className).toContain("sr-only");
-  // The narrow rail keeps the avatar alone, naming you on hover.
   const account = within(rail).getByRole("button", { name: "Open account menu" });
   expect(account.getAttribute("title")).toBe("Test User");
   expect(within(account).queryByText("Acme")).toBeNull();
@@ -178,7 +175,6 @@ it("offers the same places in the phone tab bar and follows the route", async ()
 it("lists Settings' sections under it in the rail, and on phones under the top bar", async () => {
   const { rail, router } = await show({ path: "/cloud/acme/store/production/settings" });
   await screen.findByText("Environment preferences");
-  // The current place heads its sections instead of linking to itself.
   expect(within(rail).queryByRole("link", { name: "Settings" })).toBeNull();
   const strip = screen.getByRole("navigation", { name: "Settings sections" });
   for (const nav of [rail, strip]) {
@@ -191,10 +187,11 @@ it("lists Settings' sections under it in the rail, and on phones under the top b
   expect(within(rail).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBeNull();
 });
 
-it("holds only organization switching, Theme, Home and Log out in the account menu, and applies a theme choice", async () => {
+it("holds only Account, organization switching, Theme, Home and Log out in the account menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Home", "Log out"]);
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Account", "Switch organization", "Home", "Log out"]);
+  expect(within(menu).getByRole("menuitem", { name: "Account" }).getAttribute("href")).toBe("/cloud/account");
   expect(within(menu).getByRole("menuitem", { name: "Home" }).getAttribute("href")).toBe("/home");
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);

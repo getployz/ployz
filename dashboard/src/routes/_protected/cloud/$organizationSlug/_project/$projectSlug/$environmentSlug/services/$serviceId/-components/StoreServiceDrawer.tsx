@@ -41,6 +41,7 @@ import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { useServiceRuntime } from "./useServiceRuntime";
+import { ServiceActAlert, ServiceActions, useServiceAct } from "./ServiceActions";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
@@ -49,6 +50,7 @@ import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
 import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/uptime.queries";
 import { MonitoringTab } from "./monitoring/MonitoringTab";
+import { useGithubWebOrigin } from "#/modules/github/github.queries";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
 export type StoreService = {
@@ -92,7 +94,6 @@ const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug
 const taken = (service: ServiceListing, services: readonly ServiceListing[], name: string) =>
   services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
 
-/** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) =>
     dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
@@ -119,6 +120,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const uptimeEnabled = useUptimeEnabled(organizationSlug);
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
+  const act = useServiceAct({ organizationSlug, environmentId, service: service?.name ?? "" });
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
   if (!service) return <CanvasInspectorNotFound noun="Service" />;
 
@@ -191,7 +193,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params}>
+      <CanvasInspectorHeader params={params} actions={<ServiceActions state={state} namespace={namespace} act={act} />}>
         <CanvasInspectorNameEditor
           value={service.name}
           schema={nameSchema(service, services)}
@@ -203,6 +205,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         />
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <ServiceActAlert act={act} />
         <Tabs value={tab ?? "settings"}
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
@@ -286,7 +289,6 @@ const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(nam
 /** What an unset limit means, shown in its empty field. */
 const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"]]);
 
-/** Suffixes after a number, as before the Store: "3 replicas". */
 const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
 /** What each restart policy does, shown under its choice. */
@@ -401,7 +403,7 @@ function StoreDockerfile({ state }: { state: StoreService }) {
   const repository = settingText(state.rows.get("repository")?.value);
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, repository);
   return (
-    <StoreDockerfileField gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
+    <StoreDockerfileField organizationSlug={state.organizationSlug} gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
       value={settingText(state.rows.get("dockerfilePath")?.value)} change={state.changes.get("dockerfilePath")}
       onCommit={(raw) => state.edit(settingChange(state.path("dockerfilePath"), serviceSetting("dockerfilePath"), raw))} />
   );
@@ -449,6 +451,7 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
 function StoreSourceSection({ state }: { state: StoreService }) {
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
+  const githubWeb = useGithubWebOrigin();
   const set = (name: "image" | "repository" | "branch", value: string) => state.set(name, value);
   const close = (open: boolean) => { if (!open) setPicking(null); };
   const kind = state.source === "git" ? "repository" : "image";
@@ -471,7 +474,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
 
   const dialogs = <>
     <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
-    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
+    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
       onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
   </>;
 
@@ -511,7 +514,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
             title={change ? deployed : undefined}>
             {kind === "repository" ? <GitHubMarkIcon className="size-4 shrink-0" /> : <PackageIcon className="size-4 shrink-0 text-muted-foreground" />}
             {kind === "repository"
-              ? <a className="truncate hover:underline" href={`https://github.com/${value}`} target="_blank" rel="noreferrer">{value}</a>
+              ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer">{value}</a>
               : <span className="truncate font-mono">{value}</span>}
           </span>
           <Button type="button" variant="ghost" size="icon-sm" aria-label={`Change ${setting.title.toLowerCase()}`} onClick={() => setPicking(kind)}>
@@ -522,7 +525,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
       </Field>
       {kind === "repository" ? (
         <>
-          <StoreBranchField repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
+          <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
             change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
           <StoreSettingField state={state} name="rootDir" />
           {/* Its Deployment Policy: when a push to the branch deploys. */}
@@ -586,7 +589,6 @@ function StoreReplicasCapped({ params, volume }: {
         <FieldDescription>
           Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
           <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-          {/* Never broken across lines. */}
           <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
         </FieldDescription>
       </FieldContent>

@@ -86,7 +86,6 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     const { drizzle } = yield* Database;
     const encryption = yield* SecretEncryption;
     const [before] = yield* drizzle.select().from(organizationPairing);
-    // A member who isn't an owner or admin can't.
     const [bob] = yield* drizzle.insert(user).values({ email: "bob@example.test", name: "Bob" }).returning();
     yield* drizzle.insert(member).values({ userId: bob?.id ?? "", organizationId: ORGANIZATION, role: "member" });
     expect(yield* checkForgetServers({ userId: bob?.id ?? "", organizationId: ORGANIZATION }))
@@ -106,7 +105,6 @@ it.live("forgetting unreachable Servers clears Cloud's hold, and the next Server
     for (const table of [organizationPairing, organizationMachine, machineEnrollmentToken, enrollmentAllocation, machineRemoveAttempt]) {
       expect(yield* drizzle.select().from(table)).toEqual([]);
     }
-    // History keeps the Deploy that might have run, cancelled.
     expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: QUEUED }))).toMatchObject({ status: "cancelled" });
 
     // A new token's first Server founds a new Cluster, under a new pairing secret.

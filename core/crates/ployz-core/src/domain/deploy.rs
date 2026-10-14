@@ -353,7 +353,7 @@ pub enum StopAttempt<E> {
 }
 
 impl<E> StopAttempt<E> {
-    /// Whether the container is stopped.
+    /// Whether the container stopped or was already gone.
     #[must_use]
     pub const fn stopped(&self) -> bool {
         matches!(self, Self::Stopped)
@@ -401,9 +401,7 @@ impl<E> RestartAttempt<E> {
 pub struct ReplacementOperation {
     /// Machine that hosts both containers.
     pub machine_id: MachineId,
-    /// Container being replaced.
     pub old_container_id: ContainerId,
-    /// Spec for the replacement container.
     pub spec: ResolvedServiceSpec,
     /// Skip waiting on container health after the replacement starts.
     pub skip_health_monitor: bool,
@@ -455,7 +453,6 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         skip_health_monitor: bool,
     },
-    /// Stop a running container.
     StopContainer {
         machine_id: MachineId,
         container_id: ContainerId,
@@ -471,7 +468,8 @@ pub enum DeployOperation {
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
-    /// Run the stop hook for a container.
+    /// Stop a pre-deploy hook container that is still running, before [`Self::RunHook`]
+    /// starts the next one.
     StopHook {
         machine_id: MachineId,
         container_id: ContainerId,
@@ -495,7 +493,6 @@ pub struct DeployPreview {
     /// Capacity budget for every Machine receiving provisioned storage.
     #[serde(default)]
     pub storage: Vec<MachineStorageBudget>,
-    /// Namespace this preview describes.
     pub namespace: Namespace,
     /// Pending rows for the operations this snapshot would execute.
     pub operations: Vec<OperationRow>,
@@ -595,7 +592,8 @@ impl DeployPreview {
             .any(|warning| warning.observation_gap().is_some())
     }
 
-    /// True when this preview planned no operations.
+    /// Whether `operations` is empty. Planned stops and removals are operations;
+    /// `warnings`, `would_remove` and `volumes_to_create` do not count on their own.
     #[must_use]
     pub fn noop(&self) -> bool {
         self.operations.is_empty()
@@ -934,12 +932,10 @@ pub enum DeployEvent {
 pub struct OperationRow {
     /// Zero-based index in the Deploy Plan.
     pub index: u32,
-    /// Machine this operation targets.
     pub machine_id: MachineId,
     /// Human-facing Machine Name when known from the snapshot.
     #[serde(default)]
     pub machine_name: Option<MachineName>,
-    /// Planned operation.
     pub operation: DeployOperation,
     /// Container display name when known.
     #[serde(default)]
@@ -1018,7 +1014,8 @@ impl OperationRow {
 }
 
 impl DeployOperation {
-    /// Machine this operation targets.
+    /// The Machine that executes this operation; for `RemoveVolume`, the Machine holding
+    /// the Volume.
     #[must_use]
     pub fn machine_id(&self) -> MachineId {
         match self {

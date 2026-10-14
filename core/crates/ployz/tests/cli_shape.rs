@@ -18,9 +18,8 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     let mut paths = Vec::new();
     collect(&ployz::cli::command(), "", &mut paths);
     paths.sort_unstable();
-    // `ployz debug` exists only in a verify-cluster build.
     if cfg!(feature = "verify-faults") {
-        paths.retain(|path| path != "debug" && path != "debug volume-rpc");
+        paths.retain(|path| path != "debug" && !path.starts_with("debug "));
     }
     assert_eq!(
         paths,
@@ -53,6 +52,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "deployment start",
             "diff",
             "discard",
+            "docs",
             "domain",
             "domain add",
             "domain check",
@@ -350,6 +350,41 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
         "{json}"
     );
     assert!(message(&json).contains("--no-such-flag"), "{json}");
+}
+
+#[test]
+fn docs_answers_offline_from_the_binary() {
+    let (code, json, stderr) = run_json(&["docs", "add", "a", "custom", "domain", "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(json.pointer("/query").unwrap(), "add a custom domain");
+    assert_eq!(
+        json.pointer("/results/0/path").unwrap(),
+        "services/domains.md"
+    );
+    assert_eq!(
+        json.pointer("/results/0/anchor").unwrap(),
+        "add-a-custom-domain"
+    );
+
+    let (code, json, stderr) = run_json(&["docs", "domains.md", "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(json.pointer("/path").unwrap(), "services/domains.md");
+    assert!(
+        json.pointer("/content")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("## Add a custom domain")
+    );
+
+    let (code, json, _) = run_json(&["docs", "services/domain.md", "--json"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert_eq!(
+        json.pointer("/error/details/did_you_mean").unwrap(),
+        "services/domains.md",
+        "{json}"
+    );
 }
 
 #[test]

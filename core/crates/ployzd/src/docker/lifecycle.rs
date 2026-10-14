@@ -122,8 +122,6 @@ impl ContainerRuntime {
                 return Ok(existing);
             }
         }
-        // TODO: direct creation does not validate that an existing Service ID still uses
-        // the same Service Name; that requires an observer-relative cluster snapshot.
         tracing::info!(
             namespace = namespace.as_str(),
             service = spec.name.as_str(),

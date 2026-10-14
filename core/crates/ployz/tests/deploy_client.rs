@@ -1335,7 +1335,6 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     .await
     .unwrap();
     assert_eq!(ran.status, DeploymentStatus::Applied);
-    // The Server holds the mounted Volume's data.
     let docker = ployz_core::DockerVolumeName::parse(
         "shop-production_vol-00000000-0000-4000-8000-000000000004",
     )

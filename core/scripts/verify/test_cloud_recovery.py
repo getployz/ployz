@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cloud recovery must kill the recorded worker and finish the same Deploy through a new one."""
+"""Cloud recovery must kill the recorded worker, then resume the Deploy or, once prepared, redeploy it."""
 
 import importlib.machinery
 import importlib.util
@@ -33,6 +33,8 @@ class SlowDeploy:
         self.now = 0
         self.returncode = None
         self.deployment = dict(id="interrupted-deploy", number=2, status="running")
+        self.preview = None
+        self.redeploys = 0
         self.noop = None
 
     def sleep(self, seconds):
@@ -50,6 +52,12 @@ class SlowDeploy:
     def cli(self, *args):
         if args == ("--json", "deployment", "ls"):
             return json.dumps({"deployments": [self.deployment]})
+        if args == ("--json", "deployment", "show", str(self.deployment["number"])):
+            return json.dumps(dict(self.deployment, preview=self.preview))
+        if args == ("deploy",):
+            self.redeploys += 1
+            self.deployment = dict(id="redeploy", number=3, status="applied")
+            return ""
         return json.dumps({"containers": [{"labels": {"ployz.service.name": "web"}}]})
 
     def poll(self):
@@ -59,9 +67,13 @@ class SlowDeploy:
         if not self.processes:
             raise subprocess.TimeoutExpired("deploy", timeout)
         self.now = 20
+        if self.preview:
+            self.returncode = 3
+            self.deployment["status"] = "unknown"
+            return "error: Deployment #2 did not complete.", None
         self.returncode = 0
         self.deployment["status"] = "applied"
-        return "of verify/production: applied", None
+        return "", None
 
 
 class Recovery(unittest.TestCase):
@@ -92,9 +104,65 @@ class Recovery(unittest.TestCase):
 
     def test_new_worker_finishes_the_interrupted_deploy(self):
         result = self.recover()
-        self.assertEqual(result, dict(deployment_id="interrupted-deploy", number=2, old_worker_pid=41, new_worker_pid=42))
+        self.assertEqual(result, dict(deployment_id="interrupted-deploy", number=2, prepared=False,
+                                      old_worker_pid=41, new_worker_pid=42))
         self.assertEqual(self.deploy.processes, {42})
         self.assertEqual(self.deploy.now, 20)
+        self.assertEqual(self.deploy.redeploys, 0)
+
+    def test_a_deploy_killed_after_its_preview_ends_unknown_and_a_redeploy_applies(self):
+        self.deploy.preview = {"operations": []}
+        result = self.recover()
+        self.assertEqual(result, dict(deployment_id="interrupted-deploy", number=2, prepared=True,
+                                      old_worker_pid=41, new_worker_pid=42))
+        self.assertEqual(self.deploy.redeploys, 1)
+
+    def prepared_and_settled(self, **settled):
+        self.deploy.preview = {"operations": []}
+        communicate = self.deploy.communicate
+
+        def settle(timeout):
+            output = communicate(timeout)
+            self.deploy.now = settled.pop("now", self.deploy.now)
+            self.deploy.returncode = settled.pop("returncode", self.deploy.returncode)
+            self.deploy.deployment.update(settled)
+            return output
+
+        self.deploy.communicate = settle
+
+    def test_a_prepared_deploy_that_exits_cleanly_is_not_recovery(self):
+        self.prepared_and_settled(returncode=0)
+        with self.assertRaisesRegex(AssertionError, "did not end unknown"):
+            self.recover()
+
+    def test_a_prepared_deploy_that_replays_is_not_recovery(self):
+        self.prepared_and_settled(status="applied")
+        with self.assertRaisesRegex(AssertionError, "did not end unknown"):
+            self.recover()
+
+    def test_a_different_unknown_deploy_is_not_recovery(self):
+        self.prepared_and_settled(id="different-deploy")
+        with self.assertRaisesRegex(AssertionError, "did not end unknown"):
+            self.recover()
+
+    def test_a_lapsed_lease_is_not_recovery(self):
+        self.prepared_and_settled(now=610)
+        with self.assertRaisesRegex(AssertionError, "lease lapsed"):
+            self.recover()
+
+    def test_a_failed_redeploy_is_not_recovery(self):
+        self.deploy.preview = {"operations": []}
+        cli = self.deploy.cli
+
+        def stuck(*args):
+            output = cli(*args)
+            if args == ("deploy",):
+                self.deploy.deployment["status"] = "unknown"
+            return output
+
+        self.deploy.cli = stuck
+        with self.assertRaisesRegex(AssertionError, "The redeploy did not apply"):
+            self.recover()
 
     def test_a_different_completed_deploy_is_not_recovery(self):
         communicate = self.deploy.communicate
@@ -106,6 +174,18 @@ class Recovery(unittest.TestCase):
 
         self.deploy.communicate = replace
         with self.assertRaisesRegex(AssertionError, "interrupted Deploy did not apply"):
+            self.recover()
+
+    def test_a_failed_deploy_is_not_recovery(self):
+        communicate = self.deploy.communicate
+
+        def fail(timeout):
+            output = communicate(timeout)
+            self.deploy.returncode = 3
+            return output
+
+        self.deploy.communicate = fail
+        with self.assertRaisesRegex(AssertionError, "The Deploy did not complete"):
             self.recover()
 
 

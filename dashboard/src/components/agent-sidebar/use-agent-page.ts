@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { useParams } from "@tanstack/react-router";
+import { useMatch, useParams } from "@tanstack/react-router";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
 import { useDashboardSection } from "#/components/use-dashboard-section";
 import type { PageContext } from "#/modules/agent/page-context";
@@ -15,7 +15,10 @@ export function useAgentPage(scope: DashboardScope): PageContext {
   const [project, environment] = scope.kind === "environment" ? [scope.projectSlug, scope.environmentSlug] : [];
   const listed = useCachedStoreView(scope.organizationSlug,
     serviceId !== undefined && project !== undefined && environment !== undefined ? servicesQuery({ project, environment }) : null);
+  const environmentId = useMatch({ from: "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug", shouldThrow: false })
+    ?.loaderData?.environmentId;
+  const environment_id = environment === undefined ? undefined : environmentId;
   const service = listed?.ok ? listed.value.services.find((candidate) => candidate.id === serviceId)?.name : undefined;
-  return useMemo(() => ({ page, project, environment, service, deployment: deploymentId, server: serverId }),
-    [page, project, environment, service, deploymentId, serverId]);
+  return useMemo(() => ({ page, project, environment, environment_id, service, deployment: deploymentId, server: serverId }),
+    [page, project, environment, environment_id, service, deploymentId, serverId]);
 }

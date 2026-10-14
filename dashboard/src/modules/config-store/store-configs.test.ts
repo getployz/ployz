@@ -1,8 +1,10 @@
+import { Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import type { ConfigItemView, ConfigListing, DiffView, EnvironmentView, RowId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  attachConfigCommand, configEdits, configFileSizeError, configReferenceValues, configTrays, createConfigCommand, fileAccess, putConfigFileCommand, saveConfigCommand, utf8Bytes,
+  attachConfigCommand, changedAccess, configEdits, configFileSizeError, configReferenceValues, configTrays, createConfigCommand, draftAccess, executableToggle,
+  fileAccessDraftSchema, fileAccessLabel, putConfigFileCommand, saveConfigCommand, utf8Bytes,
 } from "./store-configs";
 
 const environment = { project: "shop", environment: "production" };
@@ -13,10 +15,11 @@ describe("Config commands", () => {
       .toEqual({ command: "create_config", id: "c1", environment, name: "sentry", mounts: [] });
   });
 
-  it("puts a file's text and sends a mode only when the user set one, so a CLI-set owner stays", () => {
+  it("puts a file's text and sends only the access fields the user set, so the Store keeps the others", () => {
     expect(putConfigFileCommand(environment, "sentry", "config.yml", "a: 1"))
       .toEqual({ command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "a: 1" });
-    expect(putConfigFileCommand(environment, "sentry", "run.sh", "#!/bin/sh", "0555")).toMatchObject({ mode: "0555" });
+    expect(putConfigFileCommand(environment, "sentry", "run.sh", "#!/bin/sh", { mode: "0555" }))
+      .toEqual({ command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0555" });
   });
 
   it("saves every edited file of a Config in one batch", () => {
@@ -27,6 +30,13 @@ describe("Config commands", () => {
     ] });
   });
 
+  it("carries a file's owner in the batch, including root's 0", () => {
+    const save = saveConfigCommand(environment, "sentry", [{ file: "app.conf", content: "a", mode: "0640", uid: 0, gid: 1000 }]);
+    expect(save).toEqual({ command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "app.conf", content: "a", mode: "0640", uid: 0, gid: 1000 },
+    ] });
+  });
+
   it("mounts a Config on a Service at a directory", () => {
     expect(attachConfigCommand(environment, "web", "sentry", "/etc/sentry"))
       .toEqual({ command: "attach_config", environment, service: "web", config: "sentry", dir: "/etc/sentry" });
@@ -34,11 +44,18 @@ describe("Config commands", () => {
 });
 
 describe("Config files", () => {
-  it("toggles only root-owned 0444 and 0555; anything else is a fixed label", () => {
-    expect(fileAccess({ mode: "0444", uid: 0, gid: 0 })).toEqual({ kind: "toggle", executable: false });
-    expect(fileAccess({ mode: "0555", uid: 0, gid: 0 })).toEqual({ kind: "toggle", executable: true });
-    expect(fileAccess({ mode: "0640", uid: 0, gid: 0 })).toEqual({ kind: "fixed", label: "0640 · 0:0" });
-    expect(fileAccess({ mode: "0444", uid: 999, gid: 999 })).toEqual({ kind: "fixed", label: "0444 · 999:999" });
+  it("toggles only root-owned 0444 and 0555; anything else is custom and labels its owner", () => {
+    expect(executableToggle({ mode: "0444", uid: 0, gid: 0 })).toEqual({ executable: false });
+    expect(executableToggle({ mode: "0555", uid: 0, gid: 0 })).toEqual({ executable: true });
+    expect(executableToggle({ mode: "0640", uid: 0, gid: 0 })).toBeNull();
+    expect(executableToggle({ mode: "0444", uid: 999, gid: 999 })).toBeNull();
+    expect(fileAccessLabel({ mode: "0555", uid: 0, gid: 0 })).toBe("0555");
+    expect(fileAccessLabel({ mode: "0640", uid: 0, gid: 1000 })).toBe("0640 · 0:1000");
+  });
+
+  it("shows a draft's access over the stored file's, and a new file's defaults", () => {
+    expect(draftAccess(undefined, undefined)).toEqual({ mode: "0444", uid: 0, gid: 0 });
+    expect(draftAccess({ mode: "0640", uid: 1000, gid: 1000 }, { content: "", gid: 0 })).toEqual({ mode: "0640", uid: 1000, gid: 0 });
   });
 
   it("refuses text over 256 KB, counted in UTF-8 bytes", () => {
@@ -86,6 +103,12 @@ describe("Saving drafts", () => {
   it("writes only drafts that differ from the Store, and new files", () => {
     const drafts = new Map([["config.yml", { content: "a: 1" }], ["new.toml", { content: "" }]]);
     expect(configEdits(stored, drafts)).toEqual([{ file: "new.toml", content: "" }]);
+  });
+
+  it("writes a file whose text is unchanged when only its owner changed", () => {
+    expect(configEdits(stored, new Map([["config.yml", { content: "a: 1", mode: "0444", uid: 1000, gid: 0 }]])))
+      .toEqual([{ file: "config.yml", content: "a: 1", mode: "0444", uid: 1000, gid: 0 }]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "a: 1", mode: "0444", uid: 0, gid: 0 }]]))).toEqual([]);
   });
 
   it("writes a file whose text is unchanged when only its mode flipped", () => {
@@ -147,4 +170,42 @@ it("keeps detached mounts separate from a replacement Config with the same name"
   ] }] });
   expect(detachedConfigMounts(diff, "old-id")).toEqual([{ serviceId: "web-id", service: "web", directory: "/etc/old" }]);
   expect(detachedConfigMounts(diff, "new-id")).toEqual([]);
+});
+
+describe("Permissions dialog", () => {
+  const parse = (draft: { mode: string; uid: string; gid: string }) => Schema.decodeUnknownResult(fileAccessDraftSchema)(draft);
+  const failure = (draft: { mode: string; uid: string; gid: string }) => {
+    const parsed = parse(draft);
+    return Result.isFailure(parsed) ? parsed.failure.message : null;
+  };
+
+  it("parses three octal digits, with an optional leading 0, into the Store's four-digit mode", () => {
+    expect(parse({ mode: "640", uid: "1000", gid: " 1000 " })).toEqual(Result.succeed({ mode: "0640", uid: 1000, gid: 1000 }));
+    expect(parse({ mode: "0755", uid: "0", gid: "0" })).toEqual(Result.succeed({ mode: "0755", uid: 0, gid: 0 }));
+  });
+
+  it("refuses a mode that is not three octal digits", () => {
+    for (const mode of ["999", "0888", "64", "10644", "", "rwx"]) {
+      expect(failure({ mode, uid: "0", gid: "0" })).toContain("Mode is three octal digits, like 0644.");
+    }
+  });
+
+  it("refuses an owner that is not a whole number the Store can hold", () => {
+    expect(failure({ mode: "0644", uid: "-1", gid: "0" })).toContain("User ID is a whole number, like 1000.");
+    expect(failure({ mode: "0644", uid: "0", gid: "1.5" })).toContain("Group ID is a whole number, like 1000.");
+    expect(failure({ mode: "0644", uid: "4294967296", gid: "0" })).toContain("User ID is a whole number, like 1000.");
+    expect(parse({ mode: "0644", uid: "4294967294", gid: "0" })).toEqual(Result.succeed({ mode: "0644", uid: 4294967294, gid: 0 }));
+    expect(Result.isFailure(parse({ mode: "0644", uid: "4294967295", gid: "0" }))).toBe(true);
+  });
+
+  it("hands back only the fields the user changed, so an owner set elsewhere survives a mode change", () => {
+    const prefill = { mode: "0444", uid: 1000, gid: 1000 };
+    expect(changedAccess(prefill, { mode: "0640", uid: 1000, gid: 1000 })).toEqual({ mode: "0640" });
+    expect(changedAccess(prefill, { mode: "0444", uid: 0, gid: 1000 })).toEqual({ uid: 0 });
+    expect(changedAccess(prefill, prefill)).toEqual({});
+  });
+
+  it("prefills the fields from a file's access", () => {
+    expect(Schema.encodeSync(fileAccessDraftSchema)({ mode: "0640", uid: 0, gid: 1000 })).toEqual({ mode: "0640", uid: "0", gid: "1000" });
+  });
 });

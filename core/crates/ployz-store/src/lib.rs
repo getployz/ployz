@@ -12,6 +12,7 @@ pub mod catalog;
 mod command;
 mod config_item;
 mod deployment;
+pub mod docs;
 mod domain;
 mod error;
 mod git;

@@ -45,7 +45,7 @@ more it sees:
 
 All three start off, and turning support access off turns them off. Each applies on support's
 next request. Support sees these switches but can't change them. It can still change anything
-else you can, including a value it can't read.
+else you can, including a value it can't read, but it can't delete the organization.
 
 ## Destructive actions ask first
 
@@ -76,9 +76,8 @@ How you answer depends on where the command runs:
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
   would stop a service or delete volume data. `ployz server upgrade` never asks.
-- Draining a server from the dashboard asks the same way when a global service would run on no
-  other server. You approve it in the [Ployz agent](agent-sidebar.md) panel, and the drain starts.
-  Other dashboard actions and settings edits never ask.
+- Dashboard buttons and dialogs never ask: confirming a dialog is your approval. When the
+  [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
   again about the new one.
 - An approval covers one publish. A later publish that still carries a removal that hasn't
@@ -114,7 +113,7 @@ allowed.
 ## Delete an organization
 
 Deleting an organization removes it with its settings and tokens, and disconnects your servers
-from it. It can't be undone.
+from it. It can't be undone. Only an owner can delete it.
 
 1. Delete every project in it. **Delete organization** stays disabled until you do.
 2. **Cancel Pro first.** Deleting the organization doesn't cancel it: go to

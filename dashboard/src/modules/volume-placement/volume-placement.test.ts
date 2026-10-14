@@ -84,6 +84,14 @@ describe("placementChanges", () => {
     expect(changes([member("web-1", "writer"), member("web-2", "mirror")], row(["web-2"]))).toEqual([]);
   });
 
+  it("plans nothing for a mirror on a Server that left the cluster", () => {
+    expect(changes([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
+  });
+
+  it("plans nothing for a staged mirror on a Server that left the cluster", () => {
+    expect(changes([member("web-1", "writer")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] }))).toEqual([]);
+  });
+
   it("makes a move one change, even when it consumes the mirror it promotes", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
     const staged = changes(members, row(["web-2"], { primary: "web-2" }));
@@ -148,13 +156,10 @@ describe("placementChanges", () => {
     expect(review(members, row(["web-2"], { primary: "web-1" }))).toEqual([{ kind: "remove", name: "Mirror", currentValue: "web-2", newValue: "" }]);
   });
 
-  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent or missing Server", () => {
+  it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent Server", () => {
     expect(changes([member("web-1", "writer"), pooled("web-2")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
     expect(steps([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"], { primary: "web-1" }))).toEqual([
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
-    ]);
-    expect(steps([member("web-1", "writer")], row(["web-2"], { primary: "web-1" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: id("web-2"), confirmed_name: null } },
     ]);
   });
 
@@ -201,6 +206,12 @@ describe("placementForm", () => {
 
   it("is null when no Server holds the Volume", () => {
     expect(placementForm(volume, [], null)).toBeNull();
+  });
+
+  it("drops a mirror on a Server that left the cluster", () => {
+    expect(form([member("web-1", "writer")], row(["web-2"]))).toEqual({ primary: "web-1:none", mirrors: [], detached: [] });
+    expect(form([member("web-1", "writer")], row(["web-2"], { primary: "web-1", mirrors: ["web-2"] })))
+      .toEqual({ primary: "web-1:none", mirrors: [], detached: [] });
   });
 });
 

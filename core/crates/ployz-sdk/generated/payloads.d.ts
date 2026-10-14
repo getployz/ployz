@@ -5,7 +5,7 @@ export type AcceptedLoss = { volumes: Array<string>, version: string, };
 
 export type Act = { attempt: AttemptId, digest: BodyDigest, action: Action, };
 
-export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
+export type Action = { "action": "service", environment: EnvironmentId, service: ServiceName, only: ServerRef | null, verb: ServiceVerb, } | { "action": "drain", server: ServerRef, } | { "action": "upgrade", server: ServerRef, } | { "action": "set_server", server: ServerRef, accepts_builds: boolean | null, accepts_services: boolean | null, accepts_ingress: boolean | null, build_concurrency: BuildConcurrencyUpdate, } | { "action": "clean", leftover: Namespace, loss: AcceptedLoss | null, } | { "action": "remove_server", server: ServerRef, loss: AcceptedLoss | null, } | { "action": "forget_server", server: ServerRef, } | { "action": "volume", volume: VolumeId, run: VolumeRun, };
 
 export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
 /**
@@ -44,19 +44,7 @@ export type ApprovalDigest = string;
 
 export type Ask = { "at": "store", "ask": ConfigQuery } | { "at": "cloud", "ask": CloudQuery };
 
-export type AttachConfig = {
-/**
- * The Environment they are in.
- */
-environment: EnvironmentRef,
-/**
- * The Service, by name.
- */
-service: ServiceName,
-/**
- * The Config, by name.
- */
-config: ConfigName,
+export type AttachConfig = { environment: EnvironmentRef, service: ServiceName, config: ConfigName,
 /**
  * The absolute directory in the Service's containers.
  */
@@ -74,19 +62,11 @@ export type AuthorizedRepository = {
 /**
  * Its `owner/name`, as GitHub spells it.
  */
-repository: RepositoryName,
-/**
- * GitHub's ID for it.
- */
-repository_id: RepositoryId,
+repository: RepositoryName, repository_id: RepositoryId,
 /**
  * How Cloud reads it: publicly, or through a GitHub installation.
  */
-access: ServiceGitAccess,
-/**
- * Its default branch.
- */
-default_branch: BranchName,
+access: ServiceGitAccess, default_branch: BranchName,
 /**
  * Other branches Cloud saw exist.
  */
@@ -315,7 +295,7 @@ export type BuildGrantRepository = string;
 
 export type BuildLogQuery = { deployment: DeploymentId,
 /**
- * The Service it built.
+ * Its name when admitted, or its Private DNS name.
  */
 service: ServiceName, };
 
@@ -395,11 +375,7 @@ export type Change = { "op": "set",
 /**
  * The Setting.
  */
-path: SettingPath,
-/**
- * Its new value.
- */
-value: JsonValue, } | { "op": "unset",
+path: SettingPath, value: JsonValue, } | { "op": "unset",
 /**
  * The Setting.
  */
@@ -449,7 +425,7 @@ conclusion: CheckConclusion | null,
  */
 updated: GithubTimestamp, };
 
-export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
+export type CloudQuery = { "query": "github_tree" } & GithubTreeQuery | { "query": "github_file" } & GithubFileQuery | { "query": "github_connection" } | { "query": "github_branches", repository: string, } | { "query": "servers", only: MachineName | null, } | { "query": "containers", namespace: Namespace, service: ServiceName | null, } | { "query": "logs" } & LogsQuery | { "query": "server_logs" } & ServerLogsQuery | { "query": "metrics" } & MetricsQuery | { "query": "copies", namespace: Namespace, volume: VolumeName | null, } | { "query": "operations" } & OperationsQuery;
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -510,19 +486,7 @@ name: ConfigFileName,
 /**
  * How many bytes its text is, as written, references unresolved.
  */
-bytes: number,
-/**
- * Its permission bits.
- */
-mode: FileMode,
-/**
- * The user ID that owns it.
- */
-uid: number,
-/**
- * The group ID that owns it.
- */
-gid: number,
+bytes: number, mode: FileMode, uid: number, gid: number,
 /**
  * The Services its text references, by name.
  */
@@ -530,11 +494,7 @@ references: Array<string>, };
 
 export type ConfigId = string;
 
-export type ConfigItemQuery = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
+export type ConfigItemQuery = { environment: EnvironmentRef,
 /**
  * Its name, or `@UUID` for one exact identity.
  */
@@ -564,17 +524,13 @@ deployed: boolean,
 /**
  * What the next Deploy does to it; none when it is deployed as it is.
  */
-change: ReviewLifecycleKind | null,
-/**
- * Its durable identity.
- */
-id: ConfigId,
+change: ReviewLifecycleKind | null, id: ConfigId,
 /**
  * Its name, which mount paths address it by.
  */
 name: ConfigName,
 /**
- * Its files, by path.
+ * Sorted by path.
  */
 files: Array<ConfigFileSummary>, };
 
@@ -590,17 +546,13 @@ deployed: boolean,
 /**
  * What the next Deploy does to it; none when it is deployed as it is.
  */
-change: ReviewLifecycleKind | null,
-/**
- * Its durable identity.
- */
-id: ConfigId,
+change: ReviewLifecycleKind | null, id: ConfigId,
 /**
  * Its name, which mount paths address it by.
  */
 name: ConfigName,
 /**
- * Its files, by path.
+ * Sorted by path.
  */
 files: Array<ConfigFileSummary>, };
 
@@ -610,11 +562,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigMountAt = {
-/**
- * The Service, by name.
- */
-service: ServiceName,
+export type ConfigMountAt = { service: ServiceName,
 /**
  * The absolute directory in its containers where the Config's files appear.
  */
@@ -630,11 +578,7 @@ export type ConfigRef = string;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
-export type ConfigStaged = {
-/**
- * The Config.
- */
-config: ConfigSummary,
+export type ConfigStaged = { config: ConfigSummary,
 /**
  * The Environment, at its revision after the change.
  */
@@ -645,17 +589,13 @@ environment: EnvironmentSummary,
  */
 staged: Array<SettingPath>, };
 
-export type ConfigSummary = {
-/**
- * Its durable identity.
- */
-id: ConfigId,
+export type ConfigSummary = { id: ConfigId,
 /**
  * Its name, which mount paths address it by.
  */
 name: ConfigName,
 /**
- * Its files, by path.
+ * Sorted by path.
  */
 files: Array<ConfigFileSummary>, };
 
@@ -688,11 +628,7 @@ export type ConfigView = { "view": "environment" } & EnvironmentView | { "view":
 
 export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "project_renamed" } & ProjectSummary | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "volume_renamed" } & VolumeStaged | { "written": "config" } & ConfigStaged | { "written": "config_removed" } & ConfigStaged | { "written": "config_renamed" } & ConfigStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "history_staged" } & HistoryStaged | { "written": "deployment" } & DeploymentSummary | { "written": "domain_added" } & DomainAdded | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "synced" } & Synced | { "written": "undone" } & Undone | { "written": "removed" } & Removed | { "written": "taken" } & Taken | { "written": "never_synced" } & NeverSynced | { "written": "on_merge" } & OnMerge | { "written": "default_environment" } & EnvironmentsView | { "written": "branch_setup" } & EnvironmentsView | { "written": "removal" } & Removal | { "written": "removal_cancelled" } & RemovalCancelled | { "written": "pr_plans" } & PrPlansView | { "written": "batch" } & Batched;
 
-export type ConfigsQuery = {
-/**
- * The Environment to list.
- */
-environment: EnvironmentRef, };
+export type ConfigsQuery = { environment: EnvironmentRef, };
 
 export type ConfigsView = {
 /**
@@ -818,7 +754,7 @@ export type CpuNanos = number;
 
 export type CreateBranch = {
 /**
- * The new Branch's ID.
+ * Its ID, chosen by the caller.
  */
 id: EnvironmentId,
 /**
@@ -858,11 +794,7 @@ export type CreateConfig = {
 /**
  * The new Config's ID, also its lineage.
  */
-id: ConfigId,
-/**
- * The Environment to create it in.
- */
-environment: EnvironmentRef,
+id: ConfigId, environment: EnvironmentRef,
 /**
  * Its name, unique among the Environment's Configs.
  */
@@ -874,7 +806,8 @@ mounts: Array<ConfigMountAt>, };
 
 export type CreateEnvironment = {
 /**
- * The new Environment's ID.
+ * Minted by the caller: sending the same command again with it returns the first
+ * result.
  */
 id: EnvironmentId,
 /**
@@ -910,7 +843,8 @@ branch: BranchName | null, };
 
 export type CreateProject = {
 /**
- * The new Project's ID.
+ * Minted by the caller: sending the same command again with it returns the first
+ * result.
  */
 id: ProjectId,
 /**
@@ -926,11 +860,7 @@ export type CreateService = {
 /**
  * The new Service's ID, also its lineage.
  */
-id: ServiceLineageId,
-/**
- * The Environment to create it in.
- */
-environment: EnvironmentRef,
+id: ServiceLineageId, environment: EnvironmentRef,
 /**
  * Its name, unique in the Environment.
  */
@@ -948,11 +878,7 @@ export type CreateVolume = {
 /**
  * The new Volume's ID, also its lineage.
  */
-id: VolumeId,
-/**
- * The Environment to create it in.
- */
-environment: EnvironmentRef,
+id: VolumeId, environment: EnvironmentRef,
 /**
  * Its name, unique among the Environment's Volumes.
  */
@@ -984,15 +910,7 @@ export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
 export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
 
-export type DeleteConfig = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * Its name.
- */
-config: ConfigName, };
+export type DeleteConfig = { environment: EnvironmentRef, config: ConfigName, };
 
 export type DependencyCondition = "service_started" | "service_healthy";
 
@@ -1067,11 +985,7 @@ export type DeployPreview = {
 /**
  * Capacity budget for every Machine receiving provisioned storage.
  */
-storage: Array<MachineStorageBudget>,
-/**
- * Namespace this preview describes.
- */
-namespace: Namespace,
+storage: Array<MachineStorageBudget>, namespace: Namespace,
 /**
  * Pending rows for the operations this snapshot would execute.
  */
@@ -1122,11 +1036,7 @@ export type DeploymentQuery = { id: DeploymentId, };
 
 export type DeploymentStatus = "queued" | "superseded" | "running" | "applied" | "failed" | "unknown" | "cancelling" | "cancelled";
 
-export type DeploymentSummary = { id: DeploymentId,
-/**
- * The Environment it deploys.
- */
-environment_id: EnvironmentId,
+export type DeploymentSummary = { id: DeploymentId, environment_id: EnvironmentId,
 /**
  * Counts from 1 within its Environment.
  */
@@ -1213,11 +1123,7 @@ builds: Array<BuildView>,
  * Each Service's runtime name (its Private DNS name) by its name when admitted,
  * for finding its containers.
  */
-runtime_names: { [key in ServiceName]: ServiceName }, id: DeploymentId,
-/**
- * The Environment it deploys.
- */
-environment_id: EnvironmentId,
+runtime_names: { [key in ServiceName]: ServiceName }, id: DeploymentId, environment_id: EnvironmentId,
 /**
  * Counts from 1 within its Environment.
  */
@@ -1313,11 +1219,7 @@ export type DeploymentsView = { environment: EnvironmentSummary, deployments: Ar
  */
 next_cursor: string | null, };
 
-export type DestructiveEffect = {
-/**
- * What it destroys.
- */
-kind: DestructiveKind,
+export type DestructiveEffect = { kind: DestructiveKind,
 /**
  * What a human calls the thing destroyed: the Service, the Volume, or the
  * domain's hostname.
@@ -1334,35 +1236,15 @@ path: string, };
 
 export type DestructiveKind = "removes_service" | "deletes_volume" | "detaches_volume" | "removes_domain" | "removes_server";
 
-export type DetachConfig = {
-/**
- * The Environment they are in.
- */
-environment: EnvironmentRef,
-/**
- * The Service, by name.
- */
-service: ServiceName,
-/**
- * The Config, by name.
- */
-config: ConfigName, };
+export type DetachConfig = { environment: EnvironmentRef, service: ServiceName, config: ConfigName, };
 
 export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
 
 export type DeviceReservation = { driver: string | null, count: number | null, device_ids: Array<string>, capabilities: Array<Array<string>>, options: { [key in string]: string }, };
 
-export type DiffQuery = {
-/**
- * The Environment to review.
- */
-environment: EnvironmentRef, };
+export type DiffQuery = { environment: EnvironmentRef, };
 
-export type DiffView = {
-/**
- * The Environment reviewed.
- */
-environment: EnvironmentSummary,
+export type DiffView = { environment: EnvironmentSummary,
 /**
  * Pass back to `publish` or `discard` to act on exactly this review.
  */
@@ -1374,11 +1256,7 @@ saved: Revision | null,
 /**
  * Whether Saved State already holds this Working State.
  */
-published: boolean,
-/**
- * Every changed node.
- */
-changes: Array<NodeChange>,
+published: boolean, changes: Array<NodeChange>,
 /**
  * How many changes there are, counting each node and each Setting.
  */
@@ -1412,11 +1290,7 @@ included: Array<Included>,
  */
 effects?: Array<DestructiveEffect>, };
 
-export type Discard = {
-/**
- * The Environment to discard in.
- */
-environment: EnvironmentRef,
+export type Discard = { environment: EnvironmentRef,
 /**
  * The comparison to return to. Head preserves the deployment baseline; Saved
  * abandons a draft reversal; Review discards the server-derived visible rows.
@@ -1435,11 +1309,7 @@ version: string | null, };
 
 export type DiscardTarget = "head" | "saved" | "review";
 
-export type Discarded = {
-/**
- * The Environment.
- */
-environment: EnvironmentSummary,
+export type Discarded = { environment: EnvironmentSummary,
 /**
  * The latest Saved revision, unchanged by Discard.
  */
@@ -1596,17 +1466,14 @@ failed_on: Array<string>, };
 
 export type DueQuery = Record<symbol, never>;
 
-export type Edit = {
-/**
- * The Environment to edit.
- */
-environment: EnvironmentRef,
+export type Edit = { environment: EnvironmentRef,
 /**
  * Refuse with `conflict` unless Working State is still at this revision.
  */
 expect: Revision | null,
 /**
- * The changes, applied in order.
+ * The changes, applied in order, except that image and repository changes go first.
+ * Every Setting set must apply to the source the whole edit leaves.
  */
 changes: Array<Change>, };
 
@@ -1667,11 +1534,7 @@ export type EnsuredContainer = { "status": "ensured", now: ContainerNow,
  */
 health?: HealthVerdict, } | { "status": "refused", now: ContainerNow, refusal: ContainerRefusal, };
 
-export type EnvironmentCreated = {
-/**
- * The Environment.
- */
-environment: EnvironmentSummary, };
+export type EnvironmentCreated = { environment: EnvironmentSummary, };
 
 export type EnvironmentId = string;
 
@@ -1701,11 +1564,7 @@ export type EnvironmentName = string;
 
 export type EnvironmentNodeType = "service" | "volume" | "config";
 
-export type EnvironmentQuery = {
-/**
- * The Environment to read.
- */
-environment: EnvironmentRef,
+export type EnvironmentQuery = { environment: EnvironmentRef,
 /**
  * Narrow to one Service or one Setting; omitted means every Setting.
  */
@@ -1725,15 +1584,7 @@ project: ProjectName | null,
  */
 environment: EnvironmentName | null, };
 
-export type EnvironmentSummary = {
-/**
- * Its durable identity.
- */
-id: EnvironmentId,
-/**
- * The Project it belongs to.
- */
-project: ProjectName,
+export type EnvironmentSummary = { id: EnvironmentId, project: ProjectName,
 /**
  * Its name within the Project.
  */
@@ -1817,17 +1668,13 @@ export type Gate = "never" | "store" | "cloud";
 
 export type GitSource = {
 /**
- * Its runtime Service name.
+ * Its Private DNS name, which a rename keeps.
  */
 service: ServiceName,
 /**
  * The GitHub repository, as `owner/name`.
  */
-repository: RepositoryName,
-/**
- * GitHub's ID for it.
- */
-repository_id: RepositoryId,
+repository: RepositoryName, repository_id: RepositoryId,
 /**
  * How Cloud reads it.
  */
@@ -2050,11 +1897,7 @@ export type Included = {
 /**
  * Pass to [`RemoveProposal::proposal`] to remove it.
  */
-proposal: ProposalId,
-/**
- * Where it came from.
- */
-source: ProposalSource,
+proposal: ProposalId, source: ProposalSource,
 /**
  * The source's Working State revision it was last included at.
  */
@@ -2072,11 +1915,7 @@ changes: number,
  */
 sync: SyncId, };
 
-export type IncomingChange = {
-/**
- * Where it came from.
- */
-from: EnvironmentName,
+export type IncomingChange = { from: EnvironmentName,
 /**
  * What commands name it by; stable across renames.
  */
@@ -2096,6 +1935,12 @@ kind: EnvironmentNodeType,
 name: string | null, };
 
 export type IngressAction = "create" | "start";
+
+export type IngressCheck = { repairs: Array<IngressRepair>,
+/**
+ * One cause per ingress Server whose containers went unobserved, naming it.
+ */
+unchecked: Array<string>, };
 
 export type IngressFailure = { "type": "port_taken", cause: string, } | { "type": "failed", cause: string, };
 
@@ -2626,11 +2471,7 @@ export type Mirror = { server: ServerRef, synced_at: Timestamp | null, };
 
 export type MissingLiveValue = { lineageId: string, key: string, };
 
-export type Mount = {
-/**
- * The Service, by name.
- */
-service: ServiceName,
+export type Mount = { service: ServiceName,
 /**
  * The absolute path in its containers.
  */
@@ -2675,11 +2516,7 @@ export type NamespacesQuery = Record<symbol, never>;
 
 export type NamespacesView = { namespaces: Array<OwnedNamespace>, };
 
-export type NeverSync = {
-/**
- * The Environment.
- */
-environment: EnvironmentRef,
+export type NeverSync = { environment: EnvironmentRef,
 /**
  * Its rows, by name in its own configuration (with `off`, among its marks), or
  * by RowId. Each names a node the Environment has, but not necessarily a
@@ -2692,11 +2529,7 @@ rows: Array<RowRef>,
  */
 off?: boolean, };
 
-export type NeverSynced = {
-/**
- * The Environment.
- */
-environment: EnvironmentSummary,
+export type NeverSynced = { environment: EnvironmentSummary,
 /**
  * Every row it marks Never sync.
  */
@@ -2740,19 +2573,11 @@ registry_auth?: RegistryAuth | null,
  */
 image_prepared?: boolean, answer?: AnswerWhen, };
 
-export type NodeChange = {
-/**
- * Its name.
- */
-name: string,
+export type NodeChange = { name: string,
 /**
  * Its own Sync row, which joins it to what moved it.
  */
-row: RowId,
-/**
- * Whether it is created, changed or removed.
- */
-lifecycle: ReviewLifecycleKind,
+row: RowId, lifecycle: ReviewLifecycleKind,
 /**
  * What `settings` compare against; `None` when nothing exists to compare.
  */
@@ -2796,15 +2621,7 @@ export type ObservedCopy = { machine_id: MachineId, name: DockerVolumeName, role
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
 
-export type OnMerge = {
-/**
- * The PR Environment.
- */
-environment: EnvironmentSummary,
-/**
- * Its pull request.
- */
-pull_request: PullRequestRef,
+export type OnMerge = { environment: EnvironmentSummary, pull_request: PullRequestRef,
 /**
  * One list per Destination: each Environment that deploys the target branch.
  */
@@ -2833,11 +2650,7 @@ name: EnvironmentName,
  */
 rows: Array<MergeRow>, };
 
-export type OnMergeQuery = {
-/**
- * The PR Environment.
- */
-environment: EnvironmentRef, };
+export type OnMergeQuery = { environment: EnvironmentRef, };
 
 export type OpenPullRequest = { number: PullRequestNumber,
 /**
@@ -2861,19 +2674,11 @@ export type OperationRow = {
 /**
  * Zero-based index in the Deploy Plan.
  */
-index: number,
-/**
- * Machine this operation targets.
- */
-machine_id: MachineId,
+index: number, machine_id: MachineId,
 /**
  * Human-facing Machine Name when known from the snapshot.
  */
-machine_name: MachineName | null,
-/**
- * Planned operation.
- */
-operation: DeployOperation,
+machine_name: MachineName | null, operation: DeployOperation,
 /**
  * Container display name when known.
  */
@@ -3042,15 +2847,7 @@ machine_name: MachineName | null, };
 
 export type Principal = string;
 
-export type ProjectCreated = {
-/**
- * The Project.
- */
-project: ProjectSummary,
-/**
- * Its Default Environment.
- */
-environment: EnvironmentSummary, };
+export type ProjectCreated = { project: ProjectSummary, environment: EnvironmentSummary, };
 
 export type ProjectId = string;
 
@@ -3062,15 +2859,7 @@ environments: Array<EnvironmentName>, };
 
 export type ProjectName = string;
 
-export type ProjectSummary = {
-/**
- * Its durable identity.
- */
-id: ProjectId,
-/**
- * Its name.
- */
-name: ProjectName, };
+export type ProjectSummary = { id: ProjectId, name: ProjectName, };
 
 export type ProjectsQuery = Record<symbol, never>;
 
@@ -3078,11 +2867,7 @@ export type ProjectsView = { projects: Array<ProjectListing>, };
 
 export type ProposalId = string;
 
-export type ProposalSource = { "kind": "environment",
-/**
- * Its ID.
- */
-id: EnvironmentId,
+export type ProposalSource = { "kind": "environment", id: EnvironmentId,
 /**
  * Its name, or the one it had when it was last included.
  */
@@ -3090,15 +2875,7 @@ name: string,
 /**
  * False once it is gone.
  */
-live: boolean, } | { "kind": "pull_request",
-/**
- * The repository.
- */
-repository_id: RepositoryId,
-/**
- * The pull request.
- */
-number: PullRequestNumber,
+live: boolean, } | { "kind": "pull_request", repository_id: RepositoryId, number: PullRequestNumber,
 /**
  * Its preview's name, or the one it had when it was last included.
  */
@@ -3120,11 +2897,7 @@ repository: string, };
 
 export type PublicIpUpdate = { "action": "keep" } | { "action": "remove" } | { "action": "set", "value": string };
 
-export type Publish = {
-/**
- * The Environment to publish.
- */
-environment: EnvironmentRef,
+export type Publish = { environment: EnvironmentRef,
 /**
  * Refuse with `conflict` unless this is still the latest `diff` version, or the
  * version a refusal to delete data handed back.
@@ -3143,11 +2916,7 @@ accept_volume_loss?: Array<VolumeName>, };
 
 export type PublishCertificateMaterialRequest = { hostname: CertificateHost, change: CertificateMaterialChange, };
 
-export type Published = {
-/**
- * The Environment.
- */
-environment: EnvironmentSummary,
+export type Published = { environment: EnvironmentSummary,
 /**
  * The Saved revision that now holds Working State; none when nothing was ever
  * published and nothing is staged.
@@ -3228,15 +2997,7 @@ environments: Array<PrEnvironment>,
  */
 check: OnMergeCheck | null, };
 
-export type PutConfigFile = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * The Config, by name.
- */
-config: ConfigName,
+export type PutConfigFile = { environment: EnvironmentRef, config: ConfigName,
 /**
  * The file's path inside the Config.
  */
@@ -3304,11 +3065,7 @@ export type RemovalCancelled = { project: ProjectName, environment: EnvironmentN
 
 export type RemovalId = string;
 
-export type RemovalsQuery = {
-/**
- * The Environment.
- */
-environment: EnvironmentRef,
+export type RemovalsQuery = { environment: EnvironmentRef,
 /**
  * Ask about the Deploy that removes the Environment from the Servers, which
  * deletes every deployed Volume.
@@ -3344,15 +3101,7 @@ accept_volume_loss?: { [key in EnvironmentName]: Array<VolumeName> },
  */
 every_copy?: { [key in EnvironmentName]: Array<VolumeName> }, };
 
-export type RemoveConfigFile = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * The Config, by name.
- */
-config: ConfigName,
+export type RemoveConfigFile = { environment: EnvironmentRef, config: ConfigName,
 /**
  * The file's path inside the Config.
  */
@@ -3380,25 +3129,9 @@ proposal: ProposalId,
  */
 version?: string | null, };
 
-export type RemoveService = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * Its name.
- */
-service: ServiceName, };
+export type RemoveService = { environment: EnvironmentRef, service: ServiceName, };
 
-export type RemoveVolume = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * Its name.
- */
-volume: VolumeName, };
+export type RemoveVolume = { environment: EnvironmentRef, volume: VolumeName, };
 
 export type RemoveVolumesRequest = { volumes: Array<DockerVolumeId>,
 /**
@@ -3426,11 +3159,7 @@ export type RemovedVolume = { id: VolumeId, name: VolumeName,
  */
 docker_volume: DockerVolumeName, };
 
-export type RenameConfig = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
+export type RenameConfig = { environment: EnvironmentRef,
 /**
  * Its current name.
  */
@@ -3450,11 +3179,7 @@ project: ProjectName,
  */
 name: ProjectName, };
 
-export type RenameService = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
+export type RenameService = { environment: EnvironmentRef,
 /**
  * Its current name.
  */
@@ -3464,11 +3189,7 @@ service: ServiceName,
  */
 name: ServiceName, };
 
-export type RenameVolume = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
+export type RenameVolume = { environment: EnvironmentRef,
 /**
  * Its current name.
  */
@@ -3484,15 +3205,7 @@ export type ReplacementOperation = {
 /**
  * Machine that hosts both containers.
  */
-machine_id: MachineId,
-/**
- * Container being replaced.
- */
-old_container_id: ContainerId,
-/**
- * Spec for the replacement container.
- */
-spec: ResolvedServiceSpec,
+machine_id: MachineId, old_container_id: ContainerId, spec: ResolvedServiceSpec,
 /**
  * Skip waiting on container health after the replacement starts.
  */
@@ -3606,11 +3319,7 @@ export type RuntimeOutcomeSummary = { "type": "success",
 /**
  * Number of completed operations.
  */
-completed: number, } | { "type": "failed",
-/**
- * Number of completed operations.
- */
-completed: number,
+completed: number, } | { "type": "failed", completed: number,
 /**
  * Number of operations never attempted, excluding the failed operation.
  */
@@ -3690,6 +3399,8 @@ export type SeedVolumeRequest = { name: DockerVolumeName, into: DockerVolumeName
 export type SelectedEndpoint = string;
 
 export type ServerLog = { server: MachineName, text: LogText, };
+
+export type ServerLogsQuery = { process: MachineLogService, server: ServerRef | null, lines: LineCap, since: { secs: number, nanos: number } | null, };
 
 export type ServerRef = { machine: MachineId, name: MachineName, };
 
@@ -3817,11 +3528,7 @@ change: ReviewLifecycleKind | null,
 /**
  * The Service Template it was created from, if any.
  */
-template: ServiceTemplate | null,
-/**
- * Its durable identity.
- */
-id: ServiceLineageId,
+template: ServiceTemplate | null, id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -3867,15 +3574,7 @@ export type ServicePoint = {
  */
 ts: number, cpu_usec?: number, mem_bytes?: number, mem_limit?: number, rx?: number, tx?: number, io_r?: number, io_w?: number, };
 
-export type ServiceQuery = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * Its name.
- */
-service: ServiceName, };
+export type ServiceQuery = { environment: EnvironmentRef, service: ServiceName, };
 
 export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 'no';
 
@@ -3918,11 +3617,7 @@ staged: Array<SettingPath>, };
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 
-export type ServiceSummary = {
-/**
- * Its durable identity.
- */
-id: ServiceLineageId,
+export type ServiceSummary = { id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -3934,7 +3629,7 @@ private_dns: ServiceName, };
 
 export type ServiceTemplate = { id: ServiceTemplateId,
 /**
- * Its version, from 1.
+ * Starts at 1; zero is rejected.
  */
 version: number, };
 
@@ -3975,11 +3670,7 @@ change: ReviewLifecycleKind | null,
 /**
  * The Service Template it was created from, if any.
  */
-template: ServiceTemplate | null,
-/**
- * Its durable identity.
- */
-id: ServiceLineageId,
+template: ServiceTemplate | null, id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -3993,11 +3684,7 @@ export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeS
 
 export type ServiceVolumeReference = string;
 
-export type ServicesQuery = {
-/**
- * The Environment to list.
- */
-environment: EnvironmentRef, };
+export type ServicesQuery = { environment: EnvironmentRef, };
 
 export type ServicesRole = "turned_off" | "already_off";
 
@@ -4098,25 +3785,13 @@ export type SetVolumeCopyReply = { copy: VolumeCopy | null, };
 
 export type SetVolumeCopyRequest = { name: DockerVolumeName, expect: ExpectedCopy, want: WantedCopy, gen?: VolumeGen, };
 
-export type SetVolumeSharedWrites = {
-/**
- * The Environment containing the Volume.
- */
-environment: EnvironmentRef,
-/**
- * The Volume, by name.
- */
-volume: VolumeName,
+export type SetVolumeSharedWrites = { environment: EnvironmentRef, volume: VolumeName,
 /**
  * On allows several writers; off refuses while it has more than one.
  */
 shared_writes: boolean, };
 
-export type SetVolumeStorage = {
-/**
- * The Environment containing the Volume.
- */
-environment: EnvironmentRef,
+export type SetVolumeStorage = { environment: EnvironmentRef,
 /**
  * The draft Volume to edit, by name.
  */
@@ -4128,11 +3803,7 @@ storage: VolumeKind, };
 
 export type SettingPath = string;
 
-export type SettingRow = {
-/**
- * The Setting.
- */
-path: SettingPath,
+export type SettingRow = { path: SettingPath,
 /**
  * Its value in Working State; `null` when it has none.
  */
@@ -4150,11 +3821,7 @@ apply: Apply,
  */
 row?: RowId, };
 
-export type SetupCommand = {
-/**
- * The Service it runs in.
- */
-service: ServiceName,
+export type SetupCommand = { service: ServiceName,
 /**
  * A shell command.
  */
@@ -4372,15 +4039,7 @@ kind: EnvironmentNodeType,
  */
 name: string | null, };
 
-export type SyncView = {
-/**
- * Where the changes come from.
- */
-from: EnvironmentSummary,
-/**
- * Where they land.
- */
-into: EnvironmentSummary,
+export type SyncView = { from: EnvironmentSummary, into: EnvironmentSummary,
 /**
  * Pass to [`SyncChanges::version`] to sync exactly these rows.
  */
@@ -4403,15 +4062,7 @@ export type Synced = {
 /**
  * Pass to [`UndoSync::sync`] to undo it.
  */
-sync: SyncId,
-/**
- * Where the changes came from.
- */
-from: EnvironmentSummary,
-/**
- * Where they landed.
- */
-into: EnvironmentSummary,
+sync: SyncId, from: EnvironmentSummary, into: EnvironmentSummary,
 /**
  * Nodes staged in `into`'s Working State.
  */
@@ -4452,7 +4103,7 @@ export type Taken = {
  */
 from: EnvironmentSummary,
 /**
- * Where they landed.
+ * The Branch they were staged in.
  */
 into: EnvironmentSummary,
 /**
@@ -4464,11 +4115,7 @@ export type TelemetryObservation = { "scope": "bridge_capacity",
 /**
  * Fresh Ployz bridge endpoint capacity.
  */
-bridge: BridgeEndpointCapacity, } | { "scope": "full",
-/**
- * Fresh host telemetry.
- */
-host: MachineTelemetry,
+bridge: BridgeEndpointCapacity, } | { "scope": "full", host: MachineTelemetry,
 /**
  * Fresh Ployz bridge endpoint capacity.
  */
@@ -4494,11 +4141,7 @@ path: SettingPath,
 /**
  * The Services whose private addresses it types.
  */
-services: Array<ServiceName>,
-/**
- * What to set instead.
- */
-instead: Instead, };
+services: Array<ServiceName>, instead: Instead, };
 
 export type Ulimit = { soft: number, hard: number, };
 
@@ -4609,11 +4252,7 @@ storage_locked: boolean,
 /**
  * What the next Deploy does to it; none when it is deployed as it is.
  */
-change: ReviewLifecycleKind | null,
-/**
- * Its durable identity.
- */
-id: VolumeId,
+change: ReviewLifecycleKind | null, id: VolumeId,
 /**
  * Its name, which mount paths address it by.
  */
@@ -4643,21 +4282,13 @@ held: Array<DockerVolumeId>,
  */
 unanswered: Array<MachineId>, };
 
-export type VolumeQuery = {
-/**
- * The Environment it is in.
- */
-environment: EnvironmentRef,
-/**
- * Its name.
- */
-volume: VolumeName, };
+export type VolumeQuery = { environment: EnvironmentRef, volume: VolumeName, };
 
 export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome, };
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
 
-export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, };
+export type VolumeRun = { "run": "mirror", to: ServerRef, } | { "run": "sync", full: boolean, } | { "run": "move", to: ServerRef, } | { "run": "release", loss: AcceptedLoss | null, } | { "run": "remove_mirror", loss: AcceptedLoss | null, } | { "run": "restore", from: ServerRef, };
 
 export type VolumeSource = { "kind": "bind", machine_path: MachinePath, create_machine_path: boolean, propagation: BindPropagation | null, recursive: BindRecursive | null, } | { "kind": "external", name: DockerVolumeName, } | { "kind": "ordinary", name: DockerVolumeName, driver: VolumeDriver, labels: { [key in string]: string }, } | { "kind": "provisioned",
 /**
@@ -4673,11 +4304,7 @@ maximum_bytes: ProvisionedVolumeMaximumBytes,
  */
 labels: { [key in string]: string }, } | { "kind": "tmpfs", size_bytes: number | null, mode: number | null, options: Array<Array<string>>, };
 
-export type VolumeStaged = {
-/**
- * The Volume.
- */
-volume: VolumeSummary,
+export type VolumeStaged = { volume: VolumeSummary,
 /**
  * The Environment, at its revision after the change.
  */
@@ -4688,11 +4315,7 @@ environment: EnvironmentSummary,
  */
 staged: Array<SettingPath>, };
 
-export type VolumeSummary = {
-/**
- * Its durable identity.
- */
-id: VolumeId,
+export type VolumeSummary = { id: VolumeId,
 /**
  * Its name, which mount paths address it by.
  */
@@ -4748,11 +4371,7 @@ storage_locked: boolean,
 /**
  * What the next Deploy does to it; none when it is deployed as it is.
  */
-change: ReviewLifecycleKind | null,
-/**
- * Its durable identity.
- */
-id: VolumeId,
+change: ReviewLifecycleKind | null, id: VolumeId,
 /**
  * Its name, which mount paths address it by.
  */
@@ -4766,11 +4385,7 @@ storage: VolumeKind,
  */
 shared_writes: boolean, };
 
-export type VolumesQuery = {
-/**
- * The Environment to list.
- */
-environment: EnvironmentRef, };
+export type VolumesQuery = { environment: EnvironmentRef, };
 
 export type VolumesView = {
 /**

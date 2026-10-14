@@ -9,12 +9,11 @@ use std::{
 };
 
 use ployz_core::{
-    DockerVolumeName, EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest,
-    LeaveRequest, Left, LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId,
-    MachineIdentity, MachineList, MachineObservation, MachineToken, MachineUpdated,
-    ManagementAddress, MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered,
-    RpcError, RpcErrorCode, RttObservation, RttStatistics, SelectedEndpoint, UpdateMachineRequest,
-    synthesize_membership,
+    EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left,
+    LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
+    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, MembershipEvidence,
+    PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
+    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
 };
 use thiserror::Error;
 
@@ -766,21 +765,42 @@ impl LocalMachine {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Cleanup`] when the plugin cannot demote or Docker keeps a name.
+    /// Returns [`Error::Cleanup`] when the plugin cannot demote, a Volume's copy would not
+    /// stop or its demote failed, or Docker keeps a name.
     async fn depart_storage(&self) -> Result<(), Error> {
         let Some(containers) = &self.containers else {
             return Ok(());
         };
-        let demoted: Vec<DockerVolumeName> = self
+        let departure: StorageDeparture = self
             .plugin
             .call("Storage.Demote", &())
             .await
             .map_err(|error| Error::Cleanup(format!("storage departure failed: {error}")))?;
-        for name in &demoted {
-            containers
-                .forget_volume(name)
-                .await
-                .map_err(|error| Error::Cleanup(format!("Docker kept Volume {name}: {error}")))?;
+        // A retry answers only what it changes, so the demoted are forgotten now even
+        // when a stuck Volume or another kept name fails this departure.
+        let mut left = Vec::new();
+        for name in &departure.demoted {
+            if let Err(error) = containers.forget_volume(name).await {
+                left.push(format!("Docker kept Volume {name}: {error}"));
+            }
+        }
+        left.extend(
+            departure
+                .stuck
+                .iter()
+                .map(|name| format!("Volume {name} did not stop copying")),
+        );
+        left.extend(
+            departure
+                .failed
+                .iter()
+                .map(|failed| format!("Volume {} did not depart: {}", failed.name, failed.reason)),
+        );
+        if !left.is_empty() {
+            return Err(Error::Cleanup(format!(
+                "{}; retry the departure",
+                left.join("; ")
+            )));
         }
         containers.clear_floors().await.map_err(|error| {
             Error::Cleanup(format!(

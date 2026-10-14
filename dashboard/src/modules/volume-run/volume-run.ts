@@ -16,20 +16,30 @@ export type VolumeRunKind = (typeof VOLUME_RUN_KINDS)[number];
 /** The sidebar also pins the Machine it resolved, so a renamed or reused Server name can't redirect the run. */
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
+/**
+ * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
+ * resume or forget anywhere else, so it never deletes a copy the approval did not name. Cloud's own Release of a Move
+ * it ended carries none.
+ */
+export type ReleasePlan = { readonly sources: MachineId[]; readonly forgets: MachineId[] };
+
 export type VolumeRunArgs = {
   mirror: Destination;
   sync: { readonly full: boolean };
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null };
   move: Destination;
-  release: Record<string, never>;
-  restore: { readonly from: MachineName };
+  release: { readonly plan?: ReleasePlan };
+  restore: { readonly from: MachineName; readonly machine?: MachineId };
   seed: {
     readonly into: { readonly volumeId: string; readonly dockerVolume: string; readonly name: string };
     readonly guid: string;
     readonly name: string;
   };
-  /** A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. */
-  deploy: { readonly deployment: string; readonly resume: Destination | null };
+  /**
+   * A Deploy's own lane while its Services run; `resume` is the move it took over, requested again once it ends. `hold`
+   * marks a lane on a Volume no run held: it took nothing, so it is never fenced and leaves no row when the Deploy ends.
+   */
+  deploy: { readonly deployment: string; readonly resume: Destination | null; readonly hold?: true };
 };
 export type AnyVolumeRunArgs = VolumeRunArgs[VolumeRunKind];
 
@@ -63,6 +73,8 @@ export type Member =
       readonly address: string;
       readonly answered: true;
       readonly view: VolumeCopyView;
+      /** A Server without the generation floor; it holds no copy and is not the run's destination. */
+      readonly floorless?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

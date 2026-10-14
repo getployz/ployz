@@ -92,6 +92,18 @@ finish. One run at a time per volume. A second one is refused and says how to st
 VolumeBusy: data is busy with a mirror; ployz volume release data stops it
 ```
 
+A run that can't be stopped, such as a mirror removal, says it finishes on its own instead:
+
+```
+VolumeBusy: data is busy with a mirror removal; it finishes on its own
+```
+
+While a deploy runs, each of these runs is refused until the deploy ends:
+
+```
+data is deploying; the Deploy ends its run
+```
+
 `volume sync` starts no run. It hands the mirror its pull and prints what it did, like Refresh
 now; `ployz volume show data` shows the download. `volume sync data --full` copies everything
 again as a run, and takes `--wait`.
@@ -122,6 +134,14 @@ start your service, a deploy follows the move and starts your service on `web-2`
 volume change staged on that volume fails instead, with "data is starting on web-2; it finishes
 there", and the change waits for your next deploy.
 
+A move asked for while a deploy runs is refused:
+
+```
+data is deploying; the Deploy ends its run
+```
+
+Ask for the move again once the deploy ends.
+
 ## When a move stops
 
 A move can stop if a server or Ployz Cloud goes away during it. `ployz volume runs data` shows
@@ -144,13 +164,17 @@ ployz volume release data
 ```
 
 Release stops the run on the volume and starts your service again on the old server, with all
-its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. With no
+its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. Release
+deletes only the copies it named when you started it. If the copies changed since, it deletes
+nothing, your service stays stopped, and the run says to release again. With no
 run in progress, Release repairs a move that stopped. Once `web-2` is told to start your
 service, the move can only finish there, so Release is refused:
 
 ```
 data is starting on web-2; it finishes there
 ```
+
+While a deploy runs, Release is refused with "data is deploying; the Deploy ends its run".
 
 Finishing on `web-2` still needs the old server to answer for its container. If the old server
 dies, the move fails, and your service stays down until it comes back or you restore the volume.
@@ -165,8 +189,8 @@ the release fails and names the copy to restore from:
 data has no writer and no stopped Service on its copies; ployz volume restore data --from web-2
 ```
 
-If you remove `web-2` after it was told to start your service, the move fails and names the copy
-left:
+If you remove `web-2` after it was told to start your service, the move fails as the removal
+finishes, so you can restore right away. Its error names the copy left:
 
 ```
 data's writer was on web-2 (removed). Restore from web-1's copy: ployz volume restore data --from web-1
@@ -184,7 +208,7 @@ Restore needs `web-2` to hold the only copy of the volume. If other servers hold
 refused and names them; remove them with `ployz volume mirror rm` first. A mirror holds the data as of
 its last sync, so restoring one loses the writes after it, and the run says when that was:
 `data restored on web-2 from <time>; writes after that time are lost`. Restore doesn't start your service.
-Deploy it next.
+Deploy it next. The [agent](../account/agent-sidebar.md) can run the same restore from a server's copy.
 
 ## Good to know
 

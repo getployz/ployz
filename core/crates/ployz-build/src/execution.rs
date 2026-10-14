@@ -257,12 +257,14 @@ impl Admission {
             cancellation: cancellation.clone(),
         })
     }
-    /// Handle for requesting this attempt to stop.
+    /// A shared handle to this attempt's [`Cancellation`]; cancelling it makes [`Self::check`]
+    /// fail with [`BuildError::Cancelled`].
     #[must_use]
     pub fn cancellation(&self) -> Cancellation {
         self.cancellation.clone()
     }
-    /// Active budget still available to this attempt.
+    /// Time left before this attempt times out, counted from admission; zero once
+    /// [`Self::check`] would fail with [`BuildError::TimedOut`].
     #[must_use]
     pub fn remaining(&self) -> Duration {
         self.deadline.remaining()

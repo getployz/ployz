@@ -498,7 +498,7 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
     type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
+    type TailLogsStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
     type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
@@ -1067,15 +1067,41 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(tokio_stream::iter(payloads)))
     }
 
+    /// A Server process's log is two lines, the second leaking an AWS key; any other
+    /// tail is empty.
     async fn tail_logs(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<Self::TailLogsStream>, Status> {
         self.stream_opens.fetch_add(1, Ordering::SeqCst);
         if let Some(status) = &self.tail_failure {
             return Err(status.clone());
         }
-        Ok(Response::new(tokio_stream::empty()))
+        let RpcRequestBody::TailLogs(tail) = request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected tail_logs"));
+        };
+        let ployz_core::LiveLogTarget::Machine(service) = tail.target else {
+            return Ok(Response::new(tokio_stream::iter(Vec::new())));
+        };
+        let metadata = ployz_core::LogMetadata {
+            origin: ployz_core::LogOrigin::Machine { service },
+            machine_id: self.description.machine_id,
+            machine_name: MachineName::parse("one").unwrap(),
+        };
+        let mut frames = Vec::new();
+        for body in [
+            ployz_core::LogBody::Stdout(b"Started ployzd.\n".to_vec()),
+            ployz_core::LogBody::Stderr(b"pulled with AKIAABCDEFGHIJKLMNOP\n".to_vec()),
+        ] {
+            let entry = ployz_core::LogEntry {
+                metadata: metadata.clone(),
+                timestamp_unix_nanos: 1_760_000_000_000_000_000,
+                body,
+            };
+            frames.push(Ok(entry.encode().unwrap()));
+        }
+        Ok(Response::new(tokio_stream::iter(frames)))
     }
 
     async fn runtime_watch(

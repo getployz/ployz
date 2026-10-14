@@ -59,9 +59,11 @@ up() {
   (cd "$DASH" || exit 1; scripts/verify/up.sh) >"$WORK/up.log" 2>&1 || { cat "$WORK/up.log"; exit 1; }
   U=$(sed -n 's/^Ployz Cloud verify: \([^ ]*\).*/\1/p' "$DASH/.verify/run/info")
   cookie=$(jq -r .cookie "$DASH/.verify/run/seed.json")
+  pg=$(sed -n 's/^  session \([^,]*\),.*/\1/p' "$DASH/.verify/run/info")
   export PLOYZ_CLOUD_URL=$U
   echo "Cloud at $U"
 }
+sql() { docker exec "$pg" psql -q -v ON_ERROR_STOP=1 -U postgres -d ployz_cloud -c "$1"; }
 api() { curl -sf -b "better-auth.session_token=$cookie" -H "Origin: $U" -H 'content-type: application/json' "$@"; }
 approve() {
   api "$U/api/auth/device?user_code=$1" >/dev/null || { echo "approve: device lookup failed for $1" >&2; exit 1; }
@@ -81,7 +83,6 @@ done
 up
 cd "$WORK/app" || exit 1
 
-# ---------- errors: not signed in, bad token, unreachable Cloud ----------
 export HOME=$WORK/home-anon; mkdir -p "$HOME"
 note errors "## Not signed in (fresh HOME, PLOYZ_CLOUD_URL set)"
 for cmd in "status" "token ls" "org ls" "github ls" "domain ls" "deployment ls" "deploy --plan" "logs" "ps" "cloud reset -y"; do
@@ -112,7 +113,6 @@ c errors "unknown subcommand" $P org frobnicate
 c errors "bad build-order value" $P org build-order sideways
 c errors "domain add without a service" $P domain add
 
-# ---------- auth ----------
 export HOME=$WORK/home-wait; mkdir -p "$HOME"
 note auth "## login from scratch, human (killed after 5s while it waits)"
 CAP_TIMEOUT=5 m auth "login, waiting for approval (timed out by the capture)" $P login
@@ -133,7 +133,6 @@ note auth "## status, signed in"
 c auth "status" $P status
 c auth "status --json" $P status --json
 
-# ---------- token ----------
 note token "## token new / ls / rm"
 need m token "token new ci" $P token new ci
 need m token "token new deploy --expires-in 7 --json" $P token new deploy --expires-in 7 --json
@@ -166,9 +165,10 @@ PLOYZ_TOKEN=$secret c token "token new with PLOYZ_TOKEN" $P token new nested
 PLOYZ_TOKEN=$revoked c token "status with a revoked PLOYZ_TOKEN" $P status
 PLOYZ_TOKEN=$revoked c token "token ls with a revoked PLOYZ_TOKEN --json" $P token ls --json
 
-# ---------- org ----------
-api -d '{"name":"Babbage Labs","slug":"babbage","keepCurrentActiveOrganization":true}' "$U/api/auth/organization/create" >/dev/null || { echo "creating the Babbage Labs Organization failed" >&2; exit 1; }
-note org "## org ls / use (second Organization babbage created through the auth API)"
+sql "WITH o AS (INSERT INTO organization (name, slug) VALUES ('Babbage Labs', 'babbage') RETURNING id)
+  INSERT INTO member (user_id, organization_id, role) SELECT u.id, o.id, 'owner' FROM o, \"user\" u WHERE u.email = 'ada@example.com'" >/dev/null \
+  || { echo "creating the Babbage Labs Organization failed" >&2; exit 1; }
+note org "## org ls / use (second Organization babbage, owned by Ada)"
 c org "org ls" $P org ls
 c org "org ls --json" $P org ls --json
 c org "org (bare)" $P org
@@ -193,7 +193,6 @@ c org "org ls after removal" $P org ls
 c org "status after removing the acting Organization" $P status
 "$REAL" org use ada >/dev/null 2>&1 || true
 
-# ---------- github ----------
 note github "## github (GitHub App is fake in verify)"
 c github "github (bare)" $P github
 c github "github ls" $P github ls
@@ -204,7 +203,6 @@ c github "github disconnect unknown" $P github disconnect 12345
 c github "github disconnect unknown --json" $P github disconnect 12345 --json
 c github "github ls REPO (unknown repository)" $P github ls acme/shop
 
-# ---------- domain ----------
 note domain "## domain (seed: acme.com on web; hosted DNS is dead in verify)"
 c domain "domain ls" $P domain ls
 c domain "domain ls --json" $P domain ls --json
@@ -229,7 +227,6 @@ c domain "domain rm unknown" $P domain rm nope.example.org
 c domain "domain rm unknown --json" $P domain rm nope.example.org --json
 c domain "domain ls --project nosuch" $P domain ls --project nosuch
 
-# ---------- deploy ----------
 note deploy "## deployment (seed: Deployment 1 queued; no Server answers)"
 c deploy "deployment ls" $P deployment ls
 c deploy "deployment ls --json" $P deployment ls --json

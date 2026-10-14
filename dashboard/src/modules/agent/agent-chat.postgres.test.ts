@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { ConfigCommand, ConfigStore } from "@ployz/sdk";
+import type { ConfigCommand, ConfigStore, RuntimeWatchView } from "@ployz/sdk";
 import { reconstructChat } from "@tanstack/ai-persistence";
 import { type AnyTextAdapter, EventType, type TokenUsage, type ModelMessage, type RunAgentResumeItem, type StreamChunk, StreamProcessor } from "@tanstack/ai";
 import { sql } from "drizzle-orm";
@@ -7,6 +7,7 @@ import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { expect, vi } from "vitest";
 import { fakeText } from "@tanstack/ai/testing";
 import { createAnthropicChat } from "@tanstack/ai-anthropic";
+import { asTestDouble } from "#/lib/test-double";
 import { agentChat, KEEPALIVE_MS, STEP_LIMIT, STEP_LIMIT_NOTE } from "#/modules/agent/agent-chat.server";
 import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
@@ -14,6 +15,8 @@ import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -78,7 +81,7 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
       from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
   }));
   if (options.removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, support: null };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
   let runs = 0;
   const say = (content: string, forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
     provided(agentChat(caller, { messages: [{ role: "user", content }], threadId: THREAD, runId: `run-${++runs}`, forwardedProps }, model))
@@ -165,6 +168,64 @@ it.live("a store tool the agent mints ids for creates a Service where the member
     const answered = yield* say("add an nginx service called api", { page: architecture }, model);
     expect(answered.results).toMatchObject([{ ok: true }]);
     expect(answered.said).toBe("Done.");
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
+    expect(JSON.stringify(listed)).toContain('"api"');
+  }));
+
+it.live("a store tool acts in the page's Environment by id after its Project was renamed under the page", () =>
+  Effect.gen(function* () {
+    const { say, store, write } = yield* sidebar({ removeWeb: false });
+    const docs = "00000000-0000-4000-8000-00000000a607";
+    const production = "00000000-0000-4000-8000-00000000a608";
+    yield* write({ command: "create_project", id: docs, name: "docs", default_environment: production });
+    yield* write({ command: "rename_project", project: "docs", name: "guides" });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const page = { page: "architecture", project: "docs", environment: "production", environment_id: production };
+    const answered = yield* say("add an nginx service called api", { page }, model);
+    expect(answered.results).toMatchObject([{ ok: true }]);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "guides", environment: "production" } }));
+    expect(JSON.stringify(listed)).toContain('"api"');
+  }));
+
+it.live("a store tool never acts in a Project that took the page's old name when the page's Environment is gone", () =>
+  Effect.gen(function* () {
+    const { say, store, write } = yield* sidebar({ removeWeb: false });
+    yield* write({ command: "create_project", id: "00000000-0000-4000-8000-00000000a609", name: "docs", default_environment: "00000000-0000-4000-8000-00000000a60a" });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const page = { page: "architecture", project: "docs", environment: "production", environment_id: "00000000-0000-4000-8000-00000000a60b" };
+    const answered = yield* say("add an nginx service called api", { page }, model);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "docs", environment: "production" } }));
+    expect(JSON.stringify(listed)).not.toContain('"api"');
+  }));
+
+/** Shop has only production; the page still shows a staging Environment no longer there. */
+const goneStaging = { page: "architecture", project: "shop", environment: "staging", environment_id: "00000000-0000-4000-8000-00000000a60c" };
+
+it.live("a store tool refuses on a page whose Environment is gone instead of defaulting to the only Project's", () =>
+  Effect.gen(function* () {
+    const { say, store } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx" } }] }, { text: "Done." }]);
+    const answered = yield* say("add an nginx service called api", { page: goneStaging }, model);
+    expect(answered.results).toMatchObject([{ ok: false, refusal: { code: "not_found" } }]);
+    expect(answered.heard.join("")).toContain("shop/staging");
+    const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
+    expect(JSON.stringify(listed)).not.toContain('"api"');
+  }));
+
+it.live("a store tool acts where the model names it, even on a page whose Environment is gone", () =>
+  Effect.gen(function* () {
+    const { say, store } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([
+      { toolCalls: [{ name: "service_add", input: { name: "api", image: "nginx", project: "shop", environment: "production" } }] },
+      { text: "Done." },
+    ]);
+    const answered = yield* say("add an nginx service called api to shop production", { page: goneStaging }, model);
+    expect(answered.results).toMatchObject([{ ok: true }]);
     const listed = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "services", environment: { project: "shop", environment: "production" } }));
     expect(JSON.stringify(listed)).toContain('"api"');
   }));
@@ -260,6 +321,41 @@ it.live("a turn that posts the client's whole transcript back stores each tool r
     const saved = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
     const roles = saved.map((message) => message.role);
     expect(roles).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant"]);
+  }));
+
+/** Shop's one Server, fra-1, runs the only copy of web, a Global: draining it retires web. */
+const lastGlobalCopy = Effect.provideService(OrganizationRuntime, {
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
+    agentAsk: () => Effect.succeed({
+      servers: [{ machine: "0".repeat(32), name: "fra-1", state: "online", release: null, upgrade: null, draining: false, disk: null, namespaces: ["shop-production"] }],
+      seen: { seen_by: null, observed_at: 1, read_at: 1, age_seconds: 0, from: "server", unanswered: [] },
+    }),
+    watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+      machines: [{ machine: { id: "0".repeat(32), name: "fra-1", accepts_services: true, runtime: { capabilities: [] } } }],
+      services: [{
+        identity: "shop-production/web",
+        service_id: "web",
+        containers: [{
+          kind: "service_container", machine_id: "0".repeat(32), runtime: { state: "running" }, created_at_unix_nanos: 1,
+          resolved_spec: { mode: { mode: "global" }, volumes: [], mounts: [] },
+        }],
+      }],
+    })),
+  }) }),
+});
+
+it.live("the sidebar asks before a Drain that destroys something, even when its request came with a person's dashboard caller", () =>
+  Effect.gen(function* () {
+    const { provided, caller, pending } = yield* sidebar({ removeWeb: false });
+    const model = fakeText();
+    model.setResponses([{ toolCalls: [{ name: "server_drain", input: { server: "fra-1", wait_seconds: 0 } }] }, { text: "Draining." }]);
+    const person: Caller = { ...caller, via: "dashboard" };
+    const asked = yield* provided(agentChat(person, { messages: [{ role: "user", content: "drain fra-1" }], threadId: THREAD, runId: "run-drain", forwardedProps: {} }, model)
+      .pipe(lastGlobalCopy, Effect.flatMap(drain)));
+
+    const approval = yield* waitingApproval(asked, pending);
+    expect(approval).toMatchObject({ status: "pending" });
   }));
 
 it.live("a Deploy that destroys web waits on a human, and runs exactly once after they approve", () =>
@@ -1191,6 +1287,7 @@ it.live("each model call tells PostHog its tokens once, cache reads and writes a
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText({ cache: true });
     const reported: TokenUsage[] = [];
@@ -1247,6 +1344,7 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText();
     model.setResponses([{ toolCalls: [{ name: "environment_show", input: { environment: "secretname" } }] }, { text: "All quiet." }]);
@@ -1291,17 +1389,23 @@ it.live("a turn's trace in PostHog nests each tool call under the model call tha
 
 it.live("a refused tool call shows in PostHog as an error", () =>
   Effect.gen(function* () {
-    const { say } = yield* sidebar({ removeWeb: true });
+    const { caller, say } = yield* sidebar({ removeWeb: true });
     const captured: Array<Parameters<PostHogService["capture"]>[0]> = [];
+    const toolCalls: Array<Parameters<PostHogService["toolCall"]>[0]> = [];
     const sink: PostHogService = {
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: (call) => Effect.sync(() => void toolCalls.push(call)),
     };
     yield* say("list services and deploy").pipe(Effect.provideService(PostHog, sink));
 
     expect(captured.filter(({ event }) => event === "$ai_span").map(({ properties }) => [properties?.["$ai_span_name"], properties?.["$ai_is_error"]]))
       .toEqual(expect.arrayContaining([["environment_show", false], ["deploy", true]]));
+    expect(toolCalls).toEqual(expect.arrayContaining([
+      { userId: caller.userId, organizationId: ORGANIZATION, threadId: THREAD, tool: "environment_show", durationMs: expect.any(Number), failed: false },
+      { userId: caller.userId, organizationId: ORGANIZATION, threadId: THREAD, tool: "deploy", durationMs: expect.any(Number), failed: true },
+    ]));
     expect(captured.at(-1)).toMatchObject({ event: "$ai_trace", properties: { $ai_is_error: true } });
   }));
 
@@ -1315,6 +1419,7 @@ it.live("an approved call finished by a resumed run hangs under that run's trace
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     yield* resume("resolved").pipe(Effect.provideService(PostHog, sink));
 
@@ -1334,6 +1439,7 @@ it.live("a tool name the catalog does not have reaches PostHog as unknown_tool, 
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText();
     model.setResponses([{ toolCalls: [{ name: "my_password_is_hunter2", input: {} }] }, { text: "Done." }]);
@@ -1352,6 +1458,7 @@ it.live("a reply stopped mid-stream still closes its trace in PostHog", () =>
       capture: (event) => Effect.sync(() => void captured.push(event)),
       identify: () => Effect.void,
       identifyOrganization: () => Effect.void,
+      toolCall: () => Effect.void,
     };
     const model = fakeText({ tokensPerSecond: 200 });
     model.setResponses([{ text: "Here is a long answer. ".repeat(40) }]);

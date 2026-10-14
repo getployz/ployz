@@ -3,13 +3,13 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vitest";
 import { createHash } from "node:crypto";
 import type { Client, DockerVolumeName, MachineId, RuntimeWatchView } from "@ployz/sdk";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
-import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
+import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -21,6 +21,8 @@ import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { DEFAULT_SERVER_UPGRADE_SETTINGS } from "#/modules/server-upgrade/server-upgrade";
 import { operationApprovals } from "#/modules/approvals/tables";
+import type { Caller } from "#/modules/identity/actor";
+import { forgetServer } from "#/modules/operations/operations.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
@@ -42,9 +44,9 @@ const origin = "http://localhost:3000";
 
 /** GitHub: the private acme/web (through installation 7) has branches main and dev, a Dockerfile and a src directory. */
 const github = fakeGithubApi({
-  "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
-  "https://api.github.com/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
-  [`https://api.github.com/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
+  "/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+  "/repos/acme/web/commits/main": { commit: { tree: { sha: "a".repeat(40) } } },
+  [`/repos/acme/web/git/trees/${"a".repeat(40)}?recursive=1`]: {
     truncated: false,
     tree: [
       { path: "Dockerfile", type: "blob", mode: "100644" },
@@ -52,10 +54,10 @@ const github = fakeGithubApi({
       { path: "src/main.ts", type: "blob", mode: "100644" },
     ],
   },
-  "https://api.github.com/repos/acme/web/contents/Dockerfile?ref=main": {
+  "/repos/acme/web/contents/Dockerfile?ref=main": {
     type: "file", size: 12, encoding: "base64", content: Buffer.from("FROM alpine\n").toString("base64"),
   },
-  "https://api.github.com/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
+  "/repos/acme/web/contents/src?ref=main": [{ path: "src/main.ts" }],
 });
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
@@ -109,11 +111,15 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
 
 const cliLayer = Effect.fn(function* (
   ployz: Layer.Layer<Ployz> = fakeServers().layer,
-  overrides: { readonly runtime?: Layer.Layer<OrganizationRuntime>; readonly inngest?: Inngest } = {},
+  overrides: {
+    readonly runtime?: Layer.Layer<OrganizationRuntime>;
+    readonly inngest?: Inngest;
+    readonly env?: Record<string, string>;
+  } = {},
 ) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
-    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
+    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href, ...overrides.env },
   });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const databaseLayer = DatabaseLive.pipe(Layer.provide(configLayer));
@@ -260,13 +266,11 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, bob)).status, 404);
         assert.strictEqual((yield* cli("DELETE", "tokens/not-a-uuid", alice)).status, 404);
 
-        // Expired.
         yield* database.drizzle.update(organizationToken)
           .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.id, token.id));
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: token.secret })).status, 401);
         assert.isTrue((yield* cli("GET", "tokens", alice)).json.tokens?.[0]?.expired);
 
-        // Its maker left the Organization.
         const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 1 })).json.token
           ?? assert.fail("no token");
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 200);
@@ -277,7 +281,6 @@ it.live(
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 403);
         yield* database.drizzle.insert(member).values(membership ?? assert.fail("no membership"));
 
-        // Revoked.
         const removed = yield* cli("DELETE", `tokens/${second.id}`, alice);
         assert.deepStrictEqual(removed.json.removed, { id: second.id, kind: "token" });
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);
@@ -505,29 +508,36 @@ it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {
-      const layer = yield* cliLayer();
+      const layer = yield* cliLayer(undefined, { env: { PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" } });
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
         assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
-        assert.match(empty.json.install_url ?? "", /^https:\/\/github\.com\/apps\/.+\/installations\/new$/);
+        assert.match(empty.json.install_url ?? "", /^http:\/\/127\.0\.0\.1:4555\/apps\/.+\/installations\/new$/);
 
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
           .where(eq(member.organizationId, alice.organization.id));
         const userId = row?.userId ?? assert.fail("no member");
-        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(githubInstallation).values([
+          { installationId: 7, accountLogin: "acme", accountType: "Organization" },
+          { installationId: 8, accountLogin: "alice", accountType: "User" },
+        ]);
+        yield* database.drizzle.insert(organizationGithubInstallation).values([
+          { organizationId: alice.organization.id, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "alice" },
+          { organizationId: alice.organization.id, installationId: 8, connectedByUserId: userId, connectedGithubLogin: "alice" },
+        ]);
         yield* database.drizzle.insert(githubRepositoryCache).values({
-          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
         });
         const connected = yield* cli("GET", "github", alice);
         assert.deepInclude(connected.json, { ready: true });
         assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
-          [{ id: 7, account: "acme", repositories: 1 }]);
+          [{ id: 7, account: "acme", repositories: 1 }, { id: 8, account: "alice", repositories: 0 }]);
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
-        assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
+        assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
         assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
 
         const tree = yield* cli("GET", "github/tree?repository=acme%2Fweb&path=src", alice);
@@ -552,8 +562,10 @@ it.live(
 
         const removed = yield* cli("DELETE", "github/7", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
-        assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
+        assert.strictEqual(removed.json.uninstall_url, "http://127.0.0.1:4555/organizations/acme/settings/installations/7");
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
+        const personal = yield* cli("DELETE", "github/8", alice);
+        assert.strictEqual(personal.json.uninstall_url, "http://127.0.0.1:4555/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));
     }),
@@ -615,6 +627,69 @@ it.live(
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org rm is an owner's alone: an admin or a member is refused and the Organization stays",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const slug = alice.organization.slug;
+        const [personal] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, bob.organization.id));
+        const bobId = personal?.userId ?? assert.fail("no member");
+        yield* database.drizzle.insert(member).values({ userId: bobId, organizationId: alice.organization.id, role: "admin" });
+        yield* database.drizzle.update(session).set({ activeOrganizationId: alice.organization.id, activeOrganizationSlug: slug })
+          .where(eq(session.userId, bobId));
+        for (const role of ["admin", "member"] as const) {
+          yield* database.drizzle.update(member).set({ role })
+            .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
+          const refused = yield* cli("DELETE", `organizations/${slug}`, bob);
+          assert.strictEqual(refused.status, 403);
+          assert.strictEqual(refused.json.error?.code, "forbidden");
+          assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
+        }
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Every route better-auth 1.7.6's organization plugin mounts with Ployz's options, but set-active, `ployz org use`. */
+const CLOSED_ORGANIZATION_ROUTES = [
+  "accept-invitation", "cancel-invitation", "check-slug", "create", "delete", "get-active-member", "get-active-member-role",
+  "get-full-organization", "get-invitation", "get-organization", "has-permission", "invite-member", "leave", "list",
+  "list-invitations", "list-members", "list-user-invitations", "reject-invitation", "remove-member", "update",
+  "update-member-role",
+];
+
+it.live(
+  "better-auth's organization routes but set-active answer 404 to a signed-in member, so membership changes only go through Ployz",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const alice = yield* signUp("alice");
+        const body = JSON.stringify({ organizationId: alice.organization.id, email: "eve@example.test", role: "owner" });
+        const call = (method: "GET" | "POST", path: string) => {
+          const init: RequestInit = { method, headers: { cookie: alice.cookie, "content-type": "application/json", origin } };
+          if (method === "POST") init.body = body;
+          return auth.handler(new Request(`${origin}/api/auth${path}`, init));
+        };
+        assert.strictEqual((yield* call("GET", "/get-session")).status, 200);
+        for (const route of CLOSED_ORGANIZATION_ROUTES) {
+          for (const path of [`/organization/${route}`, `/organization/${route}/`]) {
+            assert.strictEqual((yield* call("POST", path)).status, 404, `POST ${path}`);
+            assert.strictEqual((yield* call("GET", path)).status, 404, `GET ${path}`);
+          }
+        }
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -776,6 +851,37 @@ it.live(
           ["namespace:left-behind", "approved"],
           [`server:${fra1}`, "pending"],
         ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a person forgetting a Server from its dashboard modal starts it at once, and a sidebar agent's forget asks first",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "dashboard-forget-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindCluster, inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const { organization: org } = yield* signUp("alice");
+        const [alice] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, org.id));
+        assert.isDefined(alice);
+        const { userId } = alice;
+        const caller = (via: Caller["via"]): Caller =>
+          ({ userId, organization: { id: org.id, slug: org.slug }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via });
+
+        const agent = yield* forgetServer(caller("agent"), fra1, { key: "agent-forget", approvalId: null });
+        assert.strictEqual(agent?.ok, false);
+        assert.lengthOf(sent.mock.calls, 0);
+
+        const person = yield* forgetServer(caller("dashboard"), fra1, { key: "modal-forget", approvalId: null });
+        assert.strictEqual(person?.ok, true);
+        assert.lengthOf(yield* drizzle.select().from(machineRemoveAttempt), 1);
+        assert.lengthOf(sent.mock.calls, 1);
+        const approvals = yield* drizzle.select({ status: operationApprovals.status }).from(operationApprovals);
+        assert.deepStrictEqual(approvals.map(({ status }) => status), ["pending"]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

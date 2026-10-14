@@ -11,7 +11,7 @@ import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { organization } from "./tables";
 
-type Role = typeof member.$inferSelect.role;
+export type Role = typeof member.$inferSelect.role;
 type OrganizationRef = { readonly id: string; readonly slug: string };
 
 /**
@@ -22,8 +22,13 @@ export type Access =
   | { readonly kind: "member"; readonly userId: string; readonly role: Role; readonly organization: OrganizationRef }
   | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows };
 
-/** "operate": any member, or support. "manage": an owner or admin, or support. */
-type Need = "operate" | "manage";
+/** "operate": any member, or support. "manage": an owner or admin, or support. "own": an owner, never support. */
+type Need = "operate" | "manage" | "own";
+
+const FORBIDDEN_MESSAGE = {
+  manage: "Only an owner or admin of this Organization can do this.",
+  own: "Only an owner of this Organization can do this.",
+} satisfies Record<Exclude<Need, "operate">, string>;
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
 type AccessFacts = {
@@ -33,7 +38,7 @@ type AccessFacts = {
   readonly supportShows: SupportShows;
 };
 
-type AccessDecision = Access | { readonly kind: "forbidden" } | { readonly kind: "not_found" };
+type AccessDecision = Access | { readonly kind: "forbidden"; readonly need: Exclude<Need, "operate"> } | { readonly kind: "not_found" };
 
 /** The one rule: members by role; staff only while the Organization allows support. Outsiders learn nothing. */
 export const decideAccess = (input: {
@@ -45,10 +50,14 @@ export const decideAccess = (input: {
   const { userId, facts, isStaff, need } = input;
   if (facts === null) return { kind: "not_found" };
   if (facts.role !== null) {
-    if (need === "manage" && facts.role === "member") return { kind: "forbidden" };
+    if (need === "manage" && facts.role === "member") return { kind: "forbidden", need };
+    if (need === "own" && facts.role !== "owner") return { kind: "forbidden", need };
     return { kind: "member", userId, role: facts.role, organization: facts.organization };
   }
-  if (isStaff && facts.supportAllowed) return { kind: "support", userId, organization: facts.organization, shows: facts.supportShows };
+  if (isStaff && facts.supportAllowed) {
+    if (need === "own") return { kind: "forbidden", need };
+    return { kind: "support", userId, organization: facts.organization, shows: facts.supportShows };
+  }
   return { kind: "not_found" };
 };
 
@@ -110,7 +119,7 @@ const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, need:
     case "support":
       return decision;
     case "forbidden":
-      return yield* new Forbidden({ message: "Only an owner or admin of this Organization can do this." });
+      return yield* new Forbidden({ message: FORBIDDEN_MESSAGE[decision.need] });
     case "not_found":
       return yield* new NotFound({ message: "The organization was not found." });
   }

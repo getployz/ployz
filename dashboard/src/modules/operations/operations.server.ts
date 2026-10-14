@@ -3,13 +3,15 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
-import { planClean, planDrain, planRemove } from "#/modules/machines/server-operations.server";
+import type { ServerPolicyChange } from "#/modules/machines/server-policy";
+import { planKeyedServerPolicyChange } from "#/modules/machines/server-policy.server";
+import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/machines/server-operations.server";
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_TOOLS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -58,13 +60,25 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
     return yield* admitOperation(caller.organization.id, { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } }, Effect.gen(function* () {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
-      return (attemptId: string) => requestCliServerDrain(actor(caller), { attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId })
+      return (attemptId: string) => requestCliServerDrain(actor(caller), {
+        attemptId, machineId, targets: plan.targets, approvalId: gated.approvalId, planDigest: operationDigest(plan),
+      })
         .pipe(Effect.map((id) => ({ ok: true, id }) as const));
     }));
   });
 
 export const upgradeServer = (caller: Caller, input: { readonly machineId: string; readonly channel: string | undefined }, call: OperationCall) =>
   admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input));
+
+export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
+  admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
+    const plan = change.acceptsIngress === false ? yield* planIngressOff(caller.organization.id, machineId, change) : null;
+    if (plan !== null) {
+      const gated = yield* gate(caller, call, plan);
+      if (!gated.ok) return refused(gated.refusal);
+    }
+    return yield* planKeyedServerPolicyChange(caller, machineId, change);
+  }));
 
 export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
   admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
@@ -125,7 +139,7 @@ export const runVolume = (
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
     }
-    return (runId: string) => insertRun(actor(caller), input, planned.volume, runId)
+    return (runId: string) => insertRun(actor(caller), planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
   }));
 
@@ -144,6 +158,6 @@ export const actService = (
 ) =>
   admitOperation(
     caller.organization.id,
-    { tool: `service_${input.verb}`, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
+    { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.succeed((attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input })),
   );

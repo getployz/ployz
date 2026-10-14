@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 use super::step::{DashboardPage, Fix};
 
-/// A tool's answer.
+/// A tool's answer: a value, or a [`Refusal`] that says what to call instead.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(into = "Wire", try_from = "Wire")]
 #[ts(type = "{ ok: true, value: JsonValue } | { ok: false, refusal: Refusal }")]
@@ -187,7 +187,6 @@ impl Refusal {
         self.with_detail("fix", json!(fix))
     }
 
-    /// `details.<key>` set to `value`.
     pub(crate) fn with_detail(mut self, key: &str, value: Value) -> Self {
         let mut details = match self.details {
             Value::Object(details) => details,
@@ -361,7 +360,7 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ),
     ("github ls", CliNext::Tool("github_ls", Some("repository"))),
     ("github connect", CliNext::Tool("github_connect", None)),
-    ("deployment ls", CliNext::Tool("deployment_show", None)),
+    ("deployment ls", CliNext::Tool("deployment_list", None)),
     ("diff", CliNext::Tool("review", None)),
     ("domain add", CliNext::Tool("domain_add", Some("service"))),
     ("volume inspect", CliNext::Tool("environment_show", None)),

@@ -237,8 +237,6 @@ export function diffVariables(
   for (const entry of parsed) {
     const existing = currentByKey.get(entry.key);
     if (!existing) {
-      // Assign the id here so the optimistic insert and the persisted row share
-      // a key once the server honours it (see RawEditorDiff / createServiceVariable).
       creates.push({ id: crypto.randomUUID(), key: entry.key, value: entry.value });
       continue;
     }

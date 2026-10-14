@@ -875,7 +875,6 @@ pub(crate) fn record(
                     json!({ "deployment": id }),
                 ));
             };
-            // Everything confirmed so far, and these now.
             let mut confirmed = services;
             for node in &stored.nodes {
                 if stored
@@ -1325,7 +1324,6 @@ fn end(
     status: DeploymentStatus,
 ) -> Result<DeploymentSummary, RpcError> {
     advance(tx, &stored, status == DeploymentStatus::Applied)?;
-    // A cancelled Deployment that stopped short reads cancelled, not failed.
     stored.summary.status = match (stored.summary.status, status) {
         (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
         _ => status,
@@ -1400,7 +1398,6 @@ fn advance(tx: &mut dyn Tx, stored: &Stored, succeeded: bool) -> Result<(), RpcE
             };
         }
         crate::branch::deployed(tx, &stored.summary.environment_id, &saved, &deployed)?;
-        // Its Branches follow what it runs now.
         crate::branch::follow(tx, &stored.summary.environment_id, &deployed)?;
     }
     Ok(())

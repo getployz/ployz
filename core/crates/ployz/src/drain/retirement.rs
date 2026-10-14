@@ -208,6 +208,23 @@ pub(crate) async fn retire_copies<C: CopyLister>(
     }
 }
 
+/// Stop and remove the system Ingress Proxy on `machine_id` through the same retirement
+/// as any Global copy: an unnamed copy goes at once, a pointed one leaves through its pointer.
+pub(crate) async fn retire_ingress_proxy<C: CopyLister>(
+    client: &mut C,
+    machine_id: &MachineId,
+    cancellation: &CancellationToken,
+) -> Result<(), RpcError> {
+    retire_copies(
+        client,
+        machine_id,
+        &QualifiedService::system_ingress(),
+        POINTED_RETIRE_WAIT,
+        cancellation,
+    )
+    .await
+}
+
 fn bind(
     bound: &mut Option<DeploymentLogId>,
     pointer: &ServingPointer,

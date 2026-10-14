@@ -67,8 +67,6 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> ProxyStream for T {}
 
 pub type BoxProxyStream = Box<dyn ProxyStream>;
 
-// TODO: a future client-side WireGuard connector must honour
-// cancellation and try each visible Machine; Ployz keeps it excluded.
 // Object-safe for `Arc<dyn Connector>` in Client; native async fn is not dyn-safe.
 #[tonic::async_trait]
 pub trait Connector: Send + Sync {
@@ -234,8 +232,6 @@ async fn connect_ssh(
     let control_path = control_path();
     let mut probe_args = ssh_base_args(destination, key_file, control_path.as_deref(), timeout);
     probe_args.extend([destination.target().into(), "true".into()]);
-    // TODO: cancelling drops this probe promptly, but a ControlMaster
-    // created during OpenSSH establishment may outlive it until ControlPersist expires.
     let output = Command::new(program)
         .args(&probe_args)
         .stdin(Stdio::null())

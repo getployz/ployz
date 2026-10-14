@@ -14,6 +14,7 @@ import { settingName } from "#/modules/config-store/store-branches";
 import { onMergeCount, onMergeLists, onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useGithubWebOrigin } from "#/modules/github/github.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /**
@@ -37,6 +38,7 @@ function OnMergeOpen({ organizationSlug, project, store, pullRequest }: {
   ] as const);
   const linked = useRouterState({ select: (state) => new URLSearchParams(state.location.searchStr).get("panel") === "on-merge" });
   const [open, setOpen] = useState(linked);
+  const githubWeb = useGithubWebOrigin();
   if (!list.ok || !facts.ok || facts.value.pull_request?.open !== true) return null;
   const count = onMergeCount(list.value);
   const repository = plans.ok ? plans.value.plans.find((plan) => plan.repository_id === pullRequest.repository_id)?.repository : undefined;
@@ -60,7 +62,7 @@ function OnMergeOpen({ organizationSlug, project, store, pullRequest }: {
           </ul>
         ))}
         <CheckFooter check={facts.value.check}
-          href={repository ? `https://github.com/${repository}/pull/${pullRequest.number}/checks` : null} />
+          href={repository ? `${githubWeb}/${repository}/pull/${pullRequest.number}/checks` : null} />
       </PopoverContent>
     </Popover>
   );

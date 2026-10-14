@@ -1,13 +1,14 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, MachineId, Snapshot, VolumeCopy } from "@ployz/sdk";
 import { and, eq, inArray, max, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
 import { expectOf, roleOf } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus, volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Member } from "#/modules/volume-run/volume-run";
-import { askCopy, DRAIN_MS, observeVolumeMembers, requestVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { askCopy, type CopyAnswer, DRAIN_MS, observeVolumeMembers, requestVolumeRun, SwitchAttemptError } from "#/modules/volume-run/volume-run.server";
+import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
 export type SyncedVolume = {
@@ -26,6 +27,7 @@ export type MirrorStep =
 
 /** What one sync of one Volume did. A sync never opens a lane except to demote a primary that came back. */
 export type MirrorSync =
+  | { readonly kind: "running" }
   | { readonly kind: "covered"; readonly run: { readonly id: string; readonly kind: string } }
   | { readonly kind: "deploying"; readonly message: string }
   | { readonly kind: "unanswered"; readonly servers: readonly string[] }
@@ -46,6 +48,9 @@ export type CopyAsk = typeof askCopy;
 type Slot = Extract<VolumeCopy, { kind: "slot" }>;
 type SlotMember = AnsweredMember & { readonly view: { readonly copy: Slot } };
 
+/** A mirror's answer, or why it couldn't be asked: that mirror skips the round and the others still get theirs. */
+type MirrorAnswer = CopyAnswer | { readonly ok: false; readonly reason: "unreached"; readonly copy: null; readonly message: string };
+
 const isSlot = (member: Member): member is SlotMember => member.answered && member.view.copy?.kind === "slot";
 const pullingTo = (copy: Slot) => copy.pull !== null && copy.pull.failure === null ? copy.pull.target : null;
 
@@ -57,6 +62,8 @@ export function syncLines(name: string, { reported, sync }: Omit<MirrorSyncAnswe
 
 function outcomeLines(name: string, sync: MirrorSync): string[] {
   switch (sync.kind) {
+    case "running":
+      return [`skipped ${name}, another sync of it is running`];
     case "covered":
       return [sync.run.kind === "move"
         ? `${name} refresh is covered by move run ${sync.run.id}`
@@ -128,11 +135,32 @@ const recordSuccess = Effect.fn("MirrorSync.recordSuccess")(function* (
 /**
  * The gen a rowless SetVolumeCopy carries: the Volume's newest lane's. With no lane open, every floor Cloud raised on
  * this Volume is at most that, and a lane opened since raises the floor past it, so the Machine refuses the sync Stale.
+ * A Deploy's hold floors no Machine and its row goes when the Deploy ends, so a sync carrying its gen would raise a
+ * floor no later sync reaches.
  */
 const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun).where(eq(volumeRun.volumeId, volumeId));
+  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, volumeId), sql`${volumeRun.args}->>'hold' is distinct from 'true'`));
   return row?.gen ?? 0;
+});
+
+/** Answers with `sync`'s lines, logging each. */
+const answerFor = (organizationId: string, volume: SyncedVolume) => (reported: readonly PullFailure[], sync: MirrorSync) => {
+  const lines = syncLines(volume.name, { reported, sync });
+  return Effect.as(Effect.forEach(lines, (line) => Effect.logInfo(line, { organizationId, volumeId: volume.volumeId })), {
+    reported, sync, lines,
+  } satisfies MirrorSyncAnswer);
+};
+
+/**
+ * The writer reuses a snapshot name it already holds, so each sync names its own. Postgres never hands out a transaction
+ * id twice, and the time in front keeps the round above a lane run's.
+ */
+const snapshotRound = Effect.fn("MirrorSync.snapshotRound")(function* () {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.execute<{ xid: string }>(sql`select pg_current_xact_id()::text as xid`, "objects");
+  return `${Date.now()}${row?.xid ?? ""}`;
 });
 
 /**
@@ -140,19 +168,9 @@ const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string)
  * It reports each failed pull once, before anything else, so an open lane never hides one. With a lane open it says
  * why it does nothing. Otherwise it snapshots the writer and hands each idle mirror the pull, without waiting for it.
  */
-export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
-  organizationId: string,
-  volume: SyncedVolume,
-  observe: MemberObserver = observeVolumeMembers,
-  ask: CopyAsk = askCopy,
-) {
+const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string, volume: SyncedVolume, observe: MemberObserver, ask: CopyAsk) {
   const { drizzle } = yield* Database;
-  const answer = (reported: readonly PullFailure[], sync: MirrorSync) => {
-    const lines = syncLines(volume.name, { reported, sync });
-    return Effect.as(Effect.forEach(lines, (line) => Effect.logInfo(line, { organizationId, volumeId: volume.volumeId })), {
-      reported, sync, lines,
-    } satisfies MirrorSyncAnswer);
-  };
+  const answer = answerFor(organizationId, volume);
 
   const members = yield* observe(organizationId, volume.dockerVolume);
   const [placement] = yield* drizzle.select().from(volumePlacement)
@@ -202,6 +220,13 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
   const steps: MirrorStep[] = [];
   const named = (member: Member) => copyName(volume.name, member.machine.name);
+  const pull = (member: SlotMember, copy: Slot, target: string) =>
+    ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }).pipe(
+      Effect.catchIf(
+        (error) => error instanceof SwitchAttemptError,
+        (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: "unreached", copy: null, message: error.message }),
+      ),
+    );
 
   // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
   const busy: MirrorStep[] = [];
@@ -213,7 +238,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
       idle.push({ member, copy });
       continue;
     }
-    const resent = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
+    const resent = yield* pull(member, copy, target);
     if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
     else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
     else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
@@ -221,7 +246,7 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
   // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
   if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
 
-  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${Math.floor(Date.now() / 1000)}` });
+  const snapshot = yield* ask(asker, writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
   if (!snapshot.ok) return yield* answer(reported, { kind: "refused", message: snapshot.message });
   const target: Snapshot | null = snapshot.copy?.newest ?? null;
   if (target === null) return yield* answer(reported, { kind: "refused", message: `${named(writer)} made no snapshot` });
@@ -236,14 +261,40 @@ export const syncMirrors = Effect.fn("MirrorSync.sync")(function* (
       const status = statuses.find((row) => row.machineId === member.machine.id);
       if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
     }
-    const handed = yield* ask(asker, member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target: target.name, drain: DRAIN_MS });
+    const handed = yield* pull(member, copy, target.name);
+    const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
     if (handed.ok) {
       steps.push({ kind: "handed_off", mirror: named(member), target: target.name });
-    } else if (handed.reason === "busy") {
-      steps.push({ kind: "pulling", mirror: named(member), target: handed.copy?.kind === "slot" ? handed.copy.pull?.target ?? target.name : target.name });
+    } else if (handed.reason === "busy" || pulling !== null) {
+      steps.push({ kind: "pulling", mirror: named(member), target: pulling ?? target.name });
     } else {
+      // A refused hand-off starts no pull, so no pull failure would ever say why this mirror skipped. A stale or mismatch
+      // refusal is a newer run moving the copy since this one observed it, not the mirror skipping.
+      if (handed.reason !== "stale" && handed.reason !== "mismatch") {
+        yield* recordFailure(organizationId, volume.volumeId, member.machine.id, target.name, handed.message);
+      }
       steps.push({ kind: "refused", mirror: named(member), message: handed.message });
     }
   }
   return yield* answer(reported, { kind: "synced", mirrors: steps });
 });
+
+/** Whether Volume `volumeId`'s sync lock was free, now held: false while another sync of it runs. */
+const syncLock = Effect.fn("MirrorSync.lock")(function* (volumeId: string) {
+  const [row] = yield* (yield* Database).drizzle.execute<{ held: boolean }>(
+    sql`select pg_try_advisory_xact_lock(hashtext(${`volume-sync:${volumeId}`})) as held`, "objects");
+  return row?.held === true;
+});
+
+/** Apart from staging's so a slow sync never queues a restore; two, so holders pin 3 of the pool's 10 connections and bodies keep 7. */
+const syncHolders = Semaphore.makeUnsafe(2);
+
+/**
+ * One sync of a Volume at a time, and none waits: one started while another runs skips, so it never snapshots past a pull
+ * the running one just handed off.
+ */
+export const syncMirrors = (organizationId: string, volume: SyncedVolume, observe: MemberObserver = observeVolumeMembers, ask: CopyAsk = askCopy) =>
+  whileLocked(syncHolders, syncLock(volume.volumeId), syncOnce(organizationId, volume, observe, ask)).pipe(Effect.flatMap(Option.match({
+    onSome: Effect.succeed,
+    onNone: () => answerFor(organizationId, volume)([], { kind: "running" }),
+  })));

@@ -46,6 +46,10 @@ def release_inputs_changed(paths):
 def select_normal(paths):
     selected = {"contracts"}
     for path in paths:
+        # ployz-store embeds the user docs: the docs tool's catalog entry and its ranking test read them.
+        if path.startswith("docs/user/") and path.endswith(".md"):
+            selected |= RUST
+            continue
         if path.endswith(".md") or path.startswith(("docs/", ".agents/", ".claude/", ".cursor/", "core/site/")):
             continue
         # The uptime crate is its own Cargo workspace, so its manifests select only its job.

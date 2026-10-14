@@ -15,6 +15,13 @@ import {
 const Uuid = Schema.String.check(Schema.isUUID());
 const DEFAULT_HOSTED_DNS_URL = new URL("https://dns.ployz.app/");
 const DEFAULT_POSTHOG_HOST = new URL("https://us.i.posthog.com");
+export type GithubOrigins = { readonly api: string; readonly web: string; readonly codeload: string; readonly oidc: string };
+const GITHUB_ORIGINS: GithubOrigins = {
+  api: "https://api.github.com",
+  web: "https://github.com",
+  codeload: "https://codeload.github.com",
+  oidc: "https://token.actions.githubusercontent.com",
+};
 const NonEmptySecret = Schema.Redacted(Schema.NonEmptyString);
 const EncryptionSecret = Schema.Redacted(
   Schema.String.check(Schema.isMinLength(32)),
@@ -29,6 +36,14 @@ export type PolarConfiguration =
       readonly server: "production" | "sandbox";
       readonly productId: string;
     };
+
+/** PostShiba sends Cloud's email; null (every variable unset) is Off. */
+export type MailConfiguration = {
+  readonly apiKey: Redacted.Redacted<string>;
+  readonly teamId: string;
+  readonly clusterId: string;
+  readonly from: string;
+} | null;
 
 export class InvalidConfiguration extends Data.TaggedError(
   "InvalidConfiguration",
@@ -59,6 +74,7 @@ const rawFields = {
     NonEmptySecret,
     "GITHUB_APP_WEBHOOK_SECRET",
   ),
+  verifyGithubOrigin: optional(Config.url("PLOYZ_VERIFY_GITHUB_ORIGIN")),
   polarAccessToken: optional(
     Config.schema(NonEmptySecret, "POLAR_ACCESS_TOKEN"),
   ),
@@ -79,6 +95,10 @@ const rawFields = {
   hostedDnsMintKey: optional(
     Config.schema(NonEmptySecret, "PLOYZ_HOSTED_DNS_MINT_KEY"),
   ),
+  postshibaApiKey: optional(Config.schema(NonEmptySecret, "POSTSHIBA_API_KEY")),
+  postshibaTeamId: optional(Config.nonEmptyString("POSTSHIBA_TEAM_ID")),
+  postshibaClusterId: optional(Config.nonEmptyString("POSTSHIBA_CLUSTER_ID")),
+  mailFrom: optional(Config.nonEmptyString("MAIL_FROM")),
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   uptimeEnabled: Config.boolean("UPTIME_ENABLED").pipe(Config.withDefault(false)),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
@@ -148,6 +168,44 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
   } as const;
 });
 
+/** No mail variables means no email; a partial set is a mistake. */
+const resolveMailConfiguration = Effect.fn("Config.resolveMail")(function* (
+  input: Effect.Success<typeof loadRawConfig>,
+) {
+  const { postshibaApiKey: apiKey, postshibaTeamId: teamId, postshibaClusterId: clusterId, mailFrom: from } = input;
+  if (apiKey === undefined && teamId === undefined && clusterId === undefined && from === undefined) {
+    return null satisfies MailConfiguration;
+  }
+  if (apiKey === undefined || teamId === undefined || clusterId === undefined || from === undefined) {
+    return yield* new InvalidConfiguration({
+      message:
+        "Mail configuration must be entirely absent or include POSTSHIBA_API_KEY, POSTSHIBA_TEAM_ID, POSTSHIBA_CLUSTER_ID, and MAIL_FROM",
+    });
+  }
+  return { apiKey, teamId, clusterId, from } satisfies MailConfiguration;
+});
+
+/** A verify lab's fake GitHub stands in for every GitHub host; it would receive every GitHub credential Cloud holds. */
+const resolveGithubOrigins = Effect.fn("Config.resolveGithubOrigins")(function* (
+  input: Effect.Success<typeof loadRawConfig>,
+) {
+  const origin = input.verifyGithubOrigin;
+  if (origin === undefined) return GITHUB_ORIGINS;
+  if (input.nodeEnv === "production") {
+    return yield* new InvalidConfiguration({
+      message: "PLOYZ_VERIFY_GITHUB_ORIGIN is for verify labs and is refused when NODE_ENV is production",
+    });
+  }
+  const bare = `${origin.origin}/`;
+  if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.href !== bare) {
+    return yield* new InvalidConfiguration({
+      message: `PLOYZ_VERIFY_GITHUB_ORIGIN must be an http(s) origin with no path, query or credentials, like http://127.0.0.1:4555, not ${origin.href}`,
+    });
+  }
+  yield* Effect.logInfo(`GitHub origin ${origin.origin} (PLOYZ_VERIFY_GITHUB_ORIGIN)`);
+  return { api: origin.origin, web: origin.origin, codeload: origin.origin, oidc: origin.origin } satisfies GithubOrigins;
+});
+
 /** Comma-separated user ids, taken exactly: no email or domain matching. */
 const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
   value === undefined ? [] : value.split(",").map((id) => id.trim()).filter((id) => id !== "");
@@ -155,6 +213,8 @@ const parseUserIds = (value: string | undefined): ReadonlyArray<string> =>
 const makeAppConfig = Effect.gen(function* () {
   const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
+  const mail = yield* resolveMailConfiguration(raw);
+  const githubOrigins = yield* resolveGithubOrigins(raw);
 
   return {
     nodeEnv: raw.nodeEnv,
@@ -174,12 +234,14 @@ const makeAppConfig = Effect.gen(function* () {
       appPrivateKey: raw.githubAppPrivateKey,
       appSlug: raw.githubAppSlug,
       appWebhookSecret: raw.githubAppWebhookSecret,
+      origins: githubOrigins,
     },
     polar,
     // Unset (Self-hosted Cloud): no product analytics. The project key is public; browsers send it too.
     posthog: raw.posthogKey === undefined
       ? null
       : { key: raw.posthogKey, host: raw.posthogHost.origin },
+    mail,
     ployz: {
       hostedDnsUrl: raw.hostedDnsUrl,
       hostedDnsMintKey: raw.hostedDnsMintKey,

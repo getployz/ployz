@@ -254,7 +254,7 @@ A node answers two questions in two places, and neither ever stands in for the o
 
 ### Settings panels
 
-- **The header is the name and nothing else.** No status, summary, count or warning line under it, and no banner between it and the tabs, on any drawer: service, volume, config, live node, or any added later. Status lives on the canvas card; trouble lives in the tab or row where it's fixed. Reach for this space and the answer is no.
+- **The header is the name and nothing else.** No status, summary, count or warning line under it, and no banner between it and the tabs, on any drawer: service, volume, config, live node, or any added later. Status lives on the canvas card; trouble lives in the tab or row where it's fixed. Reach for this space and the answer is no. One exception: a service drawer's header carries its run actions (Start or Restart, and the ⋮ menu) and, while one runs, its progress. A run that ends badly shows one alert between the header and the tabs until the next run. These act on the whole service, so no tab or row owns them.
 - A row shows the value in effect. Unset shows what that means (the default, or "Image default"), never an invented example. A staged row or chip wears its change kind and nothing more: pink for a changed value, green for something new, red and struck through for something removed, the same colours Details uses. It never says what it replaces ("Was 1") and never carries Undo. Details owns that: it shows what changes from what, and Discard drops one change or all of them. The panel and Details tell one story.
 - A missing value that breaks something is a row warning in Failure Red, where it's fixed: a database with no volume.
 - A volume's writers are every replica of every service that mounts it, staged values included. More than one is one amber warning at the top of the volume's Mounts, with a replica tag on the mount it comes from and "Use 1 replica" when one service owns all writers. It warns only where a volume allows shared writes, or where writers predate the rule; everywhere else the panel prevents it: Replicas holds at 1 while such a volume is attached ("Limited to 1 while data is attached", with Allow shared writes beside it), and the mount picker greys a service that would be a second writer ("Already used by postgres").
@@ -267,6 +267,8 @@ A node answers two questions in two places, and neither ever stands in for the o
 - Settings pages (Environment, Project, Organization's General and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
 - Settings autosave, except a name: renaming changes addresses and URLs, so it waits for an explicit Rename (a project's Rename button, a service's or volume's pencil and its dialog). Everything else saves as it's set, staged where it deploys.
 - Buttons and titles use sentence case: "Forget servers", "Generate domain".
+
+**Amendment: configured features show disabled (2026-10-14).** Never hide a feature an operator can turn on with configuration. Disable it and say why. Billing is the exception and stays hidden on Self-hosted Cloud, because only Ployz-hosted Cloud can ever have it. Account → Notifications is the first: with no Mailer its rows show each type's choice, can't be changed, and the section reads "Email isn't set up on this Cloud" with a link to the self-hosting email setup.
 
 ### Inputs / Fields
 

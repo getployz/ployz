@@ -13,6 +13,8 @@ import threading
 import time
 
 TABLE = "ackprobe"
+# A session that has not answered its ready marker within the management dial budget is dropped.
+CONNECT = 15.0
 
 
 def report(acks, present):
@@ -36,6 +38,7 @@ class Probe:
         self.acks = []
         self.in_flight = {}
         self.sessions = 0
+        self.ready = threading.Event()
         self.stopping = threading.Event()
 
     def psql(self, *args):
@@ -63,6 +66,8 @@ class Probe:
     def read(self, session):
         for line in session.stdout:
             line = line.strip()
+            if line == "ready":
+                self.ready.set()
             if not line.isdigit():
                 continue
             ack_id, now = int(line), time.monotonic()
@@ -74,6 +79,13 @@ class Probe:
     def session(self):
         session = subprocess.Popen(self.psql(), cwd=self.cwd, env=self.environment, text=True, bufsize=1,
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr)
+        self.ready.clear()
+        # Inserts wait for this answer, so the stall clock never counts the connect through Cloud.
+        try:
+            session.stdin.write("SELECT 'ready';\n")
+            session.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
         reader = threading.Thread(target=self.read, args=(session,), daemon=True)
         reader.start()
         self.sessions += 1
@@ -95,10 +107,20 @@ class Probe:
         next_id = int(self.query(f"SELECT coalesce(max(id), 0) + 1 FROM {TABLE}", deadline=time.monotonic() + 60))
         first_id = next_id
         session, reader = self.session()
+        opened = time.monotonic()
         interval = 1 / self.rate
         due = time.monotonic()
         while not self.stopping.is_set():
             now = time.monotonic()
+            if session.poll() is None and not self.ready.is_set():
+                if now - opened <= CONNECT:
+                    time.sleep(0.01)
+                    continue
+                self.end(session, reader, "connect")
+                time.sleep(0.25)
+                session, reader = self.session()
+                opened = due = time.monotonic()
+                continue
             with self.lock:
                 oldest = min(self.in_flight.values(), default=now)
                 busy = len(self.in_flight) >= self.window
@@ -106,7 +128,7 @@ class Probe:
                 self.end(session, reader, "exited" if session.returncode is not None else "stalled")
                 time.sleep(0.25)
                 session, reader = self.session()
-                due = time.monotonic()
+                opened = due = time.monotonic()
                 continue
             if busy or now < due:
                 time.sleep(min(interval, max(due - now, 0.001)))

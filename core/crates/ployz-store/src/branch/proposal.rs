@@ -42,7 +42,6 @@ pub struct Removed {
 pub struct Included {
     /// Pass to [`RemoveProposal::proposal`] to remove it.
     pub proposal: ProposalId,
-    /// Where it came from.
     pub source: ProposalSource,
     /// The source's Working State revision it was last included at.
     pub revision: Revision,
@@ -60,7 +59,6 @@ pub struct Included {
 pub enum ProposalSource {
     /// An Environment of the Project.
     Environment {
-        /// Its ID.
         id: EnvironmentId,
         /// Its name, or the one it had when it was last included.
         name: String,
@@ -69,9 +67,7 @@ pub enum ProposalSource {
     },
     /// A pull request's preview.
     PullRequest {
-        /// The repository.
         repository_id: RepositoryId,
-        /// The pull request.
         number: PullRequestNumber,
         /// Its preview's name, or the one it had when it was last included.
         name: String,

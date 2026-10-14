@@ -52,7 +52,6 @@ pub(super) struct CreatedPool<'storage> {
 }
 
 impl CreatedPool<'_> {
-    /// Returns the newly created Pool's usable identity.
     pub(super) fn machine_pool(&self) -> &MachinePool {
         &self.pool
     }

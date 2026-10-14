@@ -23,6 +23,13 @@ const hostedPolar = {
   POLAR_PRODUCT_ID: "22222222-2222-4222-8222-222222222222",
 };
 
+const postShibaMail = {
+  POSTSHIBA_API_KEY: "postshiba-api-key",
+  POSTSHIBA_TEAM_ID: "team-1",
+  POSTSHIBA_CLUSTER_ID: "cluster-1",
+  MAIL_FROM: "Ployz <noreply@example.com>",
+};
+
 const without = (environment: Record<string, string>, name: string) =>
   Object.fromEntries(Object.entries(environment).filter(([key]) => key !== name));
 
@@ -45,6 +52,7 @@ describe("AppConfig", () => {
       assert.strictEqual(config.github.appSlug, "ployz-test");
       assert.deepStrictEqual(config.polar, { mode: "self_hosted" });
       assert.strictEqual(config.posthog, null);
+      assert.strictEqual(config.mail, null);
     }),
   );
 
@@ -89,6 +97,32 @@ describe("AppConfig", () => {
     }),
   );
 
+  it.effect("loads PostShiba mail with its key redacted", () =>
+    Effect.gen(function* () {
+      const { mail } = yield* load({ ...requiredEnvironment, ...postShibaMail });
+
+      assert.isNotNull(mail);
+      if (mail === null) return;
+      assert.strictEqual(String(mail.apiKey), "<redacted>");
+      assert.strictEqual(Redacted.value(mail.apiKey), "postshiba-api-key");
+      assert.deepStrictEqual(
+        { teamId: mail.teamId, clusterId: mail.clusterId, from: mail.from },
+        { teamId: "team-1", clusterId: "cluster-1", from: "Ployz <noreply@example.com>" },
+      );
+    }),
+  );
+
+  it.effect("requires the complete mail configuration", () =>
+    Effect.gen(function* () {
+      for (const name of Object.keys(postShibaMail)) {
+        const failure = yield* Effect.flip(
+          load({ ...requiredEnvironment, ...without(postShibaMail, name) }),
+        );
+        assert.instanceOf(failure, InvalidConfiguration);
+      }
+    }),
+  );
+
   it.effect("loads PostHog from its key, on US Cloud unless a host is set", () =>
     Effect.gen(function* () {
       const cloud = yield* load({ ...requiredEnvironment, POSTHOG_KEY: "phc_test" });
@@ -100,6 +134,34 @@ describe("AppConfig", () => {
         POSTHOG_HOST: "https://e.example.com/",
       });
       assert.deepStrictEqual(proxied.posthog, { key: "phc_test", host: "https://e.example.com" });
+    }),
+  );
+
+  it.effect("points every GitHub host at a verify lab's origin, outside production only", () =>
+    Effect.gen(function* () {
+      const real = yield* load(requiredEnvironment);
+      assert.deepStrictEqual(real.github.origins, {
+        api: "https://api.github.com", web: "https://github.com", codeload: "https://codeload.github.com",
+        oidc: "https://token.actions.githubusercontent.com",
+      });
+
+      const lab = { ...requiredEnvironment, NODE_ENV: "development" };
+      const fake = yield* load({ ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" });
+      assert.deepStrictEqual(fake.github.origins, {
+        api: "http://127.0.0.1:4555", web: "http://127.0.0.1:4555", codeload: "http://127.0.0.1:4555", oidc: "http://127.0.0.1:4555",
+      });
+
+      const refused = [
+        { ...requiredEnvironment, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "https://ghe.example.com/api/v3" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://127.0.0.1:4555/?x=1" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "http://user:secret@127.0.0.1:4555" },
+        { ...lab, PLOYZ_VERIFY_GITHUB_ORIGIN: "ftp://127.0.0.1:4555" },
+      ];
+      for (const environment of refused) {
+        const failure = yield* Effect.flip(load(environment));
+        assert.instanceOf(failure, InvalidConfiguration, environment.PLOYZ_VERIFY_GITHUB_ORIGIN);
+      }
     }),
   );
 

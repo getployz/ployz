@@ -26,7 +26,6 @@ use crate::storage::Tx;
 pub struct CreateVolume {
     /// The new Volume's ID, also its lineage.
     pub id: VolumeId,
-    /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its name, unique among the Environment's Volumes.
@@ -51,7 +50,6 @@ pub struct CreateVolume {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Mount {
-    /// The Service, by name.
     pub service: ServiceName,
     /// The absolute path in its containers.
     pub path: String,
@@ -62,10 +60,8 @@ pub struct Mount {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RemoveVolume {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// Its name.
     pub volume: VolumeName,
 }
 
@@ -74,7 +70,6 @@ pub struct RemoveVolume {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RenameVolume {
-    /// The Environment it is in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its current name.
@@ -87,7 +82,6 @@ pub struct RenameVolume {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SetVolumeStorage {
-    /// The Environment containing the Volume.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// The draft Volume to edit, by name.
@@ -101,10 +95,8 @@ pub struct SetVolumeStorage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SetVolumeSharedWrites {
-    /// The Environment containing the Volume.
     #[serde(default)]
     pub environment: EnvironmentRef,
-    /// The Volume, by name.
     pub volume: VolumeName,
     /// On allows several writers; off refuses while it has more than one.
     pub shared_writes: bool,
@@ -113,7 +105,6 @@ pub struct SetVolumeSharedWrites {
 /// A Volume created or removed in Working State, staged until a Deploy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeStaged {
-    /// The Volume.
     pub volume: VolumeSummary,
     /// The Environment, at its revision after the change.
     pub environment: EnvironmentSummary,
@@ -125,7 +116,6 @@ pub struct VolumeStaged {
 /// A Volume as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeSummary {
-    /// Its durable identity.
     pub id: VolumeId,
     /// Its name, which mount paths address it by.
     pub name: VolumeName,
@@ -490,7 +480,6 @@ mod tests {
             )
         };
         set("db.env.MODE", json!("fast")).unwrap();
-        // A third writer is still refused.
         assert_eq!(
             set("db.replicas", json!(3)).unwrap_err().code,
             ployz_core::RpcErrorCode::Conflict
