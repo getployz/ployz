@@ -305,11 +305,9 @@ impl Run {
             .await;
         match outcome {
             Ok((outcome, progress)) => {
-                let outcome = if self.lost_to_another_runner().await {
-                    interrupted(outcome)
-                } else {
-                    outcome
-                };
+                if self.lost_to_another_runner().await {
+                    return self.interrupted(outcome, progress).await;
+                }
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
                     self.renewing(remove_volumes(session, deletes), || ()).await
@@ -644,6 +642,20 @@ impl Run {
                 self.record(RunEvidence::UploadNeeded(services)).await
             }
         }
+    }
+
+    /// Records what ran before the store handed the Environment to another runner.
+    async fn interrupted(
+        &self,
+        outcome: DeployOutcome<ExecutionError>,
+        progress: Vec<ployz_store::ServerProgress>,
+    ) -> Result<DeploymentSummary, RpcError> {
+        self.record(RunEvidence::Executed {
+            progress,
+            outcome: Box::new(interrupted(outcome)),
+            removed: Vec::new(),
+        })
+        .await
     }
 
     async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {

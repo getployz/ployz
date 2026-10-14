@@ -782,6 +782,10 @@ pub(crate) fn record(
                     json!({ "deployment": id }),
                 ));
             };
+            let taken_over = stored.summary.status == DeploymentStatus::Unknown;
+            if taken_over && !matches!(*outcome, DeployOutcome::Interrupted { .. }) {
+                running(&stored)?;
+            }
             let success = matches!(*outcome, DeployOutcome::Success { .. });
             let (reason, cause) = failure(&outcome, &stored.nodes)
                 .map_or((None, Vec::new()), |failure| {
@@ -829,6 +833,15 @@ pub(crate) fn record(
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
             stored.run.executed = Some(executed);
+            if taken_over {
+                // Another runner owns the Environment now: the run stays Unknown and
+                // moves no Applied State.
+                stored.summary.ended_at = Some(now());
+                stored.summary.outcome = Some(outcome.clone());
+                stored.run.outcome = Some(outcome);
+                save(tx, &mut stored)?;
+                return Ok(stored.summary);
+            }
             finish(tx, stored, outcome, status)
         }
         RunEvidence::Confirmed(services) => {
