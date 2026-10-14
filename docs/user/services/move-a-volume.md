@@ -144,7 +144,9 @@ ployz volume release data
 ```
 
 Release stops the run on the volume and starts your service again on the old server, with all
-its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. With no
+its data. Before `web-2` starts your service, Release deletes the copy on `web-2` first. Release
+deletes only the copies it named when you started it. If the copies changed since, it deletes
+nothing, your service stays stopped, and the run says to release again. With no
 run in progress, Release repairs a move that stopped. Once `web-2` is told to start your
 service, the move can only finish there, so Release is refused:
 
