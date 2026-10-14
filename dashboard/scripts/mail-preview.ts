@@ -25,6 +25,7 @@ const deployFailedSample = (origin: string): MailContent => ({
       status: "failed",
       outcome: null,
       nodes: [{ type: "service", id: "svc-api", name: "api" }],
+      runtime_names: {},
       builds: [{ service: "api", commit: "8a7ed6e9f0c1", status: "failed", message: "Build failed: npm ci exited with code 1" }],
     }),
     sources: [asTestDouble<GitSource>()({ service: "api", repository: "acme/shop", branch: "main", commit: "8a7ed6e9f0c1d2b3a4f5" })],

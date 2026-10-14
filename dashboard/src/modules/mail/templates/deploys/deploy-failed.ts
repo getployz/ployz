@@ -12,13 +12,15 @@ export type DeployFailedMail = {
 export function deployFailedMail({ origin, organization, deployment, sources }: DeployFailedMail): Omit<MailContent, "unsubscribe"> {
   const { project, name: environment } = deployment.environment;
   const place = `${project} / ${environment}`;
-  const services = [...new Set(sources.map((source) => source.service))];
+  const byRuntime = new Map(Object.entries(deployment.runtime_names).map(([name, runtime]) => [runtime, name]));
+  const serviceOf = (source: GitSource) => byRuntime.get(source.service) ?? source.service;
+  const services = [...new Set(sources.map(serviceOf))];
   const named = services.length === 1 ? services[0] : services.length > 1 ? `${services.length} services` : undefined;
   const failedBuild = deployment.builds.find((build) => build.status === "failed");
   const failure = outcomeReason(deployment.outcome) ?? failedBuild?.message ?? (deployment.status === "unknown"
     ? "Cloud lost track of it partway, so some of it may have applied."
     : "It failed before it reported why.");
-  const source = sources.find((found) => found.service === failedBuild?.service) ?? sources[0];
+  const source = sources.find((found) => serviceOf(found) === failedBuild?.service) ?? sources[0];
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
   const failedNode = deployment.nodes.find((node) => node.type === "service" && node.name === failedBuild?.service);
