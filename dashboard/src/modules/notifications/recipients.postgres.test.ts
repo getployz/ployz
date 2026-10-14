@@ -110,7 +110,7 @@ describe("queueOrganizationMail", () => {
       const [, url = "", token = ""] = link ?? [];
       const to = event.data["to"] === "ada@acme.test" ? ada : cy;
       expect(verifyUnsubscribeToken(SECRET, token)).toEqual(Option.some({ userId: to, type: "uptime" }));
-      expect(event.data["text"]).toContain(`Unsubscribe from uptime emails: ${url}`);
+      expect(event.data["text"]).toContain(`Turn off uptime emails: ${url}`);
       expect(event.data["html"]).toContain(url);
     }
   });
