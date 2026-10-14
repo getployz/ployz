@@ -116,6 +116,19 @@ describe("invite email", () => {
 });
 
 describe("renderInviteMail", () => {
+  it("keeps names on one line in the subject and the text", () => {
+    const mail = renderInviteMail({
+      to: "bob@example.test",
+      organization: "Acme\r\nBcc: eve@example.test",
+      inviter: "Ada\u0000\u2028Lovelace\u0085",
+      role: "member",
+      link: "https://cloud.example.test/invite/t",
+      expiresAt: new Date("2026-10-21T12:00:00Z"),
+    });
+    expect(mail.subject).toBe("Ada Lovelace invited you to Acme Bcc: eve@example.test on Ployz");
+    expect(mail.text).toContain("Ada Lovelace invited you to join Acme Bcc: eve@example.test as a member.");
+  });
+
   it("dates the expiry in words and names the role", () => {
     const mail = renderInviteMail({
       to: "bob@example.test",

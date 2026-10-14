@@ -27,7 +27,11 @@ const article = (role: InviteMail["role"]) => (role === "admin" ? "an admin" : "
 const longDate = (date: Date) =>
   date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
 
-export const renderInviteMail = (mail: InviteMail): MailMessage => {
+/** Names come from users and OAuth providers; a line break in one would forge a header or a body line. */
+const oneLine = (name: string) => name.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ").trim();
+
+export const renderInviteMail = (input: InviteMail): MailMessage => {
+  const mail = { ...input, organization: oneLine(input.organization), inviter: oneLine(input.inviter) };
   const title = `Join ${mail.organization} on Ployz`;
   const body = `${mail.inviter} invited you to join ${mail.organization} as ${article(mail.role)}. The link works once and expires on ${longDate(mail.expiresAt)}.`;
   const action = `Join ${mail.organization}`;
