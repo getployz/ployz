@@ -113,6 +113,14 @@ describe("the mirror sync", () => {
     expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: null, failure: null })]);
   });
 
+  it("records no failure when another sync's hand-off moved the copy first, and says it is pulling when it is", async () => {
+    mirrorAnswer = { ok: false, reason: "mismatch", copy: COPIES.pulling, message: "db's copy on web-2 changed" };
+    expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);
+    mirrorAnswer = { ok: false, reason: "mismatch", copy: COPIES.mirror, message: "db's copy on web-2 changed" };
+    expect((await sync()).lines).toEqual(["db-web-2 refused the pull: db's copy on web-2 changed"]);
+    expect(await status()).toEqual([expect.objectContaining({ failed_snapshot: null, failure: null })]);
+  });
+
   it("takes no snapshot while a pull runs, so the writer keeps its source", async () => {
     members = [member("web-1", "writer"), member("web-2", "pulling")];
     expect((await sync()).lines).toEqual(["still pulling w-1-4 on db-web-2"]);
