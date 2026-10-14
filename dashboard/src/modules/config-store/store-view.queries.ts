@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -9,7 +9,7 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
-import type { CommittedViews, StoreResult, StoreViewOf } from "./store.contract";
+import { type CommittedViews, StoreChange, StoreQuery, type StoreResult, StoreView, type StoreViewOf, viewOf } from "./store.contract";
 import { renameReferences } from "#/modules/variables/variable-template";
 
 /**
@@ -83,8 +83,7 @@ export const storeViewPrefix = (organizationSlug: string) => ["store-view", orga
  */
 export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
   const queryFn = async ({ signal }: { signal: AbortSignal }) => {
-    // SAFETY: the Store answers each query kind with the view of the same name.
-    const result = await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>;
+    const result = await readView(organizationSlug, query, signal);
     // A busy Store is a failed read, retried; the view keeps its last answer.
     if (!result.ok && result.refusal.code === "unavailable") throw new Error(result.refusal.message);
     return result;
@@ -97,10 +96,28 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
   });
 }
 
+/** Reads `query`'s view: the Store answers each query kind with the view of the same name. */
+async function readView<Q extends ConfigQuery>(organizationSlug: string, query: Q, signal: AbortSignal): Promise<StoreResult<StoreViewOf<Q>>> {
+  const result = await readStoreViewServerFn({ data: { organizationSlug, query }, signal });
+  if (!result.ok) return result;
+  const view = viewOf<Q["query"]>(result.value, query);
+  if (view === undefined) throw new Error(`The Store answered a ${query.query} query with a ${result.value.view} view.`);
+  return { ok: true, value: view };
+}
+
+const isStoreQuery = Schema.is(StoreQuery);
+
 export function queryOf(query: Query): ConfigQuery | null {
   const [prefix, , , , config] = query.queryKey;
-  // SAFETY: every `store-view` key is built by storeViewOptions, with its ConfigQuery last.
-  return prefix === "store-view" ? config as ConfigQuery : null;
+  return prefix === "store-view" && isStoreQuery(config) ? config : null;
+}
+
+const isAnswered = Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: StoreView }));
+
+/** The `kind` view a cached Store view query holds, if it answered with one. */
+export function cachedView<K extends ConfigQuery["query"]>(query: Query, kind: K) {
+  const result = query.state.data;
+  return isAnswered(result) ? viewOf(result.value, { query: kind }) : undefined;
 }
 
 /** Views with one more read queued behind the read in flight. */
@@ -177,14 +194,18 @@ export async function putCommittedViews(queryClient: QueryClient, organizationSl
   }
 }
 
+const carriesRevision = Schema.is(Schema.Struct({
+  ok: Schema.Literal(true),
+  value: Schema.Struct({ environment: Schema.Struct({ revision: Schema.Number }) }),
+}));
+
 /** The newest Working State revision any cached view of the Environment shows. */
 export function cachedRevision(queryClient: QueryClient, organizationSlug: string, key: string) {
   let latest: number | null = null;
   for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
     if (!isOfEnvironment(query, key)) continue;
-    // SAFETY: store-view queries hold StoreResult views; an Environment's views carry its summary, if any.
-    const result = query.state.data as StoreResult<{ environment?: { revision: number } }> | undefined;
-    const revision = result?.ok ? result.value.environment?.revision : undefined;
+    const result = query.state.data;
+    const revision = carriesRevision(result) ? result.value.environment.revision : undefined;
     if (revision !== undefined && (latest === null || revision > latest)) latest = revision;
   }
   return latest;
@@ -346,9 +367,7 @@ export function storeDeploymentsOptions(organizationSlug: string, scope: Collect
     staleTime: Infinity,
     initialPageParam: FIRST_PAGE,
     queryFn: async ({ pageParam, signal }) => {
-      const result = await readStoreViewServerFn({ data: { organizationSlug, query: deploymentsPage(environment, pageParam) }, signal });
-      // SAFETY: the Store answers a `deployments` query with a `deployments` view.
-      return requireView(result) as DeploymentsView;
+      return requireView(await readView(organizationSlug, deploymentsPage(environment, pageParam), signal));
     },
     getNextPageParam: (page) => page.next_cursor,
   });
@@ -375,6 +394,8 @@ export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: st
   return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
 }
 
+const isChanges = Schema.is(Schema.Array(StoreChange));
+
 /**
  * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this
  * tab's pending edits over the committed one; a failed save drops its edit, which is the rollback.
@@ -385,10 +406,9 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
   const results = useSuspenseQueries({ queries: queries.map((query) => storeViewOptions(organizationSlug, scope, query)) });
   const pending = useMutationState({
     filters: { mutationKey: ["store-edit", organizationSlug], status: "pending" },
-    // SAFETY: store-write.ts files only `Change[]` variables under `storeEditKey`, whose last part is the Environment.
-    select: (mutation) => ({ key: mutation.options.mutationKey?.[2], changes: mutation.state.variables as Change[] }),
+    select: (mutation) => ({ key: mutation.options.mutationKey?.[2], changes: isChanges(mutation.state.variables) ? mutation.state.variables : [] }),
   });
-  // SAFETY: each result answers the query at its index with the view of the same name.
+  // SAFETY: `readView` checked each result against the query at its index; `map` types the tuple as an array.
   return results.map(({ data: result }, index) => {
     const query = queries[index];
     if (!result.ok || result.value.view !== "environment" || !query || !("environment" in query)) return result;
