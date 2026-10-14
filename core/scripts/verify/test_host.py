@@ -5,12 +5,15 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from host import GiB, killer, owner, owner_live, shortfalls, size, verdict  # noqa: E402
+import incus  # noqa: E402
 
 HOUR = 3600
 DAY = 24 * HOUR
@@ -50,6 +53,37 @@ class Fit(unittest.TestCase):
         problems = shortfalls(1, 2 * GiB, 20 * GiB, 32 * GiB, [], 200 * GiB, 700 * GiB, memory_reserve=19 * GiB)
         self.assertTrue(problems and problems[0].startswith("RAM:"))
 
+
+
+class PoolCapacity(unittest.TestCase):
+    def capacity(self, source, host_free):
+        pool = {"/1.0/storage-pools/p/resources": dict(space=dict(total=100 * GiB, used=8 * GiB)),
+                "/1.0/storage-pools/p": dict(config=dict(source=source, size="100GiB"))}
+        seen = []
+
+        def disk_usage(path):
+            seen.append(str(path))
+            if str(path) == source:
+                raise PermissionError(path)
+            return shutil._ntuple_diskusage(780 * GiB, 780 * GiB - host_free, host_free)
+
+        with mock.patch.object(incus, "query", pool.__getitem__), mock.patch.object(shutil, "disk_usage", disk_usage):
+            return incus.capacity("p"), seen
+
+    def test_loop_file_pool_is_held_to_the_fuller_host_disk(self):
+        (free, total), seen = self.capacity("/var/lib/incus/disks/p.img", host_free=50 * GiB)
+        self.assertEqual((free, total), (50 * GiB, 780 * GiB))
+        self.assertEqual(seen[-1], "/var/lib/incus/disks")
+        problems = shortfalls(3, 2 * GiB, 64 * GiB, 128 * GiB, [], free, total)
+        self.assertEqual([problem.split(":")[0] for problem in problems], ["Disk"])
+
+    def test_loop_file_with_less_room_than_the_host_limits_the_pool(self):
+        (free, _), _ = self.capacity("/var/lib/incus/disks/p.img", host_free=300 * GiB)
+        self.assertEqual(free, 92 * GiB)
+
+    def test_block_device_pool_uses_its_own_numbers(self):
+        (free, total), seen = self.capacity("/dev/nvme1n1", host_free=1 * GiB)
+        self.assertEqual(((free, total), seen), ((92 * GiB, 100 * GiB), []))
 
 class Sizes(unittest.TestCase):
     def test_incus_units(self):
