@@ -109,16 +109,19 @@ fn pointed_or_previous<'serving>(
         .as_ref()
         .filter(|_| !all_visible)
         .map(DeploymentLogId::as_str);
+    // The previous deploy is its labelled copies plus the retiring ids, which also
+    // name old copies that carry no deploy label.
     members
         .into_iter()
         .filter(|container| {
             let observation = container.as_observation();
             pointer.containers.contains(&observation.container_id)
                 || previous.is_some_and(|previous| {
-                    observation
-                        .labels
-                        .get(DEPLOYMENT_ID_LABEL)
-                        .is_some_and(|deploy| deploy == previous)
+                    pointer.retiring.contains(&observation.container_id)
+                        || observation
+                            .labels
+                            .get(DEPLOYMENT_ID_LABEL)
+                            .is_some_and(|deploy| deploy == previous)
                 })
         })
         .collect()
@@ -632,7 +635,31 @@ mod tests {
     }
 
     #[test]
-    fn serving_containers_ignore_the_retiring_list() {
+    fn an_unlabelled_old_copy_serves_through_retiring_until_the_pointed_copy_is_visible() {
+        let mut unlabelled = visibility_row('1', 1, HEALTHY);
+        unlabelled
+            .try_update(|parts| {
+                parts.labels.remove(DEPLOYMENT_ID_LABEL);
+            })
+            .unwrap();
+        let containers = service_containers([unlabelled]);
+        let pointer = ServingPointer {
+            deploy: DeploymentLogId::parse("d2").unwrap(),
+            containers: vec![ContainerId::parse("b".repeat(64)).unwrap()],
+            previous: Some(DeploymentLogId::parse("pin-d2").unwrap()),
+            retiring: vec![ContainerId::parse("1".repeat(64)).unwrap()],
+        };
+
+        let routed: Vec<char> = serving_containers(&containers, |_| Some(&pointer))
+            .into_iter()
+            .map(|serving| id_char(serving.as_container()))
+            .collect();
+
+        assert_eq!(routed, ['1']);
+    }
+
+    #[test]
+    fn a_labelled_previous_deploy_routes_the_same_with_or_without_its_retiring_ids() {
         let without = visibility_pointer(&[]);
         let with = visibility_pointer(&['1', '2', '3']);
         for case in visibility_cases() {
