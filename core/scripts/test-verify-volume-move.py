@@ -791,11 +791,12 @@ class VolumeMove:
         problems = []
         if result.returncode or lines[-1:] != ["end"]:
             problems.append(f"the restart exited {result.returncode}: {result.stdout.strip()[:200]}")
-        cursor = None
+        cursor, read = None, []
         for line in lines:
             if line.startswith("procs "):
                 fields = line.split()
                 unit, status, pids = fields[1], fields[2] if len(fields) > 2 else "unread", fields[3:]
+                read.append(unit)
                 if status == "absent":
                     continue
                 if status != "0":
@@ -804,6 +805,7 @@ class VolumeMove:
                     problems.append(f"{unit} still holds {' '.join(pids)} after its stop")
             elif line.startswith("-- cursor: "):
                 cursor = line.removeprefix("-- cursor: ").strip()
+        problems += [f"no cgroup.procs line for {unit}" for unit in (DAEMON, PLUGIN) if read.count(unit) != 1]
         if not cursor:
             problems.append("no journal cursor")
         if problems:
