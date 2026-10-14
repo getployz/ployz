@@ -601,7 +601,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let rows = Rows {
         namespace: &plan.namespace,
         groups: plan.groups(),
-        admitted: tokio::sync::Mutex::new(BTreeMap::new()),
+        admitted: std::sync::Mutex::new(BTreeMap::new()),
     };
     for group in 0..plan.groups().len() {
         let Some(service) = schedule.group(group).publishing_service() else {
@@ -612,7 +612,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         let machine_id = operation_at(operations, first).machine_id();
         match await_routed_pin(&client, run, &service, machine_id, cancellation).await {
             Ok(Pin::Admitted(row)) => {
-                rows.admitted.lock().await.insert(group, row);
+                rows.admitted.lock().unwrap().insert(group, row);
             }
             Ok(Pin::Superseded) => {
                 progress.settle_unexecuted();
@@ -664,7 +664,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 Action::Publish(group) => {
                     let spec = schedule.group(group).clone();
                     let new = started.get(&group).cloned().unwrap_or_default();
-                    let current = rows.admitted.lock().await.get(&group).cloned();
+                    let current = rows.admitted.lock().unwrap().get(&group).cloned();
                     let pointer = proposed(current.as_ref(), run, &spec, &new);
                     Either::Right(async move {
                         let result = if cancellation.is_cancelled() {
@@ -1134,10 +1134,14 @@ async fn publish_group<C: MachineOperations>(
         .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))
 }
 
+/// The row each publishing group admitted, read at each pointer write and
+/// never held across one: the executor publishes a group while another
+/// group's stop retires a copy, and a stop-first task only ever amends its
+/// own group's row.
 struct Rows<'a> {
     namespace: &'a Namespace,
     groups: &'a [ServiceGroup],
-    admitted: tokio::sync::Mutex<BTreeMap<usize, ServingPointer>>,
+    admitted: std::sync::Mutex<BTreeMap<usize, ServingPointer>>,
 }
 
 impl Rows<'_> {
@@ -1181,7 +1185,7 @@ impl Rows<'_> {
         let Some(service) = self.service_of(group, operation) else {
             return Ok(());
         };
-        let mut admitted = self.admitted.lock().await;
+        let admitted = self.admitted.lock().unwrap().get(&group).cloned();
         let mut current = client
             .read_pointer(&service)
             .await
@@ -1193,7 +1197,7 @@ impl Rows<'_> {
                 Protection::Pointed(row) => row,
             };
             if admitted
-                .get(&group)
+                .as_ref()
                 .is_some_and(|admitted| admitted.deploy != row.deploy)
             {
                 return Err(OperationFailure::Superseded {
@@ -1214,7 +1218,7 @@ impl Rows<'_> {
                 .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?;
             match publication {
                 ServingPointerPublication::Published => {
-                    admitted.insert(group, next);
+                    self.admitted.lock().unwrap().insert(group, next);
                     return Ok(());
                 }
                 ServingPointerPublication::Superseded { current: newer } => current = newer,
