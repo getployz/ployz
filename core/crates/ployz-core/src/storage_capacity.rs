@@ -7,7 +7,7 @@ use ts_rs::TS;
 
 use crate::{DockerVolumeName, ProvisionedVolumeMaximumBytes, RpcError, RpcErrorCode};
 
-/// One GiB in bytes.
+/// Bytes in one GiB; Pool growth rounds up to a multiple of it.
 pub const STORAGE_GIB: u64 = 1024 * 1024 * 1024;
 
 /// The physical backing from which a Machine can provision storage.

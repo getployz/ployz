@@ -1067,11 +1067,7 @@ export type DeployPreview = {
 /**
  * Capacity budget for every Machine receiving provisioned storage.
  */
-storage: Array<MachineStorageBudget>,
-/**
- * Namespace this preview describes.
- */
-namespace: Namespace,
+storage: Array<MachineStorageBudget>, namespace: Namespace,
 /**
  * Pending rows for the operations this snapshot would execute.
  */
@@ -2863,19 +2859,11 @@ export type OperationRow = {
 /**
  * Zero-based index in the Deploy Plan.
  */
-index: number,
-/**
- * Machine this operation targets.
- */
-machine_id: MachineId,
+index: number, machine_id: MachineId,
 /**
  * Human-facing Machine Name when known from the snapshot.
  */
-machine_name: MachineName | null,
-/**
- * Planned operation.
- */
-operation: DeployOperation,
+machine_name: MachineName | null, operation: DeployOperation,
 /**
  * Container display name when known.
  */
@@ -3486,15 +3474,7 @@ export type ReplacementOperation = {
 /**
  * Machine that hosts both containers.
  */
-machine_id: MachineId,
-/**
- * Container being replaced.
- */
-old_container_id: ContainerId,
-/**
- * Spec for the replacement container.
- */
-spec: ResolvedServiceSpec,
+machine_id: MachineId, old_container_id: ContainerId, spec: ResolvedServiceSpec,
 /**
  * Skip waiting on container health after the replacement starts.
  */
@@ -3608,11 +3588,7 @@ export type RuntimeOutcomeSummary = { "type": "success",
 /**
  * Number of completed operations.
  */
-completed: number, } | { "type": "failed",
-/**
- * Number of completed operations.
- */
-completed: number,
+completed: number, } | { "type": "failed", completed: number,
 /**
  * Number of operations never attempted, excluding the failed operation.
  */
@@ -3938,7 +3914,7 @@ private_dns: ServiceName, };
 
 export type ServiceTemplate = { id: ServiceTemplateId,
 /**
- * Its version, from 1.
+ * Starts at 1; zero is rejected.
  */
 version: number, };
 
@@ -4468,11 +4444,7 @@ export type TelemetryObservation = { "scope": "bridge_capacity",
 /**
  * Fresh Ployz bridge endpoint capacity.
  */
-bridge: BridgeEndpointCapacity, } | { "scope": "full",
-/**
- * Fresh host telemetry.
- */
-host: MachineTelemetry,
+bridge: BridgeEndpointCapacity, } | { "scope": "full", host: MachineTelemetry,
 /**
  * Fresh Ployz bridge endpoint capacity.
  */

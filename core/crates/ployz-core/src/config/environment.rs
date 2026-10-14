@@ -148,7 +148,7 @@ impl FileMode {
         Ok(Self(bits))
     }
 
-    /// The permission bits.
+    /// The mode as a number, at most `0o777`.
     #[must_use]
     pub fn bits(self) -> u32 {
         self.0
