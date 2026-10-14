@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
-import type { MachineId } from "@ployz/sdk";
-import { Effect } from "effect";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { CopyObservation, MachineId } from "@ployz/sdk";
+import { Effect, Exit } from "effect";
+import { asTestDouble } from "#/lib/test-double";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import { ServerLacks } from "#/modules/runtime/daemon-compat";
-import { asSdkFailure, PloyzProviderError } from "#/modules/runtime/ployz.server";
-import { asRemoveMachineOutcome } from "./machine-removal.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { asSdkFailure, PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
+import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
+import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { asRemoveMachineOutcome, observeLeavingServerActivity } from "./machine-removal.server";
 
 const identities = [
   {
@@ -67,5 +72,67 @@ describe("asRemoveMachineOutcome", () => {
       ),
     );
     expect(exit._tag).toBe("Failure");
+  });
+});
+
+describe("observeLeavingServerActivity", () => {
+  const leaving = "leaving" as MachineId;
+  const other = "other" as MachineId;
+  const writerOn = (machine: MachineId, name: string) =>
+    asTestDouble<CopyObservation["copies"][number]>()({ machine_id: machine, name, role: "writer" });
+  let frame: "answers" | "omits" | "times out";
+  let observed: CopyObservation | null;
+
+  const observe = () => {
+    const session = asTestDouble<PloyzSession>()({
+      watchFirstFrame: () => frame === "times out"
+        ? Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out") }))
+        : Effect.succeed({
+          machines: [
+            { machine: { id: other, name: "fsn-1" } },
+            ...frame === "answers" ? [{ machine: { id: leaving, name: "fsn-2" } }] : [],
+          ],
+          containers: [],
+        }),
+    });
+    const observeCopies = () => observed === null
+      ? Effect.fail(new PloyzProviderError({ operation: "observe copies", cause: new Error("transport error") }))
+      : Effect.succeed(observed);
+    return Effect.runPromiseExit(observeLeavingServerActivity({ organizationId: "org-1", machineId: leaving }, observeCopies).pipe(
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntime["Service"]>()({
+        open: () => Effect.succeed({ status: "connected" as const, connected: session }),
+      })),
+      Effect.provideService(Database, asTestDouble<Database["Service"]>()({})),
+      Effect.provideService(SecretEncryption, asTestDouble<SecretEncryption["Service"]>()({})),
+    ));
+  };
+
+  beforeEach(() => {
+    frame = "answers";
+    observed = { copies: [writerOn(leaving, "data"), writerOn(other, "logs")], unanswered: [] };
+  });
+
+  it("names the leaving Server and the Volumes it writes", async () => {
+    expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: ["data"] }));
+  });
+
+  it("fails, for the step to retry, when the Cluster frame times out", async () => {
+    frame = "times out";
+    expect(await observe()).toMatchObject({ _tag: "Failure" });
+  });
+
+  it("fails, for the step to retry, when the copies cannot be observed", async () => {
+    observed = null;
+    expect(await observe()).toMatchObject({ _tag: "Failure" });
+  });
+
+  it("names no Server when the Cluster answers without the leaving Machine", async () => {
+    frame = "omits";
+    expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: null }, writes: ["data"] }));
+  });
+
+  it("writes nothing when the leaving Machine itself does not answer", async () => {
+    observed = { copies: [writerOn(other, "logs")], unanswered: [leaving] };
+    expect(await observe()).toEqual(Exit.succeed({ machine: { id: leaving, name: "fsn-2" }, writes: [] }));
   });
 });
