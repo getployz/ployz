@@ -2277,6 +2277,12 @@ fn missing_targets() -> Vec<(&'static str, Value)> {
         ("service_inspect", json!({ "service": "nope" })),
         ("deployment_show", json!({ "deployment": 99 })),
         ("deployment_show", json!({ "environment": "nope" })),
+        ("deployment_list", json!({ "environment": "nope" })),
+        ("domain_check", json!({ "domain": "nope.example.com" })),
+        (
+            "domain_check",
+            json!({ "domain": "nope.example.com", "environment": "nope" }),
+        ),
         (
             "github_ls",
             json!({ "repository": "acme/api", "path": "nope" }),
@@ -2295,6 +2301,7 @@ fn missing_targets() -> Vec<(&'static str, Value)> {
         ),
         ("server_show", json!({ "server": "web-9" })),
         ("server_metrics", json!({ "server": "web-9" })),
+        ("server_logs", json!({ "server": "web-9" })),
         ("service_status", json!({ "service": "nope" })),
         ("service_status", json!({ "environment": "nope" })),
         ("service_logs", json!({ "service": "nope" })),
@@ -2333,7 +2340,9 @@ fn empty_cloud(cloud: Cloud) -> Result<Value, RpcError> {
         }
         Cloud::Ask(CloudQuery::Copies { .. }) => Ok(json!({ "volumes": [], "seen": seen })),
         Cloud::Ask(CloudQuery::Operations(_)) => Ok(json!({ "operations": [] })),
-        Cloud::Ask(CloudQuery::Logs(_)) => Ok(json!({ "servers": [], "seen": seen, "notes": [] })),
+        Cloud::Ask(CloudQuery::Logs(_) | CloudQuery::ServerLogs(_)) => {
+            Ok(json!({ "servers": [], "seen": seen, "notes": [] }))
+        }
         Cloud::Ask(CloudQuery::Metrics(_)) => Ok(json!({
             "since": 0, "until": 0, "metrics": [], "oom_kills": 0, "exits": 0,
             "restarts": 0, "events": [], "notes": [], "seen": seen,
