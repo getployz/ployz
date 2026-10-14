@@ -53,6 +53,7 @@ export const changeSources = {
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
   volume_run: { key: ["id"] },
+  service_act: { key: ["id"] },
   volume_placement: { key: ["volume_id"] },
   namespace_cleanup: { key: ["id"] },
   organization_server_upgrades: { key: ["organization_id"] },

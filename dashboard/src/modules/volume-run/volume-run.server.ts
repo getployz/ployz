@@ -381,6 +381,8 @@ export type RequestOptions = {
   readonly id?: string;
   /** `yielded` takes over a warm lane as a Deploy or a staged placement does; a release always cancels. */
   readonly end?: "yielded";
+  /** The kind of a fenced run this one replaces: it fences before it plans even when it takes over no lane. */
+  readonly fences?: VolumeRunKind;
 };
 
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
@@ -394,7 +396,7 @@ export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
     const refusal = yield* seedLandingRefusal(caller.organizationId, input.environment, input.volumeId, input.args.into.volumeId);
     if (refusal !== null) return { ok: false, refusal, busy: null } as const;
   }
-  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind)));
+  return yield* database.transaction(insertRun(caller, input, volume, options.id ?? crypto.randomUUID(), options.end ?? endOf(input.kind), options.fences));
 });
 
 export type LaneTaker = {
@@ -403,6 +405,7 @@ export type LaneTaker = {
   readonly id: string;
   /** The one lane this taker may end; finding another, or none, leaves the Volume alone. */
   readonly lane?: string;
+  readonly fences?: VolumeRunKind;
 };
 
 export type LaneTake = { readonly run: VolumeRunView; readonly ended: VolumeRunView | null };
@@ -429,7 +432,7 @@ const TAKE_ROUNDS = 3;
  * insert; the next round reads it under the lock and takes it over too. A lane that ended before the read leaves the
  * Volume free, so any taker inserts again.
  */
-const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
+const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { input, volume, id, lane: only, fences }: LaneTaker, end: LaneEnd | null, inngestRunId: string | null = null) {
   const { drizzle } = yield* Database;
   for (let round = 1; ; round++) {
     const lane = end === null ? undefined : yield* activeLane(input.volumeId, true);
@@ -463,7 +466,7 @@ const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Caller, { in
         .limit(1);
       if (held !== undefined) return yield* new LaneRefused({ refusal: yield* laneRefusal(held, input.kind), busy: volumeRunView(held) });
       // A release floors and plans on its own; only a yielding run fences the lane it took before it plans.
-      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind : undefined);
+      if (inngestRunId === null) yield* enqueueRun(inserted, end === "yielded" ? taken?.kind ?? fences : undefined);
       if (taken !== undefined) yield* enqueueEvent(createVolumeRunTakenEvent({ runId: taken.id }));
       return { run: volumeRunView(inserted), ended: taken === undefined ? null : volumeRunView(taken) } satisfies LaneTake;
     }
@@ -479,10 +482,11 @@ const refused = (error: LaneRefused) => Effect.succeed({ ok: false, refusal: err
 
 export const insertRun = Effect.fn("VolumeRun.insert")(function* (
   caller: Caller, input: { readonly volumeId: string } & VolumeRunInput, volume: ResolvedVolume, id: string, end: LaneEnd | null = endOf(input.kind),
+  fences?: VolumeRunKind,
 ) {
   const database = yield* Database;
-  const taken = yield* database.transaction(takeLane(caller, { input, volume, id }, end)).pipe(Effect.catchTag("LaneRefused", refused));
-  return "ok" in taken ? taken : { ok: true, run: taken.run } as const;
+  const taken = yield* database.transaction(takeLane(caller, { input, volume, id, fences }, end)).pipe(Effect.catchTag("LaneRefused", refused));
+  return "ok" in taken ? taken : { ok: true, run: taken.run, took: taken.ended !== null } as const;
 });
 
 /** A Deploy's own lane, running under `inngestRunId` from the start; a warm lane found there yields to it. */
@@ -994,6 +998,7 @@ const isDestination = (run: VolumeLaneInput, machine: MachineRef) =>
 
 /**
  * Each managed Server's copy of `dockerVolume`; a Server that doesn't answer in time is a member that didn't answer.
+ * So is one the frame lists only by id: it is still in the cluster, so a mirror on it is not gone.
  * For a run, a Server that holds a copy or receives one and lacks the generation floor is a member that lacks it.
  */
 export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(function* (organizationId: string, dockerVolume: string, run?: VolumeLaneInput) {
@@ -1001,7 +1006,8 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
   const frame = yield* session.watchFirstFrame(5_000);
   // A Docker-only Machine holds no copy and may not serve the verb, so it must not block the run.
   const managed = frame.machines.filter((observed) => observed.storage?.state !== "stateless");
-  return yield* Effect.forEach(managed, ({ machine }) => {
+  const unlisted = frame.incomplete_ids.machines.map((id): Member => ({ machine: { id, name: id }, answered: false }));
+  const listed = yield* Effect.forEach(managed, ({ machine }) => {
     const ref: MachineRef = { id: machine.id, name: machine.name };
     const server = { name: machine.name, daemonVersion: machine.runtime.daemon_version };
     const lacks = (capability: string) => lackSentence(organizationId, capability, server, run?.kind).pipe(
@@ -1023,6 +1029,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       Effect.orElseSucceed((): Member => ({ machine: ref, answered: false })),
     );
   }, { concurrency: "unbounded" });
+  return [...listed, ...unlisted];
 }, Effect.scoped);
 
 /** What a run of each kind is called when a Server can't run it. */

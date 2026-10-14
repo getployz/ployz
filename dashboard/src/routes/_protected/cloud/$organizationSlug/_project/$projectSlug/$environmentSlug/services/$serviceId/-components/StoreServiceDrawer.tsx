@@ -41,6 +41,7 @@ import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import { useServiceRuntime } from "./useServiceRuntime";
+import { ServiceActAlert, ServiceActions, useServiceAct } from "./ServiceActions";
 import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
@@ -120,6 +121,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const uptimeEnabled = useUptimeEnabled(organizationSlug);
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
+  const act = useServiceAct({ organizationSlug, environmentId, service: service?.name ?? "" });
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
   if (!service) return <CanvasInspectorNotFound noun="Service" />;
 
@@ -192,7 +194,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params}>
+      <CanvasInspectorHeader params={params} actions={<ServiceActions state={state} namespace={namespace} act={act} />}>
         <CanvasInspectorNameEditor
           value={service.name}
           schema={nameSchema(service, services)}
@@ -204,6 +206,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         />
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        <ServiceActAlert act={act} />
         <Tabs value={tab ?? "settings"}
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });

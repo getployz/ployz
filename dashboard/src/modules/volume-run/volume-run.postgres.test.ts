@@ -310,6 +310,7 @@ describe("volume runs", () => {
         runtime: { state: container.running ? "running" : "exited" },
         created_at_unix_nanos: container.created ?? 0,
       })),
+      incomplete_ids: { machines: [] },
     }),
     inspectContainer: (target: string, container: string) => Effect.promise(async () => {
       await beforeStart?.();
@@ -2676,6 +2677,19 @@ describe("volume runs", () => {
       expect(await fence(placed)).toEqual({ on: "fsn-1" });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2"]);
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+    });
+
+    it.each(["down", "busy"] as const)("a Machine whose floor is %s stops none of the others: the Servers after it are floored, then the fence fails on it", async (fault) => {
+      machines.push({ name: "fsn-3", pool: true, copy: null });
+      failNext.set("floor@fsn-2", fault);
+      await moving();
+      const [placed] = await place();
+      const [, mine] = await lanes();
+
+      await expect(fence(placed)).rejects.toThrow(/fsn-2/);
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "floor@fsn-3"]);
+      expect(machines.map((machine) => machine.floor)).toEqual([Number(mine?.gen), undefined, Number(mine?.gen)]);
     });
 
     it("after the cut finished but before the floor rose: the reply is a slot, and the promote starts the stopped app on A", async () => {
