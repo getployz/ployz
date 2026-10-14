@@ -2,7 +2,9 @@ import "@tanstack/react-start/server-only";
 
 import crypto from "node:crypto";
 import { Effect, Redacted, Schema } from "effect";
+import type { GithubAccess } from "#/modules/github/github-access";
 import {
+  GITHUB_REPOSITORIES_PAGE_SIZE,
   GithubApi,
   GithubObservationError,
 } from "#/modules/github/github-observation.api";
@@ -13,30 +15,7 @@ import type {
 import { AppConfig } from "#/server/config.server";
 import { githubExactShaSchema, githubRepositoryPathSchema } from "./github-ingestion.contracts";
 
-const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
-const GithubId = Schema.Finite.check(
-  Schema.isInt(),
-  Schema.isGreaterThan(0),
-  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-);
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
-const GithubRepositoryResponse = Schema.Struct({
-  id: GithubId,
-  name: NonEmptyString,
-  full_name: NonEmptyString,
-  private: Schema.Boolean,
-  default_branch: NonEmptyString,
-  html_url: NonEmptyString,
-  updated_at: Schema.DateFromString,
-});
-const GithubRepositoriesPageResponse = Schema.Struct({
-  repositories: Schema.Array(GithubRepositoryResponse),
-  total_count: Schema.Finite.check(
-    Schema.isInt(),
-    Schema.isGreaterThanOrEqualTo(0),
-    Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
-  ),
-});
 const GithubBranchesResponse = Schema.Array(
   Schema.Struct({ name: NonEmptyString }),
 );
@@ -44,24 +23,12 @@ const RepositoryFullName = Schema.String.check(
   Schema.isPattern(/^[^/\s]+\/[^/\s]+$/),
 );
 
+/** One page of an installation's repositories, read as Cloud for the cache. */
 export const listInstallationReposPage = Effect.fn(
   "Github.listInstallationReposPage",
 )(function* (installationId: number, page: number) {
-  if (!Number.isSafeInteger(page) || page < 1) {
-    return yield* new GithubObservationError({
-      code: "invalid_input",
-      operation: "list_repositories",
-      retriable: false,
-      message: "GitHub list repositories failed.",
-    });
-  }
   const api = yield* GithubApi;
-  const response = yield* api.json({
-    installationId,
-    path: `/installation/repositories?per_page=${GITHUB_REPOSITORIES_PAGE_SIZE}&page=${page}`,
-    operation: "list_repositories",
-    schema: GithubRepositoriesPageResponse,
-  });
+  const response = yield* api.installationRepositories({ installationId, page });
   return {
     repositories: response.repositories.map((repository) => ({
       id: repository.id,
@@ -81,7 +48,7 @@ export const listInstallationReposPage = Effect.fn(
 
 export const listGithubRepositoryBranches = Effect.fn(
   "Github.listGithubRepositoryBranches",
-)(function* (installationId: number | null, repositoryFullName: string) {
+)(function* (access: GithubAccess, repositoryFullName: string) {
   const repository = yield* Schema.decodeUnknownEffect(RepositoryFullName)(
     repositoryFullName,
   ).pipe(
@@ -100,7 +67,7 @@ export const listGithubRepositoryBranches = Effect.fn(
   let page = 1;
   while (true) {
     const pageBranches = yield* api.json({
-      installationId,
+      access,
       path: `/repos/${repository}/branches?per_page=100&page=${page}`,
       operation: "list_branches",
       schema: GithubBranchesResponse,
@@ -113,12 +80,12 @@ export const listGithubRepositoryBranches = Effect.fn(
 });
 
 export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryFiles")(
-  function* (installationId: number | null, repositoryFullName: string, ref: string) {
+  function* (access: GithubAccess, repositoryFullName: string, ref: string) {
     const api = yield* GithubApi;
     const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
     const base: `/${string}` = `/repos/${repositoryPath}`;
     const commit = yield* api.json({
-      installationId,
+      access,
       path: `${base}/commits/${encodeURIComponent(ref)}`,
       operation: "resolve_file_ref",
       schema: Schema.Struct({
@@ -126,7 +93,7 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
       }),
     });
     const tree = yield* api.json({
-      installationId,
+      access,
       path: `${base}/git/trees/${commit.commit.tree.sha}?recursive=1`,
       operation: "list_files",
       schema: Schema.Struct({
@@ -149,12 +116,12 @@ export const listGithubRepositoryFiles = Effect.fn("Github.listGithubRepositoryF
 
 /** What GitHub's contents API holds at `path`: a directory's entries, or one file, its base64 `content` absent past 1 MB. */
 export const readGithubRepositoryContents = Effect.fn("Github.readGithubRepositoryContents")(
-  function* (installationId: number | null, repositoryFullName: string, path: string, ref: string) {
+  function* (access: GithubAccess, repositoryFullName: string, path: string, ref: string) {
     const api = yield* GithubApi;
     const repositoryPath = repositoryFullName.split("/").map(encodeURIComponent).join("/");
     const filePath = path.split("/").map(encodeURIComponent).join("/");
     return yield* api.json({
-      installationId,
+      access,
       path: `/repos/${repositoryPath}/contents/${filePath}?ref=${encodeURIComponent(ref)}`,
       operation: "fetch_contents",
       schema: Schema.Union([
