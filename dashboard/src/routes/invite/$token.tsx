@@ -1,19 +1,19 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useLocation, useNavigate } from "@tanstack/react-router";
 import { useAuth } from "#/auth/auth.hooks";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
-import { acceptInviteServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
+import { prefetchRemote } from "#/collections/route-data";
+import { acceptInviteServerFn } from "#/modules/organization/members.functions";
+import { type Invite, inviteQueryOptions } from "#/modules/organization/members.queries";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
 
 export const Route = createFileRoute("/invite/$token")({
-  loader: ({ params }) => readInviteServerFn({ data: { token: params.token } }),
+  loader: ({ params, context }) => prefetchRemote(context, inviteQueryOptions(params.token)),
   head: () => ({ meta: [{ title: "Join an organization on Ployz" }] }),
   component: InvitePage,
 });
-
-type Invite = NonNullable<Awaited<ReturnType<typeof readInviteServerFn>>>;
 
 const UNUSABLE = {
   accepted: "This invite was used already.",
@@ -22,7 +22,8 @@ const UNUSABLE = {
 } satisfies Record<Exclude<Invite["state"], "pending">, string>;
 
 function InvitePage() {
-  const invite = Route.useLoaderData();
+  const { token } = Route.useParams();
+  const invite = useSuspenseQuery(inviteQueryOptions(token)).data;
   const session = useAuth();
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">

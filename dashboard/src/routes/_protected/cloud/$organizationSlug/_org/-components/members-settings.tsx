@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { UserPlusIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -25,19 +25,17 @@ import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
   leaveOrganizationServerFn,
-  listMembersServerFn,
   removeMemberServerFn,
   revokeInviteServerFn,
   setMemberRoleServerFn,
 } from "#/modules/organization/members.functions";
+import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 type Role = "owner" | "admin" | "member";
 type InviteRole = Exclude<Role, "owner">;
 
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
-
-const membersKey = (organizationSlug: string) => ["organization-members", organizationSlug] as const;
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
@@ -46,10 +44,7 @@ type Pending = { kind: "remove"; email: string; name: string } | { kind: "leave"
 export function MembersSettings({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { data, error, isPending } = useQuery({
-    queryKey: membersKey(organizationSlug),
-    queryFn: () => listMembersServerFn({ data: { organizationSlug } }),
-  });
+  const { data } = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug));
   const [inviting, setInviting] = useState(false);
   const [confirming, setConfirming] = useState<Pending>(null);
   const refresh = () => queryClient.invalidateQueries({ queryKey: membersKey(organizationSlug) });
@@ -77,9 +72,6 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
     onSettled: refresh,
     onError: failed("Couldn't revoke the invite."),
   });
-
-  if (isPending) return <Spinner />;
-  if (error) return <p role="alert" className="text-sm text-destructive">{toErrorMessage(error, "Couldn't load the members.")}</p>;
 
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
   const manager = yourRole === "owner" || yourRole === "admin";

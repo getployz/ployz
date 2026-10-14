@@ -46,6 +46,8 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/monitoring/MonitoringTab.tsx": "Checking while a requested probe runs",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/members-settings.tsx": "invite, remove or leave in flight",
+  "routes/invite/$token.tsx": "joining in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "forget in flight",

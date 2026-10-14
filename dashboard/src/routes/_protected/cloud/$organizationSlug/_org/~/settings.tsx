@@ -6,7 +6,7 @@ import { Effect, Option, Schema } from "effect";
 import { getClusterDomainCollection, getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { prefetchStoreViews } from "#/collections/route-data";
+import { prefetchRemote, prefetchStoreViews } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
@@ -15,6 +15,7 @@ import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organi
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 import { projectsQuery } from "#/modules/config-store/store-view.queries";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { MembersSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/members-settings";
 import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/support-access-section";
@@ -33,7 +34,10 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
   validateSearch: Schema.toStandardSchemaV1(settingsSearchSchema),
-  loader: ({ params, context }) => prefetchStoreViews(context, params.organizationSlug, projectsQuery(), BUILD_ORDER_QUERY),
+  loader: ({ params, context }) => Promise.all([
+    prefetchStoreViews(context, params.organizationSlug, projectsQuery(), BUILD_ORDER_QUERY),
+    prefetchRemote(context, organizationMembersQueryOptions(params.organizationSlug)),
+  ]),
   component: RouteComponent,
 });
 
