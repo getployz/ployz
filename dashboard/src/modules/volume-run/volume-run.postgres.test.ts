@@ -3097,6 +3097,29 @@ describe("volume runs", () => {
         expect(await requested({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ kind: "move", state: "requested" });
       });
 
+      it("removing B ends a release that inherits the commitment once its unfinished rows stop naming B", async () => {
+        await failedCommit();
+        const release = await requested({ kind: "release", args: {} });
+        await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-release', phase = 'warm', current = null where id = $1", [release.id]);
+        // An admission that read the commitment before the clear commits right after it.
+        await harness.pool.query(`
+          create function admit_after_clear() returns trigger language plpgsql as $$ begin
+            update volume_run set phase = 'committed', current = OLD.current where id = '${release.id}' and phase <> 'committed';
+            return null;
+          end $$;
+          create trigger admit_after_clear after update on volume_run for each row
+            when (OLD.current is not null and NEW.current is null) execute function admit_after_clear();`);
+        try {
+          await runEffect(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: "fsn-2" }, []));
+        } finally {
+          await harness.pool.query("drop trigger admit_after_clear on volume_run; drop function admit_after_clear();");
+        }
+
+        expect((await lanes()).filter((lane) => lane.id === release.id)).toMatchObject([{ state: "failed" }]);
+        expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(false);
+        expect((await harness.pool.query("select id from volume_run where current = $1", [idOf("fsn-2")])).rows).toEqual([]);
+      });
+
       it("a mirror removal running on another Server does not stop a Deploy from following it", async () => {
         await failedCommit();
         await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null } });
