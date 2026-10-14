@@ -38,6 +38,15 @@ describe("endOf", () => {
     expect(endOf(answered, halted.map((leg) => leg.container === "web-2" ? { ...leg, start: "unknown" as const } : leg), null))
       .toEqual({ state: "unknown", reason });
   });
+
+  it("numbers the container that didn't come back when it was the last to roll", () => {
+    const answered: ServiceActBefore = { ...before, unanswered: [] };
+    const halted: ServiceActLeg[] = [
+      { server: "a", machine: "m-a", container: "web-1", hook: false, stop: "done", start: "done", reason: null },
+      { server: "a", machine: "m-a", container: "web-2", hook: false, stop: "done", start: "failed", reason: "a couldn't start it." },
+    ];
+    expect(endOf(answered, halted, null)).toEqual({ state: "failed", reason: "Container 2 on a didn't come back. a couldn't start it." });
+  });
 });
 
 describe("progressOf", () => {

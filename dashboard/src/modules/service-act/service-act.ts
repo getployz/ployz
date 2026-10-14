@@ -56,8 +56,8 @@ function haltedAt(legs: readonly ServiceActLeg[]) {
   const started = legs.filter((leg) => takes(leg, "start"));
   const index = started.findIndex((leg) => leg.stop !== null && !confirmed(leg.start));
   const leg = started[index];
-  if (leg === undefined || !started.slice(index + 1).some((later) => later.stop === null && later.start === null)) return null;
-  return { leg, number: index + 1 };
+  if (leg === undefined) return null;
+  return { leg, number: index + 1, untouched: started.slice(index + 1).some((later) => later.stop === null && later.start === null) };
 }
 
 /**
@@ -72,7 +72,7 @@ export function endOf(before: ServiceActBefore, legs: readonly ServiceActLeg[], 
   const halted = haltedAt(legs);
   const steps = legs.flatMap((leg) => [leg.stop, leg.start]);
   const reason = halted !== null
-    ? [`Container ${halted.number} on ${halted.leg.server} didn't come back.`, halted.leg.reason, "The rest are untouched."]
+    ? [`Container ${halted.number} on ${halted.leg.server} didn't come back.`, halted.leg.reason, halted.untouched ? "The rest are untouched." : null]
       .filter((part) => part !== null).join(" ")
     : legs.find((leg) => leg.reason !== null)?.reason ?? null;
   if (steps.some((step) => step === "unknown" || step === "sent")) return { state: "unknown", reason };
