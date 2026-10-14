@@ -101,7 +101,11 @@ struct Scripted {
     pull_error: Option<RpcError>,
     pulled: Mutex<BTreeSet<MachineId>>,
     unrouted: Option<ServiceName>,
+    /// This Machine never acks any pointer.
+    unrouted_machine: Option<MachineId>,
     superseded: Option<ServiceName>,
+    /// The row lands but the reply never arrives.
+    lost_reply: bool,
     pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
     publications: Mutex<Vec<PublishServingPointerRequest>>,
 }
@@ -118,7 +122,9 @@ impl Scripted {
             pull_error: None,
             pulled: Mutex::new(BTreeSet::new()),
             unrouted: None,
+            unrouted_machine: None,
             superseded: None,
+            lost_reply: false,
             pointers: Mutex::new(BTreeMap::new()),
             publications: Mutex::new(Vec::new()),
         }
@@ -166,6 +172,13 @@ impl MachineOperations for Scripted {
     ) -> Result<Vec<ContainerObservation>, RpcError> {
         if let Some(observations) = &self.observations {
             return Ok(observations.clone());
+        }
+        let scripted = matches!(
+            self.steps.lock().unwrap().front(),
+            Some(Step(Call::List(listed), _)) if listed == service
+        );
+        if !scripted {
+            return Ok(Vec::new());
         }
         match self.next(Call::List(service.clone())) {
             Reply::Listed(containers) => Ok(containers),
@@ -339,6 +352,7 @@ impl MachineOperations for Scripted {
                 .lock()
                 .unwrap()
                 .iter()
+                .filter(|machine| self.unrouted_machine.as_ref() != Some(machine))
                 .map(|machine| (*machine, pointer.deploy.clone()))
                 .collect(),
             _ => BTreeMap::new(),
@@ -357,6 +371,9 @@ impl MachineOperations for Scripted {
             return Ok(ServingPointerPublication::Superseded { current });
         }
         pointers.insert(request.service, request.pointer);
+        if self.lost_reply {
+            return Err(error("reply lost"));
+        }
         Ok(ServingPointerPublication::Published)
     }
 }
@@ -509,6 +526,27 @@ fn observation(
         labels: Default::default(),
     })
     .unwrap()
+}
+
+/// A running, addressed Container that `newest_shape` selects, labelled with
+/// the Deploy that created it when `deploy` is given.
+fn serving(
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    deploy: Option<&str>,
+) -> ContainerObservation {
+    let mut observation = observation(machine_id, container_id, running());
+    observation
+        .try_update(|parts| {
+            parts.address = Some(ployz_core::ContainerAddress("10.210.1.2".parse().unwrap()));
+            if let Some(deploy) = deploy {
+                parts
+                    .labels
+                    .insert(ployz_core::DEPLOYMENT_ID_LABEL.into(), deploy.into());
+            }
+        })
+        .unwrap();
+    observation
 }
 
 fn machine(hex: char) -> MachineId {

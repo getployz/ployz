@@ -747,6 +747,7 @@ pub enum MachineAction {
     RemoveVolume,
     /// Make a Service image present before any Container changes.
     PullImage,
+    ListContainers,
     ReadServingPointer,
     PublishServingPointer,
 }
@@ -762,6 +763,7 @@ impl Display for MachineAction {
             Self::RemoveContainer => "remove Container",
             Self::RemoveVolume => "remove Volume",
             Self::PullImage => "pull image",
+            Self::ListContainers => "list Containers",
             Self::ReadServingPointer => "read Serving Pointer",
             Self::PublishServingPointer => "publish Serving Pointer",
         })

@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
-    MachineObservation, MembershipObservation, Namespace, ObservedDataLoss, PreservedVolume,
-    PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
-    VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
-    same_service_mode_kind,
+    ContainerAction, ContainerId, ContainerKind, DataLoss, DependencyCondition, HookContainer,
+    IngressHost, MachineId, MachineObservation, MembershipObservation, Namespace, ObservedDataLoss,
+    PreservedVolume, PruneRefusal, QualifiedService, RemoveContainerPurpose, RequestedServiceSpec,
+    ServiceId, ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility,
+    ServicePlacementIneligibleReason, UpdateOrder, VolumeToCreate, explicit_ingress_hosts,
+    hostname_owners, machine_matches_placement, same_service_mode_kind,
 };
 
 use super::{
@@ -151,7 +151,7 @@ impl DeployPlan {
 /// no Service join the Service before them; leading Volume work is the prelude
 /// and anything after the last Service is the tail.
 #[cfg(test)]
-fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
+pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
     let mut groups: Vec<ServiceGroup> = Vec::new();
     let mut ranges: Vec<(Option<ServiceName>, bool, std::ops::Range<usize>)> = Vec::new();
     for (index, operation) in operations.iter().enumerate() {
@@ -179,12 +179,12 @@ fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
                 .collect(),
             (Some(_), _) => previous.iter().cloned().collect(),
         };
-        groups.push(service_group(
+        groups.extend(service_group(
             operations,
             service.clone(),
             dependencies,
             range,
-            None,
+            Vec::new(),
         ));
         if service.is_some() {
             previous = service;
@@ -193,82 +193,95 @@ fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
     groups
 }
 
-/// Consecutive starts run together; everything else runs one at a time. A
-/// stop-first Service keeps the old copy-by-copy walk and never flips a pointer.
+/// Consecutive start-first starts run together; everything else runs one at
+/// a time, and a stop-first replacement keeps the copy-by-copy walk. A Service
+/// whose Containers change flips its pointer; its rollout removals then follow
+/// in a second group, so a failed Service still has every old copy and a
+/// removed one serves until the pointer drops it.
 fn service_group(
     operations: &[DeployOperation],
     service: Option<ServiceName>,
     dependencies: Vec<ServiceName>,
     range: std::ops::Range<usize>,
-    previous: Option<ployz_core::DeploymentLogId>,
-) -> ServiceGroup {
+    kept: Vec<ContainerId>,
+) -> Vec<ServiceGroup> {
+    let indexed = || {
+        operations
+            .iter()
+            .enumerate()
+            .take(range.end)
+            .skip(range.start)
+    };
+    let rollout_removal = |operation: &DeployOperation| {
+        matches!(
+            operation,
+            DeployOperation::RemoveContainer {
+                purpose: RemoveContainerPurpose::Rollout,
+                ..
+            }
+        )
+    };
+    let publish = service.is_some()
+        && indexed()
+            .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));
     let mut steps: Vec<Step> = Vec::new();
-    let mut stop_first = false;
-    for (index, operation) in operations
-        .iter()
-        .enumerate()
-        .take(range.end)
-        .skip(range.start)
-    {
-        if let DeployOperation::ReplaceContainer(replacement) = operation
-            && replacement.spec.update.order == ployz_core::UpdateOrder::StopFirst
-        {
-            stop_first = true;
+    let mut removals = Vec::new();
+    for (index, operation) in indexed() {
+        if publish && rollout_removal(operation) {
+            removals.push(Step::Serial(index));
+            continue;
         }
-        match (starts_container(operation), steps.last_mut()) {
+        let stop_first = matches!(
+            operation,
+            DeployOperation::ReplaceContainer(replacement)
+                if replacement.spec.update.order == UpdateOrder::StopFirst
+        );
+        match (starts_container(operation) && !stop_first, steps.last_mut()) {
             (true, Some(Step::Parallel(indices))) => indices.push(index),
             (true, _) => steps.push(Step::Parallel(vec![index])),
             (false, _) => steps.push(Step::Serial(index)),
         }
     }
-    let publish = service.is_some()
-        && !stop_first
-        && steps.iter().any(|step| matches!(step, Step::Parallel(_)));
-    ServiceGroup {
-        service,
+    let mut groups = vec![ServiceGroup {
+        service: service.clone(),
         dependencies,
         steps,
         publish,
-        previous,
+        kept,
+    }];
+    if !removals.is_empty() {
+        groups.push(ServiceGroup {
+            service: None,
+            dependencies: service.into_iter().collect(),
+            steps: removals,
+            publish: false,
+            kept: Vec::new(),
+        });
     }
+    groups
 }
 
-/// Deploy the Service's current Containers carry, from one this Deploy keeps
-/// when it keeps any, for a first publish's `previous`.
-fn current_deploy(
+/// Running Service Containers of `identity` that no operation in `operations`
+/// names: the flip keeps pointing at them.
+fn kept_containers(
     snapshot: &DeploySnapshot,
     identity: &QualifiedService,
     operations: &[DeployOperation],
-) -> Option<ployz_core::DeploymentLogId> {
-    let replaced: BTreeSet<_> = operations
+) -> Vec<ContainerId> {
+    let named: BTreeSet<_> = operations
         .iter()
-        .filter_map(|operation| match operation {
-            DeployOperation::ReplaceContainer(replacement) => Some(replacement.old_container_id),
-            DeployOperation::PrepareVolumes { .. }
-            | DeployOperation::RunContainer { .. }
-            | DeployOperation::WaitHealthy { .. }
-            | DeployOperation::StopContainer { .. }
-            | DeployOperation::RemoveContainer { .. }
-            | DeployOperation::StopHook { .. }
-            | DeployOperation::RunHook { .. }
-            | DeployOperation::RemoveVolume { .. } => operation.container_id(),
-        })
+        .filter_map(DeployOperation::container_id)
         .collect();
-    let current: Vec<_> = snapshot
+    snapshot
         .containers
         .iter()
-        .filter(|container| container.identity() == *identity)
-        .collect();
-    current
-        .iter()
-        .filter(|container| !replaced.contains(&container.container_id))
-        .chain(current.iter())
-        .find_map(|container| {
-            container
-                .labels
-                .get(ployz_core::DEPLOYMENT_ID_LABEL)
-                .and_then(|label| ployz_core::DeploymentLogId::parse(label).ok())
+        .filter(|container| {
+            container.kind == ContainerKind::ServiceContainer
+                && container.identity() == *identity
+                && !named.contains(&container.container_id)
         })
+        .map(|container| container.container_id)
+        .collect()
 }
 
 impl std::ops::Deref for DeployPlan {
@@ -325,12 +338,12 @@ pub(super) fn prepare_namespace_removal(
                     .iter()
                     .filter_map(|group| group.service.clone())
                     .collect();
-                planned.groups.push(service_group(
+                planned.groups.extend(service_group(
                     &planned.operations,
                     None,
                     every_service,
                     range,
-                    None,
+                    Vec::new(),
                 ));
             }
             _ => {}
@@ -621,19 +634,19 @@ fn assemble_plan(
     operations.extend(removal_operations(&services, &retiring));
     let mut groups = Vec::new();
     if prelude > 0 {
-        groups.push(service_group(
+        groups.extend(service_group(
             &operations,
             None,
             Vec::new(),
             0..prelude,
-            None,
+            Vec::new(),
         ));
     }
     let dependencies = intent.dependencies();
     for (name, range) in ranges {
         let range = range.start + prelude..range.end + prelude;
         let identity = QualifiedService::new(intent.namespace.clone(), name.clone());
-        let previous = current_deploy(
+        let kept = kept_containers(
             snapshot,
             &identity,
             operations.get(range.clone()).unwrap_or_default(),
@@ -644,22 +657,22 @@ fn assemble_plan(
             .flatten()
             .map(|dependency| dependency.service.clone())
             .collect();
-        groups.push(service_group(
+        groups.extend(service_group(
             &operations,
             Some(name),
             dependencies,
             range,
-            previous,
+            kept,
         ));
     }
     if tail_start < operations.len() {
         let every_service = requested.iter().map(|spec| spec.name.clone()).collect();
-        groups.push(service_group(
+        groups.extend(service_group(
             &operations,
             None,
             every_service,
             tail_start..operations.len(),
-            None,
+            Vec::new(),
         ));
     }
     Ok(Planned {

@@ -2225,7 +2225,7 @@ accepts_ingress: boolean, id: MachineId, name: MachineName, subnet: MachineSubne
  */
 build_concurrency: BuildConcurrency | null, };
 
-export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume" | "PullImage" | "ReadServingPointer" | "PublishServingPointer";
+export type MachineAction = "PrepareVolumes" | "CreateContainer" | "StartContainer" | "InspectContainer" | "StopContainer" | "RemoveContainer" | "RemoveVolume" | "PullImage" | "ListContainers" | "ReadServingPointer" | "PublishServingPointer";
 
 export type MachineCleanupResult = { "status": "cleaned", removals: Array<ImageRemoval>, } | { "status": "unsupported" } | { "status": "unknown", message: string, };
 

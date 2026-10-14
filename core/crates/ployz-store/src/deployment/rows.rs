@@ -85,6 +85,7 @@ impl FailedAt {
                 MachineAction::RemoveContainer => Some(Self::Remove),
                 MachineAction::PullImage => Some(Self::Create),
                 MachineAction::InspectContainer
+                | MachineAction::ListContainers
                 | MachineAction::ReadServingPointer
                 | MachineAction::PublishServingPointer => from_phase(),
             },
@@ -385,6 +386,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::PrepareVolumes
                 | MachineAction::RemoveVolume
                 | MachineAction::PullImage
+                | MachineAction::ListContainers
                 | MachineAction::ReadServingPointer
                 | MachineAction::PublishServingPointer => None,
             },

@@ -172,7 +172,10 @@ fn rotation_joins_retires_and_reports_no_change() {
 fn a_first_pointer_that_gains_retiring_ids_names_its_own_deploy_as_previous() {
     let first = pointer('a', &['1', '2'], &[]);
     let rotated = rotated(&first, &[container('3')], &[container('1')]).unwrap();
-    assert_eq!(rotated, retired_from(pointer('a', &['2', '3'], &['1']), 'a'));
+    assert_eq!(
+        rotated,
+        retired_from(pointer('a', &['2', '3'], &['1']), 'a')
+    );
 }
 
 #[test]

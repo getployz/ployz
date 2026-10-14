@@ -645,21 +645,21 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
                 dependencies: Vec::new(),
                 steps: vec![Step::Serial(0), Step::Parallel(vec![1, 2])],
                 publish: true,
-                previous: None,
+                kept: Vec::new(),
             },
             ServiceGroup {
                 service: Some(web.name),
                 dependencies: vec![db.name],
                 steps: vec![Step::Parallel(vec![3])],
                 publish: true,
-                previous: None,
+                kept: Vec::new(),
             },
         ]
     );
 }
 
 #[test]
-fn a_stop_first_service_keeps_its_serial_walk_and_never_flips() {
+fn a_stop_first_service_keeps_its_serial_walk_and_flips_after_it() {
     use ployz::deploy::{ServiceGroup, Step};
     use ployz_core::DeployIntent;
 
@@ -697,8 +697,8 @@ fn a_stop_first_service_keeps_its_serial_walk_and_never_flips() {
             service: Some(ServiceName::parse("api").unwrap()),
             dependencies: Vec::new(),
             steps: vec![Step::Serial(0)],
-            publish: false,
-            previous: None,
+            publish: true,
+            kept: Vec::new(),
         }]
     );
     assert_eq!(
@@ -708,7 +708,7 @@ fn a_stop_first_service_keeps_its_serial_walk_and_never_flips() {
             dependencies: Vec::new(),
             steps: vec![Step::Parallel(vec![0])],
             publish: true,
-            previous: None,
+            kept: Vec::new(),
         }]
     );
 }

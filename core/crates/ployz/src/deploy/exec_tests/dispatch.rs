@@ -63,11 +63,11 @@ async fn dispatches_the_complete_algebra() {
         },
     ];
     let plan = operations.clone();
+    let older = DeploymentLogId::parse("older").unwrap();
     let client = Scripted::new(vec![
         created(Call::Run(first, ContainerKind::ServiceContainer), &new_run),
         ok(Call::Stop(first, old)),
         ok(Call::Stop(first, bind_conflict)),
-        ok(Call::Remove(first, removed)),
         created(
             Call::Run(first, ContainerKind::ServiceContainer),
             &replacement,
@@ -81,7 +81,17 @@ async fn dispatches_the_complete_algebra() {
             machine_id: first,
             name: DockerVolumeName::parse("data").unwrap(),
         })),
+        ok(Call::Remove(first, removed)),
     ]);
+    client.pointers.lock().unwrap().insert(
+        QualifiedService::new(test_namespace(), ServiceName::parse("api").unwrap()),
+        ServingPointer {
+            deploy: older.clone(),
+            containers: vec![old, removed],
+            previous: None,
+            retiring: Vec::new(),
+        },
+    );
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
 
@@ -95,13 +105,15 @@ async fn dispatches_the_complete_algebra() {
     let [publication] = publications.as_slice() else {
         panic!("one pointer flip for the one Service");
     };
-    assert_eq!(publication.pointer.deploy, run_id());
     assert_eq!(
-        publication.pointer.containers,
-        vec![new_run, replacement, nested]
+        publication.pointer,
+        ServingPointer {
+            deploy: run_id(),
+            containers: vec![new_run, replacement, nested],
+            previous: Some(older),
+            retiring: vec![old],
+        }
     );
-    assert_eq!(publication.pointer.retiring, vec![old]);
-    assert_eq!(publication.pointer.previous, None);
     client.assert_done();
 }
 
@@ -299,14 +311,17 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
 }
 
 #[tokio::test]
-async fn global_start_failure_retains_the_keyed_container_for_retry() {
+async fn global_start_failure_leaves_nothing_of_the_keyed_container() {
     let machine = machine('1');
     let mut service = spec(None, None, None);
     service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![failed(
-        Call::Run(machine, ContainerKind::ServiceContainer),
-        "start failed",
-    )]);
+    let client = Scripted::new(vec![
+        failed(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
     let outcome = execute_with(
         &[run(&machine, service, false)],
         &client,
@@ -578,10 +593,13 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
     let new = container('b');
     let mut service = spec(None, None, None);
     service.mode = ployz_core::ServiceMode::Global;
-    let client = Scripted::new(vec![created(
-        Call::Run(machine, ContainerKind::ServiceContainer),
-        &new,
-    )]);
+    let client = Scripted {
+        observations: Some(vec![serving(&machine, &old, None)]),
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
     let operation = DeployOperation::ReplaceContainer(ReplacementOperation {
         machine_id: machine,
         old_container_id: old,
@@ -593,9 +611,14 @@ async fn global_replacement_scopes_creation_to_the_old_container_and_retires_it_
         DeployOutcome::Success { .. }
     ));
     let publications = client.publications();
-    let [publication] = publications.as_slice() else {
-        panic!("one pointer flip");
+    let [pin, publication] = publications.as_slice() else {
+        panic!("a pin of what served, then one pointer flip");
     };
+    assert_eq!(pin.pointer.containers, vec![old]);
+    assert_eq!(
+        publication.pointer.previous,
+        Some(pin.pointer.deploy.clone())
+    );
     assert_eq!(publication.pointer.retiring, vec![old]);
     let slots = client.slots.lock().unwrap();
     let [slot] = slots.as_slice() else {
@@ -614,8 +637,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     use crate::deploy::{DeployIntent, DeploySnapshot, PlanOptions, plan_deploy};
     use ployz_core::{
         BridgeEndpointCapacity, ContainerDetails, ContainerList, EnsuredContainer, Machine,
-        MachineName, MachineObservation, MembershipObservation, OpaquePayload,
-        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, WireGuardPublicKey,
+        MachineList, MachineName, MachineObservation, MembershipObservation, OpaquePayload,
+        RequestedServiceSpec, RpcRequestBody, RpcResponse, ServiceMode, ServingPointerRead,
+        WireGuardPublicKey,
     };
     use std::{collections::BTreeMap, sync::Arc};
     use tonic::{Request, Response};
@@ -658,10 +682,12 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     let remote = state.clone();
     let keys = Arc::new(Mutex::new(Vec::new()));
     let captured = keys.clone();
+    let listed_target = target.clone();
     let (client, server) =
         crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
             let remote = remote.clone();
             let captured = captured.clone();
+            let fake_target = listed_target.clone();
             async move {
                 let mut remote = remote.lock().unwrap();
                 #[expect(
@@ -680,6 +706,16 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                 .clone(),
                             environment: None,
                         })
+                    }
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: vec![MachineObservation::new(
+                            fake_target.clone(),
+                            MembershipObservation::Up,
+                        )],
+                    }),
+                    RpcRequestBody::ReadServingPointer(_) => {
+                        RpcResponse::from(ServingPointerRead::default())
                     }
                     RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
                         containers: remote.clone(),

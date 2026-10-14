@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{DeployOperation, DeploymentLogId, MachineId, ServiceName, UpdateOrder};
+use ployz_core::{ContainerId, DeployOperation, MachineId, ServiceName};
 
 /// New Containers one Machine starts at once for one Deploy. Containers still
 /// draining from an earlier Deploy are not tasks here, so they never count.
@@ -33,8 +33,9 @@ pub struct ServiceGroup {
     pub steps: Vec<Step>,
     /// Flip this Service's pointer once its steps complete.
     pub publish: bool,
-    /// Deploy the Service's current Containers carry, for a first publish's `previous`.
-    pub previous: Option<DeploymentLogId>,
+    /// Current Containers of the Service no operation of this Deploy names;
+    /// the flip keeps pointing at them.
+    pub kept: Vec<ContainerId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +87,11 @@ pub(crate) struct Schedule {
 impl ServiceGroup {
     fn is_prelude(&self) -> bool {
         self.service.is_none() && self.dependencies.is_empty()
+    }
+
+    /// The Service whose pointer this group flips, if any.
+    pub(crate) fn publishing_service(&self) -> Option<&ServiceName> {
+        self.publish.then_some(self.service.as_ref()).flatten()
     }
 }
 
@@ -156,15 +162,39 @@ impl Schedule {
             .collect()
     }
 
-    pub(crate) fn last_task(&self, group: usize) -> usize {
-        self.group(group)
-            .steps
+    /// The group's tasks, or the following group's when a Service only
+    /// removes Containers and its removals run after its flip.
+    fn tasks_of(&self, group: usize) -> impl Iterator<Item = usize> + '_ {
+        self.slots
             .iter()
-            .flat_map(step_tasks)
-            .max()
-            .expect("a publishing group has at least one task")
+            .skip(group)
+            .map(|slot| {
+                slot.group
+                    .steps
+                    .iter()
+                    .flat_map(step_tasks)
+                    .collect::<Vec<_>>()
+            })
+            .find(|tasks| !tasks.is_empty())
+            .into_iter()
+            .flatten()
     }
 
+    pub(crate) fn first_task(&self, group: usize) -> usize {
+        self.tasks_of(group)
+            .min()
+            .expect("a publishing group has a task of its own or after it")
+    }
+
+    /// The row a failed publish of `group` is reported under: the Service's last
+    /// operation, since a publish has no row of its own.
+    pub(crate) fn publish_failure_task(&self, group: usize) -> usize {
+        self.tasks_of(group)
+            .max()
+            .expect("a publishing group has a task of its own or after it")
+    }
+
+    #[cfg(test)]
     pub(crate) fn finished(&self) -> bool {
         self.slots.iter().all(|slot| match slot.phase {
             Phase::Done | Phase::Failed => true,
@@ -243,6 +273,10 @@ impl Schedule {
                 continue;
             };
             let (step, mut pending, mut running) = (*step, pending.clone(), running.clone());
+            if self.failed && step == 0 && running.is_empty() && !self.began(group, &pending) {
+                self.slot_mut(group).phase = Phase::Waiting;
+                continue;
+            }
             let serial = matches!(
                 self.slot(group).group.steps.get(step),
                 Some(Step::Serial(_))
@@ -280,6 +314,14 @@ impl Schedule {
             }
         }
         actions
+    }
+
+    /// Some task of the group's first step already ran.
+    fn began(&self, group: usize, pending: &[usize]) -> bool {
+        self.group(group)
+            .steps
+            .first()
+            .is_some_and(|first| step_tasks(first).len() != pending.len())
     }
 
     fn windows(&self) -> BTreeMap<MachineId, usize> {
@@ -362,10 +404,7 @@ impl Schedule {
 /// slot and the Deploy removes the Container if the Service never switches.
 pub(crate) fn starts_container(operation: &DeployOperation) -> bool {
     match operation {
-        DeployOperation::RunContainer { .. } => true,
-        DeployOperation::ReplaceContainer(replacement) => {
-            replacement.spec.update.order != UpdateOrder::StopFirst
-        }
+        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => true,
         DeployOperation::PrepareVolumes { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }
@@ -401,7 +440,7 @@ mod tests {
             dependencies: dependencies.iter().map(|name| self::name(name)).collect(),
             steps,
             publish: true,
-            previous: None,
+            kept: Vec::new(),
         }
     }
 
@@ -550,7 +589,7 @@ mod tests {
     #[test]
     fn the_window_counts_only_this_deploys_starts_and_is_per_machine() {
         let steps = vec![Step::Parallel((0..12).collect())];
-        let tasks = (0..12)
+        let mut tasks: Vec<Task> = (0..12)
             .map(|index| {
                 if index % 2 == 0 {
                     start('1')
@@ -559,17 +598,52 @@ mod tests {
                 }
             })
             .collect();
-        let mut schedule = Schedule::new(vec![group("api", &[], steps)], tasks);
-        let first = starts(&mut schedule);
-        assert_eq!(first, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let draining = Task {
+        tasks.push(Task {
             machine: machine('1'),
             starts: false,
-        };
-        assert!(
-            !draining.starts,
-            "a draining copy is never a task of this Deploy"
+        });
+        tasks.push(Task {
+            machine: machine('2'),
+            starts: false,
+        });
+        let mut schedule = Schedule::new(
+            vec![
+                group("api", &[], steps),
+                group("web", &[], vec![Step::Parallel(vec![12, 13])]),
+            ],
+            tasks,
         );
+        assert_eq!(
+            starts(&mut schedule),
+            vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13],
+            "stops and hooks take no slot even on a full Machine"
+        );
+        assert!(starts(&mut schedule).is_empty());
+        schedule.apply(Event::Completed(12));
+        schedule.apply(Event::Completed(13));
+        assert!(starts(&mut schedule).is_empty(), "non-starts free no slot");
+        schedule.apply(Event::Completed(0));
+        schedule.apply(Event::Completed(1));
+        assert_eq!(starts(&mut schedule), vec![10, 11]);
+    }
+
+    #[test]
+    fn a_window_starved_service_never_starts_after_a_failure() {
+        let mut schedule = Schedule::new(
+            vec![
+                group("a", &[], vec![Step::Parallel((0..6).collect())]),
+                group("b", &[], vec![Step::Parallel(vec![6])]),
+            ],
+            (0..7).map(|_| start('1')).collect(),
+        );
+        assert_eq!(starts(&mut schedule), vec![0, 1, 2, 3, 4]);
+        schedule.apply(Event::Failed(0));
+        assert!(starts(&mut schedule).is_empty(), "b started nothing yet");
+        for task in 1..5 {
+            schedule.apply(Event::Completed(task));
+        }
+        assert!(starts(&mut schedule).is_empty());
+        assert!(schedule.finished());
     }
 
     #[test]
@@ -666,7 +740,7 @@ mod tests {
                     dependencies: Vec::new(),
                     steps: vec![Step::Serial(0)],
                     publish: false,
-                    previous: None,
+                    kept: Vec::new(),
                 },
                 group("a", &[], vec![Step::Serial(1)]),
                 group("b", &[], vec![Step::Serial(2)]),
@@ -696,7 +770,7 @@ mod tests {
                     dependencies: vec![name("a")],
                     steps: vec![Step::Serial(1)],
                     publish: false,
-                    previous: None,
+                    kept: Vec::new(),
                 },
             ],
             vec![
