@@ -173,6 +173,15 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         let edited = set(&store, PATH, same).unwrap();
         assert!(edited.staged.is_empty() && edited.immediate.is_empty());
     }
+    // Only the keep object passes as text, even with a credential to keep.
+    for bad in [
+        json!(r#"{"secret":"plain-token","secret":true}"#),
+        json!("[true]"),
+    ] {
+        let error = set(&store, PATH, bad.clone()).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{bad}");
+        assert!(!error.to_string().contains("plain-token"), "{error:?}");
+    }
     let diff = store.read(&who(), &DiffQuery::default()).unwrap();
     let row = diff
         .changes
@@ -312,7 +321,6 @@ fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
         (PATH, json!("plain-token")),
         (PATH, json!({ "secret": "" })),
         (PATH, json!(r#"{"secret":"plain-token"}"#)),
-        (PATH, json!(r#"{"secret":"plain-token","secret":true}"#)),
         (
             PATH,
             json!(r#"{"username":"octocat","secret":"plain-token"}"#),
