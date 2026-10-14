@@ -20,6 +20,7 @@
 // Servers that enroll next, so the queued Deploy and blog's pull requests are skipped: the Store admits none, and opens
 // no PR Environment, before a Server joins.
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Change, ConfigCommand, PullRequest } from "@ployz/sdk";
@@ -27,7 +28,7 @@ import { callStore, storeSystem } from "#/modules/config-store/config-store.serv
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
-import { session, user } from "#/modules/identity/tables";
+import { account, session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
@@ -52,6 +53,12 @@ const seed = Effect.gen(function* () {
   const organizationId = yield* ensurePersonalOrganizationForUser(ada);
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const organizationSlug = org?.slug ?? "";
+  // With the fake GitHub, Ada signed in with her fixture GitHub account, so webhooks she sends find her.
+  if (process.env["PLOYZ_GITHUB_ORIGIN"]) {
+    const fixture = JSON.parse(readFileSync(".verify/run/github.json", "utf8")) as { users: Array<{ id: number; email: string }> };
+    const github = fixture.users.find((u) => u.email === ada.email);
+    if (github) yield* drizzle.insert(account).values({ userId: ada.id, providerId: "github", accountId: String(github.id) });
+  }
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");

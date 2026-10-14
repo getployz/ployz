@@ -6,6 +6,7 @@
 # SERVERS=N [DAEMON=...] also enrolls N real Machines through it (core/scripts/verify-cluster);
 # DAEMON is space-separated [machine-N=]stable|beta|checkout|<version>, e.g. DAEMON="checkout machine-2=0.2.3";
 # down.sh tears that cluster down too. Real Servers also get a per-checkout Inngest dev server and worker.
+# FAKE_GITHUB=1 points Cloud at a fake GitHub (fake-github.ts, fixtures .verify/run/github.json) and starts Inngest too.
 # Stops itself after 15 idle minutes with no connection to vite (idle.sh; VERIFY_IDLE_TIMEOUT=<seconds>, 0 keeps it up).
 set -euo pipefail
 # A verify session takes main's SDK build while the SDK's interface is unchanged; SDK=exact builds this checkout's.
@@ -17,6 +18,7 @@ run=$dash/.verify/run
 fresh=0
 if [ "${1:-}" = --fresh ]; then fresh=1; shift; fi
 [ -n "${SERVERS:-}" ] && export VERIFY_REAL_SERVERS=1
+if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ] || [ "${FAKE_GITHUB:-0}" = 1 ]; then with_inngest=1; else with_inngest=0; fi
 cd "$dash"
 
 # Fresh checkouts have neither node_modules nor the native SDK; rebuild the SDK when core sources are newer.
@@ -26,11 +28,11 @@ sdk=$wt/core/crates/ployz-sdk/ployz-sdk.node
 if [ ! -f "$sdk" ] || [ -n "$(find "$wt/core/crates" -newer "$sdk" -type f \( -name '*.rs' -o -name Cargo.toml \) -print -quit)" ]; then build_sdk=1; fi
 
 # vite reads the env file once and loads the SDK once, and the worker runs a bundle of the code it started with, so
-# only an instance without real Servers, started by this up.sh in this mode on this port, with unchanged dependencies,
+# only an instance without Inngest, started by this up.sh in this mode on this port, with unchanged dependencies,
 # is reused.
-mode="billing=${BILLING:-0} fake-servers=${FAKE_SERVERS:-0} up=$(sha1sum < "$dash/scripts/verify/up.sh" | cut -c1-12)"
+mode="billing=${BILLING:-0} fake-servers=${FAKE_SERVERS:-0} fake-github=${FAKE_GITHUB:-0} up=$(sha1sum < "$dash/scripts/verify/up.sh" | cut -c1-12)"
 reseed=0
-if [ "$fresh" = 0 ] && [ "${VERIFY_REAL_SERVERS:-0}" != 1 ] && [ "$install$build_sdk" = 00 ] \
+if [ "$fresh" = 0 ] && [ "$with_inngest" != 1 ] && [ "$install$build_sdk" = 00 ] \
   && [ "$(cat "$run/mode" 2>/dev/null)" = "$mode" ] && kill -0 "$(cat "$run/vite.pid" 2>/dev/null)" 2>/dev/null \
   && kill -0 "$(cat "$run/hosted-dns.pid" 2>/dev/null)" 2>/dev/null \
   && [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] \
@@ -79,6 +81,11 @@ else
   # A fake Hosted DNS grants Cluster Domains, so generated https addresses deploy (log: $run/hosted-dns.log).
   setsid nohup node scripts/verify/runner.mjs /scripts/verify/hosted-dns.ts > "$run/hosted-dns.log" 2>&1 < /dev/null &
   echo $! > "$run/hosted-dns.pid"
+  if [ "${FAKE_GITHUB:-0}" = 1 ]; then
+    FAKE_GITHUB_CLOUD_URL=http://127.0.0.1:$port GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret \
+      setsid nohup node scripts/verify/runner.mjs /scripts/verify/fake-github.ts > "$run/fake-github.log" 2>&1 < /dev/null &
+    echo $! > "$run/fake-github.pid"
+  fi
 
   # Postgres: named for the checkout, host port from Docker, data on tmpfs (down.sh deletes it).
   docker run --detach --rm --name "$name" --label "ployz.verify.checkout=$wt" \
@@ -92,9 +99,17 @@ else
     hosted_dns=$(sed -n 's/^VERIFY_HOSTED_DNS //p' "$run/hosted-dns.log") && [ -n "$hosted_dns" ] && break; sleep 0.25
   done
   [ -n "$hosted_dns" ] || { echo "up.sh: the fake Hosted DNS did not start (see $run/hosted-dns.log)" >&2; cat "$run/hosted-dns.log" >&2; exit 1; }
+  github_origin=
+  if [ "${FAKE_GITHUB:-0}" = 1 ]; then
+    for _ in $(seq 120); do
+      fake_github=$(sed -n 's/^VERIFY_FAKE_GITHUB //p' "$run/fake-github.log") && [ -n "$fake_github" ] && break; sleep 0.25
+    done
+    [ -n "$fake_github" ] || { echo "up.sh: the fake GitHub did not start (see $run/fake-github.log)" >&2; cat "$run/fake-github.log" >&2; exit 1; }
+    github_origin="PLOYZ_GITHUB_ORIGIN=$fake_github"
+  fi
 
   # Secrets are stable per checkout, so the browser's cookie survives a restart. A dead URL (port 9) keeps Inngest
-  # off shared services without real Servers; the GitHub App and Polar are fake.
+  # off shared services without real Servers or FAKE_GITHUB; the GitHub App and Polar are fake.
   secret=ployz-verify-$(printf 'secret:%s' "$wt" | sha256sum | cut -c1-24)
   key=$(node -e 'const {generateKeyPairSync:g}=require("crypto");process.stdout.write(g("rsa",{modulusLength:2048}).privateKey.export({type:"pkcs8",format:"pem"}).replace(/\n/g,"\\n"))')
   if [ "${BILLING:-0}" = 1 ]; then
@@ -106,7 +121,7 @@ POLAR_PRODUCT_ID=06cdcd79-3dcd-46a5-939e-8784efa55034"
 POLAR_WEBHOOK_SECRET=
 POLAR_PRODUCT_ID="
   fi
-  if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
+  if [ "$with_inngest" = 1 ]; then
     read -r inngest_port gateway_port gateway_grpc_port executor_grpc_port worker_port <<< "$(free_ports 5)"
     inngest="INNGEST_DEV=1
 INNGEST_BASE_URL=http://127.0.0.1:$inngest_port
@@ -133,6 +148,7 @@ GITHUB_APP_ID=1
 GITHUB_APP_SLUG=ployz-verify
 GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret
 GITHUB_APP_PRIVATE_KEY='$key'
+$github_origin
 $polar
 POLAR_SERVER=sandbox
 INNGEST_EVENT_KEY=verify-event-key
@@ -153,7 +169,7 @@ EOF
   echo $! > "$run/vite.pid"
   (for _ in $(seq 120); do curl -s -o /dev/null "http://127.0.0.1:$port/cloud" && break; sleep 0.5; done) > /dev/null 2>&1 &
 
-  if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
+  if [ "$with_inngest" = 1 ]; then
     # Connect handshakes fail when the dev server inherits an HTTP(S) proxy; it needs no egress.
     env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy setsid nohup node_modules/inngest-cli/bin/inngest dev --no-discovery --no-poll --port "$inngest_port" \
       --connect-gateway-port "$gateway_port" --connect-gateway-grpc-port "$gateway_grpc_port" \
@@ -178,7 +194,7 @@ printf '%s\n' "$seed" > "$run/seed.json"; echo "$name" > "$run/session"
 json() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$seed" "$1"; }
 org=$(json organizationSlug); cookie=$(json cookie)
 
-if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
+if [ "$with_inngest" = 1 ]; then
   wait "$worker_build" || { cat "$run/worker-build.log" >&2; exit 1; }
   for _ in $(seq 60); do curl -fs -o /dev/null "http://127.0.0.1:$inngest_port" && break; sleep 0.5; done
   echo "$worker_port" > "$run/worker.port"
@@ -215,8 +231,14 @@ browser:
   agent-browser --session $name cookies set better-auth.session_token '$cookie' --url $base --httpOnly --sameSite Lax
   agent-browser --session $name open $base/cloud/$org/shop/production
 EOF
-if [ "${VERIFY_REAL_SERVERS:-0}" = 1 ]; then
+if [ "$with_inngest" = 1 ]; then
   echo "inngest: http://127.0.0.1:$inngest_port (function runs; logs $run/inngest.log, $run/worker.log)" | tee -a "$run/info"
+fi
+if [ "${FAKE_GITHUB:-0}" = 1 ]; then
+  cat <<EOF | tee -a "$run/info"
+fake github on $fake_github (requests $run/fake-github.log, fixtures $run/github.json)
+  webhook: curl -X POST $fake_github/_fake/webhook -d '{"event":"installation_repositories","action":"added","installation":7,"repositories":["acme/docs"]}'
+EOF
 fi
 
 if [ -n "${SERVERS:-}" ]; then
