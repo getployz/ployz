@@ -939,23 +939,24 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         except (RuntimeError, subprocess.TimeoutExpired) as why:
             print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
             return
-        try:
-            with pool() as entries:
-                dead = tidy(entries, sandbox_states(), registered())
-                full = not self.make_room(entries, dead)
-        except RuntimeError as why:
-            print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
-            return
-        retire(dead, lambda *args: self.boat(*args, check=False))
-        if not full:
-            with pool() as entries:
-                # A sandbox Boat has not confirmed gone still counts, so a failed delete never lets the pool grow past its size.
-                full = len(entries) >= POOL_SIZE
-                if not full:
-                    entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
-                    self.mark(name, state="parked")
-        if full:
-            print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake or newer ones.", file=sys.stderr)
+        # A sandbox Boat has not confirmed gone still counts, so the pool admits this one only on a pass that deletes nothing.
+        # Each pass makes room again: a concurrent park of an older bake can take the slot an earlier pass freed.
+        while True:
+            try:
+                with pool() as entries:
+                    dead = tidy(entries, sandbox_states(), registered())
+                    room = self.make_room(entries, dead)
+                    if room and not dead:
+                        entries.append(dict(id=entry["id"], image=image, ip=entry["ip"], ssh=entry["ssh"], parked_at=int(time.time())))
+                        self.mark(name, state="parked")
+                        return
+            except RuntimeError as why:
+                print(f"Deleting {entry['id']} ({name}) instead of reusing it: {why}", file=sys.stderr)
+                return
+            results = retire(dead, lambda *args: self.boat(*args, check=False))
+            if not room or not any(deleted(result) or forbidden(result) for result in results):
+                break
+        print(f"Deleting {entry['id']} ({name}): the pool already holds {POOL_SIZE} of this bake or newer ones.", file=sys.stderr)
 
     def make_room(self, entries, dead):
         """Whether the pool can take one more sandbox of this run's bake once `dead` is deleted, marking retiring, and adding

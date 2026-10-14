@@ -536,6 +536,40 @@ class Pool(unittest.TestCase):
         self.assertEqual([entry["id"] for entry in boat.read(boat.POOL) + boat.read(boat.RETIRING)], ["bx_b2", "bx_b1"])
         self.assertEqual(provider.record()["sandboxes"]["machine-1"]["state"], "running")
 
+    def test_a_concurrent_park_of_an_older_bake_never_takes_the_slot_a_newer_bake_freed(self):
+        boat.write(boat.BAKES, ["bake-old", "bake-mid", "bake-a"])
+        boat.write(boat.POOL, [parked("bx_o1", 1, image="bake-old", at=1), parked("bx_x", 2, image="bake-mid", at=2)])
+        states = dict(bx_o1="ready", bx_x="ready", bx_new="ready", bx_mid="ready")
+
+        def parker(run_id, image, sandbox, node, during=None):
+            boat.write(boat.fingerprints(image), {"containers": []})
+
+            def fake(args, check=True, **kwargs):
+                if args[2] != "delete":
+                    return result(0, {})
+                existed = states.pop(args[3], None)
+                if during and args[3] == "bx_o1":
+                    during.pop()()
+                return result(0, {}) if existed else result(1, {"event": "error", "code": "not_found", "status": 404})
+            run = dict(id=run_id, manifest=str(boat.REGISTRY / "cluster.json"), image=image, machines=[dict(name="machine-1")])
+            provider = boat.Provider(run, fake, Path("."))
+            boat.write(provider.registry, dict(run=run_id, image=image, sandboxes={"machine-1": dict(
+                id=sandbox, state="running", ip=f"2001:db8:0:{node}::1", ssh=f"203.0.113.{node}:22")}))
+            provider.reboot = lambda node: None
+            provider.fingerprint = lambda node: {"containers": []}
+            return provider
+        older = parker("run2", "bake-mid", "bx_mid", 4)
+        # The older bake parks while Boat deletes what the newer bake displaced, so it sees that slot free first.
+        newer = parker("run1", "bake-a", "bx_new", 3, during=[lambda: older.park("machine-1")])
+        listing = lambda *args: dict(sandboxes=[dict(id=sandbox, state=state) for sandbox, state in states.items()])
+        with unittest.mock.patch.object(boat, "boat_json", listing), unittest.mock.patch.object(boat, "POOL_SIZE", 2), \
+                contextlib.redirect_stderr(io.StringIO()):
+            newer.park("machine-1")
+        self.assertEqual(sorted(entry["id"] for entry in boat.read(boat.POOL)), ["bx_mid", "bx_new"])
+        self.assertEqual(boat.read(boat.RETIRING), [])
+        self.assertEqual(newer.record()["sandboxes"]["machine-1"]["state"], "parked")
+        self.assertNotIn("bx_x", states)
+
     def test_a_sandbox_this_key_may_not_delete_is_stopped_and_frees_its_pool_slot(self):
         forbidden = result(1, {"event": "error", "code": "api_key_action_forbidden", "status": 403})
         provider = self.park(["bake-b", "bake-a"], [parked("bx_b1", 1, image="bake-b", at=1), parked("bx_b2", 2, image="bake-b", at=2)],
