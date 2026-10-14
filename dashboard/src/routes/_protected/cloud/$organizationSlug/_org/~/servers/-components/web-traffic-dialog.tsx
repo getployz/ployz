@@ -1,15 +1,15 @@
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
+import type { WebTrafficReach } from "#/modules/machines/server-web-traffic-view";
 
 /** The confirm before web traffic goes off: which domains this affects, and whether another Server keeps serving them. */
-export function WebTrafficDialog({ serverName, domains, partial, last, open, onOpenChange, onConfirm }: {
+export function WebTrafficDialog({ serverName, domains, partial, reach, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** Every domain pointed at your Servers. */
   domains: readonly string[];
   /** Some domains weren't observed, so the list may be short. */
   partial: boolean;
-  /** No other Server takes web traffic: these stop working. */
-  last: boolean;
+  reach: WebTrafficReach;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
@@ -21,11 +21,13 @@ export function WebTrafficDialog({ serverName, domains, partial, last, open, onO
       title={`Stop web traffic on ${serverName}?`}
       description={
         <div className="flex flex-col gap-4">
-          {domains.length === 0 ? (
-            <p>{last ? "No other server takes web traffic." : "Your other servers keep taking web traffic."}</p>
+          {reach === "away" ? (
+            <p>Your domains don’t point here.</p>
+          ) : domains.length === 0 ? (
+            <p>{reach === "last" ? "No other server takes web traffic." : "Your other servers keep taking web traffic."}</p>
           ) : (
             <>
-              <p>{last ? "No other server takes web traffic. These stop working:" : "Your other servers keep serving these:"}</p>
+              <p>{reach === "last" ? "No other server takes web traffic. These stop working:" : "Your other servers keep serving these:"}</p>
               <ItemGroup aria-label="Domains" className="max-h-72 overflow-y-auto text-foreground">
                 {domains.map((domain) => (
                   <Item key={domain} variant="outline" size="xs" data-row={domain}>
@@ -37,11 +39,11 @@ export function WebTrafficDialog({ serverName, domains, partial, last, open, onO
               </ItemGroup>
             </>
           )}
-          {partial ? <p>Some servers haven’t reported their domains yet, so this may affect more.</p> : null}
+          {partial && reach !== "away" ? <p>Some servers haven’t reported their domains yet, so this may affect more.</p> : null}
         </div>
       }
       actionLabel="Stop"
-      variant={last ? "destructive" : "default"}
+      variant={reach === "last" ? "destructive" : "default"}
       onConfirm={onConfirm}
     />
   );

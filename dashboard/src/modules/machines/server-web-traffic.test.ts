@@ -1,6 +1,6 @@
 import type { IngressCheck, MachineId } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { lastWebTrafficServer, webTrafficChecked, webTrafficView } from "./server-web-traffic-view";
+import { webTrafficChecked, webTrafficReach, webTrafficView } from "./server-web-traffic-view";
 import { type LatestWebTraffic, startFailure } from "./server-web-traffic";
 
 const server = { id: "m1", acceptsIngress: false, publicIp: "203.0.113.10" };
@@ -85,7 +85,7 @@ describe("startFailure", () => {
   });
 });
 
-describe("lastWebTrafficServer", () => {
+describe("webTrafficReach", () => {
   const here = { id: "m1", acceptsIngress: true, publicIp: "203.0.113.10" };
   const other = (over: { readonly publicIp?: string | null; readonly status?: "online" | "offline" } = {}) => ({
     machine: { id: "m2", acceptsIngress: true, publicIp: over.publicIp === undefined ? "203.0.113.11" : over.publicIp },
@@ -93,19 +93,16 @@ describe("lastWebTrafficServer", () => {
   });
 
   it("is last when no other online Server with an address takes web traffic", () => {
-    expect(lastWebTrafficServer(here, [{ machine: here, status: "online" }, other({ status: "offline" })])).toBe(true);
-    expect(lastWebTrafficServer(here, [other({ publicIp: null })])).toBe(true);
+    expect(webTrafficReach(here, [{ machine: here, status: "online" }, other({ status: "offline" })])).toBe("last");
+    expect(webTrafficReach(here, [other({ publicIp: null })])).toBe("last");
   });
 
-  it("is not last while another online Server serves", () => {
-    expect(lastWebTrafficServer(here, [other()])).toBe(false);
+  it("is shared while another online Server serves", () => {
+    expect(webTrafficReach(here, [other()])).toBe("shared");
   });
 
-  it("is never last without a public IP, since no domain points here", () => {
-    expect(lastWebTrafficServer({ ...here, publicIp: null }, [])).toBe(false);
-  });
-
-  it("is never last once its role is off, since routing already left it", () => {
-    expect(lastWebTrafficServer({ ...here, acceptsIngress: false }, [])).toBe(false);
+  it("is away without a public IP or once its role is off, since no domain points here", () => {
+    expect(webTrafficReach({ ...here, publicIp: null }, [])).toBe("away");
+    expect(webTrafficReach({ ...here, acceptsIngress: false }, [])).toBe("away");
   });
 });

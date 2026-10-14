@@ -6,7 +6,7 @@ import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection"
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 import type { WebTrafficWant } from "./server-web-traffic";
 import type { ServerStatus } from "./server-status";
-import { lastWebTrafficServer, WEB_TRAFFIC_SETTLE_MS, webTrafficView, type WebTrafficView } from "./server-web-traffic-view";
+import { WEB_TRAFFIC_SETTLE_MS, type WebTrafficReach, webTrafficReach, webTrafficView, type WebTrafficView } from "./server-web-traffic-view";
 import { requestServerWebTrafficServerFn } from "./server-web-traffic.functions";
 import { serverWebTrafficKeys, useServerWebTrafficChanges } from "./server-web-traffic.queries";
 
@@ -20,7 +20,7 @@ export type ServerWebTraffic = {
   /** Some Server's certificates weren't observed, so `domains` may miss some. */
   readonly partial: boolean;
   /** No other online Server takes web traffic: turning off here stops every domain. */
-  readonly last: boolean;
+  readonly reach: WebTrafficReach;
   /** Turn on now (the switch, and Retry). */
   readonly turnOn: () => void;
   /** Open the confirm before turning off. */
@@ -94,7 +94,7 @@ export function useServerWebTraffic(
     }),
     domains: [...new Set(certificates.map((certificate) => certificate.hostname))],
     partial: incompleteIds.certificates.length > 0,
-    last: lastWebTrafficServer({ id: server.id, acceptsIngress: machine.acceptsIngress, publicIp: machine.publicIp }, servers),
+    reach: webTrafficReach({ id: server.id, acceptsIngress: machine.acceptsIngress, publicIp: machine.publicIp }, servers),
     turnOn: () => send("on"),
     ask: () => setOpen(true),
     dialog: {

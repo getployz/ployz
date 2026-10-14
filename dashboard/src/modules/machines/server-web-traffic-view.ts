@@ -22,15 +22,19 @@ export const webTrafficChecked = (view: WebTrafficView) =>
 
 type IngressServer = { readonly id: string; readonly acceptsIngress: boolean; readonly publicIp: string | null };
 
-/** Turning `server` off stops every domain: it takes web traffic now, and no other online Server would. */
-export const lastWebTrafficServer = (
+/** What turning `server` off does to your domains: `away` when they don't point here, `last` when it stops every one, `shared` when another online Server keeps serving them. */
+export type WebTrafficReach = "away" | "last" | "shared";
+
+export const webTrafficReach = (
   server: IngressServer,
   servers: ReadonlyArray<{ readonly machine: IngressServer; readonly status: ServerStatus }>,
-) =>
-  server.acceptsIngress &&
-  server.publicIp !== null &&
-  !servers.some((other) =>
-    other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null && !needsAttention(other.status));
+): WebTrafficReach => {
+  if (!server.acceptsIngress || server.publicIp === null) return "away";
+  return servers.some((other) =>
+    other.machine.id !== server.id && other.machine.acceptsIngress && other.machine.publicIp !== null && !needsAttention(other.status))
+    ? "shared"
+    : "last";
+};
 
 /** How long a finished change may take to show on the Server before the row trusts what the Server says instead. */
 export const WEB_TRAFFIC_SETTLE_MS = 30_000;
