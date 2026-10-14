@@ -101,6 +101,7 @@ const COMMAND_FILES = {
   "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "the billing portal involves money",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/github-settings.tsx": "linking a GitHub account checks the signed offer against GitHub, and a disconnect answers with the account's uninstall link",
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
   "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "forgetting the Servers is destructive: it tries every Server again and forgets only when none answers",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",

@@ -6,6 +6,7 @@ export function organizationGithubQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: githubKeys.accounts(organizationSlug),
     queryFn: () => listOrganizationGithubServerFn({ data: { organizationSlug } }),
+    staleTime: 0,
   });
 }
 

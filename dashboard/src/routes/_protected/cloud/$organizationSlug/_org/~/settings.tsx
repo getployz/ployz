@@ -6,12 +6,12 @@ import { Effect, Option, Schema } from "effect";
 import { getClusterDomainCollection, getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { prefetchStoreViews } from "#/collections/route-data";
+import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
 import { CONNECT_NOTICES } from "#/modules/github/github-connect";
-import { organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
+import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
 import { GithubSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/github-settings";
 import { BUILD_ORDER_QUERY, BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
@@ -38,11 +38,10 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
   validateSearch: Schema.toStandardSchemaV1(settingsSearchSchema),
-  loaderDeps: ({ search }) => ({ section: search.section }),
-  loader: async ({ params, context, deps }) => {
-    if (deps.section === "github") await context.queryClient.ensureQueryData(organizationGithubQueryOptions(params.organizationSlug));
-    return prefetchStoreViews(context, params.organizationSlug, projectsQuery(), BUILD_ORDER_QUERY);
-  },
+  loaderDeps: ({ search }) => ({ section: search.section, offer: search.offer }),
+  loader: ({ params, context, deps }) => prefetchRemoteWithStoreViews(context, params.organizationSlug, [projectsQuery(), BUILD_ORDER_QUERY],
+    ...deps.section === "github" ? [organizationGithubQueryOptions(params.organizationSlug)] : [],
+    ...deps.section === "github" && deps.offer ? [githubOfferQueryOptions(params.organizationSlug, deps.offer)] : []),
   component: RouteComponent,
 });
 
