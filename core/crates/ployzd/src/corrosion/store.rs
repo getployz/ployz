@@ -705,7 +705,7 @@ impl ReplicatedStore {
 
     pub(crate) async fn ingress_routes(
         &self,
-    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteAck>, Error> {
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
         let query = self.api.query(Statement::new(INGRESS_ROUTES, [])).await?;
         Ok(query
             .rows(["machine_id", "service_id", "deploy", "containers"])?
@@ -713,11 +713,20 @@ impl ReplicatedStore {
             .filter_map(|[machine_id, service_id, deploy, containers]| {
                 let machine_id = MachineId::parse(machine_id.as_str()?).ok()?;
                 let service = QualifiedService::parse(service_id.as_str()?).ok()?;
-                let ack = IngressRouteAck {
-                    deploy: DeploymentLogId::parse(deploy.as_str()?).ok()?,
-                    containers: serde_json::from_str(containers.as_str()?).ok()?,
+                let deploy = deploy
+                    .as_str()
+                    .and_then(|deploy| DeploymentLogId::parse(deploy).ok());
+                let containers = containers
+                    .as_str()
+                    .and_then(|containers| serde_json::from_str(containers).ok());
+                let row = match (deploy, containers) {
+                    (Some(deploy), Some(containers)) => {
+                        IngressRouteRow::Acked(IngressRouteAck { deploy, containers })
+                    }
+                    (None, Some(containers)) => IngressRouteRow::UnknownDeploy(containers),
+                    (_, None) => IngressRouteRow::UnknownContainers,
                 };
-                Some(((machine_id, service), ack))
+                Some(((machine_id, service), row))
             })
             .collect())
     }
@@ -1038,6 +1047,14 @@ const INGRESS_ROUTE_DELETE: &str =
 pub(crate) struct IngressRouteAck {
     pub(crate) deploy: DeploymentLogId,
     pub(crate) containers: BTreeSet<ContainerId>,
+}
+
+/// CRDT merge can surface a row before every column has arrived.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum IngressRouteRow {
+    Acked(IngressRouteAck),
+    UnknownDeploy(BTreeSet<ContainerId>),
+    UnknownContainers,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

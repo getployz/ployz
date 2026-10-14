@@ -14,8 +14,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        AdminClient, Error as CorrosionError, IngressRouteAck, MachineView, ReplicatedObservations,
-        ReplicatedStore, ServingPointers, Subscription, membership_states_by_address,
+        AdminClient, Error as CorrosionError, IngressRouteAck, IngressRouteRow, MachineView,
+        ReplicatedObservations, ReplicatedStore, ServingPointers, Subscription,
+        membership_states_by_address,
     },
     docker::ContainerRuntime,
     machine::LocalMachine,
@@ -159,6 +160,26 @@ pub(crate) struct Membership {
     pub(crate) down: BTreeSet<MachineId>,
 }
 
+impl Membership {
+    /// Machines outside the ackers, not reported Down, that may still route
+    /// the Candidate. Each holds it like an unacked Machine.
+    fn unlisted_routers(
+        &self,
+        candidate: &Candidate,
+        routes: &BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
+    ) -> Vec<String> {
+        routes
+            .iter()
+            .filter(|((machine, service), row)| {
+                candidate.routed_by(service, row)
+                    && !self.down.contains(machine)
+                    && !self.ackers.lists(machine)
+            })
+            .map(|((machine, _), _)| machine.as_str().to_owned())
+            .collect()
+    }
+}
+
 fn required_ackers(
     machines: ReplicatedObservations<Machine, MachineId>,
     local: &MachineId,
@@ -212,6 +233,14 @@ impl Candidate {
         ack.deploy == self.deploy
             && !ack.containers.contains(&self.container)
             && (self.serving.is_empty() || !ack.containers.is_disjoint(&self.serving))
+    }
+
+    fn routed_by(&self, service: &QualifiedService, row: &IngressRouteRow) -> bool {
+        match row {
+            IngressRouteRow::Acked(ack) => ack.containers.contains(&self.container),
+            IngressRouteRow::UnknownDeploy(containers) => containers.contains(&self.container),
+            IngressRouteRow::UnknownContainers => *service == self.service,
+        }
     }
 
     fn decided_deploy_still_retires(&self, pointers: &ServingPointers) -> bool {
@@ -307,7 +336,7 @@ impl Retirer {
     fn decide(
         &mut self,
         candidates: Vec<Candidate>,
-        acks: &BTreeMap<(MachineId, QualifiedService), IngressRouteAck>,
+        routes: &BTreeMap<(MachineId, QualifiedService), IngressRouteRow>,
         membership: &Membership,
         now: Instant,
     ) -> Vec<(Candidate, Verdict)> {
@@ -323,20 +352,12 @@ impl Retirer {
             }
             let ackers = &membership.ackers;
             let mut unacked = ackers.unacked(|machine| {
-                acks.get(&(*machine, candidate.service.clone()))
-                    .is_some_and(|ack| candidate.acked_away(ack))
+                matches!(
+                    routes.get(&(*machine, candidate.service.clone())),
+                    Some(IngressRouteRow::Acked(ack)) if candidate.acked_away(ack)
+                )
             });
-            // Any Machine not reported Down that still routes the Container
-            // holds it, whether or not this Machine's view lists that Machine.
-            unacked.extend(
-                acks.iter()
-                    .filter(|((machine, _), ack)| {
-                        ack.containers.contains(&candidate.container)
-                            && !membership.down.contains(machine)
-                            && !ackers.lists(machine)
-                    })
-                    .map(|((machine, _), _)| machine.as_str().to_owned()),
-            );
+            unacked.extend(membership.unlisted_routers(&candidate, routes));
             let acked_by = match ackers {
                 Ackers::Known(machines) => {
                     (!machines.is_empty() && unacked.is_empty()).then_some(machines.len())
@@ -444,15 +465,15 @@ async fn round<H: RetireHost>(
     if candidates.is_empty() {
         return;
     }
-    let acks = match replicated.ingress_routes().await {
-        Ok(acks) => acks,
+    let routes = match replicated.ingress_routes().await {
+        Ok(routes) => routes,
         Err(error) => {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "retire could not read ingress route acks");
             return;
         }
     };
     let membership = host.membership().await;
-    for (candidate, verdict) in retirer.decide(candidates, &acks, &membership, Instant::now()) {
+    for (candidate, verdict) in retirer.decide(candidates, &routes, &membership, Instant::now()) {
         if let Verdict::Forced { unacked } = &verdict {
             tracing::warn!(
                 container = %candidate.container,
@@ -628,13 +649,13 @@ mod tests {
         Verdict, remove_drained, required_ackers, round, run,
     };
     use crate::corrosion::{
-        Error as CorrosionError, IngressRouteAck, IngressRouteChange, ReplicatedObservations,
-        ReplicatedStore, ServingPointers,
+        Error as CorrosionError, IngressRouteAck, IngressRouteChange, IngressRouteRow,
+        ReplicatedObservations, ReplicatedStore, ServingPointers,
         fake_cluster::FakeCluster,
         store_tests::{corrosion_db, identity_store},
     };
 
-    type Acks = BTreeMap<(MachineId, QualifiedService), IngressRouteAck>;
+    type Acks = BTreeMap<(MachineId, QualifiedService), IngressRouteRow>;
 
     fn id(letter: &str) -> ContainerId {
         ContainerId::parse(letter.repeat(64)).unwrap()
@@ -686,6 +707,10 @@ mod tests {
         }
     }
 
+    fn acked(deploy_name: &str, containers: &[ContainerId]) -> IngressRouteRow {
+        IngressRouteRow::Acked(ack(deploy_name, containers))
+    }
+
     fn named(machines: &[&Machine]) -> BTreeMap<MachineId, MachineName> {
         machines
             .iter()
@@ -707,7 +732,7 @@ mod tests {
     fn acked_away(machines: &[&Machine]) -> Acks {
         machines
             .iter()
-            .map(|machine| ((machine.id, service()), ack("d2", &[id("b")])))
+            .map(|machine| ((machine.id, service()), acked("d2", &[id("b")])))
             .collect()
     }
 
@@ -771,7 +796,7 @@ mod tests {
     #[test]
     fn an_ack_that_still_routes_the_container_holds_it() {
         let one = machine("one", 1);
-        let acks = Acks::from([((one.id, service()), ack("d2", &[id("a"), id("b")]))]);
+        let acks = Acks::from([((one.id, service()), acked("d2", &[id("a"), id("b")]))]);
         let decided = decide_now(
             &mut Retirer::default(),
             &pointers(),
@@ -785,7 +810,7 @@ mod tests {
     #[test]
     fn an_ack_for_an_older_deploy_holds_the_container() {
         let one = machine("one", 1);
-        let acks = Acks::from([((one.id, service()), ack("d1", &[id("b")]))]);
+        let acks = Acks::from([((one.id, service()), acked("d1", &[id("b")]))]);
         let decided = decide_now(
             &mut Retirer::default(),
             &pointers(),
@@ -1066,7 +1091,7 @@ mod tests {
      {
         let (local, joiner) = (machine("local", 1), machine("joiner", 3));
         let mut acks = acked_away(&[&local]);
-        acks.insert((joiner.id, service()), ack("d1", &[id("a")]));
+        acks.insert((joiner.id, service()), acked("d1", &[id("a")]));
         let required = ackers(&[&local]);
         let mut retirer = Retirer::default();
         assert!(decide_now(&mut retirer, &pointers(), &acks, &required, &[id("a")]).is_empty());
@@ -1089,7 +1114,7 @@ mod tests {
     fn a_down_machine_missing_from_the_view_does_not_hold_the_container() {
         let (local, gone) = (machine("local", 1), machine("gone", 3));
         let mut acks = acked_away(&[&local]);
-        acks.insert((gone.id, service()), ack("d1", &[id("a")]));
+        acks.insert((gone.id, service()), acked("d1", &[id("a")]));
         let membership = Membership {
             down: BTreeSet::from([gone.id]),
             ..ackers(&[&local])
@@ -1107,7 +1132,7 @@ mod tests {
     #[test]
     fn an_ack_that_routes_none_of_the_pointers_containers_holds_the_container() {
         let one = machine("one", 1);
-        let acks = Acks::from([((one.id, service()), ack("d2", &[]))]);
+        let acks = Acks::from([((one.id, service()), acked("d2", &[]))]);
         let decided = decide_now(
             &mut Retirer::default(),
             &pointers(),
@@ -1130,7 +1155,7 @@ mod tests {
                 retiring: vec![id("a")],
             },
         )]);
-        let acks = Acks::from([((one.id, service()), ack("d2", &[]))]);
+        let acks = Acks::from([((one.id, service()), acked("d2", &[]))]);
         let decided = decide_now(
             &mut Retirer::default(),
             &pointers,
@@ -1336,6 +1361,65 @@ mod tests {
 
         assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
         server.abort();
+    }
+
+    async fn retired_with_extra_route(
+        service_id: &str,
+        deploy: &str,
+        containers: &str,
+    ) -> Vec<ContainerId> {
+        let db = corrosion_db();
+        let (local, joiner) = (machine("local", 1), machine("joiner", 2));
+        insert_pointer(&db, pointers().get(&service()).unwrap());
+        let insert = "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?)";
+        db.execute(
+            insert,
+            rusqlite::params![
+                local.id.as_str(),
+                service().to_string(),
+                "d2",
+                serde_json::to_string(&[id("b")]).unwrap()
+            ],
+        )
+        .unwrap();
+        db.execute(
+            insert,
+            rusqlite::params![joiner.id.as_str(), service_id, deploy, containers],
+        )
+        .unwrap();
+        let (store, server) = identity_store(db).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+        server.abort();
+        host.retired.lock().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_route_row_without_a_deploy_still_holds_what_it_routes() {
+        let routes_a = serde_json::to_string(&[id("a")]).unwrap();
+        assert_eq!(
+            retired_with_extra_route("app/api", "", &routes_a).await,
+            vec![]
+        );
+        let routes_b = serde_json::to_string(&[id("b")]).unwrap();
+        assert_eq!(
+            retired_with_extra_route("app/api", "", &routes_b).await,
+            vec![id("a")]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_route_row_without_readable_containers_holds_its_service() {
+        assert_eq!(
+            retired_with_extra_route("app/api", "d1", "{}").await,
+            vec![]
+        );
+        assert_eq!(
+            retired_with_extra_route("app/other", "d1", "{}").await,
+            vec![id("a")]
+        );
     }
 
     fn insert_pointer(db: &rusqlite::Connection, pointer: &ServingPointer) {
