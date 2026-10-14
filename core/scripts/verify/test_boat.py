@@ -90,15 +90,35 @@ class Images(unittest.TestCase):
 
 
 class Bakes(unittest.TestCase):
+    def bake(self, day):
+        return f"{boat.BAKED}{day}" + "0" * 8
+
     def test_prune_keeps_the_newest_bakes_and_never_names_another_snapshot(self):
+        bakes = [self.bake(day) for day in ["11", "13", "10", "12"]]
         named = [dict(name="ployz-verify-024", createdAt="2026-01-01"), dict(name="someone-else", createdAt="2026-01-02"),
-                 *(dict(name=f"{boat.BAKED}{day}", createdAt=f"2026-10-{day}") for day in ["11", "13", "10", "12"])]
-        self.assertEqual(boat.stale_bakes(named, f"{boat.BAKED}14"),
-                         [f"{boat.BAKED}10", f"{boat.BAKED}11"])
+                 *(dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes)]
+        self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes, set()), [self.bake("10"), self.bake("11")])
 
     def test_the_current_bake_is_never_pruned(self):
-        named = [dict(name=f"{boat.BAKED}{day}", createdAt=f"2026-10-{day}") for day in ["10", "11", "12", "13"]]
-        self.assertNotIn(f"{boat.BAKED}10", boat.stale_bakes(named, f"{boat.BAKED}10"))
+        bakes = [self.bake(day) for day in ["10", "11", "12", "13"]]
+        named = [dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes]
+        self.assertNotIn(self.bake("10"), boat.stale_bakes(named, self.bake("10"), bakes, set()))
+
+    def test_a_bake_another_host_made_is_never_pruned(self):
+        bakes = [self.bake(day) for day in ["10", "11", "12", "13"]]
+        named = [dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes]
+        self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes[1:], set()), [self.bake("11")])
+
+    def test_a_bake_a_live_run_uses_is_never_pruned(self):
+        bakes = [self.bake(day) for day in ["10", "11", "12", "13"]]
+        named = [dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes]
+        self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes, {self.bake("10")}), [self.bake("11")])
+
+    def test_a_name_that_only_shares_the_prefix_is_never_pruned(self):
+        named = [dict(name=f"{boat.BAKED}mine-keep", createdAt="2026-10-01"),
+                 *(dict(name=self.bake(day), createdAt=f"2026-10-{day}") for day in ["10", "11", "12"])]
+        ours = [f"{boat.BAKED}mine-keep", *(self.bake(day) for day in ["10", "11", "12"])]
+        self.assertEqual(boat.stale_bakes(named, self.bake("14"), ours, set()), [self.bake("10")])
 
 
 class Registry(unittest.TestCase):

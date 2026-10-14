@@ -36,6 +36,9 @@ BAKED = "ployz-verify-boat-"
 # Boat restores containers after boot, so the holders stay; tmpfs over each image VOLUME keeps them volume-free.
 # Boat keeps 10 named snapshots per account; bakes past the newest few are removed.
 KEEP_BAKED = 3
+BAKE_NAME = re.compile(re.escape(BAKED) + "[0-9a-f]{10}")
+# Bakes this host made; another host or person may share the account and the name prefix.
+BAKES = REGISTRY / "bakes.ledger"
 BAKE = """
 ufw disable >/dev/null
 printf '%s\\n' "$@" | xargs -P8 -n1 docker pull -q >/dev/null
@@ -155,11 +158,16 @@ def bootstrap():
     return (BOOTSTRAP / "id_ed25519.pub").read_text().strip()
 
 
-def stale_bakes(named, current):
-    """Bakes to remove after baking `current`, oldest first; no other snapshot is ever named."""
-    older = sorted((snapshot for snapshot in named if snapshot["name"].startswith(BAKED) and snapshot["name"] != current),
+def stale_bakes(named, current, ours, in_use):
+    """Bakes to remove before baking `current`, oldest first: only bakes this host made that no run still uses."""
+    older = sorted((snapshot for snapshot in named if snapshot["name"] in ours and BAKE_NAME.fullmatch(snapshot["name"])
+                    and snapshot["name"] != current and snapshot["name"] not in in_use),
                    key=lambda snapshot: snapshot["createdAt"])
     return [snapshot["name"] for snapshot in older[:max(len(older) - (KEEP_BAKED - 1), 0)]]
+
+
+def images_in_use():
+    return {record["image"] for path in REGISTRY.glob("*.json") if (record := read(path)) and record.get("image")}
 
 
 def boat_json(*args):
@@ -240,7 +248,7 @@ class Provider:
         if self.registry.exists():
             raise RuntimeError(f"Boat registry already exists for this run: {self.registry}")
         write(self.registry, dict(run=self.run["id"], manifest=self.run["manifest"], owner=self.run.get("owner", {}),
-                                  created=int(time.time()), sandboxes={}))
+                                  image=self.run.get("image"), created=int(time.time()), sandboxes={}))
 
     def launch(self, node):
         before = time.time()
@@ -448,6 +456,12 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             named = boat_json("snapshots")["named"]
             if any(snapshot["name"] == self.run["image"] and snapshot["status"] == "ready" for snapshot in named):
                 return
+            ours = read(BAKES) or []
+            # Prune first; the account caps named snapshots.
+            for name in stale_bakes(named, self.run["image"], ours, images_in_use()):
+                if not self.boat("snapshot", "rm", name, check=False).returncode:
+                    ours.remove(name)
+            write(BAKES, ours)
             print(f"Baking Boat snapshot {self.run['image']} (first run of this recipe only).", file=sys.stderr)
             bake = Provider(dict(id="bake-" + uuid.uuid4().hex[:10], manifest=str(BOOTSTRAP / "bake" / "cluster.json"),
                                  owner=self.run.get("owner", {}), image=SNAPSHOT, corrosion=self.run["corrosion"]),
@@ -458,7 +472,11 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 bake.create()
                 bake.start(node)
                 self.boat("snapshot", bake.sandbox(node)["id"], self.run["image"], timeout=1800)
-            finally:
-                bake.destroy()
-            for name in stale_bakes(named, self.run["image"]):
-                self.boat("snapshot", "rm", name, check=False)
+            except BaseException:
+                try:
+                    bake.destroy()
+                except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+                    print(f"Deleting the bake sandbox also failed: {error}", file=sys.stderr)
+                raise
+            write(BAKES, [*ours, self.run["image"]])
+            bake.destroy()
