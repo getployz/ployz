@@ -15,8 +15,9 @@ use ployz_core::{
     EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
     LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
     MachineNow, MachineObservation, MachineRpc, MachineToken, MembershipObservation, NewContainer,
-    OpaquePayload, PROTOCOL_MAJOR, Registered, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
-    RunTarget, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
+    OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, RunTarget, ServingPointer, ServingPointerPublication,
+    ServingPointerRead, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
 };
 
 /// The Management Capability the fake daemon mints for any Management Client Set.
@@ -106,6 +107,8 @@ struct JoinInner {
     fail_target_inspect: AtomicBool,
     fail_list_on: Mutex<Option<MachineId>>,
     assigned_membership: Mutex<MembershipObservation>,
+    /// Serving Pointers published so far; the fake Machine acks a pointer as soon as it lands.
+    pointers: Mutex<BTreeMap<QualifiedService, ServingPointer>>,
 }
 
 impl JoinDaemon {
@@ -145,6 +148,7 @@ impl JoinDaemon {
                 fail_target_inspect: AtomicBool::new(false),
                 fail_list_on: Mutex::new(None),
                 assigned_membership: Mutex::new(MembershipObservation::Up),
+                pointers: Mutex::new(BTreeMap::new()),
             }),
         }
     }
@@ -970,15 +974,49 @@ impl MachineRpc for JoinDaemon {
     }
     async fn publish_serving_pointer(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::PublishServingPointer(publish) = request.body else {
+            return Err(Status::invalid_argument("expected PublishServingPointer"));
+        };
+        let mut pointers = self.inner.pointers.lock().unwrap();
+        let current = pointers.get(&publish.service).cloned();
+        let publication = if current == publish.read {
+            pointers.insert(publish.service, publish.pointer);
+            ServingPointerPublication::Published
+        } else {
+            ServingPointerPublication::Superseded { current }
+        };
+        rpc_ok(publication)
     }
     async fn read_serving_pointer(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        rpc_ok(ployz_core::ServingPointerRead::default())
+        let request = request
+            .into_inner()
+            .decode_request()
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        let RpcRequestBody::ReadServingPointer(read) = request.body else {
+            return Err(Status::invalid_argument("expected ReadServingPointer"));
+        };
+        let pointer = self
+            .inner
+            .pointers
+            .lock()
+            .unwrap()
+            .get(&read.service)
+            .cloned();
+        let machine = self.inner.current_machine.lock().unwrap().id;
+        let acks = pointer
+            .iter()
+            .map(|pointer| (machine, pointer.deploy.clone()))
+            .collect();
+        rpc_ok(ServingPointerRead { pointer, acks })
     }
     async fn prune_images(
         &self,
