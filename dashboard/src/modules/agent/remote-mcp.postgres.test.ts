@@ -309,6 +309,16 @@ it.live("disconnecting stops the grant's refresh token, even after the agent con
     expect(refreshed.status).toBe(400);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("taking the ployz scope off the consent turns the next call away", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const token = yield* connect(shop, yield* registerAgent(shop));
+    expect((yield* raw(shop, token)).status).toBe(200);
+
+    expect((yield* consentCall(shop, "/api/auth/oauth2/update-consent", { id: yield* onlyConsent(shop), update: { scopes: [] } })).status).toBe(200);
+    expect((yield* raw(shop, token)).status).toBe(401);
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("a self-hosted Cloud answers 404 on every remote agent route and method", () =>
   Effect.gen(function* () {
     const { run } = yield* cloudOf(false);

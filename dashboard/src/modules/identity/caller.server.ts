@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, gt, isNull, or } from "drizzle-orm";
+import { and, arrayContains, eq, gt, isNull, or } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
@@ -105,7 +105,7 @@ export const grantClaimsOf = Schema.decodeUnknownOption(GrantClaims);
 
 /**
  * A remote agent's verified access token, acting through the consent it was issued under. The consent names the
- * Organization; the grant ends when the consent is revoked, the client is disabled, the signing-in session ends, or
+ * Organization; the grant ends when the consent is revoked or loses the `ployz` scope, the client is disabled, the signing-in session ends, or
  * the user leaves the Organization.
  */
 export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: GrantClaims) {
@@ -125,6 +125,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       eq(oauthConsent.userId, sub),
       eq(oauthConsent.clientId, clientId),
       eq(oauthConsent.referenceId, org),
+      arrayContains(oauthConsent.scopes, ["ployz"]),
       or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
       gt(session.expiresAt, new Date()),
     ))
