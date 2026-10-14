@@ -902,10 +902,12 @@ def stale_replay_refused(vc):
 
 # A deploy mid-Move takes the Move over or follows it, and never leaves two containers on the Volume
 
-def sample_running(vc, phys, samples, stop):
+# The target is read before the source, so a source stop followed by a target start between the two reads never
+# looks like two running containers.
+def sample_running(vc, phys, order, samples, stop):
     while not stop.is_set():
         try:
-            samples.append((round(time.time(), 1), vc.live(phys)))
+            samples.append((round(time.time(), 1), {machine: vc.containers(machine, phys) for machine in order}))
         except Exception as error:
             samples.append((round(time.time(), 1), f"{type(error).__name__}: {error}"[:200]))
         stop.wait(1)
@@ -940,7 +942,8 @@ def deploy_mid_move(vc):
             vc.slow_runc(target, "charlie", phys, 30)
         since = time.time()
         samples, stop = [], threading.Event()
-        sampler = threading.Thread(target=sample_running, args=(vc, phys, samples, stop), daemon=True)
+        sampler = threading.Thread(target=sample_running, args=(vc, phys, (target, source), samples, stop),
+                                   daemon=True)
         requeued = None
         try:
             _, row, data = vc.start_run("volume", "move", "charlie", "--to", target)
