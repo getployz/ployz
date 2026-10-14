@@ -418,6 +418,10 @@ function setVolumeCopyRefusal(error) {
   }
 }
 
+function machineUpgradeAttemptId(uuid) {
+  try { return native.machineUpgradeAttemptId(uuid); } catch (error) { throwRpcError(error); }
+}
+
 function ployzVersion() {
   return native.ployzVersion();
 }
@@ -446,6 +450,7 @@ module.exports = {
   observeCopies,
   allocateEnrollment,
   setVolumeCopyRefusal,
+  machineUpgradeAttemptId,
   ployzVersion,
   agentTools,
   agentStart,
