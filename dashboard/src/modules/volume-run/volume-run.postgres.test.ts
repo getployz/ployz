@@ -3161,6 +3161,30 @@ describe("volume runs", () => {
         expect(await runEffect(isVolumeOwed(organizationId, volumeId))).toBe(false);
         expect(await place()).toEqual([]);
         await finish();
+      });
+
+      it("removing B clears each Volume's commitment on its own, so a Deploy holding one and reaching for the other is no deadlock", async () => {
+        await failedCommit();
+        const [owedFirst] = (await harness.pool.query<{ id: string }>("select id from volume_run where volume_id = $1 and phase = 'committed'", [volumeId])).rows;
+        const [owedSecond] = (await harness.pool.query<{ id: string }>(`
+          insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, phase, current, state, finished_at)
+          select organization_id, environment_id, 'vol2', 'logs', 'logs-vol', refquota_bytes, kind, args, phase, current, state, finished_at
+          from volume_run where id = $1 returning id`, [owedFirst?.id])).rows;
+        const deploy = await harness.pool.connect();
+        try {
+          await deploy.query("begin");
+          await deploy.query("select id from volume_run where id = $1 for update", [owedSecond?.id]);
+          const removing = runEffect(releaseLanesOff(organizationId, { id: idOf("fsn-2"), name: "fsn-2" }, [])).catch((error: unknown) => error);
+          await waitingOnLock();
+          const reaching = deploy.query("select id from volume_run where id = $1 for update", [owedFirst?.id]);
+
+          await expect(reaching).resolves.toMatchObject({ rowCount: 1 });
+          await deploy.query("commit");
+          await expect(removing).resolves.toEqual([]);
+        } finally {
+          deploy.release(true);
+        }
+        expect((await harness.pool.query("select current from volume_run where id = any($1)", [[owedFirst?.id, owedSecond?.id]])).rows).toEqual([{ current: null }, { current: null }]);
         expect(await requested({ kind: "move", args: { to: "fsn-3" } })).toMatchObject({ kind: "move", state: "requested" });
       });
 
