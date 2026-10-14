@@ -35,7 +35,6 @@ export function useServersUpgrade(organizationSlug: string, list: readonly Serve
     line: serversUpgradeLine({ servers, release: known, latest, pendingFrom, now, automatic }),
     rows: serverUpgradeLines({ servers, release: known, latest: upgrades.servers, pendingFrom, now, automatic }),
     major: newMajorLine(serversLine, newest.isSuccess ? newest.data : null),
-    automatic,
     upgrade,
   };
 }
@@ -56,10 +55,9 @@ export function ServersUpgradeBar({ organizationSlug, upgrade }: { organizationS
 const mono = (version: string) => <span className="font-mono">{version}</span>;
 
 /** A newer major line's release notes, a rollout's progress or Upgrade, and the upgrade settings. */
-export function ServersUpgradeActions({ line, major, automatic, upgrade, onSettings }: {
+export function ServersUpgradeActions({ line, major, upgrade, onSettings }: {
   line: ServersUpgradeLine;
   major: ReturnType<typeof newMajorLine>;
-  automatic: boolean;
   upgrade: () => void;
   onSettings: () => void;
 }) {
@@ -76,16 +74,14 @@ export function ServersUpgradeActions({ line, major, automatic, upgrade, onSetti
         </a>
       )}
       {line?.kind === "upgrading" ? (
-        <p className="text-sm text-muted-foreground">Upgrading to {mono(line.target)} · {line.done} of {line.total}</p>
+        <p className="text-sm whitespace-nowrap text-muted-foreground">Upgrading {line.done}/{line.total}</p>
       ) : line?.kind === "behind" && line.canUpgrade ? (
         <Button variant="outline" onClick={upgrade}>
           Upgrade to {mono(line.release)}
         </Button>
       ) : null}
-      {/* On a phone the bar keeps one row: the icon stands in for the label, which stays the button's name. */}
-      <Button variant="ghost" onClick={onSettings}>
-        <Settings2Icon data-icon="inline-start" />
-        <span className="max-sm:sr-only">Upgrades: {automatic ? "Automatic" : "Manual"}</span>
+      <Button variant="ghost" size="icon" aria-label="Upgrade settings" title="Upgrade settings" onClick={onSettings}>
+        <Settings2Icon />
       </Button>
     </>
   );
