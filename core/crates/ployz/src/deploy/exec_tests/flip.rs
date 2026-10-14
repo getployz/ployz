@@ -38,6 +38,7 @@ async fn a_pull_failure_fails_the_deploy_with_nothing_touched() {
                     ..
                 },
                 unexecuted,
+                ..
             } if completed.is_empty() && unexecuted.len() == 1 && error.message == "manifest unknown"
         ),
         "{outcome:?}"
@@ -118,6 +119,7 @@ async fn a_lost_publish_reports_superseded_and_removes_the_unpointed_copies() {
             completed: plan,
             service: api(),
             unexecuted: Vec::new(),
+            services: ended(&[("api", ServiceResult::Old)]),
         }
     );
     assert_eq!(client.publications().len(), 1);
@@ -243,6 +245,7 @@ async fn a_dependent_fails_when_its_machine_never_acks_the_dependency() {
                     ..
                 },
                 unexecuted,
+                ..
             } if completed.len() == 1
                 && unexecuted.is_empty()
                 && *dependency == api()
@@ -251,5 +254,106 @@ async fn a_dependent_fails_when_its_machine_never_acks_the_dependency() {
         "{outcome:?}"
     );
     assert_eq!(client.publications().len(), 1);
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_failed_chain_reports_each_service_as_new_old_or_not_started() {
+    let machine = machine('1');
+    let mut db = spec(None, None, None);
+    db.name = ServiceName::parse("db").unwrap();
+    let plan = vec![
+        run(&machine, spec(None, None, None), true),
+        web_run(&machine),
+        run(&machine, db, true),
+    ];
+    let client = Scripted::new(vec![
+        created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        ),
+        failed(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[
+            ("api", ServiceResult::New),
+            ("web", ServiceResult::Old),
+            ("db", ServiceResult::NotStarted),
+        ])
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_failed_deploy_keeps_the_services_it_removes() {
+    use crate::deploy::{ServiceGroup, Step};
+
+    let machine = machine('1');
+    let removed = container('a');
+    let volume = DockerVolumeId {
+        machine_id: machine,
+        name: DockerVolumeName::parse("data").unwrap(),
+    };
+    let operations = vec![
+        run(&machine, spec(None, None, None), true),
+        DeployOperation::RemoveContainer {
+            machine_id: machine,
+            container_id: removed,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        },
+        DeployOperation::RemoveVolume { id: volume },
+    ];
+    let api = ServiceName::parse("api").unwrap();
+    let groups = vec![
+        ServiceGroup {
+            service: Some(api.clone()),
+            dependencies: Vec::new(),
+            steps: vec![Step::Parallel(vec![0])],
+            publish: true,
+            previous: None,
+        },
+        ServiceGroup {
+            service: None,
+            dependencies: vec![api],
+            steps: vec![Step::Serial(1), Step::Serial(2)],
+            publish: false,
+            previous: None,
+        },
+    ];
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        operations,
+        test_namespace(),
+        groups,
+    );
+    let client = Scripted::new(vec![
+        failed(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+    ]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(&outcome, DeployOutcome::Failed { unexecuted, .. } if unexecuted.len() == 2),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
     client.assert_done();
 }

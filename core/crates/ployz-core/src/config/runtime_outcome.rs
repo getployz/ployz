@@ -162,7 +162,7 @@ pub fn project_runtime_outcome(
         return Err(invalid());
     }
     let (summary, completed, failed, pending) = match evidence.outcome {
-        DeployOutcome::Success { completed } => (
+        DeployOutcome::Success { completed, .. } => (
             RuntimeOutcomeSummary::Success {
                 completed: completed.len(),
             },
@@ -174,6 +174,7 @@ pub fn project_runtime_outcome(
             completed,
             failed,
             unexecuted,
+            ..
         } => {
             let (operation, error) = match failed {
                 FailedOperation::Operation { operation, error } => (operation, error),
@@ -212,6 +213,7 @@ pub fn project_runtime_outcome(
         DeployOutcome::Interrupted {
             completed,
             unexecuted,
+            ..
         } => (
             RuntimeOutcomeSummary::Failed {
                 completed: completed.len(),

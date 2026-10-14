@@ -204,6 +204,7 @@ async fn assert_unreachable_middle_keeps_prefix(
         completed,
         failed,
         unexecuted,
+        ..
     } = &outcome
     else {
         panic!("expected unreachable-middle failure: {outcome:?}");

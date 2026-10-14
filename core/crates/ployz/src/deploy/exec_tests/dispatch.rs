@@ -89,6 +89,7 @@ async fn dispatches_the_complete_algebra() {
         outcome,
         DeployOutcome::Success {
             completed: operations,
+            services: ended(&[("api", ServiceResult::New)]),
         }
     );
     let publications = client.publications();
@@ -139,6 +140,7 @@ async fn volume_ensure_failure_is_the_container_operation_failure() {
                 },
             },
             unexecuted,
+            ..
         } if completed.is_empty()
             && failed == operation
             && error.message == "Volume Ensure failed after creating data"
@@ -182,6 +184,7 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
             completed,
             failed,
             unexecuted,
+            ..
         } = &outcome
         else {
             panic!("expected failure at {failed_index}");

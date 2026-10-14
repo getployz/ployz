@@ -420,7 +420,18 @@ pub enum PullPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum UpdateOrder {
     StartFirst,
+    /// Stop every old replica, then start every new one.
     StopFirst,
+    /// Stop-first one Machine at a time.
+    Rolling,
+}
+
+impl UpdateOrder {
+    /// The old Container stops before its replacement starts.
+    #[must_use]
+    pub const fn stops_first(self) -> bool {
+        matches!(self, Self::StopFirst | Self::Rolling)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -722,6 +733,20 @@ pub use comparison::compare_specs;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn update_order_parses_rolling_and_defaults_to_start_first() {
+        let config: UpdateConfig = serde_json::from_value(json!({"order": "rolling"})).unwrap();
+        assert_eq!(config.order, Some(UpdateOrder::Rolling));
+        assert!(UpdateOrder::Rolling.stops_first());
+        assert!(!UpdateOrder::StartFirst.stops_first());
+        let config: UpdateConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(config.order, None);
+        assert_eq!(
+            ResolvedUpdateConfig::default().order,
+            UpdateOrder::StartFirst
+        );
+    }
 
     #[test]
     fn config_debug_prints_content_length_not_bytes() {

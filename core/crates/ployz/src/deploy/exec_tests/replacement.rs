@@ -338,7 +338,6 @@ async fn stop_first_tolerates_disappearance_between_inspect_and_stop() {
         observed(Call::Inspect(machine, old), running()),
         Step(Call::Stop(machine, old), Reply::Error(missing.clone())),
         created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
-        ok(Call::Remove(machine, old)),
     ]);
 
     let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -367,9 +366,6 @@ async fn replacement_tolerates_an_old_container_missing_from_its_machine() {
             Call::Run(machine, ContainerKind::ServiceContainer),
             &new,
         ));
-        if order == UpdateOrder::StopFirst {
-            steps.push(ok(Call::Remove(machine, old)));
-        }
         let client = Scripted::new(steps);
 
         let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
@@ -402,9 +398,6 @@ async fn replacement_does_not_apply_the_new_stop_grace_to_the_old_container() {
             Call::Run(machine, ContainerKind::ServiceContainer),
             &new,
         ));
-        if order == UpdateOrder::StopFirst {
-            steps.push(ok(Call::Remove(machine, old)));
-        }
         let client = Scripted::new(steps);
 
         assert!(matches!(
@@ -446,5 +439,126 @@ async fn stop_first_run_failure_restores_the_old_container() {
             ..
         }
     ));
+    client.assert_done();
+}
+
+fn swap(
+    machine_id: &MachineId,
+    old_container_id: &ContainerId,
+    order: UpdateOrder,
+) -> DeployOperation {
+    let mut spec = spec(None, None, None);
+    spec.update.order = order;
+    DeployOperation::ReplaceContainer(ReplacementOperation {
+        machine_id: *machine_id,
+        old_container_id: *old_container_id,
+        spec,
+        skip_health_monitor: true,
+    })
+}
+
+#[tokio::test]
+async fn stop_first_publishes_the_new_copies_and_retires_the_stopped_ones() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::StopFirst),
+        swap(&second, &old_second, UpdateOrder::StopFirst),
+    ];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, old_first), running()),
+        ok(Call::Stop(first, old_first)),
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Stop(second, old_second)),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    let publications = client.publications();
+    let [publication] = publications.as_slice() else {
+        panic!("one pointer flip: {publications:?}");
+    };
+    assert_eq!(publication.pointer.containers, [new_first, new_second]);
+    assert_eq!(publication.pointer.retiring, [old_first, old_second]);
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_every_new_one() {
+    for order in [UpdateOrder::StopFirst, UpdateOrder::Rolling] {
+        let (first, second) = (machine('1'), machine('2'));
+        let (old_first, old_second) = (container('a'), container('b'));
+        let new_first = container('c');
+        let plan = vec![
+            swap(&first, &old_first, order),
+            swap(&second, &old_second, order),
+        ];
+        let client = Scripted::new(vec![
+            observed(Call::Inspect(first, old_first), running()),
+            ok(Call::Stop(first, old_first)),
+            created(
+                Call::Run(first, ContainerKind::ServiceContainer),
+                &new_first,
+            ),
+            observed(Call::Inspect(second, old_second), running()),
+            ok(Call::Stop(second, old_second)),
+            failed(
+                Call::Run(second, ContainerKind::ServiceContainer),
+                "start failed",
+            ),
+            ok(Call::DiscardSlot(second, ContainerKind::ServiceContainer)),
+            ok(Call::Restart(second, old_second)),
+            ok(Call::Discard(first, new_first)),
+            ok(Call::Restart(first, old_first)),
+        ]);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(
+            matches!(&outcome, DeployOutcome::Failed { .. }),
+            "{order:?}: {outcome:?}"
+        );
+        assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+        assert!(client.publications().is_empty());
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
+async fn a_rolling_failure_on_the_first_machine_leaves_the_second_untouched() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let plan = vec![
+        swap(&first, &old_first, UpdateOrder::Rolling),
+        swap(&second, &old_second, UpdateOrder::Rolling),
+    ];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, old_first), running()),
+        ok(Call::Stop(first, old_first)),
+        failed(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(first, ContainerKind::ServiceContainer)),
+        ok(Call::Restart(first, old_first)),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(&outcome, DeployOutcome::Failed { unexecuted, .. } if unexecuted.len() == 1),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
     client.assert_done();
 }

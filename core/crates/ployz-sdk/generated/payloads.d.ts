@@ -1061,7 +1061,7 @@ machine_id: MachineId,
  */
 specs: Array<ServiceStorageSpec>, } | { "type": "wait_healthy", machine_id: MachineId, dependent: QualifiedService, dependency: QualifiedService, } | { "type": "run_container", machine_id: MachineId, spec: ResolvedServiceSpec, skip_health_monitor: boolean, } | { "type": "stop_container", machine_id: MachineId, container_id: ContainerId, purpose: StopContainerPurpose, } | { "type": "remove_container", machine_id: MachineId, container_id: ContainerId, purpose: RemoveContainerPurpose, } | { "type": "replace_container" } & ReplacementOperation | { "type": "stop_hook", machine_id: MachineId, container_id: ContainerId, } | { "type": "run_hook", machine_id: MachineId, spec: ResolvedServiceSpec, old_hook_containers: Array<[MachineId, ContainerId]>, } | { "type": "remove_volume", id: DockerVolumeId, };
 
-export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, } | { "type": "superseded", completed: Array<DeployOperation>, service: QualifiedService, unexecuted: Array<DeployOperation>, } | { "type": "interrupted", completed: Array<DeployOperation>, unexecuted: Array<DeployOperation>, };
+export type DeployOutcome<E> = { "type": "success", completed: Array<DeployOperation>, services: Array<ServiceOutcome>, } | { "type": "failed", completed: Array<DeployOperation>, failed: FailedOperation<E>, unexecuted: Array<DeployOperation>, services: Array<ServiceOutcome>, } | { "type": "superseded", completed: Array<DeployOperation>, service: QualifiedService, unexecuted: Array<DeployOperation>, services: Array<ServiceOutcome>, } | { "type": "interrupted", completed: Array<DeployOperation>, unexecuted: Array<DeployOperation>, services: Array<ServiceOutcome>, };
 
 export type DeployPreview = {
 /**
@@ -3816,6 +3816,8 @@ export type ServiceName = string;
 
 export type ServiceObservation = { identity: QualifiedService, service_id: ServiceId, containers: Array<ServiceContainer>, hook_containers: Array<HookContainer>, };
 
+export type ServiceOutcome = { service: ServiceName, result: ServiceResult, };
+
 export type ServicePoint = {
 /**
  * Bucket start.
@@ -3833,6 +3835,8 @@ environment: EnvironmentRef,
 service: ServiceName, };
 
 export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 'no';
+
+export type ServiceResult = "new" | "old" | "not_started";
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
 
@@ -4477,7 +4481,7 @@ export type UpdateConfig = {
  */
 order: UpdateOrder | null, monitor_millis: number | null, };
 
-export type UpdateOrder = "start_first" | "stop_first";
+export type UpdateOrder = "start_first" | "stop_first" | "rolling";
 
 export type UploadBase = { commit: CommitSha,
 /**

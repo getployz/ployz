@@ -193,8 +193,8 @@ fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
     groups
 }
 
-/// Consecutive starts run together; everything else runs one at a time. A
-/// stop-first Service keeps the old copy-by-copy walk and never flips a pointer.
+/// Consecutive starts run together, and a rolling Service's run of starts
+/// takes one step per Machine; everything else runs one at a time.
 fn service_group(
     operations: &[DeployOperation],
     service: Option<ServiceName>,
@@ -202,28 +202,53 @@ fn service_group(
     range: std::ops::Range<usize>,
     previous: Option<ployz_core::DeploymentLogId>,
 ) -> ServiceGroup {
-    let mut steps: Vec<Step> = Vec::new();
-    let mut stop_first = false;
-    for (index, operation) in operations
+    let rolling = operations
         .iter()
-        .enumerate()
         .take(range.end)
         .skip(range.start)
-    {
-        if let DeployOperation::ReplaceContainer(replacement) = operation
-            && replacement.spec.update.order == ployz_core::UpdateOrder::StopFirst
-        {
-            stop_first = true;
+        .any(|operation| {
+            operation
+                .spec()
+                .is_some_and(|spec| spec.update.order == ployz_core::UpdateOrder::Rolling)
+        });
+    let operation = |index: usize| {
+        operations
+            .get(index)
+            .expect("group ranges index this plan's operations")
+    };
+    let mut steps: Vec<Step> = Vec::new();
+    let mut starts: Vec<usize> = Vec::new();
+    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
+        if !rolling {
+            if !starts.is_empty() {
+                steps.push(Step::Parallel(std::mem::take(starts)));
+            }
+            return;
         }
-        match (starts_container(operation), steps.last_mut()) {
-            (true, Some(Step::Parallel(indices))) => indices.push(index),
-            (true, _) => steps.push(Step::Parallel(vec![index])),
-            (false, _) => steps.push(Step::Serial(index)),
+        let mut machines: Vec<(MachineId, Vec<usize>)> = Vec::new();
+        for index in starts.drain(..) {
+            let machine = operation(index).machine_id();
+            match machines.iter_mut().find(|(owner, _)| *owner == machine) {
+                Some((_, indices)) => indices.push(index),
+                None => machines.push((machine, vec![index])),
+            }
+        }
+        steps.extend(
+            machines
+                .into_iter()
+                .map(|(_, indices)| Step::Parallel(indices)),
+        );
+    };
+    for index in range {
+        if starts_container(operation(index)) {
+            starts.push(index);
+        } else {
+            flush(&mut steps, &mut starts);
+            steps.push(Step::Serial(index));
         }
     }
-    let publish = service.is_some()
-        && !stop_first
-        && steps.iter().any(|step| matches!(step, Step::Parallel(_)));
+    flush(&mut steps, &mut starts);
+    let publish = service.is_some() && steps.iter().any(|step| matches!(step, Step::Parallel(_)));
     ServiceGroup {
         service,
         dependencies,

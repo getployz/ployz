@@ -3,7 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::{DeployOperation, DeploymentLogId, MachineId, ServiceName, UpdateOrder};
+use ployz_core::{
+    DeployOperation, DeploymentLogId, MachineId, ServiceName, ServiceOutcome, ServiceResult,
+};
 
 /// New Containers one Machine starts at once for one Deploy. Containers still
 /// draining from an earlier Deploy are not tasks here, so they never count.
@@ -153,6 +155,25 @@ impl Schedule {
             .enumerate()
             .filter(|(_, slot)| matches!(slot.phase, Phase::Failed))
             .map(|(group, _)| group)
+            .collect()
+    }
+
+    /// Where each Service group ended: published or done is new, started is
+    /// old, never started is not started.
+    pub(crate) fn services(&self) -> Vec<ServiceOutcome> {
+        self.slots
+            .iter()
+            .filter_map(|Slot { group, phase }| {
+                let result = match phase {
+                    Phase::Done => ServiceResult::New,
+                    Phase::Waiting => ServiceResult::NotStarted,
+                    Phase::Active { .. } | Phase::Publishing | Phase::Failed => ServiceResult::Old,
+                };
+                group
+                    .service
+                    .clone()
+                    .map(|service| ServiceOutcome { service, result })
+            })
             .collect()
     }
 
@@ -362,10 +383,7 @@ impl Schedule {
 /// slot and the Deploy removes the Container if the Service never switches.
 pub(crate) fn starts_container(operation: &DeployOperation) -> bool {
     match operation {
-        DeployOperation::RunContainer { .. } => true,
-        DeployOperation::ReplaceContainer(replacement) => {
-            replacement.spec.update.order != UpdateOrder::StopFirst
-        }
+        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => true,
         DeployOperation::PrepareVolumes { .. }
         | DeployOperation::WaitHealthy { .. }
         | DeployOperation::StopContainer { .. }

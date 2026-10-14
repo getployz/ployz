@@ -279,6 +279,7 @@ pub struct ServiceDependency {
 /// Evidence from executing a Deploy Plan: every operation completed, or the completed
 /// operations plus the failed operation and every operation that was not attempted.
 /// A preflight rejection may name a later operation before any operation runs.
+/// `services` holds where each deployed Service ended, in plan order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[expect(
@@ -288,12 +289,18 @@ pub struct ServiceDependency {
 #[derive(TS)]
 pub enum DeployOutcome<E> {
     /// Every planned operation completed.
-    Success { completed: Vec<DeployOperation> },
+    Success {
+        completed: Vec<DeployOperation>,
+        #[serde(default)]
+        services: Vec<ServiceOutcome>,
+    },
     /// The plan failed at `failed`; `unexecuted` contains every operation not attempted.
     Failed {
         completed: Vec<DeployOperation>,
         failed: FailedOperation<E>,
         unexecuted: Vec<DeployOperation>,
+        #[serde(default)]
+        services: Vec<ServiceOutcome>,
     },
     /// Another Deploy published `service`'s Serving Pointer first. The lost
     /// compare-and-set is never retried; this Deploy's Containers of `service`
@@ -302,12 +309,46 @@ pub enum DeployOutcome<E> {
         completed: Vec<DeployOperation>,
         service: QualifiedService,
         unexecuted: Vec<DeployOperation>,
+        #[serde(default)]
+        services: Vec<ServiceOutcome>,
     },
     /// The store handed this Deploy's environment to another runner while it ran.
     Interrupted {
         completed: Vec<DeployOperation>,
         unexecuted: Vec<DeployOperation>,
+        #[serde(default)]
+        services: Vec<ServiceOutcome>,
     },
+}
+
+impl<E> DeployOutcome<E> {
+    /// Where each deployed Service ended, in plan order.
+    #[must_use]
+    pub fn services(&self) -> &[ServiceOutcome] {
+        match self {
+            Self::Success { services, .. }
+            | Self::Failed { services, .. }
+            | Self::Superseded { services, .. }
+            | Self::Interrupted { services, .. } => services,
+        }
+    }
+}
+
+/// Where one Service of a Deploy ended.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ServiceOutcome {
+    pub service: ServiceName,
+    pub result: ServiceResult,
+}
+
+/// A Service ends a Deploy wholly on one side: every replica new, every
+/// replica old, or untouched because the Deploy stopped before it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceResult {
+    New,
+    Old,
+    NotStarted,
 }
 
 /// Why a Deploy Operation did not complete.

@@ -1233,7 +1233,7 @@ fn host_socket_admission_preserves_protocol_and_disjoint_bind_distinctions() {
 }
 
 #[test]
-fn host_socket_replacement_respects_explicit_order_and_other_owners() {
+fn host_socket_replacement_forces_stop_first_but_not_over_other_owners() {
     for mode in [
         ServiceMode::Global,
         ServiceMode::Replicated {
@@ -1249,10 +1249,15 @@ fn host_socket_replacement_respects_explicit_order_and_other_owners() {
             containers: vec![current.clone()],
             ..Default::default()
         };
-        service.update.order = Some(UpdateOrder::StartFirst);
-        assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_err());
-        service.update.order = Some(UpdateOrder::StopFirst);
-        assert!(plan_deploy([&service], &snapshot, PlanOptions::default()).is_ok());
+        for order in [UpdateOrder::StartFirst, UpdateOrder::StopFirst] {
+            service.update.order = Some(order);
+            let plan = plan_deploy([&service], &snapshot, PlanOptions::default()).unwrap();
+            assert!(matches!(
+                operations(&plan).as_slice(),
+                [DeployOperation::ReplaceContainer(replaced)]
+                    if replaced.spec.update.order == UpdateOrder::StopFirst
+            ));
+        }
         let mut foreign = container('b', '1', &service, &service_id('b'));
         foreign
             .try_update(|parts| parts.namespace = Namespace::parse("foreign").unwrap())
@@ -1519,7 +1524,7 @@ fn replicated_socket_repair_never_pre_stops_a_used_keeper() {
 }
 
 #[test]
-fn replicated_socket_repair_keeps_explicit_order_and_foreign_claims() {
+fn replicated_socket_repair_keeps_unforced_order_and_foreign_claims() {
     for shared in [false, true] {
         let mut service = requested(ServiceMode::Replicated {
             replicas: NonZeroU32::new(1).unwrap(),
@@ -1549,7 +1554,7 @@ fn replicated_socket_repair_keeps_explicit_order_and_foreign_claims() {
                 &snapshot,
                 PlanOptions::default()
             )
-            .is_err()
+            .is_ok()
         );
         service.ports = vec![host_port(9090)];
         let plan = plan_deploy(

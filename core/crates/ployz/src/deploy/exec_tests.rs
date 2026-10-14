@@ -6,7 +6,7 @@ use std::{
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
     HealthFailure, HealthObservation, LastHealthCheck, MembershipObservation, Namespace,
-    RpcErrorCode, ServiceName,
+    RpcErrorCode, ServiceName, ServiceResult, UpdateOrder,
 };
 
 use crate::deploy::{DeployOutcome, FailedOperation};
@@ -41,6 +41,17 @@ async fn execute_with<C: MachineOperations>(
         None,
     )
     .await
+}
+
+/// Where each named Service ended, in plan order.
+fn ended(results: &[(&str, ServiceResult)]) -> Vec<ServiceOutcome> {
+    results
+        .iter()
+        .map(|(name, result)| ServiceOutcome {
+            service: ServiceName::parse(*name).unwrap(),
+            result: *result,
+        })
+        .collect()
 }
 
 fn run_id() -> DeploymentLogId {
@@ -649,6 +660,7 @@ async fn storage_preparation_failure_leaves_all_application_operations_unexecute
         completed,
         unexecuted,
         failed,
+        ..
     } = outcome
     else {
         panic!("preparation must fail")
@@ -736,6 +748,7 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
             completed,
             failed,
             unexecuted,
+            ..
         } = execute_with(&operations, &client, &cancellation).await
         else {
             panic!("expected interruption")

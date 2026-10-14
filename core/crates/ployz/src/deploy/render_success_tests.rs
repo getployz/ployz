@@ -34,8 +34,9 @@ fn success_with_ingress_deduplicates_endpoints() {
                 skip_health_monitor: false,
             }),
         ],
+        services: Vec::new(),
     };
-    let DeployOutcome::<ployz_core::ExecutionError>::Success { completed } = outcome else {
+    let DeployOutcome::<ployz_core::ExecutionError>::Success { completed, .. } = outcome else {
         panic!("success fixture");
     };
     let text = endpoints_footer(&completed);

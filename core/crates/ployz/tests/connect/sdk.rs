@@ -133,7 +133,7 @@ async fn deploy_returns_success_for_a_completed_run() {
         .await
         .unwrap();
 
-    let DeployOutcome::Success { completed } = outcome else {
+    let DeployOutcome::Success { completed, .. } = outcome else {
         panic!("expected success: {outcome:?}");
     };
     assert_eq!(completed.len(), 1);
@@ -182,6 +182,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
         completed,
         failed,
         unexecuted,
+        ..
     } = outcome
     else {
         panic!("expected partial failure: {outcome:?}");
@@ -326,7 +327,7 @@ async fn preview_then_confirm_executes_the_shown_plan() {
 
     let running = preview.confirm().unwrap();
     let outcome = running.finished().await.unwrap();
-    let DeployOutcome::Success { completed } = outcome else {
+    let DeployOutcome::Success { completed, .. } = outcome else {
         panic!("expected success: {outcome:?}");
     };
     assert_eq!(completed.len(), 1);

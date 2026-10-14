@@ -19,7 +19,8 @@ use ployz::deploy::{
 };
 use ployz_core::{
     ContainerId, MachineId, MachineStorageObservation, Namespace, OperationPhase,
-    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
+    ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec, ServiceName,
+    ServiceOutcome, ServiceResult,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -96,7 +97,7 @@ async fn deploy_returns_success_for_a_completed_run() {
         .await
         .unwrap();
 
-    let DeployOutcome::Success { completed } = outcome else {
+    let DeployOutcome::Success { completed, .. } = outcome else {
         panic!("expected success: {outcome:?}");
     };
     assert_eq!(completed.len(), 1);
@@ -213,6 +214,7 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
         completed,
         failed,
         unexecuted,
+        ..
     } = outcome
     else {
         panic!("expected partial failure: {outcome:?}");
@@ -256,6 +258,7 @@ async fn created_but_unverified_volume_fails_the_container_operation() {
         completed,
         failed,
         unexecuted,
+        ..
     } = outcome
     else {
         panic!("expected partial failure: {outcome:?}");
@@ -367,7 +370,7 @@ async fn confirm_executes_the_previewed_operations_without_re_planning() {
         .confirm(&preview, &CancellationToken::new(), None)
         .await;
     assert!(mutating.load(Ordering::SeqCst) > 0);
-    let DeployOutcome::Success { completed } = outcome else {
+    let DeployOutcome::Success { completed, .. } = outcome else {
         panic!("expected success: {outcome:?}");
     };
     assert_eq!(completed.len(), 1);
@@ -605,7 +608,8 @@ async fn empty_target_is_noop_and_confirm_succeeds_with_zero_operations() {
     assert_eq!(
         outcome,
         DeployOutcome::Success {
-            completed: Vec::new()
+            completed: Vec::new(),
+            services: Vec::new(),
         }
     );
     server.abort();
@@ -649,7 +653,16 @@ async fn full_preview_confirms_prune_operations_without_replanning() {
     let outcome = client
         .confirm(&preview, &CancellationToken::new(), None)
         .await;
-    assert_eq!(outcome, DeployOutcome::Success { completed: planned });
+    assert_eq!(
+        outcome,
+        DeployOutcome::Success {
+            completed: planned,
+            services: vec![ServiceOutcome {
+                service: ServiceName::parse("web").unwrap(),
+                result: ServiceResult::New,
+            }],
+        }
+    );
     server.abort();
 }
 

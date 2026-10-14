@@ -112,6 +112,7 @@ fn contextual_failure_keeps_one_deepest_cause_tail_and_exact_inspect_command() {
             error: denied(),
         },
         unexecuted: Vec::new(),
+        services: Vec::new(),
     };
     let tail = LogTail {
         service: QualifiedService::parse("ployz-system/ingress").unwrap(),
@@ -175,6 +176,7 @@ fn missing_tail_retains_inspect_and_compensation_is_only_actual_evidence() {
             },
         },
         unexecuted: Vec::new(),
+        services: Vec::new(),
     };
     let tail = LogTail {
         service: QualifiedService::parse("shop/web").unwrap(),
