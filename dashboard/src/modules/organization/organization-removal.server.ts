@@ -58,8 +58,11 @@ const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ 
 
 /** The dashboard's Delete organization: the same removal, by an owner of the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "own");
-  return yield* removeOrganization({ userId: actor.userId, organization, role: "owner" }, organizationSlug);
+  return yield* requireAccess(actor, organizationSlug, "own").pipe(
+    Effect.flatMap(({ organization }) => removeOrganization({ userId: actor.userId, organization, role: "owner" }, organizationSlug)),
+    // A server function answers every Forbidden with one generic sentence; a refusal reaches the dialog as written.
+    Effect.catchTag("Forbidden", (error) => Effect.succeed(refused({ code: "forbidden", message: error.message, details: null }))),
+  );
 });
 
 /** Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. */
