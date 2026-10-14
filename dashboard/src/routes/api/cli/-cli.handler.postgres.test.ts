@@ -9,7 +9,7 @@ import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
-import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
+import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -266,13 +266,11 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, bob)).status, 404);
         assert.strictEqual((yield* cli("DELETE", "tokens/not-a-uuid", alice)).status, 404);
 
-        // Expired.
         yield* database.drizzle.update(organizationToken)
           .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.id, token.id));
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: token.secret })).status, 401);
         assert.isTrue((yield* cli("GET", "tokens", alice)).json.tokens?.[0]?.expired);
 
-        // Its maker left the Organization.
         const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 1 })).json.token
           ?? assert.fail("no token");
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 200);
@@ -283,7 +281,6 @@ it.live(
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 403);
         yield* database.drizzle.insert(member).values(membership ?? assert.fail("no membership"));
 
-        // Revoked.
         const removed = yield* cli("DELETE", `tokens/${second.id}`, alice);
         assert.deepStrictEqual(removed.json.removed, { id: second.id, kind: "token" });
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);
@@ -523,11 +520,15 @@ it.live(
           .where(eq(member.organizationId, alice.organization.id));
         const userId = row?.userId ?? assert.fail("no member");
         yield* database.drizzle.insert(githubInstallation).values([
-          { userId, installationId: 7, accountLogin: "acme", accountType: "Organization" },
-          { userId, installationId: 8, accountLogin: "alice", accountType: "User" },
+          { installationId: 7, accountLogin: "acme", accountType: "Organization" },
+          { installationId: 8, accountLogin: "alice", accountType: "User" },
+        ]);
+        yield* database.drizzle.insert(organizationGithubInstallation).values([
+          { organizationId: alice.organization.id, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "alice" },
+          { organizationId: alice.organization.id, installationId: 8, connectedByUserId: userId, connectedGithubLogin: "alice" },
         ]);
         yield* database.drizzle.insert(githubRepositoryCache).values({
-          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
           private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
         });
         const connected = yield* cli("GET", "github", alice);

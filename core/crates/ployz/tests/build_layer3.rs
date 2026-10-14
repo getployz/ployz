@@ -107,7 +107,6 @@ async fn railpack_preparation_preserves_variables_cache_and_failure_boundaries()
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // Neither a compiler failure nor a detection failure may touch the live Service.
     fs::write(
         root.join("build.js"),
         "throw new Error('expected compilation failure');",

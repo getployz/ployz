@@ -160,13 +160,11 @@ pub(crate) struct RevokingEntry {
     pub(crate) unconfirmed: Vec<MachineId>,
 }
 
-/// What a credential is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CredentialKind {
     /// An Organization Token (`PLOYZ_TOKEN`).
     Token,
-    /// A signed-in device.
     Device,
 }
 

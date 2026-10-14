@@ -54,7 +54,6 @@ export const PostHogLive = Layer.effect(
     const client = yield* Effect.acquireRelease(
       // An agent's failed tool call is no exception: the call's own `$mcp_is_error` says it failed.
       Effect.sync(() => new PostHogMCP(posthog.key, { host: posthog.host, enableExceptionAutocapture: false })),
-      // Shutdown flushes what is still queued.
       (client) => Effect.tryPromise(() => client.shutdown()).pipe(
         Effect.catch((cause) => Effect.logWarning("PostHog could not flush its queue on shutdown.", cause)),
       ),

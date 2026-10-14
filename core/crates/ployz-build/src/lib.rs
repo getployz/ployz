@@ -840,8 +840,6 @@ impl<'a> Docker<'a> {
             program: self.program,
             environment: self.environment,
             working_dir: self.working_dir,
-            // Normal cleanup shares the active deadline. After expiry,
-            // termination gets a separate bounded grace period.
             deadline: Deadline::starting_now(if self.deadline.remaining().is_zero() {
                 CLEANUP_TIMEOUT
             } else {

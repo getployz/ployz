@@ -36,7 +36,8 @@ list. Each item links to the page that does it.
   open. A reboot stops the services on that server until it's back.
 - **Watch your app.** Ployz Cloud checks every service with a public address and shows its
   [uptime](observe/uptime.md) next to its [metrics](observe/metrics.md) and
-  [logs](observe/logs.md). It doesn't send alerts yet, so check the dashboard after you ship.
+  [logs](observe/logs.md). It emails your organization when a service goes down and when it's
+  back up. Choose who gets those in [Notifications](account/notifications.md).
 
 ## What Ployz doesn't do yet
 

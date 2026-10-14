@@ -2,26 +2,31 @@ import "@tanstack/react-start/server-only";
 import type { GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
+import { stopGithubInstallationBuilds } from "#/modules/config-store/config-store.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
+import { accessFor } from "#/modules/github/github-access";
 import { listGithubRepositoryBranches, listGithubRepositoryFiles, readGithubRepositoryContents } from "#/modules/github/github.api";
 import { GithubApi, isGithubObservationNotFound } from "#/modules/github/github-observation.api";
 import {
-  deleteGithubInstallationForUser,
-  listCachedGithubRepositoriesForUser,
-  listGithubInstallationsForUser,
+  getGithubInstallation,
+  listCachedGithubRepositoriesForOrganization,
+  listGithubInstallationsForOrganization,
   listGithubRepositoryNamesForOrganization,
+  unlinkGithubInstallation,
 } from "#/modules/github/github.repository";
 import { basicGlob, getGithubAppInstallUrl } from "#/modules/github/github.server";
+import { findInstallationLink } from "#/modules/github/github-token.server";
 import { resolveReadableRepository, type ReadableRepository } from "#/modules/github/readable-repository.server";
 import type { Caller } from "#/modules/identity/actor";
 import { account } from "#/modules/identity/tables";
+import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 
 /**
  * `ployz github` (`GET /api/cli/github`): the install link, whether the caller's GitHub account is linked (GitHub
- * reports an installation by its GitHub user, so an unlinked user's install never completes), and the caller's
+ * reports an installation by its GitHub user, so an unlinked user's install never completes), and the Organization's
  * installations and the repositories they grant. Ready once an installation grants a repository.
  */
 export const githubConnection = Effect.fn("GithubCli.connection")(function* (caller: Caller) {
@@ -29,8 +34,8 @@ export const githubConnection = Effect.fn("GithubCli.connection")(function* (cal
   const database = yield* Database;
   const linked = yield* database.drizzle.select({ id: account.id }).from(account)
     .where(and(eq(account.userId, caller.userId), eq(account.providerId, "github"))).limit(1);
-  const installations = yield* listGithubInstallationsForUser(caller.userId);
-  const repositories = yield* listCachedGithubRepositoriesForUser(caller.userId);
+  const installations = yield* listGithubInstallationsForOrganization(caller.organization.id);
+  const repositories = yield* listCachedGithubRepositoriesForOrganization(caller.organization.id);
   return {
     install_url: getGithubAppInstallUrl(config.github),
     linked: linked.length > 0,
@@ -75,7 +80,7 @@ const readableBy = Effect.fn("GithubCli.readableBy")(function* (caller: Caller, 
 /** `ployz github ls OWNER/REPO`: a repository the Organization may read, and its branches. */
 export const githubBranches = Effect.fn("GithubCli.branches")(function* (caller: Caller, repository: string) {
   const readable = yield* readableBy(caller, repository);
-  const branches = yield* listGithubRepositoryBranches(readable.installationId, readable.fullName);
+  const branches = yield* listGithubRepositoryBranches(accessFor(readable.organizationId, readable.installationId), readable.fullName);
   return {
     repository: readable.fullName,
     access: readable.installationId === null ? "public" : "connected",
@@ -91,15 +96,15 @@ export const FILE_BYTES = 64 * 1024;
 
 const directoryOf = (path: string | undefined) => (path ?? "").replace(/^(\.?\/)+|\/+$/g, "");
 
-/** The files of `repository` that `query` selects, at most `TREE_PATHS`. */
+/** The files of `repository` that `query` selects, at most `TREE_PATHS`: the named file itself, or those under the named directory. */
 export const repositoryTree = Effect.fn("GithubCli.repositoryTree")(function* (
   repository: ReadableRepository, query: Omit<GithubTreeQuery, "repository">,
 ) {
   const at = query.ref ?? repository.defaultBranch;
-  const listed = yield* listGithubRepositoryFiles(repository.installationId, repository.fullName, at).pipe(
+  const listed = yield* listGithubRepositoryFiles(accessFor(repository.organizationId, repository.installationId), repository.fullName, at).pipe(
     Effect.catchIf(isGithubObservationNotFound, () => new NotFound({ message: `No ref ${at} in ${repository.fullName}.` })));
   const directory = directoryOf(query.path);
-  const under = directory === "" ? listed.paths : listed.paths.filter((file) => file.startsWith(`${directory}/`));
+  const under = directory === "" ? listed.paths : listed.paths.filter((file) => file === directory || file.startsWith(`${directory}/`));
   const matcher = query.match === undefined ? null : basicGlob(query.match);
   const matching = matcher === null ? under : under.filter((file) => matcher.match(file));
   return {
@@ -119,7 +124,7 @@ export const repositoryFile = Effect.fn("GithubCli.repositoryFile")(function* (
   const at = query.ref ?? repository.defaultBranch;
   const file = directoryOf(query.path);
   if (file === "") return yield* new Validation({ message: "Name a file; list the repository with github tree.", userFacing: true });
-  const contents = yield* readGithubRepositoryContents(repository.installationId, repository.fullName, file, at).pipe(
+  const contents = yield* readGithubRepositoryContents(accessFor(repository.organizationId, repository.installationId), repository.fullName, file, at).pipe(
     Effect.catchIf(isGithubObservationNotFound,
       () => new NotFound({ message: `No file ${file} at ${at} in ${repository.fullName}.` })));
   if (!("type" in contents)) {
@@ -179,13 +184,25 @@ export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.ge
   };
 }));
 
-/** `ployz github disconnect ID`: forget one of the caller's installations; uninstalling the App happens on GitHub. */
+/**
+ * `ployz github disconnect ID`: the Organization lets go of one installation it links (a `manage` call). The link goes
+ * first, so nothing new reads or builds through it; then its builds running on GitHub through that installation are
+ * cancelled as Cloud and their Deployments fail with the disconnect. A stop that fails is caught by the build walk's
+ * next look. Other Organizations linked to the installation keep it.
+ * Uninstalling the App happens on GitHub.
+ */
 export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (caller: Caller, installationId: number) {
   const { origins } = (yield* AppConfig).github;
-  const removed = yield* deleteGithubInstallationForUser({ userId: caller.userId, installationId });
-  if (removed === null) return yield* new NotFound({ message: "No such GitHub installation of yours." });
-  const settings = removed.accountType === "Organization"
-    ? `${origins.web}/organizations/${removed.accountLogin}/settings/installations/${removed.installationId}`
-    : `${origins.web}/settings/installations/${removed.installationId}`;
-  return { disconnected: { id: removed.installationId, account: removed.accountLogin }, uninstall_url: settings };
+  const { organization } = yield* requireAccess(caller, caller.organization.slug, "manage");
+  const installation = yield* getGithubInstallation(installationId);
+  const link = yield* findInstallationLink(organization.id, installationId);
+  if (installation === null || !link.linked) return yield* new NotFound({ message: "No such GitHub installation of yours." });
+  yield* unlinkGithubInstallation({ organizationId: organization.id, installationId });
+  yield* stopGithubInstallationBuilds(installationId, [organization.id]).pipe(
+    Effect.catch((error) => Effect.logWarning("Could not stop a disconnected installation's GitHub builds.", error)),
+  );
+  const settings = installation.accountType === "Organization"
+    ? `${origins.web}/organizations/${installation.accountLogin}/settings/installations/${installation.installationId}`
+    : `${origins.web}/settings/installations/${installation.installationId}`;
+  return { disconnected: { id: installation.installationId, account: installation.accountLogin }, uninstall_url: settings };
 });

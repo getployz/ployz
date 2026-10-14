@@ -104,7 +104,6 @@ export function RegistryCredentialsField({
   const usesSingleFieldUpdater =
     provider.usernameLabel == null || fixedUsername != null;
 
-  // Optimistic: the writer rolls back and toasts if saving fails.
   function handleSubmit(value: { username: string | null; secret: string }) {
     onSet(value);
     setMode(null);

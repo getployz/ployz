@@ -94,7 +94,6 @@ const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug
 const taken = (service: ServiceListing, services: readonly ServiceListing[], name: string) =>
   services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
 
-/** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) =>
     dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
@@ -290,7 +289,6 @@ const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(nam
 /** What an unset limit means, shown in its empty field. */
 const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"]]);
 
-/** Suffixes after a number, as before the Store: "3 replicas". */
 const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
 /** What each restart policy does, shown under its choice. */
@@ -405,7 +403,7 @@ function StoreDockerfile({ state }: { state: StoreService }) {
   const repository = settingText(state.rows.get("repository")?.value);
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, repository);
   return (
-    <StoreDockerfileField gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
+    <StoreDockerfileField organizationSlug={state.organizationSlug} gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
       value={settingText(state.rows.get("dockerfilePath")?.value)} change={state.changes.get("dockerfilePath")}
       onCommit={(raw) => state.edit(settingChange(state.path("dockerfilePath"), serviceSetting("dockerfilePath"), raw))} />
   );
@@ -476,7 +474,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
 
   const dialogs = <>
     <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
-    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
+    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
       onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
   </>;
 
@@ -527,7 +525,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
       </Field>
       {kind === "repository" ? (
         <>
-          <StoreBranchField repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
+          <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
             change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
           <StoreSettingField state={state} name="rootDir" />
           {/* Its Deployment Policy: when a push to the branch deploys. */}
@@ -591,7 +589,6 @@ function StoreReplicasCapped({ params, volume }: {
         <FieldDescription>
           Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
           <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-          {/* Never broken across lines. */}
           <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
         </FieldDescription>
       </FieldContent>

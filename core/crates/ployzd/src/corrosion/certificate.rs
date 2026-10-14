@@ -198,7 +198,7 @@ impl CertificateChallenge {
         Ok(Self { token, response })
     }
 
-    /// Borrow the admitted HTTP-01 token.
+    /// The HTTP-01 token: base64url alphabet, at least 22 characters, and the prefix of [`Self::response`].
     #[must_use]
     pub fn token(&self) -> &str {
         &self.token

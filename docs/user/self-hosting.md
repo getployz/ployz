@@ -119,7 +119,8 @@ its URL `github.com/apps/<slug>`.
    To turn on the [Ployz agent](account/agent-sidebar.md), set `ANTHROPIC_API_KEY`.
    Email is optional too. Ployz Cloud sends none while `POSTSHIBA_API_KEY`, `POSTSHIBA_TEAM_ID`,
    `POSTSHIBA_CLUSTER_ID`, and `MAIL_FROM` are unset. Set all four to send through
-   PostShiba. With only some of them set, `web` and `worker` stop at startup.
+   PostShiba. With only some of them set, `web` and `worker` stop at startup. Each person
+   chooses which emails they get under [Account → Notifications](account/notifications.md).
 
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume
@@ -149,9 +150,9 @@ its URL `github.com/apps/<slug>`.
 ## 4. Sign in and add a server
 
 1. Open your address and sign in with GitHub.
-2. Install the GitHub App as the same GitHub user, from the dashboard or from
-   `github.com/apps/<slug>`. Sign in first: Ployz Cloud links an installation only to a GitHub
-   account that has already signed in.
+2. Install the GitHub App from the dashboard. The installation belongs to the organization you
+   connect it to, not to your GitHub account, so everyone in that organization can use its
+   repositories.
 3. [Add a server](servers/add-a-server.md). You need one even if it's the server Ployz Cloud
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.

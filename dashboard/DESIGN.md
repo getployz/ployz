@@ -268,6 +268,8 @@ A node answers two questions in two places, and neither ever stands in for the o
 - Settings autosave, except a name: renaming changes addresses and URLs, so it waits for an explicit Rename (a project's Rename button, a service's or volume's pencil and its dialog). Everything else saves as it's set, staged where it deploys.
 - Buttons and titles use sentence case: "Forget servers", "Generate domain".
 
+**Amendment: configured features show disabled (2026-10-14).** Never hide a feature an operator can turn on with configuration. Disable it and say why. Billing is the exception and stays hidden on Self-hosted Cloud, because only Ployz-hosted Cloud can ever have it. Account → Notifications is the first: with no Mailer its rows show each type's choice, can't be changed, and the section reads "Email isn't set up on this Cloud" with a link to the self-hosting email setup.
+
 ### Inputs / Fields
 
 - **Style:** 32px controls, 12px corners, transparent or canvas background, one-pixel Structural Rule border, and 10px horizontal padding.

@@ -1,9 +1,10 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "4eac1b71-be9f-4f2a-a9e0-48d9b2eed81a",
+  "id": "d3f9a4c9-c5be-41af-a055-f99bb5c62863",
   "prevIds": [
-    "114ae64f-7bfe-4403-9435-f3ca9e0e66f0"
+    "c084e388-0a68-4a36-83b7-cf7400bb503b",
+    "c41e45dc-b24e-4297-9d46-9e513e2f1952"
   ],
   "ddl": [
     {
@@ -111,6 +112,12 @@
     {
       "isRlsEnabled": false,
       "name": "server_drain_attempt",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "server_web_traffic_attempt",
       "entityType": "tables",
       "schema": "public"
     },
@@ -826,19 +833,6 @@
       "default": null,
       "generated": null,
       "identity": null,
-      "name": "token_hash",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "invitation"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
       "name": "email",
       "entityType": "columns",
       "schema": "public",
@@ -847,7 +841,7 @@
     {
       "type": "text",
       "typeSchema": null,
-      "notNull": true,
+      "notNull": false,
       "dimensions": 0,
       "default": null,
       "generated": null,
@@ -892,19 +886,6 @@
       "generated": null,
       "identity": null,
       "name": "inviter_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "invitation"
-    },
-    {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "accepted_by_user_id",
       "entityType": "columns",
       "schema": "public",
       "table": "invitation"
@@ -2418,6 +2399,19 @@
       "table": "server_drain_attempt"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "plan_digest",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_drain_attempt"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -2455,6 +2449,149 @@
       "entityType": "columns",
       "schema": "public",
       "table": "server_drain_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "requested_by_user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "want",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'pending'",
+      "generated": null,
+      "identity": null,
+      "name": "state",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "inngest_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failure",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "requested_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "ended_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "type": "uuid",
@@ -3904,6 +4041,19 @@
       "generated": null,
       "identity": null,
       "name": "inngest_run_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "held_by",
       "entityType": "columns",
       "schema": "public",
       "table": "volume_run"
@@ -6636,6 +6786,90 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "machine_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"state\" in ('pending', 'running')",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_web_traffic_attempt_one_active_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "inngest_run_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"inngest_run_id\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_web_traffic_attempt_run_uidx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "organization_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "machine_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "requested_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_web_traffic_attempt_latest_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "user_id",
           "isExpression": false,
           "asc": true,
@@ -6936,6 +7170,27 @@
       "method": "btree",
       "concurrently": false,
       "name": "volume_run_one_active_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "volume_run"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "volume_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": "\"held_by\" is not null",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "volume_run_held_idx",
       "entityType": "indexes",
       "schema": "public",
       "table": "volume_run"
@@ -7627,23 +7882,6 @@
     {
       "nameExplicit": false,
       "columns": [
-        "accepted_by_user_id"
-      ],
-      "schemaTo": "public",
-      "tableTo": "user",
-      "columnsTo": [
-        "id"
-      ],
-      "onUpdate": "NO ACTION",
-      "onDelete": "SET NULL",
-      "name": "invitation_accepted_by_user_id_user_id_fkey",
-      "entityType": "fks",
-      "schema": "public",
-      "table": "invitation"
-    },
-    {
-      "nameExplicit": false,
-      "columns": [
         "user_id"
       ],
       "schemaTo": "public",
@@ -7931,6 +8169,40 @@
       "entityType": "fks",
       "schema": "public",
       "table": "server_drain_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "organization_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "server_web_traffic_attempt_organization_id_organization_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "requested_by_user_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "user",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "SET NULL",
+      "name": "server_web_traffic_attempt_requested_by_user_id_user_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "nameExplicit": false,
@@ -8792,6 +9064,16 @@
         "id"
       ],
       "nameExplicit": false,
+      "name": "server_web_traffic_attempt_pkey",
+      "schema": "public",
+      "table": "server_web_traffic_attempt",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
       "name": "github_installation_pkey",
       "schema": "public",
       "table": "github_installation",
@@ -9101,17 +9383,6 @@
       "table": "environment_canvas_node_position"
     },
     {
-      "nameExplicit": false,
-      "columns": [
-        "token_hash"
-      ],
-      "nullsNotDistinct": false,
-      "name": "invitation_token_hash_key",
-      "schema": "public",
-      "table": "invitation",
-      "entityType": "uniques"
-    },
-    {
       "value": "\n      (\"removal_started_at\" is null and \"removal_endpoints\" is null)\n      or (\"removal_started_at\" is not null and \"removal_endpoints\" is not null and jsonb_typeof(\"removal_endpoints\") = 'array')\n    ",
       "name": "organization_pairing_removal_shape_check",
       "entityType": "checks",
@@ -9320,6 +9591,48 @@
       "entityType": "checks",
       "schema": "public",
       "table": "server_drain_attempt"
+    },
+    {
+      "value": "\"machine_id\" ~ '^[0-9a-f]{32}$'",
+      "name": "server_web_traffic_attempt_machine_id_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"want\" in ('on','off')",
+      "name": "server_web_traffic_attempt_want_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"state\" in ('pending','running','finished','failed')",
+      "name": "server_web_traffic_attempt_state_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "(\"state\" = 'failed') = (\"failure\" is not null)\n        and (\"failure\" is null or length(\"failure\") between 1 and 1024)",
+      "name": "server_web_traffic_attempt_failure_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "\"inngest_run_id\" is null or length(\"inngest_run_id\") between 1 and 255",
+      "name": "server_web_traffic_attempt_run_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
+    },
+    {
+      "value": "(\n        (\"state\" = 'pending' and \"started_at\" is null and \"ended_at\" is null)\n        or (\"state\" = 'running' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is null)\n        or (\"state\" = 'finished' and \"inngest_run_id\" is not null\n          and \"started_at\" is not null and \"ended_at\" is not null)\n        or (\"state\" = 'failed' and \"ended_at\" is not null)\n      )",
+      "name": "server_web_traffic_attempt_state_shape_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_web_traffic_attempt"
     },
     {
       "value": "(\n        \"has_active_subscription\" = false\n        OR (\n          \"active_subscription_id\" IS NOT NULL\n          AND \"current_period_end\" IS NOT NULL\n        )\n      )",

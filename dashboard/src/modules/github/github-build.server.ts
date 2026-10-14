@@ -7,7 +7,8 @@ import {
   type GithubBuildRepository,
 } from "#/modules/github/github-build-workflow";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "#/modules/github/github-ingestion.contracts";
-import { GithubApi, GithubObservationError } from "#/modules/github/github-observation.api";
+import { organizationAccess, type GithubAccess } from "#/modules/github/github-access";
+import { GithubApi, GithubObservationError, githubLacksPermission, isGithubObservationNotFound } from "#/modules/github/github-observation.api";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
@@ -19,40 +20,35 @@ const repositorySchema = Schema.Struct({
 });
 const workflowSchema = Schema.Struct({ path: Schema.String, state: Schema.String });
 
-/** A missing permission is a 403 GitHub won't lift by waiting; rate limits are retriable 403s. */
-function lacksPermission(error: GithubObservationError) {
-  return error.status === 403 && !error.retriable;
-}
-
 /**
  * Whether GitHub will run the build workflow in this repository now. Cloud calls it for the
  * Servers page and again right before dispatching a build. The Actions API only lists
  * workflows on the default branch, so `active` means committed there and not disabled.
  */
 export const checkGithubBuildWorkflow = Effect.fn("Github.checkBuildWorkflow")(
-  function* (installationId: number, repositoryId: number) {
+  function* (access: GithubAccess, repositoryId: number) {
     const api = yield* GithubApi;
     const repository = yield* api.json({
-      installationId,
+      access,
       path: `/repositories/${repositoryId}`,
       operation: "resolve_repository",
       schema: repositorySchema,
     }).pipe(
       // The installation no longer reaches this repository.
-      Effect.catchIf((error) => error.code === "not_found" || lacksPermission(error), () => Effect.succeed(null)),
+      Effect.catchIf((error) => isGithubObservationNotFound(error) || githubLacksPermission(error), () => Effect.succeed(null)),
     );
     if (repository === null) return { fullName: null, defaultBranch: null, readiness: "no_permission" as const };
     const readiness: GithubBuildReadiness = yield* api.json({
-      installationId,
+      access,
       path: `/repos/${repository.full_name}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}`,
       operation: "fetch_workflow",
       schema: workflowSchema,
     }).pipe(
       Effect.map((workflow) =>
         workflow.state === "active" && workflow.path === `.github/workflows/${GITHUB_BUILD_WORKFLOW_FILE}` ? "ready" as const : "setup_needed" as const),
-      Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed("setup_needed" as const)),
+      Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed("setup_needed" as const)),
       // Installations that haven't accepted Actions access get a 403 here.
-      Effect.catchIf(lacksPermission, () => Effect.succeed("no_permission" as const)),
+      Effect.catchIf(githubLacksPermission, () => Effect.succeed("no_permission" as const)),
     );
     return { fullName: repository.full_name, defaultBranch: repository.default_branch, readiness };
   },
@@ -65,12 +61,12 @@ const dispatchedRunSchema = Schema.Struct({ workflow_run_id: githubIdSchema, htm
  * GitHub, so they never carry secrets: the runner fetches those at check-in.
  */
 export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkflow")(function* (input: {
-  installationId: number; fullName: string; defaultBranch: string;
+  access: GithubAccess; fullName: string; defaultBranch: string;
   inputs: { build: string; cloud: string; runner: string };
 }) {
   const api = yield* GithubApi;
   const run = yield* api.json({
-    installationId: input.installationId,
+    access: input.access,
     path: `/repos/${input.fullName}/actions/workflows/${GITHUB_BUILD_WORKFLOW_FILE}/dispatches`,
     operation: "dispatch_workflow",
     schema: dispatchedRunSchema,
@@ -84,25 +80,27 @@ export const dispatchGithubBuildWorkflow = Effect.fn("Github.dispatchBuildWorkfl
   };
 });
 
+export type GithubRunRef = { access: GithubAccess; fullName: string; runId: number };
+
 /** Cancel a build run. A run that already finished can't be cancelled; that's fine. */
-export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: { installationId: number; fullName: string; runId: number }) {
+export const cancelGithubRun = Effect.fn("Github.cancelRun")(function* (input: GithubRunRef) {
   const api = yield* GithubApi;
   yield* api.json({
-    installationId: input.installationId,
+    access: input.access,
     path: `/repos/${input.fullName}/actions/runs/${input.runId}/cancel`,
     operation: "cancel_run",
     schema: Schema.Unknown,
     method: "POST",
-  }).pipe(Effect.catchIf((error) => error.status === 409, () => Effect.void));
+  }).pipe(Effect.catchIf((error) => error instanceof GithubObservationError && error.status === 409, () => Effect.void));
 });
 
 const runStatusSchema = Schema.Struct({ status: Schema.String });
 
 /** Whether a build run has completed, whatever its conclusion. */
-export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (input: { installationId: number; fullName: string; runId: number }) {
+export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (input: GithubRunRef) {
   const api = yield* GithubApi;
   const run = yield* api.json({
-    installationId: input.installationId,
+    access: input.access,
     path: `/repos/${input.fullName}/actions/runs/${input.runId}`,
     operation: "fetch_run",
     schema: runStatusSchema,
@@ -129,10 +127,11 @@ const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(fu
 
 export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositories")(
   function* (actor: Actor, input: { organizationSlug: string }) {
-    yield* requireAccess(actor, input.organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
     const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
     return yield* Effect.forEach(repositories, (repository) =>
-      checkGithubBuildWorkflow(repository.installationId, repository.repositoryId).pipe(
+      checkGithubBuildWorkflow(organizationAccess(organization.id, repository.installationId), repository.repositoryId).pipe(
+        Effect.catchTag("GithubDisconnected", () => Effect.succeed({ fullName: null, defaultBranch: null, readiness: "no_permission" as const })),
         Effect.map((checked): GithubBuildRepository => ({
           installationId: repository.installationId,
           repositoryId: repository.repositoryId,

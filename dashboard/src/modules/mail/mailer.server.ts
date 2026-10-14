@@ -7,6 +7,8 @@ export type MailMessage = {
   readonly subject: string;
   readonly text: string;
   readonly html?: string;
+  /** Extra headers such as List-Unsubscribe; PostShiba ignores the ones it reserves. */
+  readonly headers?: Readonly<Record<string, string>>;
 };
 
 export type MailSendResult =
@@ -71,13 +73,14 @@ export const makePostShibaMailer = (
 ): MailerService => ({
   send: Effect.fn("Mailer.send")(function* (message, idempotencyKey) {
     const url = `${POSTSHIBA_ORIGIN}/api/v1/teams/${encodeURIComponent(config.teamId)}/clusters/${encodeURIComponent(config.clusterId)}/sends`;
-    // JSON.stringify drops an undefined html.
+    // JSON.stringify drops an undefined html or headers.
     const payload = {
       from: config.from,
       to: [message.to],
       subject: message.subject,
       text: message.text,
       html: message.html,
+      headers: message.headers,
     };
     const { response, body } = yield* Effect.tryPromise({
       try: async (signal) => {

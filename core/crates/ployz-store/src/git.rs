@@ -335,26 +335,28 @@ impl GitSetting {
         let setting = ServiceSetting::Git(self);
         match self {
             // Disconnected, the Service is empty until it gets a source again.
-            Self::Repository => match &config.source {
-                ServiceSource::Git { root_dir, .. } => {
+            Self::Repository => {
+                if let ServiceSource::Git { root_dir, .. } = &config.source {
                     config.source = ServiceSource::Empty {
                         version: 1,
                         root_dir: root_dir.clone(),
                     };
-                    Ok(())
                 }
-                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Err(not_git(setting)),
-            },
-            Self::Branch => {
-                Err(setting.invalid("a repository Service always builds a branch; set another one"))
+                Ok(())
             }
-            Self::RootDir => match &mut config.source {
-                ServiceSource::Git { root_dir, .. } => {
-                    "/".clone_into(root_dir);
-                    Ok(())
+            Self::Branch => {
+                match config.source {
+                    ServiceSource::Git { .. } => Err(setting
+                        .invalid("a repository Service always builds a branch; set another one")),
+                    ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Ok(()),
                 }
-                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Err(not_git(setting)),
-            },
+            }
+            Self::RootDir => {
+                if let ServiceSource::Git { root_dir, .. } = &mut config.source {
+                    "/".clone_into(root_dir);
+                }
+                Ok(())
+            }
             Self::BuildMethod => {
                 config.build.build_method = BuildMethod::default();
                 Ok(())

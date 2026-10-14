@@ -982,8 +982,6 @@ impl Client {
         let mut tasks = JoinSet::new();
         let mut omissions = Vec::new();
         for machine in machines {
-            // TODO: the entry Machine's observer-relative Membership Observation is the
-            // current trust boundary; it can be stale and is not an authority or freshness proof.
             if machine.invites_rpc() {
                 tasks.spawn(list_on_machine(
                     self.clone(),
@@ -1427,13 +1425,14 @@ fn listed_unless_forgotten<'list>(
 pub(crate) enum RoleSetting {
     ServicesOff,
     IngressOn,
+    IngressOff,
 }
 
 impl RoleSetting {
     fn role(self) -> &'static str {
         match self {
             Self::ServicesOff => "services",
-            Self::IngressOn => "ingress",
+            Self::IngressOn | Self::IngressOff => "ingress",
         }
     }
 
@@ -1441,6 +1440,7 @@ impl RoleSetting {
         match self {
             Self::ServicesOff => !machine.accepts_services,
             Self::IngressOn => machine.accepts_ingress,
+            Self::IngressOff => !machine.accepts_ingress,
         }
     }
 }

@@ -14,6 +14,7 @@ const MailSendRequestedData = Schema.Struct({
   subject: NonEmptyString,
   text: NonEmptyString,
   html: Schema.optionalKey(NonEmptyString),
+  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 
 export const SEND_MAIL_RETRIES = 5;

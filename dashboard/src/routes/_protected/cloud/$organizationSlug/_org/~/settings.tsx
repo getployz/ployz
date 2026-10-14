@@ -44,7 +44,6 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { section = "general" } = Route.useSearch();
-  // Only a Cloud with Ployz support offers to let it in.
   const supportAvailable = useQuery(organizationStateQueryOptions(organizationSlug)).data?.supportAvailable === true;
 
   return (

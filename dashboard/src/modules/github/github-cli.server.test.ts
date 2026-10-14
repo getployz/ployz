@@ -6,7 +6,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import type { ReadableRepository } from "#/modules/github/readable-repository.server";
 import { fakeGithubApi } from "#/test/fake-github";
 
-const web: ReadableRepository = { fullName: "acme/web", repositoryId: 11, installationId: 7, defaultBranch: "main" };
+const web: ReadableRepository = { organizationId: "org", fullName: "acme/web", repositoryId: 11, installationId: 7, defaultBranch: "main" };
 const sha = "b".repeat(40);
 const base = "/repos/acme/web";
 
@@ -33,6 +33,14 @@ it("lists only the files under the named directory, on the default branch", asyn
   const listed = await run(repositoryTree(web, { path: "/web/" }), tree(["Dockerfile", "web/package.json", "web/src/a.ts", "webhook.ts"]));
   expect(listed._tag === "Success" && listed.success).toEqual(
     { repository: "acme/web", ref: "main", paths: ["web/package.json", "web/src/a.ts"], truncated: false });
+});
+
+it("lists a named file as itself, and nothing for a path the tree doesn't have", async () => {
+  const files = tree(["Dockerfile", "Dockerfile.cloud", "web/Dockerfile"]);
+  const listed = await run(repositoryTree(web, { path: "Dockerfile" }), files);
+  expect(listed._tag === "Success" && listed.success.paths).toEqual(["Dockerfile"]);
+  const missing = await run(repositoryTree(web, { path: "README.md" }), files);
+  expect(missing._tag === "Success" && missing.success.paths).toEqual([]);
 });
 
 it("caps the listing and says it was cut short", async () => {

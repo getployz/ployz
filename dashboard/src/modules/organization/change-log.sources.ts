@@ -52,6 +52,7 @@ export const changeSources = {
   organization_machine: { key: ["machine_id"] },
   server_upgrade_attempt: { key: ["id"] },
   server_drain_attempt: { key: ["id"] },
+  server_web_traffic_attempt: { key: ["id"] },
   volume_run: { key: ["id"] },
   service_act: { key: ["id"] },
   volume_placement: { key: ["volume_id"] },
@@ -59,6 +60,7 @@ export const changeSources = {
   organization_server_upgrades: { key: ["organization_id"] },
   organization_support_access: { key: ["organization_id"] },
   operation_approvals: { key: ["id"] },
+  organization_github_installation: { key: ["installation_id"] },
   uptime_check: { key: ["id"] },
   // Logs the check id, so a change names the one check whose open incident it touched.
   uptime_incident: { key: ["check_id"] },

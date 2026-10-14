@@ -771,7 +771,6 @@ pub(crate) mod tests {
         });
         unrelated(&store, &who).unwrap();
         branch(&store, &who, &["db"]).unwrap();
-        // Breaking it further is still refused.
         let refused = set(&store, &who, &[("db.replicas", json!(3))]).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
     }

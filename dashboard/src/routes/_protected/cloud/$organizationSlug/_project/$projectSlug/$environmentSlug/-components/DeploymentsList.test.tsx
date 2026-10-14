@@ -10,7 +10,6 @@ import { InspectorPresentation } from "./CanvasInspectorHeader";
 import { DeploymentsList } from "./DeploymentsList";
 import { asTestDouble } from "#/lib/test-double";
 import * as storeViews from "#/modules/config-store/store-view.queries";
-// A CLI Deploy that targeted worker, a full one from the dashboard, and a failed upload.
 vi.spyOn(storeViews, "useStoreDeployments").mockReturnValue(asTestDouble<ReturnType<typeof storeViews.useStoreDeployments>>()({
   data: { pages: [{ next_cursor: null, deployments: [
     { id: "d3", number: 3, status: "running", services: ["worker"], upload: null, admitted_by: "ada", admitted_at: 1_790_000_000, started_at: null, ended_at: null },
@@ -51,7 +50,6 @@ function open(url: string) {
 it("lists the CLI's and the dashboard's Deployments, narrowed to those that deployed a Service", async () => {
   open("/cloud/acme/shop/production/deployments");
   const all = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
-  // Each row says who admitted it, then when.
   expect(all.map((row) => row.textContent)).toEqual([
     expect.stringMatching(/^Deployment #3Deploying · Deploys worker · by ada.+ ago$/u),
     expect.stringMatching(/^Deployment #2Deployed · Deploys every service.+ ago$/u),

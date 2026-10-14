@@ -23,7 +23,7 @@ impl<'serving> ServingContainer<'serving> {
         self.address
     }
 
-    /// Borrow the proven Service Container.
+    /// The Service Container that [`serving_containers`] proved may serve.
     #[must_use]
     pub fn as_container(self) -> &'serving ServiceContainer {
         self.container

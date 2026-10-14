@@ -131,6 +131,14 @@ class Client {
     return withRpcError(this._inner.drainMachine(machine, scope));
   }
 
+  startIngress(machine) {
+    return withRpcError(this._inner.startIngress(machine));
+  }
+
+  stopIngress(machine) {
+    return withRpcError(this._inner.stopIngress(machine));
+  }
+
   removeMachineMembership(machine) {
     return withRpcError(this._inner.removeMachineMembership(machine));
   }
