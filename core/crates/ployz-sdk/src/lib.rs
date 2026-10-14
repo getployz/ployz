@@ -871,9 +871,6 @@ fn to_json(value: &impl serde::Serialize) -> Result<serde_json::Value> {
     serde_json::to_value(value).map_err(|error| Error::from_reason(error.to_string()))
 }
 
-/// napi hands every JavaScript number above `u32::MAX` over as a float, even a whole one:
-/// `5_000_000_000` arrives as `5000000000.0`, which `u64` fields such as byte counts refuse.
-/// Give whole floats their integer form back before any payload is parsed.
 /// Decode JSON JavaScript sent. Napi hands a JS whole number above `u32::MAX` over
 /// as a float, which no integer field accepts, so every decode of a JS value goes
 /// through here.

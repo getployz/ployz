@@ -495,8 +495,6 @@ fn repository(repository_id: i64) -> Result<u64> {
     u64::try_from(repository_id).map_err(|_| invalid_argument("Expected a GitHub repository ID"))
 }
 
-/// Decode what JavaScript sent, its whole numbers as integers first; `refusal` names
-/// what was expected.
 fn decode<T: DeserializeOwned>(value: serde_json::Value, refusal: &str) -> Result<T> {
     crate::from_js(value).map_err(|error| refused(refusal, &error))
 }
