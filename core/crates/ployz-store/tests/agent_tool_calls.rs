@@ -2276,6 +2276,7 @@ fn missing_targets() -> Vec<(&'static str, Value)> {
         ("environment_setup", json!({ "environment": "nope" })),
         ("service_inspect", json!({ "service": "nope" })),
         ("deployment_show", json!({ "deployment": 99 })),
+        ("docs", json!({ "query": "services/nope.md" })),
         ("deployment_show", json!({ "environment": "nope" })),
         ("deployment_list", json!({ "environment": "nope" })),
         ("domain_check", json!({ "domain": "nope.example.com" })),
