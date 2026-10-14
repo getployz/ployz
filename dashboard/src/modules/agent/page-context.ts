@@ -56,20 +56,14 @@ const Renamed = Schema.fromJsonString(Schema.Struct({
 const decodeRenamed = Schema.decodeUnknownOption(Renamed);
 
 /**
- * `project` followed through each project_rename that ran after the newest block. The page keeps the old name until
- * the member moves, and a block repeats only when the place changes, so without this every later call misses.
+ * `project` followed through each project_rename the agent made in this thread. The dashboard stays on the old name
+ * after such a rename, so a block can name it even after the rename ran.
  */
-export function renamedSincePage(messages: ReadonlyArray<ModelMessage>, project: string | undefined): string | undefined {
-  let start = messages.length;
-  for (; start > 0; start--) {
-    const message = messages[start - 1];
-    if (message !== undefined && pageContextOf(message) !== undefined) break;
-  }
-  const since = messages.slice(start);
-  const renames = new Set(since.flatMap((message) => message.role === "assistant"
+export function followRenames(messages: ReadonlyArray<ModelMessage>, project: string | undefined): string | undefined {
+  const renames = new Set(messages.flatMap((message) => message.role === "assistant"
     ? (message.toolCalls ?? []).flatMap((call) => call.function.name === "project_rename" ? [call.id] : [])
     : []));
-  return since.reduce((current, message) => {
+  return messages.reduce((current, message) => {
     if (message.role !== "tool" || message.toolCallId === undefined || !renames.has(message.toolCallId)) return current;
     const renamed = decodeRenamed(message.content);
     return Option.isSome(renamed) && renamed.value.value.renamed_from === current ? renamed.value.value.project : current;
