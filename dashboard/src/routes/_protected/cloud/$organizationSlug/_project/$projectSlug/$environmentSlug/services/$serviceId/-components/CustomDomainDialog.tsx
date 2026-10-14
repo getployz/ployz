@@ -89,7 +89,6 @@ export function CustomDomainDialog({
       hostname: (route ?? initial)?.hostname ?? "",
       port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
     },
-    // Saving happens in the background and toasts on failure.
     onSubmit: ({ schemaOutputs }) => {
       onSubmit(schemaOutputs[0]);
       onClose();

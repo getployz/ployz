@@ -74,7 +74,6 @@ export function ServerRow({ organizationSlug, server, upgrade, stale }: {
       <span className="col-2 row-2 flex min-w-0 items-center gap-1 @xl:col-auto @xl:row-auto">
         {names.length === 0 ? <span className="truncate text-muted-foreground">{runsHere(server)}</span> : (
           <>
-            {/* Only the names clip; the count and the storage badge after them always show. */}
             <span className="flex min-w-0 gap-1 overflow-hidden">
               {names.slice(0, MAX_CHIPS).map((name) => <Badge key={name} variant="secondary">{name}</Badge>)}
             </span>

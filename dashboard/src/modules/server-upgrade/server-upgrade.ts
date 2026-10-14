@@ -91,7 +91,6 @@ export const RequestServerUpgradeInput = Schema.Struct({
 });
 export type RequestServerUpgradeInput = typeof RequestServerUpgradeInput.Type;
 
-/** The Server upgrades dialog changes one setting at a time; any it leaves out keeps its value. */
 /** What one save changes: the Release Channel, automatic upgrades, or both; a key left out stays as it is. */
 export const ServerUpgradeSettingsChange = Schema.Struct({
   channel: Schema.optionalKey(Schema.Literals(RELEASE_CHANNELS).annotate({ description: "The Release Channel every upgrade follows" })),
@@ -104,7 +103,6 @@ export const SetServerUpgradeSettingsInput = Schema.Struct({ organizationSlug: S
 /** The Org Store's view of the Organization's Server upgrade settings, keyed by Organization ID. */
 export type ServerUpgradeSettingsRow = { readonly id: string; readonly automatic: boolean; readonly channel: ReleaseChannel };
 
-/** No row reads as the defaults. */
 export const serverUpgradeSettings = (rows: readonly ServerUpgradeSettingsRow[]) => ({
   automatic: rows[0]?.automatic ?? DEFAULT_SERVER_UPGRADE_SETTINGS.automatic,
   channel: rows[0]?.channel ?? DEFAULT_SERVER_UPGRADE_SETTINGS.channel,
@@ -202,10 +200,8 @@ export function serverUpgradeLine(input: {
   return status === "offline" && input.automatic ? { kind: "when-back", release } : null;
 }
 
-/** The exact error for a failure; the stage reached otherwise. */
 const details = (evidence: EndEvidence) => evidence.error ?? evidence.stage ?? null;
 
-/** The attempt started last; null with none. */
 export const newestAttempt = (latest: readonly LatestUpgrade[]) => latest.reduce<LatestUpgrade | null>((found, row) =>
   found === null || Date.parse(row.startedAt) > Date.parse(found.startedAt) ? row : found, null);
 
