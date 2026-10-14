@@ -1508,6 +1508,100 @@ async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
     assert!(receives.failure(&name).is_some());
 }
 
+/// A child the kill leaves running until the test removes `gate`, as a `zfs` blocked in
+/// the kernel is until the kernel lets it go.
+fn held_child(stop: &Stop, gate: &Path) -> ZfsChild {
+    fs::write(gate, "").unwrap();
+    let mut child = ZfsChild::spawn(
+        Command::new("sh").args([
+            "-c",
+            &format!("while [ -e '{}' ]; do sleep 0.01; done", gate.display()),
+        ]),
+        stop,
+    )
+    .unwrap();
+    child.spare_from_kill();
+    child
+}
+
+/// A task of `name` that panics while `gate` holds its child, answered once its failure
+/// is published and the child is still alive.
+async fn panicked_with_a_held_child(receives: &Receives, name: &DockerVolumeName, gate: &Path) {
+    receives.spawn(name, |stop| {
+        let child = held_child(&stop, gate);
+        async move {
+            let _child = child;
+            panic!("the receive task broke");
+        }
+    });
+    for _ in 0..500 {
+        if receives.failure(name).is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the panic was never published");
+}
+
+/// A same-target retry (copy.rs `copy_pull`) answers and forgets a failure only once the
+/// Volume reads as not running, so the failed task must read as running until its child
+/// has exited.
+#[tokio::test]
+async fn a_panicked_task_reads_as_running_until_its_child_exits() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    panicked_with_a_held_child(&receives, &name, &gate).await;
+    assert!(
+        receives.running(&name),
+        "a retry would forget a task whose child is alive"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+    assert!(receives.failure(&name).is_some());
+}
+
+#[tokio::test]
+async fn a_forget_while_a_child_is_reaped_leaves_it_for_the_departure_to_name() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    panicked_with_a_held_child(&receives, &name, &gate).await;
+    receives.forget(&name);
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child that still holds the slot"
+    );
+    assert!(
+        receives.failure(&name).is_none(),
+        "the forgotten failure came back"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_task_that_replaces_one_still_reaping_a_child_leaves_that_child_for_the_departure() {
+    let test = TestDir::new();
+    let gate = test.0.join("gate");
+    let receives = Receives::default();
+    let name: DockerVolumeName = "data".parse().unwrap();
+    panicked_with_a_held_child(&receives, &name, &gate).await;
+    receives.spawn(&name, |_stop| async { Ok(()) });
+    assert_eq!(
+        receives.stop_all(Duration::from_millis(200)).await,
+        ["data"],
+        "the departure lost a child that still holds the slot"
+    );
+    fs::remove_file(&gate).unwrap();
+    assert!(receives.stop_all(Duration::from_secs(5)).await.is_empty());
+    assert!(!receives.running(&name));
+}
+
 #[tokio::test]
 async fn departure_stops_a_pull_whose_writer_never_answers() {
     let source = Source::start(Some(BOUND), "").await;
