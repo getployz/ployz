@@ -105,6 +105,12 @@ class Bakes(unittest.TestCase):
         named = [*others, *(dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes)]
         self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes, set()), [self.bake("10")])
 
+    def test_an_unfinished_current_bake_takes_no_extra_slot(self):
+        others = [dict(name=f"other-{n}", createdAt="2026-01-01") for n in range(7)]
+        bakes = [self.bake(day) for day in ["10", "11", "14"]]
+        named = [*others, *(dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes)]
+        self.assertEqual(boat.stale_bakes(named, self.bake("14"), bakes, set()), [])
+
     def test_the_current_bake_is_never_pruned(self):
         bakes = [self.bake(day) for day in ["10", "11", "12", "13"]]
         named = [dict(name=name, createdAt=f"2026-10-{name[-10:-8]}") for name in bakes]

@@ -165,7 +165,9 @@ def stale_bakes(named, current, ours, in_use):
                     and snapshot["name"] != current and snapshot["name"] not in in_use),
                    key=lambda snapshot: snapshot["createdAt"])
     # The account keeps at most NAMED snapshots, so a full account gives up more of our older bakes.
-    surplus = max(len(older) - (KEEP_BAKED - 1), len(named) - (NAMED - 1), 0)
+    # A failed or unfinished `current` is saved over, so it takes no extra slot.
+    taken = sum(snapshot["name"] != current for snapshot in named)
+    surplus = max(len(older) - (KEEP_BAKED - 1), taken - (NAMED - 1), 0)
     return [snapshot["name"] for snapshot in older[:surplus]]
 
 
@@ -475,7 +477,7 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 if not self.boat("snapshot", "rm", name, check=False).returncode:
                     ours.remove(name)
             # The name hashes this host's bootstrap key, so it is ours even if the save outlives a timeout here.
-            write(BAKES, [*ours, self.run["image"]])
+            write(BAKES, [*(name for name in ours if name != self.run["image"]), self.run["image"]])
             print(f"Baking Boat snapshot {self.run['image']} (first run of this recipe only).", file=sys.stderr)
             bake = Provider(dict(id="bake-" + uuid.uuid4().hex[:10], manifest=str(BOOTSTRAP / "bake" / "cluster.json"),
                                  owner=self.run.get("owner", {}), image=SNAPSHOT, corrosion=self.run["corrosion"]),
