@@ -490,16 +490,16 @@ def preflight(args):
     memory = host.size(args.memory or module.DEFAULT_SIZES["memory"])
     meminfo = {line.split(":")[0]: int(line.split()[1]) * 1024 for line in Path("/proc/meminfo").read_text().splitlines()}
     try:
-        free, total = module.capacity(os.environ.get("PLOYZ_VERIFY_INCUS_POOL", "ployz-verify"))
+        pool, host_disk = module.capacity(os.environ.get("PLOYZ_VERIFY_INCUS_POOL", module.DEFAULT_POOL))
     except subprocess.CalledProcessError:
         # The pool does not exist yet; its first run creates it on the root filesystem.
         usage = shutil.disk_usage("/")
-        free, total = usage.free, usage.total
+        pool, host_disk = (usage.free, usage.total), None
     runs = module.runs()
     reserve = {name: host.size(os.environ[variable]) for name, variable in
                [("memory_reserve", "PLOYZ_VERIFY_MEMORY_RESERVE"), ("disk_reserve", "PLOYZ_VERIFY_DISK_RESERVE")] if os.environ.get(variable)}
     problems = host.shortfalls(args.machines, memory, meminfo["MemAvailable"], meminfo["MemTotal"],
-                               [machine for run in runs for machine in run["machines"]], free, total, **reserve)
+                               [machine for run in runs for machine in run["machines"]], pool, host_disk, **reserve)
     if problems:
         now = time.time()
         raise RuntimeError("This host cannot fit the run now.\n" + "\n".join(problems) + "\nVerify runs on this host:\n" +
