@@ -4,7 +4,7 @@ import { createResourceServerChallenge } from "@better-auth/oauth-provider";
 import { type CallToolResult, createMcpHandler, fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
-import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall, shownOutcome } from "#/modules/agent/agent-runner.server";
+import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { CATALOG } from "#/modules/agent/agent-tools";
 import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
@@ -74,7 +74,7 @@ const resultOf = (result: AgentResult, key: string, link: () => string): CallToo
       structuredContent: { ok: false, approval_required: { approval_id: approvalId, message: refusal.message, url }, request_key: key },
     };
   }
-  const outcome = shownOutcome(result);
+  const { outcome } = result;
   return text(projectJsonObject({ ...outcome, request_key: key }) ?? { ok: outcome.ok, request_key: key }, !outcome.ok);
 };
 

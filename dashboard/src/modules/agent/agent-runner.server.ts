@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { type Act, agentResume, agentStart, type Answer, type Ask, type ConfigCommand, type ConfigWritten, type DiffView, type JsonValue, type Place, type Write } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import type { ToolOutcome } from "#/modules/agent/agent";
-import { AGENT, CATALOG, finish, untilWrite } from "#/modules/agent/agent-tools";
+import { AGENT, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
@@ -31,17 +31,8 @@ export type AgentCall = {
 
 export type Asking = { readonly approvalId: string; readonly refusal: StoreRefusal };
 
-/** What a call came to: an outcome, with the Store write it committed when it wrote one, or an approval it waits on. */
-export type AgentResult =
-  | { readonly outcome: ToolOutcome; readonly written: ConfigWritten | null }
-  | { readonly asking: Asking };
-
-/** A finished call as a person sees it: the Store write it committed stands in for the tool's own answer. */
-export const shownOutcome = ({ outcome, written }: { readonly outcome: ToolOutcome; readonly written: ConfigWritten | null }): ToolOutcome => {
-  if (written === null) return outcome;
-  if (outcome.ok && "nothing_destroyed" in outcome) return { ok: true, value: written, nothing_destroyed: true };
-  return { ok: true, value: written };
-};
+/** What a call came to: an outcome, or an approval it waits on. */
+export type AgentResult = { readonly outcome: ToolOutcome } | { readonly asking: Asking };
 
 export type AgentTool = {
   readonly name: string;
@@ -201,11 +192,12 @@ const agentWrite = (caller: AgentCaller) => (write: Write) =>
     ? storeAnswer(caller, { operation: "write", command: write.write }, AGENT)
     : callCloud(caller, { act: write.write }).pipe(Effect.map(answered));
 
-const done = (outcome: ToolOutcome): AgentResult => ({ outcome, written: null });
+const done = (outcome: ToolOutcome): AgentResult => ({ outcome });
 
 /**
- * Runs one agent tool call as `caller`. A write that waits on a human answers `asking`; the retry carrying that approval
- * runs it, then lets the compiled tool finish from the write's answer.
+ * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A gated write that waits on a human
+ * answers `asking`; the retry carrying that approval runs it. A gated Store write's answer is the call's outcome; a
+ * Cloud act's answer lets the compiled tool finish.
  */
 export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
   const published = findCommand(call.tool);
@@ -218,7 +210,9 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
   const at = placeOf(caller, call.page, call.tool, call.input);
   if ("refusal" in at) return done(at.refusal);
   const read = agentRead(caller);
-  const paused = yield* untilWrite(agentStart(call.tool, call.input, at.place, call.key), read);
+  const started = agentStart(call.tool, call.input, at.place, call.key);
+  if (!GATED.has(call.tool)) return done(yield* finish(started, read, agentWrite(caller)));
+  const paused = yield* untilWrite(started, read);
   const { step, state } = paused;
   if (step.step !== "write") return done(yield* finish(paused, read, agentWrite(caller)));
   const { write } = step;
@@ -226,9 +220,7 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
     if ("asking" in gated) return gated;
     if ("denied" in gated) return done({ ok: false, refusal: gated.denied });
-    const outcome = yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller));
-    const written = gated.result.ok ? gated.result.value : null;
-    return { outcome: outcome.ok && gated.nothingDestroyed ? { ...outcome, nothing_destroyed: true } : outcome, written } satisfies AgentResult;
+    return done(gated.result.ok && gated.nothingDestroyed ? { ...gated.result, nothing_destroyed: true } : gated.result);
   }
   const acted = yield* runGatedAct(caller, write.write, call.approvalId);
   if ("asking" in acted) return acted;
