@@ -364,7 +364,8 @@ function keptCut(members: readonly Member[]) {
 function follow(input: PlanInput, members: readonly Member[]) {
   const planned = planFromCopies(input, members);
   if (planned.ok) throw new Error(`planned ${planned.phase.kind}, not a refusal`);
-  const step = /; (?:ployz server rm (.+), then )?ployz volume (release|move) data(?: --to (.+))?$/.exec(planned.refusal.message);
+  const step = /^[^;]*; (?:ployz server rm ([\w-]+(?: and [\w-]+)*), then )?ployz volume (release|move) data(?: --to (<another server>|[\w-]+))?$/
+    .exec(planned.refusal.message);
   if (step === null) throw new Error(`no step in: ${planned.refusal.message}`);
   const [, removed, verb, to] = step;
   const gone = removed?.split(" and ") ?? [];
@@ -411,6 +412,31 @@ describe("follow every next step a refusal names", () => {
     ["three cuts with the top two tied", release, [member("fsn-1", "cut", { epoch: 7 }), member("fsn-2", "cut", { epoch: 9 }), bare("fsn-3", 9), fourth]],
   ])("%s", (_, input, members) => {
     follow(input, members);
+  });
+});
+
+describe("follow every release a refusal names on its own", () => {
+  const stops = "data is mid-run; ployz volume release data stops it";
+  const short = "data has no writer; ployz volume release data ends a move cut short";
+  const cut = member("fsn-2", "cut", { epoch: 9 });
+  const slots = [member("fsn-4", "behind"), member("fsn-3", "mirror")];
+  const fourth = member("fsn-9", "empty");
+
+  it.each<[string, PlanInput, Member[], string, string]>([
+    ["mirror rm beside a lone cut that holds a snapshot", remove(null), [cut, member("fsn-3", "mirror")], stops, "release cut fsn-2"],
+    ["mirror rm beside a writer and a cut", remove(null), [member("fsn-1", "writer", { epoch: 10 }), cut, member("fsn-3", "mirror")], stops, "demote fsn-2 below fsn-1"],
+    ["seed on a cut", seed, [cut], stops, "release cut fsn-2"],
+    ["sync on a cut", sync(), [cut, member("fsn-3", "mirror")], stops, "release cut fsn-2"],
+    ["mirror from a cut", mirror("fsn-9"), [cut, fourth], stops, "release cut fsn-2"],
+    ["move onto the cut's own Server", move("fsn-2"), [cut, member("fsn-3", "mirror")], stops, "release cut fsn-2"],
+    ["sync with no writer beside a slot", sync(), [member("fsn-3", "mirror")], short, "release slots fsn-3"],
+    ["mirror with no writer beside two slots", mirror("fsn-9"), [...slots, fourth], short, "release slots fsn-4,fsn-3"],
+    ["move with no writer beside two slots", move("fsn-9"), [...slots, fourth], "data has copies on data-fsn-4 and data-fsn-3; ployz volume release data first", "release slots fsn-4,fsn-3"],
+  ])("%s", (_, input, members, message, released) => {
+    const planned = planFromCopies(input, members);
+    if (planned.ok) throw new Error(`planned ${planned.phase.kind}, not a refusal`);
+    expect(planned.refusal.message).toBe(message);
+    expect(outcome(release, members)).toBe(released);
   });
 });
 
