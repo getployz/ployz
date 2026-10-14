@@ -451,8 +451,6 @@ impl NetworkPlane {
                 ..Default::default()
             })
             .await?;
-        // TODO: check if this works when firewalld used instead of raw iptables. The Docker daemon has a different
-        // code path for firewalld.
         Ok(true)
     }
 }

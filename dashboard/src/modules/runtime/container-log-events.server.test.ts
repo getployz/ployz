@@ -117,7 +117,7 @@ it("releases the runtime once and ends the stream when the request aborts during
   const request = new AbortController();
   const response = containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events, async () => { closed++; });
   const reader = response.body?.getReader();
-  await reader?.read(); // retry
+  await reader?.read();
   const read = reader?.read();
   await new Promise((resolve) => setTimeout(resolve, 10));
   request.abort();

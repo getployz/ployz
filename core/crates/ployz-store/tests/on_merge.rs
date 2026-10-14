@@ -576,7 +576,6 @@ fn production_diff(store: &ConfigStore, who: &Actor) -> DiffView {
         .unwrap()
 }
 
-/// Whether pr-5 is still listed.
 /// Whether the listing reads `pr-5` merged; none when it isn't listed.
 fn listed_merged(store: &ConfigStore, who: &Actor) -> Option<bool> {
     store

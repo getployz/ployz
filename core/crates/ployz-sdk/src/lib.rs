@@ -2,14 +2,8 @@
 //! (`ployz::sdk::typescript_declarations`).
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
-//! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / runtime.metricHistory / prepare / build / preview / run /
-//! previewNamespaceRemoval /
-//! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
-//! requestMachineUpgrade /
-//! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
-//! destroyCluster / close, the Config Store's openConfigStore / read / write, and the
-//! agent tools' agentTools / agentStart / agentResume / agentAsk.
+//! The handwritten façade wraps the native Cloud session, the Config Store, and the
+//! agent tools.
 pub mod agent;
 pub mod config_store;
 

@@ -132,8 +132,6 @@ pub enum StreamProtocolError {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-// TODO: exec user, privilege, working-directory, and environment options
-// remain outside the wire contract.
 pub struct ExecOptions {
     pub command: Vec<String>,
     pub attach_stdin: bool,
