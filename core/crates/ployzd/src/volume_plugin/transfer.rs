@@ -424,6 +424,8 @@ pub(super) struct ZfsChild {
     spared: bool,
     #[cfg(test)]
     kill_fails: bool,
+    #[cfg(test)]
+    wait_fails: bool,
 }
 
 impl ZfsChild {
@@ -437,6 +439,8 @@ impl ZfsChild {
             spared: false,
             #[cfg(test)]
             kill_fails: false,
+            #[cfg(test)]
+            wait_fails: false,
         })
     }
 
@@ -464,18 +468,31 @@ impl ZfsChild {
         self.kill_fails = true;
     }
 
+    /// Makes the first wait for the child's exit fail, as a `waitpid` error does.
+    #[cfg(test)]
+    pub(super) fn fail_wait(&mut self) {
+        self.wait_fails = true;
+    }
+
     /// Kills the process unless it already exited, and waits for it. A failed kill still
     /// waits, holding the task's finish, so the departure names a child it cannot stop.
     pub(super) async fn reap(mut self) {
-        let Some(mut child) = self.child.take() else {
+        let Some(mut exit) = self.exit() else {
             return;
         };
-        if let Err(error) = self.start_kill(&mut child) {
+        if let Err(error) = self.start_kill(&mut exit.child) {
             tracing::warn!(%error, "could not kill a zfs process");
         }
-        if let Err(error) = child.wait().await {
-            tracing::warn!(%error, "could not wait for a killed zfs process");
-        }
+        exit.held().await;
+    }
+
+    fn exit(&mut self) -> Option<Exit> {
+        Some(Exit {
+            child: self.child.take()?,
+            finish: Arc::clone(&self.finish),
+            #[cfg(test)]
+            wait_fails: self.wait_fails,
+        })
     }
 
     fn start_kill(&self, child: &mut Child) -> std::io::Result<()> {
@@ -495,25 +512,57 @@ impl ZfsChild {
 /// await, so a reaper waits for the exit and holds the task's finish until then.
 impl Drop for ZfsChild {
     fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
+        let Some(mut exit) = self.exit() else {
             return;
         };
         #[cfg(test)]
         let spared = self.spared;
         #[cfg(not(test))]
         let spared = false;
-        if !spared && let Err(error) = child.start_kill() {
+        if !spared && let Err(error) = exit.child.start_kill() {
             tracing::warn!(%error, "could not kill a zfs process");
         }
-        let finish = Arc::clone(&self.finish);
-        tokio::spawn(async move {
-            let _finish = finish;
-            if let Err(error) = child.wait().await {
-                tracing::warn!(%error, "could not wait for a killed zfs process");
-            }
-        });
+        tokio::spawn(exit.held());
     }
 }
+
+/// A child on its way out, holding its task's finish.
+struct Exit {
+    child: Child,
+    finish: Arc<DropGuard>,
+    #[cfg(test)]
+    wait_fails: bool,
+}
+
+impl Exit {
+    /// Releases the finish only once a wait proves the child exited. A failed wait proves
+    /// nothing, so it is retried, and until one succeeds the departure names the child.
+    async fn held(mut self) {
+        let mut warned = false;
+        loop {
+            #[cfg(test)]
+            let waited = if std::mem::take(&mut self.wait_fails) {
+                Err(std::io::Error::other("injected wait failure"))
+            } else {
+                self.child.wait().await
+            };
+            #[cfg(not(test))]
+            let waited = self.child.wait().await;
+            match waited {
+                Ok(_) => break,
+                Err(error) => {
+                    if !std::mem::replace(&mut warned, true) {
+                        tracing::warn!(%error, "could not wait for a zfs process; retrying");
+                    }
+                    tokio::time::sleep(WAIT_RETRY).await;
+                }
+            }
+        }
+        drop(self.finish);
+    }
+}
+
+const WAIT_RETRY: Duration = Duration::from_secs(1);
 
 /// The exit status and stderr of `child`, which keeps the child to kill if the wait is
 /// abandoned.
