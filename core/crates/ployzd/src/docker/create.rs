@@ -182,10 +182,12 @@ pub(super) fn container_create_body(
             .working_directory
             .as_ref()
             .map(ToString::to_string),
-        // A hook runs its own command under the image's ENTRYPOINT: the Service's
-        // entrypoint is its start command, which the hook must not run.
-        entrypoint: (hook.is_none() && !container.entrypoint.is_empty())
-            .then(|| container.entrypoint.clone()),
+        // A hook runs only its own command: an empty ENTRYPOINT clears the image's,
+        // and the Service's entrypoint is its start command, which the hook must not run.
+        entrypoint: match hook {
+            Some(_) => Some(Vec::new()),
+            None => (!container.entrypoint.is_empty()).then(|| container.entrypoint.clone()),
+        },
         exposed_ports,
         labels: Some(labels),
         stop_timeout: container.stop_timeout_secs,
