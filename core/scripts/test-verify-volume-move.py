@@ -650,7 +650,8 @@ class VolumeMove:
         cursor = None
         for line in lines:
             if line.startswith("procs "):
-                _, unit, status, *pids = line.split() if len(line.split()) > 2 else (*line.split(), "unread")
+                fields = line.split()
+                unit, status, pids = fields[1], fields[2] if len(fields) > 2 else "unread", fields[3:]
                 if status == "absent":
                     continue
                 if status != "0":

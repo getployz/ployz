@@ -222,13 +222,10 @@ class ClusterModel:
         plugin = [str(old_plugin)] if old_plugin in self.alive else []
         if machine in self.stuck_receive:
             plugin.append("4242")
-        if "absent" in script:
-            # systemd drops an emptied control group; one with a leftover stays, as does one `cat` cannot read.
-            status = "1" if machine in self.unread_procs else "0"
-            lines = [f"procs {DAEMON} absent",
-                     f"procs {PLUGIN} {status} " + " ".join(plugin) if plugin or status != "0" else f"procs {PLUGIN} absent"]
-        else:
-            lines = [f"procs {DAEMON}", f"procs {PLUGIN} " + " ".join([] if machine in self.unread_procs else plugin)]
+        # systemd drops an emptied control group; one with a leftover stays, as does one `cat` cannot read.
+        status = "1" if machine in self.unread_procs else "0"
+        lines = [f"procs {DAEMON} absent",
+                 f"procs {PLUGIN} {status} " + " ".join(plugin) if plugin or status != "0" else f"procs {PLUGIN} absent"]
         if "--show-cursor" in script and self.restart_reply.get(machine) != "no cursor":
             lines.append(self.tail_cursor(machine).rstrip("\n"))
         if self.restart_reply.get(machine) == "no end":
@@ -2276,7 +2273,6 @@ finally:
         self.assertFalse([script for script in scripts if "pgrep -f" in script], result)
 
     def test_the_first_qualifying_entry_after_the_cursor_is_the_one_stored(self):
-        # Two lines of the first run land before one poll; the earlier one is the credited event.
         def effect(begun):
             self.model.log_fault("machine-1", begun + 1)
             self.model.log_fault("machine-1", begun + 1)
