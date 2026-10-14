@@ -83,6 +83,7 @@ const PendingCode = Schema.Struct({
     referenceId: Schema.String,
   })),
 });
+const Addressed = Schema.Struct({ resource: Schema.Union([Schema.String, Schema.Array(Schema.String)]) });
 const RefreshToken = Schema.Struct({ createdAt: Schema.Date, clientId: Schema.String, userId: Schema.String, referenceId: Schema.String });
 
 /** The credential a token request presents, as the row better-auth will read it from, or nothing when there's no such row to bind. */
@@ -107,8 +108,12 @@ const DeleteConsent = Schema.Struct({ id: Schema.String });
  * again makes a newer one, so a code or refresh token older than the current consent is from a revoked grant and mints
  * nothing. Timestamps are whole seconds, so only a strictly older credential is refused. The consent that passes is
  * bound to the request, so a disconnect and reconnect while the request is in flight can't hand it the newer grant.
+ *
+ * The binding is enforced where the provider resolves access token claims, which it does only for a JWT, and it mints
+ * a JWT only for a request that names a resource. So a request must name the MCP resource, as the MCP spec has every
+ * client do, or a resourceless one would mint an opaque token and a refresh row that skipped the binding.
  */
-const bindCredentialsToGrant = {
+const bindCredentialsToGrant = (resource: string): BetterAuthPlugin => ({
   id: "ployz-bind-credentials-to-grant",
   hooks: {
     before: [
@@ -117,6 +122,10 @@ const bindCredentialsToGrant = {
         handler: createAuthMiddleware(async (ctx) => {
           const request = Schema.decodeUnknownOption(TokenRequest)(ctx.body);
           if (Option.isNone(request)) return;
+          const addressed = Schema.decodeUnknownOption(Addressed)(ctx.body);
+          if (!Option.exists(addressed, (named) => [named.resource].flat().includes(resource))) {
+            throw new APIError("BAD_REQUEST", { error: "invalid_target", error_description: `a token is only issued for ${resource}` });
+          }
           const credential = await presented(ctx.context.adapter, request.value);
           if (credential === undefined) return;
           const consent = await currentConsent(ctx.context.adapter, credential);
@@ -135,7 +144,7 @@ const bindCredentialsToGrant = {
       },
     ],
   },
-} satisfies BetterAuthPlugin;
+});
 
 export const hostedMcpPlugins = (appUrl: URL) => {
   const { issuer, resource } = mcpEndpoints(appUrl);
@@ -157,6 +166,6 @@ export const hostedMcpPlugins = (appUrl: URL) => {
       extensions: [{ claims: { accessToken: grantClaims } }],
     }),
     cimd({ fetchClientMetadataResource, metadataProfile: "mcp-2026-07-28" }),
-    bindCredentialsToGrant,
+    bindCredentialsToGrant(resource),
   ];
 };

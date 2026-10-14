@@ -4,7 +4,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
-import { Effect, Fiber, Layer, Schema } from "effect";
+import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { connectAgent } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
@@ -27,6 +27,11 @@ const ENVIRONMENT = "00000000-0000-4000-8000-00000000a803";
 const SERVICE = "00000000-0000-4000-8000-00000000a804";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000a805";
 const SHOP = { project: "shop", environment: "production" };
+const MCP = `${origin}/mcp`;
+
+/** Form fields with the absent ones left out, as a client that omits a parameter sends them. */
+const form = (fields: Record<string, string | null>) =>
+  new URLSearchParams(Object.entries(fields).flatMap(([key, value]) => value === null ? [] : [[key, value]]));
 
 const HOSTED_ENV = {
   POLAR_ACCESS_TOKEN: "polar-token",
@@ -192,12 +197,14 @@ const registerAgent = Effect.fn(function* (shop: Shop) {
 });
 
 /** Authorize and consent on /connect for Shop, leaving the code unredeemed. */
-const issueCode = Effect.fn(function* (shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed) {
+const issueCode = Effect.fn(function* (
+  shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed, resource: string | null = MCP,
+) {
   const verifier = randomBytes(32).toString("base64url");
   const authorize = new URL("/api/auth/oauth2/authorize", origin);
-  authorize.search = new URLSearchParams({
+  authorize.search = form({
     response_type: "code", client_id: clientId, redirect_uri: REDIRECT, scope: "ployz offline_access", state: "state-1",
-    code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource: `${origin}/mcp`,
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource,
   }).toString();
   const asked = yield* Effect.promise(() => shop.run(serveAuth(new Request(authorize, { headers: { cookie: shop.cookie } }))));
   const toConnect = new URL(asked.headers.get("location") ?? expect.fail(`authorize answered ${asked.status} with no redirect`), origin);
@@ -209,20 +216,18 @@ const issueCode = Effect.fn(function* (shop: Shop, clientId: string, pageQuery: 
   return { clientId, code, verifier };
 });
 
-const redeem = (shop: Shop, { clientId, code, verifier }: Effect.Success<ReturnType<typeof issueCode>>) =>
+const redeem = (shop: Shop, { clientId, code, verifier }: Effect.Success<ReturnType<typeof issueCode>>, resource: string | null = MCP) =>
   authJson(shop, "/api/auth/oauth2/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier, resource: `${origin}/mcp`,
-    }).toString(),
+    body: form({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier, resource }).toString(),
   });
 
-const refresh = (shop: Shop, clientId: string, refreshToken: string) =>
+const refresh = (shop: Shop, clientId: string, refreshToken: string, resource: string | null = MCP) =>
   authJson(shop, "/api/auth/oauth2/token", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken, resource: `${origin}/mcp` }).toString(),
+    body: form({ grant_type: "refresh_token", client_id: clientId, refresh_token: refreshToken, resource }).toString(),
   });
 
 /** The whole connect dance Bo's agent does: authorize, consent on /connect for Shop, and trade the code for tokens. */
@@ -255,7 +260,7 @@ const plantRefreshToken = Effect.fn(function* (shop: Shop, clientId: string) {
     const { drizzle } = yield* Database;
     yield* drizzle.insert(oauthRefreshToken).values({
       token: createHash("sha256").update(token).digest("base64url"), clientId, userId: shop.boId, referenceId: ORGANIZATION,
-      resources: [`${origin}/mcp`], scopes: ["ployz", "offline_access"], authTime: new Date(), expiresAt: new Date(Date.now() + 86_400_000),
+      resources: [MCP], scopes: ["ployz", "offline_access"], authTime: new Date(), expiresAt: new Date(Date.now() + 86_400_000),
     });
   }));
   return token;
@@ -517,6 +522,47 @@ it.live("a refresh held after its check, resumed after a disconnect and reconnec
     const shop = yield* hostedShop();
     const answered = yield* resumedAfterReconnect(shop, yield* registerAgent(shop), "refresh");
     expect(answered).toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a redemption without a resource, held and resumed after a disconnect and reconnect, leaves nothing that reaches /mcp", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const pending = yield* issueCode(shop, clientId, undefined, null);
+    yield* aSecondLater;
+    const hold = holdRead(verification, 1);
+    const inFlight = yield* Effect.forkScoped(redeem(shop, pending, null));
+    // A request refused before the provider reads its code never reaches the hold, and has nothing left to resume.
+    const paused = yield* Effect.raceFirst(Effect.as(hold.reached, true), Effect.as(Fiber.await(inFlight), false));
+    held = undefined;
+    if (paused) {
+      expect((yield* disconnect(shop)).status).toBe(200);
+      yield* aSecondLater;
+      const renewed = yield* redeem(shop, yield* issueCode(shop, clientId, undefined, null));
+      expect((yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token)).status).toBe(200);
+      yield* hold.release;
+    }
+    const answered = yield* Fiber.join(inFlight);
+    const issued = Schema.decodeUnknownOption(Issued)(answered.body);
+    if (Option.isSome(issued)) {
+      expect((yield* raw(shop, issued.value.access_token)).status).toBe(401);
+      const renewable = issued.value.refresh_token;
+      if (renewable !== undefined) expect((yield* refresh(shop, clientId, renewable)).status).toBe(400);
+    }
+    expect(answered.status).toBe(400);
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a token request without a resource is refused, for a code and for a refresh token", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const issued = yield* connectTokens(shop, clientId);
+    const refreshToken = issued.refresh_token ?? expect.fail("connect issued no refresh token");
+    const unaddressed = { status: 400, body: { error: "invalid_target", error_description: `a token is only issued for ${MCP}` } };
+    expect(yield* redeem(shop, yield* issueCode(shop, clientId), null)).toEqual(unaddressed);
+    expect(yield* redeem(shop, yield* issueCode(shop, clientId, undefined, null), null)).toEqual(unaddressed);
+    expect(yield* refresh(shop, clientId, refreshToken, null)).toEqual(unaddressed);
+    expect((yield* refresh(shop, clientId, refreshToken)).status).toBe(200);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("disconnecting a consent id that isn't one answers 404", () =>
