@@ -26,17 +26,16 @@ pub struct RowId {
 /// order within a node.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum At {
-    /// The node itself.
+    /// The node as a whole; its cell is what it arrives with as a new node.
     Node,
     /// A Volume's data, which never moves.
     Data,
     /// A Volume's or a Config's name.
     Name,
-    /// A Volume's storage.
+    /// A Volume's `VolumeKind`: Docker or provisioned storage.
     Storage,
     /// A Config's file at this path: its content, mode and owner as one setting.
     File(ConfigFileName),
-    /// A Service setting.
     Setting(Setting),
     /// A mount on the Volume of this lineage.
     Mount(String),
@@ -184,7 +183,7 @@ impl RowId {
         &self.lineage
     }
 
-    /// Where in the node.
+    /// Where in node [`lineage`](Self::lineage) the row is; [`At::Node`] for the node itself.
     #[must_use]
     pub fn at(&self) -> &At {
         &self.at
@@ -291,7 +290,6 @@ impl<'de> Deserialize<'de> for RowId {
 pub enum Cell {
     /// Nothing there, or a setting at its default.
     Absent,
-    /// A plain value.
     Value(Value),
     /// A secret with a value.
     Secret {
@@ -315,7 +313,6 @@ impl Cell {
 pub struct SealedSecret {
     /// Tells it apart from another value without showing either.
     pub fingerprint: String,
-    /// The value, encrypted.
     pub value: EncryptedSecretValue,
 }
 
@@ -327,7 +324,6 @@ pub enum SealedCell {
     /// Anything but a secret with its value; a secret there by fingerprint only
     /// where the configuration holds no value for it.
     Cell(Cell),
-    /// A secret with its value.
     Secret(SealedSecret),
 }
 
@@ -347,11 +343,8 @@ impl SealedCell {
 /// A node, as [`name_of`] finds it.
 #[derive(Clone, Copy, Debug)]
 pub enum NodeRef<'intent> {
-    /// A Service.
     Service(&'intent SavedServiceIntent),
-    /// A Volume.
     Volume(&'intent SavedVolumeIntent),
-    /// A Config.
     Config(&'intent SavedConfigIntent),
 }
 
