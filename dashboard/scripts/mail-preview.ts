@@ -13,7 +13,7 @@ const required = (name: string) => {
 };
 
 export async function run() {
-  const origin = process.env["APP_URL"] ?? "http://localhost:3000";
+  const origin = new URL(process.env["APP_URL"] ?? "http://localhost:3000").origin;
   const mail = await renderMail(sampleMail(origin), origin);
   const dir = ".output/mail-preview";
   await mkdir(dir, { recursive: true });
