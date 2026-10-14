@@ -397,6 +397,15 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
+  const waitingOnLock = async () => {
+    for (let poll = 0; poll < 200; poll++) {
+      const { rows: waiting } = await harness.pool.query(
+        "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
+      if (waiting.length > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("nothing waited on the held row lock");
+  };
   const settled = ["05-cut", "07-start", "03-start", "04-resume", "05-resume", "03-restore", "03-demote", "03-reset-forget-mirror", "03-reset-forget-writer", "04-forget"];
   const sleeps = [
     ...["03-r0", "03-r1", "03-r2", "06-final"].flatMap((prefix) => Array.from({ length: 9 }, (_, poll) => `${prefix}-backoff-${poll}`)),
@@ -617,9 +626,7 @@ describe("volume runs", () => {
         await other.query("begin");
         await other.query("select id from volume_run where id = $1 for update", [first.id]);
         const second = request({ kind: "sync", args: { full: false } });
-        while ((await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'")).rowCount === 0) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
+        await waitingOnLock();
         await other.query("update volume_run set state = 'done', finished_at = now() where id = $1", [first.id]);
         await other.query("commit");
 
@@ -746,15 +753,6 @@ describe("volume runs", () => {
         sync: '{"full":false}',
         release: "{}",
         delete_mirror: '{"slot":"fsn-2","confirmed_name":null}',
-      };
-      const waitingOnLock = async () => {
-        for (let poll = 0; poll < 200; poll++) {
-          const { rows: waiting } = await harness.pool.query(
-            "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
-          if (waiting.length > 0) return;
-          await new Promise((resolve) => setTimeout(resolve, 25));
-        }
-        throw new Error("the insert never waited on the landing lane");
       };
 
       for (const [kind, args] of Object.entries(landings)) {
