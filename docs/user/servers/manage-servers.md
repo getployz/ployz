@@ -65,7 +65,9 @@ An entry marked **Not in any Project** is left over from a deleted project or en
 ## Change what a server does
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see
-[Give servers different jobs](../services/scaling.md#give-servers-different-jobs).
+[Give servers different jobs](../services/scaling.md#give-servers-different-jobs). The
+[Ployz agent](../account/agent-sidebar.md) can change these too, but it can't turn web traffic
+back on: that starts the server's ingress proxy, which only `ployz server set` does.
 
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
 the server. What already runs there stays until you drain it. Your next deploy also moves it.

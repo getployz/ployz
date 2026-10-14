@@ -96,6 +96,7 @@ describe("roll-out-server-upgrade", () => {
         capture: (input) => Effect.sync(() => void captured.push(input)),
         identify: (distinctId, properties) => Effect.sync(() => void identified.push([distinctId, properties])),
         identifyOrganization: () => Effect.void,
+        toolCall: () => Effect.void,
       }),
       Effect.provideService(OrganizationRuntime, {
         cancel: () => Effect.void,
