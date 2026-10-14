@@ -65,7 +65,8 @@ const FENCE_ROUNDS = 3;
  * rest are plain. A row already running under this Inngest run is the step's own earlier attempt. Each Volume the
  * Deploy targets that no run holds gets a hold, and a lane on one that the Deploy neither takes nor holds is stamped
  * `held_by`, so a Move asked for while the Services run is refused even after that lane ends; a hold took nothing, so
- * it is neither placed nor fenced.
+ * it is neither placed nor fenced. Each committed Move it follows that no run holds gets a hold too, so no restore or
+ * release ends that commitment before the fence starts its Server.
  */
 export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
   organizationId: string,
@@ -117,27 +118,29 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
     }
     if (beside.length > 0) yield* drizzle.update(volumeRun).set({ heldBy: inngestRunId }).where(inArray(volumeRun.id, beside));
     const laned = new Set(lanes.map((lane) => lane.volumeId));
+    const hold = (volumeId: string, { volumeName, dockerVolume, refquotaBytes }: { volumeName: string; dockerVolume: string; refquotaBytes: number }) =>
+      holdDeployLane(CLOUD(organizationId), {
+        input: { volumeId, kind: "deploy", args: { deployment: deploymentId, resume: null, hold: true } },
+        volume: { environmentId, volumeName, dockerVolume, refquotaBytes },
+        id: crypto.randomUUID(),
+      }, inngestRunId);
     // Each hold locks its Volume's commitment until this transaction ends. No two Deploys hold the same Volumes at once
     // only because store-deployment.inngest.ts runs one Deploy per Environment and a Volume belongs to one.
     for (const id of targets) {
       const volume = laned.has(id) ? undefined : volumes.find((entry) => entry.id === id);
       if (volume === undefined) continue;
-      yield* holdDeployLane(CLOUD(organizationId), {
-        input: { volumeId: volume.id, kind: "deploy", args: { deployment: deploymentId, resume: null, hold: true } },
-        volume: {
-          environmentId,
-          volumeName: volume.name,
-          dockerVolume: dockerVolumeName(deployment.namespace, volume.id),
-          refquotaBytes: volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0,
-        },
-        id: crypto.randomUUID(),
-      }, inngestRunId);
+      yield* hold(volume.id, {
+        volumeName: volume.name,
+        dockerVolume: dockerVolumeName(deployment.namespace, volume.id),
+        refquotaBytes: volume.storage.kind === "provisioned" ? volume.storage.maximumBytes : 0,
+      });
     }
     for (const row of yield* owedCommitments(organizationId, environmentId)) {
       // A hold, its own or one it took over, takes nothing, so the commitment still has no run.
       if (lanes.some((lane) => lane.volumeId === row.volumeId && !BESIDE_WRITER.has(lane.kind) && !isHold(lane))) continue;
       const to = yield* laneTarget(row);
       if (to === null) return yield* Effect.fail(new NonRetriableError(`${row.volumeName} is moving to a Server its run never named`));
+      if (!laned.has(row.volumeId) && !targets.has(row.volumeId)) yield* hold(row.volumeId, row);
       placed.push({ kind: "follow", run: contextOf(row), to, machine: row.current, epoch: row.epoch, ended: true });
     }
     return placed;

@@ -3127,15 +3127,17 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["writer@fsn-2(create)"]);
     });
 
-    it("on a committed Move whose run failed: a Deploy that does not hold the Volume follows the commitment to B without waiting, and refuses to start B once a later run settled the Volume", async () => {
+    it("on a committed Move whose run failed: a Deploy that targets nothing on a Volume a mirror removal holds follows the commitment to B without waiting, and refuses to start B once a run admitted after that removal settled the Volume", async () => {
       const cut = afterCut();
       const taken = await moving("committed");
       await harness.pool.query("update volume_run set state = 'failed', finished_at = now() where id = $1", [taken.id]);
+      const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
       deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
 
       const placed = await place();
 
       expect(placed).toMatchObject([{ kind: "follow", run: { id: taken.id, kind: "move" }, to: "fsn-2", machine: idOf("fsn-2"), epoch: 1 }]);
+      await harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [mirror.id]);
       const restored = await requested({ kind: "restore", args: { from: "fsn-1" } });
       await harness.pool.query("update volume_run set state = 'failed', epoch = 2, finished_at = now() where id = $1", [restored.id]);
       await expect(fence(placed[0])).rejects.toThrow("data changed since this Deploy placed it; Deploy again");
@@ -3360,14 +3362,22 @@ describe("volume runs", () => {
         expect(await runEffect(placeDeployVolumes(organizationId, "env-1", "d-2", "deploy-2"))).toMatchObject([{ kind: "follow", to: "fsn-2", ended: true }]);
       });
 
-      it("a release requested after a Deploy that does not hold the Volume placed it inherits the same commitment, and the follow still starts B", async () => {
+      it("a Deploy that targets nothing on the Volume holds the commitment it follows: a release or a restore is refused until the Deploy ends, and the follow starts B", async () => {
         await failedCommit();
         deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
-        const placed = await place();
-        await requested({ kind: "release", args: {} });
+        const deploying = { ok: false, refusal: { message: "data is deploying; the Deploy ends its run" } };
 
+        const placed = await place();
+
+        expect((await lanes()).filter((lane) => lane.kind === "deploy")).toMatchObject([{ state: "running", inngest_run_id: DEPLOY, args: { hold: true } }]);
+        expect(await request({ kind: "release", args: {} })).toMatchObject(deploying);
+        expect(await request({ kind: "restore", args: { from: "fsn-1" } })).toMatchObject(deploying);
         expect(await fence(placed[0])).toEqual({ on: "fsn-2" });
         expect(verbs).toEqual(["writer@fsn-2(create)"]);
+
+        await finish();
+
+        expect((await lanes()).filter((lane) => lane.kind === "deploy")).toEqual([]);
       });
 
       it("refuses to start B once an older row decides the Volume instead of the commitment it followed", async () => {
@@ -3419,11 +3429,13 @@ describe("volume runs", () => {
           .toMatchObject({ ok: false, refusal: { code: "conflict", details: { reason: "follow_settled" } } });
       });
 
-      describe("once a release took the commitment over and floored B at its newer gen", () => {
+      describe("once a release admitted after a mirror removal the Deploy placed beside took the commitment over and floored B at its newer gen", () => {
         const successor = async (state: "running" | "done") => {
           await failedCommit();
+          const mirror = await requested({ kind: "delete_mirror", args: { slot: "fsn-3", confirmed_name: null, machine: idOf("fsn-3") } });
           deployNodes = [{ type: "service", id: "svc-api", name: "api", outcome: "pending", rows: [] }];
           const placed = await place();
+          await harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [mirror.id]);
           const release = await requested({ kind: "release", args: {} });
           const { rows: [floor] } = await harness.pool.query<{ gen: string }>(
             "update volume_run set state = $2, phase = 'committed', current = $3, epoch = 1 where id = $1 returning gen", [release.id, state, idOf("fsn-2")]);
