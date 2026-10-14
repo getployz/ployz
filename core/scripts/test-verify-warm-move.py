@@ -195,8 +195,6 @@ class Cluster:
         if result.returncode:
             raise CheckError(f"runner {state}: {result.stdout[-400:]} {result.stderr[-400:]}")
 
-    # Machine state
-
     def physical(self, volume, env=None):
         if (volume, env) not in self.physicals:
             _, inspect = self.cli("volume", "inspect", volume, *env_flag(env), required=True)
@@ -276,8 +274,6 @@ class Cluster:
         text = say(listed)
         return {machine for machine in self.machines if f'"{machine}"' in text}
 
-    # Faults
-
     def fault(self, machine, value):
         """Arm or disarm without a restart: the daemons read /run/ployz/fault on every check."""
         if value:
@@ -352,8 +348,6 @@ class Cluster:
                 return began
             time.sleep(1)
         return f"{TIMED_OUT} {limit}s"
-
-    # Cloud runs
 
     def approve(self, reply):
         """Approve as the operator would in Cloud and return the approval id, or None when nothing asked."""
@@ -528,8 +522,6 @@ class Cluster:
         stopped = self.wait_run(volume, row["id"], limit=300)
         return dict(held=held, cancel=cancelled, run=stopped)
 
-    # Removal and rejoin
-
     def remove_dead(self, machine, limit=900):
         """`server forget --confirm dead`, retried while the entry Server still lists it as answering:
         until its handshake goes stale, the copies it holds are asked for and the ask times out."""
@@ -592,8 +584,6 @@ class Cluster:
                 return round(time.monotonic() - started)
             time.sleep(1)
         return None
-
-    # Verdicts and evidence
 
     def verdict(self, name, ok, evidence):
         self.verdicts.append((name, ok))
