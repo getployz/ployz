@@ -20,6 +20,12 @@ export const NOTIFICATION_TYPES = {
     unsubscribe: "Turn off failed upgrade emails",
     emails: "failed upgrade emails",
   },
+  crash: {
+    label: "Crashed services",
+    description: "When a service exits with an error or runs out of memory.",
+    unsubscribe: "Turn off crash emails",
+    emails: "crash emails",
+  },
 } as const;
 
 export type NotificationType = keyof typeof NOTIFICATION_TYPES;

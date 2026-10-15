@@ -312,6 +312,34 @@ impl Session {
         .await
     }
 
+    /// Point this Machine's crash pushes at `url`, or stop them with `None`.
+    ///
+    /// # Errors
+    /// Returns `unsupported` when the Machine does not advertise the operation,
+    /// `invalid_argument` for a URL it will not push to, and cancellation or
+    /// transport errors.
+    pub async fn set_push_target(&self, url: Option<url::Url>) -> Result<(), RpcError> {
+        let description = self.about().await?;
+        if !description.supports(ployz_core::SET_PUSH_TARGET_CAPABILITY) {
+            return Err(name_refusal(
+                RpcError {
+                    code: RpcErrorCode::Unsupported,
+                    message: format!(
+                        "{} is not advertised",
+                        ployz_core::SET_PUSH_TARGET_CAPABILITY
+                    ),
+                    details: Value::Null,
+                    cause: Vec::new(),
+                },
+                op::SetPushTarget::PATH,
+                &MachineTarget::from(&description.machine_id),
+            ));
+        }
+        self.unary::<op::SetPushTarget>(ployz_core::SetPushTargetRequest { url })
+            .await
+            .map(drop)
+    }
+
     /// Set `label`'s Management Client slot to a fresh client key and return its Management
     /// Capability. A repeated Set rotates the key; the previous one works until the new one is used.
     ///

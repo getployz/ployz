@@ -1,0 +1,1 @@
+ALTER TABLE "organization_machine" ADD COLUMN "push_target" text;

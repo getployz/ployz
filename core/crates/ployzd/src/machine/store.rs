@@ -13,6 +13,7 @@ use ployz_core::{
     EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId, MachineNow, MachineUpdate,
     MachineUpdateError, ManagementClientLabel, Registered, SelectedEndpoint, apply_machine_update,
 };
+use reqwest::Url;
 use thiserror::Error;
 
 use super::{
@@ -208,6 +209,7 @@ impl LocalMachineStore {
                     management_clients: BTreeMap::new(),
                     wireguard_mtu: None,
                     selected_endpoints: BTreeMap::new(),
+                    push_target: None,
                 };
                 save(&data_dir, &record)?;
                 record
@@ -513,6 +515,21 @@ impl LocalMachineStore {
                 ManagementClientSlot::Live(LiveSlot::Active { accepted: remote }),
             );
         })
+    }
+
+    /// Replace the push target in one write. An unchanged target skips the write.
+    ///
+    /// # Errors
+    /// Returns a storage error if the updated record cannot be saved atomically.
+    pub fn set_push_target(&mut self, url: Option<Url>) -> Result<(), StoreError> {
+        if self.record.push_target == url {
+            return Ok(());
+        }
+        let mut updated = self.record.clone();
+        updated.push_target = url;
+        save(&self.data_dir, &updated)?;
+        self.record = updated;
+        Ok(())
     }
 
     fn persist_management_clients(

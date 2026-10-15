@@ -67,17 +67,17 @@ pub trait Tell: Serialize {
 }
 
 /// Register every command. A row reads:
-/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] [if SAME]] => CALL;`
+/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] if SAME] => CALL;`
 /// where `keyed` lists the caller-minted IDs a create replays by (an optional one when
-/// the caller may send none), `SAME` refuses a replay its first answer no longer fits,
-/// and `CALL` runs it with the names bound in the table's header.
+/// the caller may send none), `SAME` (see [`crate::replay`]) refuses a replay its first
+/// answer no longer fits, and `CALL` runs it with the names bound in the table's header.
 macro_rules! commands {
     (
         |$tx:ident, $who:ident, $sealing:ident, $trusted:ident, $c:ident|
         $(
             $(#[doc = $doc:literal])*
             $variant:ident($payload:ty) -> $written:ident($answer:ty) $(as $unbox:tt)?
-            $(keyed [$($id:expr),*] $(if $same:path)?)? => $call:expr;
+            $(keyed [$($id:expr),*] if $same:path)? => $call:expr;
         )*
     ) => {
         /// One change to authored configuration, applied in one transaction.
@@ -143,12 +143,6 @@ macro_rules! commands {
                 type Written = $answer;
 
                 fn apply(&self, at: &mut Call<'_>) -> Result<$answer, RpcError> {
-                    let ids: Vec<&str> = {
-                        let $c = self;
-                        let _ = $c;
-                        let keyed: Vec<Option<&str>> = vec![$($(Option::<&str>::from($id)),*)?];
-                        keyed.into_iter().flatten().collect()
-                    };
                     let run = |at: &mut Call<'_>| -> Result<$answer, RpcError> {
                         let $c = self;
                         let $tx: &mut dyn Tx = &mut *at.tx;
@@ -156,16 +150,18 @@ macro_rules! commands {
                         let _ = ($sealing, $trusted);
                         $call
                     };
-                    type Same = fn(&mut dyn Tx, &Actor, &$payload, &$answer) -> Result<(), RpcError>;
-                    let same = None::<Same> $($(.or(Some($same as Same)))?)?;
-                    let fits = |at: &mut Call<'_>, first: &$answer| match same {
-                        Some(same) => same(&mut *at.tx, at.who, self, first),
-                        None => Ok(()),
-                    };
-                    match ids.is_empty() {
-                        true => run(at),
-                        false => replayable(at, self, &ids, fits, run),
-                    }
+                    $(
+                        let $c = self;
+                        let ids: Vec<&str> =
+                            [$(Option::<&str>::from($id)),*].into_iter().flatten().collect();
+                        if !ids.is_empty() {
+                            let fits = |at: &mut Call<'_>, first: &$answer| {
+                                $same(&mut *at.tx, at.who, self, first)
+                            };
+                            return replayable(at, self, &ids, fits, run);
+                        }
+                    )?
+                    run(at)
                 }
 
                 fn to_command(&self) -> Value {
@@ -181,26 +177,36 @@ macro_rules! commands {
             }
         )*
     };
+    ($($row:tt)*) => {
+        compile_error!(
+            "a `commands!` row reads `Variant(Payload) -> Written(Answer) [as *] \
+             [keyed [IDS] if SAME] => CALL;`: a keyed row states its replay rule \
+             with `if SAME`, a fn from `crate::replay`"
+        );
+    };
 }
 
 commands! {
     |tx, who, sealing, trusted, c|
     /// Create a Project with its Default Environment.
     CreateProject(CreateProject) -> Project(ProjectCreated)
-        keyed [c.id.as_str(), c.default_environment.as_str()]
+        keyed [c.id.as_str(), c.default_environment.as_str()] if crate::replay::any
         => crate::project::create_project(tx, who, c);
     /// Rename a Project; its Namespaces stay.
     RenameProject(RenameProject) -> ProjectRenamed(ProjectSummary)
         => crate::project::rename_project(tx, who, c);
     /// Create an empty Environment.
     CreateEnvironment(CreateEnvironment) -> Environment(EnvironmentCreated)
-        keyed [c.id.as_str()] => crate::project::create_environment(tx, who, c);
+        keyed [c.id.as_str()] if crate::replay::project
+        => crate::project::create_environment(tx, who, c);
     /// Create an image Service, or an empty one.
     CreateService(CreateService) -> Service(ServiceStaged)
-        keyed [c.id.as_str()] => crate::service::create_service(tx, who, c);
+        keyed [c.id.as_str()] if crate::replay::service
+        => crate::service::create_service(tx, who, c);
     /// Create a Service that builds a GitHub repository.
     CreateGitService(crate::CreateGitService) -> Service(ServiceStaged)
-        keyed [c.id.as_str()] => crate::git::create_git_service(tx, who, c, trusted);
+        keyed [c.id.as_str()] if crate::replay::git_service
+        => crate::git::create_git_service(tx, who, c, trusted);
     /// Rename a Service, keeping its Private DNS name.
     RenameService(RenameService) -> ServiceRenamed(ServiceStaged)
         => crate::service::rename_service(tx, who, c);
@@ -209,7 +215,8 @@ commands! {
         => crate::service::remove_service(tx, who, c);
     /// Create a Volume, optionally mounted into Services.
     CreateVolume(CreateVolume) -> Volume(VolumeStaged)
-        keyed [c.id.as_str()] => crate::volume::create_volume(tx, who, c);
+        keyed [c.id.as_str()] if crate::replay::volume
+        => crate::volume::create_volume(tx, who, c);
     /// Change a Volume's storage before its first Deployment is requested.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
         => crate::volume::set_storage(tx, who, c);
@@ -224,7 +231,8 @@ commands! {
         => crate::volume::rename_volume(tx, who, c);
     /// Create a Config, optionally mounted into Services.
     CreateConfig(CreateConfig) -> Config(ConfigStaged)
-        keyed [c.id.as_str()] => crate::config_item::create_config(tx, who, c);
+        keyed [c.id.as_str()] if crate::replay::config
+        => crate::config_item::create_config(tx, who, c);
     /// Put a file into a Config, replacing one of that name.
     PutConfigFile(PutConfigFile) -> Config(ConfigStaged)
         => crate::config_item::put_file(tx, who, c);
@@ -247,7 +255,7 @@ commands! {
     Edit(Edit) -> Edited(Edited) => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
-        keyed [c.id.as_deref()] if crate::review::publish::same_environment
+        keyed [c.id.as_deref()] if crate::replay::publish
         => crate::review::publish::publish(tx, who, c, trusted);
     /// Stage a guarded Restore or Undo of an immutable Saved revision.
     StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
@@ -257,7 +265,8 @@ commands! {
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
     /// or queue again what an ended Deployment froze.
     Admit(Admit) -> Deployment(crate::DeploymentSummary)
-        keyed [c.id().as_str()] => crate::deployment::admit::admit(tx, who, c, trusted);
+        keyed [c.id().as_str()] if crate::replay::admit
+        => crate::deployment::admit::admit(tx, who, c, trusted);
     /// Hand a queued Deployment to a runner now.
     Start(Start) -> Deployment(crate::DeploymentSummary)
         => crate::deployment::start(tx, who, &c.deployment);
@@ -275,7 +284,8 @@ commands! {
         => crate::domain::remove_domain(tx, who, c, trusted);
     /// Make a Branch of an Environment.
     CreateBranch(crate::CreateBranch) -> Branch(crate::Branched)
-        keyed [c.id.as_str()] => crate::branch::create_branch(tx, who, c);
+        keyed [c.id.as_str()] if crate::replay::branch
+        => crate::branch::create_branch(tx, who, c);
     /// Sync one Environment's changes into another of its Project: staged there,
     /// never deleting or deploying.
     Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, sealing, c);

@@ -8,12 +8,14 @@ repository.workspace = true
 [dependencies]
 async-trait = "0.1.92"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "0.22.1"
 bollard = { version = "0.21.0", features = ["json_data_content"] }
 bytes = "1.12.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
 clap = { version = "4.6.6", features = ["derive"] }
 defguard_wireguard_rs = "=0.8.0"
 netlink-packet-wireguard = "=0.2.4"
+fastrand = "2.5.0"
 fs2 = "0.4.3"
 futures-util = { version = "0.3.34", features = ["sink"] }
 hickory-server = "0.26.1"
@@ -34,6 +36,7 @@ ployz-core.workspace = true
 ployz-build.workspace = true
 rcgen = "0.14.6"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
+url = "2.5.8"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 sd-notify = { version = "0.5.0", features = ["fdstore"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -57,7 +60,6 @@ verify-faults = []
 
 [dev-dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http2"] }
-base64 = "0.22.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true

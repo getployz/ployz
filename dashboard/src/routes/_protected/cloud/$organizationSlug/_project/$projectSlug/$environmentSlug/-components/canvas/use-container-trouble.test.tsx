@@ -19,10 +19,10 @@ const MINUTE = 60_000;
 const scope = { organizationSlug: "acme", environmentId: "env" };
 const machine = machineId("a");
 
-const markerAt = (kind: MetricMarker["kind"], atMs: number): MetricMarker => ({
-  machine_id: machine, container_id: containerId("c"), service_id: serviceId("s"),
-  service: "ns/web", replica: "web-1", ts: atMs * 1e6, kind,
-});
+const markerAt = (kind: MetricMarker["kind"], atMs: number): MetricMarker => {
+  const base = { machine_id: machine, container_id: containerId("c"), service_id: serviceId("s"), service: "ns/web", replica: "web-1", ts: atMs * 1e6 };
+  return kind === "exit" ? { ...base, kind, oom: false, stopped: false } : { ...base, kind };
+};
 const oomAt = (atMs: number) => markerAt("oom", atMs);
 const readWith = (first: MetricMarker, ...rest: MetricMarker[]): MetricRead => ({
   type: "history",

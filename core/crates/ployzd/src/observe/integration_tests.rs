@@ -12,6 +12,7 @@ use super::{
     frame::{self, Event, Frames, Stream},
     harvest::Harvester,
     layout::{GAPS_FILE, LogFileName, StoreRoot},
+    ship::Outbox,
 };
 use crate::test_dir::TestDir;
 
@@ -133,7 +134,8 @@ async fn every_line_through_six_rotations_and_removal_is_stored_exactly_once() {
         let docker_root = docker_root.clone();
         let store = store.clone();
         let data_dir = test_root.0.clone();
-        async move { Harvester::run(client, &docker_root, store, data_dir).await }
+        let crashes = Outbox::open(&store).unwrap();
+        async move { Harvester::run(client, &docker_root, store, data_dir, crashes).await }
     });
     tokio::time::sleep(Duration::from_secs(1)).await;
 

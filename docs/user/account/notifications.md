@@ -14,10 +14,14 @@ Each kind of email has a row, set to **Email** or **None**:
   track of it partway. The email names the service that failed and the commit GitHub deployed
   when it can tell, and links to the logs. A deploy you start yourself doesn't send one.
 - **Failed automatic upgrades**: when an automatic server upgrade fails.
+- **Crashed services**: when a service's replica exits with an error or runs out of memory. The
+  email names the service and the Server, says how many times it crashed, and gives the last
+  exit code. A service that keeps crashing sends at most one email an hour, with the crashes since
+  the last one counted in. A stop, a restart or a Deploy you asked for doesn't send one.
 
 Everything starts at **Email**. A change saves as you pick it.
 
-Ployz Cloud sends all three kinds. An uptime email that couldn't go out within an hour of the
+Ployz Cloud sends all four kinds. An uptime email that couldn't go out within an hour of the
 check going down or recovering is skipped, not sent late.
 
 ## Turn an email off from the email
