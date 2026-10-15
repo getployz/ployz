@@ -7,7 +7,7 @@ use std::{
 use defguard_wireguard_rs::{
     Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
-use ployz_core::{MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
+use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
 use ployzd::network::{NetworkError, apply_firewall_rules};
 
 const TEST_NAME: &str = "mesh_firewall_policy";
@@ -347,6 +347,10 @@ fn mesh_firewall_policy() {
     connect(&source, "fdcc::1", "fdcc::2", MACHINE_API_PORT);
     assert_eq!(management_api.peer(), "fdcc::1");
 
+    let mut gossip = datagram_server(&target, "fdcc::2", CORROSION_GOSSIP_PORT);
+    send_datagram(&source, "fdcc::1", "fdcc::2", CORROSION_GOSSIP_PORT);
+    assert_eq!(gossip.peer(), "fdcc::1");
+
     let mut local_ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
     connect(&target, "fdcc::2", "fdcc::2", UNREGISTRY_PORT);
     assert_eq!(local_ingest.peer(), "fdcc::2");
@@ -365,6 +369,14 @@ fn mesh_firewall_policy() {
 
     let _management_api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
     assert_connection_denied(&container, "fd00::2", "fdcc::2", MACHINE_API_PORT);
+
+    let mut gossip = datagram_server(&target, "fdcc::2", CORROSION_GOSSIP_PORT);
+    send_datagram(&container, "fd00::2", "fdcc::2", CORROSION_GOSSIP_PORT);
+    assert_eq!(
+        gossip.peer_within(1),
+        None,
+        "gossip arrived from outside the mesh"
+    );
 }
 
 #[test]
@@ -567,6 +579,17 @@ impl Server {
         output.read_line(&mut ready).unwrap();
         assert_eq!(ready.trim(), "READY");
         Self { child, output }
+    }
+
+    fn peer_within(&mut self, seconds: u64) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        while std::time::Instant::now() < deadline {
+            if self.child.try_wait().unwrap().is_some() {
+                return Some(self.peer());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        None
     }
 
     fn peer(&mut self) -> String {
