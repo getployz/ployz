@@ -204,7 +204,7 @@ export const sessionsBy = Effect.fn("WebAnalytics.sessionsBy")(function* (query:
   const { drizzle } = yield* Database;
   const plan = yield* planned(query);
   const parts: SQL[] = [];
-  if (plan.days !== null) parts.push(sql`select value, visits, bounces, total_duration ${dailyRows(query, plan.days, dim)}`);
+  if (plan.days !== null) parts.push(sql`select value, visits, bounces, total_duration ${dailyRows(query, plan.days, dim)} and visits > 0`);
   for (const edge of plan.edges) {
     parts.push(sql`
       select ${column(dim)} as value, count(*)::bigint as visits, count(*) filter (where pageviews = 1)::bigint as bounces,
