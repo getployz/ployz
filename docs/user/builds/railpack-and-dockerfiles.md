@@ -95,11 +95,12 @@ A token can't get a Dockerfile `FROM` a private image: use a public base image.
 
 Build steps reach the internet over IPv4, so package registries and Git hosts work. They can't
 reach the server running the build, the private network Ployz runs between your servers, or your
-services on it. They see your other servers only as the internet does, at their public addresses.
-Fetch what a build needs from the internet, and talk to your services after deploy.
+services on it. Fetch what a build needs from the internet, and talk to your services after
+deploy.
 
-A build step can still reach other machines on the build server's own local network, like a cloud
-VPC or office LAN, the way the server itself can. Don't leave anything there open without a login.
+A build step can still reach your other servers at their public addresses, and anything on the
+build server's own local network, like a cloud VPC or office LAN, including your other servers
+there. Don't leave anything on those addresses open without a login.
 
 A Dockerfile `ADD` of a URL or Git repository is downloaded by the server running the build, not
 by a build step.
