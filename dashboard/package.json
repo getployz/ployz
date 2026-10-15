@@ -11,7 +11,6 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "prepare": "git config merge.ours.driver true 2>/dev/null || true",
     "dev": "pnpm sdk && portless ployz-cloud vite dev",
     "build": "pnpm sdk && pnpm build:app",
     "start": "node --experimental-loader=@opentelemetry/instrumentation/hook.mjs --import @opentelemetry/auto-instrumentations-node/register .output/server/index.mjs",

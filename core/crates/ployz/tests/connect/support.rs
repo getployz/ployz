@@ -19,13 +19,14 @@ use ployz_core::{
     DataLoss, DataLossConfirmation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, ForgetRequest, Forgotten, Left, LeftPhase, LocalMachinePhase,
     MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
-    MachineObservation, MachinePath, MachineRpc, MachineRpcServer, MachineStorageObservation,
+    MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
     QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode,
     RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, ServingPointer,
     ServingPointerPublication, ServingPointerRead, VolumeInventory, VolumeObservationFailure,
     VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
+use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -50,7 +51,7 @@ pub(super) async fn serve_discovery(
     let server = tokio::spawn(
         Server::builder()
             .add_service(
-                MachineRpcServer::new(service)
+                MachineRpcServer::new(Fake(service))
                     .send_compressed(CompressionEncoding::Gzip)
                     .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
             )
@@ -350,14 +351,11 @@ impl Connector for CountingConnector {
 }
 
 #[tonic::async_trait]
-impl MachineRpc for DiscoveryService {
-    type ExecStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type BuildStream = ReceiverStream<Result<OpaquePayload, Status>>;
-
+impl FakeMachine for DiscoveryService {
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
-    ) -> Result<Response<Self::BuildStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         let recorder = self
             .builds
             .clone()
@@ -495,11 +493,8 @@ impl MachineRpc for DiscoveryService {
                 recorder.retained.store(false, Ordering::SeqCst);
             }
         });
-        Ok(Response::new(ReceiverStream::new(receiver)))
+        Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
     }
-    type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type TailLogsStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type RuntimeWatchStream = ReceiverStream<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
         &self,
@@ -578,13 +573,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn enroll(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn register(
         &self,
         request: Request<OpaquePayload>,
@@ -634,13 +622,6 @@ impl MachineRpc for DiscoveryService {
         Ok(Response::new(
             RpcResponse::from(registered).encode().unwrap(),
         ))
-    }
-
-    async fn set_management_client(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 
     async fn list_machines(
@@ -813,14 +794,6 @@ impl MachineRpc for DiscoveryService {
             RpcResponse::from(capacity.clone()).encode().unwrap(),
         ))
     }
-    async fn prepare_volumes(
-        &self,
-        _request: tonic::Request<ployz_core::OpaquePayload>,
-    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "storage preparation not supplied by this fixture",
-        ))
-    }
 
     async fn list_volumes(
         &self,
@@ -872,32 +845,6 @@ impl MachineRpc for DiscoveryService {
             })
         };
         Ok(Response::new(response.encode().unwrap()))
-    }
-
-    async fn inspect_volume_copy(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-
-    async fn set_volume_copy(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
-    }
-    async fn seed_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented(
-            "Volume switch verbs are not used by this fixture",
-        ))
     }
 
     async fn remove_volume(
@@ -1001,7 +948,7 @@ impl MachineRpc for DiscoveryService {
     async fn exec(
         &self,
         request: Request<Streaming<OpaquePayload>>,
-    ) -> Result<Response<Self::ExecStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         let frames = self
             .exec_frames
             .as_ref()
@@ -1011,19 +958,19 @@ impl MachineRpc for DiscoveryService {
             .message()
             .await?
             .ok_or_else(|| Status::invalid_argument("missing exec config"))?;
-        Ok(Response::new(tokio_stream::iter(
+        Ok(Response::new(Box::pin(tokio_stream::iter(
             frames
                 .iter()
                 .map(|frame| Ok(frame.encode().unwrap()))
                 .collect::<Vec<_>>(),
-        )))
+        ))))
     }
 
     /// Every Server's Log Store holds one line of a removed `app/gone`.
     async fn log_history(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap()).unwrap();
         let RpcRequestBody::LogHistory(history) =
@@ -1064,7 +1011,7 @@ impl MachineRpc for DiscoveryService {
         for row in &rows {
             payloads.push(Ok(row.encode().unwrap()));
         }
-        Ok(Response::new(tokio_stream::iter(payloads)))
+        Ok(Response::new(Box::pin(tokio_stream::iter(payloads))))
     }
 
     /// A Server process's log is two lines, the second leaking an AWS key; any other
@@ -1072,7 +1019,7 @@ impl MachineRpc for DiscoveryService {
     async fn tail_logs(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::TailLogsStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         self.stream_opens.fetch_add(1, Ordering::SeqCst);
         if let Some(status) = &self.tail_failure {
             return Err(status.clone());
@@ -1082,7 +1029,7 @@ impl MachineRpc for DiscoveryService {
             return Err(Status::invalid_argument("expected tail_logs"));
         };
         let ployz_core::LiveLogTarget::Machine(service) = tail.target else {
-            return Ok(Response::new(tokio_stream::iter(Vec::new())));
+            return Ok(Response::new(Box::pin(tokio_stream::iter(Vec::new()))));
         };
         let metadata = ployz_core::LogMetadata {
             origin: ployz_core::LogOrigin::Machine { service },
@@ -1101,13 +1048,13 @@ impl MachineRpc for DiscoveryService {
             };
             frames.push(Ok(entry.encode().unwrap()));
         }
-        Ok(Response::new(tokio_stream::iter(frames)))
+        Ok(Response::new(Box::pin(tokio_stream::iter(frames))))
     }
 
     async fn runtime_watch(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         self.watch_opens.fetch_add(1, Ordering::SeqCst);
         self.watch_accepts_gzip.store(
             request
@@ -1124,7 +1071,9 @@ impl MachineRpc for DiscoveryService {
         let watch_request = op::RuntimeWatch::from_request_body(decoded.body)
             .map_err(|error| Status::invalid_argument(error.to_string()))?;
         self.watch_requests.lock().unwrap().push(watch_request);
-        Ok(Response::new(ReceiverStream::new(self.watch.subscribe())))
+        Ok(Response::new(Box::pin(ReceiverStream::new(
+            self.watch.subscribe(),
+        ))))
     }
 
     async fn list_images(
@@ -1176,18 +1125,6 @@ impl MachineRpc for DiscoveryService {
         ))
     }
 
-    async fn mint_build_grant(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-    async fn inspect_build_grant(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
     async fn publish_serving_pointer(
         &self,
         request: Request<OpaquePayload>,
@@ -1237,12 +1174,6 @@ impl MachineRpc for DiscoveryService {
             .unwrap(),
         ))
     }
-    async fn prune_images(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
     async fn pull_image(
         &self,
         _request: Request<OpaquePayload>,
@@ -1280,13 +1211,6 @@ impl MachineRpc for DiscoveryService {
                 .encode()
                 .unwrap(),
         ))
-    }
-
-    async fn publish_certificate_material(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
 
     async fn update_machine(
@@ -1564,7 +1488,7 @@ pub(super) async fn connected_client(
     let (incoming, receiver) = mpsc::unbounded_channel();
     let server = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(service))
+            .add_service(MachineRpcServer::new(Fake(service)))
             .serve_with_incoming(tokio_stream::wrappers::UnboundedReceiverStream::new(
                 receiver,
             )),

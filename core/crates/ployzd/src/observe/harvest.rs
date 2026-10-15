@@ -6,13 +6,15 @@ use std::{
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     pin::Pin,
+    str::FromStr,
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use bollard::{
     Docker,
     errors::Error as DockerError,
-    models::{ContainerConfig, ContainerInspectResponse, EventMessage},
+    models::{ContainerConfig, ContainerInspectResponse, ContainerState, EventMessage},
     query_parameters::EventsOptionsBuilder,
 };
 use futures_util::{Stream, StreamExt};
@@ -36,6 +38,7 @@ use super::{
         sampler,
         segment::{self, Row},
     },
+    ship::Outbox,
 };
 use crate::docker::{
     LABEL_DEPLOYMENT, LABEL_HOOK, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
@@ -53,6 +56,7 @@ const DIR_MASK: WatchMask = WatchMask::CREATE.union(WatchMask::ONLYDIR);
 const SYNC_ATTEMPTS: usize = 8;
 const GAP_BOUND_READ_BYTES: u64 = 1 << 20;
 const EXIT_CODE_ATTRIBUTE: &str = "exitCode";
+const SIGNAL_ATTRIBUTE: &str = "signal";
 const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 type DockerEvents = Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
@@ -105,9 +109,78 @@ pub(super) struct Harvester {
     /// The newest Docker event seen. A reconnect resumes from it, so events
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
-    /// Service containers whose exit was marked; their next start is a
-    /// restart.
-    exited: HashSet<ContainerId>,
+    /// What the events said of each container's current run.
+    runs: HashMap<ContainerId, Run>,
+    /// Exits that wait on the inspect that follows them: Docker can send
+    /// `die` before `oom`, or drop the `oom` event.
+    exits: HashMap<ContainerId, Vec<Exit>>,
+    /// The `Config.StopSignal` the last inspect gave, for an exit whose own
+    /// inspect finds the container gone.
+    stop_signals: HashMap<ContainerId, Signal>,
+    crashes: Arc<Outbox>,
+}
+
+/// The evidence Docker's events gave about one run of a container.
+#[derive(Debug, Default)]
+struct Run {
+    oom: bool,
+    /// The signals Docker was asked to send it, as `docker stop` does.
+    kills: Vec<Signal>,
+    /// Docker's stop API stopped it, whatever signal it sent. A bare
+    /// `docker kill` sends no `stop` event.
+    stop_requested: bool,
+    exited: bool,
+}
+
+/// An exit and its run's evidence, waiting on the inspect that follows it.
+#[derive(Debug)]
+struct Exit {
+    marker: MetricMarker,
+    oom: bool,
+    kills: Vec<Signal>,
+    stop_requested: bool,
+    /// The harvester saw nothing of the run before its exit, as after a
+    /// restart of `ployz observe` while Docker stopped the container.
+    unseen: bool,
+    stop_signal: Option<Signal>,
+}
+
+impl Exit {
+    /// The exit's marker, with the OOM kill taken from `state` only when
+    /// `state` describes this run: a later run's inspect says nothing of it.
+    fn settle(self, state: Option<&ContainerState>, stop_signal: Option<Signal>) -> MetricMarker {
+        let Exit {
+            mut marker,
+            oom,
+            kills,
+            stop_requested,
+            unseen,
+            stop_signal: stop_signal_at_exit,
+        } = self;
+        let died = marker.ts;
+        let stop_signal = stop_signal.or(stop_signal_at_exit);
+        let is_stop = |signal: Signal| is_stop_signal(signal, stop_signal);
+        if let MarkerKind::Exit {
+            exit_code,
+            oom: killed_by_oom,
+            stopped,
+        } = &mut marker.kind
+        {
+            *killed_by_oom = oom
+                || state
+                    .is_some_and(|state| ends_run(state, died) && state.oom_killed == Some(true));
+            // A stop signal's exit with no run to say who sent it is taken
+            // as `docker stop`.
+            *stopped = stop_requested
+                || kills.into_iter().any(is_stop)
+                || (unseen
+                    && !*killed_by_oom
+                    && exit_code
+                        .and_then(|code| Signal::from_number(code.checked_sub(128)?))
+                        .is_some_and(is_stop));
+        }
+        marker
+    }
 }
 
 impl Harvester {
@@ -116,12 +189,21 @@ impl Harvester {
         docker_root: &Path,
         store: StoreRoot,
         data_dir: PathBuf,
+        crashes: Arc<Outbox>,
     ) -> io::Result<()> {
         let inotify = Inotify::init()?;
         let watches = inotify.watches();
         let mut inotify_events = inotify.into_event_stream([0_u8; 64 * 1024])?;
         let (inspected, mut inspections) = mpsc::unbounded_channel();
-        let mut harvester = Self::new(docker, docker_root, store, watches, inspected, data_dir);
+        let mut harvester = Self::new(
+            docker,
+            docker_root,
+            store,
+            watches,
+            inspected,
+            data_dir,
+            crashes,
+        );
         let mut docker_events = Some(harvester.docker_events());
         let mut reconnect_at = None;
         harvester.rescan();
@@ -177,6 +259,7 @@ impl Harvester {
         watches: Watches,
         inspected: mpsc::UnboundedSender<(ContainerId, Inspected)>,
         data_dir: PathBuf,
+        crashes: Arc<Outbox>,
     ) -> Self {
         Self {
             docker,
@@ -192,14 +275,17 @@ impl Harvester {
             inspected,
             data_dir,
             last_event_nanos: None,
-            exited: HashSet::new(),
+            runs: HashMap::new(),
+            exits: HashMap::new(),
+            stop_signals: HashMap::new(),
+            crashes,
         }
     }
 
     fn docker_events(&self) -> DockerEvents {
         let filters = HashMap::from([
             ("type", vec!["container"]),
-            ("event", vec!["start", "oom", "die"]),
+            ("event", vec!["start", "kill", "stop", "oom", "die"]),
         ]);
         let mut options = EventsOptionsBuilder::default().filters(&filters);
         if let Some(since) = self.last_event_nanos.map(docker_time) {
@@ -241,7 +327,8 @@ impl Harvester {
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
-        self.exited.retain(|id| present.contains(id));
+        self.runs.retain(|id, _| present.contains(id));
+        self.stop_signals.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
         }
@@ -294,17 +381,20 @@ impl Harvester {
         if self.first_delivery(&message) {
             self.mark(id, &message);
         }
+        let held = matches!(
+            self.seen.get(&id),
+            Some(Seen::Pending | Seen::Managed { .. })
+        );
+        if held || self.exits.contains_key(&id) {
+            self.request_inspect(id);
+        }
         if matches!(self.seen.get(&id), Some(Seen::Ignored)) {
             return;
         }
         if let Some(meta) = container_meta(&labelled_by_event(&message)) {
             self.owned_by_event.insert(id, meta);
         }
-        if matches!(
-            self.seen.get(&id),
-            Some(Seen::Pending | Seen::Managed { .. })
-        ) {
-            self.request_inspect(id);
+        if held {
             self.sync(&id);
         }
     }
@@ -326,11 +416,108 @@ impl Harvester {
         let Some(machine_id) = sampler::machine_id(&self.data_dir) else {
             return;
         };
-        let Some(marker) = marker(machine_id, id, message, &mut self.exited) else {
+        let Some((attributes, marker)) = service_event(machine_id, id, message) else {
             return;
         };
-        if let Err(error) = segment::append(&self.store, &[Row::Marker(marker)]) {
+        match message.action.as_deref() {
+            Some("kill") => self.on_kill(id, attributes.get(SIGNAL_ATTRIBUTE)),
+            Some("stop") => self.on_stop(id),
+            Some("oom") => self.on_oom(marker(MarkerKind::Oom)),
+            Some("die") => self.on_die(marker(MarkerKind::Exit {
+                exit_code: attributes
+                    .get(EXIT_CODE_ATTRIBUTE)
+                    .and_then(|code| code.parse().ok()),
+                oom: false,
+                stopped: false,
+            })),
+            Some("start") => self.on_start(marker(MarkerKind::Restart)),
+            _ => {}
+        }
+    }
+
+    fn on_kill(&mut self, id: ContainerId, signal: Option<&String>) {
+        let Some(signal) = signal.and_then(|signal| signal.parse().ok()) else {
+            return;
+        };
+        let run = self.runs.entry(id).or_default();
+        if !run.exited {
+            run.kills.push(signal);
+        }
+    }
+
+    /// Docker can send `stop` after the `die` of the run it stopped, even
+    /// after a later run started. Its stop API signals a run before it sends
+    /// `stop`, so a live run with no `kill` is not the one stopped.
+    fn on_stop(&mut self, id: ContainerId) {
+        let run = self.runs.entry(id).or_default();
+        if !run.exited && !run.kills.is_empty() {
+            run.stop_requested = true;
+        } else if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
+            exit.stop_requested = true;
+        }
+    }
+
+    /// Docker can send `oom` after the `die` of the run it killed.
+    fn on_oom(&mut self, marker: MetricMarker) {
+        let id = marker.container_id;
+        let run = self.runs.entry(id).or_default();
+        if !run.exited {
+            run.oom = true;
+        } else if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
+            exit.oom = true;
+        }
+        self.record(marker);
+    }
+
+    fn on_die(&mut self, marker: MetricMarker) {
+        let id = marker.container_id;
+        let unseen = !self.runs.contains_key(&id);
+        let run = self.runs.entry(id).or_default();
+        run.exited = true;
+        let exit = Exit {
+            marker,
+            oom: std::mem::take(&mut run.oom),
+            kills: std::mem::take(&mut run.kills),
+            stop_requested: std::mem::take(&mut run.stop_requested),
+            unseen,
+            stop_signal: self.stop_signals.get(&id).copied(),
+        };
+        self.exits.entry(id).or_default().push(exit);
+    }
+
+    fn on_start(&mut self, marker: MetricMarker) {
+        let previous = self.runs.insert(marker.container_id, Run::default());
+        if previous.is_some_and(|run| run.exited) {
+            self.record(marker);
+        }
+    }
+
+    /// Settles the exits waiting on `id` with what Docker says now. An
+    /// inspect that Docker did not answer leaves the events' evidence alone.
+    fn settle_exits(&mut self, id: &ContainerId, inspected: &Inspected) {
+        let Some(exits) = self.exits.remove(id) else {
+            return;
+        };
+        let found = match inspected {
+            Inspected::Found(inspected) => Some(&**inspected),
+            Inspected::Gone | Inspected::Unanswered => None,
+        };
+        let state = found.and_then(|inspected| inspected.state.as_ref());
+        let stop_signal = found.and_then(stop_signal);
+        for exit in exits {
+            self.record(exit.settle(state, stop_signal));
+        }
+    }
+
+    fn record(&mut self, marker: MetricMarker) {
+        let id = marker.container_id;
+        let crashed = marker.is_crash();
+        if let Err(error) = segment::append(&self.store, &[Row::Marker(marker.clone())]) {
             tracing::warn!(container = %id, %error, "cannot append a metric marker");
+            return;
+        }
+        if crashed && let Err(error) = self.crashes.push(marker) {
+            tracing::warn!(container = %id, %error, "cannot queue a crash for Cloud");
         }
     }
 
@@ -490,8 +677,17 @@ impl Harvester {
     }
 
     fn on_inspected(&mut self, id: ContainerId, inspected: Inspected) {
+        if let Inspected::Found(found) = &inspected
+            && let Some(signal) = stop_signal(found)
+        {
+            self.stop_signals.insert(id, signal);
+        }
+        // An inspect asked for again began before the newest event, so it
+        // cannot settle an exit that event reported.
         if self.inspecting.remove(&id) == Some(true) {
             self.request_inspect(id);
+        } else {
+            self.settle_exits(&id, &inspected);
         }
         let Some(seen) = self.seen.get(&id).copied() else {
             return;
@@ -597,7 +793,8 @@ impl Harvester {
     fn forget(&mut self, id: &ContainerId) {
         self.seen.insert(*id, Seen::Ignored);
         self.damage.remove(id);
-        self.exited.remove(id);
+        self.runs.remove(id);
+        self.stop_signals.remove(id);
         self.owned_by_event.remove(id);
         self.unwatch_container(id);
     }
@@ -1286,15 +1483,17 @@ fn labelled_by_event(message: &EventMessage) -> ContainerInspectResponse {
     }
 }
 
-/// The marker a Docker event leaves on a Service container. System
-/// containers and pre-deploy hooks get none: no Service shows them, and a
-/// hook is meant to exit.
-fn marker(
+/// The attributes of a Docker event on a Service container, and the marker
+/// it leaves of a given kind. System containers and pre-deploy hooks get
+/// none: no Service shows them, and a hook is meant to exit.
+fn service_event(
     machine_id: MachineId,
     id: ContainerId,
     message: &EventMessage,
-    exited: &mut HashSet<ContainerId>,
-) -> Option<MetricMarker> {
+) -> Option<(
+    HashMap<String, String>,
+    impl FnOnce(MarkerKind) -> MetricMarker,
+)> {
     let labelled = labelled_by_event(message);
     let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
     let attributes = labelled.config.and_then(|config| config.labels)?;
@@ -1303,29 +1502,141 @@ fn marker(
         Namespace::parse(meta.namespace.as_deref()?).ok()?,
         ServiceName::parse(meta.service.as_deref()?).ok()?,
     );
-    let kind = match message.action.as_deref()? {
-        "oom" => MarkerKind::Oom,
-        "die" => {
-            exited.insert(id);
-            MarkerKind::Exit {
-                exit_code: attributes
-                    .get(EXIT_CODE_ATTRIBUTE)
-                    .and_then(|code| code.parse().ok()),
-            }
-        }
-        "start" if exited.remove(&id) => MarkerKind::Restart,
-        _ => return None,
-    };
-    Some(MetricMarker {
+    let ts = message.time_nano.unwrap_or_else(now_nanos);
+    let marker = move |kind| MetricMarker {
         machine_id,
         container_id: id,
         service_id,
         service,
         deployment_id: meta.deployment,
         replica: meta.replica,
-        ts: message.time_nano.unwrap_or_else(now_nanos),
+        ts,
         kind,
-    })
+    };
+    Some((attributes, marker))
+}
+
+/// Whether `state` describes the run that died at `died`. Docker sets
+/// `FinishedAt` before it sends `die`, and starts any later run after it.
+fn ends_run(state: &ContainerState, died: i64) -> bool {
+    let at = |time: &Option<String>| time.as_deref().and_then(rfc3339_nanos);
+    at(&state.started_at)
+        .zip(at(&state.finished_at))
+        .is_some_and(|(started, finished)| started <= finished && finished <= died)
+}
+
+fn stop_signal(inspected: &ContainerInspectResponse) -> Option<Signal> {
+    inspected
+        .config
+        .as_ref()?
+        .stop_signal
+        .as_deref()?
+        .parse()
+        .ok()
+}
+
+/// A signal that stops a container: the image's `StopSignal`, or one
+/// `docker stop`, `docker kill` or a terminal sends. Any other signal, such as
+/// `HUP` to reload or `CONT`, leaves the run going.
+fn is_stop_signal(signal: Signal, stop_signal: Option<Signal>) -> bool {
+    [Signal::TERM, Signal::KILL, Signal::INT, Signal::QUIT].contains(&signal)
+        || Some(signal) == stop_signal
+}
+
+/// A Linux signal number. Realtime signals such as systemd's
+/// `SIGRTMIN+3` have no name in libc, so signals compare as numbers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Signal(u8);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Docker names no such signal.")]
+struct UnknownSignal;
+
+impl Signal {
+    const INT: Self = Self(2);
+    const QUIT: Self = Self(3);
+    const KILL: Self = Self(9);
+    const TERM: Self = Self(15);
+    const RTMIN: u8 = 34;
+    const RTMAX: u8 = 64;
+    /// moby's `pkg/signal` map for Linux, less the realtime range.
+    const NAMES: [(&str, u8); 34] = [
+        ("ABRT", 6),
+        ("ALRM", 14),
+        ("BUS", 7),
+        ("CHLD", 17),
+        ("CLD", 17),
+        ("CONT", 18),
+        ("FPE", 8),
+        ("HUP", 1),
+        ("ILL", 4),
+        ("INT", 2),
+        ("IO", 29),
+        ("IOT", 6),
+        ("KILL", 9),
+        ("PIPE", 13),
+        ("POLL", 29),
+        ("PROF", 27),
+        ("PWR", 30),
+        ("QUIT", 3),
+        ("SEGV", 11),
+        ("STKFLT", 16),
+        ("STOP", 19),
+        ("SYS", 31),
+        ("TERM", 15),
+        ("TRAP", 5),
+        ("TSTP", 20),
+        ("TTIN", 21),
+        ("TTOU", 22),
+        ("URG", 23),
+        ("USR1", 10),
+        ("USR2", 12),
+        ("VTALRM", 26),
+        ("WINCH", 28),
+        ("XCPU", 24),
+        ("XFSZ", 25),
+    ];
+
+    fn from_number(number: i64) -> Option<Self> {
+        let number = u8::try_from(number).ok()?;
+        (1..=Self::RTMAX).contains(&number).then_some(Self(number))
+    }
+
+    /// `RTMIN`, `RTMIN+1` to `RTMIN+15`, `RTMAX-14` to `RTMAX-1` and `RTMAX`.
+    fn realtime(name: &str) -> Option<Self> {
+        let offset = |rest: &str, sign: char| match rest {
+            "" => Some(0),
+            _ => rest.strip_prefix(sign)?.parse::<u8>().ok(),
+        };
+        let number = if let Some(rest) = name.strip_prefix("RTMIN") {
+            let offset = offset(rest, '+')?;
+            (offset <= 15).then(|| Self::RTMIN + offset)?
+        } else {
+            let offset = offset(name.strip_prefix("RTMAX")?, '-')?;
+            (offset <= 14).then(|| Self::RTMAX - offset)?
+        };
+        Some(Self(number))
+    }
+}
+
+/// Docker gives a signal by number in events and by name, with or without
+/// `SIG`, in `Config.StopSignal`.
+impl FromStr for Signal {
+    type Err = UnknownSignal;
+
+    fn from_str(signal: &str) -> Result<Self, Self::Err> {
+        let name = signal.trim().to_ascii_uppercase();
+        if let Ok(number) = name.parse::<i64>() {
+            return Self::from_number(number).ok_or(UnknownSignal);
+        }
+        let name = name.strip_prefix("SIG").unwrap_or(&name);
+        Self::NAMES
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|&(_, number)| Self(number))
+            .or_else(|| Self::realtime(name))
+            .ok_or(UnknownSignal)
+    }
 }
 
 /// Docker's `since` takes seconds with a fractional part.
@@ -1410,6 +1721,7 @@ mod tests {
                 ContainerKind, ContainerMeta, Gap, GapReason, LINKING_FILE, LogFileName, StoreRoot,
             },
             metrics::segment::Row,
+            ship::{self, Outbox},
         },
         test_dir::TestDir,
     };
@@ -2077,6 +2389,7 @@ mod tests {
                 inotify.watches(),
                 inspected,
                 self.root.0.clone(),
+                Outbox::open(&self.store).unwrap(),
             );
             Running {
                 harvester,
@@ -2758,6 +3071,7 @@ mod tests {
             .harvester
             .on_docker_event(event("start", T0 + 4, &service));
         running.harvester.on_docker_event(die);
+        running.settle_exits(|| Inspected::Unanswered);
 
         assert_eq!(
             host.markers(),
@@ -2766,12 +3080,485 @@ mod tests {
                 (
                     T0 + 2,
                     MarkerKind::Exit {
-                        exit_code: Some(137)
+                        exit_code: Some(137),
+                        oom: true,
+                        stopped: false,
                     }
                 ),
                 (T0 + 3, MarkerKind::Restart),
             ]
         );
+    }
+
+    impl Running {
+        /// Answers the inspects an exit waits on, including the one re-asked
+        /// for an event that came while the first was in flight.
+        fn settle_exits(&mut self, inspected: impl Fn() -> Inspected) {
+            let id = ContainerId::parse(ID).unwrap();
+            for _ in 0..3 {
+                if !self.harvester.exits.contains_key(&id) {
+                    return;
+                }
+                self.harvester.on_inspected(id, inspected());
+            }
+            panic!("the exit never settled");
+        }
+    }
+
+    /// An inspect of a container whose image stops it with `signal`.
+    fn stopping_on(signal: &str, state: &ContainerState) -> Inspected {
+        let Inspected::Found(mut found) = inspected(state) else {
+            unreachable!("inspected() describes a found container")
+        };
+        found.config.as_mut().unwrap().stop_signal = Some(signal.to_owned());
+        Inspected::Found(found)
+    }
+
+    fn crashes(host: &Host) -> Vec<MarkerKind> {
+        Outbox::open(&host.store)
+            .unwrap()
+            .oldest(ship::CAP)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.marker.kind)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_oom_kill_queues_one_oom_crash_whatever_order_docker_reports_it_in() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        let oom = |at| event("oom", at, &[service]);
+        let die = |at| event("die", at, &[service, ("exitCode", "137")]);
+        let orders = [
+            ("oom then die", vec![oom(T0 + 1), die(T0 + 2)], true),
+            ("die then oom", vec![die(T0 + 1), oom(T0 + 2)], true),
+            ("die with oom dropped", vec![die(T0 + 1)], false),
+        ];
+        for (order, events, oom_event) in orders {
+            for inspected_after_restart in [false, true] {
+                let host = host().with_machine();
+                let mut running = host.harvester();
+                running
+                    .harvester
+                    .on_docker_event(event("start", T0, &[service]));
+                for event in events.clone() {
+                    running.harvester.on_docker_event(event);
+                }
+                let restart = event("start", T0 + 3, &[service]);
+                if inspected_after_restart {
+                    // Docker clears OOMKilled when it starts the next run.
+                    running.harvester.on_docker_event(restart);
+                    running.settle_exits(|| inspected(&running_after(3, 1)));
+                } else {
+                    running.settle_exits(|| inspected(&restarting(0, 1, 137, true)));
+                    running.harvester.on_docker_event(restart);
+                }
+                assert_eq!(
+                    crashes(&host),
+                    [MarkerKind::Exit {
+                        exit_code: Some(137),
+                        oom: oom_event || !inspected_after_restart,
+                        stopped: false,
+                    }],
+                    "{order}, inspected after the restart: {inspected_after_restart}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_exit_does_not_take_the_oom_kill_of_a_later_run() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        for message in [
+            event("start", T0 + 1, &[service]),
+            event("die", T0 + 2, &[service, ("exitCode", "1")]),
+            event("start", T0 + 3, &[service]),
+            event("die", T0 + 5, &[service, ("exitCode", "137")]),
+        ] {
+            running.harvester.on_docker_event(message);
+        }
+        running.settle_exits(|| inspected(&exited(3, 5, 137, true)));
+        assert_eq!(
+            crashes(&host),
+            [
+                MarkerKind::Exit {
+                    exit_code: Some(1),
+                    oom: false,
+                    stopped: false,
+                },
+                MarkerKind::Exit {
+                    exit_code: Some(137),
+                    oom: true,
+                    stopped: false,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signal_that_does_not_stop_the_container_does_not_hide_the_crash_after_it() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        for signal in ["1", "SIGHUP", "USR1", "12", "18", "CONT", "28"] {
+            let host = host().with_machine();
+            let mut running = host.harvester();
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + 1, &[service]));
+            running.harvester.on_docker_event(event(
+                "kill",
+                T0 + 2,
+                &[service, ("signal", signal)],
+            ));
+            running
+                .harvester
+                .on_docker_event(event("die", T0 + 3, &[service, ("exitCode", "1")]));
+            running.settle_exits(|| inspected(&exited(1, 3, 1, false)));
+            assert_eq!(
+                crashes(&host),
+                [MarkerKind::Exit {
+                    exit_code: Some(1),
+                    oom: false,
+                    stopped: false,
+                }],
+                "signal {signal}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kill_with_the_images_stop_signal_is_a_stop() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        for code in [0, 143] {
+            for gone_at_exit in [false, true] {
+                let host = host().with_machine();
+                let mut harvester = host.harvester();
+                let id = host.id();
+                harvester
+                    .harvester
+                    .on_inspected(id, stopping_on("SIGWINCH", &running(1)));
+                harvester
+                    .harvester
+                    .on_docker_event(event("start", T0 + 1, &[service]));
+                harvester.harvester.on_docker_event(event(
+                    "kill",
+                    T0 + 2,
+                    &[service, ("signal", "28")],
+                ));
+                let exit_code = code.to_string();
+                harvester.harvester.on_docker_event(event(
+                    "die",
+                    T0 + 3,
+                    &[service, ("exitCode", &exit_code)],
+                ));
+                if gone_at_exit {
+                    harvester.settle_exits(|| Inspected::Gone);
+                } else {
+                    harvester.settle_exits(|| stopping_on("WINCH", &exited(1, 3, code, false)));
+                }
+                assert_eq!(
+                    host.markers(),
+                    [(
+                        T0 + 3,
+                        MarkerKind::Exit {
+                            exit_code: Some(code),
+                            oom: false,
+                            stopped: true,
+                        }
+                    )],
+                    "exit {code}, gone at exit: {gone_at_exit}"
+                );
+                assert_eq!(crashes(&host), [], "exit {code}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stop_signal_other_than_term_still_counts_as_a_stop() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[service]));
+        running
+            .harvester
+            .on_docker_event(event("kill", T0 + 2, &[service, ("signal", "3")]));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 3, &[service, ("exitCode", "131")]));
+        running.settle_exits(|| inspected(&exited(1, 3, 131, false)));
+        assert_eq!(crashes(&host), []);
+    }
+
+    #[tokio::test]
+    async fn a_stop_signal_exit_of_a_run_observe_never_saw_is_a_stop() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        let cases = [
+            ("143", false, false, true),
+            ("137", false, false, true),
+            ("137", true, true, false),
+            ("1", false, true, false),
+        ];
+        for (code, oom_killed, crashed, stopped) in cases {
+            let host = host().with_machine();
+            let mut running = host.harvester();
+            running
+                .harvester
+                .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", code)]));
+            let exit_code = code.parse().unwrap();
+            running.settle_exits(|| inspected(&exited(0, 1, exit_code, oom_killed)));
+            assert_eq!(
+                host.markers(),
+                [(
+                    T0 + 1,
+                    MarkerKind::Exit {
+                        exit_code: code.parse().ok(),
+                        oom: oom_killed,
+                        stopped,
+                    }
+                )],
+                "exit {code}, OOMKilled {oom_killed}"
+            );
+            assert_eq!(crashes(&host).len(), usize::from(crashed), "exit {code}");
+        }
+
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[service]));
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 2, &[service, ("exitCode", "143")]));
+        running.settle_exits(|| inspected(&exited(1, 2, 143, false)));
+        assert_eq!(
+            crashes(&host).len(),
+            1,
+            "a seen run that exits 143 unasked crashed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_through_dockers_stop_api_is_a_stop_whatever_signal_it_sends() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        let kill = |at| event("kill", at, &[service, ("signal", "10")]);
+        let stop = |at| event("stop", at, &[service]);
+        let die = |at| event("die", at, &[service, ("exitCode", "1")]);
+        let cases = [
+            (
+                "stop before die",
+                vec![kill(T0 + 2), stop(T0 + 3), die(T0 + 4)],
+                false,
+            ),
+            (
+                "stop after die",
+                vec![kill(T0 + 2), die(T0 + 3), stop(T0 + 4)],
+                false,
+            ),
+            ("bare kill", vec![kill(T0 + 2), die(T0 + 3)], true),
+        ];
+        for (case, events, crashed) in cases {
+            for seen_start in [true, false] {
+                let host = host().with_machine();
+                let mut running = host.harvester();
+                if seen_start {
+                    running
+                        .harvester
+                        .on_docker_event(event("start", T0 + 1, &[service]));
+                }
+                for message in events.clone() {
+                    running.harvester.on_docker_event(message);
+                }
+                running.settle_exits(|| inspected(&exited(1, 4, 1, false)));
+                assert_eq!(
+                    crashes(&host),
+                    if crashed {
+                        vec![MarkerKind::Exit {
+                            exit_code: Some(1),
+                            oom: false,
+                            stopped: false,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    "{case}, start seen: {seen_start}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_late_stop_of_an_earlier_run_does_not_hide_the_crash_of_the_live_run() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        for settled_before_stop in [false, true] {
+            let host = host().with_machine();
+            let mut running = host.harvester();
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + 1, &[service]));
+            running
+                .harvester
+                .on_docker_event(event("kill", T0 + 2, &[service, ("signal", "15")]));
+            running
+                .harvester
+                .on_docker_event(event("die", T0 + 3, &[service, ("exitCode", "1")]));
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + 4, &[service]));
+            if settled_before_stop {
+                running.settle_exits(|| inspected(&running_after(4, 3)));
+            }
+            running
+                .harvester
+                .on_docker_event(event("stop", T0 + 5, &[service]));
+            running.settle_exits(|| inspected(&running_after(4, 3)));
+            running
+                .harvester
+                .on_docker_event(event("die", T0 + 6, &[service, ("exitCode", "1")]));
+            running.settle_exits(|| inspected(&exited(4, 6, 1, false)));
+            assert_eq!(
+                crashes(&host),
+                [MarkerKind::Exit {
+                    exit_code: Some(1),
+                    oom: false,
+                    stopped: false,
+                }],
+                "first exit settled before the stop: {settled_before_stop}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_realtime_stop_signal_matches_by_name_and_by_number() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        for configured in ["SIGRTMIN+3", "rtmin+3", "37"] {
+            let host = host().with_machine();
+            let mut harvester = host.harvester();
+            let id = host.id();
+            harvester
+                .harvester
+                .on_inspected(id, stopping_on(configured, &running(1)));
+            harvester
+                .harvester
+                .on_docker_event(event("start", T0 + 1, &[service]));
+            harvester.harvester.on_docker_event(event(
+                "kill",
+                T0 + 2,
+                &[service, ("signal", "37")],
+            ));
+            harvester.harvester.on_docker_event(event(
+                "die",
+                T0 + 3,
+                &[service, ("exitCode", "1")],
+            ));
+            harvester.settle_exits(|| stopping_on(configured, &exited(1, 3, 1, false)));
+            assert_eq!(crashes(&host), [], "StopSignal {configured}");
+        }
+
+        // A run observe never saw that exits on the realtime signal: 128 + 37.
+        let host = host().with_machine();
+        let mut harvester = host.harvester();
+        harvester
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "165")]));
+        harvester.settle_exits(|| stopping_on("SIGRTMIN+3", &exited(0, 1, 165, false)));
+        assert_eq!(crashes(&host), [], "an unseen exit by RTMIN+3");
+    }
+
+    #[tokio::test]
+    async fn a_late_oom_upgrades_an_unseen_runs_pending_exit_to_a_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "137")]));
+        running
+            .harvester
+            .on_docker_event(event("oom", T0 + 2, &[service]));
+        running.settle_exits(|| Inspected::Gone);
+        assert_eq!(
+            crashes(&host),
+            [MarkerKind::Exit {
+                exit_code: Some(137),
+                oom: true,
+                stopped: false,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_zero_exit_queues_one_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
+        running.settle_exits(|| inspected(&exited(0, 1, 1, false)));
+        // A stream resumed from the newest event delivers it again.
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
+        running.settle_exits(|| inspected(&exited(0, 1, 1, false)));
+        assert_eq!(
+            crashes(&host),
+            [MarkerKind::Exit {
+                exit_code: Some(1),
+                oom: false,
+                stopped: false,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clean_exit_or_a_stop_queues_no_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let mut at = T0;
+        let mut next = || {
+            at += 1;
+            at
+        };
+        running
+            .harvester
+            .on_docker_event(event("die", next(), &[service, ("exitCode", "0")]));
+        running.settle_exits(|| Inspected::Unanswered);
+        for code in ["143", "137"] {
+            running
+                .harvester
+                .on_docker_event(event("start", next(), &[service]));
+            running
+                .harvester
+                .on_docker_event(event("kill", next(), &[service, ("signal", "15")]));
+            running
+                .harvester
+                .on_docker_event(event("kill", next(), &[service, ("signal", "9")]));
+            running
+                .harvester
+                .on_docker_event(event("die", next(), &[service, ("exitCode", code)]));
+            running.settle_exits(|| Inspected::Unanswered);
+        }
+        assert_eq!(crashes(&host), []);
+        assert_eq!(
+            host.markers()
+                .iter()
+                .filter(|(_, kind)| matches!(kind, MarkerKind::Exit { stopped: true, .. }))
+                .count(),
+            2
+        );
+
+        running
+            .harvester
+            .on_docker_event(event("start", next(), &[service]));
+        running
+            .harvester
+            .on_docker_event(event("die", next(), &[service, ("exitCode", "2")]));
+        running.settle_exits(|| Inspected::Unanswered);
+        assert_eq!(crashes(&host).len(), 1);
     }
 
     #[tokio::test]

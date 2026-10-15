@@ -10,6 +10,7 @@ import { makePostShibaMailer } from "#/modules/mail/mailer.server";
 import { sampleMail } from "#/modules/mail/sample";
 import { deployFailedMail } from "#/modules/mail/templates/deploys/deploy-failed";
 import { inviteSamples } from "#/modules/mail/templates/organizations/invite";
+import { crashSamples } from "#/modules/mail/templates/servers/crash";
 import { upgradeFailedSamples } from "#/modules/mail/templates/servers/upgrade-failed";
 import { NOTIFICATION_TYPES } from "#/modules/notifications/notification-types";
 import { uptimeAlertSamples } from "#/modules/uptime/alert-mail";
@@ -52,6 +53,12 @@ export async function run() {
       Object.entries(upgradeFailedSamples(origin)).map(([name, content]) => [
         name,
         { ...content, unsubscribe: { label: NOTIFICATION_TYPES["upgrade-failed"].unsubscribe, url: unsubscribe.url } },
+      ]),
+    ),
+    ...Object.fromEntries(
+      Object.entries(crashSamples(origin)).map(([name, content]) => [
+        name,
+        { ...content, unsubscribe: { label: NOTIFICATION_TYPES.crash.unsubscribe, url: unsubscribe.url } },
       ]),
     ),
   };

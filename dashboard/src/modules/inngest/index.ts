@@ -34,6 +34,8 @@ import { createVolumeRunFunctions } from "#/modules/volume-run/volume-run.innges
 import { createSweepOperationOutbox } from "#/modules/operations/outbox.server";
 import { createServiceActFunctions } from "#/modules/service-act/service-act.inngest";
 import { createSendMail } from "#/modules/mail/mail.inngest";
+import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.inngest";
+import { createDeliverPushTargets } from "#/modules/observe-ingest/push-target.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
   return [
@@ -69,5 +71,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createUptimeMaintenanceFunctions(inngest),
     createSendUptimeAlerts(inngest),
     createSendMail(inngest),
+    ...createCrashMailFunctions(inngest),
+    createDeliverPushTargets(inngest),
   ];
 }

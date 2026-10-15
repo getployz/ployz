@@ -43,6 +43,7 @@ pub struct LocalMachine {
 mod container;
 pub(crate) use container::CutRefusal;
 mod management_client;
+mod push_target;
 mod upgrade;
 
 #[derive(Clone)]
@@ -108,6 +109,8 @@ pub enum Error {
     MissingPeerRow(ManagementAddress),
     #[error("at least one Machine update is required")]
     EmptyUpdate,
+    #[error("push target {0}")]
+    InvalidPushTarget(&'static str),
     #[error(transparent)]
     RecordOwner(#[from] RecordOwnerStopped),
     #[error(transparent)]

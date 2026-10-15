@@ -57,6 +57,9 @@ When other issues share the card, the badge adds their count, as in **⚠ OOM +1
 amber, or red when the service is down. Click the ⚠ to open the service's Monitoring tab. A
 server that needs an upgrade or doesn't answer adds nothing to the card.
 
+A crash or OOM kill also emails the organization, as
+[Notifications](../account/notifications.md) describes.
+
 ## See a server's metrics
 
 ```sh

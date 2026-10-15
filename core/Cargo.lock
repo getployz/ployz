@@ -3848,6 +3848,7 @@ dependencies = [
  "ts-rs",
  "unicode-segmentation",
  "unicode-width",
+ "url",
  "uuid",
 ]
 
@@ -3892,9 +3893,11 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "thiserror 2.0.20",
+ "tokio",
  "tonic",
  "tonic-build",
  "ts-rs",
+ "url",
  "uuid",
 ]
 
@@ -3912,6 +3915,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -3972,6 +3976,7 @@ dependencies = [
  "chrono",
  "clap",
  "defguard_wireguard_rs",
+ "fastrand",
  "fs2",
  "futures-util",
  "hex",
@@ -4012,6 +4017,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+ "url",
  "x509-parser",
 ]
 

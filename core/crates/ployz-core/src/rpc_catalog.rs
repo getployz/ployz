@@ -26,9 +26,19 @@
 /// so a service-version bump is one edit (plus the `include!` path in `rpc.rs`, which the
 /// compiler requires to be a literal).
 ///
-/// `Exec` is deliberately absent: it is bidirectionally streamed and schema-blind, so it
-/// has no request variant and is wired up by hand. Its capability is an explicit extra
-/// Container row on the advertisement table.
+/// Bidirectional rows are schema-blind streams of `OpaquePayload`, so they name no
+/// request either:
+///
+/// ```text
+/// Variant: (method, route, command, CAPABILITY, "capability.v1", Advertisement)
+/// ```
+///
+/// `capabilities` rows name a capability with no route of its own: a behaviour of a
+/// route above that a caller may need to know a Machine has.
+///
+/// ```text
+/// CAPABILITY: ("capability.v1", Advertisement)
+/// ```
 ///
 /// Removing a row removes the RPC with no shim: the daemon stops advertising its
 /// capability and refuses the route, and a caller names the capability it lacks.
@@ -43,6 +53,7 @@ macro_rules! rpc_catalog {
                 Enroll: (enroll, "Enroll", EnrollRequest, "enroll", Enrolled, ENROLL_MACHINE_CAPABILITY, "ployz.machine.enroll.v1", Always),
                 Register: (register, "Register", RegisterRequest, "register", Registered, REGISTER_MACHINE_CAPABILITY, "ployz.machine.register.v1", Always),
                 SetManagementClient: (set_management_client, "SetManagementClient", SetManagementClientRequest, "set_management_client", SetManagementClientResponse, SET_MANAGEMENT_CLIENT_CAPABILITY, "ployz.machine.set-management-client.v1", Always),
+                SetPushTarget: (set_push_target, "SetPushTarget", SetPushTargetRequest, "set_push_target", PushTargetSet, SET_PUSH_TARGET_CAPABILITY, "ployz.machine.set-push-target.v1", Always),
                 ListMachines: (list_machines, "ListMachines", ListMachinesRequest, "list_machines", MachineList, LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1", Always),
                 UpdateMachine: (update_machine, "UpdateMachine", UpdateMachineRequest, "update_machine", MachineUpdated, UPDATE_MACHINE_CAPABILITY, "ployz.machine.update.v1", Always),
                 RequestMachineUpgrade: (request_machine_upgrade, "RequestMachineUpgrade", RequestMachineUpgradeRequest, "request_machine_upgrade", MachineUpgradeAttempt, REQUEST_MACHINE_UPGRADE_CAPABILITY, "ployz.machine.upgrade.request.v1", Always),
@@ -74,6 +85,18 @@ macro_rules! rpc_catalog {
                 LogHistory: (log_history, "LogHistory", LogHistoryRequest, "log_history", LOG_HISTORY_CAPABILITY, "ployz.logs.history.v2", Container),
                 TailLogs: (tail_logs, "TailLogs", TailLogsRequest, "tail_logs", TAIL_LOGS_CAPABILITY, "ployz.logs.tail.v1", Container),
                 RuntimeWatch: (runtime_watch, "RuntimeWatch", RuntimeWatchRequest, "runtime_watch", RUNTIME_WATCH_CAPABILITY, "ployz.runtime.watch.v1", Cluster),
+            }
+            bidi_streaming {
+                Exec: (exec, "Exec", "exec", EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1", Container),
+                Build: (build, "Build", "build", BUILD_CAPABILITY, "ployz.build.v1", Container),
+            }
+            capabilities {
+                /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
+                VOLUME_FLOOR_CAPABILITY: ("ployz.volume.copy.floor.v1", Container),
+                /// The daemon can take a Certificate Policy from cluster state.
+                CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
+                /// `Inspect` can report requested current local Machine storage evidence.
+                MACHINE_STORAGE_OBSERVATION_CAPABILITY: ("ployz.machine.storage-observation.v1", Always),
             }
         }
     };

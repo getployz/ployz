@@ -62,9 +62,13 @@ macro_rules! define_capabilities {
         package $package:literal
         unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
         server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
     ) => {
         $(pub const $unary_capability: &str = $unary_capability_name;)+
         $(pub const $stream_capability: &str = $stream_capability_name;)+
+        $(pub const $bidi_capability: &str = $bidi_capability_name;)+
+        $($(#[$extra_meta])* pub const $extra_capability: &str = $extra_capability_name;)+
 
         /// Whether this exact RPC path accepts one buffered request for fan-out.
         /// Client-streaming methods (Exec and Build) require one selected Machine.
@@ -78,43 +82,16 @@ macro_rules! define_capabilities {
             match path {
                 $(concat!("/", $package, ".MachineRpc/", $unary_route) => Some($unary_capability),)+
                 $(concat!("/", $package, ".MachineRpc/", $stream_route) => Some($stream_capability),)+
-                EXEC_PATH => Some(EXEC_CONTAINER_CAPABILITY),
-                BUILD_PATH => Some(BUILD_CAPABILITY),
+                $(concat!("/", $package, ".MachineRpc/", $bidi_route) => Some($bidi_capability),)+
                 _ => None,
             }
         }
 
-        /// gRPC path of the Exec stream.
-        pub const EXEC_PATH: &str = concat!("/", $package, ".MachineRpc/Exec");
-        /// gRPC path of the Build stream.
-        pub const BUILD_PATH: &str = concat!("/", $package, ".MachineRpc/Build");
-
-        /// Bidirectional exec is outside the unary catalog.
-        pub const EXEC_CONTAINER_CAPABILITY: &str = "ployz.container.exec.v1";
-        /// One admitted Build over the existing bidirectional Machine stream.
-        pub const BUILD_CAPABILITY: &str = "ployz.build.v1";
-
-        /// The daemon can take a Certificate Policy from cluster state.
-        pub const CERTIFICATE_POLICY_CAPABILITY: &str = "ployz.certificates.policy.v1";
-
-        /// `SetVolumeCopy` honours `gen`, takes the `floor` want and refuses `stale`.
-        pub const VOLUME_FLOOR_CAPABILITY: &str = "ployz.volume.copy.floor.v1";
-
-        /// `Inspect` can report requested current local Machine storage evidence.
-        pub const MACHINE_STORAGE_OBSERVATION_CAPABILITY: &str =
-            "ployz.machine.storage-observation.v1";
-
         const CATALOGUED_CAPABILITIES: &[(&str, CapabilityAdvertisement)] = &[
             $(($unary_capability, CapabilityAdvertisement::$unary_advertisement),)+
             $(($stream_capability, CapabilityAdvertisement::$stream_advertisement),)+
-            (EXEC_CONTAINER_CAPABILITY, CapabilityAdvertisement::Container),
-            (BUILD_CAPABILITY, CapabilityAdvertisement::Container),
-            (VOLUME_FLOOR_CAPABILITY, CapabilityAdvertisement::Container),
-            (CERTIFICATE_POLICY_CAPABILITY, CapabilityAdvertisement::Always),
-            (
-                MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-                CapabilityAdvertisement::Always,
-            ),
+            $(($bidi_capability, CapabilityAdvertisement::$bidi_advertisement),)+
+            $(($extra_capability, CapabilityAdvertisement::$extra_advertisement),)+
         ];
     };
 }
@@ -387,6 +364,22 @@ pub enum SetManagementClientRequest {
 pub struct SetManagementClientResponse {
     #[ts(type = "string | null")]
     pub capability: Option<ManagementCapability>,
+}
+
+/// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
+///
+/// Strict for the same reason as [`SetManagementClientRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetPushTargetRequest {
+    pub url: Option<url::Url>,
+}
+
+/// The push target the Machine now holds.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PushTargetSet {
+    #[ts(type = "string | null")]
+    pub url: Option<url::Url>,
 }
 
 /// The place one Container creation lands on a Machine. The same slot names the
@@ -812,6 +805,8 @@ macro_rules! define_request_body {
         package $package:literal
         unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
         server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
     ) => {
         /// Commands are closed and own their typed payloads.
         ///
@@ -839,7 +834,17 @@ macro_rules! define_request_body {
                 #[doc = concat!("The `", $stream_command, "` RPC.")]
                 pub struct $stream_variant;
             )+
+            $(
+                #[doc = concat!("The `", $bidi_command, "` stream.")]
+                pub struct $bidi_variant;
+            )+
         }
+
+        $(
+            impl op::$bidi_variant {
+                pub const PATH: &'static str = concat!("/", $package, ".MachineRpc/", $bidi_route);
+            }
+        )+
 
         $(
             impl op::$unary_variant {
@@ -1344,6 +1349,7 @@ define_responses! {
     Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
+    PushTargetSet(PushTargetSet) => "push_target_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1475,6 +1481,36 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Unauthenticated => "unauthenticated",
     ConfirmationRequired => "confirmation_required",
 });
+
+/// How a client may repeat a call that failed. Clients decide this; it never
+/// crosses the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retry {
+    /// Transient: repeat soon, within the call's own budget.
+    Now,
+    /// The daemon did not serve the call: repeat only where the caller waits
+    /// out a restart.
+    AfterRestart,
+    Never,
+}
+
+impl RpcErrorCode {
+    #[must_use]
+    pub fn retry(&self) -> Retry {
+        match self {
+            Self::Unavailable => Retry::Now,
+            Self::InvalidArgument
+            | Self::NotFound
+            | Self::Ambiguous
+            | Self::Unsupported
+            | Self::Conflict
+            | Self::Internal
+            | Self::Unauthenticated
+            | Self::ConfirmationRequired
+            | Self::Unknown(_) => Retry::Never,
+        }
+    }
+}
 
 impl fmt::Display for RpcErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1703,6 +1739,26 @@ mod set_management_client_wire {
     }
 
     #[test]
+    fn push_target_requests_carry_a_url_or_null_and_nothing_else() {
+        let set = serde_json::from_value::<SetPushTargetRequest>(
+            json!({ "url": "https://cloud.example/api/machines/aa/observe" }),
+        )
+        .unwrap();
+        assert_eq!(
+            set.url.map(String::from).as_deref(),
+            Some("https://cloud.example/api/machines/aa/observe")
+        );
+        let clear = serde_json::from_value::<SetPushTargetRequest>(json!({ "url": null })).unwrap();
+        assert_eq!(clear.url, None);
+        for value in [
+            json!({ "url": "not a url" }),
+            json!({ "url": null, "token": "private" }),
+        ] {
+            assert!(serde_json::from_value::<SetPushTargetRequest>(value).is_err());
+        }
+    }
+
+    #[test]
     fn enroll_names_its_role_and_carries_no_pairing() {
         let founder = serde_json::to_value(EnrollRequest {
             role: EnrollAs::Founder {
@@ -1771,26 +1827,21 @@ mod served_capabilities_tests {
             package $package:literal
             unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
             server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
         ) => {
-            [$($unary_capability_name,)+ $($stream_capability_name,)+]
+            [$($unary_capability_name,)+ $($stream_capability_name,)+ $($bidi_capability_name,)+ $($extra_capability_name,)+]
         };
     }
 
     #[test]
-    fn served_capabilities_cover_every_catalog_row_and_the_five_without_one() {
+    fn served_capabilities_cover_every_catalog_row() {
         let served = served_capabilities();
         let rows = crate::rpc_catalog!(catalog_capabilities);
-        let without_row = [
-            "ployz.container.exec.v1",
-            "ployz.build.v1",
-            "ployz.volume.copy.floor.v1",
-            "ployz.certificates.policy.v1",
-            "ployz.machine.storage-observation.v1",
-        ];
-        for name in rows.iter().chain(&without_row) {
-            assert!(served.contains(*name), "{name} is not served");
+        for name in rows {
+            assert!(served.contains(name), "{name} is not served");
         }
-        assert_eq!(served.len(), rows.len() + without_row.len());
+        assert_eq!(served.len(), rows.len());
     }
 }
 
@@ -1813,6 +1864,8 @@ mod streaming_routing_tests {
             package $package:literal
             unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
             server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
         ) => {
             $(assert_eq!(
                 super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $unary_route)),
@@ -1822,20 +1875,16 @@ mod streaming_routing_tests {
                 super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $stream_route)),
                 Some($stream_capability_name),
             );)+
+            $(assert_eq!(
+                super::capability_of(&format!("/ployz.rpc.v1.MachineRpc/{}", $bidi_route)),
+                Some($bidi_capability_name),
+            );)+
         };
     }
 
     #[test]
     fn capability_of_names_every_catalogued_route() {
         crate::rpc_catalog!(assert_capability_of);
-        assert_eq!(
-            super::capability_of("/ployz.rpc.v1.MachineRpc/Exec"),
-            Some("ployz.container.exec.v1")
-        );
-        assert_eq!(
-            super::capability_of("/ployz.rpc.v1.MachineRpc/Build"),
-            Some("ployz.build.v1")
-        );
         assert_eq!(
             super::capability_of("/ployz.rpc.v1.MachineRpc/SetVolumeCopy"),
             Some("ployz.volume.copy.set.v1")

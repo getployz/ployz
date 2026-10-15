@@ -81,7 +81,7 @@ ProtectControlGroups=true
 ProtectHome=read-only
 ProtectKernelTunables=true
 PrivateTmp=true
-RestrictAddressFamilies=AF_UNIX
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=true
 ",
         exe = exe.display(),
@@ -254,6 +254,10 @@ esac"#;
                     exe.path().display()
                 )),
                 "{case}: unit does not run this daemon's binary:\n{unit}"
+            );
+            assert!(
+                unit.contains("\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n"),
+                "{case}: the observer cannot open a socket to Cloud:\n{unit}"
             );
             assert!(
                 !unit.contains("[Install]"),

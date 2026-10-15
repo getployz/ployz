@@ -23,20 +23,23 @@ class CiTest(unittest.TestCase):
             (["dashboard/src/app.tsx"], {"contracts", "cloud"}),
             (["core/crates/ployz/tests/management_connect.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
             (["core/crates/ployzd/src/main.rs"], {"contracts", "rust-lint", "rust-tests"}),
-            (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud", "sdk-types"}),
+            (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud"}),
             (["core/crates/ployz-core/tests/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
+            (["core/crates/ployz-store/src/lib.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
+            (["core/crates/ployz-store/tests/snapshots/agent_tools.json"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud"}),
             (["dashboard/uptime/src/main.rs"], {"contracts", "uptime"}),
             (["dashboard/uptime/Cargo.lock"], {"contracts", "uptime"}),
             (["dashboard/uptime/Dockerfile"], {"contracts", "uptime"}),
             (["dashboard/drizzle/20261011044514_uptime_checks/migration.sql"], {"contracts", "cloud", "uptime"}),
             (["dashboard/src/modules/uptime/incident-fence.ts"], {"contracts", "cloud", "uptime"}),
             (["core/scripts/build-cloud-sdk.sh"], {"contracts", "cloud"}),
+            (["core/scripts/check-sdk-types.sh"], {"contracts", "cloud"}),
             (["core/scripts/pack-release.sh"], {"contracts", "release-contracts"}),
         ]
         for paths, expected in cases:
             with self.subTest(paths=paths):
                 self.assertEqual(ci["select"](paths), expected)
-        for path in [".github/workflows/ci.yml", "core/crates/new-config", "unknown.config"]:
+        for path in [".github/workflows/ci.yml", "core/crates/new-config", "core/crates/not-a-member/src/lib.rs", "unknown.config"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"] - {"release-contracts"})
         for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml", ".github/workflows/release.yml", ".github/workflows/release-contracts.yml"]:
@@ -44,6 +47,12 @@ class CiTest(unittest.TestCase):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
+
+    def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
+        self.assertEqual(
+            ci["sdk_and_config_wasm_crates"](),
+            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-store", "ployz-build"},
+        )
 
     def test_agent_tool_changes_run_the_tool_tests(self):
         # Cloud's `pnpm test` drives the sidebar's tools against the Store; rust-tests drives them through `ployz mcp`.

@@ -45,6 +45,7 @@ if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ]
   esac
   # Replace, don't overwrite: macOS caches the code signature per inode and SIGKILLs a stale one.
   rm -f "$node_out" && cp "$binding" "$node_out"
+  "${CARGO_TARGET_DIR:-target}/$profile_dir/sdk-generated" crates/ployz-sdk/generated
   # The config WASM depends on fewer crates than the addon, so an addon edit often leaves it current.
   wasm_key=
   if [ -n "$key" ]; then

@@ -14,6 +14,7 @@ pub mod layout;
 pub(crate) mod metrics;
 mod query;
 mod serve;
+mod ship;
 pub(crate) mod unit;
 
 use std::{
@@ -71,7 +72,12 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         store.clone(),
         data_dir.to_path_buf(),
     ));
-    harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf()).await
+    let crashes = ship::Outbox::open(&store)?;
+    let machine_dir = data_dir.to_path_buf();
+    let shipper = ship::Shipper::new(crashes.clone(), move || ship::push_target(&machine_dir))
+        .map_err(io::Error::other)?;
+    tokio::spawn(shipper.run());
+    harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
 }
 
 fn lock_store(store: &StoreRoot) -> io::Result<File> {

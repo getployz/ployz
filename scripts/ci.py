@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Select PR checks and verify their aggregate result without optional failures going green."""
 import argparse
+import functools
 import json
 import os
 from pathlib import Path
@@ -8,7 +9,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "sdk-types", "macos-cli", "cloud", "release-contracts"}
+JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud", "release-contracts"}
 NORMAL = JOBS - {"release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
@@ -75,16 +76,15 @@ def select_normal(paths):
             selected.add("macos-cli")
             if crate == "ployz-testkit":
                 continue
-            if crate not in {"ployz", "ployz-core", "ployz-build", "ployz-sdk", "ployz-config-wasm"}:
+            if crate not in sdk_and_config_wasm_crates():
                 return NORMAL.copy()
-            if not relative.startswith("tests/") or crate == "ployz-sdk":
-                selected |= {"cloud", "sdk-types"}
+            # The Cloud's parity tests read ployz-store's snapshots.
+            if not relative.startswith("tests/") or crate == "ployz-sdk" or relative.startswith("tests/snapshots/"):
+                selected.add("cloud")
         elif path == "core/install.sh" or path.startswith("core/relay/"):
             continue
-        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh"}:
+        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh", "core/scripts/check-sdk-types.sh"}:
             selected.add("cloud")
-        elif path == "core/scripts/check-sdk-types.sh":
-            selected.add("sdk-types")
         elif path == "core/scripts/test-missing-ssh-client.sh":
             selected |= RUST
         elif path.startswith(("scripts/", "core/scripts/")) and Path(path).name in CONTRACT_SCRIPTS:
@@ -92,6 +92,26 @@ def select_normal(paths):
         elif not release_inputs_changed([path]):
             return NORMAL.copy()
     return selected
+
+
+@functools.cache
+def sdk_and_config_wasm_crates():
+    metadata = json.loads(
+        subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT / "core")
+    )
+    path_deps = {
+        package["name"]: {
+            dep["name"] for dep in package["dependencies"] if dep.get("path") and dep["kind"] in (None, "build")
+        }
+        for package in metadata["packages"]
+    }
+    shipped, pending = set(), ["ployz-sdk", "ployz-config-wasm"]
+    while pending:
+        name = pending.pop()
+        if name in path_deps and name not in shipped:
+            shipped.add(name)
+            pending.extend(path_deps[name])
+    return shipped
 
 
 def changed_paths(base, head):

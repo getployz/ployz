@@ -19,15 +19,14 @@ ployz-testkit = { path = "crates/ployz-testkit" }
 ts-rs = { version = "12.0.1", features = ["serde-compat", "serde-json-impl", "no-serde-warnings"] }
 
 [workspace.lints.rust]
-# ployz-sdk is the napi exception and does not inherit workspace lints.
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+indexing_slicing = "deny"
+fallible_impl_from = "deny"
+wildcard_enum_match_arm = "deny"
+fn_params_excessive_bools = "deny"
+must_use_candidate = "deny"
 
 [profile.dev]
 # Line tables keep backtraces readable; full DWARF made each test binary ~85% debug info.

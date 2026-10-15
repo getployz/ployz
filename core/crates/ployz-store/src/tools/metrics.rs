@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::ServiceName;
+use ployz_core::metrics::MarkerKind;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -32,12 +33,25 @@ fn ask(cx: &mut Cx<'_>, query: MetricsQuery) -> Result<MetricsAnswer, Stop> {
 }
 
 /// `event` as a tool shows it: when, where, and the kind with its exit code.
+/// An exit's OOM and stop evidence stays out, as in every other reader: the
+/// OOM kill is its own event.
 fn event(event: &MetricEvent) -> Map<String, Value> {
     let mut shown = Map::new();
     shown.insert("at".into(), json!(event.at));
     shown.insert("server".into(), json!(event.server.as_str()));
-    if let Ok(Value::Object(kind)) = serde_json::to_value(event.kind) {
-        shown.extend(kind);
+    match event.kind {
+        MarkerKind::Oom => {
+            shown.insert("kind".into(), json!("oom"));
+        }
+        MarkerKind::Restart => {
+            shown.insert("kind".into(), json!("restart"));
+        }
+        MarkerKind::Exit { exit_code, .. } => {
+            shown.insert("kind".into(), json!("exit"));
+            if let Some(code) = exit_code {
+                shown.insert("exit_code".into(), json!(code));
+            }
+        }
     }
     shown
 }

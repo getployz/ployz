@@ -25,6 +25,7 @@ mod pull_request;
 mod query;
 mod registry;
 mod removal;
+mod replay;
 mod review;
 mod rules;
 mod scope;

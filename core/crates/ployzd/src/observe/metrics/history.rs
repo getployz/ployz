@@ -746,6 +746,8 @@ pub(crate) mod tests {
             T0 + 45 * MIN,
             MarkerKind::Exit {
                 exit_code: Some(137),
+                oom: false,
+                stopped: false,
             },
         );
         append_markers(
@@ -785,7 +787,11 @@ pub(crate) mod tests {
         let tail = marker(
             1,
             T0 + 2 * HOUR + 20 * MIN,
-            MarkerKind::Exit { exit_code: Some(0) },
+            MarkerKind::Exit {
+                exit_code: Some(0),
+                oom: false,
+                stopped: false,
+            },
         );
         append_markers(
             &store,
