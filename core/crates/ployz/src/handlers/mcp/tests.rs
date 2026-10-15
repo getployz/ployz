@@ -97,6 +97,7 @@ struct Seen {
     approval: Option<String>,
     key: Option<String>,
     bearer: String,
+    via: Option<String>,
     body: Value,
 }
 
@@ -122,7 +123,8 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
     let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
     let mut request = String::new();
     reader.read_line(&mut request).unwrap();
-    let (mut length, mut bearer, mut approval, mut key) = (0, String::new(), None, None);
+    let (mut length, mut bearer, mut approval, mut key, mut via) =
+        (0, String::new(), None, None, None);
     loop {
         let mut header = String::new();
         reader.read_line(&mut header).unwrap();
@@ -141,6 +143,7 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
                 .clone_into(&mut bearer),
             "x-ployz-approval" => approval = Some(value.to_owned()),
             "x-ployz-request-key" => key = Some(value.to_owned()),
+            "x-ployz-via" => via = Some(value.to_owned()),
             _ => {}
         }
     }
@@ -155,6 +158,7 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
         approval,
         key,
         bearer,
+        via,
         body: match body.as_slice() {
             [] => Value::Null,
             body => serde_json::from_slice(body).unwrap(),
@@ -184,6 +188,7 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) 
                 approval,
                 key,
                 bearer,
+                via,
                 body,
             } = incoming(&stream);
             let (status, reply) = if path.starts_with("/api/cli/approvals/") && body.is_null() {
@@ -218,6 +223,7 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>, slow: Duration) 
                 approval,
                 key,
                 bearer,
+                via,
                 body,
             });
             write!(
@@ -813,6 +819,17 @@ async fn a_host_that_elicits_asks_the_human_and_an_approval_resends_the_write() 
         .unwrap();
     assert_eq!(decided.path, "/api/cli/approvals/apr_1");
     assert_eq!(decided.bearer, "ployz_acme");
+    assert_eq!(decided.via, None, "the human's answer is not the agent's");
+    let store = seen
+        .iter()
+        .filter(|seen| seen.path.starts_with("/api/config/"));
+    assert!(
+        store.clone().count() >= 2
+            && store
+                .clone()
+                .all(|each| each.via.as_deref() == Some("agent")),
+        "the agent's Store calls speak for an agent: {seen:?}"
+    );
 }
 
 fn removal_asks() -> Value {
@@ -1777,6 +1794,7 @@ mod published {
         assert!(RequestKey::parse(key.as_str()).is_ok());
         assert_eq!(run.bearer, "ployz_acme");
         assert_eq!(run.approval, None);
+        assert_eq!(run.via.as_deref(), Some("agent"));
     }
 
     #[tokio::test]

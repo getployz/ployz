@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
-use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud_account::{self, Credential, StoreCallError, Via};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
@@ -217,9 +217,9 @@ impl Backend<'_> {
                 store.read(who, query).and_then(|view| value(&view))
             }
             (Self::Local(..), Ask::Cloud(_)) => Err(not_here()),
-            (Self::Cloud(credential), Ask::Store(query)) => {
-                called(cloud_account::config_store(credential, "read", query, None).await)
-            }
+            (Self::Cloud(credential), Ask::Store(query)) => called(
+                cloud_account::config_store(credential, Via::Agent, "read", query, None).await,
+            ),
             (Self::Cloud(credential), Ask::Cloud(query)) => called(
                 cloud_account::approved_answer(
                     credential,
@@ -239,9 +239,10 @@ impl Backend<'_> {
                 .write(who, command)
                 .and_then(|written| value(&written)),
             (Self::Local(..), Write::Act(_)) => Err(not_here()),
-            (Self::Cloud(credential), Write::Store(command)) => {
-                written(cloud_account::config_store(credential, "write", command, approval).await)
-            }
+            (Self::Cloud(credential), Write::Store(command)) => written(
+                cloud_account::config_store(credential, Via::Agent, "write", command, approval)
+                    .await,
+            ),
             (Self::Cloud(credential), Write::Act(act)) => written(
                 cloud_account::approved_answer(
                     credential,
@@ -522,7 +523,7 @@ impl Server {
         let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
         let (ran, revision) = tokio::select! {
             biased;
-            ran = published::run_on(&credential, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
+            ran = published::run_on(&credential, Via::Agent, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
             () = context.ct.cancelled() => {
                 return Err(McpError::internal_error("the call was cancelled", None));
             }

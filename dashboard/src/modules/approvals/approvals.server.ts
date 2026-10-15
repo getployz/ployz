@@ -182,6 +182,20 @@ const RefusedReview = Schema.Struct({
   diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
 });
 
+const requester = (caller: Caller) => ({
+  requestedByUserId: caller.userId,
+  credentialKind: caller.credential.kind,
+  credentialId: caller.credential.id,
+  via: caller.via,
+});
+
+/**
+ * A person who asks again for what is pending takes the request over, so their own prompt can approve it: they could
+ * run it from `ployz` anyway. An agent asking again takes nothing, so no other agent's credential inherits the request.
+ */
+const askedAgain = (caller: Caller) =>
+  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller) };
+
 /**
  * Record the Store's `approval_required` as one pending approval per digest and answer the refusal with its ID added
  * as `details.approval_id`. Asking again while it is pending answers the same row. Recording sweeps the Environment's
@@ -204,17 +218,14 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     const [row] = yield* drizzle.insert(operationApprovals).values({
       organizationId,
       subject: diff.environment.id,
-      requestedByUserId: caller.userId,
-      credentialKind: caller.credential.kind,
-      credentialId: caller.credential.id,
-      via: caller.via,
+      ...requester(caller),
       command: command.command,
       review: { effects, diff },
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: { updatedAt: new Date() },
+      set: askedAgain(caller),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
@@ -243,17 +254,14 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     const [row] = yield* drizzle.insert(operationApprovals).values({
       organizationId,
       subject: asked.subject,
-      requestedByUserId: caller.userId,
-      credentialKind: caller.credential.kind,
-      credentialId: caller.credential.id,
-      via: caller.via,
+      ...requester(caller),
       command: asked.verb,
       review: { effects: asked.effects, operation: { ...operation, preview: asked.preview } },
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: { updatedAt: new Date() },
+      set: askedAgain(caller),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleOperation(asked.verb, digest));
@@ -344,7 +352,7 @@ export const decideApproval = <R = never>(
   };
   const row = yield* freshen(found, operationDigest);
   if ("approve" in decision && !mayApprove(caller, row)) {
-    const message = "An agent can't approve this. A person approves it in the Ployz Cloud sidebar.";
+    const message = "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
     return { ok: false, refusal: { code: "forbidden", message, details: { approval: approvalView(row) } } } satisfies Decided;
   }
   if (row.status !== "pending") return settled(row);

@@ -266,7 +266,7 @@ it.live("refuses a ployz approve of a request an agent asked for, and still lets
     }));
     expect(yield* route("org_approval_approve", { id: data ?? "" })).toEqual({
       status: 403,
-      body: { error: { code: "forbidden", message: "An agent can't approve this. A person approves it in the Ployz Cloud sidebar.", details: expect.anything() } },
+      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything() } },
     });
     expect(yield* route("org_approval_deny", { id: logs ?? "" })).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied" } } });
     expect((yield* rows).decided.map(({ status }) => status)).toEqual(["pending", "denied"]);

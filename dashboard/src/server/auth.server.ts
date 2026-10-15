@@ -3,7 +3,8 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
-import { betterAuth } from "better-auth";
+import { betterAuth, type BetterAuthPlugin } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
 import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
@@ -161,6 +162,25 @@ const AuthSchema = {
 /** The `ployz` CLI's device-authorization client id. */
 export const CLI_CLIENT_ID = "ployz-cli";
 
+const BEARER = /^bearer /i;
+
+/**
+ * A `ployz` session token signs in only `ployz`, so nothing answering it sets the session cookie, or `bearer`'s copy of
+ * it in `set-auth-token`, that would sign a browser into the dashboard. Runs before `bearer` and the cookie plugin.
+ */
+const bearerSetsNoCookie = {
+  id: "bearer-sets-no-cookie",
+  hooks: {
+    after: [{
+      matcher: (context) =>
+        BEARER.test(context.request?.headers.get("authorization") ?? context.headers?.get("authorization") ?? ""),
+      handler: createAuthMiddleware(async (context) => {
+        context.context.responseHeaders?.delete("set-cookie");
+      }),
+    }],
+  },
+} satisfies BetterAuthPlugin;
+
 // better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
 // so another signed-in user can neither approve nor deny it.
 const cliSignInPlugins = [
@@ -168,6 +188,7 @@ const cliSignInPlugins = [
     verificationUri: "/device",
     validateClient: (clientId) => clientId === CLI_CLIENT_ID,
   }),
+  bearerSetsNoCookie,
   bearer(),
 ];
 
