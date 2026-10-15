@@ -7,6 +7,7 @@ import type { ConfigCommand, ConfigListing, VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { storeWriteKey } from "#/modules/config-store/store-pending";
 import { CanvasNodeList } from "./CanvasServiceList";
+import type { StoreCanvas } from "./types";
 
 const store = { project: "shop", environment: "production" };
 const volume = asTestDouble<VolumeListing>()({ id: "vol", name: "data", mounts: [], deployed: false, storage: { kind: "docker" }, storage_locked: false, change: null });
@@ -14,7 +15,7 @@ const config = asTestDouble<ConfigListing>()({ id: "cfg", name: "nginx", change:
 
 afterEach(cleanup);
 
-async function show(pending: readonly ConfigCommand[]) {
+async function show(pending: readonly ConfigCommand[], arriving: StoreCanvas["arriving"] = []) {
   const queryClient = new QueryClient();
   for (const command of pending) {
     void new MutationObserver<unknown, Error, { command: ConfigCommand }>(queryClient, { mutationKey: storeWriteKey("acme", command.command), mutationFn: () => new Promise(() => {}) }).mutate({ command });
@@ -24,7 +25,7 @@ async function show(pending: readonly ConfigCommand[]) {
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
   const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", loader: () => ({ store }), component: () => (
-    <CanvasNodeList store={{ services: [], unmountedVolumes: [volume], unmountedConfigs: [config] }} selectedNodeId={null} />
+    <CanvasNodeList store={{ services: [], unmountedVolumes: [volume], unmountedConfigs: [config], arriving }} selectedNodeId={null} />
   ) });
   const router = createRouter({
     routeTree: root.addChildren([protectedRoute.addChildren([organization.addChildren([projectGroup.addChildren([environment])])])]),
@@ -55,4 +56,9 @@ it("dims a Volume and a Config a pending removal is taking away, and only those"
   await show([{ command: "delete_config", environment: store, config: "nginx" }]);
   expect(card("cfg")?.getAttribute("data-leaving")).toBe("true");
   expect(card("vol")?.hasAttribute("data-leaving")).toBe(false);
+});
+
+it("lists a Service, Volume or Config this tab is adding, on a phone too, until the Store answers", async () => {
+  await show([], [{ node: "service", id: "new", name: "worker" }]);
+  expect(document.querySelector('[data-pending-node="worker"]')?.textContent).toContain("Adding");
 });

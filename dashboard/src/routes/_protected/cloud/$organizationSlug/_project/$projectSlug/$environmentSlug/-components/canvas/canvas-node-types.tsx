@@ -1,6 +1,7 @@
 import type { Node } from "@xyflow/react";
 import { Card, CardContent, CardHeader } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
+import { cn } from "#/lib/utils";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
 import { StoreServiceNode } from "./StoreServiceNode";
 import { StoreVolumeNode } from "./StoreVolumeNode";
@@ -26,10 +27,15 @@ export const canvasNodeTypes = {
 };
 
 function PendingNode({ data }: { data: { name: string } }) {
+  return <PendingCard name={data.name} className="h-36 w-72" />;
+}
+
+/** A Service, Volume or Config this tab is adding, until the Store's answer draws it. */
+export function PendingCard({ name, className }: { name: string; className?: string }) {
   return (
-    <Card size="node" className="h-36 w-72 justify-between border-dashed opacity-70" data-pending-node={data.name}>
+    <Card size="node" className={cn("justify-between border-dashed opacity-70", className)} data-pending-node={name}>
       <CardHeader>
-        <div className="truncate font-medium">{data.name}</div>
+        <div className="truncate font-medium">{name}</div>
         <div className="text-sm text-muted-foreground">Adding…</div>
       </CardHeader>
     </Card>
