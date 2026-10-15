@@ -14,6 +14,7 @@ import { cn } from "#/lib/utils";
 import { settingName } from "#/modules/config-store/store-branches";
 import { onMergeCount, onMergeLists, onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { useStoreNeverSyncs } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useGithubWebOrigin } from "#/modules/github/github.queries";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -108,8 +109,12 @@ function OnMergeRow({ row: read, rows, organizationSlug, store, into }: {
   row: MergeRow; rows: readonly MergeRow[]; organizationSlug: string; store: EnvironmentRef; into: string;
 }) {
   const writer = useStoreWriter(organizationSlug);
-  // What the user just did shows at once, until the Store answers.
-  const [row, hold] = useCommitHold(read);
+  // What the user just did shows at once, until the Store answers: an Edit on its row, and every pending Exclude or
+  // Include on the rows it names, a node's on the rows it brings.
+  const [held, hold] = useCommitHold(read);
+  const row = useStoreNeverSyncs(organizationSlug, store.project).reduce((shown, mark) =>
+    mark.environment === store.environment && (mark.rows.includes(shown.row) || mark.off && shown.requires !== null && mark.rows.includes(shown.requires))
+      ? included(shown, !mark.off) : shown, held);
   const [editing, setEditing] = useState(false);
   const { name } = row.name === null ? { name: row.node }
     : isFile(row) ? { name: row.name.slice("files.".length) } : settingName(row.name);
@@ -119,8 +124,7 @@ function OnMergeRow({ row: read, rows, organizationSlug, store, into }: {
   const edited = row.ride === "edited";
   const preview = store.environment ?? "";
   const node = rows.find((entry) => entry.row === row.requires && entry.ride === "excluded");
-  const exclude = (off: boolean) => hold(included(row, !off),
-    writer.commit({ command: "never_sync", environment: store, rows: [off && node ? node.row : row.row], off }));
+  const exclude = (off: boolean) => void writer.commit({ command: "never_sync", environment: store, rows: [off && node ? node.row : row.row], off });
   const land = (value?: string) => hold(landing(row, value),
     writer.commit({ command: "set_merge_value", environment: store, into: { project: store.project, environment: into }, row: row.row, value }));
   return (
