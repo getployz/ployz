@@ -9,8 +9,8 @@ use crate::cloud_login::{
     self, Account, CredentialStore, DEFAULT_CLOUD, Organization, Pending, SignedIn, Start,
 };
 
-pub(crate) fn login_command() -> Command {
-    Command::new("login")
+pub(super) fn login_command(command: Command) -> Command {
+    command
         .about("Sign this device in to Ployz Cloud")
         .long_about("Sign this device in to Ployz Cloud. Opens the approval page and waits; with --json, prints the page and code at once unless --wait is given. Run again, or with --wait, to finish a pending sign-in.")
         .arg(
@@ -21,8 +21,8 @@ pub(crate) fn login_command() -> Command {
         .arg(switch("wait", None).help("Wait for approval, also with --json"))
 }
 
-pub(crate) fn logout_command() -> Command {
-    Command::new("logout").about("End this device's Ployz Cloud sign-in")
+pub(super) fn logout_command(command: Command) -> Command {
+    command.about("End this device's Ployz Cloud sign-in")
 }
 
 /// Signed-in result: who and where, never the bearer.

@@ -27,12 +27,12 @@ use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
 use crate::ui::{Fields, Hint};
 
-pub(crate) fn link_command() -> Command {
-    scoped(Command::new("link").about("Link this directory to a Project and Environment"))
+pub(super) fn link_command(command: Command) -> Command {
+    scoped(command.about("Link this directory to a Project and Environment"))
 }
 
-pub(crate) fn status_command() -> Command {
-    scoped(Command::new("status").about(
+pub(super) fn status_command(command: Command) -> Command {
+    scoped(command.about(
         "Show who you are, where commands act, and what is staged, deploying or needs attention",
     ))
 }

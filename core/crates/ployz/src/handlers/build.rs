@@ -284,8 +284,8 @@ async fn docker(args: &[&str]) -> Result<(), Error> {
     .into())
 }
 
-pub(crate) fn command() -> clap::Command {
-    clap::Command::new("build")
+pub(super) fn command(command: clap::Command) -> clap::Command {
+    command
         .about("Build one Git Service and push it into a Machine with a Build Grant")
         .long_about("Build one Git Service and push it into a Machine with a Build Grant.\n\nChecks out --commit and refuses to build unless the build inputs match --fingerprint. When the GitHub Actions cache runtime (ACTIONS_RUNTIME_TOKEN and its cache URLs) is in the environment, Buildx uses the GitHub Actions cache.")
         .arg(

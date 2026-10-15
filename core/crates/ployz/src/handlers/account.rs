@@ -1,7 +1,6 @@
 //! `ployz token` and `ployz org`: acting in Cloud as this device's
 //! sign-in or `PLOYZ_TOKEN`. None of them needs a Server.
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
@@ -14,42 +13,49 @@ use crate::cloud_account::{self, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 
-pub(crate) fn token_command() -> Command {
-    Command::new("token")
-        .about("Manage Organization Tokens and signed-in devices")
-        .subcommand(
-            Command::new("new")
-                .about("Make a token for PLOYZ_TOKEN; its secret is shown once")
-                .arg(positional("name", true).help("What the token is for, e.g. ci"))
-                .arg(
-                    value("expires-in", None)
-                        .value_name("DAYS")
-                        .value_parser(clap::value_parser!(u16).range(1..=365))
-                        .default_value("90")
-                        .help("Days until the token stops working"),
-                ),
-        )
-        .subcommand(
-            Command::new("ls").about("List the Organization's tokens and your signed-in devices"),
-        )
-        .subcommand(
-            Command::new("rm")
-                .about("Revoke a token or sign out a device, at once")
-                .arg(positional("id", true)),
+pub(super) fn token_group(command: Command) -> Command {
+    command.about("Manage Organization Tokens and signed-in devices")
+}
+
+pub(super) fn token_new_command(command: Command) -> Command {
+    command
+        .about("Make a token for PLOYZ_TOKEN; its secret is shown once")
+        .arg(positional("name", true).help("What the token is for, e.g. ci"))
+        .arg(
+            value("expires-in", None)
+                .value_name("DAYS")
+                .value_parser(clap::value_parser!(u16).range(1..=365))
+                .default_value("90")
+                .help("Days until the token stops working"),
         )
 }
 
-pub(crate) fn org_command() -> Command {
-    Command::new("org")
-        .about("List or switch Organizations")
-        .subcommand(Command::new("ls").about("List the Organizations you can act in"))
-        .subcommand(
-            Command::new("use")
-                .about("Act in another of your Organizations from this device")
-                .arg(positional("organization", true).help("Organization slug")),
-        )
-        .subcommand(
-            Command::new("build-order")
+pub(super) fn token_list_command(command: Command) -> Command {
+    command.about("List the Organization's tokens and your signed-in devices")
+}
+
+pub(super) fn token_remove_command(command: Command) -> Command {
+    command
+        .about("Revoke a token or sign out a device, at once")
+        .arg(positional("id", true))
+}
+
+pub(super) fn org_group(command: Command) -> Command {
+    command.about("List or switch Organizations")
+}
+
+pub(super) fn org_list_command(command: Command) -> Command {
+    command.about("List the Organizations you can act in")
+}
+
+pub(super) fn org_use_command(command: Command) -> Command {
+    command
+        .about("Act in another of your Organizations from this device")
+        .arg(positional("organization", true).help("Organization slug"))
+}
+
+pub(super) fn org_build_order_command(command: Command) -> Command {
+    command
                 .about("Show or set which Builders build Git Services, in turn")
                 .long_about("Show or set the Organization's Build Order: which Builders a Git Service's build tries, in turn, after its Preferred Builder (SERVICE.preferredBuilder). A change applies to the next build. auto tries GitHub first, skipping it at once where the repository has no ployz-build.yml workflow.")
                 .arg(positional("order", false).value_parser([
@@ -58,55 +64,36 @@ pub(crate) fn org_command() -> Command {
                     "github-then-servers",
                     "servers-then-github",
                     "github-only",
-                ])),
-        )
-        .subcommand(
-            Command::new("leave")
-                .about("Leave the Organization you act in; this device moves to another of yours")
-                .long_about(
-                    "Leave the Organization you act in. Its last owner cannot leave. A signed-in \
+                ]))
+}
+
+pub(super) fn org_leave_command(command: Command) -> Command {
+    command
+        .about("Leave the Organization you act in; this device moves to another of yours")
+        .long_about(
+            "Leave the Organization you act in. Its last owner cannot leave. A signed-in \
                      device moves to another of your Organizations. Asks first; --yes skips that.",
-                )
-                .after_help("Examples:\n  ployz org leave\n  ployz org leave --yes")
-                .arg(switch("yes", Some('y')).help("Leave without asking")),
         )
-        .subcommand(
-            Command::new("rm")
-                .about("Delete the Organization you act in, once it has no Project")
-                .long_about(
-                    "Delete the Organization you act in. Remove its Projects first \
+        .after_help("Examples:\n  ployz org leave\n  ployz org leave --yes")
+        .arg(switch("yes", Some('y')).help("Leave without asking"))
+}
+
+pub(super) fn org_remove_command(command: Command) -> Command {
+    command
+        .about("Delete the Organization you act in, once it has no Project")
+        .long_about(
+            "Delete the Organization you act in. Remove its Projects first \
                      (ployz project rm). Every Server is unpaired: Cloud's key and every \
                      device key are cleared on it. A Server that doesn't confirm keeps the \
                      Organization, disabled, until the same command confirms it. Type its \
                      slug with --confirm.",
-                )
-                .arg(positional("organization", true).help("Organization slug"))
-                .arg(
-                    value("confirm", None)
-                        .value_name("ORGANIZATION")
-                        .help("The Organization's slug, typed to confirm its removal"),
-                ),
         )
-}
-
-pub(super) fn token_handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "new" => cloud(Always, token_new),
-        "ls" => cloud(Never, token_list),
-        "rm" => cloud(Always, token_remove),
-        _ => return None,
-    })
-}
-
-pub(super) fn org_handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "ls" => cloud(Never, org_list),
-        "use" => cloud(Never, org_use),
-        "build-order" => cloud(Depends, org_build_order),
-        "leave" => cloud(Always, org_leave),
-        "rm" => cloud(Always, org_remove),
-        _ => return None,
-    })
+        .arg(positional("organization", true).help("Organization slug"))
+        .arg(
+            value("confirm", None)
+                .value_name("ORGANIZATION")
+                .help("The Organization's slug, typed to confirm its removal"),
+        )
 }
 
 /// Run `work` with `PLOYZ_TOKEN` or this device's sign-in.
@@ -121,7 +108,7 @@ pub(super) fn in_cloud<T>(
     })
 }
 
-fn token_new(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = matches.get_one::<String>("name").expect("name is required");
     let days = *matches
@@ -141,7 +128,7 @@ fn token_new(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn token_list(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
     let listed = in_cloud(root, async |_, credential| {
         cloud_account::credentials(credential).await
     })?;
@@ -196,7 +183,7 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
     ui::list(&listed, &table)
 }
 
-fn token_remove(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
     let id = leaf_matches(root)
         .get_one::<String>("id")
         .expect("id is required");
@@ -261,7 +248,7 @@ pub(super) fn say_clears(servers: &ServerClears, retry: Option<&str>) {
     }
 }
 
-fn org_list(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn org_list(root: &ArgMatches) -> Result<(), Error> {
     let organizations = in_cloud(root, async |_, credential| {
         cloud_account::organizations(credential).await
     })?;
@@ -283,7 +270,7 @@ fn org_list(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
     let store = super::store::store(root)?;
     let order = leaf_matches(root).get_one::<String>("order");
     let view = match order {
@@ -318,7 +305,7 @@ fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn org_use(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
     let slug = leaf_matches(root)
         .get_one::<String>("organization")
         .expect("organization is required");
@@ -336,7 +323,7 @@ fn org_use(root: &ArgMatches) -> Result<(), Error> {
 /// Leave the Organization through Cloud's `org_leave`. Cloud refuses a device everything
 /// in an Organization it left, so a signed-in device lists the others first and moves to
 /// one, as `org rm` does.
-fn org_leave(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
@@ -409,7 +396,7 @@ fn org_leave(root: &ArgMatches) -> Result<(), Error> {
 
 /// Delete the Organization: Cloud refuses while it has a Project, then unpairs its
 /// Servers. Not every Server confirmed: exit 3 naming the same command.
-fn org_remove(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let slug = matches
         .get_one::<String>("organization")

@@ -15,8 +15,8 @@ use super::super::{Error, leaf_matches};
 use crate::cli::{positional, value};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
-pub(super) fn add_command() -> Command {
-    store::scoped(Command::new("add").about("Add a Service; it is staged until a Deploy"))
+pub(crate) fn add_command(command: Command) -> Command {
+    store::scoped(command.about("Add a Service; it is staged until a Deploy"))
         .arg(positional("name", true).help("Service name, also its Private DNS name"))
         .arg(
             value("image", None)
@@ -31,33 +31,30 @@ pub(super) fn add_command() -> Command {
         )
 }
 
-pub(super) fn ls_command() -> Command {
-    store::scoped(Command::new("ls").about("List Services and what the next Deploy does to them"))
+pub(crate) fn list_command(command: Command) -> Command {
+    store::scoped(command.about("List Services and what the next Deploy does to them"))
 }
 
-pub(super) fn inspect_command() -> Command {
-    store::scoped(Command::new("inspect").about("Show a Service, its Settings and staged changes"))
+pub(crate) fn inspect_command(command: Command) -> Command {
+    store::scoped(command.about("Show a Service, its Settings and staged changes"))
         .arg(positional("service", true))
 }
 
-pub(super) fn rename_command() -> Command {
+pub(crate) fn rename_command(command: Command) -> Command {
     store::scoped(
-        Command::new("rename")
-            .about("Rename a Service; its Private DNS name and references stay the same"),
+        command.about("Rename a Service; its Private DNS name and references stay the same"),
     )
     .arg(positional("service", true))
     .arg(positional("name", true).help("The new name"))
 }
 
-pub(super) fn rm_command() -> Command {
-    store::scoped(
-        Command::new("rm").about("Remove a Service; it keeps running until a Deploy removes it"),
-    )
-    .arg(positional("service", true))
+pub(crate) fn remove_command(command: Command) -> Command {
+    store::scoped(command.about("Remove a Service; it keeps running until a Deploy removes it"))
+        .arg(positional("service", true))
 }
 
 /// Add an image, GitHub repository or empty Service to Working State.
-pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let id = ServiceLineageId::parse(store::mint())?;
     let environment = store::environment(matches)?;
@@ -91,7 +88,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// List Working State's Services, and deployed ones a removal dropped from it.
-pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let query = ServicesQuery {
         environment: store::environment(matches)?,
@@ -124,7 +121,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
 
 /// Show one Service: its identity, every Setting with its default, its domains and
 /// staged changes.
-pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let environment = store::environment(matches)?;
     let name = service_name(matches, "service")?;
@@ -215,7 +212,7 @@ struct Inspected<'view> {
 }
 
 /// Rename a Service in Working State.
-pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let rename = RenameService {
         environment: store::environment(matches)?,
@@ -227,7 +224,7 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Remove a Service from Working State; the next Deploy removes it from the Servers.
-pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let remove = RemoveService {
         environment: store::environment(matches)?,

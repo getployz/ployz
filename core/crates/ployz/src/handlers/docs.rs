@@ -6,16 +6,14 @@ use ployz_store::docs::{self, Lookup};
 use super::{Error, leaf_matches};
 use crate::ui::{self, Hint};
 
-pub(crate) fn command() -> Command {
-    Command::new("docs")
-        .about("Search the Ployz docs, or print a page")
-        .arg(
-            Arg::new("query")
-                .required(true)
-                .num_args(1..)
-                .action(ArgAction::Append)
-                .help("A question, or a page path ending in .md, for example services/domains.md"),
-        )
+pub(super) fn command(command: Command) -> Command {
+    command.about("Search the Ployz docs, or print a page").arg(
+        Arg::new("query")
+            .required(true)
+            .num_args(1..)
+            .action(ArgAction::Append)
+            .help("A question, or a page path ending in .md, for example services/domains.md"),
+    )
 }
 
 pub(super) fn run(root: &ArgMatches) -> Result<(), Error> {

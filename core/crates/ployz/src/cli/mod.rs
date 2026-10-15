@@ -37,63 +37,31 @@ pub fn command() -> Command {
 
 /// The commands this binary carries on its own.
 pub(crate) fn compiled() -> Command {
-    let command = base("ployz", "Manage Ployz machines, services, and volumes")
-        .styles(crate::ui::clap_styles())
-        .after_help(handlers::catalog::SIGNPOST)
-        .arg(switch("version", Some('V')).help("Print version"))
-        .arg(
-            switch("json", None)
-                .global(true)
-                .help("Print the result as one JSON object on stdout"),
-        )
-        .arg(
-            value("color", None)
-                .global(true)
-                .value_name("WHEN")
-                .value_parser(["auto", "always", "never"])
-                .default_value("auto")
-                .help("When to color output; overrides NO_COLOR and CLICOLOR"),
-        )
-        .subcommand(handlers::build::command())
-        .subcommand(handlers::cloud::command())
-        .subcommand(handlers::config_item::command())
-        .subcommand(handlers::context::command())
-        .subcommand(handlers::deploy::deploy_command())
-        .subcommand(handlers::deploy::deployment_command())
-        .subcommand(handlers::review::diff_command())
-        .subcommand(handlers::review::history_command())
-        .subcommand(handlers::review::discard_command())
-        .subcommand(handlers::docs::command())
-        .subcommand(handlers::domain::command())
-        .subcommand(handlers::env::command())
-        .subcommand(handlers::operator::exec_command())
-        .subcommand(handlers::catalog::explain_command())
-        .subcommand(handlers::config::get_command())
-        .subcommand(handlers::link::link_command())
-        .subcommand(handlers::github::command())
-        .subcommand(handlers::login::login_command())
-        .subcommand(handlers::login::logout_command())
-        .subcommand(handlers::operator::logs_command())
-        .subcommand(handlers::mcp::command())
-        .subcommand(handlers::metrics::command())
-        .subcommand(handlers::account::org_command())
-        .subcommand(handlers::server::command())
-        .subcommand(handlers::service::command())
-        .subcommand(handlers::account::token_command())
-        .subcommand(handlers::project::command())
-        .subcommand(handlers::operator::ps_command())
-        .subcommand(handlers::catalog::schema_command())
-        .subcommand(handlers::config::set_command())
-        .subcommand(handlers::link::status_command())
-        .subcommand(handlers::config::unset_command())
-        .subcommand(handlers::up::command())
-        .subcommand(handlers::volume::command())
-        .subcommand(completion());
-    handlers::debug::attach(command)
+    let root = base(
+        Command::new("ployz"),
+        "Manage Ployz machines, services, and volumes",
+    )
+    .styles(crate::ui::clap_styles())
+    .after_help(handlers::catalog::SIGNPOST)
+    .arg(switch("version", Some('V')).help("Print version"))
+    .arg(
+        switch("json", None)
+            .global(true)
+            .help("Print the result as one JSON object on stdout"),
+    )
+    .arg(
+        value("color", None)
+            .global(true)
+            .value_name("WHEN")
+            .value_parser(["auto", "always", "never"])
+            .default_value("auto")
+            .help("When to color output; overrides NO_COLOR and CLICOLOR"),
+    );
+    handlers::verbs::tree(root)
 }
 
-pub(crate) fn base(name: &'static str, about: &'static str) -> Command {
-    Command::new(name).about(about).args(connection_args(true))
+pub(crate) fn base(command: Command, about: &'static str) -> Command {
+    command.about(about).args(connection_args(true))
 }
 
 pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
@@ -234,8 +202,8 @@ pub(crate) fn volume_acceptance() -> Arg {
         .help("Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this")
 }
 
-fn completion() -> Command {
-    base("completion", "Generate shell completion")
+pub(crate) fn completion(command: Command) -> Command {
+    base(command, "Generate shell completion")
         .arg(positional("shell", true).value_parser(clap::value_parser!(clap_complete::Shell)))
 }
 

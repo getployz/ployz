@@ -1,101 +1,72 @@
 //! `ployz debug`: verification-only verbs.
 
-use clap::Command;
+use clap::{ArgMatches, Command};
+use ployz_core::{MachineTarget, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponseBody};
+use serde_json::json;
 
-#[cfg(feature = "verify-faults")]
-pub(crate) fn attach(command: Command) -> Command {
-    command.subcommand(enabled::command())
+use crate::{
+    cli::{base, positional},
+    connect::TARGET_RPC_TIMEOUT,
+    handlers::{Error, leaf_matches, with_client},
+    ui,
+};
+
+pub(super) fn group(command: Command) -> Command {
+    base(command, "Verification-only commands").hide(true)
 }
 
-#[cfg(not(feature = "verify-faults"))]
-pub(crate) fn attach(command: Command) -> Command {
-    command
+pub(super) fn volume_rpc_command(command: Command) -> Command {
+    base(command, "Send one unary Machine RPC as JSON and print its response")
+        .long_about("Send one unary Machine RPC to a Server and print the response body. REQUEST is the JSON request body, for example {\"command\":\"inspect_volume_copy\",\"payload\":{\"name\":\"data\"}}. An error response fails the command with the error's code and details.")
+        .arg(positional("server", true))
+        .arg(positional("request", true).value_name("REQUEST"))
 }
 
-#[cfg(feature = "verify-faults")]
-pub(super) fn handler(path: &str) -> Option<super::catalog::Runnable> {
-    use super::catalog::{Approval, internal};
-    match path {
-        "volume-rpc" => Some(internal(Approval::Never, enabled::volume_rpc)),
-        "local-rpc" => Some(internal(Approval::Never, enabled::local_rpc)),
-        _ => None,
-    }
+pub(super) fn local_rpc_command(command: Command) -> Command {
+    base(command, "Send one unary Machine RPC to the dialed daemon, unrouted")
+        .long_about("Send one unary Machine RPC to the daemon this CLI dials, with no routing, and print the response body. It reaches a Machine outside any cluster, which volume-rpc cannot route to. REQUEST is the JSON request body, as for volume-rpc.")
+        .arg(positional("request", true).value_name("REQUEST"))
 }
 
-#[cfg(not(feature = "verify-faults"))]
-pub(super) fn handler(_path: &str) -> Option<super::catalog::Runnable> {
-    None
+pub(super) fn volume_rpc(root: &ArgMatches) -> Result<(), Error> {
+    let selector = MachineTarget::parse(
+        leaf_matches(root)
+            .get_one::<String>("server")
+            .ok_or_else(|| Error::usage("server is required"))?,
+    )?;
+    send(root, Some(selector))
 }
 
-#[cfg(feature = "verify-faults")]
-mod enabled {
-    use clap::{ArgMatches, Command};
-    use ployz_core::{MachineTarget, RpcErrorCode, RpcRequest, RpcRequestBody, RpcResponseBody};
-    use serde_json::json;
+pub(super) fn local_rpc(root: &ArgMatches) -> Result<(), Error> {
+    send(root, None)
+}
 
-    use crate::{
-        cli::{base, positional},
-        connect::TARGET_RPC_TIMEOUT,
-        handlers::{Error, leaf_matches, with_client},
-        ui,
-    };
-
-    pub(super) fn command() -> Command {
-        base("debug", "Verification-only commands")
-            .hide(true)
-            .subcommand(
-                base("volume-rpc", "Send one unary Machine RPC as JSON and print its response")
-                    .long_about("Send one unary Machine RPC to a Server and print the response body. REQUEST is the JSON request body, for example {\"command\":\"inspect_volume_copy\",\"payload\":{\"name\":\"data\"}}. An error response fails the command with the error's code and details.")
-                    .arg(positional("server", true))
-                    .arg(positional("request", true).value_name("REQUEST")),
-            )
-            .subcommand(
-                base("local-rpc", "Send one unary Machine RPC to the dialed daemon, unrouted")
-                    .long_about("Send one unary Machine RPC to the daemon this CLI dials, with no routing, and print the response body. It reaches a Machine outside any cluster, which volume-rpc cannot route to. REQUEST is the JSON request body, as for volume-rpc.")
-                    .arg(positional("request", true).value_name("REQUEST")),
-            )
-    }
-
-    pub(super) fn volume_rpc(root: &ArgMatches) -> Result<(), Error> {
-        let selector = MachineTarget::parse(
-            leaf_matches(root)
-                .get_one::<String>("server")
-                .ok_or_else(|| Error::usage("server is required"))?,
-        )?;
-        send(root, Some(selector))
-    }
-
-    pub(super) fn local_rpc(root: &ArgMatches) -> Result<(), Error> {
-        send(root, None)
-    }
-
-    fn send(root: &ArgMatches, target: Option<MachineTarget>) -> Result<(), Error> {
-        let body: RpcRequestBody = serde_json::from_str(
-            leaf_matches(root)
-                .get_one::<String>("request")
-                .ok_or_else(|| Error::usage("request is required"))?,
+fn send(root: &ArgMatches, target: Option<MachineTarget>) -> Result<(), Error> {
+    let body: RpcRequestBody = serde_json::from_str(
+        leaf_matches(root)
+            .get_one::<String>("request")
+            .ok_or_else(|| Error::usage("request is required"))?,
+    )
+    .map_err(|error| {
+        Error::caused(
+            RpcErrorCode::InvalidArgument,
+            "request is not an RPC request body",
+            error,
         )
-        .map_err(|error| {
-            Error::caused(
-                RpcErrorCode::InvalidArgument,
-                "request is not an RPC request body",
-                error,
-            )
-        })?;
-        let path = body
-            .unary_path()
-            .ok_or_else(|| Error::usage("request names a streaming RPC; debug sends unary RPCs"))?;
-        let request = RpcRequest::from(body);
-        with_client(root, |client| {
-            Box::pin(async move {
-                let response = client
-                    .invoke_raw(&request, path, target.as_ref(), Some(TARGET_RPC_TIMEOUT))
-                    .await?;
-                if let RpcResponseBody::Error(error) = response.body {
-                    return Err(Error::from(error));
-                }
-                ui::show(&json!({ "response": response }))
-            })
+    })?;
+    let path = body
+        .unary_path()
+        .ok_or_else(|| Error::usage("request names a streaming RPC; debug sends unary RPCs"))?;
+    let request = RpcRequest::from(body);
+    with_client(root, |client| {
+        Box::pin(async move {
+            let response = client
+                .invoke_raw(&request, path, target.as_ref(), Some(TARGET_RPC_TIMEOUT))
+                .await?;
+            if let RpcResponseBody::Error(error) = response.body {
+                return Err(Error::from(error));
+            }
+            ui::show(&json!({ "response": response }))
         })
-    }
+    })
 }

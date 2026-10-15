@@ -22,8 +22,8 @@ use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 
-pub(crate) fn get_command() -> Command {
-    scoped(Command::new("get").about("Show Settings: every Service, one Service, or one Setting"))
+pub(super) fn get_command(command: Command) -> Command {
+    scoped(command.about("Show Settings: every Service, one Service, or one Setting"))
         .arg(
             positional("path", false)
                 .help("SERVICE, SERVICE.SETTING or SERVICE.env.KEY")
@@ -32,8 +32,8 @@ pub(crate) fn get_command() -> Command {
         .arg(switch("all", None).help("Include Settings at their default across the Environment"))
 }
 
-pub(crate) fn set_command() -> Command {
-    scoped(Command::new("set").about("Stage Setting values"))
+pub(super) fn set_command(command: Command) -> Command {
+    scoped(command.about("Stage Setting values"))
         .arg(
             positional("assignment", true)
                 .action(ArgAction::Append)
@@ -70,8 +70,8 @@ pub(crate) fn set_command() -> Command {
         .arg(expect())
 }
 
-pub(crate) fn unset_command() -> Command {
-    scoped(Command::new("unset").about("Return Settings to their defaults"))
+pub(super) fn unset_command(command: Command) -> Command {
+    scoped(command.about("Return Settings to their defaults"))
         .arg(
             positional("path", true)
                 .action(ArgAction::Append)

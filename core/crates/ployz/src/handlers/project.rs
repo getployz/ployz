@@ -1,7 +1,6 @@
 //! `ployz project`: Projects in the Config Store. `rm` removes a Project through
 //! the same teardown path as `env rm`, one Environment at a time.
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
@@ -16,25 +15,30 @@ use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::ui::{Hint, Table, Tree};
 
-pub(crate) fn command() -> Command {
-    Command::new("project")
-        .about("Manage Projects")
-        .subcommand(
-            Command::new("new")
-                .about("Create a Project with its Default Environment, production")
-                .arg(positional("name", true)),
-        )
-        .subcommand(Command::new("ls").about("List the Organization's Projects"))
-        .subcommand(
-            Command::new("rename")
-                .about("Rename a Project; its running Environments keep their Namespaces")
-                .arg(positional("project", true))
-                .arg(positional("name", true).help("Its new name, unique in the Organization")),
-        )
-        .subcommand(deploy::following(
-            base(
-                "rm",
-                "Remove a Project: every Environment from the Servers first, then from Ployz",
+pub(super) fn group(command: Command) -> Command {
+    command.about("Manage Projects")
+}
+
+pub(super) fn new_command(command: Command) -> Command {
+    command
+        .about("Create a Project with its Default Environment, production")
+        .arg(positional("name", true))
+}
+
+pub(super) fn ls_command(command: Command) -> Command {
+    command.about("List the Organization's Projects")
+}
+
+pub(super) fn rename_command(command: Command) -> Command {
+    command
+        .about("Rename a Project; its running Environments keep their Namespaces")
+        .arg(positional("project", true))
+        .arg(positional("name", true).help("Its new name, unique in the Organization"))
+}
+
+pub(super) fn rm_command(command: Command) -> Command {
+    deploy::following(
+            base(command, "Remove a Project: every Environment from the Servers first, then from Ployz",
             )
             .long_about(
                 "Remove a Project. Each Environment that ran is taken off the Servers by \
@@ -53,20 +57,10 @@ pub(crate) fn command() -> Command {
             )
             .arg(crate::cli::volume_acceptance())
             .arg(crate::cli::reviewed_version()),
-        ))
+        )
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "new" => cloud(Never, new),
-        "ls" => cloud(Never, ls),
-        "rename" => cloud(Never, rename),
-        "rm" => cloud(Always, rm),
-        _ => return None,
-    })
-}
-
-fn new(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?;
@@ -84,7 +78,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn ls(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     let listed = store(root)?.read(&ployz_store::ProjectsQuery {})?;
     let mut table = Table::new(
         ["PROJECT", "DEFAULT ENVIRONMENT", "ENVIRONMENTS"],
@@ -104,7 +98,7 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn rename(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let rename = RenameProject {
         project: ProjectName::parse(required(matches, "project")?)?,
@@ -150,7 +144,7 @@ struct Removal<'a> {
 
 /// Remove a Project: each Environment of it that may still run comes off the
 /// Servers first (Branches before their Parents), then the Store deletes it all.
-fn rm(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
     let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);

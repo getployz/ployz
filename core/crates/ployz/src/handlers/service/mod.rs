@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use futures_util::future::join_all;
 
@@ -346,8 +345,16 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
 
 /// Stop, then start, the addressed Environment's Services. Every Container is started
 /// again even when stopping one failed, so a failed restart never leaves a Service down.
-fn restart(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn restart(root: &ArgMatches) -> Result<(), Error> {
     lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
+}
+
+pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
+    lifecycle(root, &[ContainerAction::Start])
+}
+
+pub(super) fn stop(root: &ArgMatches) -> Result<(), Error> {
+    lifecycle(root, &[ContainerAction::Stop])
 }
 
 /// Start or stop the addressed Environment's Services.
@@ -650,26 +657,17 @@ const fn past(action: ContainerAction) -> &'static str {
     }
 }
 
-mod authored;
+pub(super) mod authored;
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn command() -> Command {
-    base("service", "Manage services")
-        .subcommand(authored::add_command())
-        .subcommand(authored::inspect_command())
-        .subcommand(authored::ls_command())
-        .subcommand(service_port_forward())
-        .subcommand(authored::rename_command())
-        .subcommand(service_restart())
-        .subcommand(authored::rm_command())
-        .subcommand(service_start())
-        .subcommand(service_stop())
+pub(super) fn group(command: Command) -> Command {
+    base(command, "Manage services")
 }
 
-fn service_port_forward() -> Command {
+pub(super) fn port_forward_command(command: Command) -> Command {
     super::store::scoped(base(
-        "port-forward",
+        command,
         "Forward a local port to a Service's container until interrupted",
     ))
     .arg(positional("service", true))
@@ -683,20 +681,20 @@ fn services() -> Arg {
         .action(ArgAction::Append)
 }
 
-fn service_restart() -> Command {
+pub(super) fn restart_command(command: Command) -> Command {
     stop_flags(base(
-        "restart",
+        command,
         "Stop, then start, a Service's containers; its configuration is unchanged",
     ))
 }
 
-fn service_start() -> Command {
-    super::store::scoped(base("start", "Start a Service's stopped containers")).arg(services())
+pub(super) fn start_command(command: Command) -> Command {
+    super::store::scoped(base(command, "Start a Service's stopped containers")).arg(services())
 }
 
-fn service_stop() -> Command {
+pub(super) fn stop_command(command: Command) -> Command {
     stop_flags(base(
-        "stop",
+        command,
         "Stop a Service's containers; they stay until started or deployed",
     ))
 }
@@ -706,19 +704,4 @@ fn stop_flags(command: Command) -> Command {
         .arg(services())
         .arg(value("signal", None).default_value("SIGTERM"))
         .arg(value("timeout", Some('t')).default_value("10"))
-}
-
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "add" => cloud(Never, authored::add),
-        "inspect" => cloud(Never, authored::inspect),
-        "ls" => cloud(Never, authored::list),
-        "port-forward" => cloud(Never, super::operator::port_forward),
-        "rename" => cloud(Never, authored::rename),
-        "restart" => cloud(Never, restart),
-        "rm" => cloud(Never, authored::remove),
-        "start" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Start])),
-        "stop" => cloud(Never, |root| lifecycle(root, &[ContainerAction::Stop])),
-        _ => return None,
-    })
 }

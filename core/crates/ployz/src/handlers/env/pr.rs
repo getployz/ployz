@@ -12,7 +12,7 @@ use super::branch::setups;
 use crate::handlers::teardown::{accepted, take_off, unfinished, with_accepted};
 
 /// Take an Environment off the Servers and keep everything else of it.
-pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
     let at = EnvironmentRef {
@@ -33,7 +33,7 @@ pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Show the Project's PR plans, or change one.
-pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let list = |flag: &str| -> Option<Vec<String>> {
         matches
@@ -148,7 +148,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// What a PR Environment's pull request lands when it merges.
-pub(super) fn on_merge(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn on_merge(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let view = store(root)?.read(&ployz_store::OnMergeQuery {
         environment: store::environment(matches)?,

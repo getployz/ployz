@@ -37,8 +37,8 @@ use super::{
     Error, cancellation_on_ctrl_c, leaf_matches, store::scoped, string_values, with_client,
 };
 
-pub(crate) fn exec_command() -> Command {
-    scoped(base("exec", "Run a command in a Service's container"))
+pub(super) fn exec_command(command: Command) -> Command {
+    scoped(base(command, "Run a command in a Service's container"))
         .arg(value("container", None))
         .arg(switch("detach", Some('d')))
         .arg(switch("no-tty", Some('T')))
@@ -46,9 +46,9 @@ pub(crate) fn exec_command() -> Command {
         .arg(trailing("command"))
 }
 
-pub(crate) fn logs_command() -> Command {
+pub(super) fn logs_command(command: Command) -> Command {
     scoped(log_flags(base(
-        "logs",
+        command,
         "Show Service logs; every Service of the Environment when none is named",
     )))
     .arg(
@@ -69,9 +69,9 @@ pub(crate) fn logs_command() -> Command {
     )
 }
 
-pub(crate) fn ps_command() -> Command {
+pub(super) fn ps_command(command: Command) -> Command {
     scoped(base(
-        "ps",
+        command,
         "List the Environment's containers across Servers",
     ))
     .arg(

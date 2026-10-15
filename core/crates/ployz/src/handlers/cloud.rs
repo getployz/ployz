@@ -1,6 +1,5 @@
 //! Cloud enrollment behind `ployz server add`, and `ployz cloud reset`.
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use std::{future::Future, time::Duration};
 
 use clap::{ArgMatches, Command};
@@ -711,27 +710,20 @@ async fn wait_phase(
     })
 }
 
-pub(crate) fn command() -> Command {
-    Command::new("cloud")
-        .about("Manage Cloud")
-        .subcommand(
-            base("reset", "Give up your Organization's founding that never finished")
+pub(super) fn group(command: Command) -> Command {
+    command.about("Manage Cloud")
+}
+
+pub(super) fn reset_command(command: Command) -> Command {
+    base(command, "Give up your Organization's founding that never finished")
                 .long_about("Give up your Organization's founding that never finished, so the next ployz server add founds the Cluster again. Stop or erase the founding Server first. Needs `ployz login`.")
                 .arg(
                     switch("yes", Some('y'))
                         .help("Confirm the founding Server is stopped or erased"),
-                ),
-        )
+                )
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "reset" => cloud(Always, reset),
-        _ => return None,
-    })
-}
-
-fn reset(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn reset(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     if !matches.get_flag("yes") {
         return Err(Error::usage(

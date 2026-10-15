@@ -10,10 +10,8 @@ use crate::cloud_account::{self, ForgetCheck};
 use crate::cloud_login::CredentialStore;
 use crate::ui::Hint;
 
-pub(super) fn command() -> Command {
-    base(
-        "forget",
-        "Forget a Server without resetting it, or every Server when they were deleted",
+pub(crate) fn command(command: Command) -> Command {
+    base(command, "Forget a Server without resetting it, or every Server when they were deleted",
     )
     .long_about(
         "Forget a Server: take it out of the Cluster without resetting it, for a Server \
@@ -41,7 +39,7 @@ pub(super) fn command() -> Command {
 }
 
 /// Forget the named Server, or without one, every Server of the Organization.
-pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn forget(root: &ArgMatches) -> Result<(), Error> {
     if leaf_matches(root).contains_id("server") {
         super::remove::forget(root)
     } else {
