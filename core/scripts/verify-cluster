@@ -380,6 +380,9 @@ zfs version
             raise RuntimeError(f"{node['name']}: expected {len(run['machines'])} reachable Machines")
         return {"machine": node["name"], "daemon": {**daemon, "running_sha256": binaries["ployzd"]}, "servers": servers}
     observations = parallel(inspect, run["machines"])
+    overdue = overdue_drains(run, commands, backend)
+    if overdue:
+        raise RuntimeError("\n".join(overdue))
     if "cloud" in run:
         # Through Cloud's own Server Access, so Cloud must reach every Machine.
         servers = json.loads(cli(run, commands, ["--json", "server", "ls"]).stdout)["servers"]
@@ -393,6 +396,34 @@ zfs version
         observations.append({"cloud": run["cloud"]["url"], "servers": servers})
     (commands.evidence / "doctor.json").write_text(json.dumps(observations, indent=2) + "\n")
     return observations
+
+
+def overdue_drains(run, commands, backend):
+    node = run["machines"][0]
+    containers = json.loads(cli(run, commands, ["--json", "--connect", "ssh://" + node["ssh"], "ps"]).stdout)["containers"]
+    draining = {}
+    for container in containers:
+        if container.get("draining"):
+            draining.setdefault(container["machine_id"], []).append(container)
+    lines = []
+    for holder in run["machines"]:
+        if holder["machine_id"] not in draining:
+            continue
+        log = backend.exec(holder, ["bash", "-c", "journalctl -u ployz --no-pager -o cat | grep -F -e 'retire clock started' -e 'forcing retire' || true"]).stdout.decode()
+        forced = forced_retirements(log)
+        lines += [f"{holder['name']}: {container['resolved_spec']['name']} Container {container['container_id'][:12]} "
+                  f"still drains past 300 s; see journalctl -u ployz"
+                  for container in draining[holder["machine_id"]] if container["container_id"] in forced]
+    return lines
+
+
+def forced_retirements(log):
+    latest = {}
+    for line in log.splitlines():
+        container = re.search(r"\bcontainer=(\S+)", line)
+        if container:
+            latest[container.group(1)] = "forcing retire" in line
+    return {container for container, forced in latest.items() if forced}
 
 
 def wait_ready(run, commands, backend):

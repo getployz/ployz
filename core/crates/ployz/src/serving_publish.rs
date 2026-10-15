@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use ployz_core::rpc::op;
 use ployz_core::{
-    ContainerId, ContainerObservation, DeploymentLogId, LiveServices, MachineTarget,
-    NotPointerPublisher, PublishServingPointerRequest, QualifiedService, ReadServingPointerRequest,
-    RpcError, ServingPointer, ServingPointerPublication, ServingPointerRead,
+    ContainerId, ContainerObservation, DeploymentLogId, LiveServices, MachineObservation,
+    MachineTarget, NotPointerPublisher, PublishServingPointerRequest, QualifiedService,
+    ReadServingPointerRequest, RpcError, ServingPointer, ServingPointerPublication,
+    ServingPointerRead,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -101,7 +102,7 @@ impl Client {
     }
 
     /// Read at `at`, following one refusal to the Machine it names.
-    async fn read_at(
+    pub(crate) async fn read_at(
         &mut self,
         at: &mut MachineTarget,
         service: &QualifiedService,
@@ -150,18 +151,22 @@ impl Client {
 
     async fn publisher(&mut self) -> Result<MachineTarget, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
-        machines
-            .iter()
-            .filter(|machine| machine.invites_rpc())
-            .map(|machine| &machine.machine.id)
-            .min()
-            .map(MachineTarget::from)
-            .ok_or_else(|| {
-                RpcError::from(ConnectError::from(tonic::Status::unavailable(
-                    "no Machine accepts Serving Pointer publishes",
-                )))
-            })
+        publisher_among(&machines).ok_or_else(|| {
+            RpcError::from(ConnectError::from(tonic::Status::unavailable(
+                "no Machine accepts Serving Pointer publishes",
+            )))
+        })
     }
+}
+
+/// The lowest-id Machine that invites RPC, where every pointer read and publish goes.
+pub(crate) fn publisher_among(machines: &[MachineObservation]) -> Option<MachineTarget> {
+    machines
+        .iter()
+        .filter(|machine| machine.invites_rpc())
+        .map(|machine| &machine.machine.id)
+        .min()
+        .map(MachineTarget::from)
 }
 
 /// The pointer-membership contract. A copy id stands in one of four states relative to a

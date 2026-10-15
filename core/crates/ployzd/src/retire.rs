@@ -5,7 +5,7 @@
 //! Container.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map},
     future::Future,
     io,
     time::Duration,
@@ -344,7 +344,15 @@ impl Retirer {
         self.first_seen.retain(|container, _| tracked(container));
         self.retry_after.retain(|container, _| tracked(container));
         for candidate in candidates {
-            self.first_seen.entry(candidate.container).or_insert(now);
+            if let btree_map::Entry::Vacant(entry) = self.first_seen.entry(candidate.container) {
+                entry.insert(now);
+                tracing::info!(
+                    container = %candidate.container,
+                    service = %candidate.service,
+                    "retire clock started; forcing after {} s",
+                    FORCE_AFTER.as_secs(),
+                );
+            }
         }
     }
 
@@ -2376,6 +2384,28 @@ mod tests {
         assert_eq!(*host.marked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.removals.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn each_retire_episode_journals_one_start_line() {
+        let (capture, _logging) = crate::diag::test_support::capture();
+        let mut retirer = Retirer::default();
+        retirer.note_local(&pointers(), &BTreeSet::from([id("a")]));
+        let candidates = retirer.candidates(&pointers());
+        retirer.track(&candidates, Instant::now());
+        retirer.track(&candidates, Instant::now());
+        let starts = |journal: &str| {
+            journal
+                .lines()
+                .filter(|line| line.contains("retire clock started"))
+                .filter(|line| line.contains(&format!("container={}", id("a"))))
+                .count()
+        };
+        assert_eq!(starts(&capture.text()), 1, "{}", capture.text());
+
+        retirer.track(&[], Instant::now());
+        retirer.track(&candidates, Instant::now());
+        assert_eq!(starts(&capture.text()), 2, "{}", capture.text());
     }
 
     #[tokio::test]
