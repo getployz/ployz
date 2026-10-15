@@ -155,8 +155,7 @@ impl Asked {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
         };
-        let changes_only =
-            !self.effects.is_empty() && self.effects.iter().all(|effect| !destroys(effect.kind));
+        let changes_only = self.effects.iter().all(|effect| !destroys(effect.kind));
         let mut lines = vec![if verb == Verb::Publish && changes_only {
             format!("The next deploy{within} after this save:")
         } else if verb == Verb::Publish {
@@ -404,6 +403,33 @@ mod tests {
                 "This removal in Organization acme destroys 1 thing:",
                 "  ✕ removes member bob@example.com",
             ]
+        );
+    }
+
+    #[test]
+    fn a_deploy_that_destroys_nothing_reads_as_the_deploy() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval_id": "a1",
+            "approval": "d1",
+            "effects": [],
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "total_count": 2,
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            asked.review(Verb::Deploy),
+            ["This deploy:", "  + 2 other changes"]
         );
     }
 
