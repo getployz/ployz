@@ -296,7 +296,7 @@ class Main(Scratch):
                        "".join(f'{dependency} = {{ path = "../{dependency}" }}\n' for dependency in dependencies))
             self.write(f"crates/{name}/src/lib.rs", "// one\n")
         self.write("crates/ployz-sdk/index.d.ts", "export {};\n")
-        self.write("crates/ployz-store/src/wire.rs", "use ts_rs::TS;\npub struct Wire;\n")
+        self.write("crates/ployz-store/src/wire.rs", "use super::*;\n#[derive(TS)]\npub struct Wire;\n")
         self.write("../docs/user/page.md", "page\n")
         # The repository holds core/ and the docs ployz-store embeds, as the real one does.
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.root, check=True)
@@ -349,7 +349,7 @@ class Main(Scratch):
         self.assertIn("interface differs from main@", said)
 
     def test_an_edit_to_a_type_the_sdk_generates_from_builds(self):
-        self.write("crates/ployz-store/src/wire.rs", "use ts_rs::TS;\npub struct Wire { pub added: bool }\n")
+        self.write("crates/ployz-store/src/wire.rs", "use super::*;\n#[derive(TS)]\npub struct Wire { pub added: bool }\n")
         meta, said = self.stale()
         self.assertIsNone(meta)
         self.assertFalse((self.root / "out").exists())
