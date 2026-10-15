@@ -19,7 +19,8 @@ use ployz_core::{
     RequestedServiceSpec, RpcError, VolumeRemoval,
 };
 
-const HEADER: &str = "// Generated from the Rust wire types by `cargo test -p ployz --test sdk_payloads`.\n// Do not edit.\n\n";
+const HEADER: &str =
+    "// Generated from the Rust wire types by core/scripts/build-cloud-sdk.sh. Do not edit.\n\n";
 
 struct Declarations {
     config: Config,
@@ -55,8 +56,7 @@ impl TypeVisitor for Declarations {
 }
 
 /// Every declaration the SDK package exports, in name order.
-#[must_use]
-pub fn typescript_declarations() -> String {
+fn typescript_declarations() -> String {
     let mut declarations = Declarations {
         config: Config::new()
             .with_large_int("number")
@@ -177,12 +177,24 @@ pub fn typescript_declarations() -> String {
     out
 }
 
-const CAPABILITIES_HEADER: &str = "// Generated from the daemon's capability catalog by `cargo test -p ployz --test sdk_payloads`.\n// Do not edit.\n\n";
-
-/// Each `generated/` file behind `@ployz/sdk/capabilities`, by file name: the `CapabilityName`
-/// union, an ES module, and a CommonJS module, all listing every capability the daemon serves.
+/// Every file the SDK package's `generated/` directory holds, by file name: the payload
+/// declarations, `@ployz/sdk/capabilities` as a `CapabilityName` union and ES and CommonJS
+/// modules listing every capability the daemon serves, and the settings catalog.
 #[must_use]
-pub fn capabilities_files() -> [(&'static str, String); 3] {
+pub fn generated_files() -> [(&'static str, String); 5] {
+    let catalog = ployz_store::catalog::schema(None).expect("the whole catalog always renders");
+    let catalog = serde_json::to_string_pretty(&catalog).expect("a JSON value serializes");
+    let [declarations, esm, cjs] = capabilities_files();
+    [
+        ("payloads.d.ts", typescript_declarations()),
+        declarations,
+        esm,
+        cjs,
+        ("catalog.json", format!("{catalog}\n")),
+    ]
+}
+
+fn capabilities_files() -> [(&'static str, String); 3] {
     let names = ployz_core::served_capabilities();
     let union: String = names
         .iter()
@@ -196,19 +208,17 @@ pub fn capabilities_files() -> [(&'static str, String); 3] {
         (
             "capabilities.d.ts",
             format!(
-                "{CAPABILITIES_HEADER}export type CapabilityName =\n{union};\n\nexport declare const capabilities: readonly CapabilityName[];\n"
+                "{HEADER}export type CapabilityName =\n{union};\n\nexport declare const capabilities: readonly CapabilityName[];\n"
             ),
         ),
         (
             "capabilities.mjs",
-            format!(
-                "{CAPABILITIES_HEADER}export const capabilities = Object.freeze([\n{list}]);\n"
-            ),
+            format!("{HEADER}export const capabilities = Object.freeze([\n{list}]);\n"),
         ),
         (
             "capabilities.js",
             format!(
-                "{CAPABILITIES_HEADER}\"use strict\";\n\nexports.capabilities = Object.freeze([\n{list}]);\n"
+                "{HEADER}\"use strict\";\n\nexports.capabilities = Object.freeze([\n{list}]);\n"
             ),
         ),
     ]

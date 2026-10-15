@@ -21,7 +21,7 @@ use ployz_core::{
     RuntimeWatchRequest, ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
-pub use payloads::{capabilities_files, typescript_declarations};
+pub use payloads::generated_files;
 
 pub mod agent;
 mod build;
