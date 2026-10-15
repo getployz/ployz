@@ -2,7 +2,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -27,6 +27,8 @@ const TICK: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(5 * 60);
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
+const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
 
 const MACHINE_FILE: &str = "machine.json";
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-push-v1\0";
@@ -265,6 +267,8 @@ pub struct Shipper<T> {
     outbox: Arc<Outbox>,
     client: reqwest::Client,
     target: T,
+    /// When the journal last heard that Cloud does not know this Machine.
+    unheard_warned: Mutex<Option<Instant>>,
 }
 
 impl<T: Fn() -> Option<Pusher>> Shipper<T> {
@@ -276,6 +280,7 @@ impl<T: Fn() -> Option<Pusher>> Shipper<T> {
             outbox,
             client,
             target,
+            unheard_warned: Mutex::new(None),
         })
     }
 
@@ -348,6 +353,12 @@ impl<T: Fn() -> Option<Pusher>> Shipper<T> {
                     after: retry_after(&response),
                 };
             }
+            StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND => {
+                if self.warn_unheard() {
+                    tracing::warn!(%status, "Cloud does not accept this Machine's crashes; keeping them");
+                }
+                return Shipped::Retry { after: None };
+            }
             status => {
                 tracing::debug!(%status, "Cloud did not take a crash batch; keeping it");
                 return Shipped::Retry { after: None };
@@ -360,6 +371,23 @@ impl<T: Fn() -> Option<Pusher>> Shipper<T> {
                 Shipped::Retry { after: None }
             }
         }
+    }
+}
+
+impl<T> Shipper<T> {
+    /// Whether to warn that Cloud turned this Machine away. A Machine Cloud
+    /// lost keeps retrying, so the journal hears it once every few minutes.
+    fn warn_unheard(&self) -> bool {
+        let now = Instant::now();
+        let mut warned = self
+            .unheard_warned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if warned.is_some_and(|at| now.duration_since(at) < UNHEARD_WARN_EVERY) {
+            return false;
+        }
+        *warned = Some(now);
+        true
     }
 }
 
@@ -386,7 +414,7 @@ impl Backoff {
         let ceiling = self.ceiling;
         self.ceiling = (ceiling * 2).min(BACKOFF_CAP);
         if let Some(asked) = asked {
-            return asked.min(BACKOFF_CAP);
+            return asked.min(RETRY_AFTER_CAP);
         }
         let half = ceiling / 2;
         half + half.mul_f64(fastrand::f64())
@@ -536,7 +564,14 @@ mod tests {
             backoff.next(Some(Duration::from_secs(7))),
             Duration::from_secs(7)
         );
-        assert_eq!(backoff.next(Some(Duration::from_secs(3600))), BACKOFF_CAP);
+        assert_eq!(
+            backoff.next(Some(Duration::from_secs(3600))),
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            backoff.next(Some(Duration::from_secs(86_400))),
+            RETRY_AFTER_CAP
+        );
         backoff.reset();
         assert!(backoff.next(None) <= BACKOFF_FLOOR);
     }
@@ -633,6 +668,39 @@ mod tests {
                 ],
             }))
         );
+    }
+
+    #[tokio::test]
+    async fn cloud_turning_the_machine_away_warns_once_every_few_minutes() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        outbox.push(crash(5)).unwrap();
+        let (_cloud, url) = Cloud::serve(vec![
+            (StatusCode::UNAUTHORIZED, None),
+            (StatusCode::NOT_FOUND, None),
+            (StatusCode::UNAUTHORIZED, None),
+        ])
+        .await;
+        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
+        let (journal, _journal) = crate::diag::test_support::capture();
+
+        shipper.ship_once().await;
+        shipper.ship_once().await;
+        let warned = shipper.unheard_warned.lock().unwrap().unwrap();
+        *shipper.unheard_warned.lock().unwrap() = warned.checked_sub(UNHEARD_WARN_EVERY);
+        shipper.ship_once().await;
+
+        let journal = journal.text();
+        let warnings: Vec<&str> = journal
+            .lines()
+            .filter(|line| line.contains("WARN"))
+            .collect();
+        assert_eq!(warnings.len(), 2, "{journal}");
+        assert!(
+            warnings.iter().all(|line| line.contains("status=401")),
+            "{journal}"
+        );
+        assert_eq!(held(&outbox), [5]);
     }
 
     #[tokio::test]
