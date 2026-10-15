@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at};
+use super::machine::{Cx, Effect, Stop, Tool, at};
 use super::refusal::Call;
 use super::step::RequestKey;
 use crate::catalog::NODE_NAME;
@@ -18,7 +18,7 @@ pub(crate) struct ProjectCreate {
     /// The new Project's name, unique in the Organization.
     #[schemars(with = "String", pattern(NODE_NAME), example = &"docs")]
     name: ProjectName,
-    /// Any id you choose. Repeat the same call with the same key after a lost reply and you get the same Project back, not a second one.
+    /// Any id you choose. A call that repeats a key gets the Project the first call made, not a second one.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
     request_key: Option<RequestKey>,
@@ -26,8 +26,9 @@ pub(crate) struct ProjectCreate {
 
 impl Tool for ProjectCreate {
     const NAME: &'static str = "project_create";
-    const DESCRIPTION: &'static str = "Create a Project with its Default Environment, production. Then add Services to it with service_add, naming the Project.";
-    const READ_ONLY: bool = false;
+    const DESCRIPTION: &'static str =
+        "Create a Project with its Default Environment, production. It starts with no Services.";
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "name": "docs", "request_key": "q8Lz3fWn2KcT" })
@@ -67,7 +68,7 @@ impl Tool for ProjectRename {
     const NAME: &'static str = "project_rename";
     const DESCRIPTION: &'static str =
         "Rename a Project. Applies at once; its Environments keep running.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "project": "docs", "to": "handbook" })

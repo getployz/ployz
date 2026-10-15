@@ -54,7 +54,11 @@ pub(crate) struct PublishedCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Effect {
     Read,
-    Write { ask: bool },
+    /// `removes`: it removes or revokes something, so hosts mark it destructive.
+    Write {
+        ask: bool,
+        removes: bool,
+    },
 }
 
 /// A name the user types before the command runs.
@@ -426,7 +430,11 @@ impl PublishedCommand {
     }
 
     pub(crate) fn asks(&self) -> bool {
-        self.effect == Effect::Write { ask: true }
+        matches!(self.effect, Effect::Write { ask: true, .. })
+    }
+
+    pub(crate) fn removes(&self) -> bool {
+        matches!(self.effect, Effect::Write { removes: true, .. })
     }
 
     fn from_wire(entry: wire::Entry) -> Option<Self> {
@@ -446,6 +454,7 @@ impl PublishedCommand {
                 wire::Kind::Read => Effect::Read,
                 wire::Kind::Write => Effect::Write {
                     ask: entry.gate == wire::Gate::Ask,
+                    removes: entry.removes,
                 },
             },
             agents: entry.agents,

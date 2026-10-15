@@ -22,6 +22,8 @@ pub(super) struct Entry {
     pub(super) examples: Vec<String>,
     pub(super) kind: Kind,
     pub(super) gate: Gate,
+    #[serde(default)]
+    pub(super) removes: bool,
     pub(super) agents: bool,
     #[serde(default)]
     pub(super) typed: Option<Typed>,

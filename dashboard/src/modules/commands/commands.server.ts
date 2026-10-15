@@ -50,6 +50,7 @@ function entry(command: Published): JsonObject {
     examples: [...command.examples],
     kind: command.kind,
     gate: command.gate,
+    removes: command.removes,
     agents: command.agents,
     typed: command.typed,
     positional: [...command.positional],

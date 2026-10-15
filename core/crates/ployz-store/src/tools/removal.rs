@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use super::act::{server_show, servers};
 use super::cloud::ServersAnswer;
-use super::machine::{Cx, Stop, Tool, store};
+use super::machine::{Cx, Effect, Stop, Tool, store};
 use super::refusal::{Call, Refusal, Writes, from_store};
 use super::step::{AcceptedLoss, DashboardPage, Fix, Gate, ServerName};
 use crate::catalog::NODE_NAME;
@@ -300,7 +300,7 @@ impl Tool for EnvironmentRemove {
     const NAME: &'static str = "environment_remove";
     const DESCRIPTION: &'static str = "Delete an Environment, its Volumes and their data, once no server runs it. A server that does not answer holds its part until it answers or is removed. The result says removed or removing.";
     const GATE: Gate = Gate::Store;
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "environment": "preview", "wait_seconds": 120 })
@@ -355,7 +355,7 @@ impl Tool for ProjectRemove {
     const NAME: &'static str = "project_remove";
     const DESCRIPTION: &'static str = "Delete a Project, every Environment and Volume and their data, the Default last. A server that does not answer holds its part until it answers or is removed. The result says removed or removing.";
     const GATE: Gate = Gate::Store;
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "project": "trial", "wait_seconds": 120 })

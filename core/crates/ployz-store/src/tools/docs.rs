@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool};
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::Refusal;
 use crate::docs::{self, Lookup};
 
@@ -22,7 +22,7 @@ impl Tool for Docs {
         include_str!(concat!(env!("OUT_DIR"), "/docs_contents.txt")),
         "."
     );
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "query": "add a custom domain" })

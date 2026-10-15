@@ -323,6 +323,10 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     const { tools } = yield* Effect.promise(() => agent.client.listTools());
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["environment_show", "service_add", "deploy"]));
     expect(tools.find((tool) => tool.name === "deploy")?.inputSchema.properties).toHaveProperty("approval");
+    const hints = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+    expect(hints("deploy")).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(hints("service_add")).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    expect(hints("environment_show")).toMatchObject({ readOnlyHint: true, destructiveHint: false });
 
     const shown = yield* agent.call("environment_show", SHOP);
     expect(shown).toMatchObject({ isError: false, body: { ok: true } });

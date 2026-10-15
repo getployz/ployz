@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::step::{Ask, CloudQuery, DashboardPage};
 use crate::catalog::NODE_NAME;
@@ -33,7 +33,7 @@ pub(crate) struct EnvironmentShow {
 impl Tool for EnvironmentShow {
     const NAME: &'static str = "environment_show";
     const DESCRIPTION: &'static str = "Where you are: Projects and Environments, Services with source and domains, Volumes, Configs, how many changes are Staged, and the latest Deployment.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "environment": "staging" })
@@ -141,7 +141,7 @@ pub(crate) struct EnvironmentPr {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REPOSITORY))]
     repository: Option<RepositoryName>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -158,7 +158,7 @@ impl Tool for EnvironmentPr {
     const NAME: &'static str = "environment_pr";
     const DESCRIPTION: &'static str =
         "Turn on or off an Environment per GitHub pull request, built from this Environment.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "enabled": true, "repository": "acme/api" })
@@ -263,7 +263,7 @@ pub(crate) struct GithubAnswer {
 impl Tool for EnvironmentSetup {
     const NAME: &'static str = "environment_setup";
     const DESCRIPTION: &'static str = "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
 
     fn example() -> Value {

@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at};
+use super::machine::{Cx, Effect, Stop, Tool, at};
 use super::refusal::{Call, Refusal, Writes, from_store};
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -16,15 +16,15 @@ use crate::{
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct History {
-    /// Saved revision number. review shows the latest as saved.revision.
+    /// Saved revision number.
     revision: u64,
     /// Reverse only what this revision changed, keeping later ones.
     #[serde(default)]
     undo: bool,
-    /// Only from a refusal, with accept_overwrite.
+    /// The Working State version a refusal names; required with accept_overwrite.
     #[serde(default)]
     version: Option<String>,
-    /// Only from a refusal, when the member accepted losing the Staged changes it named.
+    /// Replace the Staged changes a refusal named.
     #[serde(default)]
     accept_overwrite: bool,
     /// Project name. Omit for the one you are in.
@@ -39,8 +39,8 @@ pub(crate) struct History {
 
 impl Tool for History {
     const NAME: &'static str = "history";
-    const DESCRIPTION: &'static str = "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; the next deploy asks a human if it removes something. Sealed values and Volume data do not come back.";
-    const READ_ONLY: bool = false;
+    const DESCRIPTION: &'static str = "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; the next deploy asks a human if it removes something. Sealed values and Volume data are not restored.";
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "revision": 1, "undo": true })

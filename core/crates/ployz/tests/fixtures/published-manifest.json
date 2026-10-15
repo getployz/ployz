@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "d6564b3f4efc",
+  "revision": "d1ec13e6d34a",
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -15,6 +15,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -60,6 +61,7 @@
       ],
       "kind": "write",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -117,6 +119,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -178,6 +181,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -266,6 +270,7 @@
       ],
       "kind": "write",
       "gate": "never",
+      "removes": false,
       "agents": false,
       "typed": "organization",
       "positional": [
@@ -354,6 +359,7 @@
       ],
       "kind": "write",
       "gate": "never",
+      "removes": false,
       "agents": false,
       "typed": null,
       "positional": [
@@ -447,6 +453,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -508,6 +515,7 @@
       ],
       "kind": "write",
       "gate": "never",
+      "removes": false,
       "agents": false,
       "typed": null,
       "positional": [
@@ -591,6 +599,7 @@
       ],
       "kind": "write",
       "gate": "ask",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -658,6 +667,7 @@
       ],
       "kind": "write",
       "gate": "ask",
+      "removes": true,
       "agents": true,
       "typed": null,
       "positional": [
@@ -704,6 +714,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [],
@@ -766,6 +777,7 @@
       ],
       "kind": "write",
       "gate": "ask",
+      "removes": true,
       "agents": true,
       "typed": null,
       "positional": [
@@ -819,6 +831,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [
@@ -1070,6 +1083,7 @@
       ],
       "kind": "read",
       "gate": "never",
+      "removes": false,
       "agents": true,
       "typed": null,
       "positional": [

@@ -40,6 +40,8 @@ export type AgentTool = {
   readonly inputSchema: JsonObject;
   readonly gated: boolean;
   readonly readOnly: boolean;
+  /** It removes or revokes something, now or at the deploy it ships. */
+  readonly destructive: boolean;
   /** The input takes a `request_key`, so a client's key is the one the Store admits. */
   readonly keyed: boolean;
 };
@@ -51,7 +53,7 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
   ...CATALOG.tools.map((tool) => {
     // SAFETY: the catalog writes each input schema as a JSON Schema object.
     const schema = tool.input_schema as JsonObject;
-    return { name: tool.name, description: tool.description, inputSchema: schema, gated: tool.gate !== "never", readOnly: tool.read_only, keyed: keyed(schema) };
+    return { name: tool.name, description: tool.description, inputSchema: schema, gated: tool.gate !== "never", readOnly: tool.read_only, destructive: tool.destructive, keyed: keyed(schema) };
   }),
   ...COMMANDS.filter((command) => command.agents && command.typed === null).map((command) => ({
     name: command.name,
@@ -59,6 +61,7 @@ export const AGENT_TOOLS: ReadonlyArray<AgentTool> = [
     inputSchema: inputSchema(command),
     gated: command.gate !== "never",
     readOnly: command.kind === "read",
+    destructive: command.removes,
     keyed: false,
   })),
 ];

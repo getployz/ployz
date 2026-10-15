@@ -29,6 +29,7 @@ export const serverUpgradePolicySet = defineCommand({
   about: "Change the Organization's upgrade policy: the Release Channel every upgrade follows, or automatic upgrades on or off",
   examples: ["ployz server upgrade-policy set --channel beta", "ployz server upgrade-policy set --automatic true"],
   kind: "write",
+  removes: false,
   gate: "never",
   agents: true,
   typed: null,

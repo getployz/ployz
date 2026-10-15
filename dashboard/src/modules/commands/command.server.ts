@@ -29,8 +29,9 @@ type Gate<F extends Fields, E, R> =
   | { readonly gate: "ask"; readonly asked: (caller: Caller, input: InputOf<F>) => Effectful<OperationAsked, E, R> };
 
 type Kind<F extends Fields, E, R> =
-  | { readonly kind: "read"; readonly gate?: never }
-  | { readonly kind: "write"; readonly gate: Gate<F, E, R> };
+  | { readonly kind: "read"; readonly gate?: never; readonly removes?: never }
+  /** `removes`: it removes or revokes something, so agent hosts mark it destructive. */
+  | { readonly kind: "write"; readonly gate: Gate<F, E, R>; readonly removes: boolean };
 
 type Shown = {
   readonly path: readonly string[];
@@ -54,6 +55,7 @@ export type Command<N extends string = string, O extends Schema.Top = Schema.Top
   readonly name: N;
   readonly kind: "read" | "write";
   readonly gate: "never" | "ask";
+  readonly removes: boolean;
   readonly positional: readonly string[];
   readonly input: Schema.Struct<Fields>;
   readonly output: O;
@@ -96,5 +98,5 @@ export function defineCommand<const N extends string, F extends Fields, O extend
     Effect.withSpan("Commands.invoke", { attributes: { command: def.name } }),
   ) as Effect.Effect<Ran<O["Type"]>, Exclude<E, Refusable>, R | Database>;
   const { run: _run, ...shown } = def;
-  return { ...shown, kind, gate: gate === "never" ? "never" : "ask", invoke };
+  return { ...shown, kind, gate: gate === "never" ? "never" : "ask", removes: def.kind === "write" && def.removes, invoke };
 }

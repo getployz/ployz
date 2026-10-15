@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -41,7 +41,7 @@ pub(crate) struct ConfigWrite {
     #[serde(default)]
     #[schemars(pattern("^/"))]
     path: Option<String>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -57,7 +57,7 @@ pub(crate) struct ConfigWrite {
 impl Tool for ConfigWrite {
     const NAME: &'static str = "config_write";
     const DESCRIPTION: &'static str = "Write files into a Config, creating it if needed, and optionally mount it into a Service at a directory. A file's text may read a Service variable as ${{ SERVICE.KEY }}. Staged.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({
@@ -161,7 +161,7 @@ pub(crate) struct ConfigRename {
     /// New name.
     #[schemars(with = "String", pattern(NODE_NAME))]
     to: ConfigName,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name. Omit for the one you are in.
@@ -177,7 +177,7 @@ pub(crate) struct ConfigRename {
 impl Tool for ConfigRename {
     const NAME: &'static str = "config_rename";
     const DESCRIPTION: &'static str = "Rename a Config. Its files and mounts stay. Staged.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "config": "nginx", "to": "proxy" })
@@ -216,7 +216,7 @@ pub(crate) struct ConfigRemove {
     #[serde(default)]
     #[schemars(with = "Option<String>", length(min = 1))]
     file: Option<ConfigFileName>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -233,7 +233,7 @@ impl Tool for ConfigRemove {
     const NAME: &'static str = "config_remove";
     const DESCRIPTION: &'static str =
         "Remove one file from a Config, or the whole Config and its mounts. Staged.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "config": "nginx", "file": "nginx.conf" })

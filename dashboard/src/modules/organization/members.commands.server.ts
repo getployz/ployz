@@ -114,6 +114,7 @@ export const orgMemberInvite = defineCommand({
   about: `Make an invite link that adds whoever opens it as a member. It lasts ${INVITE_DAYS} days and works once`,
   examples: ["ployz org member invite bob@example.com", "ployz org member invite bob@example.com --role admin"],
   kind: "write",
+  removes: false,
   gate: "never",
   agents: false,
   typed: null,
@@ -151,6 +152,7 @@ export const orgMemberRole = defineCommand({
   about: "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
   examples: ["ployz org member role bob@example.com admin", "ployz org member role Bob member"],
   kind: "write",
+  removes: false,
   gate: {
     gate: "ask",
     asked: (caller, input) => roleTarget(caller, input).pipe(Effect.map((target) => ({
@@ -182,6 +184,7 @@ export const orgMemberRm = defineCommand({
   about: "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
   examples: ["ployz org member rm bob@example.com", "ployz org member rm Bob"],
   kind: "write",
+  removes: true,
   gate: {
     gate: "ask",
     asked: (caller, input) => rmTarget(caller, input.member).pipe(Effect.map((target) => ({
@@ -235,6 +238,7 @@ export const orgInviteRevoke = defineCommand({
   about: "Revoke a pending invite so its link stops working",
   examples: ["ployz org invite revoke bob@example.com"],
   kind: "write",
+  removes: true,
   gate: {
     gate: "ask",
     asked: (caller, input) => pendingInvite(caller, input.invite).pipe(Effect.map((invite) => ({
@@ -264,6 +268,7 @@ export const orgLeave = defineCommand({
   about: "Leave the Organization. Its last owner cannot leave",
   examples: ["ployz org leave"],
   kind: "write",
+  removes: true,
   gate: "never",
   agents: false,
   typed: null,

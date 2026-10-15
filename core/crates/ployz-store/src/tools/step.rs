@@ -329,9 +329,7 @@ impl Gate {
     pub const fn sentence(self) -> &'static str {
         match self {
             Self::Never => "Never asks a human to approve.",
-            Self::Store | Self::Cloud => {
-                "It may stop to ask a human to approve; call it alone, never alongside another tool."
-            }
+            Self::Store | Self::Cloud => "May stop to ask a human to approve.",
         }
     }
 }
