@@ -192,3 +192,10 @@ it("a deleted environment's ClickHouse copy is forgotten", async () => {
   expect(await clickhouseCount(SHOP)).toBe(0);
   expect(await harness.db.select().from(analyticsClickhouseSite)).toEqual([]);
 });
+
+it("raw pageviews are partitioned by retention and month, so expiry drops whole parts instead of rewriting them", async () => {
+  const [table] = await Effect.runPromise(clickhouse.query<{ partition_key: string; engine: string; create_table_query: string }>(
+    "SELECT partition_key, engine, create_table_query FROM system.tables WHERE database = currentDatabase() AND name = 'pageview'"));
+  expect(table).toMatchObject({ partition_key: "(retention_days, toYYYYMM(ts))", engine: "MergeTree" });
+  expect(table?.create_table_query).toContain("ttl_only_drop_parts = 1");
+});
