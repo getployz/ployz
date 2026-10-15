@@ -149,7 +149,11 @@ const setup = Effect.fn(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`alter table analytics.site rename to site_gone`);
   }).pipe(Effect.orDie));
-  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts };
+  const corruptTimezone = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update analytics.site set timezone = 'Not/A_Zone'`);
+  }).pipe(Effect.orDie));
+  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone };
 });
 
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
@@ -246,6 +250,15 @@ it.live("a push Cloud kept but cannot issue salts for answers 204, which keeps t
   const answer = yield* send(push([[10, WEB]]));
   expect(answer.status).toBe(204);
   expect(yield* Effect.promise(() => answer.text())).toBe("");
+  expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
+}), 60_000);
+
+it.live("a push Cloud kept answers 204 even when issuing salts dies", () => Effect.gen(function* () {
+  const { send, rows, sites, corruptTimezone } = yield* setup();
+  yield* sites();
+  yield* corruptTimezone();
+  const answer = yield* send(push([[10, WEB]]));
+  expect(answer.status).toBe(204);
   expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
 }), 60_000);
 
