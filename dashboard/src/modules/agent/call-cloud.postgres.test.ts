@@ -6,7 +6,7 @@ import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud, NO_SERVERS_MESSAGE } from "#/modules/agent/call-cloud.server";
-import { decideApproval } from "#/modules/approvals/approvals.server";
+import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
@@ -361,6 +361,32 @@ describe("callCloud", () => {
       const there = yield* callCloud(caller, { act: stop("3", MACHINE) }, approval_id).pipe(Effect.provide(services));
       expect(there).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
       expect((yield* drizzle.select().from(serviceAct)).map((row) => row.only?.machine)).toEqual([MACHINE]);
+    }));
+
+  // Catches an approval asked before the digest named the machine, for a Server named like another Server's id,
+  // stopping web on that other Server.
+  it.live("an approval that hashed a Server's name never authorizes a stop on the Server whose id is that name", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      const stop = (attempt: string, only: ServerRef): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only, verb: "stop" },
+      });
+
+      const asked = yield* callCloud(caller, { act: stop("1", { machine: MACHINE, name: OTHER_MACHINE }) }).pipe(Effect.provide(services));
+      const { approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
+      const byName = operationDigest({
+        verb: "stop",
+        preview: { environment: ENVIRONMENT, service: "web", only: OTHER_MACHINE },
+        effects: [{ kind: "stops_service", name: "web", node: `${ENVIRONMENT}/web`, path: "services.web" }],
+      });
+      yield* drizzle.execute(sql`update operation_approvals set digest = ${byName} where id = ${approval_id}`);
+      expect(yield* decideApproval(caller, approval_id, { approve: { digest: byName } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+
+      const elsewhere = yield* callCloud(caller, { act: stop("2", { machine: OTHER_MACHINE, name: "fra-2" }) }, approval_id).pipe(Effect.provide(services));
+      expect(elsewhere).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
+      expect(yield* drizzle.select().from(serviceAct)).toEqual([]);
     }));
 
   // Catches an approval for web off authorizing a change that also turns other policy off, or a reread that supersedes
