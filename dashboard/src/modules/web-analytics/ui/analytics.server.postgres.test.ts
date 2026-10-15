@@ -5,10 +5,10 @@ import { expect } from "vitest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { setSiteAnalytics } from "#/modules/web-analytics/salts.server";
-import { analyticsGoal } from "#/modules/web-analytics/tables";
+import { analyticsGapDaily, analyticsGoal } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-import { createGoal, deleteGoal } from "./analytics.server";
+import { createGoal, deleteGoal, readAnalyticsView } from "./analytics.server";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f501";
 const PROJECT = "00000000-0000-4000-8000-00000000f502";
@@ -67,4 +67,18 @@ it.live("goal writes go through where the plan and the Environment have analytic
   yield* provide(createGoal(actor, { ...scope, name: "Signup", pathPattern: "/signup*" }));
   yield* provide(deleteGoal(actor, { ...scope, id: KEPT_GOAL }));
   expect(yield* goals()).toEqual(["/signup*"]);
+}).pipe(Effect.scoped));
+
+it.live("a site whose every visit was lost says which days, not that it has no visits, and keeps its goals", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.insert(analyticsGapDaily).values([
+      { environmentId: PRODUCTION, day: "2026-10-11", count: 0 },
+      { environmentId: PRODUCTION, day: "2026-10-12", count: 40 },
+      { environmentId: PRODUCTION, day: "2026-10-10", count: 12 },
+    ]);
+  }).pipe(Effect.orDie));
+  const view = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
+  expect(view).toMatchObject({ gate: "on", empty: true, lostDays: ["2026-10-10", "2026-10-12"], goals: [{ pathPattern: "/kept", visitors: 0 }] });
 }).pipe(Effect.scoped));

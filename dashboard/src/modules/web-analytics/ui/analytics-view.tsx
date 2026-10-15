@@ -40,7 +40,7 @@ export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
   if (view.empty) {
     return (
       <div className="flex min-w-0 flex-col gap-4">
-        <NoVisitsYet />
+        {view.lostDays.length > 0 ? <VisitsLost days={view.lostDays} /> : <NoVisitsYet />}
         <AnalyticsGoals scope={scope} goals={view.goals} visitors={0} />
       </div>
     );
@@ -278,6 +278,14 @@ function SiteOff({ scope }: { scope: AnalyticsScope }) {
     <Gate title="Analytics is off for this Environment"
       action={<Button disabled={turnOn.isPending} onClick={() => turnOn.mutate()}>Turn on</Button>}>
       Counts visits to this Environment&apos;s domains from the moment it is on, without cookies.
+    </Gate>
+  );
+}
+
+function VisitsLost({ days }: { days: ReadonlyArray<string> }) {
+  return (
+    <Gate title="No visits counted">
+      <span data-analytics-partial={days.join(" ")}>Some visits on {days.join(", ")} could not be counted.</span>
     </Gate>
   );
 }

@@ -15,7 +15,8 @@ Analytics comes with the paid plan on Ployz Cloud. A self-hosted Cloud runs it o
 2. Click **Turn on**. It takes an owner or admin of the Organization.
 
 Ployz counts from that moment, in your browser's time zone. The zone stays the Environment's for
-good, so its days never shift under the numbers. Until the first visit lands, the page says so.
+good, so its days never shift under the numbers. Until the first visit lands, the page says so. If
+visits arrived but none could be counted, it names the days they were lost on instead.
 
 ## Read the page
 

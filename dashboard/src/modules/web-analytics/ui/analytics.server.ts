@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, asc, eq, gte, lte } from "drizzle-orm";
+import { and, asc, eq, gt, gte, lte } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { analyticsPlan } from "#/modules/billing/billing.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -48,7 +48,18 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
     .from(analyticsGoal).where(eq(analyticsGoal.environmentId, input.environmentId)).orderBy(asc(analyticsGoal.createdAt));
   const [seen] = yield* drizzle.select({ ts: analyticsPageview.ts }).from(analyticsPageview)
     .where(eq(analyticsPageview.environmentId, input.environmentId)).limit(1);
-  if (seen === undefined) return { gate: "on", empty: true, timezone: site.timezone, goals: goals.map((goal) => ({ ...goal, visitors: 0, conversions: 0 })) } as const;
+  if (seen === undefined) {
+    // Every visit can be dropped, for a day with no salt: then the count of lost visits is all the site has.
+    const lost = yield* drizzle.select({ day: analyticsGapDaily.day }).from(analyticsGapDaily)
+      .where(and(eq(analyticsGapDaily.environmentId, input.environmentId), gt(analyticsGapDaily.count, 0))).orderBy(asc(analyticsGapDaily.day));
+    return {
+      gate: "on",
+      empty: true,
+      timezone: site.timezone,
+      lostDays: lost.map(({ day }) => day),
+      goals: goals.map((goal) => ({ ...goal, visitors: 0, conversions: 0 })),
+    } as const;
+  }
 
   const now = yield* Clock.currentTimeMillis;
   const { range, interval } = resolveRange(isRangeSpec(input.range) ? input.range : DEFAULT_RANGE, site.timezone, now);
