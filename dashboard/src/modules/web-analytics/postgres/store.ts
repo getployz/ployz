@@ -47,6 +47,7 @@ const SESSION_KEYS: ReadonlySet<FilterKey> = new Set(SESSION_DIMS);
 const sessionFilters = (query: StoreQuery) => query.filters.filter((filter) => SESSION_KEYS.has(filter.key));
 const pageFilters = (query: StoreQuery) => query.filters.filter((filter) => !SESSION_KEYS.has(filter.key));
 
+/** `neq` keeps rows whose value is missing: a pageview with no source is not from Google. */
 const filterClause = (filters: ReadonlyArray<Filter>, table?: string) =>
   sql.join(
     filters.map((filter) => {
