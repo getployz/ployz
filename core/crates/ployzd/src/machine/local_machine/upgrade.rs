@@ -10,6 +10,9 @@ impl LocalMachine {
     /// A replay is read before claiming exclusive mutation ownership so a lost reply can be
     /// recovered while the independent worker owns the installation lock.
     ///
+    /// `cloud_routed` marks a request that entered the mesh through Ployz Cloud on any
+    /// Machine; such a request, like one on this Machine's own tunnel, cannot downgrade.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Upgrade`] for a conflicting retry identity, active mutation, release
@@ -17,6 +20,7 @@ impl LocalMachine {
     pub(crate) async fn request_upgrade(
         &self,
         request: RequestMachineUpgradeRequest,
+        cloud_routed: bool,
     ) -> Result<MachineUpgradeAttempt, Error> {
         let data_dir = self.owner.data_dir().to_owned();
         let run_dir = self.owner.run_dir().to_owned();
@@ -34,13 +38,45 @@ impl LocalMachine {
         let installation = self.owner.mutation_gate().try_installation()?;
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;
-        let downgrade = if self.management_client.is_some() {
+        crate::installer::upgrade::request(
+            request,
+            self.downgrade(cloud_routed),
+            data_dir,
+            run_dir,
+            installation,
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    fn downgrade(&self, cloud_routed: bool) -> crate::installer::upgrade::Downgrade {
+        if cloud_routed || self.management_client.is_some() {
             crate::installer::upgrade::Downgrade::Refused
         } else {
             crate::installer::upgrade::Downgrade::Allowed
-        };
-        crate::installer::upgrade::request(request, downgrade, data_dir, run_dir, installation)
-            .await
-            .map_err(Into::into)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        installer::upgrade::Downgrade,
+        machine::{LocalMachineStore, RecordOwner},
+    };
+
+    #[test]
+    fn only_a_request_that_never_touched_cloud_may_downgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = LocalMachine::new(
+            RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap(),
+        );
+        let tunnel = local.clone().with_management_client([7; 32]);
+
+        assert_eq!(local.downgrade(false), Downgrade::Allowed);
+        assert_eq!(local.downgrade(true), Downgrade::Refused);
+        assert_eq!(tunnel.downgrade(false), Downgrade::Refused);
+        assert_eq!(tunnel.downgrade(true), Downgrade::Refused);
     }
 }

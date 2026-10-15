@@ -156,6 +156,57 @@ async fn one_to_one_forwards_unknown_bytes_unchanged() {
 }
 
 #[tokio::test]
+async fn forwarding_keeps_the_cloud_routed_mark() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let remote_port = listener.local_addr().unwrap().port();
+    let (shutdown, shutdown_rx) = oneshot::channel();
+    let remote = machine('2', "remote", 2);
+    let target_proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        remote.id,
+        remote_port,
+        None,
+    );
+    let server = tokio::spawn(Server::builder().serve_with_incoming_shutdown(
+        target_proxy,
+        TcpListenerStream::new(listener),
+        async { _ = shutdown_rx.await },
+    ));
+    let local = machine('1', "local", 1);
+    let proxy = MachineProxy::new(
+        Routes::new(EchoService::default()),
+        local.id,
+        remote_port,
+        None,
+    );
+    proxy.remote_backends.lock().unwrap().insert(
+        remote.management_address(),
+        tonic::transport::Endpoint::from_shared(format!("http://[::1]:{remote_port}"))
+            .unwrap()
+            .connect_lazy(),
+    );
+    let request = http::Request::builder()
+        .uri("/ployz.rpc.v1.MachineRpc/RequestMachineUpgrade")
+        .header("content-type", "application/grpc")
+        .header("machine", remote.name.as_str())
+        .header(ployz_core::CLOUD_ROUTED_HEADER, "1")
+        .body(Body::new(Full::new(Bytes::from(
+            ployz_core::encode_grpc_frame(b"{}"),
+        ))))
+        .unwrap();
+
+    let response = proxy.dispatch_with_snapshot(request, &[remote]).await;
+
+    assert_eq!(
+        response.headers().get(ployz_core::CLOUD_ROUTED_HEADER),
+        Some(&http::HeaderValue::from_static("1")),
+        "a Cloud request lost its mark on the way to the target Machine"
+    );
+    let _ = shutdown.send(());
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn a_target_that_does_not_answer_is_marked_as_the_router_s_own_failure() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let silent_port = listener.local_addr().unwrap().port();
