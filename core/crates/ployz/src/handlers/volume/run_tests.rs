@@ -198,12 +198,9 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                kind: VolumeRunKind::Mirror,
-                to: Some(MachineName::parse("web-2").unwrap()),
-                full: None,
-                slot: None,
-                confirm: None,
-                from: None,
+                ask: RunAsk::Mirror {
+                    to: MachineName::parse("web-2").unwrap(),
+                },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "mirror", "to": "web-2" }),
             json!({ "to": "web-2" }),
@@ -211,12 +208,7 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                kind: VolumeRunKind::Sync,
-                to: None,
-                full: Some(true),
-                slot: None,
-                confirm: None,
-                from: None,
+                ask: RunAsk::Sync { full: Full },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "sync", "full": true }),
             json!({ "full": true }),
@@ -224,12 +216,10 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                kind: VolumeRunKind::DeleteMirror,
-                to: None,
-                full: None,
-                slot: Some(MachineName::parse("web-2").unwrap()),
-                confirm: Some("data".to_owned()),
-                from: None,
+                ask: RunAsk::DeleteMirror {
+                    slot: MachineName::parse("web-2").unwrap(),
+                    confirm: Some("data".to_owned()),
+                },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "delete_mirror", "slot": "web-2", "confirm": "data" }),
             json!({ "slot": "web-2", "confirmed_name": "data" }),
@@ -237,12 +227,9 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                kind: VolumeRunKind::Move,
-                to: Some(MachineName::parse("web-2").unwrap()),
-                full: None,
-                slot: None,
-                confirm: None,
-                from: None,
+                ask: RunAsk::Move {
+                    to: MachineName::parse("web-2").unwrap(),
+                },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "move", "to": "web-2" }),
             json!({ "to": "web-2" }),
@@ -250,12 +237,7 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                kind: VolumeRunKind::Release,
-                to: None,
-                full: None,
-                slot: None,
-                confirm: None,
-                from: None,
+                ask: RunAsk::Release,
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "release" }),
             json!({}),
@@ -263,12 +245,9 @@ async fn each_kind_posts_only_its_own_fields() {
         (
             RunRequest {
                 environment: named(),
-                kind: VolumeRunKind::Restore,
-                to: None,
-                full: None,
-                slot: None,
-                confirm: None,
-                from: Some(MachineName::parse("web-2").unwrap()),
+                ask: RunAsk::Restore {
+                    from: MachineName::parse("web-2").unwrap(),
+                },
             },
             json!({ "environment": { "project": "shop", "environment": "production" }, "kind": "restore", "from": "web-2" }),
             json!({ "from": "web-2" }),
@@ -303,12 +282,7 @@ async fn a_refused_run_keeps_cloud_s_refusal() {
     });
     let request = RunRequest {
         environment: named(),
-        kind: VolumeRunKind::Sync,
-        to: None,
-        full: Some(false),
-        slot: None,
-        confirm: None,
-        from: None,
+        ask: RunAsk::Sync { full: Full },
     };
     let error = start(&token(&cloud), &volume(), &request, None)
         .await
@@ -503,12 +477,7 @@ async fn a_release_cloud_plans_for_20_seconds_still_starts() {
     });
     let release = RunRequest {
         environment: named(),
-        kind: VolumeRunKind::Release,
-        to: None,
-        full: None,
-        slot: None,
-        confirm: None,
-        from: None,
+        ask: RunAsk::Release,
     };
     let started = start(&token(&cloud), &volume(), &release, None).await;
     server.await.unwrap();

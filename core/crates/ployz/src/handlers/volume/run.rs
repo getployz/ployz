@@ -155,17 +155,40 @@ pub(crate) struct RunEnvironment {
 #[derive(Debug, Serialize, PartialEq)]
 pub(crate) struct RunRequest {
     pub(crate) environment: RunEnvironment,
-    pub(crate) kind: VolumeRunKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) to: Option<MachineName>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) full: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) slot: Option<MachineName>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) confirm: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) from: Option<MachineName>,
+    #[serde(flatten)]
+    pub(crate) ask: RunAsk,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum RunAsk {
+    Mirror {
+        to: MachineName,
+    },
+    Sync {
+        full: Full,
+    },
+    DeleteMirror {
+        slot: MachineName,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<String>,
+    },
+    Move {
+        to: MachineName,
+    },
+    Release,
+    Restore {
+        from: MachineName,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct Full;
+
+impl Serialize for Full {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bool(true)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -367,12 +390,7 @@ pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("Mirror of Volume {volume} onto {to}");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        kind: VolumeRunKind::Mirror,
-        to: Some(to.clone()),
-        full: None,
-        slot: None,
-        confirm: None,
-        from: None,
+        ask: RunAsk::Mirror { to: to.clone() },
     })
 }
 
@@ -385,12 +403,7 @@ pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("full Sync of Volume {volume}'s Mirror");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        kind: VolumeRunKind::Sync,
-        to: None,
-        full: Some(true),
-        slot: None,
-        confirm: None,
-        from: None,
+        ask: RunAsk::Sync { full: Full },
     })
 }
 
@@ -454,12 +467,7 @@ pub(super) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("Move of Volume {volume} onto {to}");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        kind: VolumeRunKind::Move,
-        to: Some(to.clone()),
-        full: None,
-        slot: None,
-        confirm: None,
-        from: None,
+        ask: RunAsk::Move { to: to.clone() },
     })
 }
 
@@ -469,12 +477,7 @@ pub(super) fn release(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("Release of Volume {volume}");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        kind: VolumeRunKind::Release,
-        to: None,
-        full: None,
-        slot: None,
-        confirm: None,
-        from: None,
+        ask: RunAsk::Release,
     })
 }
 
@@ -485,12 +488,7 @@ pub(super) fn restore(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("Restore of Volume {volume} from {from}");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        kind: VolumeRunKind::Restore,
-        to: None,
-        full: None,
-        slot: None,
-        confirm: None,
-        from: Some(from.clone()),
+        ask: RunAsk::Restore { from: from.clone() },
     })
 }
 
@@ -512,12 +510,10 @@ pub(super) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
     let started = format!("deletion of Mirror {mirror}");
     request(root, &volume, started, |environment| RunRequest {
         environment,
-        kind: VolumeRunKind::DeleteMirror,
-        to: None,
-        full: None,
-        slot: Some(slot.clone()),
-        confirm: confirm.clone(),
-        from: None,
+        ask: RunAsk::DeleteMirror {
+            slot: slot.clone(),
+            confirm: confirm.clone(),
+        },
     })
 }
 
@@ -556,7 +552,7 @@ fn request(
         project: environment.project,
         environment: environment.name,
     });
-    let confirming = asked.kind == VolumeRunKind::DeleteMirror && asked.confirm.is_none();
+    let confirming = matches!(asked.ask, RunAsk::DeleteMirror { confirm: None, .. });
     let run = approved(runtime, credential, matches, volume, &volume_id, &asked)?
         .map_err(|error| refused(&store, matches, error, confirming, volume))?;
     let follow = store::next(
@@ -592,8 +588,8 @@ fn approved(
     volume_id: &VolumeId,
     asked: &RunRequest,
 ) -> Result<Result<VolumeRun, StoreCallError>, Error> {
-    let (verb, mut words) = match (asked.kind, &asked.slot) {
-        (VolumeRunKind::Release, _) => (
+    let (verb, mut words) = match &asked.ask {
+        RunAsk::Release => (
             Verb::Release,
             vec![
                 "volume".to_owned(),
@@ -601,24 +597,18 @@ fn approved(
                 volume.to_string(),
             ],
         ),
-        (VolumeRunKind::DeleteMirror, slot) => {
-            let mirror = slot
-                .as_ref()
-                .map_or_else(|| volume.to_string(), |slot| format!("{volume}-{slot}"));
+        RunAsk::DeleteMirror { slot, confirm } => {
             let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
-            words.push(mirror);
-            if let Some(confirm) = &asked.confirm {
+            words.push(format!("{volume}-{slot}"));
+            if let Some(confirm) = confirm {
                 words.extend(["--confirm".to_owned(), confirm.clone()]);
             }
             (Verb::RemoveMirror, words)
         }
-        (
-            VolumeRunKind::Mirror
-            | VolumeRunKind::Sync
-            | VolumeRunKind::Move
-            | VolumeRunKind::Restore,
-            _,
-        ) => {
+        RunAsk::Mirror { .. }
+        | RunAsk::Sync { .. }
+        | RunAsk::Move { .. }
+        | RunAsk::Restore { .. } => {
             return Ok(runtime.block_on(start(credential, volume_id, asked, None)));
         }
     };
