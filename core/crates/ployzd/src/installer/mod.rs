@@ -102,7 +102,7 @@ pub enum Error {
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
     Verification(String),
-    #[error("release {0} is not signed, and Ployz installs only signed releases")]
+    #[error("Release {0} is not signed, and Ployz installs only signed releases.")]
     Unsigned(MachineVersion),
     #[error("{stage}: {message}")]
     Command { stage: String, message: String },

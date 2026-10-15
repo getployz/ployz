@@ -344,4 +344,47 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
+
+    async fn serve_status(status: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await.unwrap();
+            let response =
+                format!("HTTP/1.1 {status}\r\ncontent-length: 4\r\nconnection: close\r\n\r\nbody");
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        format!("http://{addr}/checksums.txt.minisig")
+    }
+
+    #[tokio::test]
+    async fn missing_signature_reads_as_absent_and_other_failures_stay_errors() {
+        let client = reqwest::Client::new();
+
+        let url = serve_status("404 Not Found").await;
+        let absent = download_if_present(&client, &url, "signature")
+            .await
+            .unwrap();
+        assert_eq!(absent, None);
+
+        let url = serve_status("200 OK").await;
+        let present = download_if_present(&client, &url, "signature")
+            .await
+            .unwrap();
+        assert_eq!(present.as_deref(), Some(b"body".as_slice()));
+
+        let url = serve_status("500 Internal Server Error").await;
+        let failed = download_if_present(&client, &url, "signature").await;
+        assert!(matches!(
+            failed,
+            Err(ProvisionError::BootstrapDownload {
+                stage: "signature",
+                ..
+            })
+        ));
+    }
 }
