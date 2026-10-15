@@ -1,7 +1,6 @@
 import { Option, Schema } from "effect";
 import { OBSERVE_STREAMS } from "#/modules/observe-ingest/tables";
 
-/** The most events one push carries. A Machine sends at most 100. */
 export const MAX_PUSH_EVENTS = 1000;
 
 const MAX_SEQ = 2n ** 63n - 1n;
@@ -32,7 +31,6 @@ const CrashPush = Schema.Struct({
 });
 type CrashPush = typeof CrashPush.Type;
 
-/** Every push names its stream first, so a stream Cloud does not take yet is told apart from a malformed one. */
 export const decodePushHeader = Schema.decodeUnknownOption(Schema.Struct({ stream: Schema.String }));
 export const isObserveStream = Schema.is(Schema.Literals(OBSERVE_STREAMS));
 export const decodeCrashPush = Schema.decodeUnknownOption(CrashPush);
@@ -61,12 +59,10 @@ const toSeq = (value: string): Option.Option<bigint> => {
 
 type Marker = typeof Marker.Type;
 
-/** Mirrors core's crash rule. Clean stops and exits Docker gave no code for are not crashes. */
 const isCrash = (marker: Marker) =>
   marker.kind === "exit"
   && (marker.oom === true || (marker.exit_code != null && marker.exit_code !== 0 && marker.stopped !== true));
 
-/** The crashes a push carries, or none when a seq is past what Postgres holds. Other markers are acknowledged and not kept. */
 export const crashPushInput = (push: CrashPush): Option.Option<CrashPushInput> => {
   const seq = toSeq(push.seq);
   if (Option.isNone(seq)) return Option.none();

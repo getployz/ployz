@@ -19,10 +19,6 @@ export type AuthenticateObservePush<R = never> = (
 /** How a Machine proves it may push is not settled yet, so every push is refused until it is. */
 export const authenticateObservePush: AuthenticateObservePush = () => Effect.fail(new Unauthorized());
 
-/**
- * Takes one crash push in one transaction. A push at or below the stream's cursor is a replay and writes nothing. Events
- * already kept are skipped one by one, which covers a batch that straddles the cursor after a Machine restart.
- */
 export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pusher: ObservePusher, push: CrashPushInput) {
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {

@@ -6,9 +6,7 @@ import { queueOrganizationMail } from "#/modules/notifications/recipients.server
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
-/** A Service that keeps crashing mails at most once in this window. */
 const MAIL_GAP_MS = 3_600_000;
-/** Crash events older than this are deleted. */
 const RETAIN = "30 days";
 export const PRUNE_BATCH_ROWS = 5_000;
 
@@ -25,11 +23,9 @@ type Context = {
   organizationName: string; organizationSlug: string; project: string | null; environment: string | null; slug: string | null;
 };
 
-/** The runtime name after the `<namespace>/` the marker qualifies it with. */
 const runtimeName = (serviceName: string) => serviceName.slice(serviceName.indexOf("/") + 1);
 const namespaceOf = (serviceName: string) => serviceName.slice(0, Math.max(serviceName.indexOf("/"), 0));
 
-/** The Organization, and the Project and Environment that own the namespace with the Service's applied slug, if any. */
 const loadContext = Effect.fn("CrashMail.context")(function* (organizationId: string, serviceId: string, serviceName: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.execute<Context>(sql`
@@ -47,11 +43,6 @@ const loadContext = Effect.fn("CrashMail.context")(function* (organizationId: st
   return row ?? null;
 });
 
-/**
- * Claim one Service's unmailed crashes and queue their email. A Service mailed within the last hour waits: the claim
- * returns when it may mail again and leaves the crashes for then. The mail is queued before the claim commits, keyed by
- * the first crash it counts, so a retry after a failed commit re-queues the same mail and send-mail drops the copy.
- */
 export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
   organizationId: string,
   serviceId: string,
@@ -94,9 +85,10 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
           organization: { name: context.organizationName, slug: context.organizationSlug },
           service: context.slug ?? runtimeName(last.serviceName),
           place,
-          server: { machineId: last.machineId, name: serverNames.get(last.machineId) ?? last.machineId.slice(0, 12) },
           count: unmailed.length,
-          last: { exitCode: last.exitCode, oom: last.oom, at: new Date(last.occurredMs) },
+          last: {
+            server: { machineId: last.machineId, name: serverNames.get(last.machineId) ?? last.machineId.slice(0, 12) },
+            exitCode: last.exitCode, oom: last.oom, at: new Date(last.occurredMs) },
           origin: config.app.url.origin,
         }),
       });
@@ -109,7 +101,6 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
   }));
 });
 
-/** One batch of crash events older than 30 days; how many it deleted. */
 export const pruneCrashEvents = Effect.fn("CrashMail.prune")(function* (now: Date) {
   const { drizzle } = yield* Database;
   const deleted = yield* drizzle.execute<{ id: string }>(sql`

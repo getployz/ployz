@@ -18,10 +18,6 @@ const MACHINE = machineId("0");
 const WEB = "c".repeat(32);
 const NAMES = new Map([[MACHINE, "web-1"]]);
 
-/**
- * Cloud with Organization Acme, one enrolled Server, and Project shop whose production Environment owns a namespace.
- * `crash` keeps one crash of Service web as ingest would. `mails` are the mail/send events queued so far.
- */
 const setup = Effect.fn(function* () {
   const inngest = new Inngest({ id: "crash-mail-test" });
   const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });

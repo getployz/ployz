@@ -176,7 +176,6 @@ export type ClusterDomainSyncRequestedEventData = {
 /** Sync every Environment's uptime checks with its Applied State, for Services applied before checks existed. */
 export type UptimeBackfillRequestedEventData = Record<string, never>;
 
-/** A Server reported new crashes of one Service. The crash mail debounces on the pair. */
 export type ObserveCrashReceivedEventData = {
   organizationId: string;
   serviceId: string;
@@ -460,7 +459,6 @@ export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventD
   return { name: configSweepRequestedEvent, data } as const;
 }
 
-/** Keyed by the first crash it reports, so the outbox and Inngest send it once. */
 export function createObserveCrashReceivedEvent(data: ObserveCrashReceivedEventData, crashEventId: string) {
   return { id: `observe-crash-${crashEventId}`, name: observeCrashReceivedEvent, data } as const;
 }

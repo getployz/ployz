@@ -3,14 +3,14 @@ import { type CrashMail, crashMail } from "#/modules/mail/templates/servers/cras
 
 const SERVICE = "c".repeat(32);
 const MACHINE = "a".repeat(32);
+const WEB_1 = { machineId: MACHINE, name: "web-1" };
 
 const mail = (overrides: Partial<CrashMail>) => crashMail({
   organization: { name: "Acme", slug: "acme" },
   service: "web",
   place: { project: "shop", environment: "production", serviceId: SERVICE },
-  server: { machineId: MACHINE, name: "web-1" },
   count: 1,
-  last: { exitCode: 1, oom: false, at: new Date("2026-10-15T03:02:00Z") },
+  last: { server: WEB_1, exitCode: 1, oom: false, at: new Date("2026-10-15T03:02:00Z") },
   origin: "https://ployz.dev",
   ...overrides,
 });
@@ -30,7 +30,7 @@ it("names the service, its Environment and the Server, and links the service's m
 });
 
 it("counts a burst and says the last crash ran out of memory", () => {
-  const burst = mail({ count: 5, last: { exitCode: 137, oom: true, at: new Date("2026-10-15T03:09:00Z") } });
+  const burst = mail({ count: 5, last: { server: WEB_1, exitCode: 137, oom: true, at: new Date("2026-10-15T03:09:00Z") } });
   expect(burst).toMatchObject({
     subject: "web crashed 5 times in shop / production",
     paragraphs: ["web crashed 5 times. The last replica to crash was on web-1 and ran out of memory."],

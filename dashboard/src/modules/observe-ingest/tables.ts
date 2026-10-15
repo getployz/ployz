@@ -5,11 +5,9 @@ import { organizationMachine } from "#/modules/machines/tables";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
-/** The streams a Machine pushes. A stream outside this list answers 404 so the Machine keeps it buffered. */
 export const OBSERVE_STREAMS = ["crash"] as const;
 export type ObserveStream = (typeof OBSERVE_STREAMS)[number];
 
-/** The highest seq Cloud has taken from one Machine's stream. A push at or below it is a replay. */
 export const observeIngestCursor = pgTable(
   "observe_ingest_cursor",
   {
@@ -30,7 +28,6 @@ export const observeIngestCursor = pgTable(
   ],
 );
 
-/** One container that crashed on a Server, as its Machine reported it. Mailed once, kept 30 days. */
 export const crashEvent = pgTable(
   "crash_event",
   {
@@ -38,9 +35,7 @@ export const crashEvent = pgTable(
     organizationId: uuid("organization_id").notNull(),
     machineId: text("machine_id").notNull().$type<MachineId>(),
     seq: bigint("seq", { mode: "bigint" }).notNull(),
-    // The Store node id, the same id the dashboard's service route takes.
     serviceId: text("service_id").notNull(),
-    // Qualified as the marker carries it, `<namespace>/<runtime name>`.
     serviceName: text("service_name").notNull(),
     replica: text("replica").notNull(),
     containerId: text("container_id").notNull(),

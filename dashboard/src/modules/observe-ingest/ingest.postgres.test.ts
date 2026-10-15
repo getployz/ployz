@@ -37,7 +37,6 @@ type PushFields = {
   readonly events?: ReadonlyArray<{ readonly seq: string; readonly marker: { readonly kind: string } }>;
 };
 
-/** A push body as a Machine sends it, with `fields` replacing any of its own. */
 const push = (events: ReadonlyArray<readonly [seq: number, service: string, exitCode?: number]>, fields: PushFields = {}) =>
   JSON.stringify({
     stream: "crash",
@@ -50,7 +49,6 @@ const push = (events: ReadonlyArray<readonly [seq: number, service: string, exit
 const trusted: AuthenticateObservePush = (_request, machine) =>
   Effect.succeed({ organizationId: ORGANIZATION, machineId: machineId(machine) });
 
-/** Cloud with Organization Acme and one enrolled Server, and a way to push to it as that Server. */
 const setup = Effect.fn(function* () {
   const inngest = new Inngest({ id: "observe-ingest-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });

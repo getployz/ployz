@@ -7,15 +7,10 @@ import { runInngestEffect } from "#/server/run.server";
 
 type EffectRunner = typeof runInngestEffect;
 
-/** A claim waits at most an hour, and only a run that mailed in between makes it wait again. */
 const MAX_CLAIMS = 3;
 const MAX_PRUNE_BATCHES = 200;
 const SERVICE_KEY = "event.data.organizationId + '/' + event.data.serviceId";
 
-/**
- * On crashes of one Service, mail them. The Server names come from the Runtime Watch in their own step, so the claim's
- * transaction never waits on the network.
- */
 const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
   inngest.createFunction(
     {
@@ -39,7 +34,6 @@ const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
     },
   );
 
-/** Daily, delete crash events past 30 days, one batch per step. */
 const createPruneCrashEvents = (inngest: PloyzInngest, runEffect: EffectRunner) =>
   inngest.createFunction(
     {
