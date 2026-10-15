@@ -5,7 +5,7 @@
 //! Container.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map},
     future::Future,
     io,
     time::Duration,
@@ -344,7 +344,15 @@ impl Retirer {
         self.first_seen.retain(|container, _| tracked(container));
         self.retry_after.retain(|container, _| tracked(container));
         for candidate in candidates {
-            self.first_seen.entry(candidate.container).or_insert(now);
+            if let btree_map::Entry::Vacant(entry) = self.first_seen.entry(candidate.container) {
+                entry.insert(now);
+                tracing::info!(
+                    container = %candidate.container,
+                    service = %candidate.service,
+                    "retire clock started; forcing after {} s",
+                    FORCE_AFTER.as_secs(),
+                );
+            }
         }
     }
 
@@ -626,10 +634,7 @@ fn finish(
             retirer
                 .retry_after
                 .insert(container, Instant::now() + PENDING_TICK);
-            tracing::info!(
-                container = %container,
-                "kept retire: a pointer serves it or no longer retires it"
-            );
+            tracing::info!("kept {container}: a pointer serves it or no longer retires it");
         }
         (Outcome::Failed(error), _) => {
             retirer
@@ -664,7 +669,7 @@ mod tests {
 
     use super::{
         Ackers, Candidate, FORCE_AFTER, Membership, Outcome, PENDING_TICK, RetireHost, Retirer,
-        Verdict, finish, remove_drained, required_ackers, round, run,
+        Verdict, remove_drained, required_ackers, round, run,
     };
     use crate::corrosion::{
         Error as CorrosionError, IngressRouteAck, IngressRouteChange, IngressRouteRow,
@@ -2381,28 +2386,26 @@ mod tests {
         assert_eq!(*host.removals.lock().unwrap(), 0);
     }
 
-    #[tokio::test]
-    async fn a_kept_container_is_journalled_by_its_container_field() {
-        let local = machine("local", 1);
-        let (cluster, store) = acked_cluster(&[&local]).await;
-        let host = FakeHost {
-            on_drain: roll_back_to_a(&cluster),
-            ..FakeHost::new(&[id("a"), id("b")], ackers(&[&local]))
-        };
+    #[test]
+    fn each_retire_episode_journals_one_start_line() {
         let (capture, _logging) = crate::diag::test_support::capture();
         let mut retirer = Retirer::default();
-        let mut stopping = JoinSet::new();
-        round(&host, &store, &mut retirer, &mut stopping).await;
-        while let Some(joined) = stopping.join_next().await {
-            finish(&mut retirer, joined);
-        }
+        retirer.note_local(&pointers(), &BTreeSet::from([id("a")]));
+        let candidates = retirer.candidates(&pointers());
+        retirer.track(&candidates, Instant::now());
+        retirer.track(&candidates, Instant::now());
+        let starts = |journal: &str| {
+            journal
+                .lines()
+                .filter(|line| line.contains("retire clock started"))
+                .filter(|line| line.contains(&format!("container={}", id("a"))))
+                .count()
+        };
+        assert_eq!(starts(&capture.text()), 1, "{}", capture.text());
 
-        let journal = capture.text();
-        let kept = journal
-            .lines()
-            .find(|line| line.contains("kept retire"))
-            .unwrap_or_else(|| panic!("no kept line in {journal:?}"));
-        assert!(kept.contains(&format!("container={}", id("a"))), "{kept}");
+        retirer.track(&[], Instant::now());
+        retirer.track(&candidates, Instant::now());
+        assert_eq!(starts(&capture.text()), 2, "{}", capture.text());
     }
 
     #[tokio::test]
