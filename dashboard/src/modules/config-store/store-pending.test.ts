@@ -4,13 +4,14 @@ import { marksOf, showPending } from "./store-pending";
 
 const environment = { project: "shop", environment: "production" };
 
-it("echoes only a literal set from an edit, marks a renamed variable by its old path, and leaves unsets and patches to the Store's rows", () => {
+it("echoes a literal set and unset from an edit, marks a renamed variable by its old path, and leaves patches to the Store's rows", () => {
   expect(marksOf({ command: "edit", environment, expect: 2, changes: [
     { op: "set", path: "web.replicas", value: 3 },
     { op: "unset", path: "web.startCommand" },
     { op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" },
   ] })).toEqual([
     { mark: "value", environment, path: "web.replicas", value: 3 },
+    { mark: "unset", environment, path: "web.startCommand" },
     { mark: "renamed", environment, node: "variable", from: "web.env.API_URL", to: "PUBLIC_API_URL" },
   ]);
 });
@@ -63,4 +64,21 @@ it("shows a Never sync on the Environment's list at once, and a row synced again
     ...marksOf({ command: "never_sync", environment, rows: ["w:env.A"], off: true }),
   ];
   expect(showPending(view, marks).never_synced).toEqual(["w:env.B", "w:env.C"]);
+});
+
+it("shows an unset row at its default and a renamed variable's rows under its new name until the Store answers", () => {
+  const view = { view: "environment" as const, environment: { id: "env", project: "shop", name: "production", revision: 3 }, settings: [
+    { path: "web.source", value: { github: "acme/web" }, default: null, apply: "staged" as const },
+    { path: "web.env.API_URL", value: "https://api", default: null, apply: "staged" as const },
+    { path: "web.env.API_URL.exported", value: true, default: false, apply: "staged" as const },
+  ] };
+  const marks = marksOf({ command: "edit", environment, expect: 3, changes: [
+    { op: "unset", path: "web.source" },
+    { op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" },
+  ] });
+  expect(showPending(view, marks).settings.map(({ path, value }) => ({ path, value }))).toEqual([
+    { path: "web.source", value: null },
+    { path: "web.env.PUBLIC_API_URL", value: "https://api" },
+    { path: "web.env.PUBLIC_API_URL.exported", value: true },
+  ]);
 });

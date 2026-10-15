@@ -13,6 +13,7 @@ export type Busy = "saving" | "restoring" | "syncing" | "discarding";
 /** What a pending command says outright about the views it moves: a closed vocabulary, never a Store row. */
 export type Mark =
   | { mark: "value"; environment: EnvironmentRef; path: string; value: Extract<Change, { op: "set" }>["value"] }
+  | { mark: "unset"; environment: EnvironmentRef; path: string }
   | { mark: "leaving"; environment: EnvironmentRef; scope: Scope }
   | { mark: "arriving"; environment: EnvironmentRef; node: NodeKind; id: string; name: string }
   | { mark: "renamed"; environment: EnvironmentRef; node: NodeKind | "variable"; from: string; to: string }
@@ -24,7 +25,7 @@ const changeMarks = (environment: EnvironmentRef, changes: readonly Change[]): M
   switch (change.op) {
     case "set": return [{ mark: "value", environment, path: change.path, value: change.value }];
     case "rename": return [{ mark: "renamed", environment, node: "variable", from: change.path, to: change.to }];
-    case "unset":
+    case "unset": return [{ mark: "unset", environment, path: change.path }];
     case "patch": return [];
   }
 });
@@ -188,14 +189,24 @@ export function useStoreNeverSyncs(organizationSlug: string, project: string | n
 /** A pending Never sync: `rows` of `environment` marked, or with `off` synced again. */
 export type NeverSyncing = { environment: string; rows: readonly string[]; off: boolean };
 
+/** The edit a mark echoes on an Environment view's rows, if any. */
+const changeOf = (mark: Mark): Change[] => {
+  switch (mark.mark) {
+    case "value": return [{ op: "set", path: mark.path, value: mark.value }];
+    case "unset": return [{ op: "unset", path: mark.path }];
+    case "renamed": return mark.node === "variable" ? [{ op: "rename", path: mark.from, to: mark.to }] : [];
+    default: return [];
+  }
+};
+
 /**
- * `view` with the literal edits of `marks` echoed: a set value on its own row, and a row marked Never sync or synced again.
- * Nothing derived: the review, counts, pink and dependents wait for the Store's rows in the write's answer.
+ * `view` with the literal edits of `marks` echoed: a set value on its own row, an unset row at its default, a renamed
+ * variable's rows under its new name, and a row marked Never sync or synced again. Nothing derived: the review,
+ * counts, pink, references and dependents wait for the Store's rows in the write's answer.
  */
 export function showPending<V extends ConfigView>(view: V, marks: readonly Mark[]): V {
   if (view.view !== "environment") return view;
-  const shown = withPendingChanges(view, marks.flatMap((mark): Change[] =>
-    mark.mark === "value" ? [{ op: "set", path: mark.path, value: mark.value }] : []));
+  const shown = withPendingChanges(view, marks.flatMap(changeOf));
   const marking = neverSyncing(marks);
   if (marking.size === 0) return { ...view, ...shown };
   const kept = (view.never_synced ?? []).filter((row) => marking.get(row) !== false);
@@ -207,17 +218,28 @@ export function showPending<V extends ConfigView>(view: V, marks: readonly Mark[
 const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
 
 /**
- * Shows pending sets over an Environment view, in order, each as its value on its row (a new variable adds its row).
- * A secret shows as reads show it. Unsets and renames wait for the Store's answer.
+ * Shows pending edits over an Environment view, in order: a set as its value on its row (a new variable adds its row),
+ * an unset as the row's default. A rename moves the variable's rows, value and `.exported` alike, to its new name;
+ * onto a name in use it shows nothing, as the Store refuses it. References to the old name wait for the Store's
+ * answer. A secret shows as reads show it. Patches wait too.
  */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
-  const settings = view.settings.map((row) => ({ ...row }));
+  let settings = view.settings.map((row) => ({ ...row }));
   for (const change of changes) {
-    if (change.op !== "set") continue;
+    if (change.op === "patch") continue;
+    if (change.op === "rename") {
+      const to = `${change.path.slice(0, change.path.lastIndexOf(".") + 1)}${change.to.toUpperCase()}`;
+      if (to === change.path || settings.some((row) => row.path === to && row.value !== null)) continue;
+      const moved = (path: string) => path === change.path || path.startsWith(`${change.path}.`);
+      settings = settings.flatMap((row) => moved(row.path) ? [{ ...row, path: `${to}${row.path.slice(change.path.length)}` }]
+        : row.path === to || row.path.startsWith(`${to}.`) ? [] : [row]);
+      continue;
+    }
     let row = settings.find((candidate) => candidate.path === change.path);
-    if (!row) settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
-    const value = change.value;
+    if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
+    if (!row) continue;
+    const value = change.op === "set" ? change.value : row.default;
     // Keeping a secret (`{"secret": true}`) keeps what it shows, a value or none.
     row.value = !isSecret(value) ? value : value.secret === true && isSecret(row.value) ? row.value : { secret: true };
   }

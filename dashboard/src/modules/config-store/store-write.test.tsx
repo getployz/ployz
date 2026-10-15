@@ -160,13 +160,13 @@ it("drops an echoed value the Store refuses, back to the value it holds", async 
   await waitFor(() => expect(test.replicas()).toBe(1));
 });
 
-it("shows pending sets as their values, in order, and leaves unsets to the Store's answer", () => {
+it("shows pending sets as their values and unsets as the row's default, in order", () => {
   const shown = withPendingChanges(view(1, 1), [
     { op: "set", path: "web.replicas", value: 4 },
     { op: "unset", path: "web.startCommand" },
     { op: "set", path: "web.replicas", value: 6 },
   ]);
-  expect(shown.settings.map((row) => row.value)).toEqual([6, "serve"]);
+  expect(shown.settings.map((row) => row.value)).toEqual([6, null]);
 });
 
 it("runs a Sync after pending edits in every Environment", async () => {
