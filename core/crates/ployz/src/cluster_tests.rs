@@ -26,9 +26,12 @@ fn unspecified_stop_timeout_has_no_rpc_deadline() {
 #[test]
 fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
     let machine = machine_id('a');
-    let lost = TransportError::from(tonic::Status::unavailable("deadline has elapsed"));
+    let lost = ployz_core::rpc::target_unanswered_status(&std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "deadline has elapsed",
+    ));
 
-    let error = answered_by(&machine, ConnectError::Rpc(lost));
+    let error = answered_by(&machine, ConnectError::from(lost));
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(
@@ -55,6 +58,29 @@ fn a_machine_answer_keeps_its_own_words() {
     let error = answered_by(&machine_id('a'), ConnectError::Remote(answered.clone()));
 
     assert_eq!(error, answered);
+}
+
+#[test]
+fn a_machine_that_sends_unavailable_itself_is_not_called_silent() {
+    let error = answered_by(
+        &machine_id('a'),
+        ConnectError::from(tonic::Status::unavailable("Cluster is not available")),
+    );
+
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "Cluster is not available");
+}
+
+#[test]
+fn a_lost_entry_does_not_blame_the_target() {
+    let error = answered_by(
+        &machine_id('a'),
+        ConnectError::from(tonic::Status::deadline_exceeded(
+            "entry Machine reconnect timed out",
+        )),
+    );
+
+    assert_eq!(error.message, "entry Machine reconnect timed out");
 }
 
 #[test]

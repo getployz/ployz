@@ -26,7 +26,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
+use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT, TransportError, stop_rpc_timeout};
 use ployz_core::EnvironmentValues;
 
 use super::{
@@ -408,13 +408,14 @@ impl Client {
         }
         Ok(self
             .clone()
-            .read::<op::ListContainers>(
+            .try_read::<op::ListContainers>(
                 ListContainersRequest {
                     environment: EnvironmentValues::Included,
                 },
                 &MachineTarget::from(machine_id),
             )
-            .await?
+            .await
+            .map_err(|error| crate::cluster::answered_by(machine_id, error))?
             .containers
             .into_iter()
             .find_map(|container| {
@@ -1796,7 +1797,7 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
         Ok(new) => new,
         Err(error) => {
             let keep = adopts || (global && !cancellation.is_cancelled());
-            let replacement_removed = !keep && discard_attempt(&client, to, slot).await;
+            let replacement_removed = !keep && discard_attempt(&client, to, slot).await.is_ok();
             return Err(MoveContainerError::NotServing {
                 error,
                 replacement_removed,
@@ -1869,8 +1870,16 @@ async fn start<C: MachineOperations>(
         Err(error) => error.code != RpcErrorCode::Conflict,
     };
     let keep = adopts || (keyed_by_spec && failed == FailedStart::Retain);
-    if cleanup && !keep {
-        discard_attempt(client, machine_id, slot).await;
+    if cleanup
+        && !keep
+        && let Err(error) = discard_attempt(client, machine_id, slot.clone()).await
+    {
+        tracing::warn!(
+            machine = %machine_id,
+            ?slot,
+            error = %error.message,
+            "couldn't remove a failed start's Container"
+        );
     }
     started_container(started, cancellation)
 }
@@ -1894,18 +1903,24 @@ async fn discard_attempt<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
     slot: SlotKey,
-) -> bool {
-    let discarded = gone(
-        client,
+) -> Result<(), RpcError> {
+    let discarded = client.ensure_container(
         machine_id,
-        ContainerLocator::Key(slot),
-        Drain::NONE,
-        AnonymousVolumes::Remove,
+        ContainerWant::Gone {
+            container: ContainerLocator::Key(slot),
+            drain: Drain::NONE,
+            anonymous_volumes: AnonymousVolumes::Remove,
+        },
     );
-    matches!(
-        tokio::time::timeout(TARGET_RPC_TIMEOUT, discarded).await,
-        Ok(Ok(_))
-    )
+    match tokio::time::timeout(TARGET_RPC_TIMEOUT, discarded).await {
+        Ok(result) => result.map(|_| ()),
+        Err(_) => Err(crate::cluster::answered_by(
+            machine_id,
+            ConnectError::Rpc(TransportError::budget_expired(
+                "target Machine RPC timed out",
+            )),
+        )),
+    }
 }
 
 #[expect(
