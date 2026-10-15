@@ -7,6 +7,7 @@ use std::{
     process::Command,
 };
 
+use ployz_core::ReleaseSignatureError;
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -162,10 +163,11 @@ async fn bootstrap_with_rewritten_checksums_is_rejected_before_execution() {
     };
 
     assert!(
-        error
-            .to_string()
-            .contains("not signed by the Ployz release key"),
-        "{error}"
+        matches!(
+            error,
+            ProvisionError::BootstrapSignature(ReleaseSignatureError::Invalid(_))
+        ),
+        "{error:?}"
     );
     assert!(!log.exists(), "unsigned bootstrap executed");
 }

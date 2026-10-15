@@ -252,13 +252,19 @@ Hba87bYoMElhZcSMvr9IyS97pXf3Yvxg/rSb6GG+EvrTyWrk3Hdln9ZDRRhuuFPYdcpUPVLABCKlZkMa
 
     #[test]
     fn release_signature_from_minisign_verifies() {
-        verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, FIXTURE_SIGNATURE, "1.2.3").unwrap();
+        verify_fixture(
+            FIXTURE_PUBLIC_KEY,
+            FIXTURE_CHECKSUMS,
+            FIXTURE_SIGNATURE,
+            "1.2.3",
+        )
+        .unwrap();
     }
 
     #[test]
     fn release_signature_refuses_tampered_checksums_signature_or_version() {
         let mut checksums = FIXTURE_CHECKSUMS.to_vec();
-        checksums[0] ^= 1;
+        *checksums.first_mut().unwrap() ^= 1;
         assert!(matches!(
             verify_fixture(FIXTURE_PUBLIC_KEY, &checksums, FIXTURE_SIGNATURE, "1.2.3"),
             Err(ReleaseSignatureError::Invalid(_))
@@ -269,15 +275,30 @@ Hba87bYoMElhZcSMvr9IyS97pXf3Yvxg/rSb6GG+EvrTyWrk3Hdln9ZDRRhuuFPYdcpUPVLABCKlZkMa
             Err(ReleaseSignatureError::Invalid(_))
         ));
         assert!(matches!(
-            verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, FIXTURE_SIGNATURE, "1.2.4"),
+            verify_fixture(
+                FIXTURE_PUBLIC_KEY,
+                FIXTURE_CHECKSUMS,
+                FIXTURE_SIGNATURE,
+                "1.2.4"
+            ),
             Err(ReleaseSignatureError::WrongRelease { .. })
         ));
         assert!(matches!(
-            verify_fixture(RELEASE_PUBLIC_KEY, FIXTURE_CHECKSUMS, FIXTURE_SIGNATURE, "1.2.3"),
+            verify_fixture(
+                RELEASE_PUBLIC_KEY,
+                FIXTURE_CHECKSUMS,
+                FIXTURE_SIGNATURE,
+                "1.2.3"
+            ),
             Err(ReleaseSignatureError::Invalid(_))
         ));
         assert!(matches!(
-            verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, "not a signature", "1.2.3"),
+            verify_fixture(
+                FIXTURE_PUBLIC_KEY,
+                FIXTURE_CHECKSUMS,
+                "not a signature",
+                "1.2.3"
+            ),
             Err(ReleaseSignatureError::Malformed(_))
         ));
     }

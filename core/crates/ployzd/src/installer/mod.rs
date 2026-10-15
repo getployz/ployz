@@ -821,7 +821,7 @@ mod tests {
         if case == "tampered-checksums" {
             let path = release.join("checksums.txt");
             let mut checksums = fs::read(&path).unwrap();
-            checksums[0] ^= 1;
+            *checksums.first_mut().unwrap() ^= 1;
             fs::write(path, checksums).unwrap();
         }
     }

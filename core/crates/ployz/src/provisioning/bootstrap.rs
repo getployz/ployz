@@ -203,9 +203,8 @@ fn verify_signature(
     })?;
     let version = MachineVersion::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|error| ProvisionError::BootstrapVerification(error.to_string()))?;
-    verify_release_checksums(public_key, checksums, signature, &version).map_err(|error| {
-        ProvisionError::BootstrapVerification(ployz_core::error_chain::inline(&error))
-    })
+    verify_release_checksums(public_key, checksums, signature, &version)
+        .map_err(ProvisionError::BootstrapSignature)
 }
 
 fn verify_checksum(

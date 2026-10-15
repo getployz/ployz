@@ -203,7 +203,11 @@ ployz server upgrade stable web-1 web-2
 
 When you're signed in, Ployz Cloud runs the upgrade, so it follows your organization's channel.
 Naming the other channel fails with `channel_mismatch`. To pick an exact version like `0.2.0`,
-add `--context` and upgrade from your computer instead.
+add `--context` and upgrade from your computer instead. Ployz Cloud never moves a server to an
+older release than it runs, so a downgrade also needs `--context`.
+
+Every Ployz release is signed. A server checks the signature before it installs a release, and
+refuses one that isn't signed by Ployz or that claims a different version.
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
 running and private DNS keeps answering (with the exceptions in
