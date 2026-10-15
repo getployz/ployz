@@ -29,5 +29,5 @@ tokio-util = "0.7.19"
 [build-dependencies]
 napi-build = "2.1.4"
 
-[lints.rust]
-unsafe_code = "allow"
+[lints]
+workspace = true

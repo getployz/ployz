@@ -41,8 +41,8 @@ tokio = { version = "1.53.1", features = ["io-util", "rt"] }
 unsafe_code = "forbid"
 
 [lints.clippy]
-indexing_slicing = "warn"
-fallible_impl_from = "warn"
-wildcard_enum_match_arm = "warn"
-fn_params_excessive_bools = "warn"
-must_use_candidate = "warn"
+indexing_slicing = "deny"
+fallible_impl_from = "deny"
+wildcard_enum_match_arm = "deny"
+fn_params_excessive_bools = "deny"
+must_use_candidate = "deny"
