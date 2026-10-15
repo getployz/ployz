@@ -1,4 +1,5 @@
 import { TZDate } from "@date-fns/tz";
+import { LONGEST_RETENTION_MONTHS } from "./model";
 
 export const HOUR_MS = 3_600_000;
 export const SESSION_GAP_SECONDS = 1800;
@@ -28,7 +29,15 @@ export const isHourStart = (timezone: string, instant: Date) => hourStart(timezo
 
 export function retentionFloor(timezone: string, now: number, months: number) {
   const today = new TZDate(now, timezone);
-  return new Date(new TZDate(today.getFullYear(), today.getMonth() - months, today.getDate(), timezone).getTime());
+  const first = new Date(Date.UTC(today.getFullYear(), today.getMonth() - months, 1));
+  const lastDate = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(new TZDate(first.getUTCFullYear(), first.getUTCMonth(), Math.min(today.getDate(), lastDate), timezone).getTime());
+}
+
+/** Raw and aggregated rows strictly before this instant are outside every site's retention window. */
+export function retentionCutoff(now: number) {
+  const floor = retentionFloor("UTC", now, LONGEST_RETENTION_MONTHS);
+  return new Date(floor.getTime() - 24 * HOUR_MS);
 }
 
 export function localDays(timezone: string, start: Date, end: Date) {
@@ -38,9 +47,14 @@ export function localDays(timezone: string, start: Date, end: Date) {
   return days;
 }
 
-export function hourBuckets(start: Date, end: Date) {
+const QUARTER_HOUR_MS = 900_000;
+
+export function hourBuckets(timezone: string, start: Date, end: Date) {
   const buckets: Date[] = [];
-  for (let at = start.getTime(); at < end.getTime(); at += HOUR_MS) buckets.push(new Date(at));
+  for (let at = start.getTime(); at < end.getTime(); at += QUARTER_HOUR_MS) {
+    const bucket = hourStart(timezone, new Date(at));
+    if (buckets.at(-1)?.getTime() !== bucket.getTime()) buckets.push(bucket);
+  }
   return buckets;
 }
 

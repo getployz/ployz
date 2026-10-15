@@ -66,7 +66,7 @@ export const goalConversions = (rows: ReadonlyArray<GoalRow>): GoalRow[] =>
 
 export function timeseries(rows: ReadonlyArray<BucketRow>, range: Range, timezone: string, interval: Interval): Bucket[] {
   const starts = interval === "hour"
-    ? hourBuckets(range.start, range.end)
+    ? hourBuckets(timezone, range.start, range.end)
     : localDays(timezone, range.start, range.end).map((day) => dayStart(timezone, day));
   const byBucket = new Map<number, Totals>();
   for (const row of rows) {
