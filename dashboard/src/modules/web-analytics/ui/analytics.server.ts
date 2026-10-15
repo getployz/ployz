@@ -12,6 +12,7 @@ import { localDay, localDays } from "../local-time";
 import { setSiteAnalytics } from "../salts.server";
 import { analyticsGapDaily, analyticsGoal, analyticsPageview, analyticsSite } from "../tables";
 import {
+  analyticsGate,
   type CreateGoalInput,
   DEFAULT_RANGE,
   type DeleteGoalInput,
@@ -38,9 +39,9 @@ const siteRow = Effect.fn("WebAnalyticsView.site")(function* (organizationId: st
 export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (actor: Actor, input: ReadAnalyticsViewInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const plan = yield* analyticsPlan(organization.id);
-  if (plan === "unpaid" || plan === "self-host-off") return { gate: plan } as const;
-  const site = yield* siteRow(organization.id, input.environmentId);
-  if (site === undefined || !site.enabled) return { gate: "site-off" } as const;
+  const open = analyticsGate(plan, plan === "unpaid" || plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
+  if (open.gate !== "on") return { gate: open.gate } as const;
+  const { site } = open;
 
   const { drizzle } = yield* Database;
   const goals = yield* drizzle.select({ id: analyticsGoal.id, name: analyticsGoal.name, pathPattern: analyticsGoal.pathPattern })

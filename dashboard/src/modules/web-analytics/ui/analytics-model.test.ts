@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { customRange, isRangeSpec, parsePageFilter, partialDays, resolveRange, viewsPerVisit } from "./analytics-model";
+import { analyticsGate, customRange, isRangeSpec, parsePageFilter, partialDays, resolveRange, viewsPerVisit } from "./analytics-model";
 
 const iso = (range: { start: Date; end: Date }) => [range.start.toISOString(), range.end.toISOString()];
 const NOW = Date.parse("2026-10-15T09:20:00Z");
@@ -45,6 +45,21 @@ describe("partialDays", () => {
 
   it("calls today a gap when visits were lost on it", () => {
     expect(partialDays(["2026-10-15"], [{ day: "2026-10-15", count: 1 }], "2026-10-15")).toEqual([{ day: "2026-10-15", reason: "gap" }]);
+  });
+});
+
+describe("analyticsGate", () => {
+  const on = { enabled: true };
+  it("closes on the plan before looking at the Environment", () => {
+    expect(analyticsGate("unpaid", on)).toEqual({ gate: "unpaid" });
+    expect(analyticsGate("self-host-off", on)).toEqual({ gate: "self-host-off" });
+  });
+
+  it("opens on a paid or self-host plan only where the Environment turned it on", () => {
+    expect(analyticsGate("paid", on)).toEqual({ gate: "on", site: on });
+    expect(analyticsGate("self-host-on", on)).toEqual({ gate: "on", site: on });
+    expect(analyticsGate("paid", { enabled: false })).toEqual({ gate: "site-off" });
+    expect(analyticsGate("paid", undefined)).toEqual({ gate: "site-off" });
   });
 });
 
