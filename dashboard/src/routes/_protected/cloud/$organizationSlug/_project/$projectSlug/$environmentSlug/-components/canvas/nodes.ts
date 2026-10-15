@@ -176,9 +176,4 @@ export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string): 
   return shown?.id ?? null;
 }
 
-/** The nodes that show `ids` on the canvas, each once: what an open Deployment Page brings into view. */
-export function shownNodeIds(nodes: readonly CanvasResourceNode[], ids: readonly string[]) {
-  return [...new Set(ids.flatMap((id) => canvasNodeOf(nodes, id) ?? []))];
-}
-
 export const liveNodeId = (lineageId: string) => `live:${lineageId}`;
