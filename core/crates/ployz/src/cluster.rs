@@ -18,7 +18,6 @@ use ployz_core::{
     RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
     RpcResponseBody, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss, VolumeInventory,
     VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
-    rpc::{BUILD_PATH, EXEC_PATH},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -410,7 +409,7 @@ impl Client {
             .machine_rpc()
             .build(target_request(input, Some(target)))
             .await
-            .map_err(|status| TransportError::from(status).name_refusal(BUILD_PATH, target))?
+            .map_err(|status| TransportError::from(status).name_refusal(op::Build::PATH, target))?
             .into_inner())
     }
 
@@ -423,7 +422,7 @@ impl Client {
         Ok(rpc
             .exec(target_request(input, Some(target)))
             .await
-            .map_err(|status| TransportError::from(status).name_refusal(EXEC_PATH, target))?
+            .map_err(|status| TransportError::from(status).name_refusal(op::Exec::PATH, target))?
             .into_inner())
     }
 

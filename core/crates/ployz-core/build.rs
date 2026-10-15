@@ -7,6 +7,8 @@ fn main() {
             package $package:literal
             unary { $($unary_variant:ident: ($unary_name:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
             server_streaming { $($stream_variant:ident: ($stream_name:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+            bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+            capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
         ) => {{
             let mut service = tonic_build::manual::Service::builder()
                 .name("MachineRpc")
@@ -14,32 +16,24 @@ fn main() {
                 .comment("Machine control RPCs with schema-blind protobuf envelopes.");
             $(service = service.method(method(stringify!($unary_name), $unary_route));)+
             $(service = service.method(streaming_method(stringify!($stream_name), $stream_route));)+
+            $(service = service.method(bidi_method(stringify!($bidi_method), $bidi_route));)+
             service
         }};
     }
-    let exec = tonic_build::manual::Method::builder()
-        .name("exec")
-        .route_name("Exec")
-        .input_type("crate::rpc::OpaquePayload")
-        .output_type("crate::rpc::OpaquePayload")
-        .codec_path("tonic::codec::ProstCodec")
-        .client_streaming()
-        .server_streaming()
-        .build();
-    let build = tonic_build::manual::Method::builder()
-        .name("build")
-        .route_name("Build")
-        .input_type("crate::rpc::OpaquePayload")
-        .output_type("crate::rpc::OpaquePayload")
-        .codec_path("tonic::codec::ProstCodec")
-        .client_streaming()
-        .server_streaming()
-        .build();
-    let machine_rpc = rpc_catalog!(build_service)
-        .method(exec)
-        .method(build)
-        .build();
+    let machine_rpc = rpc_catalog!(build_service).build();
     tonic_build::manual::Builder::new().compile(&[machine_rpc]);
+}
+
+fn bidi_method(name: &str, route: &str) -> tonic_build::manual::Method {
+    tonic_build::manual::Method::builder()
+        .name(name)
+        .route_name(route)
+        .input_type("crate::rpc::OpaquePayload")
+        .output_type("crate::rpc::OpaquePayload")
+        .codec_path("tonic::codec::ProstCodec")
+        .client_streaming()
+        .server_streaming()
+        .build()
 }
 
 fn streaming_method(name: &str, route: &str) -> tonic_build::manual::Method {
