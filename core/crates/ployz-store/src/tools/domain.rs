@@ -317,7 +317,7 @@ pub(crate) struct DomainRemove {
 
 impl Tool for DomainRemove {
     const NAME: &'static str = "domain_remove";
-    const DESCRIPTION: &'static str = "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next Publish or Deploy.";
+    const DESCRIPTION: &'static str = "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next deploy.";
     const READ_ONLY: bool = false;
 
     fn example() -> Value {

@@ -1,7 +1,7 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useStillHere } from "#/hooks/use-still-here";
 import { preloadGithubRepos } from "#/modules/github/github.collection";
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -17,6 +17,7 @@ import {
 } from "#/components/ui/command";
 import {
   GitRepoSelector,
+  GitRepoSelectorFooter,
   ImageSelector,
 } from "#/components/service-source-selector";
 import {
@@ -435,6 +436,11 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
             <DatabasePanel disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)} />
           ) : null}
         </CommandList>
+        {panel.kind === "git" ? (
+          <Suspense>
+            <GitRepoSelectorFooter organizationSlug={props.organizationSlug} />
+          </Suspense>
+        ) : null}
       </Command>
       </SourcePickerLayout>
       )}

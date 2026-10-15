@@ -321,7 +321,7 @@ ts={time.now.unix}
     let cloudflare = format!(
         "{direct}via=cloudflare
 cf_ray={{ployz_trace_ray}}
-client_ip={{ployz_trace_client_ip}}
+client_ip={{client_ip}}
 "
     );
 
@@ -345,6 +345,18 @@ client_ip={{ployz_trace_client_ip}}
 }
 "
     ));
+}
+
+#[test]
+fn trace_reports_the_client_address_caddy_trusts() {
+    let caddyfile = super::render_caddyfile(&super::renderer_projection(), "TIMESTAMP");
+
+    let snippet = site_text(&caddyfile, "(ployz_trace)");
+    assert!(snippet.contains("\nclient_ip={client_ip}\n"), "{snippet}");
+    assert!(
+        !snippet.contains("CF-Connecting-IP"),
+        "only the trusted_proxies check may read the header: {snippet}"
+    );
 }
 
 #[test]

@@ -15,10 +15,10 @@ type Loss = { action: Action; check: VolumeLossCheck; message: Message };
 type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; loss: Loss };
 
 /**
- * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish), Discard and Never sync,
+ * The bottom bar's actions over the Config Store: Deploy, Save only (the Store's publish), Discard and Never sync,
  * each in the Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
  *
- * When a Deploy or Publish would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
+ * When a Deploy or Save only would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
  * the user reads every Volume that goes, types where, and it runs again accepting exactly those. A Deploy whose staged
  * copy changes delete a copy or drop a restore's writes asks the same way before it goes, from `placementLoss` when this
  * tab has it, else from Cloud's refusal, which checks the copies again at admission. Any other refusal (Servers that
@@ -38,7 +38,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const [admitting, setAdmitting] = useState(false);
   const inFlight = useRef(false);
 
-  /** Deploys or publishes; resolves with how it went, holding what it would delete when the Store asks first. */
+  /** Deploys or saves; resolves with how it went, holding what it would delete when the Store asks first. */
   async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
@@ -60,8 +60,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     return outcome;
   }
 
-  /** Saves without deploying; resolves true once saved, false when refused, failed or cancelled. */
-  async function publish(message: Message): Promise<boolean> {
+  /** Save only: saves without deploying; resolves true once saved, false when refused, failed or cancelled. */
+  async function save(message: Message): Promise<boolean> {
     const outcome = ask(await run("publish", { accept: [], version }, message));
     if (outcome.status !== "asks") return outcome.status === "done";
     // A later Save replaces the dialog's question: the earlier one did not save.
@@ -103,7 +103,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   return {
     deploy,
     admitting,
-    publish,
+    save,
     discard,
     neverSync,
     dialog: (
@@ -114,9 +114,10 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
           setLoss(null);
           settleSave(false);
         }}
-        title={loss?.action === "publish" ? "Saving deletes data on the next deploy" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
+        title={loss?.action === "publish" ? "Next deploy deletes data" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}
-        confirmLabel={loss?.action === "publish" ? "Save" : "Deploy"}
+        sentence={loss?.action === "publish" ? "Saving keeps data for now. The next deploy deletes it, including one a Git push starts." : undefined}
+        confirmLabel={loss?.action === "publish" ? "Save only" : "Deploy"}
         items={loss?.check.items}
         callbacks={{
           load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" }, losesWrites: false }),

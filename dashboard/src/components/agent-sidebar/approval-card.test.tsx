@@ -46,7 +46,7 @@ const answered = (status: ApprovalView["status"], reason: string | null = null) 
 
 it("leads with what the plan destroys and folds the rest to a count", () => {
   const card = show(approval).card();
-  expect(within(card).getByText("Destroys 1 thing")).toBeTruthy();
+  expect(within(card).getByText("Deletes 1 volume")).toBeTruthy();
   expect(within(card).getByRole("list", { name: "Destroys" }).textContent).toBe("Deletes volume pg-data. Not recoverable.");
   expect(within(card).queryByText(/1 → 2/)).toBeNull();
   fireEvent.click(within(card).getByText("1 other change"));
@@ -95,6 +95,28 @@ it("names a Server operation by its verb and Server, with nothing folded", () =>
   expect(card.getByText("Remove fra-1")).toBeTruthy();
   expect(card.getByRole("list", { name: "Destroys" }).textContent).toBe("Removes server fra-1");
   expect(card.queryByText(/other change/)).toBeNull();
+});
+
+it("says a Save deletes nothing until the next deploy, and approving it saves without deploying", async () => {
+  decide.mockResolvedValue(({ ok: true, approval: { ...approval, command: "publish", status: "approved", decided_at: "2026-10-08T12:01:00.000Z" } }) as never);
+  const { onSettled } = show(asTestDouble<ApprovalView>()({ ...approval, command: "publish" }));
+  const card = within(screen.getByLabelText("Save production needs approval"));
+  expect(card.getByText("Save production")).toBeTruthy();
+  expect(card.getByText("Deletes on deploy")).toBeTruthy();
+  expect(card.getByRole("list", { name: "Destroys" }).textContent).toBe("Next deploy deletes volume pg-data.");
+  fireEvent.click(card.getByRole("button", { name: /^Approve/ }));
+  await waitFor(() => expect(onSettled).toHaveBeenCalled());
+  expect(screen.getByText("Approved. Saves without deploying.")).toBeTruthy();
+});
+
+it("counts a Deploy's deleted Volumes, and anything else it destroys as things", () => {
+  const two = { ...approval.review, effects: [approval.review.effects[0], { kind: "deletes_volume" as const, name: "cache", node: "v2", path: "volumes.cache" }] };
+  show(asTestDouble<ApprovalView>()({ ...approval, review: two }));
+  expect(within(screen.getByLabelText("Deploy production needs approval")).getByText("Deletes 2 volumes")).toBeTruthy();
+  cleanup();
+  const mixed = { ...approval.review, effects: [approval.review.effects[0], { kind: "removes_service" as const, name: "web", node: "s1", path: "services.s1" }] };
+  show(asTestDouble<ApprovalView>()({ ...approval, review: mixed }));
+  expect(within(screen.getByLabelText("Deploy production needs approval")).getByText("Destroys 2 things")).toBeTruthy();
 });
 
 it("words a destroyed thing without a name as its kind, never by its id", () => {

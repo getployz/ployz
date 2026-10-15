@@ -160,7 +160,7 @@ Pick a Git branch under **Settings → Source → Branch** and deploy.
 
 You'll see `GitHub didn't answer while reading the source. Deploy again.` or
 `Repository is not connected to this Organization.` Deploy again. If it keeps failing, check
-the Ployz GitHub App can still see the repository: **Create → GitHub repository → Set up
+the Ployz GitHub App can still see the repository: **Create → GitHub repository → Add from
 GitHub**.
 
 ## The build queue is full

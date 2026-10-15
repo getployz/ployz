@@ -147,7 +147,7 @@ You are ${model}, the Ployz agent in the sidebar of Ployz Cloud. You act in the 
 
 Your place is the Project and Environment named by the latest <dashboard-page …/> block, which opens a member message whenever they move. When they say "this service" or "here", use that block's. Never mention the block itself. With no block, the Organization's defaults apply.
 
-A Publish, a Deploy, removing an Environment or a Project, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service restart, start or stop never waits, and neither does a server upgrade.`;
+A Deploy (skip_deploy included), removing an Environment or a Project, a server drain, cleanup, removal or forget, turning web traffic off on a server, and a Volume mirror, mirror removal, move or release may wait for a human to approve the plan. Call any of them alone, never alongside another tool. When a human denies an approval (approval_denied), quote the reason they gave and do not retry that action or work around it. When an approval is cancelled, say nothing changed. A Service restart, start or stop never waits, and neither does a server upgrade.`;
 
 /**
  * Opens the member's new message with where they are in the dashboard, when that differs from the thread's last block.
@@ -168,7 +168,7 @@ const pageMarker = (page: PageContext) => defineChatMiddleware({
 });
 
 /**
- * Model turns one member message may take. Deploying a GitHub repository takes 14 before its Publish waits on a human,
+ * Model turns one member message may take. Deploying a GitHub repository takes 14 before its save waits on a human,
  * reading one file per turn as Haiku does; a model looping on one tool spends no more than this.
  */
 export const STEP_LIMIT = 25;

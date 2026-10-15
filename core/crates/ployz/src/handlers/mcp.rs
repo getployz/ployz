@@ -759,7 +759,7 @@ impl Server {
                 let answer = answer(request.input_responses)?;
                 let held = self.waiting.take(&state, tool, &input)?;
                 if held.until <= Instant::now() {
-                    let verb = verb(tool, &held.asked);
+                    let verb = verb(tool, &input, &held.asked);
                     return Ok(refused(late(verb, &held.asked, self.deadline)).into());
                 }
                 let step = Step::Write { write: held.write };
@@ -923,10 +923,11 @@ struct Call<'a> {
     until: Instant,
 }
 
-fn verb(tool: &str, asked: &Asked) -> Verb {
+fn verb(tool: &str, input: &Value, asked: &Asked) -> Verb {
+    let skips = input.get("skip_deploy").and_then(Value::as_bool) == Some(true);
     match (&asked.subject, tool) {
         (Subject::Operation(operation), _) => operation.verb,
-        (Subject::Diff(_), "publish") => Verb::Publish,
+        (Subject::Diff(_), "deploy") if skips => Verb::Publish,
         (Subject::Diff(_), "environment_remove" | "project_remove") => Verb::Remove,
         (Subject::Diff(_), _) => Verb::Deploy,
     }
@@ -972,7 +973,7 @@ impl Server {
                             let Backend::Cloud(credential) = call.backend else {
                                 return Ok(refused(not_here().message).into());
                             };
-                            let verb = verb(call.tool, &asked);
+                            let verb = verb(call.tool, call.input, &asked);
                             let typed = typed(&write);
                             match self
                                 .decide(credential, verb, &asked, typed.as_deref(), answer)
@@ -1002,7 +1003,7 @@ impl Server {
                             (step, state) = tools::resume(state, vec![written]);
                             continue;
                         };
-                        let verb = verb(call.tool, &asked);
+                        let verb = verb(call.tool, call.input, &asked);
                         let form = form(verb, &asked, typed(&write).as_deref());
                         match asking(context) {
                             Asking::Unable => return Ok(cannot_ask(verb, &asked).into()),

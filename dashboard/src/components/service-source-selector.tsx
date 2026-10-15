@@ -5,25 +5,24 @@ import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notic
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
 import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
-import { ChevronRightIcon, InfoIcon, TriangleAlertIcon, RefreshCwIcon, Settings2Icon } from "lucide-react";
+import { ChevronRightIcon, ExternalLinkIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { InputGroupAddon, InputGroupButton, InputGroupInput } from "#/components/ui/input-group";
-import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import { githubBranchesQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubKeys, githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
 import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
-import { toast } from "sonner";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
 
 const imageExamples = [
@@ -188,22 +187,46 @@ function SelectorCommandDialog({
 const githubConnectHref = (organizationSlug: string) =>
   `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
 
-function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string }) {
+/** Cross-origin reads throw while the popup is on GitHub; before the first redirect it is about:blank. */
+function returnedToPloyz(popup: Window) {
+  try {
+    const { protocol, origin, pathname } = popup.location;
+    return protocol !== "about:" && origin === window.location.origin && !pathname.startsWith("/api/github/");
+  } catch {
+    return false;
+  }
+}
+
+let onReturnFromGithub: (() => void) | undefined;
+
+function openGithub(queryClient: QueryClient, organizationSlug: string) {
+  const href = githubConnectHref(organizationSlug);
+  const popup = window.open(href, "_blank", "width=1020,height=680");
+  if (!popup) {
+    window.location.assign(href);
+    return;
+  }
+  // Returning from the popup fires focus but not visibilitychange, so recheck access here, and
+  // resync in case GitHub's webhook never arrives. Keep resyncing on focus until one succeeds
+  // after the flow ends: the popup closed, or GitHub sent it back to a Ployz page.
+  if (onReturnFromGithub) window.removeEventListener("focus", onReturnFromGithub);
+  const onReturn = () => {
+    const done = popup.closed || returnedToPloyz(popup);
+    void queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
+    void requestGithubRepoSyncServerFn({ data: { organizationSlug } }).then(() => {
+      if (done && onReturnFromGithub === onReturn) {
+        window.removeEventListener("focus", onReturn);
+        onReturnFromGithub = undefined;
+      }
+    }, () => {});
+  };
+  onReturnFromGithub = onReturn;
+  window.addEventListener("focus", onReturn);
+}
+
+function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
   const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
-  const { mutate: requestRepoSync, isPending: isRefreshing } = useMutation(
-    {
-      mutationKey: [...githubKeys.repos(), "refresh"],
-      mutationFn: () => requestGithubRepoSyncServerFn({ data: { organizationSlug } }),
-      onSuccess: async () => {
-        await queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
-      },
-      onError: (error) => {
-        toast.error(toErrorMessage(error, "Could not refresh GitHub repositories."));
-      },
-    }
-  );
-
   if (!accessState.hasInstallations) {
     return (
       <Empty>
@@ -217,56 +240,36 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button nativeButton={false} render={<a href={githubConnectHref(organizationSlug)} />}>
-            Connect GitHub
-          </Button>
+          <Button onClick={() => openGithub(queryClient, organizationSlug)}>Connect GitHub</Button>
         </EmptyContent>
       </Empty>
     );
   }
-
-  return (
-    <CommandGroup>
-      <CommandItem
-        value="Configure GitHub App"
-        keywords={["github", "configure", "app"]}
-        onSelect={() => {
-          window.location.assign(githubConnectHref(organizationSlug));
-        }}
-      >
-        <Settings2Icon />
-        <span>Set up GitHub</span>
-        <CommandShortcut>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isRefreshing}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              requestRepoSync();
-            }}
-          >
-            {isRefreshing ? (
-              <Spinner data-icon="inline-start" />
-            ) : (
-              <RefreshCwIcon data-icon="inline-start" />
-            )}
-            {isRefreshing ? "Refreshing" : "Refresh"}
-          </Button>
-        </CommandShortcut>
-      </CommandItem>
-    </CommandGroup>
-  );
+  return null;
 }
 
-function groupByAccount<R extends { full_name: string }>(repos: ReadonlyArray<R>) {
-  const groups = new Map<string, R[]>();
-  for (const repo of repos) {
-    const account = repo.full_name.split("/")[0] ?? repo.full_name;
-    groups.set(account, [...(groups.get(account) ?? []), repo]);
-  }
-  return [...groups];
+/** Pinned below the CommandList so it stays visible while the repositories scroll. */
+export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: string }) {
+  const queryClient = useQueryClient();
+  const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
+  if (!accessState.hasInstallations) return null;
+  return (
+    <>
+      <CommandSeparator />
+      <Item size="xs">
+        <ItemContent>
+          <ItemDescription>Missing a repo?</ItemDescription>
+        </ItemContent>
+        <ItemActions>
+          <Button variant="outline" size="sm" onClick={() => openGithub(queryClient, organizationSlug)}>
+            <GitHubMarkIcon data-icon="inline-start" />
+            Add from GitHub
+            <ExternalLinkIcon data-icon="inline-end" />
+          </Button>
+        </ItemActions>
+      </Item>
+    </>
+  );
 }
 
 function GitRepoSelectorResults({
@@ -335,9 +338,8 @@ function GitRepoSelectorResults({
       ) : selectorState === "no-results" ? (
         <SelectorEmpty>No repositories match your search</SelectorEmpty>
       ) : (
-        groupByAccount(repos).map(([account, accountRepos]) => (
-        <CommandGroup key={account} heading={account}>
-          {accountRepos.map((repo) => (
+        <CommandGroup>
+          {repos.map((repo) => (
             <CommandItem
               key={repo.id}
               value={repo.full_name}
@@ -360,7 +362,6 @@ function GitRepoSelectorResults({
             </CommandItem>
           ))}
         </CommandGroup>
-        ))
       )}
 
       {!normalizedQuery && repoCount > INITIAL_GITHUB_REPO_LIMIT ? (
@@ -402,11 +403,11 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
         </CommandItem>
       </CommandGroup> : props.query.includes("/") ? <SelectorEmpty>Enter owner/repo or a GitHub repository URL. Choose the branch separately.</SelectorEmpty> : null}
       {connectPublic.isError ? <Alert variant="destructive"><AlertDescription>Could not read this public repository. Check its address and visibility, then try again.</AlertDescription></Alert> : null}
-      <Suspense>
-        <GitRepoSelectorActions organizationSlug={organizationSlug} />
-      </Suspense>
       <Suspense fallback={<SelectorLoading />}>
         <GitRepoSelectorResults {...props} />
+      </Suspense>
+      <Suspense>
+        <GitRepoSelectorConnect organizationSlug={organizationSlug} />
       </Suspense>
     </>
   );
@@ -681,6 +682,9 @@ function OpenGitRepoSelectorDialog({
             onSelectRepo={dialog.runSelect}
           />
         </CommandList>
+        <Suspense>
+          <GitRepoSelectorFooter organizationSlug={organizationSlug} />
+        </Suspense>
       </Command>
       </SourcePickerLayout>
     </SelectorCommandDialog>

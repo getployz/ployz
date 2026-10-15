@@ -50,7 +50,7 @@ stdout:
   },
   "staged": {
     "changes": 0,
-    "published": true,
+    "saved": true,
     "version": "38:27:0.54"
   }
 }

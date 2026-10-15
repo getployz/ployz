@@ -497,7 +497,6 @@ pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
         ("ps", "") => Some(cloud(Never, service::processes)),
-        ("publish", "") => Some(cloud(Depends, review::publish)),
         ("schema", "") => Some(cloud(Never, catalog::schema)),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),

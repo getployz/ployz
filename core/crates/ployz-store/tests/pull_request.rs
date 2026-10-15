@@ -85,6 +85,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
         .write(
             &who,
             &ployz_store::Command::Publish(ployz_store::Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,
@@ -843,6 +844,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
         .write(
             &who,
             &ployz_store::Command::Publish(ployz_store::Publish {
+                id: None,
                 environment: at("qa"),
                 version: None,
                 message: None,

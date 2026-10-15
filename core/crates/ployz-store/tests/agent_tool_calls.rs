@@ -240,7 +240,6 @@ fn the_catalog_has_the_agreed_tools() {
             "review",
             "discard",
             "history",
-            "publish",
             "deploy",
             "deployment_list",
             "deployment_show",
@@ -291,7 +290,6 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
             ("deploy", Gate::Store),
             ("environment_remove", Gate::Store),
             ("project_remove", Gate::Store),
-            ("publish", Gate::Store),
             ("server_clean", Gate::Cloud),
             ("server_drain", Gate::Cloud),
             ("server_forget", Gate::Cloud),
@@ -674,7 +672,7 @@ fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged()
         "This Organization has no servers yet, so nothing deployed. Add one from a terminal, then deploy again."
     );
     let review = call(&store, "review", json!({}), "review-1").ok();
-    assert_eq!(review["saved_revision"], Value::Null, "nothing was saved");
+    assert_eq!(review.get("saved"), Some(&Value::Null), "nothing was saved");
     assert_eq!(review["staged"], 1, "the change stays Staged");
 }
 
@@ -779,6 +777,7 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
         .write_trusted(
             &who(),
             &ployz_store::Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,

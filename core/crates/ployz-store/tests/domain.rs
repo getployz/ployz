@@ -493,6 +493,7 @@ fn removing_a_deployed_generated_domain_is_destructive() {
         )]
     );
     let publish = Publish {
+        id: None,
         environment: EnvironmentRef::default(),
         version: None,
         message: None,
@@ -621,6 +622,7 @@ fn a_restored_generated_domain_reads_by_its_full_hostname() {
         )
         .unwrap();
     let publish = Publish {
+        id: None,
         environment: EnvironmentRef::default(),
         version: None,
         message: None,

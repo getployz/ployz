@@ -28,7 +28,7 @@ private image.
    **Message (optional)** if you like.
 2. Click **Deploy changes**. **Deploy** in the bottom bar skips the review.
 
-![Details: each change, a deploy message, and Discard all changes, Save and Deploy changes](../images/review-changes.png)
+![Details: a message box, each staged change, and Discard all, Save only and Deploy changes](../images/review-changes.png)
 
 Ployz opens the new deployment's page. A deploy covers the whole environment, not only what you
 changed: every GitHub service moves to the newest commit on its Git branch, and if you've added
@@ -37,15 +37,17 @@ lost server, see [When a server goes down](../services/scaling.md#when-a-server-
 Everything else keeps running as it is. A secret that is **Not set** never stops a deploy: the
 deploy skips it, and any variable that references it, and warns.
 
-**Save** in **Details** records your changes and optional message without deploying them. Your
+**Save only** in **Details**, in the bottom bar's **⋮** menu, or on **Deploy** while you hold Alt,
+records your changes and optional message without deploying them. Ployz shows **Saved, not
+deployed**. Your
 next deploy takes them along, including one started by a push to GitHub; unsaved changes stay
-behind. Repeating Save with no changes creates no new version. The CLI calls this `ployz publish`,
-and accepts `--message`.
+behind. Saving again with no changes creates no new version. The CLI calls this
+`ployz deploy --skip-deploy`, and accepts `--message`.
 
 To undo, click **Discard** beside a change, or open **⋮** and choose **Discard all changes**.
 Discarding a service or volume you never deployed deletes it. Discard does not save a version.
 If you discard saved changes back to what is deployed, Details still shows the draft reversal.
-Save records that reversal; Discard on its row returns it to the latest saved value.
+Saving records that reversal; Discard on its row returns it to the latest saved value.
 
 The dashboard's **Deploy** needs a staged change. Deploying again with nothing staged is
 CLI-only for now:
@@ -217,10 +219,11 @@ because the primary's server isn't answering, the title reads **Data loss**, sin
 the mirror's last refresh are lost. Type your `project/environment`, like `my-app/production`, and
 click **Deploy**. If you didn't mean it, cancel, then discard the change in **Details**.
 
-**Publish** asks the same way, under **Publishing deletes data on the next deploy**. Publishing
-deletes nothing and starts no deploy: it saves the deletion, and your next deploy takes it along.
+**Save only** asks the same way, under **Next deploy deletes data**. Saving deletes nothing and
+starts no deploy: it saves the deletion, and your next deploy takes it along, including one a Git
+push starts.
 
-From the CLI, `ployz deploy` and `ployz publish` stop and print the command to run instead. It
-names each volume that loses data, like `ployz publish --accept-volume-loss postgres-data
---version …`. Run it only if you mean it. If another server starts holding that data first,
+From the CLI, `ployz deploy` and `ployz deploy --skip-deploy` stop and print the command to run
+instead. It names each volume that loses data, like
+`ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if you mean it. If another server starts holding that data first,
 or someone stages a different copy change on that volume meanwhile, Ployz asks again.

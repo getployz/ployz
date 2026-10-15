@@ -1246,7 +1246,7 @@ export type DiffQuery = { environment: EnvironmentRef, };
 
 export type DiffView = { environment: EnvironmentSummary,
 /**
- * Pass back to `publish` or `discard` to act on exactly this review.
+ * Pass back to `deploy` or `discard` to act on exactly this review.
  */
 version: string,
 /**
@@ -1256,7 +1256,7 @@ saved: Revision | null,
 /**
  * Whether Saved State already holds this Working State.
  */
-published: boolean, changes: Array<NodeChange>,
+holds_staged: boolean, changes: Array<NodeChange>,
 /**
  * How many changes there are, counting each node and each Setting.
  */
@@ -2912,7 +2912,12 @@ message?: string | null,
  * deletes their data. Publishing one refuses with `confirmation_required` unless
  * it names each one and passes the `version` that refusal handed back.
  */
-accept_volume_loss?: Array<VolumeName>, };
+accept_volume_loss?: Array<VolumeName>,
+/**
+ * Caller-minted: this save sent again with the same ID returns the first one's
+ * answer instead of saving what is staged by then.
+ */
+id?: string | null, };
 
 export type PublishCertificateMaterialRequest = { hostname: CertificateHost, change: CertificateMaterialChange, };
 

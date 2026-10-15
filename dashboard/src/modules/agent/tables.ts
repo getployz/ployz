@@ -36,7 +36,7 @@ export const agentRuns = pgTable("agent_runs", {
   updatedAt,
 }, (table) => [index("agent_runs_thread_idx").on(table.organizationId, table.userId, table.threadId)]);
 
-/** A pause a run waits on, such as a gated Publish or Deploy's approval. */
+/** A pause a run waits on, such as a gated Save or Deploy's approval. */
 export const agentInterrupts = pgTable("agent_interrupts", {
   interruptId: text("interrupt_id").primaryKey(),
   ...owner,

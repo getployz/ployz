@@ -110,6 +110,7 @@ fn publish_as(
     store.write_trusted(
         who,
         &Publish {
+            id: None,
             environment: EnvironmentRef::default(),
             version: version.map(Into::into),
             message: None,
@@ -3693,6 +3694,7 @@ fn removing_a_deployed_domain_is_destructive() {
         .write_trusted(
             &who,
             &Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,
@@ -3887,6 +3889,7 @@ fn publish_review_perf() {
             .write_trusted(
                 &who,
                 &Publish {
+                    id: None,
                     environment: EnvironmentRef::default(),
                     version: None,
                     message: None,

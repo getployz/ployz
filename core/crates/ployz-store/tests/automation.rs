@@ -73,6 +73,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
         .write(
             who,
             &Command::Publish(Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,

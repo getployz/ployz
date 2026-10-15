@@ -30,7 +30,7 @@ pick it.
 ## What it can do
 
 The same tools as the [Ployz agent](agent-sidebar.md) in the dashboard. It can create projects,
-change services, configs, volumes and domains, publish and deploy, follow and redeploy
+change services, configs, volumes and domains, save and deploy, follow and redeploy
 deployments, and work on your servers and volumes. Tell it which project and environment to
 work in.
 

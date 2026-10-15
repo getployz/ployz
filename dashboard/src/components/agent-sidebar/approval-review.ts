@@ -3,7 +3,7 @@ import { changeGroups } from "#/modules/config-store/store-deployments";
 
 export type OtherChange = { key: string; mark: "+" | "~" | "−"; node: string; text: string };
 
-/** Everything else a Publish or Deploy changes, one line per changed node or Setting, minus what a destroyed line already says. */
+/** Everything else a Save or Deploy changes, one line per changed node or Setting, minus what a destroyed line already says. */
 export function otherChanges(review: ApprovalReview): OtherChange[] {
   if (!("diff" in review)) return [];
   const { effects, diff } = review;

@@ -23,7 +23,7 @@ const api = (settings: NodeChange["settings"]): NodeChange =>
   ({ type: "service", id: "api", row: id("a:node"), name: "api", lifecycle: "update", comparison: null, data: null, restarts: [], settings });
 const diff = (extra: Partial<DiffView>): DiffView => ({
   environment: { id: "id-fix-api", project: "shop", name: "fix-api", revision: 4 }, version: "4:abc", saved: null,
-  published: false, changes: [], total_count: 0, incoming: [], follow_hints: [], included: [], ...extra,
+  holds_staged: false, changes: [], total_count: 0, incoming: [], follow_hints: [], included: [], ...extra,
 });
 
 /** fix-api's Details over `view`, as the bottom bar opens it. */
@@ -46,7 +46,7 @@ function open(view: DiffView) {
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
     loader: ({ params }) => ({ store: { project: params.projectSlug, environment: params.environmentSlug } }),
     component: () => (
-      <EnvironmentChangesReview environment="fix-api" groups={groups} totalChanges={view.total_count} canDeploy canPublish={false} onPublish={() => {}}
+      <EnvironmentChangesReview environment="fix-api" groups={groups} totalChanges={view.total_count} canDeploy canSave={false} onSave={() => {}}
         onDiscardAll={() => {}} onClose={() => {}} onDeploy={() => {}} message="" onMessageChange={() => {}}
         onDiscardNode={() => {}} onDiscardRow={() => {}} {...notes} />
     ),

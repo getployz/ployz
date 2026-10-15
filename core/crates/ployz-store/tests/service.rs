@@ -329,6 +329,7 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
         .write(
             &who,
             &Command::Publish(ployz_store::Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,

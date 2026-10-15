@@ -57,7 +57,7 @@ const Listed = Schema.fromJsonString(Schema.Struct({
   value: Schema.Struct({ projects: Schema.Array(Schema.Unknown), services: Schema.Array(Schema.Struct({ name: Schema.String })) }),
 }));
 const CallScope = Schema.fromJsonString(Schema.Struct({
-  project: Schema.optional(Schema.String), environment: Schema.optional(Schema.String),
+  project: Schema.optional(Schema.String), environment: Schema.optional(Schema.String), skip_deploy: Schema.optional(Schema.Boolean),
 }));
 
 type Scope = { readonly project?: string | undefined; readonly environment?: string | undefined };
@@ -70,11 +70,20 @@ const scopeInput = (scope: Scope): JsonObject => {
   return input;
 };
 
+/** "save" is the deploy tool with skip_deploy; "deploy" is the deploy tool without it. */
+type Action = "save" | "deploy";
+
+const actionInput = (action: Action, scope: Scope): JsonObject => {
+  const input = scopeInput(scope);
+  if (action === "save") input["skip_deploy"] = true;
+  return input;
+};
+
 /**
  * The retry accepting the Volume loss of the nearest `action` refused in `scope`, in that refusal's own Project and
  * Environment. A later result of that action, or any denial or cancellation, leaves nothing to accept.
  */
-const lossRetry = (messages: ReadonlyArray<ModelMessage>, asked: number, action: "publish" | "deploy", scope: Scope): ScriptedTurn => {
+const lossRetry = (messages: ReadonlyArray<ModelMessage>, asked: number, action: Action, scope: Scope): ScriptedTurn => {
   const calls = new Map(messages.slice(0, asked).flatMap((message) => message.role === "assistant" ? message.toolCalls ?? [] : [])
     .map((call) => [call.id, call]));
   for (let index = asked - 1; index >= 0; index--) {
@@ -84,16 +93,17 @@ const lossRetry = (messages: ReadonlyArray<ModelMessage>, asked: number, action:
     const refused = Schema.decodeUnknownOption(Refused)(text(result));
     if (Option.isSome(refused) && refused.value.refusal.code === "approval_denied") break;
     const call = result.toolCallId === undefined ? undefined : calls.get(result.toolCallId);
-    if (call?.function.name !== action) continue;
+    if (call?.function.name !== "deploy") continue;
     const original = Option.getOrUndefined(Schema.decodeUnknownOption(CallScope)(call.function.arguments));
     if (original === undefined) break;
+    if ((original.skip_deploy === true) !== (action === "save")) continue;
     if ((scope.project !== undefined && scope.project !== original.project) || (scope.environment !== undefined && scope.environment !== original.environment)) continue;
     const loss = Option.isSome(refused) ? volumeLoss({ details: null, ...refused.value.refusal }) : null;
     if (loss === null || loss.accept.length === 0 || loss.accept.some((name) => !loss.volumes.some((volume) => volume.name === name))) break;
-    const input = scopeInput(original);
+    const input = actionInput(action, original);
     input["accept_volume_loss"] = [...loss.accept];
     input["version"] = loss.version;
-    return { calls: [{ tool: action, input }] };
+    return { calls: [{ tool: "deploy", input }] };
   }
   return { text: "No matching Volume-loss refusal to accept. Review that action in its original Project and Environment first." };
 };
@@ -121,9 +131,9 @@ const whereAbouts = (messages: ReadonlyArray<ModelMessage>): string => {
 /**
  * `PLOYZ_AGENT_STUB=1`'s model. It reads the member's latest message and the tool results since: "list services" lists
  * them by name, "list services and deploy" calls both at once, "set <service>.<setting>=<value>" stages that Setting,
- * "remove <service>" and "drop <volume>" stage their removal, "publish" publishes (at `--version "<version>"` when named),
- * and "deploy" deploys the Environment, each in `--project` and `--environment` when named. "tree <owner/repo>" lists a
- * repository's files. After a Publish or Deploy refuses Volume loss, an explicit request to accept it
+ * "remove <service>" and "drop <volume>" stage their removal, "save" saves without deploying (at `--version "<version>"`
+ * when named), and "deploy" deploys the Environment, each in `--project` and `--environment` when named. "tree
+ * <owner/repo>" lists a repository's files. After a Save or Deploy refuses Volume loss, an explicit request to accept it
  * retries that action in its original scope, accepting exactly what the Store named. A denial is quoted, never retried.
  * "Where am I" answers from the thread's latest page block.
  */
@@ -156,18 +166,18 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
   if (dropped !== undefined) return { calls: [{ tool: "volume_remove", input: { volume: dropped } }] };
   if (said.includes("list services and deploy")) return { calls: [{ tool: "environment_show", input: {} }, { tool: "deploy", input: {} }] };
   if (said.includes("list services")) return { calls: [{ tool: "environment_show", input: {} }] };
-  const action = /\b(publish|deploy)\b/.exec(said)?.[1];
+  const action = /\b(save|deploy)\b/.exec(said)?.[1];
   const scope: Scope = { project: /--project ([a-z0-9-]+)/.exec(said)?.[1], environment: /--environment ([a-z0-9-]+)/.exec(said)?.[1] };
   if (said.includes("accepting the volume loss")) {
-    return action === "publish" || action === "deploy"
+    return action === "save" || action === "deploy"
       ? lossRetry(messages, asked, action, scope)
-      : { text: "Name Publish or Deploy when accepting the Volume loss." };
+      : { text: "Name Save or Deploy when accepting the Volume loss." };
   }
-  if (action === "publish" || action === "deploy") {
-    const input = scopeInput(scope);
-    const version = action === "publish" ? /--version "([^"]*)"/.exec(raw)?.[1] : undefined;
+  if (action === "save" || action === "deploy") {
+    const input = actionInput(action, scope);
+    const version = action === "save" ? /--version "([^"]*)"/.exec(raw)?.[1] : undefined;
     if (version !== undefined) input["version"] = version;
-    return { calls: [{ tool: action, input }] };
+    return { calls: [{ tool: "deploy", input }] };
   }
   return { text: "I can list services, remove one, or deploy." };
 }
