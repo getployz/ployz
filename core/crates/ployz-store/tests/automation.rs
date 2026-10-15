@@ -73,6 +73,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
         .write(
             who,
             &Command::Publish(Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,
@@ -364,6 +365,7 @@ fn saved_volume_loss() -> (ConfigStore, Actor) {
         store.write_trusted(
             &who,
             &Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version,
                 message: None,

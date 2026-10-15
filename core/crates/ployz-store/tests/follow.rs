@@ -568,6 +568,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
     );
     deploy(&store, &who, "production", 4);
     let publish = Publish {
+        id: None,
         environment: at("fix-web"),
         version: Some(diff(&store, &who, "fix-web").version),
         message: None,
@@ -626,6 +627,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
         .write_trusted(
             &who,
             &Publish {
+                id: None,
                 environment: at("fix-web"),
                 version: Some(inverse.version),
                 message: None,

@@ -128,6 +128,18 @@ it("saves without deploying from Alt+click on Deploy and from Save only under â‹
   expect(onDeploy).not.toHaveBeenCalled();
 });
 
+it("never deploys from Alt+click, even once everything is saved and the changes still wait to deploy", async () => {
+  open(canvasUrl, [replicas], 1, false);
+  const staged = await bar();
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: /^Deploy/ }), { altKey: true }); });
+  act(() => { fireEvent.keyDown(window, { key: "Alt", altKey: true }); });
+  const button = staged.getByRole("button", { name: /^Save only/ });
+  expect(button).toHaveProperty("disabled", true);
+  await act(async () => { fireEvent.click(button, { altKey: true }); });
+  expect(onDeploy).not.toHaveBeenCalled();
+  expect(onSave).not.toHaveBeenCalled();
+});
+
 it("counts the secrets the Deploy leaves out beside the changes", async () => {
   notSet = 2;
   open(canvasUrl, [replicas], 1);

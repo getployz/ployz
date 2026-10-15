@@ -106,6 +106,7 @@ fn retiring_api() -> (ConfigStore, Actor) {
         .write(
             &who,
             &Command::Publish(Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,

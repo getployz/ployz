@@ -3200,6 +3200,7 @@ fn publish_asking(
     store.write_trusted(
         who,
         &Command::Publish(Publish {
+            id: None,
             environment: EnvironmentRef::default(),
             version: None,
             message: None,

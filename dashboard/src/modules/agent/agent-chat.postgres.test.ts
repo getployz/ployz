@@ -1032,7 +1032,8 @@ it.live("an approved Save saves the reviewed version once, and a replay after it
     const writes = watchWrites();
 
     const published = yield* answer(interruptId, "resolved");
-    expect(published.results).toEqual([{ ok: true, value: expect.objectContaining({ written: "published", created: true }) }]);
+    const revision = (approval.review.diff.saved ?? 0) + 1;
+    expect(published.results).toEqual([{ ok: true, value: expect.objectContaining({ saved: { revision, created: true } }) }]);
     expect(writes.mock.calls.map(([, command]) => command)).toEqual([expect.objectContaining({ command: "publish", version: approval.review.diff.version })]);
 
     yield* rewind(interruptId, beforeResume);
@@ -1040,13 +1041,13 @@ it.live("an approved Save saves the reviewed version once, and a replay after it
     const replayed = yield* answer(interruptId, "resolved");
     expect(replayed.errors).toEqual([]);
     expect(replayed.interrupts).toEqual([]);
-    expect(replayed.results).toEqual([{ ok: true, value: expect.objectContaining({ written: "published", created: false }) }]);
+    expect(replayed.results).toEqual([{ ok: true, value: expect.objectContaining({ saved: { revision, created: false } }) }]);
     expect(writes.mock.calls.map(([, command]) => command.command)).toEqual(["publish"]);
     expect(yield* pending).toEqual([]);
   }), 15_000);
 
 for (const { named, replayed } of [
-  { named: (version: string) => version, replayed: { ok: true, value: expect.objectContaining({ written: "published", created: false }) } },
+  { named: (version: string) => version, replayed: { ok: true, value: expect.objectContaining({ saved: expect.objectContaining({ created: false }) }) } },
   { named: (version: string) => `${version}:accepted-loss`, replayed: { ok: false, refusal: expect.objectContaining({ code: "conflict" }) } },
 ]) {
   it.live(`an approved Save sends ${named("V")} as the agent named it, and a replay after it landed reports ${replayed.ok ? "that Save" : "the Store's conflict"}`, () =>
@@ -1063,7 +1064,7 @@ for (const { named, replayed } of [
       const writes = watchWrites();
 
       const published = yield* answer(interruptId, "resolved");
-      expect(published.results).toEqual([{ ok: true, value: expect.objectContaining({ written: "published", created: true }) }]);
+      expect(published.results).toEqual([{ ok: true, value: expect.objectContaining({ saved: { revision: (approval.review.diff.saved ?? 0) + 1, created: true } }) }]);
       expect(writes.mock.calls.map(([, command]) => command)).toEqual([expect.objectContaining({ command: "publish", version: sent })]);
 
       yield* rewind(interruptId, beforeResume);
@@ -1081,7 +1082,7 @@ it.live("a replay carrying a version the human never reviewed keeps the Store's 
     yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
     const interruptId = yield* waiting;
     const beforeResume = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
-    expect((yield* answer(interruptId, "resolved")).results).toMatchObject([{ ok: true, value: { written: "published", created: true } }]);
+    expect((yield* answer(interruptId, "resolved")).results).toMatchObject([{ ok: true, value: { saved: { created: true } } }]);
 
     const unreviewed = beforeResume.map((message) => message.role === "assistant" && message.toolCalls !== undefined
       ? { ...message, toolCalls: message.toolCalls.map((call) => call.function.name === "deploy" ? { ...call, function: { ...call.function, arguments: '{"skip_deploy":true,"version":""}' } } : call) }

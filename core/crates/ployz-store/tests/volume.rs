@@ -760,6 +760,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
         store.write_trusted(
             &who,
             &Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: version.map(Into::into),
                 message: None,
@@ -849,6 +850,7 @@ fn save(
         store.write_trusted(
             who,
             &Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version,
                 message: None,
@@ -1042,6 +1044,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
         store.write_trusted(
             &who,
             &Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: version.map(Into::into),
                 message: None,

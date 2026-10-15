@@ -777,6 +777,7 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
         .write_trusted(
             &who(),
             &ployz_store::Publish {
+                id: None,
                 environment: EnvironmentRef::default(),
                 version: None,
                 message: None,

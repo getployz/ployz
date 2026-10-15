@@ -310,6 +310,7 @@ impl Tool for DeployInput {
                 version: self.version,
                 message: self.message,
                 accept_volume_loss: self.accept_volume_loss,
+                id: Some(cx.mint(self.request_key)?),
             })?;
             return Ok(json!({
                 "at": at(&saved.environment),

@@ -197,8 +197,8 @@ const done = (outcome: ToolOutcome): AgentResult => ({ outcome });
 
 /**
  * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A gated write that waits on a human
- * answers `asking`; the retry carrying that approval runs it. A gated Store write's answer is the call's outcome; a
- * Cloud act's answer lets the compiled tool finish.
+ * answers `asking`; the retry carrying that approval runs it. A gated save and a Cloud act let the compiled tool finish;
+ * any other gated Store write's answer is the call's outcome.
  */
 export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
   const published = findCommand(call.tool);
@@ -221,7 +221,9 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
     if ("asking" in gated) return gated;
     if ("denied" in gated) return done({ ok: false, refusal: gated.denied });
-    return done(gated.result.ok && gated.nothingDestroyed ? { ...gated.result, nothing_destroyed: true } : gated.result);
+    // A save finishes in its tool, so it answers `saved` as native MCP does. A Deployment's answer stays the Store's: the Run card draws it.
+    const outcome = write.write.command === "publish" ? yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller)) : gated.result;
+    return done(outcome.ok && gated.nothingDestroyed ? { ...outcome, nothing_destroyed: true } : outcome);
   }
   const acted = yield* runGatedAct(caller, write.write, call.approvalId);
   if ("asking" in acted) return acted;
