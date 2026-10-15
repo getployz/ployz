@@ -75,13 +75,30 @@ impl ReleaseSource {
         file: &str,
         stage: &'static str,
     ) -> Result<Vec<u8>, Error> {
+        self.release_file_if_present(target, file, stage)
+            .await?
+            .ok_or_else(|| {
+                Error::ReleaseSelection(format!("{stage}: release {target} has no {file}"))
+            })
+    }
+
+    async fn release_file_if_present(
+        &self,
+        target: &MachineVersion,
+        file: &str,
+        stage: &'static str,
+    ) -> Result<Option<Vec<u8>>, Error> {
         match self {
-            Self::Published => fetch(&release_url(target, file), stage).await,
+            Self::Published => fetch_if_present(&release_url(target, file), stage).await,
             #[cfg(test)]
-            Self::Local(directory) => fs::read(directory.join(file)).map_err(|source| Error::Io {
-                stage: "read local release artifact",
-                source,
-            }),
+            Self::Local(directory) => match fs::read(directory.join(file)) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(source) => Err(Error::Io {
+                    stage: "read local release artifact",
+                    source,
+                }),
+            },
         }
     }
 
@@ -146,6 +163,13 @@ fn parse_channel_version(value: &str) -> Result<MachineVersion, Error> {
 }
 
 pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
+    fetch_if_present(url, stage)
+        .await?
+        .ok_or_else(|| Error::ReleaseSelection(format!("{stage}: {url} was not found")))
+}
+
+/// Download `url`, or `None` when the server answers 404.
+async fn fetch_if_present(url: &str, stage: &str) -> Result<Option<Vec<u8>>, Error> {
     let client = reqwest::Client::builder()
         .https_only(true)
         .connect_timeout(DOWNLOAD_TIMEOUT)
@@ -158,27 +182,25 @@ pub(super) async fn fetch(url: &str, stage: &str) -> Result<Vec<u8>, Error> {
                 error = ployz_core::error_chain::inline(&error),
             ))
         })?;
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| {
-            Error::ReleaseSelection(format!(
-                "{stage}: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ))
-        })?
-        .error_for_status()
-        .map_err(|error| {
-            Error::ReleaseSelection(format!(
-                "{stage}: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            ))
-        })?;
+    let response = client.get(url).send().await.map_err(|error| {
+        Error::ReleaseSelection(format!(
+            "{stage}: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        ))
+    })?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let response = response.error_for_status().map_err(|error| {
+        Error::ReleaseSelection(format!(
+            "{stage}: {error}",
+            error = ployz_core::error_chain::inline(&error),
+        ))
+    })?;
     response
         .bytes()
         .await
-        .map(|bytes| bytes.to_vec())
+        .map(|bytes| Some(bytes.to_vec()))
         .map_err(|error| {
             Error::ReleaseSelection(format!(
                 "{stage}: {error}",
@@ -253,12 +275,13 @@ async fn release_checksum(
         .release_file(target, "checksums.txt", "download release checksums")
         .await?;
     let signature = source
-        .release_file(
+        .release_file_if_present(
             target,
             RELEASE_SIGNATURE_ASSET,
             "download release checksums signature",
         )
-        .await?;
+        .await?
+        .ok_or_else(|| Error::Unsigned(target.clone()))?;
     let signature = String::from_utf8(signature)
         .map_err(|_| Error::Verification(format!("{RELEASE_SIGNATURE_ASSET} is not UTF-8")))?;
     verify_release_checksums(&source.public_key(), &checksums, &signature, target)

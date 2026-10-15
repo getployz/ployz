@@ -18,7 +18,7 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineRelease, MachineUpgradeStage, StorageChoice};
+use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StorageChoice};
 use thiserror::Error;
 
 use crate::mutation;
@@ -102,6 +102,8 @@ pub enum Error {
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
     Verification(String),
+    #[error("release {0} is not signed, and Ployz installs only signed releases")]
+    Unsigned(MachineVersion),
     #[error("{stage}: {message}")]
     Command { stage: String, message: String },
     #[error("{stage}")]
@@ -451,8 +453,6 @@ mod tests {
         process::Command,
     };
 
-    use ployz_core::MachineVersion;
-
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
@@ -691,11 +691,7 @@ mod tests {
                         && message.contains("expected")
             )),
             "unsigned" => assert!(
-                matches!(
-                    result,
-                    Err(Error::Io { ref source, .. })
-                        if source.kind() == std::io::ErrorKind::NotFound
-                ),
+                matches!(result, Err(Error::Unsigned(ref version)) if version.to_string() == "1.2.3"),
                 "an unsigned release was accepted: {result:?}"
             ),
             "tampered-checksums" => assert!(
