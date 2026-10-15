@@ -173,6 +173,27 @@ pub(crate) fn publish(
     })
 }
 
+/// Refuse a replayed save whose Environment resolves elsewhere now: an omitted one
+/// follows the Default Environment, which may have moved since the first save.
+pub(crate) fn same_environment(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    publish: &Publish,
+    first: &Published,
+) -> Result<(), RpcError> {
+    let (_, now) = scope::resolve(tx, who, &publish.environment)?;
+    if now == first.environment.id {
+        return Ok(());
+    }
+    Err(crate::error::conflict(
+        format!(
+            "This ID already saved {}/{}, not the Environment it names now",
+            first.environment.project, first.environment.name
+        ),
+        serde_json::json!({ "id": publish.id }),
+    ))
+}
+
 pub(crate) fn discard(
     tx: &mut dyn Tx,
     who: &Actor,

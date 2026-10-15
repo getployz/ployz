@@ -5,8 +5,8 @@ use ployz_store::tools::{
     Answer, Ask, Place, Step, StoreAt, Write, catalog, example, resume, start,
 };
 use ployz_store::{
-    Actor, ConfigStore, CreateProject, EnvironmentId, OrganizationId, ProjectId, ProjectName,
-    SealingKey,
+    Actor, ConfigStore, CreateEnvironment, CreateProject, EnvironmentId, EnvironmentName,
+    EnvironmentRef, OrganizationId, ProjectId, ProjectName, SealingKey, SetDefaultEnvironment,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -275,5 +275,62 @@ fn deploy_with_skip_deploy_saves_everything_staged_and_queues_nothing() {
         next.pointer("/value/saved"),
         Some(&serde_json::json!({ "revision": 2, "created": true })),
         "{next}"
+    );
+}
+
+#[test]
+fn a_replayed_save_refuses_once_the_default_environment_moved() {
+    let store = shop();
+    store
+        .write(
+            &who(),
+            &CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let call = |tool: &str, input: Value| {
+        let transcript = record_on(&store, tool, input, StoreAt::Local);
+        let step = &transcript.turns.last().unwrap().step;
+        let Step::Done { result } = step else {
+            panic!("not done: {step:?}");
+        };
+        serde_json::to_value(result).unwrap()
+    };
+    let save = || {
+        call(
+            "deploy",
+            serde_json::json!({ "skip_deploy": true, "request_key": "save-first" }),
+        )
+    };
+
+    call("service_add", example("service_add").unwrap());
+    let first = save();
+    assert_eq!(
+        first.pointer("/value/at"),
+        Some(&serde_json::json!("shop/production")),
+        "{first}"
+    );
+
+    store
+        .write(
+            &who(),
+            &SetDefaultEnvironment {
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(EnvironmentName::parse("staging").unwrap()),
+                },
+            },
+        )
+        .unwrap();
+    call("service_add", example("service_add").unwrap());
+    // The same request now names staging: production's save is not its answer.
+    let again = save();
+    assert_eq!(
+        again.pointer("/refusal/code"),
+        Some(&serde_json::json!("conflict")),
+        "{again}"
     );
 }

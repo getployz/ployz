@@ -67,17 +67,17 @@ pub trait Tell: Serialize {
 }
 
 /// Register every command. A row reads:
-/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS]] => CALL;`
+/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] [if SAME]] => CALL;`
 /// where `keyed` lists the caller-minted IDs a create replays by (an optional one when
-/// the caller may send none), and `CALL` runs it
-/// with the names bound in the table's header.
+/// the caller may send none), `SAME` refuses a replay its first answer no longer fits,
+/// and `CALL` runs it with the names bound in the table's header.
 macro_rules! commands {
     (
         |$tx:ident, $who:ident, $sealing:ident, $trusted:ident, $c:ident|
         $(
             $(#[doc = $doc:literal])*
             $variant:ident($payload:ty) -> $written:ident($answer:ty) $(as $unbox:tt)?
-            $(keyed [$($id:expr),*])? => $call:expr;
+            $(keyed [$($id:expr),*] $(if $same:path)?)? => $call:expr;
         )*
     ) => {
         /// One change to authored configuration, applied in one transaction.
@@ -156,9 +156,15 @@ macro_rules! commands {
                         let _ = ($sealing, $trusted);
                         $call
                     };
+                    type Same = fn(&mut dyn Tx, &Actor, &$payload, &$answer) -> Result<(), RpcError>;
+                    let same = None::<Same> $($(.or(Some($same as Same)))?)?;
+                    let fits = |at: &mut Call<'_>, first: &$answer| match same {
+                        Some(same) => same(&mut *at.tx, at.who, self, first),
+                        None => Ok(()),
+                    };
                     match ids.is_empty() {
                         true => run(at),
-                        false => replayable(at, self, &ids, run),
+                        false => replayable(at, self, &ids, fits, run),
                     }
                 }
 
@@ -241,7 +247,8 @@ commands! {
     Edit(Edit) -> Edited(Edited) => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
-        keyed [c.id.as_deref()] => crate::review::publish::publish(tx, who, c, trusted);
+        keyed [c.id.as_deref()] if crate::review::publish::same_environment
+        => crate::review::publish::publish(tx, who, c, trusted);
     /// Stage a guarded Restore or Undo of an immutable Saved revision.
     StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
         => crate::review::history::stage(tx, who, c);
@@ -609,6 +616,7 @@ fn replayable<C: Tell + ?Sized>(
     at: &mut Call<'_>,
     command: &C,
     ids: &[&str],
+    fits: impl FnOnce(&mut Call<'_>, &C::Written) -> Result<(), RpcError>,
     create: impl FnOnce(&mut Call<'_>) -> Result<C::Written, RpcError>,
 ) -> Result<C::Written, RpcError> {
     let body = command.to_command().to_string();
@@ -625,7 +633,9 @@ fn replayable<C: Tell + ?Sized>(
                     json!({ "id": id }),
                 ));
             }
-            return row.json(2, "create result");
+            let first = row.json(2, "create result")?;
+            fits(at, &first)?;
+            return Ok(first);
         }
     }
     let written = create(at)?;
