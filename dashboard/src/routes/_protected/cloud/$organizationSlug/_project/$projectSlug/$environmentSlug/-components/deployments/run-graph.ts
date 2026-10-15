@@ -5,13 +5,17 @@ import type { RunSearch } from "./run-search";
 /** Unix seconds over a node's rows; `finished` stays null until every row finished. */
 export type RunTiming = { started: number; finished: number | null };
 
-type RunNodeBase = { id: string; name: string; light: NodeLight; column: number };
+/** `row` is the node's offset from its column's middle, in card slots. */
+type RunNodeBase = { id: string; name: string; light: NodeLight; column: number; row: number; timing?: RunTiming };
 export type BuildRunNode = RunNodeBase & { type: "build"; build: BuildView };
-export type OutcomeRunNode = RunNodeBase & { type: NodeOutcome["type"]; node: NodeOutcome; timing?: RunTiming };
+export type OutcomeRunNode = RunNodeBase & { type: NodeOutcome["type"]; node: NodeOutcome };
 /** One entry of a Deployment as it reports it: a build, or a Service, Volume or Config node. */
 export type RunNode = BuildRunNode | OutcomeRunNode;
 
-export type RunGraph = { nodes: RunNode[]; done: number };
+/** A build to its Service, or a Service to one depending on it; `animated` while the target runs. */
+export type RunEdge = { id: string; source: string; target: string; animated: boolean };
+
+export type RunGraph = { nodes: RunNode[]; edges: RunEdge[]; done: number };
 
 export const buildStatusLabels = {
   pending: "Pending", building: "Building", built: "Built", reused: "Reused", failed: "Failed",
@@ -65,32 +69,81 @@ export function rowLight(row: ServerRow): NodeLight {
   }
 }
 
+/** When a row's work started: its first state past pending, else what the row says. */
+function rowStart(row: ServerRow): number | null {
+  return row.history?.find((transition) => transition.state !== "pending")?.at ?? row.started_at;
+}
+
 export function rowTiming(rows: ServerRow[]): RunTiming | undefined {
-  if (!rows.length || rows.some((row) => row.started_at === null)) return undefined;
-  const started = Math.min(...rows.map((row) => row.started_at ?? 0));
+  const starts = rows.map(rowStart);
+  if (!starts.length || starts.some((start) => start === null)) return undefined;
+  const started = Math.min(...starts.map((start) => start ?? 0));
   const finished = rows.every((row) => row.finished_at !== null) ? Math.max(...rows.map((row) => row.finished_at ?? 0)) : null;
   return { started, finished };
+}
+
+function buildTiming(build: BuildView): RunTiming | undefined {
+  return build.started_at === null ? undefined : { started: build.started_at, finished: build.finished_at };
 }
 
 const buildOutcome = {
   pending: "pending", building: "pending", built: "deployed", reused: "deployed", failed: "failed",
 } satisfies Record<BuildStatus, NodeStatus>;
 
+type Placeable = { id: string; name: string; column: number; rank: number };
+
+/**
+ * Each node's row so linked cards line up. Column 0 goes by `rank`, then name. Every later column goes by the mean row
+ * of the nodes linking into it, unlinked nodes last, ties by name.
+ */
+export function orderRows(nodes: Placeable[], edges: Pick<RunEdge, "source" | "target">[]): Map<string, number> {
+  const rows = new Map<string, number>();
+  const key = (node: Placeable) => {
+    if (node.column === 0) return node.rank;
+    const linked = edges.filter((edge) => edge.target === node.id).flatMap((edge) => rows.get(edge.source) ?? []);
+    return linked.length ? linked.reduce((sum, row) => sum + row, 0) / linked.length : Infinity;
+  };
+  for (const column of [...new Set(nodes.map((node) => node.column))].sort((a, b) => a - b)) {
+    const keyed = nodes.filter((node) => node.column === column).map((node) => ({ node, key: key(node) }));
+    keyed.sort((a, b) => (a.key === b.key ? a.node.name.localeCompare(b.node.name) : a.key < b.key ? -1 : 1));
+    keyed.forEach(({ node }, index) => rows.set(node.id, index - (keyed.length - 1) / 2));
+  }
+  return rows;
+}
+
+const columnRanks = { build: 0, volume: 1, config: 2, service: 3 } satisfies Record<RunNode["type"], number>;
+
 /**
  * A Deployment's builds in the first column, then its nodes: a Service at its preview depth after the builds, a Volume or
- * Config beside the builds, since the preview places only Services.
+ * Config beside the builds, since nothing says which Service mounts it. Edges run from each build to its Service and
+ * along the preview's dependencies. A Service reads as running while any of its rows runs, old copies stopping included.
  */
 export function makeRunGraph(deployment: DeploymentView): RunGraph {
-  const builds: RunNode[] = deployment.builds.map((build) => ({
-    type: "build", id: buildNodeId(build.service), name: build.service, build, column: 0,
-    light: nodeLight(buildOutcome[build.status], deployment),
-  }));
-  const outcomes: RunNode[] = deployment.nodes.map((node) => ({
-    type: node.type, id: node.id, name: node.name, node, light: nodeLight(node.outcome, deployment), timing: rowTiming(node.rows),
-    column: node.type === "service" ? (deployment.preview?.depths[deployment.runtime_names[node.name] ?? node.name] ?? 0) + 1 : 0,
-  }));
-  const nodes = [...builds, ...outcomes];
-  return { nodes, done: nodes.filter((node) => node.light === "deployed").length };
+  const runtime = (name: string) => deployment.runtime_names[name] ?? name;
+  const unplaced: RunNode[] = [
+    ...deployment.builds.map((build): RunNode => ({
+      type: "build", id: buildNodeId(build.service), name: build.service, build, column: 0, row: 0, timing: buildTiming(build),
+      light: nodeLight(buildOutcome[build.status], deployment),
+    })),
+    ...deployment.nodes.map((node): RunNode => ({
+      type: node.type, id: node.id, name: node.name, node, row: 0, timing: rowTiming(node.rows),
+      light: deployment.in_flight && node.rows.some((row) => row.state === "running") ? "deploying" : nodeLight(node.outcome, deployment),
+      column: node.type === "service" ? (deployment.preview?.depths[runtime(node.name)] ?? 0) + 1 : 0,
+    })),
+  ];
+  const services = new Map(deployment.nodes.filter((node) => node.type === "service").map((node) => [runtime(node.name), node.id]));
+  const links = [
+    ...deployment.builds.map((build) => [buildNodeId(build.service), services.get(runtime(build.service))] as const),
+    ...(deployment.preview?.dependencies ?? []).map(([dependency, dependent]) => [services.get(dependency), services.get(dependent)] as const),
+  ];
+  const lights = new Map(unplaced.map((node) => [node.id, node.light]));
+  const edges = new Map<string, RunEdge>();
+  for (const [source, target] of links) {
+    if (source && target) edges.set(`${source}->${target}`, { id: `${source}->${target}`, source, target, animated: lights.get(target) === "deploying" });
+  }
+  const rows = orderRows(unplaced.map((node) => ({ ...node, rank: columnRanks[node.type] })), [...edges.values()]);
+  const nodes = unplaced.map((node) => ({ ...node, row: rows.get(node.id) ?? 0 }));
+  return { nodes, edges: [...edges.values()], done: nodes.filter((node) => node.light === "deployed").length };
 }
 
 /**
