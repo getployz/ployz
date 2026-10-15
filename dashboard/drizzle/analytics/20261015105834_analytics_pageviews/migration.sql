@@ -69,4 +69,19 @@ CREATE TABLE "analytics"."session_hourly" (
 	CONSTRAINT "session_hourly_pkey" PRIMARY KEY("environment_id","hour")
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX "goal_environment_path_idx" ON "analytics"."goal" ("environment_id","path_pattern");
+CREATE UNIQUE INDEX "goal_environment_path_idx" ON "analytics"."goal" ("environment_id","path_pattern");--> statement-breakpoint
+-- The Config Store creates config_environment when it opens, after these migrations, and attaches this then.
+-- Raw pageviews are left to the partition drops. rollup_state is deleted before site, the order the rollup locks them.
+CREATE FUNCTION "analytics"."forget_environments"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  DELETE FROM analytics.rollup_state USING old_rows WHERE rollup_state.environment_id = old_rows.id;
+  DELETE FROM analytics.site USING old_rows WHERE site.environment_id = old_rows.id;
+  DELETE FROM analytics.daily USING old_rows WHERE daily.environment_id = old_rows.id;
+  DELETE FROM analytics.session_hourly USING old_rows WHERE session_hourly.environment_id = old_rows.id;
+  DELETE FROM analytics.bot_daily USING old_rows WHERE bot_daily.environment_id = old_rows.id;
+  DELETE FROM analytics.gap_daily USING old_rows WHERE gap_daily.environment_id = old_rows.id;
+  DELETE FROM analytics.goal USING old_rows WHERE goal.environment_id = old_rows.id;
+  DELETE FROM analytics.salt USING old_rows WHERE salt.environment_id = old_rows.id;
+  RETURN NULL;
+END
+$$;

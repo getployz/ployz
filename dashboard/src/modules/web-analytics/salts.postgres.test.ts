@@ -5,7 +5,7 @@ import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
 import { ackSalts, saltWindow, setSiteAnalytics, siteDay, withholdToday } from "#/modules/web-analytics/salts.server";
-import { analyticsDaily, analyticsRollupState, analyticsSalt, analyticsSessionHourly } from "#/modules/web-analytics/tables";
+import { analyticsBotDaily, analyticsDaily, analyticsGapDaily, analyticsGoal, analyticsRollupState, analyticsSalt, analyticsSessionHourly, analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
@@ -197,4 +197,36 @@ it.live("a new time zone drops the site's rollups and starts its rollup state ov
       { environmentId: STAGING, rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] },
     ],
   });
+}), 60_000);
+
+it.live("deleting an environment deletes its analytics and keeps every other environment's", () => Effect.gen(function* () {
+  const { provide } = yield* setup();
+  for (const environmentId of [PRODUCTION, STAGING]) yield* provide(setSiteAnalytics(ORGANIZATION, environmentId, { enabled: true }));
+  const tables = [analyticsSite, analyticsSalt, analyticsRollupState, analyticsDaily, analyticsSessionHourly, analyticsBotDaily, analyticsGapDaily, analyticsGoal];
+  const left = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const environments = [];
+    for (const table of tables) {
+      const rows = yield* drizzle.selectDistinct({ environmentId: table.environmentId }).from(table).orderBy(asc(table.environmentId));
+      environments.push(rows.map(({ environmentId }) => environmentId));
+    }
+    return environments;
+  }).pipe(Effect.orDie));
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    for (const environmentId of [PRODUCTION, STAGING]) {
+      yield* drizzle.insert(analyticsDaily).values({ environmentId, day: "2026-10-01", dim: "", value: "", pageviews: 1, visitors: 1, visits: 1, bounces: 1, totalDuration: 0 });
+      yield* drizzle.insert(analyticsSessionHourly).values({ environmentId, hour: new Date("2026-10-01T00:00:00Z"), visits: 1, bounces: 1, totalDuration: 0 });
+      yield* drizzle.insert(analyticsBotDaily).values({ environmentId, day: "2026-10-01", reason: "ua", count: 1 });
+      yield* drizzle.insert(analyticsGapDaily).values({ environmentId, day: "2026-10-01", count: 1 });
+      yield* drizzle.insert(analyticsGoal).values({ environmentId, name: "Signup", pathPattern: "/signup" });
+    }
+  }).pipe(Effect.orDie));
+  expect(yield* left()).toEqual(tables.map(() => [PRODUCTION, STAGING]));
+
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`delete from config_environment where id = ${STAGING}`);
+  }).pipe(Effect.orDie));
+  expect(yield* left()).toEqual(tables.map(() => [PRODUCTION]));
 }), 60_000);
