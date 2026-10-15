@@ -20,13 +20,7 @@ added here slows every PR, so add none.
 - A PR that leaves Machine behaviour alone skips Boat. Verify dashboard UI with the
   `verify-dashboard` skill.
 - Merges run no scenario suite.
-
-### Durable scenarios
-
-`core/scripts/test-verify-*.py` is frozen: shrink it, never grow it. Delete a scenario
-that overlaps another or no longer catches anything. A behaviour worth checking again goes
-into the next swarm's angles, not into a script. Releases are Nick's job; agents leave
-them alone.
+- Releases are Nick's job; agents leave them alone.
 
 ## Review: bounded rounds
 

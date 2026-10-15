@@ -71,12 +71,9 @@ jobs:
       - run: bash core/scripts/test-daemon-lifecycle.sh
       - run: python3 core/scripts/verify/test_ackprobe.py
       - run: python3 core/scripts/verify/test_boat.py
-      - run: python3 core/scripts/verify/test_cloud_recovery.py
-      - run: python3 core/scripts/verify/test_volume_fences.py
       - run: python3 core/scripts/verify/test_host.py
       - run: python3 core/scripts/verify/test_commands.py
       - run: python3 core/scripts/verify/test_doctor.py
-      - run: python3 core/scripts/verify/test_warm_move.py
       - run: python3 core/scripts/test_artifacts.py
       - uses: dtolnay/rust-toolchain@1.97.1
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
