@@ -1,8 +1,9 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { it } from "@effect/vitest";
 import { asc, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect, Fiber, Layer } from "effect";
 import { Inngest } from "inngest";
+import { Client } from "pg";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { organizationMachine } from "#/modules/machines/tables";
@@ -14,8 +15,11 @@ import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { handleObservePush } from "#/routes/api/machines/-handlers";
 import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
+import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/postgres/rollup";
+import { dailyTotals, dailyTotalsSql, type StoreQuery } from "#/modules/web-analytics/postgres/store";
 import { saltWindow, setSiteAnalytics, siteDay } from "#/modules/web-analytics/salts.server";
 import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState } from "#/modules/web-analytics/tables";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
@@ -175,7 +179,7 @@ const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANA
     const { drizzle } = yield* Database;
     yield* drizzle.update(analyticsRollupState).set({ rolledUpTo, dirty: [...dirty] });
   }).pipe(Effect.orDie));
-  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone, stored, rollupState, rolledUp };
+  return { services, send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone, stored, rollupState, rolledUp };
 });
 
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
@@ -598,4 +602,89 @@ it.live("a pageviews batch with an unknown kind or a malformed row answers 422 a
   }
   expect((yield* send(JSON.stringify({ stream: "pageviews", seq: 5, dropped: 0, events: [] }))).status).toBe(422);
   expect(yield* stored()).toEqual(nothingStored);
+}), 60_000);
+
+const lockRace = (services: Effect.Success<ReturnType<typeof setup>>["services"]) => {
+  const provide = <A, E>(effect: Effect.Effect<A, E, Database | AppConfig>) => effect.pipe(Effect.provide(services), Effect.orDie);
+  const lockWaiters = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.execute<{ n: number }>(sql`
+      select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`, "objects");
+    return row?.n ?? 0;
+  }));
+  const untilWaiting = (count: number) => Effect.gen(function* () {
+    for (let tries = 0; tries < 200; tries++) {
+      if ((yield* lockWaiters()) >= count) return;
+      yield* Effect.sleep("50 millis");
+    }
+    return yield* Effect.die(new Error(`never saw ${count} sessions waiting on a lock`));
+  });
+  const holdRollupState = (environmentId: string) => provide(Effect.gen(function* () {
+    const { database } = yield* AppConfig;
+    const client = new Client({ connectionString: database.url.href });
+    yield* Effect.promise(() => client.connect());
+    yield* Effect.promise(() => client.query("begin"));
+    yield* Effect.promise(() => client.query("select 1 from analytics.rollup_state where environment_id = $1 for update", [environmentId]));
+    return Effect.promise(async () => {
+      await client.query("rollback");
+      await client.end();
+    });
+  }));
+  return { provide, untilWaiting, holdRollupState };
+};
+
+const totals = (query: StoreQuery) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const rolled = (yield* dailyTotals(query)).map((row) => ({ ...row, bucket: row.bucket.getTime() }));
+  const raw = (yield* drizzle.execute<{ bucket: string; pageviews: string; visitors: string; visits: string; bounces: string; total_duration: string }>(dailyTotalsSql(query, { days: null, edges: [query.range] }), "objects"))
+    .map((row) => ({
+      bucket: Number(row.bucket), pageviews: Number(row.pageviews), visitors: Number(row.visitors),
+      visits: Number(row.visits), bounces: Number(row.bounces), totalDuration: Number(row.total_duration),
+    }));
+  return { rolled, raw };
+});
+
+it.live("a pageview that waits behind a closing rollup marks the closed day dirty, and the rebuild counts it", () => Effect.gen(function* () {
+  const { services, send, sites, rollupState } = yield* setup();
+  const race = lockRace(services);
+  yield* sites();
+  const day = siteDay(SYDNEY, Date.now(), -3);
+  const midnight = saltWindow(day, SYDNEY).start * 1000;
+  expect((yield* send(pageviews(5, [pageview(midnight + 12 * HOUR_MS)]))).status).toBe(200);
+  const release = yield* race.holdRollupState(PRODUCTION);
+  const rollup = yield* Effect.forkChild(race.provide(closeDays(PRODUCTION, new Date())));
+  yield* race.untilWaiting(1);
+  const ingest = yield* Effect.forkChild(send(pageviews(6, [pageview(midnight + 13 * HOUR_MS, { visitor: "cd".repeat(32) })])));
+  yield* race.untilWaiting(2);
+  yield* release;
+  expect(yield* Fiber.join(rollup)).toBeGreaterThan(0);
+  expect((yield* Fiber.join(ingest)).status).toBe(200);
+  expect((yield* rollupState())[0]?.dirty).toContain(day);
+  yield* race.provide(rebuildDirtyDays(PRODUCTION));
+  const query: StoreQuery = { environmentId: PRODUCTION, timezone: SYDNEY, range: { start: new Date(midnight), end: new Date(saltWindow(siteDay(SYDNEY, Date.now(), -2), SYDNEY).start * 1000) }, filters: [] };
+  const { rolled, raw } = yield* race.provide(totals(query));
+  expect(rolled).toEqual(raw);
+  expect(rolled.map(({ pageviews, visitors }) => ({ pageviews, visitors }))).toEqual([{ pageviews: 2, visitors: 2 }]);
+}), 60_000);
+
+it.live("a time zone change that waits behind a closing rollup leaves every rolled day in the new zone", () => Effect.gen(function* () {
+  const { services, send, sites } = yield* setup();
+  const race = lockRace(services);
+  yield* sites();
+  const today = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+  const evening = (offset: number) => today + offset * 24 * HOUR_MS + 20 * HOUR_MS;
+  expect((yield* send(pageviews(5, [-5, -4, -3, -2].map((offset) => pageview(evening(offset)))))).status).toBe(200);
+  const release = yield* race.holdRollupState(PRODUCTION);
+  const rollup = yield* Effect.forkChild(race.provide(closeDays(PRODUCTION, new Date())));
+  yield* race.untilWaiting(1);
+  const change = yield* Effect.forkChild(race.provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "UTC" })));
+  yield* race.untilWaiting(2);
+  yield* release;
+  yield* Fiber.join(rollup);
+  yield* Fiber.join(change);
+  yield* race.provide(closeDays(PRODUCTION, new Date()));
+  const query: StoreQuery = { environmentId: PRODUCTION, timezone: "UTC", range: { start: new Date(today - 5 * 24 * HOUR_MS), end: new Date(today) }, filters: [] };
+  const { rolled, raw } = yield* race.provide(totals(query));
+  expect(rolled).toEqual(raw);
+  expect(rolled.filter((row) => row.pageviews > 0).map((row) => row.bucket)).toEqual([-5, -4, -3, -2].map((offset) => today + offset * 24 * HOUR_MS));
 }), 60_000);
