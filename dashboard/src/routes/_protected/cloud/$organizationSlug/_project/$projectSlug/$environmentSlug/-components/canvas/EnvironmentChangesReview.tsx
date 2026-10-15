@@ -9,6 +9,7 @@ import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import type { ChangeGroup, ChangeRow } from "#/modules/config-store/store-deployments";
+import type { Busy } from "#/modules/config-store/store-pending";
 
 /** Where changes came from, said once over them: "From production's deploy", and why they arrived. */
 export type ChangeOrigin = { title: string; description: string };
@@ -29,6 +30,10 @@ export type EnvironmentChangesReviewProps = {
   onMessageChange: (message: string) => void;
   /** A Deploy is being admitted: Deploy waits. */
   admitting?: boolean;
+  /** A write the Store hasn't answered for yet. */
+  busy?: Busy | null;
+  /** Paths of Discards the Store hasn't answered for yet: their lines show Discarding…. */
+  discarding?: ReadonlySet<string>;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** A change's second line: the Parent's deployed value, with Use theirs. */
@@ -102,7 +107,7 @@ function changeSections(groups: readonly ChangeGroup[], originFor: EnvironmentCh
   return [...sections.values()].filter((section) => section.lines.length);
 }
 
-export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor }: Pick<EnvironmentChangesReviewProps, "groups" | "noteFor" | "neverSyncFor" | "originFor"> & Partial<Pick<EnvironmentChangesReviewProps, "onDiscardNode" | "onDiscardRow">>) {
+export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, neverSyncFor, originFor, discarding }: Pick<EnvironmentChangesReviewProps, "groups" | "noteFor" | "neverSyncFor" | "originFor" | "discarding"> & Partial<Pick<EnvironmentChangesReviewProps, "onDiscardNode" | "onDiscardRow">>) {
   const sections = changeSections(groups, originFor);
   const firstConfigLines = new Map<string, Line>();
   for (const { lines } of sections) {
@@ -128,7 +133,7 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
             if (!row) {
               const kind = nodeKinds[group.lifecycle];
               return (
-                <ChangeLine key={group.discardPath} kind={kind} label={group.nodeName}
+                <ChangeLine key={group.discardPath} kind={kind} label={group.nodeName} pending={discarding?.has(group.discardPath)}
                   value={group.comesBack ? <span className="text-xs text-muted-foreground">Comes back</span> : undefined}
                   onDiscard={firstConfig ? undefined : discardNode}
                   discardNode={firstConfig && discardNode ? { name: group.nodeName, run: discardNode } : undefined}>
@@ -141,6 +146,7 @@ export function ChangeGroups({ groups, onDiscardNode, onDiscardRow, noteFor, nev
             const note = noteFor?.(row);
             return (
               <ChangeLine key={row.changeKey} kind={row.kind} label={`${group.nodeName} ${row.label}`}
+                pending={discarding?.has(row.path) || discarding?.has(group.discardPath)}
                 value={row.configFile ? undefined : <Value kind={row.kind} before={row.currentValue} after={row.newValue} />}
                 onDiscard={row.canDiscard && onDiscardRow ? () => onDiscardRow(group, row.path) : undefined}
                 discardNode={(!row.canDiscard || firstConfig) && discardNode ? { name: group.nodeName, run: discardNode } : undefined}
@@ -220,19 +226,20 @@ const kindMarks = {
 } as const;
 
 /** One change: its kind's marker, what changed, the value on the right, and ⋯. */
-function ChangeLine({ kind, label, value, onDiscard, discardNode, onNeverSync, children }: {
-  kind: ChangeKind; label: string; value?: ReactNode; onDiscard?: () => void;
+function ChangeLine({ kind, label, value, onDiscard, discardNode, onNeverSync, pending = false, children }: {
+  kind: ChangeKind; label: string; value?: ReactNode; onDiscard?: () => void; pending?: boolean | undefined;
   discardNode?: { name: string; run: () => void };
   onNeverSync?: () => void; children: ReactNode;
 }) {
   const mark = kindMarks[kind];
   const actions = onDiscard ?? discardNode?.run ?? onNeverSync;
   return (
-    <li className="grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 border-b py-1.5 last:border-b-0">
+    <li aria-busy={pending} data-discarding={pending || undefined}
+      className={cn("grid min-h-10 grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-3 border-b py-1.5 last:border-b-0", pending && "opacity-50")}>
       <Badge variant={mark.badge}>{mark.icon}<span className="sr-only">{mark.word}</span></Badge>
       <div className="min-w-0">{children}</div>
       {value ?? <span />}
-      {actions ? (
+      {pending ? <span className="text-xs text-muted-foreground">Discarding…</span> : actions ? (
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`} />}>
             <MoreVerticalIcon />
@@ -286,11 +293,11 @@ export function Value({ kind, before, after }: { kind: ChangeKind; before: strin
 }
 
 /** Discard all, quiet on the left; Save only and Deploy on the right. */
-function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, admitting = false }: EnvironmentChangesReviewProps) {
+function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, admitting = false, busy = null }: EnvironmentChangesReviewProps) {
   return (
     <DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
-        <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
+        <Button variant="ghost" className="text-muted-foreground sm:mr-auto" disabled={busy === "discarding"} onClick={onDiscardAll}>{busy === "discarding" ? "Discarding…" : "Discard all"}</Button>
       ) : null}
       <Button variant={canDeploy ? "outline" : "default"} disabled={!canSave} onClick={onSave}>Save only</Button>
       {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}

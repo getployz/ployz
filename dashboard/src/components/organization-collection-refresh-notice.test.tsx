@@ -18,7 +18,7 @@ it("shows paused Store writes only in their Organization and clears once they ar
     const unrelated = new MutationObserver(queryClient, { mutationKey: ["billing", "acme"], mutationFn: async () => {} });
     await act(async () => { pending.push(unrelated.mutate()); });
     expect(screen.queryByRole("alert")).toBeNull();
-    for (const command of ["store-edit", "store-command"]) {
+    for (const command of ["store-write"]) {
       const writer = new MutationObserver(queryClient, { mutationKey: [command, "acme", "shop/production"], mutationFn: async () => {} });
       await act(async () => { pending.push(writer.mutate()); });
       await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("not saved yet"));

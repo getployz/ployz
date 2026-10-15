@@ -8,7 +8,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
-import { diffQuery, environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
+import { diffQuery, environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
+import { withPendingChanges } from "./store-pending";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -145,13 +146,27 @@ it("seals a variable at once, and a refused seal leaves it as it was", async () 
   await waitFor(() => expect(test.value("web.env.TOKEN")).toBe("abc"));
 });
 
-it("shows pending sets and unsets as their values, in order, knowing no edit rules", () => {
+it("drops an echoed value the Store refuses, back to the value it holds", async () => {
+  const test = setup(view(2, 1));
+  vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const refused = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => refused.promise);
+
+  let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { edit = test.edit({ environment: ref, changes: replicas(9) }); });
+  await waitFor(() => expect(test.replicas()).toBe(9));
+  refused.resolve({ ok: false, refusal: { code: "invalid_argument", message: "replicas must be at most 8", details: null } });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid_argument" });
+  await waitFor(() => expect(test.replicas()).toBe(1));
+});
+
+it("shows pending sets as their values, in order, and leaves unsets to the Store's answer", () => {
   const shown = withPendingChanges(view(1, 1), [
     { op: "set", path: "web.replicas", value: 4 },
     { op: "unset", path: "web.startCommand" },
     { op: "set", path: "web.replicas", value: 6 },
   ]);
-  expect(shown.settings.map((row) => row.value)).toEqual([6, null]);
+  expect(shown.settings.map((row) => row.value)).toEqual([6, "serve"]);
 });
 
 it("runs a Sync after pending edits in every Environment", async () => {

@@ -24,7 +24,7 @@ export function OrganizationCollectionRefreshNotice({
       status: "pending",
       predicate: (mutation) => mutation.state.isPaused
         && mutation.options.mutationKey?.[1] === organizationSlug
-        && (mutation.options.mutationKey?.[0] === "store-edit" || mutation.options.mutationKey?.[0] === "store-command"),
+        && mutation.options.mutationKey?.[0] === "store-write",
     }).length > 0,
     () => false,
   );

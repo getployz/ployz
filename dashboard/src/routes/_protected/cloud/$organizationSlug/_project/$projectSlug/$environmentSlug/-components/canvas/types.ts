@@ -86,10 +86,14 @@ export type StoreCanvas = {
   copies: ReadonlyMap<string, VolumeCopies>;
 };
 
+/** A Service this tab is adding, until the Store's answer draws it. */
+export type PendingServiceNode = Node<{ name: string }, "pendingService">;
+
 export type CanvasResourceNode =
   | CanvasStoreServiceNode
   | CanvasStoreVolumeNode
   | CanvasStoreConfigNode
-  | CanvasStoreLiveNode;
+  | CanvasStoreLiveNode
+  | PendingServiceNode;
 
 export type FlowPosition = { x: number; y: number };

@@ -62,11 +62,11 @@ it("projects pending mount moves, unsets and new mounts into the writer rules", 
   const { effectiveVolumes } = await import("./store-volumes");
   const { replicaCap, mountRefusal, volumeWriters } = await import("./volume-sharing");
   const { asTestDouble } = await import("#/lib/test-double");
-  const { withPendingChanges } = await import("./store-view.queries");
   const volumes = [asTestDouble<import("@ployz/sdk").VolumeListing>()({ id: "v", name: "data", shared_writes: false, mounts: [{ service: "web", path: "/old" }] })];
   const services = ["web", "worker", "removed"].map((name) => asTestDouble<import("@ployz/sdk").ServiceListing>()({ id: name, name, change: name === "removed" ? "delete" : null }));
   const view = asTestDouble<import("@ployz/sdk").EnvironmentView>()({ settings: [{ path: "web.mounts.data", value: "/old", default: null, apply: "staged" }] });
-  const project = (changes: import("@ployz/sdk").Change[]) => effectiveVolumes(volumes, services, withPendingChanges(view, changes));
+  const project = (changes: import("@ployz/sdk").Change[]) => effectiveVolumes(volumes, services, { ...view, settings: changes.map((change) =>
+    ({ path: change.path, value: change.op === "set" ? change.value : null, default: null, apply: "staged" as const })) });
   const moved = project([mountChange("web", "data", "/new")]);
   expect(moved[0]?.mounts).toEqual([{ service: "web", path: "/new" }]);
   expect(replicaCap("web", moved)?.id).toBe("v");

@@ -22,7 +22,19 @@ export const canvasNodeTypes = {
   storeConfig: StoreConfigNode,
   storeLive: StoreLiveNode,
   loading: LoadingNode,
+  pendingService: PendingServiceNode,
 };
+
+function PendingServiceNode({ data }: { data: { name: string } }) {
+  return (
+    <Card size="node" className="h-36 w-72 justify-between border-dashed opacity-70" data-pending-node={data.name}>
+      <CardHeader>
+        <div className="truncate font-medium">{data.name}</div>
+        <div className="text-sm text-muted-foreground">Adding…</div>
+      </CardHeader>
+    </Card>
+  );
+}
 
 function LoadingNode() {
   return (

@@ -1,7 +1,7 @@
-import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -9,8 +9,8 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
-import { MAX_SHOWN_VIEWS, StoreChange, StoreQuery, type StoreResult, StoreView, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
-import { renameReferences } from "#/modules/variables/variable-template";
+import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, StoreView, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
+import { usePendingMarks, showPending } from "./store-pending";
 
 /**
  * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
@@ -253,56 +253,6 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
   return latest;
 }
 
-/** The mutation key of an Environment's pending edits; `store-write.ts` files them under it. */
-export const storeEditKey = (organizationSlug: string, key: string) => ["store-edit", organizationSlug, key] as const;
-
-const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
-const isText = Schema.is(Schema.String);
-
-/**
- * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
- * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
- * its row), so a pending edit shows as its value, or the row's default once unset. A rename moves the variable's rows,
- * value and `.exported` alike, to its new name; onto a name in use it shows nothing, as the Store refuses it. A secret
- * shows as reads show it, `{"secret": true}`, or `{"secret": false}` while kept without a value. What the Store makes
- * of an edit arrives with the committed view.
- */
-export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
-  if (changes.length === 0) return view;
-  let settings = view.settings.map((row) => ({ ...row }));
-  for (const change of changes) {
-    if (change.op === "patch") continue;
-    if (change.op === "rename") {
-      const to = `${change.path.slice(0, change.path.lastIndexOf(".") + 1)}${change.to.toUpperCase()}`;
-      if (to === change.path || settings.some((row) => row.path === to && row.value !== null)) continue;
-      const moved = (path: string) => path === change.path || path.startsWith(`${change.path}.`);
-      settings = settings.flatMap((row) => moved(row.path) ? [{ ...row, path: `${to}${row.path.slice(change.path.length)}` }]
-        : row.path === to || row.path.startsWith(`${to}.`) ? [] : [row]);
-      const [, service, key] = SERVICE_VARIABLE.exec(change.path) ?? [];
-      if (change.update_references && service && key) {
-        settings = settings.map((row) => switchReferences(row, service, key, change.to.toUpperCase()));
-      }
-      continue;
-    }
-    let row = settings.find((candidate) => candidate.path === change.path);
-    if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
-    if (!row) continue;
-    const value = change.op === "set" ? change.value : row.default;
-    // Keeping a secret (`{"secret": true}`) keeps what it shows, a value or none.
-    row.value = !isSecret(value) ? value : value.secret === true && isSecret(row.value) ? row.value : { secret: true };
-  }
-  return { ...view, settings };
-}
-
-const SERVICE_VARIABLE = /^([^.]+)\.env\.([^.]+)$/u;
-
-/** `row`, a variable as the Store shows it, with its references to variable `key` of `service` switched to `to`. */
-function switchReferences(row: EnvironmentView["settings"][number], service: string, key: string, to: string) {
-  const owner = SERVICE_VARIABLE.exec(row.path)?.[1];
-  if (owner === undefined || !isText(row.value)) return row;
-  return { ...row, value: renameReferences(row.value, owner, service, key, to) ?? row.value };
-}
-
 /** An Environment's Settings (every one, defaults included): the view Service editors read and edit. */
 export function environmentSettingsQuery(environment: EnvironmentRef): { query: "environment" } & EnvironmentQuery {
   return { query: "environment", environment, path: null, all: true };
@@ -436,27 +386,23 @@ export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: st
   return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
 }
 
-const isChanges = Schema.is(Schema.Array(StoreChange));
-
 /**
- * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this
- * tab's pending edits over the committed one; a failed save drops its edit, which is the rollback.
+ * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). Each shows the marks of this
+ * tab's pending writes over the committed view (`store-pending.ts`); a write's answer replaces both.
  */
 export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizationSlug: string, queries: Qs):
   { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> } {
   const scope = useCollectionScope();
   const results = useSuspenseQueries({ queries: queries.map((query) => storeViewOptions(organizationSlug, scope, query)) });
-  const pending = useMutationState({
-    filters: { mutationKey: ["store-edit", organizationSlug], status: "pending" },
-    select: (mutation) => ({ key: mutation.options.mutationKey?.[2], changes: isChanges(mutation.state.variables) ? mutation.state.variables : [] }),
-  });
+  const marks = usePendingMarks(organizationSlug);
   // SAFETY: `readView` checked each result against the query at its index; `map` types the tuple as an array.
   return results.map(({ data: result }, index) => {
     const query = queries[index];
-    if (!result.ok || result.value.view !== "environment" || !query || !("environment" in query)) return result;
+    if (marks.length === 0 || !result.ok || !query || !("environment" in query)) return result;
     const key = environmentKey(query.environment);
-    const changes = pending.flatMap((edit) => edit.key === key ? edit.changes : []);
-    return changes.length === 0 ? result : { ok: true, value: withPendingChanges(result.value, changes) };
+    const mine = marks.filter((mark) => mark.environment === null || environmentKey(mark.environment) === key);
+    if (mine.length === 0) return result;
+    return { ok: true, value: showPending(result.value, mine) };
   }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };
 }
 

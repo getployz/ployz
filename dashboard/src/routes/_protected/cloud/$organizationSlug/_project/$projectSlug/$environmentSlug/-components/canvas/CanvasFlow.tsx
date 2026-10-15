@@ -41,6 +41,7 @@ import { SyncButton } from "../sync/SyncButton";
 import { OnMergeButton } from "../sync/OnMerge";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreBusy, useStoreDiscarding } from "#/modules/config-store/store-pending";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -253,6 +254,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const hasSomethingToSave = (diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
+  const busy = useStoreBusy(params.organizationSlug, ref);
+  const discarding = useStoreDiscarding(params.organizationSlug, ref);
   return (
     <>
       <BottomBar
@@ -280,6 +283,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
           onIncludeNewer: ({ source }) => setIncluding(source.name),
         }}
         noServers={noServers}
+        busy={busy}
+        discarding={discarding}
       />
       {actions.dialog}
       {including === null ? null : (

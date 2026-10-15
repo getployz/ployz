@@ -38,7 +38,8 @@ export function ServiceCommandField({
     const error = next === null ? null : validate(next);
     if (error) return setDraft({ ...current, error });
     onCommit(next);
-    setDraft({ source: value, text: next, error: null });
+    // Filed under the committed text, so the echo shows it and a refusal's rollback doesn't revive it.
+    setDraft({ source: next, text: next, error: null });
   }
 
   if (!open) {

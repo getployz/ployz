@@ -20,6 +20,7 @@ import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
+import type { Busy } from "#/modules/config-store/store-pending";
 import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
 
 /**
@@ -72,6 +73,9 @@ type BottomBarProps = {
   noServers?: boolean;
   /** Secrets without a value: the next Deploy leaves them out. */
   notSet?: number;
+  /** A write the Store hasn't answered for yet, in words (Discarding…). */
+  busy?: Busy | null;
+  discarding?: ReadonlySet<string>;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
@@ -100,6 +104,8 @@ export function BottomBar({
   noServers = false,
   admitting = false,
   notSet = 0,
+  busy = null,
+  discarding,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const dock = useContext(AgentDock);
@@ -203,7 +209,7 @@ export function BottomBar({
   });
 
   const staged = hasChanges ? (
-    <Row staged title={(totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : "")}
+    <Row staged title={busy === "discarding" ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
@@ -241,7 +247,7 @@ export function BottomBar({
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave,
-    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
+    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,

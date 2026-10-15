@@ -25,8 +25,9 @@ import { changedProps, deployedVcpuLimit, dnsLabelError, serviceChanges, service
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
-import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
+import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
@@ -121,8 +122,10 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   const act = useServiceAct({ organizationSlug, environmentId, service: service?.name ?? "" });
+  const shownName = useStorePendingName(organizationSlug, store, "service", service?.name ?? "");
+  const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === params.serviceId);
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
-  if (!service) return <CanvasInspectorNotFound noun="Service" />;
+  if (!service) return arriving ? <CanvasInspectorPending /> : <CanvasInspectorNotFound noun="Service" />;
 
   const rows = serviceSettingRows(settings, service.name);
   const path = (name: string) => `${service.name}.${name}`;
@@ -195,7 +198,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params} actions={<ServiceActions state={state} namespace={namespace} act={act} />}>
         <CanvasInspectorNameEditor
-          value={service.name}
+          value={shownName}
           schema={nameSchema(service, services)}
           editTitle="Edit service name"
           editDescription="Rename this service. Other services reach it at its Private DNS name, which stays."

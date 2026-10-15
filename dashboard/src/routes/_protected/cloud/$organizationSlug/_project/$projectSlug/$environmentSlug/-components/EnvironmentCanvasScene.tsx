@@ -19,6 +19,10 @@ import { canvasPositionSchema } from "#/modules/canvas/canvas-positions";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
+import { SERVICE_NODE_SIZE } from "./canvas/constants";
+import { findPlacement } from "../-utils/node-placement";
+import { useStorePendingNodes } from "#/modules/config-store/store-pending";
+import type { CanvasResourceNode, PendingServiceNode } from "./canvas/types";
 import { BottomBarSlot, HistoryStages } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
@@ -84,6 +88,7 @@ function CanvasWithData() {
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.environmentId, environmentId))
       .select(({ position }) => position),
   });
+  const pending = useStorePendingNodes(organizationSlug, ref);
   const copies = useCanvasCopies(organizationSlug, ref, environmentId, volumesResult.ok ? volumesResult.value.volumes : []);
   // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
   if ([servicesResult, settingsResult, diffResult, volumesResult, domainsResult, configsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
@@ -125,7 +130,15 @@ function CanvasWithData() {
     live: isBranch(branch) ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
-  const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
+  const storeNodes = buildStoreNodes(store, canvasPositions, environmentId);
+  // Arriving Services draw as ghosts where the Store's node will land, until its answer replaces them.
+  const occupied = storeNodes.map((node) => ({ ...node.position, width: node.width ?? SERVICE_NODE_SIZE.width, height: node.height ?? SERVICE_NODE_SIZE.height }));
+  const ghosts = pending.arriving.filter((arriving) => !services.services.some((service) => service.id === arriving.id)).map((arriving): PendingServiceNode => {
+    const position = findPlacement({ x: 0, y: 0 }, SERVICE_NODE_SIZE, occupied);
+    occupied.push({ ...position, ...SERVICE_NODE_SIZE });
+    return { id: arriving.id, type: "pendingService", position, ...SERVICE_NODE_SIZE, data: { name: arriving.name } };
+  });
+  const initialNodes: CanvasResourceNode[] = [...storeNodes, ...ghosts];
   const initialEdges = buildStoreEdges(store);
 
   return (
