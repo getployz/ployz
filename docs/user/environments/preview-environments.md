@@ -3,8 +3,8 @@ title: Preview environments
 description: Give every pull request a temporary copy of your app at its own https address.
 ---
 
-Each pull request gets a temporary copy of your app at its own https address. Every push to the
-pull request redeploys it. When the pull request merges, production deploys the merge with the
+Each pull request gets a temporary copy of your app at its own https address. A member's pushes
+redeploy it. Anyone else's pull request waits for a member to approve it. When the pull request merges, production deploys the merge with the
 setting changes the preview made, and the copy and its data are deleted.
 Closing the pull request without merging deletes it too.
 
@@ -41,6 +41,29 @@ Two more switches sit in the panel. **Delete when the PR closes** is on by defau
 PR environments** is off: turn it on to preview pull requests from Dependabot, Renovate and other
 bots.
 
+## Who deploys automatically
+
+A preview runs the pull request's code with copies of its environment's secrets. So Ployz deploys
+a pull request on its own only when a member of your Ployz organization wrote it, from a branch
+of the repository itself. A pull request from a fork, or from someone outside your organization,
+reads **Needs approval** under **Open now**, with its commit like `a1b2c3d`. Until a member
+approves it, nothing builds and no preview exists.
+
+Ployz knows a member by the GitHub account they signed in with. A member who signed in some other
+way has their pull requests wait too.
+
+To deploy it, read the pull request's changes on GitHub, then click **Approve deploy** beside it.
+From the CLI, run `ployz env pr approve 142`. The approval covers that one commit. A new push
+reads **Needs approval** again, with the new commit, and the preview keeps running the commit you
+approved until you approve the new one. If someone pushed after you loaded the page, Approve deploy
+is refused with **This pull request has a newer commit. Approve that one.**
+
+Bots' pull requests from the repository itself count as a member's once **Enable bot PR
+environments** is on. A bot's pull request from a fork still needs approval.
+
+`ployz env pr` lists each open pull request with where it stands, like `#142 needs approval
+a1b2c3d` or `#140 deploys`.
+
 ## What each pull request gets
 
 When a pull request opens, Ployz deploys its preview, named like `pr-142`:
@@ -50,8 +73,9 @@ When a pull request opens, Ployz deploys its preview, named like `pr-142`:
 - Each copied service with a generated address gets its own. If production's `web` is
   `web.acme-x7q2.ployz.app`, the preview's is `web-pr-142.acme-x7q2.ployz.app`. Custom domains
   aren't copied.
-- Each push redeploys it, even if production doesn't deploy on push. **Wait for CI** and **Watch
-  paths** still apply.
+- A push deploys the new commit, even if production doesn't deploy on push, once the pull request
+  [deploys automatically](#who-deploys-automatically) or a member approves that commit. **Wait
+  for CI** and **Watch paths** still apply.
 
 Open previews are listed under **Open now** in the panel, and in the environment switcher under
 the environment they start from. Each one is a [branch](environments.md) of that environment, so
@@ -126,7 +150,7 @@ A preview you're not testing can come off your servers and keep its settings.
    preview with no data shuts down without asking.
 
 Its services stop and its own data is deleted. Its settings, synced changes and pull request stay.
-The next push brings it back, or click **Deploy pr-142**. It starts fresh: its databases start
+The next push brings it back, once it [deploys](#who-deploys-automatically), or click **Deploy pr-142**. It starts fresh: its databases start
 empty and setup commands run again.
 
 To delete it instead, open the ▾ menu, then **Close pr-142…**, type `my-app/pr-142` and click **Close
