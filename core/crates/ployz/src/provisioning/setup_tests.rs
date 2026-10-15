@@ -185,7 +185,7 @@ async fn unsigned_bootstrap_is_rejected_before_execution() {
 
     assert_eq!(
         error.to_string(),
-        format!("release {VERSION} is not signed, and Ployz installs only signed releases")
+        format!("Release {VERSION} is not signed, and Ployz installs only signed releases.")
     );
     assert!(!log.exists(), "unsigned bootstrap executed");
 }

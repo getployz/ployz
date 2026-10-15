@@ -84,7 +84,7 @@ pub enum ProvisionError {
     #[error("bootstrap verification: {0}")]
     BootstrapVerification(String),
     /// The bootstrap release publishes no signature.
-    #[error("release {0} is not signed, and Ployz installs only signed releases")]
+    #[error("Release {0} is not signed, and Ployz installs only signed releases.")]
     BootstrapUnsigned(ployz_core::MachineVersion),
     /// The bootstrap release is not signed by the Ployz release key.
     #[error("bootstrap verification")]
