@@ -279,12 +279,11 @@ describe("restartedServices", () => {
 });
 
 describe("stagedSurface", () => {
-  it("is green for a new node, blue for a change and red for a removal, and none while a Deployment Page is open", () => {
-    expect(stagedSurface(undefined, "create")).toBe("success");
-    expect(stagedSurface(undefined, "update")).toBe("info");
-    expect(stagedSurface(undefined, "delete")).toBe("destructive");
-    expect(stagedSurface(undefined, null)).toBeUndefined();
-    expect(stagedSurface(null, "delete")).toBeUndefined();
+  it("is green for a new node, blue for a change and red for a removal", () => {
+    expect(stagedSurface("create")).toBe("success");
+    expect(stagedSurface("update")).toBe("info");
+    expect(stagedSurface("delete")).toBe("destructive");
+    expect(stagedSurface(null)).toBeUndefined();
   });
 });
 
