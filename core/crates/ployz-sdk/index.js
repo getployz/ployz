@@ -4,37 +4,7 @@
 // .node binary. Nitro/Vinxi emit this file as ESM without CJS module globals.
 const native = require([".", "ployz-sdk.node"].join("/"));
 
-class RpcError extends Error {
-  constructor({ code, message, details }, options) {
-    super(message, options);
-    this.name = "RpcError";
-    this.code = code;
-    this.details = details;
-  }
-}
-
-const RPC_ERROR_PREFIX = "PLOYZ_RPC_ERROR:";
-
-function throwRpcError(error) {
-  if (typeof error?.message !== "string" || !error.message.startsWith(RPC_ERROR_PREFIX)) {
-    throw error;
-  }
-  let payload;
-  try {
-    payload = JSON.parse(error.message.slice(RPC_ERROR_PREFIX.length));
-  } catch {
-    throw error;
-  }
-  if (typeof payload?.code === "string" && typeof payload.message === "string") {
-    throw new RpcError(payload, { cause: error });
-  }
-  throw error;
-}
-
-function withRpcError(promise) {
-  return promise.catch(throwRpcError);
-}
-
+const { RpcError, throwRpcError, withRpcError, rpc, forward, bindAll } = require("./wrap.js");
 const runtimeLogs = require("./runtime-logs.js");
 
 class Client {
@@ -57,38 +27,6 @@ class Client {
       logHistory: (options) => runtimeLogs.history(logTransport, options),
       metricHistory: (input) => withRpcError(inner.metricHistory(input)),
     };
-  }
-
-  observeEnrollment() {
-    return withRpcError(this._inner.observeEnrollment());
-  }
-
-  register(assignment) {
-    return withRpcError(this._inner.register(assignment));
-  }
-
-  setManagementClient(label) {
-    return withRpcError(this._inner.setManagementClient(label));
-  }
-
-  clearManagementClient(label) {
-    return withRpcError(this._inner.clearManagementClient(label));
-  }
-
-  setPushTarget(url) {
-    return withRpcError(this._inner.setPushTarget(url));
-  }
-
-  inspect() {
-    return withRpcError(this._inner.inspect());
-  }
-
-  about() {
-    return withRpcError(this._inner.about());
-  }
-
-  publishCertificateMaterial(request) {
-    return withRpcError(this._inner.publishCertificateMaterial(request));
   }
 
   prepare(input, options = {}) {
@@ -115,78 +53,6 @@ class Client {
     return running.finished;
   }
 
-  pruneImages(targets) {
-    return withRpcError(this._inner.pruneImages(targets));
-  }
-
-  removeVolumes(request) {
-    return withRpcError(this._inner.removeVolumes(request));
-  }
-
-  dataLossIfMachineRemoved(machine) {
-    return withRpcError(this._inner.dataLossIfMachineRemoved(machine));
-  }
-
-  removeMachine(machine, confirmDataLoss) {
-    return withRpcError(this._inner.removeMachine(machine, confirmDataLoss));
-  }
-
-  drainMachine(machine, scope) {
-    return withRpcError(this._inner.drainMachine(machine, scope));
-  }
-
-  startIngress(machine) {
-    return withRpcError(this._inner.startIngress(machine));
-  }
-
-  stopIngress(machine) {
-    return withRpcError(this._inner.stopIngress(machine));
-  }
-
-  removeMachineMembership(machine) {
-    return withRpcError(this._inner.removeMachineMembership(machine));
-  }
-
-  updateMachine(machine, update) {
-    return withRpcError(this._inner.updateMachine(machine, update));
-  }
-
-  agentAsk(query) {
-    return withRpcError(this._inner.agentAsk(query));
-  }
-
-  observeService(namespace, service) {
-    return withRpcError(this._inner.observeService(namespace, service));
-  }
-
-  stopContainer(machine, container) {
-    return withRpcError(this._inner.stopContainer(machine, container));
-  }
-
-  startContainer(machine, container) {
-    return withRpcError(this._inner.startContainer(machine, container));
-  }
-
-  inspectContainer(machine, container) {
-    return withRpcError(this._inner.inspectContainer(machine, container));
-  }
-
-  removeContainer(machine, container) {
-    return withRpcError(this._inner.removeContainer(machine, container));
-  }
-
-  copyContainerImage(source, container, dest) {
-    return withRpcError(this._inner.copyContainerImage(source, container, dest));
-  }
-
-  volumeSwitch(machine, request) {
-    return withRpcError(this._inner.volumeSwitch(machine, request));
-  }
-
-  requestMachineUpgrade(machine, request) {
-    return withRpcError(this._inner.requestMachineUpgrade(machine, request));
-  }
-
   dataLossIfNamespaceDestroyed(namespace, destroyVolumes = false) {
     return withRpcError(this._inner.dataLossIfNamespaceDestroyed(namespace, destroyVolumes));
   }
@@ -194,19 +60,9 @@ class Client {
   destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false) {
     return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes));
   }
-
-  dataLossIfClusterDestroyed() {
-    return withRpcError(this._inner.dataLossIfClusterDestroyed());
-  }
-
-  destroyCluster(confirmDataLoss) {
-    return withRpcError(this._inner.destroyCluster(confirmDataLoss));
-  }
-
-  close() {
-    return this._inner.close();
-  }
 }
+
+forward(Client, native.Client, ["containerLogs", "logHistory", "metricHistory", "watch"]);
 
 function wrapProgress(start, signal, wrap = value => value) {
   signal?.throwIfAborted();
@@ -369,48 +225,18 @@ async function connect(options) {
 }
 
 async function openConfigStore(url, sealingSecret) {
-  const store = await withRpcError(native.openConfigStore(url, sealingSecret));
-  return {
-    converted: () => store.converted(),
-    read: (organization, query, trusted) => withRpcError(store.read(organization, query, trusted)),
-    write: (organization, command, trusted, principal) =>
-      withRpcError(store.write(organization, command, trusted, principal)),
-    deploymentSources: (deployment) => withRpcError(store.deploymentSources(deployment)),
-    pinSources: (deployment, commits) => withRpcError(store.pinSources(deployment, commits)),
-    runDeployment: (organization, deployment, runner, connections, sources) =>
-      withRpcError(store.runDeployment(organization, deployment, runner, connections, sources)),
-    abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
-    checks: (environment) => withRpcError(store.checks(environment)),
-    system: (organization, event, trusted) => withRpcError(store.system(organization, event, trusted)),
-    removeOrganization: (organization) => withRpcError(store.removeOrganization(organization)),
-    appliedVolumes: (organization) => withRpcError(store.appliedVolumes(organization)),
-    unclaimed: (before) => withRpcError(store.unclaimed(before)),
-    branchHead: (organization, repositoryId, branch) =>
-      withRpcError(store.branchHead(organization, repositoryId, branch)),
-    awaitingMerge: (organization, repositoryId, branch) =>
-      withRpcError(store.awaitingMerge(organization, repositoryId, branch)),
-    githubStart: (build, connections) => withRpcError(store.githubStart(build, connections)),
-    githubDispatched: (build, run) => withRpcError(store.githubDispatched(build, run)),
-    githubBuild: (build) => withRpcError(store.githubBuild(build)),
-    githubSkip: (build, message) => withRpcError(store.githubSkip(build, message)),
-    githubCheckIn: (build, claims, connections) => withRpcError(store.githubCheckIn(build, claims, connections)),
-    githubReport: (build, claims, report) => withRpcError(store.githubReport(build, claims, report)),
-    githubFinish: (build, timedOut, connections) => withRpcError(store.githubFinish(build, timedOut, connections)),
-    githubCancel: (deployment) => withRpcError(store.githubCancel(deployment)),
-  };
+  return bindAll(await withRpcError(native.openConfigStore(url, sealingSecret)), native.ConfigStore);
 }
 
-function observeVolumes(connections, sought) {
-  return withRpcError(native.observeVolumes(connections, sought));
-}
-
-function observeCopies(connections) {
-  return withRpcError(native.observeCopies(connections));
-}
-
-function allocateEnrollment(...args) {
-  try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
-}
+const observeVolumes = rpc(native.observeVolumes);
+const observeCopies = rpc(native.observeCopies);
+const allocateEnrollment = rpc(native.allocateEnrollment);
+const machineUpgradeAttemptId = rpc(native.machineUpgradeAttemptId);
+const ployzVersion = rpc(native.ployzVersion);
+const agentTools = rpc(native.agentTools);
+const agentStart = rpc(native.agentStart);
+const agentResume = rpc(native.agentResume);
+const agentCloudCall = rpc(native.agentCloudCall);
 
 function setVolumeCopyRefusal(error) {
   const details = error?.details;
@@ -420,30 +246,6 @@ function setVolumeCopyRefusal(error) {
   } catch {
     return null;
   }
-}
-
-function machineUpgradeAttemptId(uuid) {
-  try { return native.machineUpgradeAttemptId(uuid); } catch (error) { throwRpcError(error); }
-}
-
-function ployzVersion() {
-  return native.ployzVersion();
-}
-
-function agentTools() {
-  return native.agentTools();
-}
-
-function agentStart(tool, input, place, callKey) {
-  try { return native.agentStart(tool, input, place, callKey); } catch (error) { throwRpcError(error); }
-}
-
-function agentResume(state, answers) {
-  try { return native.agentResume(state, answers); } catch (error) { throwRpcError(error); }
-}
-
-function agentCloudCall(call) {
-  try { return native.agentCloudCall(call); } catch (error) { throwRpcError(error); }
 }
 
 // Shorthand entries only: Node's CommonJS export lexer stops at the first non-identifier value, and every name it

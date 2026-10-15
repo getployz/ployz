@@ -10,7 +10,7 @@ use crate::{Client, from_js, invalid_argument, rpc_to_napi, to_json, whole_numbe
 ///
 /// # Errors
 /// Returns an error when the catalog fails to encode.
-#[napi]
+#[napi(ts_return_type = "{ instructions: string; tools: ToolDef[] }")]
 pub fn agent_tools() -> Result<serde_json::Value> {
     to_json(&serde_json::json!({
         "instructions": tools::INSTRUCTIONS,
@@ -24,11 +24,11 @@ pub fn agent_tools() -> Result<serde_json::Value> {
 /// # Errors
 /// Returns `invalid_argument` when `place` is malformed. A bad tool or input is a
 /// refusal in the step, not an error.
-#[napi]
+#[napi(ts_return_type = "AgentTurn")]
 pub fn agent_start(
     tool: String,
-    input: serde_json::Value,
-    place: serde_json::Value,
+    #[napi(ts_arg_type = "unknown")] input: serde_json::Value,
+    #[napi(ts_arg_type = "Place")] place: serde_json::Value,
     call_key: String,
 ) -> Result<serde_json::Value> {
     let place: Place = from_js(place).map_err(invalid_argument)?;
@@ -44,10 +44,10 @@ pub fn agent_start(
 ///
 /// # Errors
 /// Returns `invalid_argument` when `state` or `answers` is malformed.
-#[napi]
+#[napi(ts_return_type = "AgentTurn")]
 pub fn agent_resume(
-    state: serde_json::Value,
-    answers: serde_json::Value,
+    #[napi(ts_arg_type = "AgentState")] state: serde_json::Value,
+    #[napi(ts_arg_type = "Answer[]")] answers: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let state: tools::State = from_js(state).map_err(invalid_argument)?;
     let answers: Vec<Answer> = from_js(answers).map_err(invalid_argument)?;
@@ -67,8 +67,10 @@ enum CloudCall {
 ///
 /// # Errors
 /// Returns `invalid_argument` naming what is malformed.
-#[napi]
-pub fn agent_cloud_call(call: serde_json::Value) -> Result<serde_json::Value> {
+#[napi(ts_return_type = "{ ask: CloudQuery } | { act: Act }")]
+pub fn agent_cloud_call(
+    #[napi(ts_arg_type = "unknown")] call: serde_json::Value,
+) -> Result<serde_json::Value> {
     let call: CloudCall = from_js(call).map_err(invalid_argument)?;
     to_json(&call)
 }
@@ -85,8 +87,13 @@ impl Client {
     /// # Errors
     /// Returns `invalid_argument` for a malformed query, `unsupported` for one only
     /// Cloud answers, or the session's error.
-    #[napi]
-    pub async fn agent_ask(&self, query: serde_json::Value) -> Result<serde_json::Value> {
+    #[napi(
+        ts_return_type = "Promise<ServersAnswer | ContainersAnswer | LogsAnswer | MetricsAnswer>"
+    )]
+    pub async fn agent_ask(
+        &self,
+        #[napi(ts_arg_type = "CloudQuery")] query: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let query: CloudQuery = from_js(query).map_err(invalid_argument)?;
         ployz::sdk::agent::ask(&self.inner, query)
             .await
@@ -97,7 +104,9 @@ impl Client {
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed name, or the session's error.
-    #[napi]
+    #[napi(
+        ts_return_type = "Promise<{ copies: { server: string; machine: string; container: string; state: ContainerState; hook: boolean }[]; unanswered: ServerRef[] }>"
+    )]
     pub async fn observe_service(
         &self,
         namespace: String,
@@ -143,7 +152,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns the Machine's refusal, or the transport's error when it did not answer.
-    #[napi]
+    #[napi(ts_return_type = "Promise<'serving' | 'unconfirmed' | 'unhealthy'>")]
     pub async fn start_container(&self, machine: String, container: String) -> Result<String> {
         let (machine, container) = ids(&machine, &container)?;
         ployz::sdk::agent::start_one(&self.inner, machine, container)
