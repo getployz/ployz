@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
   Building2Icon,
+  ChartLineIcon,
   CircleUserRoundIcon,
   CreditCardIcon,
   HistoryIcon,
@@ -23,8 +24,8 @@ interface Destination {
   path: RegisteredPath;
 }
 
-/** An Environment's four places, in rail order. Architecture is its canvas. */
-const environmentPlaceOrder = ["architecture", "deployments", "logs", "settings"] as const;
+/** An Environment's five places, in rail order. Architecture is its canvas. */
+const environmentPlaceOrder = ["architecture", "deployments", "logs", "analytics", "settings"] as const;
 type EnvironmentPlace = (typeof environmentPlaceOrder)[number];
 const environmentPlaces = {
   architecture: {
@@ -41,6 +42,11 @@ const environmentPlaces = {
     label: "Logs",
     icon: TerminalIcon,
     path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
+  },
+  analytics: {
+    label: "Analytics",
+    icon: ChartLineIcon,
+    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics",
   },
   settings: {
     label: "Settings",
@@ -235,6 +241,7 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/$deploymentId", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/versions", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/analytics", "analytics"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings", "settings"],
   // Opened from Settings → Project, over the canvas.
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId", "settings"],

@@ -15,14 +15,15 @@ const environment = {
 const organization = { kind: "all", organizationSlug: "acme" } as const;
 
 describe("dashboard navigation model", () => {
-  it("gives an Environment its four places, with the current one marked", () => {
+  it("gives an Environment its five places, with the current one marked", () => {
     const { places } = createDashboardNavigation(environment, { section: "logs" });
 
-    expect(places.map((place) => place.label)).toEqual(["Architecture", "Deployments", "Logs", "Settings"]);
+    expect(places.map((place) => place.label)).toEqual(["Architecture", "Deployments", "Logs", "Analytics", "Settings"]);
     expect(places.map((place) => place.to)).toEqual([
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
+      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics",
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
     ]);
     expect(places.filter((place) => place.current).map((place) => place.label)).toEqual(["Logs"]);

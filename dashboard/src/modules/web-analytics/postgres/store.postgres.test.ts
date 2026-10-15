@@ -13,7 +13,7 @@ import { Database } from "#/server/database.server";
 import { storeTestCloud } from "#/test/store-cloud";
 import { ensurePartitions, forgetPartitions } from "./partitions";
 import { closeDays } from "./rollup";
-import { breakdown, dailyTotals, dailyTotalsSql, hourlyTotals, readPlan, rolledUpTo, sessionsBy, type StoreQuery } from "./store";
+import { breakdown, dailyTotals, dailyTotalsSql, figures, hourlyTotals, readPlan, rolledUpTo, sessionsBy, type StoreQuery } from "./store";
 
 const setup = Effect.fn(function* () {
   forgetPartitions();
@@ -138,7 +138,7 @@ it.live("a visit that starts more than a session gap before midnight keeps its e
     expect(byBucket(yield* provide(hourlyTotals(midGoogle)))).toEqual(byBucket(new Reference(site.timezone, rows, midVisit, midGoogle.filters).hourlyTotals()));
   }), 60_000);
 
-it.live("a filtered day series reads one source's closed days from the rollup and matches the reference", () =>
+it.live("a filtered day series reads one source's closed days from the rollup, and every figure of a range matches the reference", () =>
   Effect.gen(function* () {
     const provide = yield* setup();
     const site = { environmentId: "00000000-0000-4000-8000-00000000a0f4", timezone: "Australia/Sydney" };
@@ -155,7 +155,11 @@ it.live("a filtered day series reads one source's closed days from the rollup an
         rows.push(row(new Date(at + 60_000).toISOString(), id, { pathname: `/docs/${at % 4}` }));
       }
     }
-    yield* provide(seedSite(site, rows));
+    const goals = [
+      { id: "00000000-0000-4000-8000-00000000a0f6", name: "Docs", pathPattern: "/docs/*" },
+      { id: "00000000-0000-4000-8000-00000000a0f7", name: "Home", pathPattern: "/" },
+    ];
+    yield* provide(seedSite(site, rows, goals));
     const range = { start: new Date(dayStart(site.timezone, "2026-10-01").getTime() + 5 * 3_600_000), end: new Date(dayStart(site.timezone, "2026-10-04").getTime() + 7 * 3_600_000) };
     const byBucket = (series: ReadonlyArray<BucketRow>) => [...series].sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
     yield* provide(closeDays(site.environmentId, dayEnd(site.timezone, "2026-10-03")));
@@ -165,9 +169,33 @@ it.live("a filtered day series reads one source's closed days from the rollup an
       [{ key: "source", op: "eq", value: "" }],
       [{ key: "source", op: "neq", value: "Google" }],
       [{ key: "page", op: "eq", value: "/" }],
+      [{ key: "page", op: "neq", value: "/" }],
     ] as const) {
-      const expected = byBucket(new Reference(site.timezone, rows, range, filters).dailyTotals());
-      expect(byBucket(yield* provide(dailyTotals({ ...site, range, filters }))), `${filters[0].key} ${filters[0].op} ${filters[0].value}`).toEqual(expected);
+      const reference = new Reference(site.timezone, rows, range, filters);
+      const query = { ...site, range, filters };
+      const when = `${filters[0].key} ${filters[0].op} ${filters[0].value}`;
+      expect(byBucket(yield* provide(dailyTotals(query))), when).toEqual(byBucket(reference.dailyTotals()));
+      const pages = yield* provide(breakdown(query, "page"));
+      expect(pages, `${when} pages`).toEqual(expect.arrayContaining(reference.breakdown("page")));
+      expect(pages, `${when} pages`).toHaveLength(reference.breakdown("page").length);
+      const sources = yield* provide(sessionsBy(query, "source"));
+      expect(sources, `${when} sources`).toEqual(expect.arrayContaining(reference.sessionsBy("source")));
+      expect(sources, `${when} sources`).toHaveLength(reference.sessionsBy("source").length);
+    }
+    const byValue = <Row extends { readonly value: string }>(values: ReadonlyArray<Row>) => [...values].sort((a, b) => (a.value < b.value ? -1 : a.value > b.value ? 1 : 0));
+    const dims = ["page", "source", "host", "language"] as const;
+    for (const filters of [[], [{ key: "page", op: "eq", value: "/" }], [{ key: "page", op: "neq", value: "/" }], [{ key: "source", op: "neq", value: "Google" }]] as const) {
+      const reference = new Reference(site.timezone, rows, range, filters);
+      const when = filters.map((filter) => `${filter.key} ${filter.op} ${filter.value}`).join() || "unfiltered";
+      const day = yield* provide(figures({ ...site, range, filters }, "day", dims));
+      const hour = yield* provide(figures({ ...site, range, filters }, "hour", dims));
+      expect(reference.rows.length, when).toBeGreaterThan(0);
+      expect({ daily: byBucket(day.daily), hourly: day.hourly }, `${when} day`).toEqual({ daily: byBucket(reference.dailyTotals()), hourly: [] });
+      expect({ daily: byBucket(hour.daily), hourly: byBucket(hour.hourly) }, `${when} hour`)
+        .toEqual({ daily: byBucket(reference.dailyTotals()), hourly: byBucket(reference.hourlyTotals()) });
+      for (const dim of dims) expect(byValue(day.values.get(dim) ?? []), `${when} ${dim}`).toEqual(byValue(reference.breakdown(dim)));
+      expect(byValue(day.entries), `${when} entries`).toEqual(byValue(reference.entryPages()));
+      expect([...day.goals].sort((a, b) => a.name.localeCompare(b.name)), `${when} goals`).toEqual(reference.goalConversions(goals).sort((a, b) => a.name.localeCompare(b.name)));
     }
     const pageviews = (filters: StoreQuery["filters"]) =>
       provide(dailyTotals({ ...site, range, filters })).pipe(Effect.map((series) => series.reduce((sum, bucket) => sum + bucket.pageviews, 0)));
