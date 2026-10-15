@@ -9,7 +9,12 @@ import { TTL_DAYS } from "./schema";
 type Pageview = typeof analyticsPageview.$inferSelect;
 type ClickHouseRow = ReturnType<typeof clickHouseRow>;
 
+/**
+ * A drain inserts one block per outbox batch, and a retried run replays those blocks under the same tokens. The
+ * whole run's blocks stay inside `pageview`'s deduplication window, so a replay lands every batch once.
+ */
 export const DRAIN_BATCHES = 200;
+export const DRAINS_PER_RUN = 30;
 const BACKFILL_PAGE = 50_000;
 
 const deduplicationToken = (outboxId: string) => `outbox-${outboxId}`;

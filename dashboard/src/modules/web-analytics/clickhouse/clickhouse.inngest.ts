@@ -7,11 +7,9 @@ import { ClickHouse, type ClickHouseService } from "./client";
 import { promoteReads } from "./promote";
 import { closeDays, rebuildDirtyDays } from "./rollup";
 import { ensureSchema } from "./schema";
-import { DRAIN_BATCHES, drainOutbox, ensureBackfilled, forgetDeletedSites } from "./writer";
+import { DRAIN_BATCHES, DRAINS_PER_RUN, drainOutbox, ensureBackfilled, forgetDeletedSites } from "./writer";
 
 type EffectRunner = typeof runInngestEffect;
-
-const DRAINS_PER_RUN = 30;
 
 const withClickHouse = <A, E, R>(run: (clickhouse: ClickHouseService) => Effect.Effect<A, E, R>, otherwise: A) =>
   Effect.gen(function* () {
