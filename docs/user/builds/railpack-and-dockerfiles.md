@@ -103,8 +103,10 @@ other servers' public addresses. It also reaches anything on the build
 server's own local network, like a cloud VPC or office LAN, including your other servers there.
 Don't leave anything on those addresses open without a login.
 
-A Dockerfile `ADD` of a URL or Git repository is downloaded by the server running the build, not
-by a build step.
+A Dockerfile `ADD` of a URL or Git repository follows the same rule. It reaches the internet,
+and nothing on the server running the build or your servers' private network, except the image
+servers Ployz uses to share build images between your servers. If Ployz can't put that limit in
+place, the build fails instead of running without it.
 
 ## When your servers mix x86 and ARM
 

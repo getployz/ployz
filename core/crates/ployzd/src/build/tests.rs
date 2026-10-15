@@ -576,7 +576,7 @@ if [ -f "$root/oversized-error" ] && [ "$1 $2" = 'info --format' ]; then
 fi
 case "$1 $2" in
   'context show') echo default ;;
-  'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
+  'info --format') printf '%s\n' '{{"OSType":"linux","CgroupVersion":"2","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create') exit 0 ;;

@@ -249,7 +249,7 @@ fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> 
     };
     let result = (|| {
         docker.require_local()?;
-        let builder = Builder::acquire(&docker, admission.lock, &admission.resources)?;
+        let builder = Builder::acquire(&docker, admission.lock, &admission.resources, None)?;
         let result = docker
             .run(
                 "start the builder for cache clearing",

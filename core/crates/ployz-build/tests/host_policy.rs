@@ -124,7 +124,7 @@ fn admitted_limits_cover_worker_and_railpack_preparation_despite_later_policy_ed
         r#"
 case "$1 $2" in
  'context show') echo default ;;
- 'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CpuCfsPeriod":true,"CpuCfsQuota":true,"MemoryLimit":true,"SwapLimit":true}}' ;;
+ 'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2","CpuCfsPeriod":true,"CpuCfsQuota":true,"MemoryLimit":true,"SwapLimit":true}}' ;;
  'version --format') echo linux/amd64 ;;
  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
  'buildx create')

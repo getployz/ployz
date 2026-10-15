@@ -10,6 +10,8 @@ your other servers on a private network.
 
 - **A Linux server with systemd**, amd64 or arm64, from any provider: a Hetzner Cloud server, a
   DigitalOcean Droplet, a bare-metal box.
+- **cgroup v2** to run builds. Every current distribution uses it. A server on cgroup v1 joins and
+  runs apps, but its builds fail.
 - **Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 on a VM or bare metal** for managed volumes.
   Anything else works [without them](#start-without-zfs).
 - **A main disk of 30 GB or more.** Ployz keeps a quarter of the disk, at least 10 GB, free for

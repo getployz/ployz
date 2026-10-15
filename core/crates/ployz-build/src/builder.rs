@@ -23,6 +23,7 @@ pub(crate) struct Builder<'a> {
     lock: Option<Lock>,
     // Released only after Drop removes the container that uses the bridge.
     bridge: Option<Bridge>,
+    fence: Option<(crate::FenceInstaller, Vec<u16>)>,
 }
 
 impl<'a> Builder<'a> {
@@ -38,6 +39,7 @@ impl<'a> Builder<'a> {
         docker: &'a Docker<'a>,
         lock: Lock,
         resources: &crate::policy::Resources,
+        fence: Option<(crate::FenceInstaller, Vec<u16>)>,
     ) -> Result<Self, BuildError> {
         let name = lock.name();
         let mut builder = Self {
@@ -45,6 +47,7 @@ impl<'a> Builder<'a> {
             name,
             lock: Some(lock),
             bridge: None,
+            fence,
         };
         // Mark before any Docker mutation so a killed daemon cannot silently
         // reuse state whose termination was never observed.
@@ -111,12 +114,22 @@ impl<'a> Builder<'a> {
                 "the build host must run Linux containers".into(),
             ));
         }
+        if info
+            .get("CgroupVersion")
+            .and_then(serde_json::Value::as_str)
+            != Some("2")
+        {
+            return Err(BuildError::Prerequisite(
+                "Ployz Builds require cgroup v2 on the build host".into(),
+            ));
+        }
         let native = format!("linux/{architecture}");
         self.docker.run(
             "start the BuildKit worker",
             &["buildx", "inspect", &self.name, "--bootstrap"],
             Streams::Captured,
         )?;
+        self.fence()?;
         let workers = self.docker.run(
             "inspect BuildKit platforms",
             &["buildx", "ls", "--format", "{{json .}}"],
@@ -169,6 +182,8 @@ impl<'a> Builder<'a> {
         arguments: &[String],
         started: impl FnOnce(),
     ) -> Result<(), BuildError> {
+        // A restarted worker is a new cgroup the old fence no longer matches.
+        self.fence()?;
         let mut borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
         let Some(progress) = self.docker.progress else {
             return self
@@ -201,6 +216,37 @@ impl<'a> Builder<'a> {
             .expect("parsing never panics while holding the parser")
             .finish(progress);
         result.map(|_| ())
+    }
+
+    /// Fence the running worker's own traffic, or refuse to solve.
+    fn fence(&self) -> Result<(), BuildError> {
+        let Some((install, image_ports)) = &self.fence else {
+            return Ok(());
+        };
+        let refuse = |reason: String| {
+            BuildError::Prerequisite(format!("fence the BuildKit worker: {reason}"))
+        };
+        let container = format!("buildx_buildkit_{}0", self.name);
+        let state = self.docker.run(
+            "inspect the BuildKit worker",
+            &["inspect", "--format", "{{.Id}} {{.State.Pid}}", &container],
+            Streams::Captured,
+        )?;
+        let (id, pid) = state
+            .trim()
+            .split_once(' ')
+            .filter(|(_, pid)| pid.parse::<u32>().is_ok_and(|pid| pid > 0))
+            .ok_or_else(|| refuse(format!("{container} is not running")))?;
+        let cgroups = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .map_err(|error| refuse(format!("read its cgroup: {error}")))?;
+        let cgroup = crate::fence::container_cgroup(&cgroups, id)
+            .ok_or_else(|| refuse(format!("no cgroup names container {id}")))?;
+        install(&crate::Fence {
+            slot: self.lock.as_ref().expect("owned lock").slot,
+            cgroup,
+            image_ports: image_ports.clone(),
+        })
+        .map_err(refuse)
     }
 
     /// Confirm teardown before releasing retained state; failure preserves its
@@ -284,6 +330,10 @@ fn create(
         // to the local registry; build steps run in the worker's bridge network.
         "--driver-opt".into(),
         "network=host".into(),
+        // A restarted worker sits in a new cgroup the fence no longer matches.
+        // A worker that dies stays dead, so its Build fails instead.
+        "--driver-opt".into(),
+        "restart-policy=no".into(),
         "--buildkitd-config".into(),
         config.to_string_lossy().into_owned(),
     ];
@@ -662,7 +712,7 @@ mod tests {
             &format!(
                 r#"#!/bin/sh
 case "$1 $2" in
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/386","linux/arm/v7","linux/ppc64le"]}}]}}' ;;
 esac
 "#,
@@ -683,6 +733,7 @@ esac
             &docker,
             Lock::try_acquire_in(&directory).unwrap(),
             &resources,
+            None,
         )
         .unwrap();
         for platform in ["linux/386", "linux/arm/v7", "linux/ppc64le", "linux/s390x"] {
@@ -727,7 +778,8 @@ esac
             };
             let lock = Lock::try_acquire_in(&directory).unwrap();
             let mut builder =
-                Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
+                Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None)
+                    .unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
             builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile(
                 fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap(),
@@ -811,7 +863,7 @@ esac
 
         let lock = Lock::acquire_in(&directory, &crate::Cancellation::default()).unwrap();
         let builder =
-            Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
+            Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None).unwrap();
         let name = builder_name();
         let acquired = fs::read_to_string(directory.join("calls")).unwrap();
         // A container left by an earlier attempt is stale, so it is replaced.
@@ -820,7 +872,7 @@ esac
             [
                 format!("buildx rm --keep-state {name}"),
                 format!(
-                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --buildkitd-config {}",
+                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --buildkitd-config {}",
                     directory.join(format!("{name}.buildkitd.toml")).display()
                 ),
             ]
