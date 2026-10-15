@@ -1,7 +1,11 @@
 import { Effect } from "effect";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { runInngestEffect } from "#/server/run.server";
+import { eachSite } from "../postgres/web-analytics.inngest";
+import { rollupSites } from "../postgres/rollup";
 import { ClickHouse, type ClickHouseService } from "./client";
+import { promoteReads } from "./promote";
+import { closeDays, rebuildDirtyDays } from "./rollup";
 import { ensureSchema } from "./schema";
 import { DRAIN_BATCHES, drainOutbox, forgetDeletedSites } from "./writer";
 
@@ -29,6 +33,29 @@ const createDrain = (inngest: PloyzInngest, runEffect: EffectRunner) =>
     },
   );
 
+const createRollup = (inngest: PloyzInngest, runEffect: EffectRunner) =>
+  inngest.createFunction(
+    { id: "analytics-clickhouse-rollup", retries: 3, triggers: [{ cron: "TZ=UTC */15 * * * *" }], concurrency: [{ limit: 1 }] },
+    async ({ step }) => {
+      const now = new Date();
+      const sites = await step.run("sites", () => runEffect(withClickHouse(() => rollupSites(), [])));
+      await eachSite(sites, async (environmentId) => {
+        const closed = await step.run(`close-days-${environmentId}`, () => runEffect(closeDays(environmentId, now)));
+        await step.run(`promote-${environmentId}`, () => runEffect(promoteReads(environmentId)));
+        return closed;
+      });
+    },
+  );
+
+const createDirtyRebuild = (inngest: PloyzInngest, runEffect: EffectRunner) =>
+  inngest.createFunction(
+    { id: "analytics-clickhouse-dirty", retries: 3, triggers: [{ cron: "TZ=UTC */5 * * * *" }], concurrency: [{ limit: 1 }] },
+    async ({ step }) => {
+      const sites = await step.run("sites", () => runEffect(withClickHouse(() => rollupSites(), [])));
+      await eachSite(sites, (environmentId) => step.run(`rebuild-dirty-${environmentId}`, () => runEffect(rebuildDirtyDays(environmentId))));
+    },
+  );
+
 const createForget = (inngest: PloyzInngest, runEffect: EffectRunner) =>
   inngest.createFunction(
     { id: "analytics-clickhouse-forget", retries: 3, triggers: [{ cron: "TZ=UTC 40 3 * * *" }], concurrency: [{ limit: 1 }] },
@@ -39,5 +66,7 @@ const createForget = (inngest: PloyzInngest, runEffect: EffectRunner) =>
 
 export const createClickHouseFunctions = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => [
   createDrain(inngest, runEffect),
+  createRollup(inngest, runEffect),
+  createDirtyRebuild(inngest, runEffect),
   createForget(inngest, runEffect),
 ];
