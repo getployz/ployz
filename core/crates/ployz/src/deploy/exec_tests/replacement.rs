@@ -755,6 +755,39 @@ fn a_hold_outlasts_every_health_wait_the_plan_configures() {
     }
 }
 
+fn unbounded_monitor_swaps(count: usize) -> Vec<DeployOperation> {
+    let mut spec = spec(None, None, None);
+    spec.update.order = UpdateOrder::StopFirst;
+    spec.update.monitor_millis = Some(u64::MAX);
+    (0..count)
+        .map(|_| {
+            DeployOperation::ReplaceContainer(ReplacementOperation {
+                machine_id: machine('1'),
+                old_container_id: container('a'),
+                spec: spec.clone(),
+                skip_health_monitor: false,
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn an_unbounded_monitor_holds_no_longer_than_the_cap() {
+    assert!(hold_for(&unbounded_monitor_swaps(1)) <= HOLD_MAX);
+}
+
+#[test]
+fn a_hold_over_many_unbounded_monitors_still_lapses() {
+    let hold = Hold::lasting(run_id(), hold_for(&unbounded_monitor_swaps(501)));
+    let after = std::time::UNIX_EPOCH
+        .checked_add(Duration::from_secs(
+            hold.until_unix_seconds.saturating_add(1),
+        ))
+        .expect("the hold expires at a representable time");
+
+    assert!(!hold.holds_at(after));
+}
+
 #[tokio::test]
 async fn a_stopped_copy_stays_held_until_its_deploy_publishes() {
     let machine = machine('1');

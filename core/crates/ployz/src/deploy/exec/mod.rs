@@ -48,6 +48,7 @@ const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a dependent waits for one Machine to route its dependency's Deploy.
 const ACK_WAIT: Duration = Duration::from_secs(300);
 const HOLD_BEYOND_HEALTH: Duration = Duration::from_secs(60 * 60);
+const HOLD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[allow(clippy::large_enum_variant)]
 enum Stop {
@@ -1216,6 +1217,7 @@ fn hold_for(operations: &[DeployOperation]) -> Duration {
         .filter_map(DeployOperation::spec)
         .map(ployz_core::settle_deadline)
         .fold(HOLD_BEYOND_HEALTH, Duration::saturating_add)
+        .min(HOLD_MAX)
 }
 
 struct StopFirstStep<'a> {

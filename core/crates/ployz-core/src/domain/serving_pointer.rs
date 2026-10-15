@@ -45,10 +45,12 @@ impl Hold {
         }
     }
 
-    fn holds_at(&self, now: SystemTime) -> bool {
+    /// An expiry past the last representable time counts as lapsed.
+    #[must_use]
+    pub fn holds_at(&self, now: SystemTime) -> bool {
         UNIX_EPOCH
             .checked_add(Duration::from_secs(self.until_unix_seconds))
-            .is_none_or(|until| now < until)
+            .is_some_and(|until| now < until)
     }
 }
 
@@ -65,5 +67,20 @@ impl ServingPointer {
     #[must_use]
     pub fn key(service: &QualifiedService) -> String {
         format!("serving/{service}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hold_past_the_last_representable_time_has_lapsed() {
+        let hold = Hold {
+            deploy: DeploymentLogId::parse("run").unwrap(),
+            until_unix_seconds: u64::MAX,
+        };
+
+        assert!(!hold.holds_at(SystemTime::now()));
     }
 }
