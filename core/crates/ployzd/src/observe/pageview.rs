@@ -449,6 +449,7 @@ impl Tail {
                 }
                 self.position = 0;
                 self.partial.clear();
+                self.skipping = false;
                 Ok(0)
             }
             Ok(_) => Ok(0),

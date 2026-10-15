@@ -413,4 +413,11 @@ fn the_tail_starts_at_the_end_and_follows_appends_rolls_and_truncation() {
     append(&"x".repeat(MAX_LINE + READ_CHUNK));
     append("\nkept\n");
     assert_eq!(poll(), ["kept"], "an overlong line is skipped");
+
+    append(&"x".repeat(MAX_LINE + READ_CHUNK));
+    assert!(poll().is_empty());
+    fs::write(&path, "").unwrap();
+    assert!(poll().is_empty());
+    append("after truncating an overlong line\n");
+    assert_eq!(poll(), ["after truncating an overlong line"]);
 }
