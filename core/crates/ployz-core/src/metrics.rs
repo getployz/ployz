@@ -127,6 +127,7 @@ impl MetricMarker {
     /// Whether this marker is an exit nobody asked for: an OOM kill, or a
     /// non-zero exit that no stop or kill request explains. An exit whose code
     /// Docker did not report counts only when it was an OOM kill.
+    #[must_use]
     pub fn is_crash(&self) -> bool {
         match self.kind {
             MarkerKind::Exit {
