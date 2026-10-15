@@ -31,7 +31,7 @@ function open(url: string) {
   const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
   const environment = createRoute({
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", loader: () => ({ environmentId: "env-1", store: { project: "shop", environment: "production" } }),
-    component: () => <InspectorPresentation value={{ takeover: false, toggleFullscreen: () => {}, returnTo: null }}><Outlet /></InspectorPresentation>,
+    component: () => <InspectorPresentation value={{ takeover: false, toggleFullscreen: () => {} }}><Outlet /></InspectorPresentation>,
   });
   const list = createRoute({
     getParentRoute: () => environment, path: "deployments",
@@ -60,5 +60,5 @@ it("lists the CLI's and the dashboard's Deployments, narrowed to those that depl
   open("/cloud/acme/shop/production/deployments?service=api-id");
   const api = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
   expect(api.map((row) => row.textContent)).toEqual([expect.stringMatching(/^Deployment #2/), expect.stringMatching(/^Deployment #1/)]);
-  expect(api[1]?.getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d1?service=api-id");
+  expect(api[1]?.getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d1?job=api-id");
 });

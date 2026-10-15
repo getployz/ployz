@@ -25,12 +25,11 @@ For one service, click it on the canvas and open its **Logs** tab.
 
 1. Open the deployment from **Deployments** in the sidebar, or from **Logs** in the bottom bar
    while it runs.
-2. Click the service's tab.
-3. Pick **Build** or **Deploy**.
+2. Click the service's build card for its build output. A Docker image service has no build.
+3. Click the service's card for what its new containers printed, including the pre-deploy
+   command, even after a later deploy replaced them.
 
-**Build** shows the build output. A Docker image service has no build. **Deploy** shows what the
-new containers printed, including the pre-deploy command, even after a later deploy replaced
-them. See [Deployments](../deploy/deployments.md).
+See [Deployments](../deploy/deployments.md).
 
 ![A deployment's Build logs while it builds](../images/deployment-page-build.png)
 
@@ -51,15 +50,15 @@ no service arguments, and `--follow` still use live container discovery.
   10% of one CPU core. Some historical reads can take several seconds. The main daemon's
   work serving those reads has a separate CPU cost.
 - **Logs stay on your servers after a deploy.** Each server keeps what its containers printed,
-  so an older deployment's **Deploy** tab still shows its output. Ployz keeps up to 5% of the
+  so a service's card on an older deployment still shows its output. Ployz keeps up to 5% of the
   disk for them and for metrics, between 512 MB and 5 GB. Logs stay 30 days, and the oldest go
   first. It doesn't copy them anywhere else. To search or keep logs for longer, send them from your app to a log
   service.
 - **A replica that failed keeps its output.** Its exit code appears when the server observed it,
   so you can see why it stopped.
 - **Deleted environments and removed services keep their logs until retention removes them.**
-  Recreating an environment with the same name can show its earlier logs. A deployment's
-  **Deploy** tab shows only that deployment's output.
+  Recreating an environment with the same name can show its earlier logs. A service's card
+  on a deployment shows only that deployment's output.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or

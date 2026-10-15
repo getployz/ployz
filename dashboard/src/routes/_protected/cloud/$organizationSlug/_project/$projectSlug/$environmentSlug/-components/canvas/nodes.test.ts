@@ -6,7 +6,7 @@ import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import type { MachineId } from "@ployz/sdk";
 import type { MirrorCopy, OffsiteCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
-import { buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, shownNodeIds, volumeTrays } from "./nodes";
+import { buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
@@ -98,10 +98,6 @@ describe("Config Store nodes", () => {
     const nodes = buildStoreNodes(store, [], "e");
     expect(canvasNodeOf(nodes, `shared~${"b2".padEnd(32, "0")}`)).toBe("s1");
     expect(canvasNodeOf(nodes, `loose~${"b3".padEnd(32, "0")}`)).toBe("loose");
-  });
-
-  it("shows what a Deployment Page lights by the nodes that show it, each once", () => {
-    expect(shownNodeIds(buildStoreNodes(store, [], "e"), ["shared", "own", "s2", "loose", "gone"])).toEqual(["s1", "s2", "loose"]);
   });
 
   describe("copies", () => {

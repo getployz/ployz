@@ -38,15 +38,16 @@ If a reply gets lost, the agent can resend a write without running it twice, as 
 the same `request_key` (or `x-ployz-request-key` header) both times. A call without one is a new
 run each time, and Ployz tells agents this when they connect.
 
-## Approve a removal
+## Approve a deploy
 
-When a call would remove something, Ployz stops it the same way it stops the CLI. See
+Every deploy or redeploy the agent asks for waits for you, even one that destroys nothing. A save waits
+only when it would remove something. See
 [Destructive actions ask first](organizations.md#destructive-actions-ask-first). The call fails
-with `approval_required`, what it would remove, and a link to your organization.
+with `approval_required`, anything it would remove, and a link to your organization.
 
 1. Open the link. The approval waits at the top of the [Ployz agent](agent-sidebar.md) under
    **Waiting on you**.
-2. Read what gets destroyed, and click **Approve** or **Deny**.
+2. Read what the deploy does, and click **Approve** or **Deny**.
 3. Tell your agent to try again. It sends the call with the approval, and the deploy goes ahead.
 
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays

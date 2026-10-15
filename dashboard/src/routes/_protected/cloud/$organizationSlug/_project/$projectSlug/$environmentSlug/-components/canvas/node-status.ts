@@ -4,7 +4,6 @@ import type { Marker } from "#/modules/metrics/metrics-model";
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
-import type { Lit } from "../deployment-page";
 
 /**
  * How a status line reads: its colour; `crashed`, red with the explosion; `idle`, a hollow dot for a Service with
@@ -199,12 +198,9 @@ export function restartedServices(deployment: Pick<DeploymentView, "nodes">): Re
   return new Set(deployment.nodes.flatMap((node) => node.type === "service" && node.outcome !== "unchanged" ? [node.name] : []));
 }
 
-/**
- * A node's staged surface, in the colour of what the next Deploy does to it. None while a Deployment Page is open
- * (`light`, anything but undefined), which lights nodes by its own outcome.
- */
-export function stagedSurface(light: Lit | null | undefined, change: ReviewLifecycleKind | null): StagedColour | undefined {
-  return light !== undefined || change === null ? undefined : stagedColour(change);
+/** A node's staged surface, in the colour of what the next Deploy does to it. */
+export function stagedSurface(change: ReviewLifecycleKind | null): StagedColour | undefined {
+  return change === null ? undefined : stagedColour(change);
 }
 
 /** How many of a Service's secrets have no value, which its Deploys leave out. None when every secret has one. */

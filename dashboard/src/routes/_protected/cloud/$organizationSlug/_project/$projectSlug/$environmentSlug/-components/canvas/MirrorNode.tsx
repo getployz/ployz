@@ -9,7 +9,6 @@ import {
   cardLine, hangingCopies, type MirrorCopy, type OffsiteCopy, STAGED_WORDS, type StagedCopy, type VolumeCopies,
 } from "#/modules/volume-copies/volume-copies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
-import { useNodeLighting } from "../deployment-page";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { stagedSurface } from "./node-status";
@@ -30,16 +29,14 @@ function useMinute(): Date | null {
 
 function CopyCard({ volume, copy, now }: { volume: VolumeCopies["volume"]; copy: MirrorCopy | OffsiteCopy; now: Date | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const light = useNodeLighting(volume.id);
   const selectedNodeId = useCanvasInspectorSelection().selectedNodeId;
-  const surface = stagedSurface(light, copy.staged === null ? null : STAGED_LIFECYCLE[copy.staged]);
+  const surface = stagedSurface(copy.staged === null ? null : STAGED_LIFECYCLE[copy.staged]);
   const line = now === null ? null : cardLine(copy, now);
   const name = copy.kind === "mirror" ? copy.name : copy.bucket;
   const className = cn(
     "relative flex h-14 w-44 shrink-0 flex-col justify-center gap-1 rounded-xl border bg-card px-3 text-xs text-muted-foreground data-[selected=true]:ring-2 data-[selected=true]:ring-foreground",
     "before:absolute before:-top-3.25 before:left-1/2 before:h-3 before:border-l before:border-dashed before:border-muted-foreground/60",
     surface && STAGED_CLASSES[surface].surface,
-    light === null && "opacity-40",
   );
   const content: ReactNode = <>
     <span className={cn("flex items-center gap-1.5 text-foreground", surface && "text-inherit")}>

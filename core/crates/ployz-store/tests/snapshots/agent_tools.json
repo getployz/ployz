@@ -1476,7 +1476,7 @@
       "read_only": false
     },
     {
-      "description": "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. May stop to ask a human to approve.",
+      "description": "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain. May stop to ask a human to approve.",
       "destructive": true,
       "gate": "store",
       "input_schema": {
@@ -1607,9 +1607,9 @@
       "read_only": true
     },
     {
-      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Never asks a human to approve.",
+      "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve. May stop to ask a human to approve.",
       "destructive": true,
-      "gate": "never",
+      "gate": "store",
       "input_schema": {
         "additionalProperties": false,
         "properties": {

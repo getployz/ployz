@@ -13,7 +13,7 @@ import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/mo
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
+import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { DangerRow } from "./danger-row";
 import { SettingsSection } from "./SettingsSection";
@@ -111,7 +111,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
           {inScope.flatMap((environment) => {
             const removal = environment.removal;
             if (!removal) return [];
-            const deployment = <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params(environment.name), deploymentId: removal.id }}
+            const deployment = <Link {...deploymentDestination(params(environment.name), removal.id)}
               className="underline underline-offset-4">Deployment #{removal.number}</Link>;
             // Applied, while the Store is deleting it: the next sweep finishes it.
             if (removing(environment) || (left !== null && removal.status === "applied")) return [

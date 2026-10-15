@@ -2,9 +2,9 @@ use std::future::Future;
 
 use ployz_core::{
     EnsureImageIngestRequest, FanoutSelector, ImageIngestDestination, ImageIngestReason, Machine,
-    MachineFailure, MachineId, MachineImages, MachineSuccess, MachineTarget, PartialResult,
-    PeerImagePull, PullImageFromMachineRequest, PullImageRequest, PullPolicy, RegistryAuth,
-    RpcError, op, resolve_machine_selectors,
+    MachineFailure, MachineId, MachineImages, MachineSuccess, MachineTarget, PULL_IMAGE_CAPABILITY,
+    PartialResult, PeerImagePull, PullImageFromMachineRequest, PullImageRequest, PullPolicy,
+    RegistryAuth, RpcError, op, resolve_machine_selectors,
 };
 use thiserror::Error;
 
@@ -238,7 +238,16 @@ pub(crate) async fn pull_cluster_image(
         )
         .await
         .map(|_| ())
-        .map_err(|error| answered_by(dest, error))
+        .or_else(|error| pulls_on_create(answered_by(dest, error)))
+}
+
+/// A daemon older than [`PULL_IMAGE_CAPABILITY`] pulls when it creates the Container,
+/// with the same policy and credentials, so its refusal is not a failure.
+fn pulls_on_create(error: RpcError) -> Result<(), RpcError> {
+    match error.refusal() {
+        Some(refusal) if refusal.capability == PULL_IMAGE_CAPABILITY => Ok(()),
+        _ => Err(error),
+    }
 }
 
 /// Copy the image a Container runs, by its local image ID, from `source` to `dest`,
@@ -439,6 +448,25 @@ mod tests {
         assert_eq!(repository("localhost/app"), "app");
         assert_eq!(repository("team/app:v1"), "team/app");
         assert_eq!(repository("alpine"), "alpine");
+    }
+
+    #[test]
+    fn a_daemon_without_image_pull_is_left_to_pull_on_create() {
+        let refusal = |capability: &str| RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "unimplemented".into(),
+            details: serde_json::json!({"capability": capability, "target": "a".repeat(32)}),
+            cause: Vec::new(),
+        };
+        assert!(pulls_on_create(refusal(PULL_IMAGE_CAPABILITY)).is_ok());
+        assert!(pulls_on_create(refusal("ployz.serving.read.v1")).is_err());
+        let failed = RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "registry unreachable".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        };
+        assert_eq!(pulls_on_create(failed.clone()), Err(failed));
     }
 
     #[test]

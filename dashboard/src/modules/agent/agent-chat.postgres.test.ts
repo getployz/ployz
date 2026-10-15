@@ -13,6 +13,7 @@ import type { PageContext } from "#/modules/agent/page-context";
 import { FAILURES } from "#/modules/agent/provider-error";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import { agentPersistence, CLAIM_LEASE_MS, claimResume, Superseded } from "#/modules/agent/persistence.server";
+import { approvalBadge } from "#/modules/approvals/approvals";
 import { type ApprovalView, decideApproval, getApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -89,11 +90,11 @@ const sidebar = Effect.fn(function* (options: { removeWeb: boolean }) {
   const persistence = yield* provided(agentPersistence({ organizationId: ORGANIZATION, userId }));
   const waiting = Effect.promise(() => persistence.stores.interrupts.listPending(THREAD))
     .pipe(Effect.map(([first]) => first?.interruptId ?? expect.fail("nothing is waiting")));
-  const answer = (interruptId: string, status: RunAgentResumeItem["status"], forwardedProps: Forwarded = {}) =>
-    provided(agentChat(caller, { messages: [], threadId: THREAD, runId: `run-${++runs}`, forwardedProps, resume: [status === "resolved" ? { interruptId, status, payload: {} } : { interruptId, status }] }))
+  const answer = (interruptId: string, status: RunAgentResumeItem["status"], forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
+    provided(agentChat(caller, { messages: [], threadId: THREAD, runId: `run-${++runs}`, forwardedProps, resume: [status === "resolved" ? { interruptId, status, payload: {} } : { interruptId, status }] }, model))
       .pipe(Effect.flatMap(drain));
-  const resume = (status: RunAgentResumeItem["status"], forwardedProps: Forwarded = {}) =>
-    waiting.pipe(Effect.flatMap((interruptId) => answer(interruptId, status, forwardedProps)));
+  const resume = (status: RunAgentResumeItem["status"], forwardedProps: Forwarded = {}, model?: AnyTextAdapter) =>
+    waiting.pipe(Effect.flatMap((interruptId) => answer(interruptId, status, forwardedProps, model)));
   const watchWrites = () => vi.spyOn(store, "write");
   const pending = provided(pendingApprovals(ORGANIZATION));
   const deployments = provided(Effect.gen(function* () {
@@ -477,7 +478,7 @@ it.live("a resume after the Deploy committed and its process died deploys nothin
     expect(retried).toEqual(first);
   }), 15_000);
 
-const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeof sidebar>>) => {
+const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeof sidebar>>, held: ConfigCommand["command"] = "admit") => {
   const original = store.write.bind(store);
   const writes = watchWrites();
   let enter = () => {};
@@ -487,7 +488,7 @@ const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeo
   let first = true;
   writes.mockImplementation(async (...args) => {
     const result = await original(...args);
-    if (args[1].command === "admit" && first) {
+    if (args[1].command === held && first) {
       first = false;
       enter();
       await released;
@@ -497,32 +498,32 @@ const blockFirstAdmit = ({ store, watchWrites }: Effect.Success<ReturnType<typeo
   return { writes, entered, release: () => release() };
 };
 
-/** A Service to Deploy that destroys nothing, so the Deploy runs without waiting on a human. */
+/** A Service to Save that destroys nothing, so the Save runs without waiting on a human. */
 const addCache = { command: "create_service", id: "00000000-0000-4000-8000-0000000a6105", environment: here, name: "cache", image: "redis:7" } as const;
 
-const sendAs = ({ provided, caller }: Effect.Success<ReturnType<typeof sidebar>>, runId: string, threadId = THREAD) =>
-  provided(agentChat(caller, { messages: [{ role: "user", content: "deploy" }], threadId, runId })).pipe(Effect.flatMap(drain));
+const sendAs = ({ provided, caller }: Effect.Success<ReturnType<typeof sidebar>>, runId: string, threadId = THREAD, content = "deploy") =>
+  provided(agentChat(caller, { messages: [{ role: "user", content }], threadId, runId })).pipe(Effect.flatMap(drain));
+const saveAs = (harness: Effect.Success<ReturnType<typeof sidebar>>, runId: string) => sendAs(harness, runId, THREAD, "save");
+const publishes = (writes: ReturnType<Effect.Success<ReturnType<typeof sidebar>>["watchWrites"]>) =>
+  writes.mock.calls.filter(([, command]) => command.command === "publish");
 
 for (const status of ["completed", "aborted", "failed"] as const) {
-  it.live(`a request repeating the id of a ${status} run replays that run and deploys nothing more`, () =>
+  it.live(`a request repeating the id of a ${status} run replays that run and saves nothing more`, () =>
     Effect.gen(function* () {
       const harness = yield* sidebar({ removeWeb: false });
-      const { write, persistence, watchWrites, deployments } = harness;
+      const { write, persistence, watchWrites } = harness;
       yield* write(addCache);
-      expect((yield* sendAs(harness, "run-once")).said).toBe("Done.");
-      const deployed = yield* deployments;
-      expect(deployed).toHaveLength(1);
+      expect((yield* saveAs(harness, "run-once")).said).toBe("Done.");
       yield* Effect.promise(() => persistence.stores.runs.update("run-once", { status }));
       const thread = yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD));
       const writes = watchWrites();
 
-      const again = yield* sendAs(harness, "run-once");
+      const again = yield* saveAs(harness, "run-once");
       expect(again.errors).toEqual([]);
       expect(again.results).toEqual([]);
       expect(again.said).toBe("");
       expect(again.shown).toContain("Done.");
       expect(writes).not.toHaveBeenCalled();
-      expect(yield* deployments).toEqual(deployed);
       expect(yield* Effect.promise(() => persistence.stores.messages.loadThread(THREAD))).toEqual(thread);
       expect((yield* Effect.promise(() => persistence.stores.runs.get("run-once")))?.status).toBe(status);
     }), 15_000);
@@ -555,24 +556,22 @@ it.live("a request repeating the id of a run that waits on a human shows the sam
     expect(admits(writes)).toHaveLength(1);
   }));
 
-it.live("a request repeating the id of a run still answering is refused, and only that run deploys", () =>
+it.live("a request repeating the id of a run still answering is refused, and only that run saves", () =>
   Effect.gen(function* () {
     const harness = yield* sidebar({ removeWeb: false });
-    const { write, deployments } = harness;
-    yield* write(addCache);
-    const gate = blockFirstAdmit(harness);
-    const first = Effect.runPromise(sendAs(harness, "run-busy"));
+    yield* harness.write(addCache);
+    const gate = blockFirstAdmit(harness, "publish");
+    const first = Effect.runPromise(saveAs(harness, "run-busy"));
     try {
       yield* Effect.promise(() => gate.entered);
-      const again = yield* sendAs(harness, "run-busy");
+      const again = yield* saveAs(harness, "run-busy");
       expect(again.errors).toEqual(["This message is already being answered."]);
       expect(again.results).toEqual([]);
     } finally {
       gate.release();
     }
     expect((yield* Effect.promise(() => first)).said).toBe("Done.");
-    expect(admits(gate.writes)).toHaveLength(1);
-    expect(yield* deployments).toHaveLength(1);
+    expect(publishes(gate.writes)).toHaveLength(1);
   }), 15_000);
 
 it.live("a request naming another conversation's run is refused and runs nothing", () =>
@@ -589,15 +588,16 @@ it.live("a request naming another conversation's run is refused and runs nothing
 it.live("a message whose request ends before it streams leaves no run behind, so sending it again answers it", () =>
   Effect.gen(function* () {
     const harness = yield* sidebar({ removeWeb: false });
-    const { provided, caller, write, persistence, deployments } = harness;
+    const { provided, caller, write, persistence, watchWrites } = harness;
     yield* write(addCache);
-    yield* provided(agentChat(caller, { messages: [{ role: "user", content: "deploy" }], threadId: THREAD, runId: "run-dropped" }));
+    const writes = watchWrites();
+    yield* provided(agentChat(caller, { messages: [{ role: "user", content: "save" }], threadId: THREAD, runId: "run-dropped" }));
     expect(yield* Effect.promise(() => persistence.stores.runs.get("run-dropped"))).toBeNull();
 
-    const sent = yield* sendAs(harness, "run-dropped");
+    const sent = yield* saveAs(harness, "run-dropped");
     expect(sent.errors).toEqual([]);
     expect(sent.said).toBe("Done.");
-    expect(yield* deployments).toHaveLength(1);
+    expect(publishes(writes)).toHaveLength(1);
   }), 15_000);
 
 it.live("a second request resuming the same run while the first is mid-Deploy waits for it and shows its result", () =>
@@ -1201,27 +1201,41 @@ it.live("a plan that moved while it waited asks again under a new approval", () 
     expect((yield* provided(getApproval(ORGANIZATION, stale.id))).status).toBe("approved");
   }));
 
-it.live("a Deploy that destroys nothing runs without an interrupt", () =>
+it.live("a Deploy that destroys nothing still waits on a human, and reads as the deploy", () =>
+  Effect.gen(function* () {
+    const { write, say, pending, deployments } = yield* sidebar({ removeWeb: false });
+    yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6102", environment: here, name: "cache", image: "redis:7" });
+    const asked = yield* say("deploy");
+    expect(asked.results).toEqual([]);
+    const approval = yield* waitingApproval(asked, pending);
+    expect(approval.review.effects).toEqual([]);
+    expect(approvalBadge(approval.command, approval.review)).toBe("Deploys");
+    expect(yield* deployments).toEqual([]);
+  }));
+
+it.live("a Save that destroys nothing runs without an interrupt", () =>
   Effect.gen(function* () {
     const { write, say, pending } = yield* sidebar({ removeWeb: false });
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6102", environment: here, name: "cache", image: "redis:7" });
-    const answered = yield* say("deploy");
+    const answered = yield* say("save");
     expect(answered.interrupts).toEqual([]);
-    expect(answered.results).toMatchObject([{ ok: true, value: { written: "deployment" }, nothing_destroyed: true }]);
+    expect(answered.results).toMatchObject([{ ok: true, value: { saved: { created: true } }, nothing_destroyed: true }]);
     expect(yield* pending).toEqual([]);
   }));
 
-it.live("shipping a new image stages it without asking, and its Deploy runs without an interrupt", () =>
+it.live("shipping a new image stages it without asking, and its Deploy runs once a human approves", () =>
   Effect.gen(function* () {
-    const { write, say, pending, deployments } = yield* sidebar({ removeWeb: false });
+    const { provided, caller, write, say, resume, pending, deployments } = yield* sidebar({ removeWeb: false });
     yield* write({ command: "create_service", id: "00000000-0000-4000-8000-0000000a6103", environment: here, name: "api", image: "ghcr.io/acme/api:2.3" });
     const staged = yield* say("set api.image=ghcr.io/acme/api:2.4");
     expect(staged.interrupts).toEqual([]);
     expect(staged.results).toMatchObject([{ ok: true }]);
     expect(yield* pending).toEqual([]);
-    const shipped = yield* say("deploy");
+    const approval = yield* waitingApproval(yield* say("deploy"), pending);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const shipped = yield* resume("resolved");
     expect(shipped.interrupts).toEqual([]);
-    expect(shipped.results).toMatchObject([{ ok: true, value: { written: "deployment" }, nothing_destroyed: true }]);
+    expect(shipped.results).toMatchObject([{ ok: true, value: { written: "deployment" } }]);
     expect(yield* deployments).toHaveLength(1);
   }));
 
@@ -1243,10 +1257,13 @@ const githubDeploy = [
 
 it.live("deploying a GitHub repository one call per turn finishes within the step limit", () =>
   Effect.gen(function* () {
-    const { say } = yield* sidebar({ removeWeb: false });
+    const { provided, caller, say, resume, pending } = yield* sidebar({ removeWeb: false });
     const model = fakeText();
     model.setResponses([...githubDeploy.map((call) => ({ toolCalls: [call] })), { text: "api is deploying." }]);
-    const answered = yield* say("deploy acme/api", {}, model);
+    const approval = yield* waitingApproval(yield* say("deploy acme/api", {}, model), pending);
+    expect(model.state.callCount).toBe(githubDeploy.length - 1);
+    yield* provided(decideApproval(caller, approval.id, { approve: { digest: approval.digest } }));
+    const answered = yield* resume("resolved", {}, model);
     expect(model.state.callCount).toBe(githubDeploy.length + 1);
     expect(answered.said).toBe("api is deploying.");
   }));

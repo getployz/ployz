@@ -4,7 +4,7 @@ description: Fix failed builds, failed health checks, failed pre-deploy commands
 ---
 
 Start on the deployment's page. Why it failed is under the header, in red, with the service's
-name first. That service's tab has its **Build** and **Deploy** logs. See
+name first. The page opens on the card that failed, with its servers and logs. See
 [Deployments](../deploy/deployments.md).
 
 ## Following a deploy in the CLI

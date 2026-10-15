@@ -5,8 +5,6 @@ import { RelativeTime, RunningTime } from "#/components/relative-time";
 import { Skeleton } from "#/components/ui/skeleton";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
-import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
-import type { Lit } from "../deployment-page";
 import type { DeployChipState, NodeIssues, RuntimeLine, StagedColour, Tone } from "./node-status";
 
 /**
@@ -81,12 +79,8 @@ export function StatusLine({ status, issues, onIssues, className }: {
   );
 }
 
-/**
- * A node's chip: anything about Deploys. Under an open Deployment Page, its Node Outcome (`light`); else a Deploy in
- * flight, or what the next Deploy does.
- */
-export function DeployChip({ light, chip }: { light: Lit | null | undefined; chip: DeployChipState | null }) {
-  if (light !== undefined) return light ? <NodeOutcomeBadge light={light} /> : null;
+/** A node's chip: anything about Deploys. A Deploy in flight, or what the next Deploy does. */
+export function DeployChip({ chip }: { chip: DeployChipState | null }) {
   if (!chip) return null;
   if (chip.kind === "deploying") return <Badge variant="info">Deploying <RunningTime from={new Date(chip.since * 1000)} /></Badge>;
   if (chip.kind === "queued") return <Badge variant="secondary">Queued</Badge>;

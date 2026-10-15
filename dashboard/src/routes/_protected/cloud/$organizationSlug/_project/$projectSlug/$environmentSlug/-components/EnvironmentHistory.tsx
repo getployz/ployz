@@ -1,6 +1,6 @@
-import { useContext, useRef, useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import type { ChangeKind, HistoryAction, HistoryPreview, SavedRevision } from "@ployz/sdk";
-import { useLoaderData, useParams } from "@tanstack/react-router";
+import { linkOptions, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { HistoryIcon, MoreVerticalIcon, Undo2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -16,9 +16,8 @@ import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-dep
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
-import { HistoryStages } from "./canvas/BottomBar";
+import { DashboardPage } from "#/components/dashboard-page";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { kindText, Value } from "./canvas/EnvironmentChangesReview";
 import { notSetToast, sealedOnlyPaths } from "./history-not-set";
 
@@ -84,20 +83,26 @@ function later(history: SavedRevision[], revision: number) {
   return listNames(history.filter((saved) => saved.revision > revision).map((saved) => `#${saved.revision}`).reverse());
 }
 
-export function EnvironmentHistory() {
+/**
+ * The Environment's Saved versions, newest first. `revision` picks one out: it reads far enough back to hold it, then
+ * scrolls to it. Undo and Roll back stage onto the canvas, so a change goes to Architecture to review it.
+ */
+export function EnvironmentHistory({ revision: picked }: { revision?: number }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const [limit, setLimit] = useState<number | null>(null);
+  const navigate = useNavigate();
+  const diff = requireView(useStoreView(params.organizationSlug, diffQuery(store)));
+  // Revisions count up, so the saves since the picked one bound how many to read.
+  const [limit, setLimit] = useState<number | null>(() =>
+    picked !== undefined && diff.saved !== null && diff.saved >= picked ? Math.max(diff.saved - picked + 1, HISTORY_PAGE) : null);
   const [loadingOlder, startOlder] = useTransition();
   const history = requireView(useStoreView(params.organizationSlug,
     limit === null ? { query: "history", environment: store } : { query: "history", environment: store, limit }));
-  const diff = requireView(useStoreView(params.organizationSlug, diffQuery(store)));
   const scope = useCollectionScope();
   const writer = useStoreWriter(params.organizationSlug);
   const request = useRef(0);
   const [review, setReview] = useState<HistoryReview>({ kind: "closed" });
   const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(new Set());
-  const { staged } = useContext(HistoryStages);
 
   async function stage(preview: HistoryPreview, acceptOverwrite: boolean) {
     setReview({ kind: "preview", preview, saving: true });
@@ -106,9 +111,9 @@ export function EnvironmentHistory() {
         action: preview.action, change: preview.change, version: preview.version, accept_overwrite: acceptOverwrite },
       ["conflict", "confirmation_required"]).isPersisted.promise;
       if (written.written === "history_staged") {
-        if (written.changed) staged();
         const notSet = notSetToast(preview.action, written.not_set);
         if (notSet) toast(notSet.title, { description: notSet.description });
+        if (written.changed) void navigate(linkOptions({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {} }));
       }
       setReview({ kind: "closed" });
     } catch (error) {
@@ -138,9 +143,8 @@ export function EnvironmentHistory() {
   const close = () => { request.current += 1; setReview({ kind: "closed" }); };
   const undoing = review.kind === "preview" && review.preview.action === "undo";
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params}><span className="font-medium">History</span></CanvasInspectorHeader>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+    <DashboardPage width="content">
+      <div className="flex flex-col gap-3">
         {review.kind === "loading" || (review.kind === "preview" && review.saving && !review.preview.overwritten.length) ? <p role="status" className="text-sm text-muted-foreground">Reviewing version...</p> : null}
         {review.kind === "failed" ? <p role="alert">{review.message}</p> : null}
         {review.kind === "preview" && review.error && !review.preview.overwritten.length ? <p role="alert">{review.error}</p> : null}
@@ -156,7 +160,9 @@ export function EnvironmentHistory() {
             const sealed = sealedOnlyPaths(revision.changes, revision.linked);
             const nothingToUndo = changes.length > 0 && changes.every((line) => sealed.has(line.path));
             return (
-              <li key={revision.revision} className="rounded-lg border p-3">
+              <li key={revision.revision} aria-current={revision.revision === picked || undefined}
+                ref={revision.revision === picked ? (node) => node?.scrollIntoView({ block: "center" }) : undefined}
+                className={cn("scroll-mt-4 rounded-lg border p-3", revision.revision === picked && "ring-2 ring-ring")}>
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="flex flex-wrap items-center gap-2 font-medium">
@@ -268,6 +274,6 @@ export function EnvironmentHistory() {
           </DialogContent>
         </Dialog>
       ) : null}
-    </div>
+    </DashboardPage>
   );
 }

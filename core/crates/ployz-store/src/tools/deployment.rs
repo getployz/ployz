@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::release::place;
-use super::step::RequestKey;
+use super::step::{Gate, RequestKey};
 use crate::catalog::NODE_NAME;
 use crate::{
     Admit, Cancel, DeployedNode, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
@@ -351,7 +351,8 @@ pub(crate) struct DeploymentRetry {
 
 impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
-    const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy.";
+    const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve.";
+    const GATE: Gate = Gate::Store;
     const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {

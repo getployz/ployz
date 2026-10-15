@@ -811,6 +811,7 @@ fn verb(tool: &str, input: &Value, asked: &Asked) -> Verb {
         (Subject::Operation(operation), _) => operation.verb,
         (Subject::Diff(_), "deploy") if skips => Verb::Publish,
         (Subject::Diff(_), "environment_remove" | "project_remove") => Verb::Remove,
+        (Subject::Diff(_), "deployment_retry") => Verb::Retry,
         (Subject::Diff(_), _) => Verb::Deploy,
     }
 }

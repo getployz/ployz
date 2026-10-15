@@ -768,7 +768,7 @@ pub(crate) fn namespace(
 }
 
 /// Deployment `id` of `who`'s Organization.
-fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
+pub(crate) fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
     let rows = tx.query(
         &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
         &[id.as_str().into(), who.organization.as_str().into()],

@@ -5,7 +5,6 @@ import type { ConfigListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { useNodeLighting } from "../deployment-page";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { NO_MOUNTS_CONFIGURED, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
@@ -13,8 +12,7 @@ import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
 export function StoreConfigCard({ config, selected, className }: { config: ConfigListing; selected: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const light = useNodeLighting(config.id);
-  const surface = stagedSurface(light, config.change);
+  const surface = stagedSurface(config.change);
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
@@ -27,12 +25,12 @@ export function StoreConfigCard({ config, selected, className }: { config: Confi
       className={cn("rounded-xl", className)}
     >
       <Card size="node" state={surface}
-        className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected}>
+        className={cn("h-full justify-between")} data-selected={selected}>
         <CardHeader>
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><FolderIcon /></AvatarFallback></Avatar>
             <CardTitle className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{config.name}</CardTitle>
-            <DeployChip light={light} chip={config.change === null ? null : stagedChip(config.change, 0)} />
+            <DeployChip chip={config.change === null ? null : stagedChip(config.change, 0)} />
           </div>
         </CardHeader>
         <CardContent><StatusLine status={NO_MOUNTS_CONFIGURED} issues={null} /></CardContent>

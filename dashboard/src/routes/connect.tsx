@@ -94,7 +94,7 @@ function ConnectConsent({ email, organizations, agent }: { email: string; organi
           Returns to <span className="font-mono">{agent.host}</span>
         </p>
         <p className="text-sm text-muted-foreground">
-          Signed in as {email}. The agent can read and change this Organization as you. Destroys still wait for your approval.
+          Signed in as {email}. The agent can read and change this Organization as you. Deploys and destroys wait for your approval.
         </p>
       </div>
       <div className="flex flex-col gap-2">

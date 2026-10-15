@@ -11,9 +11,9 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::{ApprovalDigest, EnvironmentId, Hostname};
-use crate::review::{Head, Review};
-use crate::{Actor, Approval};
+use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
+use crate::review::{DiffView, Head, Review, Shipping};
+use crate::{Actor, Approval, Asks, Trusted};
 
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
@@ -226,19 +226,33 @@ pub(crate) fn approval_digest(
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    let bound = json!({
+    digest(version, &bound(who, environment, effects))
+}
+
+fn bound(
+    who: &Actor,
+    environment: &EnvironmentId,
+    effects: &BTreeSet<DestructiveEffect>,
+) -> serde_json::Value {
+    json!({
         "organization": who.organization,
         "environment": environment,
         "effects": effects,
-    });
+    })
+}
+
+fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
     let digest = crate::removal::short_digest(&bound.to_string());
     ApprovalDigest::parse(format!("{version}:{digest}"))
         .expect("a version and a 16-digit hex digest form an approval")
 }
 
-/// Refuse publishing `target` while it destroys something, unless no approval is
+/// Refuse shipping `target` while it destroys something, unless no approval is
 /// required or Cloud holds a human's approval of exactly this version and set.
-/// Publishing already-Saved State asks nothing: the Publish that saved it did.
+/// Publishing already-Saved State asks nothing: the Publish that saved it did. Under
+/// [`Asks::EveryDeploy`] every Deploy asks, even one that destroys nothing or ships
+/// already-Saved State, and the approval covers only the Services and upload it
+/// deploys.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
@@ -247,8 +261,8 @@ pub(crate) fn approve(
     who: &Actor,
     environment: &EnvironmentId,
     review: &Review,
-    target: &SavedEnvironmentIntent,
-    trusted: &Approval,
+    (target, shipping): (&SavedEnvironmentIntent, Shipping<'_>),
+    trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let diff = &review.view;
     let effects = &diff.effects;
@@ -256,24 +270,82 @@ pub(crate) fn approve(
         .saved
         .as_ref()
         .is_some_and(|saved| saved.intent == *target);
+    let asks = match shipping {
+        Shipping::Publish => Asks::Destroys,
+        Shipping::Deploy { .. } => trusted.asks,
+    };
+    if asks == Asks::Destroys && (effects.is_empty() || resaves) {
+        return Ok(());
+    }
+    let mut bound = bound(who, environment, effects);
+    if let Shipping::Deploy { services, upload } = shipping
+        && let Some(bound) = bound.as_object_mut()
+    {
+        let services = services.iter().collect::<BTreeSet<_>>();
+        bound.insert("services".to_owned(), json!(services));
+        bound.insert("upload".to_owned(), json!(upload));
+    }
+    let message = if effects.is_empty() {
+        "A human must approve this deploy first.".to_owned()
+    } else {
+        let asked = effects
+            .iter()
+            .map(DestructiveEffect::describe)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("A human must approve this first: {asked}")
+    };
+    let digest = digest(&diff.version, &bound);
+    require(&trusted.approval, digest, message, (effects, diff))
+}
+
+/// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
+/// retry. Only [`Asks::EveryDeploy`] asks: a retry ships nothing a review hasn't.
+/// `review` is taken before the retry queues, so its version moves once it does: one
+/// approval admits one retry.
+///
+/// # Errors
+/// `approval_required`, naming the `version:digest` to approve and the `diff`.
+pub(crate) fn approve_retry(
+    who: &Actor,
+    environment: &EnvironmentId,
+    review: &Review,
+    source: &DeploymentId,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let bound = json!({
+        "organization": who.organization,
+        "environment": environment,
+        "retry": source,
+    });
+    // The retry ships its source's frozen state: none of the staged changes, and it
+    // destroys only what its source's review already accepted.
+    let mut diff = review.view.clone();
+    diff.effects.clear();
+    diff.changes.clear();
+    diff.total_count = 0;
+    let digest = digest(&diff.version, &bound);
+    let message = "A human must approve this retry first.".to_owned();
+    require(
+        &trusted.approval,
+        digest,
+        message,
+        (&BTreeSet::new(), &diff),
+    )
+}
+
+fn require(
+    trusted: &Approval,
+    digest: ApprovalDigest,
+    message: String,
+    (effects, diff): (&BTreeSet<DestructiveEffect>, &DiffView),
+) -> Result<(), RpcError> {
     match trusted {
-        Approval::NotRequired => return Ok(()),
-        Approval::Required | Approval::Approved(_) => {}
+        Approval::NotRequired => Ok(()),
+        Approval::Approved(approved) if *approved == digest => Ok(()),
+        Approval::Required | Approval::Approved(_) => Err(error::approval_required(
+            message,
+            json!({"effects": effects, "approval": digest, "diff": diff}),
+        )),
     }
-    if effects.is_empty() || resaves {
-        return Ok(());
-    }
-    let digest = approval_digest(who, environment, &diff.version, effects);
-    if matches!(trusted, Approval::Approved(approved) if *approved == digest) {
-        return Ok(());
-    }
-    let asked = effects
-        .iter()
-        .map(DestructiveEffect::describe)
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(error::approval_required(
-        format!("A human must approve this first: {asked}"),
-        json!({"effects": effects, "approval": digest, "diff": diff}),
-    ))
 }

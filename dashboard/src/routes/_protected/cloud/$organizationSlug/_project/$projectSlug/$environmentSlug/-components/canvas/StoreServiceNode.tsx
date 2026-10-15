@@ -5,7 +5,6 @@ import { LockIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { useNodeLighting } from "../deployment-page";
 import { useRemoveStoreService } from "../../services/$serviceId/-components/useDeleteService";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 import { ServiceContextMenu } from "./ServiceContextMenu";
@@ -37,8 +36,6 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const runtimeLens = use(RuntimeLensContext);
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
-  // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
-  const light = useNodeLighting(service.id);
   const running = inFlight.find((deployment) => deployment.status !== "queued") ?? null;
   const plan = useCachedStoreView(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
   const chip = deployChip(service, changeCount, inFlight, plan?.ok ? restartedServices(plan.value) : null);
@@ -48,11 +45,11 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const trouble = useContainerTrouble(scope, service.name);
   const issues = nodeIssues(status, domains, { unreachable, trouble });
   const domain = publicDomain(domains);
-  const surface = stagedSurface(light, service.change);
+  const surface = stagedSurface(service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
   const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{service.name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
-  const chipBadge = <DeployChip light={light} chip={chip} />;
+  const chipBadge = <DeployChip chip={chip} />;
   const navigate = useNavigate();
   // Secrets it has no value for: deploys skip them, so the card counts them and opens its variables.
   const unset = notSetLabel(notSet);
@@ -86,7 +83,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
         className={cn("relative z-10 rounded-xl", className)}
       >
         <Card size={compact ? "sm" : "node"} state={surface}
-          className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected} data-down={status.down}>
+          className={cn("h-full justify-between")} data-selected={selected} data-down={status.down}>
           {compact ? (
             <CardContent className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
               <div className="row-span-2">{icon}</div>

@@ -871,7 +871,7 @@ async fn a_removal_asks_the_human_to_type_its_name() {
     let (asking, done, seen) = remove_trial(json!({ "approve": true, "name": " trial " })).await;
     assert_eq!(
         asking["params"]["message"],
-        "Approve this removal of trial?\nThis removal destroys 0 things:"
+        "Approve this removal of trial?\nThis removal:"
     );
     let name = &asking["params"]["requestedSchema"]["properties"]["name"];
     assert_eq!(name["type"], "string", "{asking}");

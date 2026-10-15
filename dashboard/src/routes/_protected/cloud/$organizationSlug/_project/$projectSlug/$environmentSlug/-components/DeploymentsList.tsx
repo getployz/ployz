@@ -9,8 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { admission, deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel } from "#/modules/config-store/store-deployments";
 import { RelativeTime } from "#/components/relative-time";
 import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
-import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "./deployment-page";
+import { DashboardPage } from "#/components/dashboard-page";
+import { deploymentDestination, type RunOrigin } from "./deployments/run-search";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 /** The Config Store's Deployments of the Environment, the CLI's and this dashboard's alike. */
@@ -26,14 +26,12 @@ export function DeploymentsList({ service }: { service: string | null }) {
 }
 
 function ListFrame({ service, services, children }: { service: string | null; services: { id: string; name: string }[]; children: ReactNode }) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const items = [{ value: null, label: "All services" }, ...services.map((node) => ({ value: node.id, label: node.name }))];
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params}><span className="font-medium">Deployments</span></CanvasInspectorHeader>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+    <DashboardPage width="content">
+      <div className="flex flex-col gap-3">
         <Select items={items} value={service}
           onValueChange={(next) => void navigate({ to: ".", search: { service: next ?? undefined }, replace: true })}>
           <SelectTrigger size="sm" aria-label="Service"><SelectValue /></SelectTrigger>
@@ -47,17 +45,17 @@ function ListFrame({ service, services, children }: { service: string | null; se
           </ItemGroup>
         </nav>
       </div>
-    </div>
+    </DashboardPage>
   );
 }
 
 /**
  * Store Deployments newest first, a page at a time. Narrowed to a Service, the ones that deployed it: every full
- * Deploy, and targeted ones that named it. Each opens its Deployment Page, focused on that Service.
+ * Deploy, and targeted ones that named it. Each opens its Run on that Service's job, carrying `origin` for its back.
  */
 // ponytail: filters loaded pages by the name the Service had when admitted; a renamed Service loses older rows, and a
 // page can filter to nothing (Show more still loads the next). A Store query by Service when that matters.
-export function StoreDeploymentRows({ service, returnTo }: { service: ServiceListing | null; returnTo?: string }) {
+export function StoreDeploymentRows({ service, origin }: { service: ServiceListing | null; origin?: RunOrigin }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = useStoreDeployments(params.organizationSlug, store);
@@ -68,8 +66,7 @@ export function StoreDeploymentRows({ service, returnTo }: { service: ServiceLis
       const { by, at } = admission(deployment);
       const detail = deployment.upload ? uploadLabel(deployment.upload) : [deploysLabel(deployment), by && `by ${by}`].filter(Boolean).join(" · ");
       return (
-        <Item key={deployment.id} size="sm" render={<Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }}
-          search={{ service: service?.id, returnTo }} />}>
+        <Item key={deployment.id} size="sm" render={<Link {...deploymentDestination(params, deployment.id, { job: service?.id, origin })} />}>
           <ItemContent className="min-w-0">
             <ItemTitle className="w-full"><span className="truncate">{deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}</span></ItemTitle>
             <ItemDescription className="flex items-center gap-1.5 whitespace-nowrap [&_svg]:size-3.5">

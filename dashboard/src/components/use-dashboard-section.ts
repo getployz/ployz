@@ -8,11 +8,12 @@ import {
 } from "#/components/dashboard-navigation-model";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 
+function useDeepestRouteId() {
+  return useMatches({ select: (matches) => matches.at(-1)?.routeId });
+}
+
 export function useDashboardSection() {
-  return useMatches({
-    select: (matches) =>
-      getDashboardSectionFromRouteId(matches.at(-1)?.routeId),
-  });
+  return getDashboardSectionFromRouteId(useDeepestRouteId());
 }
 
 /** The deepest route's crumb, if it declares one in `staticData`. */
@@ -21,12 +22,13 @@ export function useRouteCrumb() {
 }
 
 export function useDashboardNavigation(scope: DashboardScope) {
-  const section = useDashboardSection();
+  const routeId = useDeepestRouteId();
+  const section = getDashboardSectionFromRouteId(routeId);
   const search = useSearch({ strict: false });
   // Self-hosted Cloud has no billing, so no Billing destination.
   const billingEnabled =
     useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.billingEnabled ?? false;
-  return createDashboardNavigation(scope, { section, search: { scope: search.scope, section: search.section }, billingEnabled });
+  return createDashboardNavigation(scope, { section, search: { scope: search.scope, section: search.section }, billingEnabled, routeId });
 }
 
 /** Whether the canvas shows: on Architecture or under a panel over it. */

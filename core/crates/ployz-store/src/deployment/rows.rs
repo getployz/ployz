@@ -224,16 +224,33 @@ impl From<&str> for Failure {
 
 impl From<&RpcError> for Failure {
     fn from(error: &RpcError) -> Self {
-        Self {
-            reason: error.message.clone(),
-            cause: ployz_core::error_chain::causes(error),
+        match error.refusal() {
+            Some(refusal) => refusal.to_string().into(),
+            None => Self {
+                reason: error.message.clone(),
+                cause: ployz_core::error_chain::causes(error),
+            },
         }
     }
 }
 
-impl From<&ExecutionError> for Failure {
-    fn from(error: &ExecutionError) -> Self {
+impl Failure {
+    /// `error` for users. A Server that refused for want of a capability is named
+    /// from `operations`, and its sentence stands alone.
+    pub fn of(error: &ExecutionError, operations: &[OperationRow]) -> Self {
         let (reason, cause) = match error {
+            ExecutionError::Machine { error, .. } if let Some(refusal) = error.refusal() => {
+                let name = operations
+                    .iter()
+                    .find(|row| row.machine_id.to_string() == refusal.target)
+                    .and_then(|row| row.machine_name.as_ref())
+                    .map(ToString::to_string);
+                let refusal = match name {
+                    Some(name) => refusal.naming(name),
+                    None => refusal,
+                };
+                (refusal.to_string(), Vec::new())
+            }
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));
@@ -371,6 +388,7 @@ impl RowTracker {
                 .get(&key)
                 .is_some_and(|index| self.containers.contains_key(index));
             let state = state(
+                snapshot,
                 &statuses,
                 self.last.get(&key),
                 container,
@@ -441,6 +459,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
 
 /// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
 fn state(
+    operations: &[OperationRow],
     statuses: &[(&OperationStatus, bool)],
     last: Option<&RowState>,
     container: bool,
@@ -464,7 +483,7 @@ fn state(
         }
     }
     if let Some(error) = failed {
-        let Failure { reason, cause } = error.into();
+        let Failure { reason, cause } = Failure::of(error, operations);
         return RowState::Failed {
             reason,
             cause,
@@ -678,15 +697,15 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 #[cfg(test)]
 mod tests {
     use ployz_core::{
-        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, OperationPhase,
-        OperationStatus,
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, MachineAction,
+        OperationPhase, OperationRow, OperationStatus, RpcError, RpcErrorCode,
     };
 
     use super::{Failure, RowPhase, RowState};
 
     fn server(statuses: &[OperationStatus]) -> RowState {
         let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
-        super::state(&statuses, None, true, false)
+        super::state(&[], &statuses, None, true, false)
     }
 
     #[test]
@@ -717,6 +736,7 @@ mod tests {
         );
         assert_eq!(
             super::state(
+                &[],
                 &[(&switch, true), (&OperationStatus::Pending, false)],
                 None,
                 true,
@@ -728,14 +748,49 @@ mod tests {
     }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {
-        Failure::from(&ExecutionError::Health {
-            container_id: ContainerId::parse("a".repeat(64)).unwrap(),
-            failure: HealthFailure::Runtime {
-                observation,
-                last_check: None,
+        Failure::of(
+            &ExecutionError::Health {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+                failure: HealthFailure::Runtime {
+                    observation,
+                    last_check: None,
+                },
             },
-        })
+            &[],
+        )
         .reason
+    }
+
+    #[test]
+    fn a_server_without_a_capability_is_named_and_told_to_upgrade() {
+        let machine_id = "a".repeat(32);
+        let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+            "index": 0, "machine_id": machine_id, "machine_name": "prod-1",
+            "operation": {"type": "remove_container", "machine_id": machine_id, "container_id": "c".repeat(64)},
+            "status": {"type": "pending"}
+        }]))
+        .unwrap();
+        let error = ExecutionError::Machine {
+            action: MachineAction::PullImage,
+            error: RpcError {
+                code: RpcErrorCode::Unsupported,
+                message: "unimplemented".into(),
+                details: serde_json::json!({"capability": "ployz.serving.read.v1", "target": machine_id}),
+                cause: vec!["unimplemented".into()],
+            },
+        };
+        let named = Failure::of(&error, &operations);
+        assert_eq!(
+            named.reason,
+            "Server prod-1 needs a newer Ployz. It cannot serve ployz.serving.read.v1."
+        );
+        assert!(named.cause.is_empty());
+        assert_eq!(
+            Failure::of(&error, &[]).reason,
+            format!(
+                "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.read.v1."
+            )
+        );
     }
 
     #[test]

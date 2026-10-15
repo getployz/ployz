@@ -4,13 +4,11 @@ import { Link, linkOptions } from "@tanstack/react-router";
 import { ArrowLeftIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
 
 export const InspectorPresentation = createContext<{
   takeover: boolean;
   toggleFullscreen: () => void;
-  /** The service whose panel opened this one (its Deployments tab); leaving goes back there instead of the canvas. */
-  returnTo: string | null;
 } | null>(null);
 
 type CanvasInspectorHeaderParams = {
@@ -27,10 +25,10 @@ export function CanvasInspectorHeader({ params, actions, children }: {
 }) {
   const presentation = useContext(InspectorPresentation);
   if (!presentation) throw new Error("Canvas inspector header must be inside its workspace");
-  const { takeover, toggleFullscreen, returnTo } = presentation;
-  const back = returnTo ? "Back to service" : "Back to Architecture";
+  const { takeover, toggleFullscreen } = presentation;
+  const back = "Back to Architecture";
   const returnLink = (
-    <Link {...inspectorExit(params, returnTo)}
+    <Link {...inspectorExit(params)}
       className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-back")}
       data-canvas-inspector-exit aria-label={back} title={back}>
       <ArrowLeftIcon />
@@ -54,7 +52,7 @@ export function CanvasInspectorHeader({ params, actions, children }: {
           {takeover ? <Minimize2Icon /> : <Maximize2Icon />}
         </Button>
         {!takeover ? (
-          <Link {...inspectorExit(params, returnTo)}
+          <Link {...inspectorExit(params)}
             className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-close")}
             data-canvas-inspector-exit data-canvas-inspector-desktop-control aria-label="Close inspector" title="Close inspector">
             <XIcon />
@@ -65,10 +63,7 @@ export function CanvasInspectorHeader({ params, actions, children }: {
   );
 }
 
-/** Where leaving a panel goes: back to the service panel that opened it (its Deployments tab), else to the canvas. */
-export function inspectorExit(params: CanvasInspectorHeaderParams, returnTo: string | null) {
-  const viewTransition = { types: ["canvas-inspector-close"] };
-  return returnTo
-    ? linkOptions({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: returnTo }, search: { tab: "deployments" }, viewTransition })
-    : linkOptions({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {}, viewTransition });
+/** Where leaving a panel goes: the bare canvas. */
+export function inspectorExit(params: CanvasInspectorHeaderParams) {
+  return linkOptions({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {}, viewTransition: { types: ["canvas-inspector-close"] } });
 }

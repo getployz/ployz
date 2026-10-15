@@ -609,7 +609,14 @@ pub(crate) fn shut_down(
         None => crate::review::destructive(
             who,
             &review,
-            (&empty, &namespace, crate::review::Shipping::Deploy(&[])),
+            (
+                &empty,
+                &namespace,
+                crate::review::Shipping::Deploy {
+                    services: &[],
+                    upload: None,
+                },
+            ),
             (admit.version.as_deref(), &admit.accept_volume_loss, &[]),
             trusted.volumes.as_ref(),
         )?,

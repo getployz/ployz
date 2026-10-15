@@ -102,7 +102,7 @@ pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
     ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment,
 };
-pub use trusted::{Approval, Trusted, VolumeObservation};
+pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]

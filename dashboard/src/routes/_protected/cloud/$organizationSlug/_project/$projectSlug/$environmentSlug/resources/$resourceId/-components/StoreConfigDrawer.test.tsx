@@ -67,7 +67,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
     const config = requireView(useStoreViews("acme", [configsQuery(environment)] as const)[0]).configs[0];
     if (!config) throw new Error("Config listing did not load");
     return (
-      <InspectorPresentation value={{ takeover: false, toggleFullscreen() {}, returnTo: null }}>
+      <InspectorPresentation value={{ takeover: false, toggleFullscreen() {} }}>
         <StoreConfigDrawer params={params} config={config} />
       </InspectorPresentation>
     );
