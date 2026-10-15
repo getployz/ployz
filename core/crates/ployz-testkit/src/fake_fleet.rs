@@ -1356,15 +1356,18 @@ fn frame_stream(frames: Vec<OpaquePayload>, hold: bool) -> FrameStream {
 }
 
 /// Builds the service impl and the `COMMANDS` table from the catalog: every unary RPC
-/// forwards to [`FleetService::unary`], every server stream to [`FleetService::stream`].
+/// forwards to [`FleetService::unary`], every server stream to [`FleetService::stream`],
+/// every bidirectional stream to [`FleetService::bare`].
 macro_rules! fleet_service {
     (
         package $package:literal
         unary { $($unary_variant:ident: ($unary_method:ident, $unary_route:literal, $unary_request:ty, $unary_command:literal, $unary_response:ty, $unary_capability:ident, $unary_capability_name:literal, $unary_advertisement:ident),)+ }
         server_streaming { $($stream_variant:ident: ($stream_method:ident, $stream_route:literal, $stream_request:ty, $stream_command:literal, $stream_capability:ident, $stream_capability_name:literal, $stream_advertisement:ident),)+ }
+        bidi_streaming { $($bidi_variant:ident: ($bidi_method:ident, $bidi_route:literal, $bidi_command:literal, $bidi_capability:ident, $bidi_capability_name:literal, $bidi_advertisement:ident),)+ }
+        capabilities { $($(#[$extra_meta:meta])* $extra_capability:ident: ($extra_capability_name:literal, $extra_advertisement:ident),)+ }
     ) => {
         /// Every command a fault may name.
-        const COMMANDS: &[&str] = &[$($unary_command,)+ $($stream_command,)+ "exec", "build"];
+        const COMMANDS: &[&str] = &[$($unary_command,)+ $($stream_command,)+ $($bidi_command,)+];
 
         #[tonic::async_trait]
         impl MachineRpc for FleetService {
@@ -1392,19 +1395,14 @@ macro_rules! fleet_service {
                 }
             )+
 
-            async fn exec(
-                &self,
-                request: Request<Streaming<OpaquePayload>>,
-            ) -> Result<Response<FrameStream>, Status> {
-                self.bare(request.metadata(), "exec")
-            }
-
-            async fn build(
-                &self,
-                request: Request<Streaming<OpaquePayload>>,
-            ) -> Result<Response<FrameStream>, Status> {
-                self.bare(request.metadata(), "build")
-            }
+            $(
+                async fn $bidi_method(
+                    &self,
+                    request: Request<Streaming<OpaquePayload>>,
+                ) -> Result<Response<FrameStream>, Status> {
+                    self.bare(request.metadata(), $bidi_command)
+                }
+            )+
         }
     };
 }
