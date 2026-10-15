@@ -39,6 +39,7 @@ import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ConfigFilePermissionsDialog } from "./ConfigFilePermissionsDialog";
 import { useConfigFileEditor } from "./config-file-editor-loader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { useStoreRenaming } from "#/modules/config-store/store-pending";
 
 
 const SHOWN_REFUSALS = ["invalid", "conflict"] as const;
@@ -56,6 +57,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const diff = requireView(views[2]);
   const settings = requireView(views[3]);
   const writer = useStoreWriter(organizationSlug);
+  const renaming = useStoreRenaming(organizationSlug, store, "config").has(config.name);
   if (!views[4].ok) return <CanvasInspectorNotFound noun="Config" />;
   const item = views[4].value;
   const state: StoreConfig = { organizationSlug, environment: store, config };
@@ -72,14 +74,16 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
         {removing ? <p className="truncate font-semibold">{config.name}</p> : (
-          <CanvasInspectorNameEditor value={config.name} schema={nameSchema} editTitle="Edit config name"
+          <div inert={renaming} className="min-w-0"><CanvasInspectorNameEditor value={config.name} schema={nameSchema} editTitle="Edit config name"
             editDescription="Rename this config. Its files and mounts stay." placeholder="Config name"
             {...changedProps(renamed)}
-            onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} />
+            onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} /></div>
         )}
       </CanvasInspectorHeader>
-      <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
-        values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />
+      <div inert={renaming} aria-busy={renaming} className="flex min-h-0 flex-1 flex-col aria-busy:opacity-60">
+        <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
+          values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />
+      </div>
     </div>
   );
 }

@@ -22,7 +22,7 @@ export function ServiceContextMenu({
   children,
 }: {
   serviceId: string;
-  onDelete: () => void;
+  onDelete: (() => void) | null;
   children: ReactElement;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -50,7 +50,7 @@ export function ServiceContextMenu({
         </ContextMenuGroup>
         <ContextMenuSeparator />
         <ContextMenuGroup>
-          <ContextMenuItem variant="destructive" onClick={onDelete}>
+          <ContextMenuItem variant="destructive" disabled={onDelete === null} onClick={onDelete ?? undefined}>
             <Trash2Icon />
             Delete service
           </ContextMenuItem>

@@ -133,10 +133,10 @@ export function useStorePendingName(organizationSlug: string, environment: Envir
 }
 
 /**
- * What a pending rename still names by the old name: a Service by its name, a variable by its path. Each stays locked
- * until the Store answers, since an edit made now would name what the rename moves.
+ * What a pending rename still names by the old name: a node or Project by its name, a variable by its path. Each stays
+ * locked until the Store answers, since an edit made now would name what the rename moves.
  */
-export function useStoreRenaming(organizationSlug: string, environment: EnvironmentRef, node: NodeKind | "variable"): ReadonlySet<string> {
+export function useStoreRenaming(organizationSlug: string, environment: EnvironmentRef, node: NodeKind | "project" | "variable"): ReadonlySet<string> {
   return new Set(usePendingMarks(organizationSlug).flatMap((mark) =>
     mark.mark === "renamed" && mark.node === node && sameEnvironment(mark, environment) ? [mark.from] : []));
 }

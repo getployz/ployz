@@ -230,6 +230,20 @@ it("keeps unsaved text and new files through a successful Config rename", async 
   } }));
 });
 
+it("locks the drawer while its rename is pending, so no file save names the config by its old name", async () => {
+  const test = await openDrawer();
+  const answer = deferred();
+  test.write.mockImplementationOnce(() => answer.promise);
+  fireEvent.click(screen.getByTitle("Edit config name"));
+  fireEvent.change(screen.getByRole("textbox", { name: "Edit config name" }), { target: { value: "renamed" } });
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "config.yml contents", hidden: true }).closest("[inert]")).not.toBeNull());
+  expect(screen.getByTitle("Edit config name").closest("[inert]")).not.toBeNull();
+  test.store.item = { ...initial, name: "renamed" };
+  await act(async () => { answer.resolve(accepted); });
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "config.yml contents" }).closest("[inert]")).toBeNull());
+});
+
 it("isolates undo when switching to a file with the same text", async () => {
   const test = await openDrawer({ ...initial, files: [...initial.files, { name: "same.yml", bytes: 4, mode: "0444", uid: 0, gid: 0, references: [] }],
     contents: { ...initial.contents, "same.yml": "same" } });
