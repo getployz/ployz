@@ -256,14 +256,14 @@ fn deploy(
         (cluster_domain, &namespace),
         trusted,
     )?;
+    let shipping = review::Shipping::Deploy {
+        services: &admit.services,
+        upload: admit.upload.as_ref().map(|upload| &upload.digest),
+    };
     let losses = review::destructive(
         who,
         &review,
-        (
-            &saved_intent,
-            &namespace,
-            review::Shipping::Deploy(&admit.services),
-        ),
+        (&saved_intent, &namespace, shipping),
         (
             admit.version.as_deref(),
             &admit.accept_volume_loss,
@@ -271,13 +271,7 @@ fn deploy(
         ),
         trusted.volumes.as_ref(),
     )?;
-    review::approve(
-        who,
-        id,
-        &review,
-        (&saved_intent, review::Shipping::Deploy(&admit.services)),
-        trusted,
-    )?;
+    review::approve(who, id, &review, (&saved_intent, shipping), trusted)?;
     let (saved, _) = review::publish(
         tx,
         who,

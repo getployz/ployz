@@ -251,7 +251,8 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
 /// required or Cloud holds a human's approval of exactly this version and set.
 /// Publishing already-Saved State asks nothing: the Publish that saved it did. Under
 /// [`Asks::EveryDeploy`] every Deploy asks, even one that destroys nothing or ships
-/// already-Saved State, and the approval covers only the Services it deploys.
+/// already-Saved State, and the approval covers only the Services and upload it
+/// deploys.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
@@ -271,17 +272,18 @@ pub(crate) fn approve(
         .is_some_and(|saved| saved.intent == *target);
     let asks = match shipping {
         Shipping::Publish => Asks::Destroys,
-        Shipping::Deploy(_) => trusted.asks,
+        Shipping::Deploy { .. } => trusted.asks,
     };
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }
     let mut bound = bound(who, environment, effects);
-    if let Shipping::Deploy(services) = shipping
+    if let Shipping::Deploy { services, upload } = shipping
         && let Some(bound) = bound.as_object_mut()
     {
         let services = services.iter().collect::<BTreeSet<_>>();
         bound.insert("services".to_owned(), json!(services));
+        bound.insert("upload".to_owned(), json!(upload));
     }
     let message = if effects.is_empty() {
         "A human must approve this deploy first.".to_owned()

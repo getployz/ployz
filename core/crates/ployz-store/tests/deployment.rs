@@ -3346,6 +3346,50 @@ fn an_agent_approval_admits_only_the_services_it_named() {
     agent_deploys_only(&store, &who, 2, "web", approved(&refused)).unwrap();
 }
 
+fn agent_deploys_upload(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    upload: char,
+    approval: Approval,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: Some(UploadedSource {
+                digest: ployz_core::UploadDigest::parse(upload.to_string().repeat(64)).unwrap(),
+                base: None,
+                uploader: None,
+            }),
+            accept_volume_loss: Vec::new(),
+            message: None,
+        }),
+        &Trusted {
+            approval,
+            asks: Asks::EveryDeploy,
+            ..Trusted::default()
+        },
+    )
+}
+
+#[test]
+fn an_agent_approval_admits_only_the_upload_it_named() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let refused = agent_deploys_upload(&store, &who, 2, 'a', Approval::Required).unwrap_err();
+    let other = agent_deploys_upload(&store, &who, 2, 'b', approved(&refused)).unwrap_err();
+    assert_eq!(other.code.as_str(), "approval_required");
+    assert_ne!(other.details["approval"], refused.details["approval"]);
+    let none = agent_deploys(&store, &who, 2, approved(&refused)).unwrap_err();
+    assert_eq!(none.code.as_str(), "approval_required");
+    agent_deploys_upload(&store, &who, 2, 'a', approved(&refused)).unwrap();
+}
+
 fn agent_retries(
     store: &ConfigStore,
     who: &Actor,
