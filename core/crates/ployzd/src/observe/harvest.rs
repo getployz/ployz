@@ -105,9 +105,18 @@ pub(super) struct Harvester {
     /// The newest Docker event seen. A reconnect resumes from it, so events
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
-    /// Service containers whose exit was marked; their next start is a
-    /// restart.
-    exited: HashSet<ContainerId>,
+    /// What Docker said so far about each Service container's current run.
+    runs: HashMap<ContainerId, Run>,
+}
+
+/// What Docker said about a Service container's run before it exited, so its
+/// exit can tell a crash from a stop, and its next start a restart.
+#[derive(Debug, Default)]
+struct Run {
+    oom: bool,
+    /// Docker was asked to kill it, as `docker stop` and removal do.
+    stopped: bool,
+    exited: bool,
 }
 
 impl Harvester {
@@ -192,14 +201,14 @@ impl Harvester {
             inspected,
             data_dir,
             last_event_nanos: None,
-            exited: HashSet::new(),
+            runs: HashMap::new(),
         }
     }
 
     fn docker_events(&self) -> DockerEvents {
         let filters = HashMap::from([
             ("type", vec!["container"]),
-            ("event", vec!["start", "oom", "die"]),
+            ("event", vec!["start", "kill", "oom", "die"]),
         ]);
         let mut options = EventsOptionsBuilder::default().filters(&filters);
         if let Some(since) = self.last_event_nanos.map(docker_time) {
@@ -241,7 +250,7 @@ impl Harvester {
         self.seen.retain(|id, _| present.contains(id));
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
-        self.exited.retain(|id| present.contains(id));
+        self.runs.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
         }
@@ -326,7 +335,7 @@ impl Harvester {
         let Some(machine_id) = sampler::machine_id(&self.data_dir) else {
             return;
         };
-        let Some(marker) = marker(machine_id, id, message, &mut self.exited) else {
+        let Some(marker) = marker(machine_id, id, message, &mut self.runs) else {
             return;
         };
         if let Err(error) = segment::append(&self.store, &[Row::Marker(marker)]) {
@@ -597,7 +606,7 @@ impl Harvester {
     fn forget(&mut self, id: &ContainerId) {
         self.seen.insert(*id, Seen::Ignored);
         self.damage.remove(id);
-        self.exited.remove(id);
+        self.runs.remove(id);
         self.owned_by_event.remove(id);
         self.unwatch_container(id);
     }
@@ -1293,7 +1302,7 @@ fn marker(
     machine_id: MachineId,
     id: ContainerId,
     message: &EventMessage,
-    exited: &mut HashSet<ContainerId>,
+    runs: &mut HashMap<ContainerId, Run>,
 ) -> Option<MetricMarker> {
     let labelled = labelled_by_event(message);
     let meta = container_meta(&labelled).filter(|meta| meta.kind == ContainerKind::Service)?;
@@ -1304,16 +1313,31 @@ fn marker(
         ServiceName::parse(meta.service.as_deref()?).ok()?,
     );
     let kind = match message.action.as_deref()? {
-        "oom" => MarkerKind::Oom,
+        "kill" => {
+            runs.entry(id).or_default().stopped = true;
+            return None;
+        }
+        "oom" => {
+            runs.entry(id).or_default().oom = true;
+            MarkerKind::Oom
+        }
         "die" => {
-            exited.insert(id);
+            let run = runs.entry(id).or_default();
+            run.exited = true;
             MarkerKind::Exit {
                 exit_code: attributes
                     .get(EXIT_CODE_ATTRIBUTE)
                     .and_then(|code| code.parse().ok()),
+                oom: std::mem::take(&mut run.oom),
+                stopped: std::mem::take(&mut run.stopped),
             }
         }
-        "start" if exited.remove(&id) => MarkerKind::Restart,
+        "start" => {
+            if !runs.remove(&id).is_some_and(|run| run.exited) {
+                return None;
+            }
+            MarkerKind::Restart
+        }
         _ => return None,
     };
     Some(MetricMarker {
@@ -2766,7 +2790,9 @@ mod tests {
                 (
                     T0 + 2,
                     MarkerKind::Exit {
-                        exit_code: Some(137)
+                        exit_code: Some(137),
+                        oom: true,
+                        stopped: false,
                     }
                 ),
                 (T0 + 3, MarkerKind::Restart),

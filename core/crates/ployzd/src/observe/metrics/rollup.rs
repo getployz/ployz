@@ -543,6 +543,8 @@ mod tests {
             T0 + 600 * SEC + 1,
             MarkerKind::Exit {
                 exit_code: Some(137),
+                oom: false,
+                stopped: false,
             },
         );
         let rows: Vec<Row> = [&before, &oom, &exit]
