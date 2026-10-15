@@ -1126,22 +1126,20 @@ impl Client {
     }
 }
 
-/// A Machine's own answer keeps its words. An unavailable call it never answered
-/// names the Machine in the deepest line, which is the one progress shows.
+/// A call the router or this client's own deadline shows went unanswered names the
+/// Machine in the deepest line, which is the one progress shows. Every other error
+/// keeps its own words.
 pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
-    if let ConnectError::Remote(answered) = error {
-        return answered;
+    if !error.target_unanswered() {
+        return rpc_error(error);
     }
     let error = rpc_error(error);
-    if error.code != RpcErrorCode::Unavailable {
-        return error;
-    }
     let transport = std::iter::once(error.message)
         .chain(error.cause)
         .collect::<Vec<_>>()
         .join(": ");
     RpcError {
-        code: RpcErrorCode::Unavailable,
+        code: error.code,
         message: format!("Machine {machine_id} did not answer: {transport}"),
         details: Value::Null,
         cause: Vec::new(),
