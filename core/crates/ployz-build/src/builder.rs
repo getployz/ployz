@@ -114,6 +114,15 @@ impl<'a> Builder<'a> {
                 "the build host must run Linux containers".into(),
             ));
         }
+        if info
+            .get("CgroupVersion")
+            .and_then(serde_json::Value::as_str)
+            != Some("2")
+        {
+            return Err(BuildError::Prerequisite(
+                "Ployz Builds require cgroup v2 on the build host".into(),
+            ));
+        }
         let native = format!("linux/{architecture}");
         self.docker.run(
             "start the BuildKit worker",
@@ -703,7 +712,7 @@ mod tests {
             &format!(
                 r#"#!/bin/sh
 case "$1 $2" in
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/386","linux/arm/v7","linux/ppc64le"]}}]}}' ;;
 esac
 "#,
