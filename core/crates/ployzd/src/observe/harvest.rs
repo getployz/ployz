@@ -445,10 +445,12 @@ impl Harvester {
         }
     }
 
-    /// Docker can send `stop` after the `die` of the run it stopped.
+    /// Docker can send `stop` after the `die` of the run it stopped, even
+    /// after a later run started. Its stop API signals a run before it sends
+    /// `stop`, so a live run with no `kill` is not the one stopped.
     fn on_stop(&mut self, id: ContainerId) {
         let run = self.runs.entry(id).or_default();
-        if !run.exited {
+        if !run.exited && !run.kills.is_empty() {
             run.stop_requested = true;
         } else if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
             exit.stop_requested = true;
@@ -3384,6 +3386,47 @@ mod tests {
                     "{case}, start seen: {seen_start}"
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_late_stop_of_an_earlier_run_does_not_hide_the_crash_of_the_live_run() {
+        let service = ("ployz.service.id", SERVICE_ID);
+        for settled_before_stop in [false, true] {
+            let host = host().with_machine();
+            let mut running = host.harvester();
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + 1, &[service]));
+            running
+                .harvester
+                .on_docker_event(event("kill", T0 + 2, &[service, ("signal", "15")]));
+            running
+                .harvester
+                .on_docker_event(event("die", T0 + 3, &[service, ("exitCode", "1")]));
+            running
+                .harvester
+                .on_docker_event(event("start", T0 + 4, &[service]));
+            if settled_before_stop {
+                running.settle_exits(|| inspected(&running_after(4, 3)));
+            }
+            running
+                .harvester
+                .on_docker_event(event("stop", T0 + 5, &[service]));
+            running.settle_exits(|| inspected(&running_after(4, 3)));
+            running
+                .harvester
+                .on_docker_event(event("die", T0 + 6, &[service, ("exitCode", "1")]));
+            running.settle_exits(|| inspected(&exited(4, 6, 1, false)));
+            assert_eq!(
+                crashes(&host),
+                [MarkerKind::Exit {
+                    exit_code: Some(1),
+                    oom: false,
+                    stopped: false,
+                }],
+                "first exit settled before the stop: {settled_before_stop}"
+            );
         }
     }
 
