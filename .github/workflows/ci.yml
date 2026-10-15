@@ -47,6 +47,8 @@ jobs:
         name: Select checks from the complete change
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          # cargo metadata --no-deps needs no compiler, so skip installing the pinned toolchain.
+          RUSTUP_TOOLCHAIN: stable
         run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
 
   contracts:
@@ -153,10 +155,10 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked
           cargo test --doc --workspace --all-features --locked
-      - name: Config Store behaviour suite on Postgres
+      - name: ployz-store tests on Postgres
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --package ployz-store --test store --test review --test deployment --test git --test service --test config_item --test variables --test registry --test domain --test volume --test automation --test branch --test removal --test pull_request --test sync --test migration --test never_sync --test follow --test batch --test on_merge --test proposal --locked
+        run: cargo nextest run --package ployz-store --locked
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz

@@ -1,4 +1,4 @@
-//! Agent tool calls driven to the end against a SQLite Config Store, the way a
+//! Agent tool calls driven to the end against a Config Store, the way a
 //! host drives them: every step's asks answered in order, the one write run.
 #![expect(
     clippy::indexing_slicing,
@@ -7,6 +7,8 @@
 
 use std::collections::BTreeMap;
 use std::time::Duration;
+
+mod backend;
 
 use ployz_core::{
     BuildConcurrencyUpdate, DeployOutcome, DeployPreview, MachineLogService, ServiceName,
@@ -21,7 +23,7 @@ use ployz_store::{
     Actor, Admit, ConfigStore, ConfigsQuery, CreateEnvironment, CreateProject, CreateService,
     CreateVolume, Deploy, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentsQuery, NamespacesQuery, OrganizationId, ProjectId, ProjectName, RowTracker,
-    RunEvidence, RunnerId, SealingKey, ServiceLineageId, Trusted, VolumeId, VolumeName,
+    RunEvidence, RunnerId, ServiceLineageId, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -30,11 +32,7 @@ fn who() -> Actor {
 }
 
 fn shop() -> ConfigStore {
-    let store = ConfigStore::open(
-        "sqlite::memory:",
-        SealingKey::new(b"test-encryption-secret").unwrap(),
-    )
-    .unwrap();
+    let store = backend::open();
     store
         .write(
             &who(),

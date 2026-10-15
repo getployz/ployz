@@ -24,6 +24,9 @@ tonic = { version = "0.13.1", features = ["transport"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1.24.0", features = ["js"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt"] }
+
 [build-dependencies]
 tonic-build = { version = "0.13.1", default-features = false, features = ["transport"] }
 

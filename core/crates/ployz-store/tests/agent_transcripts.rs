@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 
+mod backend;
+
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::tools::{
     Answer, Ask, Place, Step, StoreAt, Write, catalog, example, resume, start,
 };
 use ployz_store::{
     Actor, ConfigStore, CreateEnvironment, CreateProject, EnvironmentId, EnvironmentName,
-    EnvironmentRef, OrganizationId, ProjectId, ProjectName, SealingKey, SetDefaultEnvironment,
+    EnvironmentRef, OrganizationId, ProjectId, ProjectName, SetDefaultEnvironment,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,11 +38,7 @@ fn who() -> Actor {
 }
 
 fn shop() -> ConfigStore {
-    let store = ConfigStore::open(
-        "sqlite::memory:",
-        SealingKey::new(b"test-encryption-secret").unwrap(),
-    )
-    .unwrap();
+    let store = backend::open();
     store
         .write(
             &who(),

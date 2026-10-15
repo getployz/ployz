@@ -1,7 +1,6 @@
 //! Napi package `@ployz/sdk`. Public payloads are derived from the Rust wire types
 //! (`ployz::sdk::generated_files`, written by the `sdk-generated` bin).
 //!
-//! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade wraps the native Cloud session, the Config Store, and the
 //! agent tools.
 pub mod agent;
@@ -899,7 +898,7 @@ pub(crate) fn whole_numbers(value: serde_json::Value) -> serde_json::Value {
                 .map(|(key, value)| (key, whole_numbers(value)))
                 .collect(),
         ),
-        other => other,
+        other @ (Value::Null | Value::Bool(_) | Value::String(_)) => other,
     }
 }
 
