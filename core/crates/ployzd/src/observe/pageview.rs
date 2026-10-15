@@ -26,10 +26,6 @@ use super::{
     ship::PageviewOutbox,
 };
 
-/// The access log under the run dir, which the ingress container mounts at
-/// `/run/ingress`.
-pub(super) const ACCESS_LOG: &str = "ingress/pageviews/access.log";
-
 const POLL: Duration = Duration::from_millis(200);
 const COUNTS_EVERY: Duration = Duration::from_secs(60);
 const READ_CHUNK: usize = 64 * 1024;
@@ -539,7 +535,7 @@ pub(super) fn spawn(
     salts: Arc<Salts>,
     outbox: Arc<PageviewOutbox>,
 ) -> io::Result<()> {
-    let path = run_dir.join(ACCESS_LOG);
+    let path = run_dir.join("ingress").join(crate::ingress::ACCESS_LOG);
     std::thread::Builder::new()
         .name("pageviews".to_owned())
         .spawn(move || tail(&path, &salts, &outbox))?;

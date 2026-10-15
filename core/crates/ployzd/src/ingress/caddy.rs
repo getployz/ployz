@@ -28,6 +28,20 @@ mod trace;
 
 pub const CONFIG_FILE: &str = "Caddyfile";
 const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
+/// The ingress runtime dir as the Caddy container mounts it.
+const CONTAINER_RUNTIME_DIR: &str = "/run/ingress";
+/// Request fields that name the visitor. Caddy's stderr lands in Docker's log files and the
+/// Log Store, so no line it writes there carries them.
+const VISITOR_FIELDS: [&str; 8] = [
+    "remote_ip",
+    "client_ip",
+    "headers>User-Agent",
+    "headers>X-Forwarded-For",
+    "headers>X-Real-Ip",
+    "headers>Cf-Connecting-Ip",
+    "headers>True-Client-Ip",
+    "headers>Forwarded",
+];
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Set to any value to turn on Caddy's debug log: every upstream selection, failure and retry.
 pub(crate) const DEBUG_ENV: &str = "PLOYZ_INGRESS_DEBUG";
@@ -192,10 +206,12 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     };
     let _ = write!(
         output,
-        "{{\n{debug}\tauto_https off\n{}}}\n\n",
-        trace::cloudflare_client_ip_servers()
+        "{{\n{debug}\tauto_https off\n{}\tlog default {{\n{}\t}}\n}}\n\n",
+        trace::cloudflare_client_ip_servers(),
+        visitor_filter("\t\t"),
     );
     trace::write_snippets(&mut output);
+    write_log_snippets(&mut output);
     write_error_page(&mut output);
     let ingress_verify = verify_handle(INGRESS_VERIFY_PATH, local_machine);
     let hostname_verify = verify_handle(HOSTNAME_VERIFY_PATH, local_machine);
@@ -208,7 +224,7 @@ http:// {{\n\
 {headers}{unpublished}{ingress_verify}{hostname_verify}\
 \terror NOT_DEPLOYED 404\n\
 \timport error_page {local_machine}\n\
-\tlog\n\
+\timport ployz_log\n\
 }}\n\
 \n\
 # Unknown hostnames over HTTPS: a wildcard certificate another site pins may cover them,\n\
@@ -217,7 +233,7 @@ https:// {{\n\
 {headers}{unpublished}\
 \terror NOT_DEPLOYED 404\n\
 \timport error_page {local_machine}\n\
-\tlog\n\
+\timport ployz_log\n\
 }}\n\
 \n\
 (common_proxy) {{\n\
@@ -248,7 +264,11 @@ https:// {{\n\
                 .publication
                 .as_ref()
                 .expect("a routed site has a publication");
-            trace::published_import(local_machine, &publication.trace, endpoints)
+            format!(
+                "{}\timport ployz_pageviews {}\n",
+                trace::published_import(local_machine, &publication.trace, endpoints),
+                publication.owner.namespace
+            )
         };
         // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
         // A challenge-only http site publishes nothing else, so it answers like the catch-all.
@@ -311,6 +331,39 @@ fn route_summary(projection: &IngressProjection) -> String {
         }
     }
     summary
+}
+
+/// A `format filter` block, at `indent`, that deletes every visitor field.
+fn visitor_filter(indent: &str) -> String {
+    let mut filter = format!("{indent}format filter {{\n");
+    for field in VISITOR_FIELDS {
+        let _ = writeln!(filter, "{indent}\trequest>{field} delete");
+    }
+    let _ = writeln!(filter, "{indent}}}");
+    filter
+}
+
+/// `ployz_log` is a site's stderr access log. `ployz_pageviews <namespace>` also writes the
+/// site's full requests to the file the pageview harvester tails, which lives on the runtime
+/// tmpfs and rolls at 10MiB, keeping one old file.
+fn write_log_snippets(output: &mut String) {
+    let _ = write!(
+        output,
+        "(ployz_log) {{\n\tlog {{\n{}\t}}\n}}\n\n\
+(ployz_pageviews) {{\n\
+\tlog_append namespace {{args[0]}}\n\
+\tlog ployz_pageviews {{\n\
+\t\toutput file {CONTAINER_RUNTIME_DIR}/{} {{\n\
+\t\t\troll_size 10MiB\n\
+\t\t\troll_keep 1\n\
+\t\t\troll_uncompressed\n\
+\t\t\tmode 0600\n\
+\t\t}}\n\
+\t}}\n\
+}}\n\n",
+        visitor_filter("\t\t"),
+        super::ACCESS_LOG,
+    );
 }
 
 /// The `error_page` snippet: one code per failure, negotiated as HTML, JSON or plain text.
@@ -443,7 +496,7 @@ fn write_site(
         .unwrap_or_default();
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page {machine}\n\tlog\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page {machine}\n\timport ployz_log\n}}\n"
     );
 }
 
