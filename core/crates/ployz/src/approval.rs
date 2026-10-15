@@ -50,6 +50,7 @@ pub(crate) struct Operation {
 pub(crate) enum Verb {
     Publish,
     Deploy,
+    Retry,
     Drain,
     Set,
     Clean,
@@ -66,6 +67,7 @@ impl Verb {
         match self {
             Self::Publish => "save",
             Self::Deploy => "deploy",
+            Self::Retry => "retry",
             Self::Drain => "drain",
             Self::Set => "change",
             Self::Clean => "cleanup",
@@ -82,6 +84,7 @@ impl Verb {
         match self {
             Self::Publish => "saved",
             Self::Deploy => "deployed",
+            Self::Retry => "retried",
             Self::Drain => "drained",
             Self::Set => "changed",
             Self::Clean => "cleaned",
@@ -100,6 +103,7 @@ impl Verb {
             Self::Set => "to",
             Self::Publish
             | Self::Deploy
+            | Self::Retry
             | Self::Drain
             | Self::Clean
             | Self::Remove
