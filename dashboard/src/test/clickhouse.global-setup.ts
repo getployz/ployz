@@ -15,10 +15,10 @@ export const CLICKHOUSE_IMAGE = "clickhouse/clickhouse-server:26.9";
 const execFile = promisify(execFileCallback);
 const docker = (...args: ReadonlyArray<string>) => execFile("docker", args, { maxBuffer: 10 * 1024 * 1024 });
 
-async function waitForClickHouse(url: URL) {
+async function waitForClickHouse(port: number) {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    const ready = await fetch(new URL("/ping", url)).then((response) => response.ok, () => false);
+    const ready = await fetch(`http://127.0.0.1:${port}/ping`).then((response) => response.ok, () => false);
     if (ready) return;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
@@ -42,9 +42,8 @@ export default async function setup(project: TestProject) {
     const { stdout } = await docker("port", name, "8123/tcp");
     const port = Number(stdout.trim().split("\n")[0]?.split(":").at(-1));
     if (!Number.isSafeInteger(port) || port < 1) throw new Error(`Docker returned an invalid ClickHouse port: ${stdout}`);
-    const url = new URL(`http://ployz:ployz@127.0.0.1:${port}`);
-    await waitForClickHouse(url);
-    project.provide("clickhouseUrl", url.href);
+    await waitForClickHouse(port);
+    project.provide("clickhouseUrl", `http://ployz:ployz@127.0.0.1:${port}`);
     return stop;
   } catch (error) {
     await stop();

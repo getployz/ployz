@@ -11,10 +11,10 @@ import { organizationMachine } from "#/modules/machines/tables";
 import type { BotsInput, CrashPushInput, GapInput, PageviewInput, PageviewPushInput } from "#/modules/observe-ingest/ingest";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
-import { ENTRY_LOOKBACK_SECONDS, localDays, retentionCutoff, SESSION_GAP_SECONDS } from "#/modules/web-analytics/local-time";
+import { retentionCutoff } from "#/modules/web-analytics/local-time";
 import type { Site } from "#/modules/web-analytics/model";
 import { ClickHouse } from "#/modules/web-analytics/clickhouse/client";
-import { enqueueForClickHouse } from "#/modules/web-analytics/clickhouse/writer";
+import { enqueueForClickHouse, rollupDaysChangedBy } from "#/modules/web-analytics/clickhouse/writer";
 import { ensurePartitions, monthOf } from "#/modules/web-analytics/postgres/partitions";
 import { namespacesByEnvironment, siteDay } from "#/modules/web-analytics/salts.server";
 import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState, analyticsSite } from "#/modules/web-analytics/tables";
@@ -132,9 +132,6 @@ const DAY_MS = 86_400_000;
 const NO_BATCH_YET = -1n;
 
 type IngestSite = Pick<Site, "environmentId" | "timezone">;
-
-const rollupDaysChangedBy = (timezone: string, ts: Date) =>
-  localDays(timezone, new Date(ts.getTime() - SESSION_GAP_SECONDS * 1000), new Date(ts.getTime() + ENTRY_LOOKBACK_SECONDS * 1000 + 1));
 
 export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function* (pusher: ObservePusher, push: PageviewPushInput) {
   if (push.dropped > 0) {
