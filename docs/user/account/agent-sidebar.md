@@ -13,7 +13,7 @@ Ployz can't read where it is, the agent won't fall back to another environment. 
 you to name the project and environment to act in. It
 can create or rename a project, add, change and rename services, [configs](../services/configs.md)
 and volumes, add and change domains, check a domain and list the DNS records it still needs,
-review what's staged, restore or undo a saved version, publish and deploy. It can list an
+review what's staged, restore or undo a saved version, save without deploying, and deploy. It can list an
 environment's deployments, follow one to its end, redeploy a failed, cancelled or unknown one, start
 a queued one now, and cancel one, like the
 [deployment page](../deploy/deployments.md#redeploy-or-cancel-a-deployment)'s buttons. It can also
@@ -69,7 +69,7 @@ While the agent is open on an environment's canvas, the bar with your staged cha
 it goes back to the bottom of the canvas.
 
 Each thing the agent runs shows as a short line under its reply, named for what it does, like
-**environment show**. When it deploys or publishes, that line becomes a card with the
+**environment show**. When it deploys, that line becomes a card with the
 deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
@@ -83,7 +83,7 @@ CLI at once can leave it either running or stopped.
 
 ## Approve or deny a removal
 
-When a deploy or publish would remove a running service, delete a volume, detach a volume from a
+When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
 a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
 command that deletes data. The card leads with what would be
@@ -99,6 +99,10 @@ click it to see them.
 
 The agent picks up your answer and carries on. If you denied it, the agent gets your reason.
 
+A card for a save, like **Save production**, is marked **Deletes on deploy**: saving deletes
+nothing yet. Approving it saves without deploying, and shows **Approved. Saved, not deployed.**
+Your next deploy deletes the data, including one a Git push starts.
+
 While approvals are waiting, the **Agent** button shows how many, like **1 waiting**. An approval you didn't
 start from this chat, like one a coding agent opened from the CLI or an agent you
 [connected to Ployz Cloud](connect-an-agent.md), appears at the top of the
@@ -110,9 +114,9 @@ server, like **Remove fra-1**.
 
 - **Needs an Anthropic API key.** On a [Self-hosted Cloud](../self-hosting.md) without
   `ANTHROPIC_API_KEY`, the agent answers every message by saying it isn't set up yet.
-- **Approving never deletes data on its own.** When a deploy or publish would delete a volume's
+- **Approving never deletes data on its own.** When a deploy or save would delete a volume's
   data, the agent stops and tells you which volumes. It goes ahead only if you ask it to, like
-  "publish, accepting the volume loss", and only in the same project and environment.
+  "save, accepting the volume loss", and only in the same project and environment.
 - **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
   Restarting, starting or stopping a service never asks, and neither does upgrading a server or

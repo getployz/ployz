@@ -80,7 +80,7 @@ else you can, including a value it can't read, but it can't delete the organizat
 
 ## Destructive actions ask first
 
-A coding agent working through the CLI can publish or deploy a change that removes a running
+A coding agent working through the CLI can save or deploy a change that removes a running
 service, deletes a volume and its data, detaches a volume from a service, or removes a domain. It
 can also drain or remove a server, or clean up what a deleted environment left on your servers.
 Ployz refuses that command with `approval_required`, naming what it would remove and the approval
@@ -104,7 +104,7 @@ How you answer depends on where the command runs:
 - In an agent you [connected to Ployz Cloud](connect-an-agent.md), the call fails with a link.
   Approve or deny under **Waiting on you** in the Ployz agent, then have the agent try again.
 
-- `ployz publish` and `ployz deploy` ask only when the change removes something that's running.
+- `ployz deploy` and `ployz deploy --skip-deploy` ask only when the change removes something that's running.
   Rolling out a new image or changing variables never asks.
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
@@ -113,7 +113,7 @@ How you answer depends on where the command runs:
   [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks
   again about the new one.
-- An approval covers one publish. A later publish that still carries a removal that hasn't
+- An approval covers one save. A later save that still carries a removal that hasn't
   deployed yet asks again.
 
 A retry of a command you denied is still denied, even once it would destroy nothing. A retry of

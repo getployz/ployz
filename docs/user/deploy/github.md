@@ -64,7 +64,7 @@ every environment that follows that Git branch. Turn **Auto-deploy** off under *
 Source** to deploy only when you choose. It applies at once, with no deploy.
 
 A push ships the new commit with the settings you last deployed or
-[published](deployments.md#deploy-your-changes). Staged changes you haven't published stay
+[saved](deployments.md#deploy-your-changes). Staged changes you haven't saved stay
 behind, and services the push doesn't touch keep running as they are.
 
 ## Wait for CI

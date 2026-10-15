@@ -57,7 +57,7 @@ without revealing the secret they reference.
 2. Review the full **Before** and **After** text, with each file's mode, user ID, and group ID.
 3. To undo one file, open its actions menu and choose **Discard**. Choose
    **Discard all of app-settings** to undo the whole config.
-4. Click **Deploy changes** to apply the files, or **Publish** to save the staged configuration
+4. Click **Deploy changes** to apply the files, or **Save only** to save the staged configuration
    without changing running services.
 
 ![Before and After text and permissions for a config file in Details](../images/config-review.png)

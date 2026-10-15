@@ -110,7 +110,7 @@ one sentence of "what it means".
 Use the words the dashboard shows. Server (never machine, node, host or cluster),
 organization, project, environment, service, replica, volume, deployment, variable, builder,
 build order. Branch for an environment made from another, Git branch for Git's. Preview
-environment (the dashboard says PR environments). Staged changes, Deploy, Publish.
+environment (the dashboard says PR environments). Staged changes, Deploy, Save only.
 
 Never write: Config Store, Engine, Namespace, Saved/Applied/Working State, ingress, Management
 Client, Cloud Pairing, Founding Claim, iroh, NATS, Corrosion, BuildKit, OIDC. Exact quoted UI or
