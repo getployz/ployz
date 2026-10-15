@@ -9,9 +9,10 @@
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Change, Command, ConfigStore, CreateProject, CreateService, DiffQuery, Edit,
-    EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName, RemoveService,
-    RenameService, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, SourceKind, Written,
+    Actor, Change, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService,
+    DiffQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
+    ProjectName, RemoveService, RenameService, ServiceLineageId, ServiceQuery, ServicesQuery,
+    SetDefaultEnvironment, SettingPath, SourceKind, Written,
 };
 use serde_json::json;
 
@@ -377,4 +378,41 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
     })
     .unwrap();
     assert_eq!(template(), json!(null));
+}
+
+#[test]
+fn a_replayed_create_refuses_once_the_default_environment_moved() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateEnvironment {
+                id: EnvironmentId::parse(uuid(9)).unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    let create = CreateService {
+        id: ServiceLineageId::parse(uuid(10)).unwrap(),
+        environment: EnvironmentRef::default(),
+        name: name("api"),
+        image: Some("nginx:1".into()),
+        template: None,
+    };
+    store.write(&who, &create).unwrap();
+    store.write(&who, &create).unwrap();
+    store
+        .write(
+            &who,
+            &SetDefaultEnvironment {
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(EnvironmentName::parse("staging").unwrap()),
+                },
+            },
+        )
+        .unwrap();
+    let refused = store.write(&who, &create).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
 }
