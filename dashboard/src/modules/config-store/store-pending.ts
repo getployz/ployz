@@ -6,7 +6,7 @@ import { commandEnvironments } from "./store.contract";
 /** The mutation key of an Environment's pending writes; `store-write.ts` files each with its command. */
 export const storeWriteKey = (organizationSlug: string, key: string) => ["store-write", organizationSlug, key] as const;
 
-type NodeKind = "service" | "volume" | "config" | "domain";
+export type NodeKind = "service" | "volume" | "config" | "domain";
 type Scope = { path: string | null; target: DiscardTarget } | { node: NodeKind; name: string };
 export type Busy = "saving" | "restoring" | "syncing" | "discarding";
 
@@ -126,14 +126,16 @@ export function useStoreDiscarding(organizationSlug: string, environment: Enviro
     mark.mark === "leaving" && sameEnvironment(mark, environment) && "path" in mark.scope && mark.scope.path !== null ? [mark.scope.path] : []));
 }
 
-/** A Service the Store hasn't answered for yet: the canvas draws it as a ghost. */
-export type Arriving = { pending: "arriving"; id: string; name: string };
+/** A node the Store hasn't answered for yet: the canvas draws it as a ghost. */
+export type Arriving = { pending: "arriving"; node: NodeKind; id: string; name: string };
 
-/** Services arriving (ghosts) and leaving (dimmed) in the Environment until their writes answer. */
+/** Nodes arriving (ghosts) and leaving (dimmed, by kind and name) in the Environment until their writes answer. */
 export function useStorePendingNodes(organizationSlug: string, environment: EnvironmentRef) {
   const marks = usePendingMarks(organizationSlug).filter((mark) => sameEnvironment(mark, environment));
-  const arriving = marks.flatMap((mark): Arriving[] => mark.mark === "arriving" && mark.node === "service" ? [{ pending: "arriving", id: mark.id, name: mark.name }] : []);
-  const leaving = new Set(marks.flatMap((mark) => mark.mark === "leaving" && "node" in mark.scope && mark.scope.node === "service" ? [mark.scope.name] : []));
+  const arriving = marks.flatMap((mark): Arriving[] => mark.mark === "arriving" ? [{ pending: "arriving", node: mark.node, id: mark.id, name: mark.name }] : []);
+  const leavingOf = (node: NodeKind): ReadonlySet<string> =>
+    new Set(marks.flatMap((mark) => mark.mark === "leaving" && "node" in mark.scope && mark.scope.node === node ? [mark.scope.name] : []));
+  const leaving = { service: leavingOf("service"), volume: leavingOf("volume"), config: leavingOf("config"), domain: leavingOf("domain") } satisfies Record<NodeKind, ReadonlySet<string>>;
   return { arriving, leaving };
 }
 

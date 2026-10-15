@@ -24,7 +24,7 @@ import { deploymentQuery, useCachedStoreView, useInFlightDeployments } from "#/m
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
 import { useContainerTrouble } from "./use-container-trouble";
-import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
+import { usePendingNode } from "./usePendingNode";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
@@ -40,8 +40,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
-  const name = useStorePendingName(params.organizationSlug, store, "service", service.name);
-  const leaving = useStorePendingNodes(params.organizationSlug, store).leaving.has(service.name);
+  const { name, leaving } = usePendingNode("service", service.name);
   const running = inFlight.find((deployment) => deployment.status !== "queued") ?? null;
   const plan = useCachedStoreView(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
   const chip = deployChip(service, changeCount, inFlight, plan?.ok ? restartedServices(plan.value) : null);

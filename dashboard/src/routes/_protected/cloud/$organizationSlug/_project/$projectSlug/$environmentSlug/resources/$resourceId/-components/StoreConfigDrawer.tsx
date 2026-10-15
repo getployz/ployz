@@ -27,6 +27,7 @@ import { changedProps, dnsLabelError } from "#/modules/config-store/store-servic
 import { storeReferenceTargets } from "#/modules/config-store/store-variables";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStorePendingName } from "#/modules/config-store/store-pending";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -56,6 +57,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const diff = requireView(views[2]);
   const settings = requireView(views[3]);
   const writer = useStoreWriter(organizationSlug);
+  const shownName = useStorePendingName(organizationSlug, store, "config", config.name);
   if (!views[4].ok) return <CanvasInspectorNotFound noun="Config" />;
   const item = views[4].value;
   const state: StoreConfig = { organizationSlug, environment: store, config };
@@ -72,7 +74,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
         {removing ? <p className="truncate font-semibold">{config.name}</p> : (
-          <div className="min-w-0"><CanvasInspectorNameEditor value={config.name} schema={nameSchema} editTitle="Edit config name"
+          <div className="min-w-0"><CanvasInspectorNameEditor value={shownName} schema={nameSchema} editTitle="Edit config name"
             editDescription="Rename this config. Its files and mounts stay." placeholder="Config name"
             {...changedProps(renamed)}
             onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} /></div>

@@ -8,6 +8,7 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { stagedSurface } from "./node-status";
 import { STAGED_CLASSES } from "./node-status-view";
+import { usePendingNode } from "./usePendingNode";
 import type { MountedVolume } from "./types";
 import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.hooks";
 import { traySpeech } from "#/modules/volume-copies/volume-copies";
@@ -30,13 +31,14 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
   const speech = copies === null ? null : traySpeech(copies);
   const placed = usePlacementStaged(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, volume);
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged || placed ? "update" : null));
+  const { name, leaving } = usePendingNode("volume", volume.name);
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
   // Several writers on one directory must be said: it's how data gets corrupted.
   const shared = writers > 1;
   const className = cn(
     "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
     surface && STAGED_CLASSES[surface].surface,
-    lighting === null && "opacity-40",
+    (lighting === null || leaving) && "opacity-40",
     alsoMounted && litVolumeId === volume.id && "border-foreground text-foreground",
     selected && "ring-2 ring-foreground",
     pick?.role === "own" && "ring-2 ring-foreground",
@@ -45,7 +47,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged, writers, 
   );
   const content = <>
     <HardDriveIcon className="size-3.5 shrink-0" />
-    <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
+    <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
       : surface === "destructive" ? <span>Removing</span>
       : speech ? <span className={cn("flex shrink-0 items-center gap-1", speech.tone === "staged" && "text-info")}>
@@ -79,6 +81,7 @@ export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { 
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const lighting = useNodeLighting(config.id);
   const surface = stagedSurface(lighting, config.change ?? (mountChanged ? "update" : null));
+  const { name, leaving } = usePendingNode("config", config.name);
   return (
     <Link to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: config.id }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
@@ -87,11 +90,11 @@ export function ConfigTray({ tray: { config, dir, mountChanged }, selected }: { 
       className={cn(
         "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
         surface && STAGED_CLASSES[surface].surface,
-        lighting === null && "opacity-40",
+        (lighting === null || leaving) && "opacity-40",
         selected && "ring-2 ring-foreground",
       )}>
       <FolderIcon className="size-3.5 shrink-0" />
-      <span className={cn("shrink-0", surface && STAGED_CLASSES[surface].name)}>{config.name}</span>
+      <span className={cn("shrink-0", surface && STAGED_CLASSES[surface].name)}>{name}</span>
       <span className="min-w-0 flex-1 truncate text-right font-mono">{surface === "destructive" ? "Removing" : dir}</span>
     </Link>
   );

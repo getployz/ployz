@@ -80,7 +80,7 @@ it("opens a mirror on the Copies tab, even from a URL that had Settings open", a
   expect(screen.getByRole("tab", { name: "Copies" }).getAttribute("aria-selected")).toBe("true");
 });
 
-it("locks the drawer while its rename is pending, so no edit names the volume by its old name", async () => {
+it("locks the drawer and shows the new name while its rename is pending, so no edit names the volume by its old name", async () => {
   await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings", {});
   let answer!: (result: StoreResult<ConfigWritten>) => void;
   const write = vi.spyOn(functions, "writeStoreServerFn").mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
@@ -90,6 +90,7 @@ it("locks the drawer while its rename is pending, so no edit names the volume by
   await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByRole("tab", { name: "Settings", hidden: true }).closest("[inert]")).not.toBeNull());
   expect(screen.getByTitle("Edit volume name").closest("[inert]")).not.toBeNull();
+  expect(screen.getByTitle("Edit volume name").textContent).toBe("store");
   await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); });
   await waitFor(() => expect(screen.getByRole("tab", { name: "Settings" }).closest("[inert]")).toBeNull());
   expect(screen.getByTitle("Edit volume name").closest("[inert]")).toBeNull();

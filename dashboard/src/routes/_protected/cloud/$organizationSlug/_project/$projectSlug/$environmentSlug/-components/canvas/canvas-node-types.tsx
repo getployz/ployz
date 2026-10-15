@@ -22,10 +22,10 @@ export const canvasNodeTypes = {
   storeConfig: StoreConfigNode,
   storeLive: StoreLiveNode,
   loading: LoadingNode,
-  pendingService: PendingServiceNode,
+  pending: PendingNode,
 };
 
-function PendingServiceNode({ data }: { data: { name: string } }) {
+function PendingNode({ data }: { data: { name: string } }) {
   return (
     <Card size="node" className="h-36 w-72 justify-between border-dashed opacity-70" data-pending-node={data.name}>
       <CardHeader>

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Link, Outlet,
@@ -61,7 +62,7 @@ async function openInspector(state: "ready" | "pending" | "error" = "ready") {
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
   const organizationRoute = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
   const projectGroup = createRoute({ getParentRoute: () => organizationRoute, id: "_project", component: Outlet });
-  const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", component: Outlet });
+  const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", loader: () => ({ store: { project: "shop", environment: "production" } }), component: Outlet });
   const canvas = createRoute({ getParentRoute: () => environment, id: "_canvas", component: Architecture });
   const index = createRoute({ getParentRoute: () => canvas, path: "/", component: () => null });
   const service = createRoute({
@@ -83,7 +84,7 @@ async function openInspector(state: "ready" | "pending" | "error" = "ready") {
     routeTree,
     history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production/services/api"] }),
   });
-  render(<RouterProvider router={router} />);
+  render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
   if (state === "ready") await screen.findByLabelText("Draft setting");
   else if (state === "pending") await screen.findByRole("status", { name: "Loading resource" });
   else await screen.findByText("Service couldn’t load");
