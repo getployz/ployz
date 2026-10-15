@@ -1043,9 +1043,11 @@ describe("organization enrollment coordinator", () => {
     try {
       await removal.query("begin");
       await removal.query("select 1 from organization_pairing where organization_id = $1 for update", [organizationId]);
+      const pid = (await removal.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]?.pid;
       const publication = fake.coordinator.publish({ ...unfinished, capability: keyed(0x77) });
       await vi.waitFor(async () => {
-        expect((await harness.pool.query("select 1 from pg_locks where not granted")).rowCount).toBeGreaterThan(0);
+        expect((await harness.pool.query("select 1 from pg_stat_activity where $1 = any(pg_blocking_pids(pid))", [pid])).rowCount)
+          .toBeGreaterThan(0);
       });
       await removal.query("delete from organization_machine where machine_id = $1", [unfinished.machineId]);
       await removal.query("update machine_enrollment_token set expires_at = clock_timestamp() where claimed_machine_id = $1", [
