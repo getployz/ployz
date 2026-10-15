@@ -187,6 +187,15 @@ function SelectorCommandDialog({
 const githubConnectHref = (organizationSlug: string) =>
   `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
 
+/** Cross-origin reads throw while the popup is on GitHub. */
+function returnedToPloyz(popup: Window) {
+  try {
+    return popup.location.origin === window.location.origin && !popup.location.pathname.startsWith("/api/github/");
+  } catch {
+    return false;
+  }
+}
+
 let onReturnFromGithub: (() => void) | undefined;
 
 function openGithub(queryClient: QueryClient, organizationSlug: string) {
@@ -198,10 +207,10 @@ function openGithub(queryClient: QueryClient, organizationSlug: string) {
   }
   // Returning from the popup fires focus but not visibilitychange, so recheck access here, and
   // resync in case GitHub's webhook never arrives. Keep resyncing on focus until one succeeds
-  // after the popup has closed, so a visit back mid-flow doesn't use up the resync.
+  // after the flow ends: the popup closed, or GitHub sent it back to a Ployz page.
   if (onReturnFromGithub) window.removeEventListener("focus", onReturnFromGithub);
   const onReturn = () => {
-    const done = popup.closed;
+    const done = popup.closed || returnedToPloyz(popup);
     void queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
     void requestGithubRepoSyncServerFn({ data: { organizationSlug } }).then(() => {
       if (done && onReturnFromGithub === onReturn) {
