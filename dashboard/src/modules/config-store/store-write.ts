@@ -17,7 +17,10 @@ export type StoreEdit = {
   changes: Change[];
 };
 
-/** Commands that read or write an Environment besides the one they name. */
+/**
+ * Commands that read or write an Environment besides the one they name. Their views are every view: one may make or
+ * close an Environment, which the Project's views (its Environments, the Projects) list.
+ */
 const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["sync", "undo_sync", "remove_proposal", "take", "create_branch", "copy_node"]);
 
 /** The Environment revision a write produced; a Batch's is its last command's. */
@@ -49,10 +52,10 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   // Edits not yet settled, in any Environment: a command naming several Environments waits for all of them.
   const unsettled = new Set<Promise<unknown>>();
 
-  /** The Environments a command names (null, one naming none: every view). */
+  /** The Environments whose views a command moves (null, every view). */
   function keysOf(command: ConfigCommand): ReadonlySet<string> | null {
     const refs = commandEnvironments(command);
-    return refs.length === 0 ? null : new Set(refs.map(environmentKey));
+    return refs.length === 0 || SPANS.has(command.command) ? null : new Set(refs.map(environmentKey));
   }
 
   /** Sends `command` with the views this tab shows of its Environments, and installs their answers. */

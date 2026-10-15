@@ -8,7 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
-import { diffQuery, environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
+import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
 import { withPendingChanges } from "./store-pending";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
@@ -241,6 +241,19 @@ it("rereads a view the write's answer says the Store was too busy to read, keepi
   reread.resolve({ ok: true, value: { view: "environment", ...view(3, 3) } });
   await persisted;
   expect(test.replicas()).toBe(3);
+});
+
+it("lists a new Branch in its Project's Environments once the write persists, so its canvas opens", async () => {
+  const test = setup(view(2, 1));
+  const listing = (names: string[]) => ({ ok: true as const, value: { view: "environments" as const, project: { name: "shop" }, environments: names.map((name) => ({ name })) } });
+  const key = storeViewOptions("acme", test.scope, environmentsQuery("shop")).queryKey;
+  test.scope.queryClient.setQueryData<unknown>(key, listing(["production"]));
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
+  renderHook(() => useStoreView("acme", environmentsQuery("shop")), { wrapper });
+  test.write.mockImplementationOnce(async ({ data }) => ({ ok: true, value: { written: "branch" } as never,
+    answers: data.shows.filter((query) => query.query === "environments").map((query) => ({ query, result: listing(["production", "feature"]) as never })) }));
+  await test.writer.commit({ command: "create_branch", id: "b", from: ref, name: "feature", copy: [], live: [], keep: false, setup: [], fix: null } as never).isPersisted.promise;
+  expect(test.scope.queryClient.getQueryData(key)).toEqual(listing(["production", "feature"]));
 });
 
 it("keeps a newer view when a write's answer or a read lands older", async () => {
