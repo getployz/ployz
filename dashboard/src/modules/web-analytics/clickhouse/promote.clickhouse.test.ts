@@ -18,13 +18,14 @@ import { storeTestCloud } from "#/test/store-cloud";
 const DAY = 86_400_000;
 const MATCHED = "00000000-0000-4000-8000-00000000c4a1";
 const DRIFTED = "00000000-0000-4000-8000-00000000c4a2";
+const RENAMED = "00000000-0000-4000-8000-00000000c4a3";
 
 const row = (ts: Date, visitorId: string): PageviewRecord => ({
   ts: ts.toISOString(), visitorId, host: "shop.example", pathname: "/", source: "", referrerHost: null, utmSource: null,
   utmMedium: null, utmCampaign: null, utmTerm: null, utmContent: null, ref: null, language: "en",
 });
 
-it.live("a site whose ClickHouse rollup matches Postgres flips to ClickHouse reads, and a site that differs stays on Postgres", () =>
+it.live("a site whose ClickHouse rollup matches Postgres flips to ClickHouse reads, and a site that differs in any served read stays on Postgres", () =>
   Effect.gen(function* () {
     forgetPartitions();
     const { url, clickhouse } = yield* clickhouseTestDatabase;
@@ -45,22 +46,27 @@ it.live("a site whose ClickHouse rollup matches Postgres flips to ClickHouse rea
       yield* drizzle.insert(analyticsPageview).values(pageviewValues(environmentId, [extra]));
     }));
 
-    for (const environmentId of [MATCHED, DRIFTED]) {
+    for (const environmentId of [MATCHED, DRIFTED, RENAMED]) {
       yield* provide(seedSite({ environmentId, timezone: "UTC" }, rows));
       yield* provide(backfillSite(clickhouse, environmentId));
       yield* provide(closeDays(environmentId, now));
     }
     yield* postgresOnly(DRIFTED);
+    yield* clickhouse.command(
+      "INSERT INTO daily SELECT * REPLACE ('/renamed' AS value) FROM daily WHERE environment_id = {environmentId:String} AND dim = 'page'",
+      { environmentId: RENAMED });
+    yield* clickhouse.command("DELETE FROM daily WHERE environment_id = {environmentId:String} AND dim = 'page' AND value = '/'", { environmentId: RENAMED });
 
     expect(yield* provide(promoteReads(MATCHED))).toBe(true);
     expect(yield* provide(promoteReads(DRIFTED))).toBe(false);
+    expect(yield* provide(promoteReads(RENAMED))).toBe(false);
     expect(yield* provide(promoteReads(MATCHED))).toBe(false);
     const reads = yield* provide(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       return yield* drizzle.select({ environmentId: analyticsClickhouseSite.environmentId, reads: analyticsClickhouseSite.reads })
         .from(analyticsClickhouseSite).orderBy(analyticsClickhouseSite.environmentId);
     }));
-    expect(reads).toEqual([{ environmentId: MATCHED, reads: true }, { environmentId: DRIFTED, reads: false }]);
+    expect(reads).toEqual([{ environmentId: MATCHED, reads: true }, { environmentId: DRIFTED, reads: false }, { environmentId: RENAMED, reads: false }]);
 
     yield* postgresOnly(MATCHED);
     const pageviews = (environmentId: string) => provide(adapter.overview({
