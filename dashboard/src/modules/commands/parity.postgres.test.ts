@@ -56,7 +56,7 @@ const parity = Effect.fn(function* () {
   const approvals = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.insert(operationApprovals).values(["volume:data", "volume:logs"].map((subject) => ({
-      organizationId: ORGANIZATION, subject, credentialKind: "session" as const, credentialId: "device", command: "release", digest: `release:${subject}`,
+      organizationId: ORGANIZATION, subject, via: "cli" as const, credentialKind: "session" as const, credentialId: "device", command: "release", digest: `release:${subject}`,
       review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
         effects: [{ kind: "deletes_volume", name: subject.slice("volume:".length) }],
         operation: { verb: "release", name: subject.slice("volume:".length), preview: null },
