@@ -105,7 +105,9 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
   const textOf = (file: string) => drafts.get(file)?.content ?? item.contents[file] ?? "";
   const hidden = (file: string) => hiddenFile(item, file) && textOf(file) === "";
-  const edits = configEdits(item, drafts, failedSaves);
+  const submittedDraft = (file: string) => [...pendingSaves].reverse().find((submitted) => submitted.has(file))?.get(file);
+  const unsubmitted = new Map([...drafts].filter(([file, value]) => !sameDraft(submittedDraft(file), value)));
+  const edits = configEdits(item, unsubmitted, failedSaves);
   const dirty = new Set(edits.map((edit) => edit.file));
   const unsaved = new Set([...dirty, ...[...pendingSaves].flatMap((submitted) => [...submitted.keys()])]);
   const oversized = fileNames.map((file) => ({ file, error: configFileSizeError(utf8Bytes(textOf(file))) }))
@@ -201,6 +203,9 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     </div>
   );
 }
+
+const sameDraft = (a: FileDraft | undefined, b: FileDraft) =>
+  a?.content === b.content && a.mode === b.mode && a.uid === b.uid && a.gid === b.gid;
 
 function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf, hidden, targets, serviceNames, values, readOnly,
   onDraft, onSave, onRemove, onAdd, footer }: {
