@@ -365,30 +365,33 @@ fn no_client_address_or_user_agent_reaches_a_row_or_the_disk() {
     assert!(!dir_has(&outbox, b"Chrome/130"));
 }
 
+fn append(path: &Path, text: &str) {
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+}
+
+fn lines(tail: &mut Tail) -> Vec<String> {
+    let mut lines = Vec::new();
+    tail.poll(|line| lines.push(String::from_utf8(line.to_vec()).unwrap()))
+        .unwrap();
+    lines
+}
+
 #[test]
 fn the_tail_starts_at_the_end_and_follows_appends_rolls_and_truncation() {
     let root = TestDir::new("ployzd-observe-pageview-tail");
     fs::create_dir_all(&root.0).unwrap();
     let path = root.0.join("access.log");
-    let append = |text: &str| {
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .unwrap()
-            .write_all(text.as_bytes())
-            .unwrap();
-    };
-    let mut tail = Tail::new(path.clone());
-    let mut poll = || {
-        let mut lines = Vec::new();
-        tail.poll(|line| lines.push(String::from_utf8(line.to_vec()).unwrap()))
-            .unwrap();
-        lines
-    };
-
-    assert!(poll().is_empty(), "no log yet");
+    let append = |text: &str| append(&path, text);
     append("old\n");
+    let mut tail = Tail::new(path.clone());
+    let mut poll = || lines(&mut tail);
+
     assert!(
         poll().is_empty(),
         "a log found at start is read from its end"
@@ -420,4 +423,15 @@ fn the_tail_starts_at_the_end_and_follows_appends_rolls_and_truncation() {
     assert!(poll().is_empty());
     append("after truncating an overlong line\n");
     assert_eq!(poll(), ["after truncating an overlong line"]);
+}
+
+#[test]
+fn a_log_that_appears_after_startup_is_read_from_its_first_line() {
+    let root = TestDir::new("ployzd-observe-pageview-tail-cold");
+    fs::create_dir_all(&root.0).unwrap();
+    let path = root.0.join("access.log");
+    let mut tail = Tail::new(path.clone());
+    assert!(lines(&mut tail).is_empty(), "no log yet");
+    append(&path, "first\nsecond\n");
+    assert_eq!(lines(&mut tail), ["first", "second"]);
 }

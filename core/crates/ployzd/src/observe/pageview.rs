@@ -461,7 +461,10 @@ impl Tail {
     fn open(&mut self) -> io::Result<bool> {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                self.start = Start::Beginning;
+                return Ok(false);
+            }
             Err(error) => return Err(error),
         };
         let inode = file.metadata()?.ino();
