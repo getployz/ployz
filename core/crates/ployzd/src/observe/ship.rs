@@ -390,16 +390,16 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
         let Some(pusher) = (self.target)() else {
             return Shipped::Idle;
         };
-        let held = match self.outbox.next() {
+        let refresh = if self.asks_for_salts() {
+            self.outbox.salt_refresh().unwrap_or_else(|error| {
+                tracing::warn!(stream = S::NAME, %error, "cannot build a salt refresh");
+                None
+            })
+        } else {
+            None
+        };
+        let held = match refresh.map_or_else(|| self.outbox.next(), |held| Ok(Some(held))) {
             Ok(Some(held)) => held,
-            Ok(None) if self.asks_for_salts() => match self.outbox.salt_refresh() {
-                Ok(Some(held)) => held,
-                Ok(None) => return Shipped::Idle,
-                Err(error) => {
-                    tracing::warn!(stream = S::NAME, %error, "cannot build a salt refresh");
-                    return Shipped::Retry { after: None };
-                }
-            },
             Ok(None) => return Shipped::Idle,
             Err(error) => {
                 tracing::warn!(stream = S::NAME, %error, "cannot read the outbox");
@@ -1106,8 +1106,41 @@ mod tests {
         let empty = |seq: &str| serde_json::json!({ "stream": "crash", "seq": seq, "dropped": 0, "events": [] });
         assert_eq!(bodies.len(), 3);
         assert_eq!(bodies[0], empty("0"));
-        assert_eq!(bodies[1]["seq"], "5");
-        assert_eq!(bodies[2], empty("5"));
+        assert_eq!(bodies[1], empty("5"));
+        assert_eq!(bodies[2]["seq"], "5");
+        assert_eq!(bodies[2]["events"][0]["seq"], "5");
+    }
+
+    #[tokio::test]
+    async fn stale_salts_are_asked_for_while_a_crash_batch_is_held() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        outbox.push(crash(5)).unwrap();
+        let (cloud, url) = Cloud::serve(vec![
+            (StatusCode::SERVICE_UNAVAILABLE, None),
+            (StatusCode::SERVICE_UNAVAILABLE, None),
+            (StatusCode::OK, Some(ACK)),
+        ])
+        .await;
+        let salts = Arc::new(Salts::open(&store, 0));
+        let shipper =
+            Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
+
+        assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
+        assert!(salts.stale(unix_seconds()));
+        assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
+        *shipper.salts_asked.lock().unwrap() = None;
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert!(acme_covered(&salts));
+        assert_eq!(held(&outbox), [5]);
+        assert_eq!(
+            cloud
+                .bodies()
+                .iter()
+                .map(|body| body["events"].as_array().unwrap().len())
+                .collect::<Vec<_>>(),
+            [0, 1, 0]
+        );
     }
 
     fn pageviews(store: &StoreRoot, rows: usize) -> Arc<PageviewOutbox> {
