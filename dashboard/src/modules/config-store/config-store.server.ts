@@ -189,15 +189,22 @@ export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (o
   return loaded.kind === "ready" ? loaded.connections : [];
 });
 
+/** Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing. */
+const deploys = {
+  branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false,
+} satisfies Record<SystemEvent["event"], boolean>;
+
 /**
  * Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits, the
- * hostnames other Namespaces publish, and which Servers hold the data a Save accepted losing.
+ * hostnames other Namespaces publish, and, for an event that can deploy, which Servers hold the data a Save accepted losing.
  */
 export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizationId: string, event: SystemEvent) {
   const store = yield* cloudStore;
   const servers = yield* countOrganizationMachines(organizationId);
   const domains = yield* systemDomainEvidence(organizationId);
-  const volumes = yield* systemVolumeEvidence(organizationId, (query) => store.read(organizationId, query));
+  const volumes = deploys[event.event]
+    ? yield* systemVolumeEvidence(organizationId, (query) => store.read(organizationId, query))
+    : undefined;
   const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes"> = { servers, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
   return yield* storeTry(() => store.system(organizationId, event, trusted));

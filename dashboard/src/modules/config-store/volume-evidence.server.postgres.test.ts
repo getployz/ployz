@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { ConfigCommand, ConfigQuery, ConfigWritten, Connection, VolumeObservation } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigWritten, Connection, SystemEvent, VolumeObservation } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { expect, vi } from "vitest";
 import type { JsonObject, JsonValue } from "#/db/tables";
@@ -60,7 +60,7 @@ it.live("a push asks which Volumes a Save accepted losing, and without Servers t
       .toEqual({ evidence: undefined, asked: [{ query: "consented" }] });
   }));
 
-it.live("a push asks the paired Servers about exactly the consented Volumes and hands what they hold to the Store", () =>
+it.live("a push asks the paired Servers about exactly the consented Volumes and hands what they hold to the Store; a sweep, which can't deploy, asks nothing", () =>
   Effect.gen(function* () {
     const services = yield* cloud();
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
@@ -72,11 +72,20 @@ it.live("a push asks the paired Servers about exactly the consented Volumes and 
     const read = vi.spyOn(store, "read").mockResolvedValue({ view: "consented", volumes: [volume] });
     const system = vi.spyOn(store, "system").mockResolvedValue(asTestDouble<ConfigWritten>()({ written: "nothing" }));
 
-    yield* provided(storeSystem(ORGANIZATION, { event: "cluster_forgotten" }).pipe(Effect.provideService(VolumeObserver, { observe })));
+    const told = (event: SystemEvent) => provided(storeSystem(ORGANIZATION, event).pipe(Effect.provideService(VolumeObserver, { observe })));
+    const push: SystemEvent = {
+      event: "branch_head", repository_id: 1, branch: "main", base: null, head: "0".repeat(40), changed: null,
+    };
 
-    expect(read).toHaveBeenCalledWith(ORGANIZATION, { query: "consented" });
+    yield* told(push);
+    expect(read).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, { query: "consented" });
     expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }], [volume]);
-    expect(system).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, { event: "cluster_forgotten" }, expect.objectContaining({ volumes: held }));
+    expect(system).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, push, expect.objectContaining({ volumes: held }));
+
+    yield* told({ event: "sweep", now: 0 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(observe).toHaveBeenCalledOnce();
+    expect(system).toHaveBeenLastCalledWith(ORGANIZATION, { event: "sweep", now: 0 }, expect.not.objectContaining({ volumes: expect.anything() }));
   }));
 
 it.live("a removal gathers for each Environment it takes off, and a shutdown for its own", () =>
