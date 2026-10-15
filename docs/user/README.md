@@ -64,6 +64,7 @@ New to Ployz? Follow these steps from a first deploy to real users.
 - [Logs](observe/logs.md): service logs and deployment logs
 - [Metrics](observe/metrics.md): CPU, memory, network and disk per service and server
 - [Uptime](observe/uptime.md): whether visitors can reach each service, checks after each deploy and on demand
+- [Analytics](observe/analytics.md): visitors, pages, sources and goals per Environment, without cookies
 
 ## Account
 
