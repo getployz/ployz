@@ -321,6 +321,10 @@ fn create(
         // to the local registry; build steps run in the worker's bridge network.
         "--driver-opt".into(),
         "network=host".into(),
+        // A restarted worker sits in a new cgroup the fence no longer matches.
+        // A worker that dies stays dead, so its Build fails instead.
+        "--driver-opt".into(),
+        "restart-policy=no".into(),
         "--buildkitd-config".into(),
         config.to_string_lossy().into_owned(),
     ];
@@ -859,7 +863,7 @@ esac
             [
                 format!("buildx rm --keep-state {name}"),
                 format!(
-                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --buildkitd-config {}",
+                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --buildkitd-config {}",
                     directory.join(format!("{name}.buildkitd.toml")).display()
                 ),
             ]
