@@ -129,7 +129,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    needs: [sdk, static, test]
+    needs: [sdk, static, test, test-clickhouse]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -193,9 +193,7 @@ jobs:
           run-id: ${{ needs.sdk.outputs.run-id }}
           github-token: ${{ github.token }}
           path: core/crates/ployz-sdk
-      # The ClickHouse tests start their own server through the Docker CLI; pulling first keeps the pull out of the test timing.
-      - run: docker pull --quiet clickhouse/clickhouse-server:26.9
-      - name: Unit, PostgreSQL and ClickHouse tests
+      - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
         run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
@@ -206,3 +204,28 @@ jobs:
           path: dashboard/test-results
           retention-days: 7
           if-no-files-found: ignore
+
+  # Its own job so `pnpm test` never needs ClickHouse, and the parity job's wall time stays visible.
+  test-clickhouse:
+    needs: [sdk]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.release-tag }}
+      - uses: ./.github/actions/setup-cloud
+        with:
+          package-cache: ${{ inputs.release-tag == '' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.sdk.outputs.name }}
+          run-id: ${{ needs.sdk.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: core/crates/ployz-sdk
+      # The tests start their own servers through the Docker CLI; pulling first keeps the pull out of the test timing.
+      - run: docker pull --quiet clickhouse/clickhouse-server:26.9
+      - name: ClickHouse tests
+        env:
+          PLOYZ_TEST_ENV_FILE: .env.test
+        run: pnpm test:clickhouse --reporter=default --reporter=github-actions
