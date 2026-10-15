@@ -123,7 +123,7 @@ fn automatic_sites_render_routes_and_health_endpoint() {
         automatic_site_block(&caddyfile, "https://"),
         format!(
             "import ployz_headers {local} import ployz_trace {local} \"\" \"\" NOT_DEPLOYED \
-             error NOT_DEPLOYED 404 import error_page {local} log"
+             error NOT_DEPLOYED 404 import error_page {local} import ployz_log"
         )
     );
     let health = automatic_site_block(&caddyfile, "http://");
@@ -170,7 +170,10 @@ fn every_site_answers_failures_with_the_error_page() {
     ] {
         let site = automatic_site_block(&caddyfile, address);
         assert!(
-            site.ends_with(&format!("import error_page {} log", "a".repeat(32))),
+            site.ends_with(&format!(
+                "import error_page {} import ployz_log",
+                "a".repeat(32)
+            )),
             "{address}: {site}"
         );
     }
@@ -208,6 +211,62 @@ fn only_cloudflare_peers_may_set_the_client_address() {
         ),
         "forwarded headers from a trusted peer never reach the app: {proxy}"
     );
+}
+
+#[test]
+fn only_the_pageview_file_names_the_visitor() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+    let deletes = |block: &str, fields: &[&str]| {
+        for field in fields {
+            assert!(
+                block.contains(&format!("{field} delete")),
+                "{field}: {block}"
+            );
+        }
+    };
+
+    let global = caddyfile
+        .split_once("\n{\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("global options block")
+        .0;
+    deletes(global, &super::VISITOR_FIELDS);
+    deletes(global, &super::CONNECTION_FIELDS);
+    assert!(
+        global.contains("\t\texclude http.stdlib events\n"),
+        "handshake errors and TLS events name the client where no filter reaches: {global}"
+    );
+    deletes(
+        &automatic_site_block(&caddyfile, "(ployz_log)"),
+        &super::VISITOR_FIELDS,
+    );
+    assert_eq!(
+        automatic_site_block(&caddyfile, "(ployz_pageviews)"),
+        "log_append namespace {args[0]} log ployz_pageviews { output file \
+         /run/ingress/pageviews/access.log { roll_size 10MiB roll_keep 1 roll_uncompressed \
+         mode 0600 } }"
+    );
+    assert_eq!(
+        caddyfile.matches("\tlog\n").count(),
+        0,
+        "every site log is filtered"
+    );
+
+    for (address, imports) in [
+        ("http://example.com", true),
+        ("http://empty.example.com", true),
+        ("https://secure.example.com", true),
+        ("http://", false),
+        ("https://", false),
+    ] {
+        let site = automatic_site_block(&caddyfile, address);
+        assert!(site.ends_with("import ployz_log"), "{address}: {site}");
+        assert_eq!(
+            site.contains("import ployz_pageviews app "),
+            imports,
+            "{address}: {site}"
+        );
+    }
 }
 
 #[test]

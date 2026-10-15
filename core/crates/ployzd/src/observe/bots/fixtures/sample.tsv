@@ -1,0 +1,98 @@
+# label	category	user agent. Hand-built mix of UAs a Caddy access log sees on HTML document requests in 2026.
+human	chrome-desktop	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36
+human	chrome-desktop	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36
+human	chrome-desktop	Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36
+human	chrome-android	Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36
+human	safari-ios	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1
+human	safari-ios	Mozilla/5.0 (iPad; CPU OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1
+human	safari-mac	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15
+human	firefox	Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:143.0) Gecko/20100101 Firefox/143.0
+human	firefox	Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0
+human	firefox	Mozilla/5.0 (Android 15; Mobile; rv:143.0) Gecko/143.0 Firefox/143.0
+human	edge	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0
+human	samsung	Mozilla/5.0 (Linux; Android 14; SAMSUNG SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36
+human	opera	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 OPR/124.0.0.0
+human	brave-arc	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36
+human	in-app	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22G86 Instagram 400.0.0.40.81 (iPhone15,3; iOS 18_6; en_US; en; scale=3.00; 1290x2796; 789432112)
+human	in-app	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/22G86 [FBAN/FBIOS;FBAV/520.0.0.40.104;FBBV/789;FBDV/iPhone15,3;FBMD/iPhone;FBSN/iOS;FBSV/18.6;FBSS/3;FBCR/;FBID/phone;FBLC/en_US;FBOP/80]
+human	in-app	Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A.240805.005; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/141.0.0.0 Mobile Safari/537.36 [FB_IAB/FB4A;FBAV/520.0.0.47.109;]
+human	in-app	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1 Line/15.12.0
+human	in-app	Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A.240805.005; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/141.0.0.0 Mobile Safari/537.36 GSA/16.30.0
+human	in-app	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) GSA/385.0.789 Mobile/15E148 Safari/604.1
+human	in-app	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 musical_ly_41.2.0 JsSdk/2.0 NetType/WIFI Channel/App Store ByteLocale/en Region/US
+human	in-app	Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/141.0.0.0 Mobile Safari/537.36 LinkedInApp/9.31.1
+human	google-app	Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36 GoogleApp/16.30
+human	duckduckgo	Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 DuckDuckGo/7 Safari/605.1.15
+human	yandex	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 YaBrowser/25.8.0.0 Safari/537.36
+human	ucbrowser	Mozilla/5.0 (Linux; U; Android 13; en-US; SM-A145F Build/TP1A.220624.014) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/123.0.6312.80 UCBrowser/13.8.2.1324 Mobile Safari/537.36
+bot	search	Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)
+bot	search	Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7390.54 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)
+bot	search	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm) Chrome/116.0.1938.76 Safari/537.36
+bot	search	Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)
+bot	search	Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)
+bot	search	DuckDuckBot/1.1; (+http://duckduckgo.com/duckduckbot.html)
+bot	search	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)
+bot	search	Mozilla/5.0 (compatible; Qwantbot/1.0_4193332; +https://help.qwant.com/bot/)
+bot	seo	Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)
+bot	seo	Mozilla/5.0 (compatible; SemrushBot/7~bl; +http://www.semrush.com/bot.html)
+bot	seo	Mozilla/5.0 (compatible; MJ12bot/v1.4.8; http://mj12bot.com/)
+bot	seo	Mozilla/5.0 (compatible; DotBot/1.2; +https://opensiteexplorer.org/dotbot; help@moz.com)
+bot	seo	Mozilla/5.0 (compatible; DataForSeoBot/1.0; +https://dataforseo.com/dataforseo-bot)
+bot	ai	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)
+bot	ai	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot
+bot	ai	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; OAI-SearchBot/1.0; +https://openai.com/searchbot
+bot	ai	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)
+bot	ai	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +Claude-User@anthropic.com)
+bot	ai	Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)
+bot	ai	Mozilla/5.0 (Linux; Android 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Mobile Safari/537.36 (compatible; Bytespider; spider-feedback@bytedance.com)
+bot	ai	meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)
+bot	ai	CCBot/2.0 (https://commoncrawl.org/faq/)
+bot	ai	Mozilla/5.0 (compatible; Amazonbot/0.1; +https://developer.amazon.com/support/amazonbot) Chrome/119.0.6045.214 Safari/537.36
+bot	ai	Mozilla/5.0 (compatible; Google-Extended)
+bot	preview	facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)
+bot	preview	Twitterbot/1.0
+bot	preview	Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)
+bot	preview	Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)
+bot	preview	WhatsApp/2.23.20.0
+bot	preview	TelegramBot (like TwitterBot)
+bot	preview	LinkedInBot/1.0 (compatible; Mozilla/5.0; Apache-HttpClient +http://www.linkedin.com)
+bot	preview	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_1) AppleWebKit/601.2.4 (KHTML, like Gecko) Version/9.0.1 Safari/601.2.4 facebookexternalhit/1.1 Facebot Twitterbot/1.0
+bot	preview	Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/600.2.5 (KHTML, like Gecko) Version/8.0.2 Safari/600.2.5 (Applebot/0.1; +http://www.apple.com/go/applebot)
+bot	preview	Iframely/1.3.1 (+https://iframely.com/docs/about)
+bot	monitor	Mozilla/5.0 (compatible; UptimeRobot/2.0; http://www.uptimerobot.com/)
+bot	monitor	Pingdom.com_bot_version_1.4_(http://www.pingdom.com/)
+bot	monitor	Mozilla/5.0 (compatible; BetterUptimeBot/1.0; +https://betteruptime.com/)
+bot	monitor	Better Stack Better Uptime Bot Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36
+bot	monitor	Mozilla/5.0+(compatible; UptimeRobot/2.0; http://www.uptimerobot.com/)
+bot	monitor	Cloudflare-Healthchecks/1.0
+bot	monitor	kube-probe/1.31
+bot	monitor	Datadog Agent/7.50.0
+bot	library	curl/8.5.0
+bot	library	Wget/1.21.4
+bot	library	python-requests/2.32.3
+bot	library	python-httpx/0.27.0
+bot	library	Python/3.12 aiohttp/3.9.5
+bot	library	Go-http-client/1.1
+bot	library	Go-http-client/2.0
+bot	library	axios/1.7.2
+bot	library	node-fetch/1.0 (+https://github.com/bitinn/node-fetch)
+bot	library	node
+bot	library	undici
+bot	library	okhttp/4.12.0
+bot	library	Java/17.0.2
+bot	library	Apache-HttpClient/4.5.14 (Java/17.0.2)
+bot	library	Ruby
+bot	library	PostmanRuntime/7.39.0
+bot	library	Scrapy/2.11.2 (+https://scrapy.org)
+bot	headless	Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36
+bot	headless	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Lighthouse/12.0
+bot	headless	Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36 Chrome-Lighthouse
+bot	headless	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) PTST/250901.120000 Chrome/141.0.0.0 Safari/537.36
+bot	scanner	Mozilla/5.0 (compatible; CensysInspect/1.1; +https://about.censys.io/)
+bot	scanner	Mozilla/5.0 zgrab/0.x
+bot	scanner	Mozilla/5.0 (compatible; Nuclei - Open-source project (github.com/projectdiscovery/nuclei))
+bot	scanner	Expanse, a Palo Alto Networks company, searches across the global IPv4 space multiple times per day to identify customers&#39; presences on the Internet. If you would like to be excluded from our scans, please contact us at: scaninfo@paloaltonetworks.com
+bot	scanner	Mozilla/5.0 (compatible; InternetMeasurement/1.0; +https://internet-measurement.com/)
+bot	empty	
+bot	empty	-
+bot	disguised	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36

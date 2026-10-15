@@ -55,7 +55,11 @@ pub(crate) fn command(command: Command) -> Command {
             .value_parser(clap::value_parser!(Ipv4Net))
             .help("Cluster network, when this Server founds the Cluster"),
     )
-    .arg(value("ingress-image", None).help("Caddy image to deploy when founding a Cluster"))
+    .arg(
+        value("ingress-image", None)
+            .value_parser(crate::ingress::pinned_image)
+            .help("Caddy image to deploy when founding a Cluster"),
+    )
     .arg(switch("reset", None).help("Reset an initialized Server before enrollment"))
     .arg(
         switch("standalone", None)

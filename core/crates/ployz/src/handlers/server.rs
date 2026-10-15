@@ -518,7 +518,10 @@ pub(super) fn upgrade_command(command: Command) -> Command {
 
 /// Pin the Caddy image the Ingress Proxy is deployed with (offline test clusters).
 fn ingress_image() -> Arg {
-    value("ingress-image", None).value_name("IMAGE").hide(true)
+    value("ingress-image", None)
+        .value_name("IMAGE")
+        .value_parser(crate::ingress::pinned_image)
+        .hide(true)
 }
 
 pub(super) fn provisioning_flags(command: Command) -> Command {

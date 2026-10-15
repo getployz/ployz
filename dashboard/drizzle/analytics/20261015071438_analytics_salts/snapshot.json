@@ -1,0 +1,180 @@
+{
+  "version": "8",
+  "dialect": "postgres",
+  "id": "fb166a36-7fd7-483a-98a6-5947a2f093a8",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
+  "ddl": [
+    {
+      "name": "analytics",
+      "entityType": "schemas"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "salt",
+      "entityType": "tables",
+      "schema": "analytics"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "site",
+      "entityType": "tables",
+      "schema": "analytics"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "salt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_id",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "salt"
+    },
+    {
+      "type": "date",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "day",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "salt"
+    },
+    {
+      "type": "bytea",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "salt",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "salt"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "salt"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "site"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "environment_id",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "site"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "enabled",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "site"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'UTC'",
+      "generated": null,
+      "identity": null,
+      "name": "timezone",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "site"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "site"
+    },
+    {
+      "columns": [
+        "organization_id",
+        "environment_id",
+        "day"
+      ],
+      "nameExplicit": false,
+      "name": "salt_pkey",
+      "entityType": "pks",
+      "schema": "analytics",
+      "table": "salt"
+    },
+    {
+      "columns": [
+        "organization_id",
+        "environment_id"
+      ],
+      "nameExplicit": false,
+      "name": "site_pkey",
+      "entityType": "pks",
+      "schema": "analytics",
+      "table": "site"
+    }
+  ],
+  "renames": []
+}

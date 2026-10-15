@@ -57,7 +57,7 @@ if [ "$reseed" = 1 ]; then
   # Store's migration ledger stays, as drizzle's does in its own schema, so neither reapplies its migrations.
   docker exec "$name" psql -q -v ON_ERROR_STOP=1 -U postgres -d ployz_cloud -c "DO \$\$ BEGIN EXECUTE (SELECT
     'TRUNCATE ' || string_agg(format('%I.%I', schemaname, tablename), ', ') || ' RESTART IDENTITY CASCADE'
-    FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'config_migration'); END \$\$" > "$run/truncate.log" 2>&1 || { cat "$run/truncate.log" >&2; exit 1; }
+    FROM pg_tables WHERE schemaname IN ('public', 'analytics') AND tablename <> 'config_migration'); END \$\$" > "$run/truncate.log" 2>&1 || { cat "$run/truncate.log" >&2; exit 1; }
 else
   KEEP_BROWSER=1 "$dash/scripts/verify/down.sh" >/dev/null 2>&1 || true
   # Prints N distinct free ports: every listener stays open until all are allocated.
@@ -205,7 +205,7 @@ EOF
 fi
 
 for _ in $(seq 120); do docker exec "$name" pg_isready -q -h 127.0.0.1 -U postgres -d ployz_cloud && break; sleep 0.5; done
-node node_modules/drizzle-kit/bin.cjs migrate > "$run/migrate.log" 2>&1 || { cat "$run/migrate.log" >&2; exit 1; }
+{ node node_modules/drizzle-kit/bin.cjs migrate && node node_modules/drizzle-kit/bin.cjs migrate --config drizzle.analytics.config.ts; } > "$run/migrate.log" 2>&1 || { cat "$run/migrate.log" >&2; exit 1; }
 seed_out=$(node scripts/verify/runner.mjs /scripts/verify/seed.ts 2>&1) || { echo "$seed_out" >&2; exit 1; }
 seed=$(printf '%s\n' "$seed_out" | sed -n 's/^VERIFY_SEED //p')
 # Only the Monitoring tab reads uptime, so it seeds in the background; $run/uptime says ok or failed when it ends.

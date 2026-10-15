@@ -1,9 +1,10 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { it } from "@effect/vitest";
-import { asc } from "drizzle-orm";
+import { asc, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { observePushMessage, verifyObservePush } from "#/modules/observe-ingest/ingest.server";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
@@ -11,6 +12,7 @@ import { operationOutbox } from "#/modules/operations/tables";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { handleObservePush } from "#/routes/api/machines/-handlers";
+import { saltWindow, setSiteAnalytics, siteDay } from "#/modules/web-analytics/salts.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
@@ -18,6 +20,8 @@ import type { MachineId } from "@ployz/sdk";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f201";
+const PRODUCTION = "00000000-0000-4000-8000-00000000f203";
+const STAGING = "00000000-0000-4000-8000-00000000f204";
 const MACHINE = machineId("0");
 const WEB = "c".repeat(32);
 const API = "d".repeat(32);
@@ -129,14 +133,36 @@ const setup = Effect.fn(function* () {
       events: (yield* drizzle.select().from(operationOutbox)).map(({ name, data }) => ({ name, data })),
     };
   }).pipe(Effect.orDie));
-  return { send, sendRaw, rows, identity, enrollElsewhere };
+  const sites = () => Effect.gen(function* () {
+    const store = yield* cloudStore;
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: "00000000-0000-4000-8000-00000000f202", name: "shop", default_environment: PRODUCTION }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_environment", id: STAGING, project: "shop", name: "staging" }));
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`
+      insert into config_namespace (organization_id, namespace, environment_id)
+      values (${ORGANIZATION}, 'shop-prod', ${PRODUCTION}), (${ORGANIZATION}, 'shop-staging', ${STAGING})
+      on conflict do nothing`);
+    yield* setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "Australia/Sydney" });
+    yield* setSiteAnalytics(ORGANIZATION, STAGING, { enabled: false });
+  }).pipe(Effect.provide(services), Effect.orDie);
+  const breakSalts = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`alter table analytics.site rename to site_gone`);
+  }).pipe(Effect.orDie));
+  const corruptTimezone = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update analytics.site set timezone = 'Not/A_Zone'`);
+  }).pipe(Effect.orDie));
+  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone };
 });
 
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
   const answer = yield* send(push([[10, WEB], [11, WEB, 0], [12, API, 137]]));
-  expect(answer.status).toBe(204);
+  expect(answer.status).toBe(200);
   expect(answer.headers.get("cache-control")).toBe("no-store");
+  expect(answer.headers.get("content-type")).toBe("application/json");
+  expect(yield* Effect.promise(() => answer.json())).toEqual({ sites: [] });
   expect(yield* rows()).toEqual({
     crashes: [
       { seq: 10n, serviceId: WEB, serviceName: "prod/web", exitCode: 1, oom: false },
@@ -152,21 +178,21 @@ it.live("a push keeps every event the Machine shipped, advances the cursor, and 
   expect((yield* rows()).events).toHaveLength(2);
 }), 60_000);
 
-it.live("a replayed seq answers 204 and writes nothing", () => Effect.gen(function* () {
+it.live("a replayed seq answers 200 and writes nothing", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
   const body = push([[10, WEB], [12, WEB]]);
-  expect((yield* send(body)).status).toBe(204);
+  expect((yield* send(body)).status).toBe(200);
   const before = yield* rows();
   expect(before.crashes.map(({ seq }) => seq)).toEqual([10n, 12n]);
   expect(before.events).toHaveLength(1);
-  expect((yield* send(body)).status).toBe(204);
+  expect((yield* send(body)).status).toBe(200);
   expect(yield* rows()).toEqual(before);
 }), 60_000);
 
 it.live("crashes behind a cursor that went backwards are kept and mailed, and the cursor stays ahead", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
-  expect((yield* send(push([[20, WEB]]))).status).toBe(204);
-  expect((yield* send(push([[5, API]]))).status).toBe(204);
+  expect((yield* send(push([[20, WEB]]))).status).toBe(200);
+  expect((yield* send(push([[5, API]]))).status).toBe(200);
   const { crashes, cursor, events } = yield* rows();
   expect(crashes.map(({ seq }) => seq)).toEqual([5n, 20n]);
   expect(cursor).toEqual([{ stream: "crash", seq: 20n }]);
@@ -178,8 +204,8 @@ it.live("crashes behind a cursor that went backwards are kept and mailed, and th
 
 it.live("a batch that straddles the cursor keeps only the crashes it had not kept", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
-  expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(204);
-  expect((yield* send(push([[12, WEB], [13, API]]))).status).toBe(204);
+  expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(200);
+  expect((yield* send(push([[12, WEB], [13, API]]))).status).toBe(200);
   const { crashes, cursor, events } = yield* rows();
   expect(crashes.map(({ seq }) => seq)).toEqual([10n, 12n, 13n]);
   expect(cursor).toEqual([{ stream: "crash", seq: 13n }]);
@@ -187,6 +213,60 @@ it.live("a batch that straddles the cursor keeps only the crashes it had not kep
     { organizationId: ORGANIZATION, serviceId: WEB },
     { organizationId: ORGANIZATION, serviceId: API },
   ]);
+}), 60_000);
+
+const EMPTY = JSON.stringify({ stream: "crash", seq: "0", dropped: 0, events: [] });
+
+it.live("an empty crash batch is a salt refresh: 200 with salts for on sites only", () => Effect.gen(function* () {
+  const { send, rows, sites } = yield* setup();
+  yield* sites();
+  const answer = yield* send(EMPTY);
+  expect(answer.status).toBe(200);
+  expect(answer.headers.get("content-type")).toBe("application/json");
+  const now = Date.now();
+  const days = [0, 1, 2].map((offset) => siteDay("Australia/Sydney", now, offset));
+  expect(yield* Effect.promise(() => answer.json())).toEqual({
+    sites: [{
+      namespace: "shop-prod",
+      salts: days.map((day) => ({ day, ...saltWindow(day, "Australia/Sydney"), salt: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/) })),
+    }],
+  });
+  expect(yield* rows()).toEqual({ ...nothing, cursor: [{ stream: "crash", seq: 0n }] });
+}), 60_000);
+
+it.live("a replay below the cursor carries the same salts", () => Effect.gen(function* () {
+  const { send, sites } = yield* setup();
+  yield* sites();
+  const first = yield* send(push([[10, WEB]]));
+  const replay = yield* send(EMPTY);
+  expect(replay.status).toBe(200);
+  expect(yield* Effect.promise(() => replay.json())).toEqual(yield* Effect.promise(() => first.json()));
+}), 60_000);
+
+it.live("a push Cloud kept but cannot issue salts for answers 204, which keeps the Machine's salts", () => Effect.gen(function* () {
+  const { send, rows, sites, breakSalts } = yield* setup();
+  yield* sites();
+  yield* breakSalts();
+  const answer = yield* send(push([[10, WEB]]));
+  expect(answer.status).toBe(204);
+  expect(yield* Effect.promise(() => answer.text())).toBe("");
+  expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
+}), 60_000);
+
+it.live("a push Cloud kept answers 204 even when issuing salts dies", () => Effect.gen(function* () {
+  const { send, rows, sites, corruptTimezone } = yield* setup();
+  yield* sites();
+  yield* corruptTimezone();
+  const answer = yield* send(push([[10, WEB]]));
+  expect(answer.status).toBe(204);
+  expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
+}), 60_000);
+
+it.live("a pageviews push answers 404 until Cloud takes pageviews, and writes nothing", () => Effect.gen(function* () {
+  const { send, rows, sites } = yield* setup();
+  yield* sites();
+  expect((yield* send(JSON.stringify({ stream: "pageviews", seq: "1", dropped: 0, events: [] }))).status).toBe(404);
+  expect(yield* rows()).toEqual(nothing);
 }), 60_000);
 
 it.live("a stream Cloud does not know answers 404 and writes nothing", () => Effect.gen(function* () {
@@ -216,7 +296,7 @@ it.live("a push signed more than five minutes away from now answers 401 and writ
   expect((yield* send(push([[10, WEB]]), { at: now - 301 })).status).toBe(401);
   expect((yield* send(push([[10, WEB]]), { at: now + 301 })).status).toBe(401);
   expect(yield* rows()).toEqual(nothing);
-  expect((yield* send(push([[10, WEB]]), { at: now - 290 })).status).toBe(204);
+  expect((yield* send(push([[10, WEB]]), { at: now - 290 })).status).toBe(200);
 }), 60_000);
 
 it.live("a push with no signature, a malformed one, or a stale timestamp answers 401 before its body or the database is read", () =>
@@ -291,7 +371,7 @@ it.live("a push from a Machine no Organization enrolled answers 401 and writes n
 it.live("a Machine enrolled before Cloud kept its key gets the key from its capability on its first push", () => Effect.gen(function* () {
   const { send, identity } = yield* setup();
   expect(yield* identity()).toEqual([{ organizationId: ORGANIZATION, managementIdentity: null }]);
-  expect((yield* send(push([[10, WEB]]))).status).toBe(204);
+  expect((yield* send(push([[10, WEB]]))).status).toBe(200);
   expect(yield* identity()).toEqual([{ organizationId: ORGANIZATION, managementIdentity: PUBLIC_KEY }]);
 }), 60_000);
 

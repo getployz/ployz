@@ -35,6 +35,7 @@ iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 ployz-core.workspace = true
 ployz-build.workspace = true
 rcgen = "0.14.6"
+regex = "1.13.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["http2", "json", "rustls", "stream"] }
 url = "2.5.8"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
@@ -63,7 +64,6 @@ axum = { version = "0.8.9", default-features = false, features = ["http2"] }
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true
-regex = "1.13.1"
 tokio = { version = "1.53.1", features = ["test-util"] }
 
 [lints]
