@@ -80,17 +80,21 @@ impl Tool for GithubLs {
             GithubFileBody::Text { content } => (Some(content), None),
             GithubFileBody::Withheld { note } => (None, Some(note)),
         };
-        let dockerfile = content
+        let facts = content
             .as_deref()
             .filter(|_| is_dockerfile(&file.path))
             .map(DockerfileFacts::parse);
+        let mut untrusted = json!({ "content": content });
+        if let Some(facts) = &facts {
+            untrusted["dockerfile"] = json!({ "env": facts.env, "args": facts.args });
+        }
         Ok(json!({
             "repository": file.repository,
             "ref": file.git_ref,
             "path": file.path,
-            "untrusted": { "content": content },
+            "untrusted": untrusted,
             "note": note,
-            "dockerfile": dockerfile,
+            "dockerfile": facts.map(|facts| json!({ "ports": facts.ports })),
         }))
     }
 }

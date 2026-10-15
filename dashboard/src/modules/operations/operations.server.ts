@@ -159,7 +159,7 @@ const interrupts = (input: {
     subject: `service:${input.environmentId}/${input.service}`,
     verb: input.verb,
     name: `${input.service} in ${input.place}${input.only === null ? "" : ` on ${input.only.name}`}`,
-    preview: { environment: input.environmentId, service: input.service, only: input.only?.name ?? null },
+    preview: { environment: input.environmentId, service: input.service, only: input.only?.machine ?? null },
     effects: [{
       kind: input.verb === "stop" ? "stops_service" : "restarts_service",
       name: input.service,

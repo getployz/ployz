@@ -451,10 +451,10 @@ fn github_ls_reads_a_dockerfiles_final_ports_and_variable_names() {
     )
     .ok();
     assert_eq!(read["untrusted"]["content"], CLOUD_DOCKERFILE);
+    assert_eq!(read["dockerfile"], json!({ "ports": [8080, 9090] }));
     assert_eq!(
-        read["dockerfile"],
+        read["untrusted"]["dockerfile"],
         json!({
-            "ports": [8080, 9090],
             "env": ["DATABASE_URL", "LOG_LEVEL", "PORT"],
             "args": ["NPM_TOKEN", "VERSION"],
         })
@@ -473,6 +473,7 @@ fn github_ls_reads_no_dockerfile_facts_from_other_files() {
     )
     .ok();
     assert!(read["dockerfile"].is_null(), "{read}");
+    assert!(read["untrusted"]["dockerfile"].is_null(), "{read}");
 }
 
 #[test]

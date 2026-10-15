@@ -264,23 +264,28 @@ describe("callCloud", () => {
       expect(send).toHaveBeenCalledTimes(1);
     }));
 
+  const deployedWeb = Effect.gen(function* () {
+    const inngest = new Inngest({ id: "call-cloud-test" });
+    const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+    const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+    const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+    const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: { project: null, environment: null }, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    const { drizzle } = yield* Database.pipe(Effect.provide(services));
+    yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = ${DEPLOYMENT}`);
+    yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
+      select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
+      from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
+    const caller: Caller = { ...member, userId };
+    return { services, drizzle, caller, send };
+  });
+
   // Catches an agent stopping or restarting a Service without asking, or a start (which interrupts nothing) made to ask.
   it.live("asks a human before an agent stops or restarts a Service, and runs a start straight away", () =>
     Effect.gen(function* () {
-      const inngest = new Inngest({ id: "call-cloud-test" });
-      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
-      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
-      const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
-      yield* Effect.promise(() => store.write(ORGANIZATION, {
-        command: "admit", admit: "deploy", id: DEPLOYMENT, environment: { project: null, environment: null }, services: [], version: null, accept_volume_loss: [],
-      }, acmeWeb()));
-      const { drizzle } = yield* Database.pipe(Effect.provide(services));
-      yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = ${DEPLOYMENT}`);
-      yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
-        select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
-        from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
-      const caller: Caller = { ...member, userId };
+      const { services, drizzle, caller, send } = yield* deployedWeb;
       const act = (verb: ServiceVerb, attempt: string, only: ServerRef | null = null): Act => ({
         attempt: attempt.repeat(32),
         digest: "d".repeat(64),
@@ -309,20 +314,7 @@ describe("callCloud", () => {
   // Catches one approved stop authorizing every later stop of the Service, or a dashboard Stop made to wait for a human.
   it.live("one approval runs one stop: a retry with its key replays it, a later stop asks again, and the dashboard never asks", () =>
     Effect.gen(function* () {
-      const inngest = new Inngest({ id: "call-cloud-test" });
-      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
-      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
-      const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
-      yield* Effect.promise(() => store.write(ORGANIZATION, {
-        command: "admit", admit: "deploy", id: DEPLOYMENT, environment: { project: null, environment: null }, services: [], version: null, accept_volume_loss: [],
-      }, acmeWeb()));
-      const { drizzle } = yield* Database.pipe(Effect.provide(services));
-      yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = ${DEPLOYMENT}`);
-      yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
-        select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
-        from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
-      const caller: Caller = { ...member, userId };
+      const { services, drizzle, caller } = yield* deployedWeb;
       const stop = (attempt: string): Act => ({
         attempt: attempt.repeat(32),
         digest: "d".repeat(64),
@@ -346,6 +338,29 @@ describe("callCloud", () => {
 
       const clicked = yield* callCloud({ ...caller, via: "dashboard" }, { act: stop("4") }).pipe(Effect.provide(services));
       expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+    }));
+
+  // Catches an approval to stop web on one Server stopping it on another Server that has the same name.
+  it.live("an approved stop on one Server asks again for another Server with the same name", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller } = yield* deployedWeb;
+      const stop = (attempt: string, machine: MachineId): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: { machine, name: "fra-1" }, verb: "stop" },
+      });
+
+      const asked = yield* callCloud(caller, { act: stop("1", MACHINE) }).pipe(Effect.provide(services));
+      const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
+      expect(yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+
+      const elsewhere = yield* callCloud(caller, { act: stop("2", OTHER_MACHINE) }, approval_id).pipe(Effect.provide(services));
+      expect(elsewhere).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
+      expect(yield* drizzle.select().from(serviceAct)).toEqual([]);
+
+      const there = yield* callCloud(caller, { act: stop("3", MACHINE) }, approval_id).pipe(Effect.provide(services));
+      expect(there).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+      expect((yield* drizzle.select().from(serviceAct)).map((row) => row.only?.machine)).toEqual([MACHINE]);
     }));
 
   // Catches an approval for web off authorizing a change that also turns other policy off, or a reread that supersedes
