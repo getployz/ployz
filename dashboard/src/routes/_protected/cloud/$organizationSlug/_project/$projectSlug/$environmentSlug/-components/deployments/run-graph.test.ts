@@ -137,7 +137,7 @@ describe("run graph", () => {
     expect(Object.fromEntries(ordered)).toEqual({ a: -1, b: 0, c: 1, v: -2, y: -1, x: 0, w: 1, z: 2 });
   });
 
-  it("times a build from its start and finish, and a row from its first state past pending", () => {
+  it("times a build from its start and finish, and a row from its first running state", () => {
     const timed = makeRunGraph(deployment({
       builds: [build("api", { started_at: 5, finished_at: 17 }), build("web", { status: "building", started_at: 8 }), build("db")],
     }));
@@ -145,6 +145,10 @@ describe("run graph", () => {
     const history: ServerRow["history"] = [{ at: 3, state: "pending" }, { at: 7, state: "running", phase: "starting", serving: false }];
     const row = { ...completed("fsn-1", 10, 20), history };
     expect(makeRunGraph(deployment({ nodes: [service("api", [row], "deployed")] })).nodes[0]?.timing).toEqual({ started: 7, finished: 20 });
+    const skipped: ServerRow = {
+      ...at, state: "not_attempted", started_at: null, finished_at: 30, history: [{ at: 3, state: "pending" }, { at: 30, state: "not_attempted" }],
+    };
+    expect(makeRunGraph(deployment({ nodes: [service("web", [skipped], "not_attempted")] })).nodes[0]?.timing).toBeUndefined();
   });
 
   it("keeps a deployed Service running while its old copies still stop", () => {

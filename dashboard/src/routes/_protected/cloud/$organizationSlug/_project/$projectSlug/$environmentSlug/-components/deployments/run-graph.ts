@@ -69,9 +69,9 @@ export function rowLight(row: ServerRow): NodeLight {
   }
 }
 
-/** When a row's work started: its first state past pending, else what the row says. */
+/** When a row's work started: its first running state, else what the row says. A row never attempted never started. */
 function rowStart(row: ServerRow): number | null {
-  return row.history?.find((transition) => transition.state !== "pending")?.at ?? row.started_at;
+  return row.history?.find((transition) => transition.state === "running")?.at ?? row.started_at;
 }
 
 export function rowTiming(rows: ServerRow[]): RunTiming | undefined {
