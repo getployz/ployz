@@ -57,14 +57,36 @@ export function resolveRange(spec: RangeSpec, timezone: string, now: number): Re
   return { range: { start: dayStart(timezone, addDays(timezone, today, 1 - days)), end }, interval: days === 1 ? "hour" : "day" };
 }
 
-/** Why a day's numbers are short: some visits could not be counted, or the day is still arriving. */
-export type PartialReason = "gap" | "today";
+/**
+ * Why a day's numbers are short: some visits could not be counted, the day is today, or a past day's visits may
+ * still be arriving late.
+ */
+export type PartialReason = "gap" | "today" | "late";
 export type PartialDay = { readonly day: string; readonly reason: PartialReason };
 
-/** Days in `days` with uncounted visits, then the site's current day, which pageviews still reach late. */
-export function partialDays(days: ReadonlyArray<string>, gaps: ReadonlyArray<{ day: string; count: number }>, today: string): PartialDay[] {
-  const gapped = new Set(gaps.filter((gap) => gap.count > 0).map((gap) => gap.day));
-  return days.flatMap((day): PartialDay[] => gapped.has(day) ? [{ day, reason: "gap" }] : day === today ? [{ day, reason: "today" }] : []);
+/** What Cloud knows about how complete each day is. */
+export type DayEvidence = {
+  readonly gaps: ReadonlyArray<{ readonly day: string; readonly count: number }>;
+  readonly today: string;
+  /** The last day the rollup closed, which it does only once a Machine's late pageviews for it stop being likely. */
+  readonly closedThrough: string;
+  /** Closed days that pageviews reached after closing, not yet rebuilt. */
+  readonly dirty: ReadonlyArray<string>;
+};
+
+/** Days in `days` with uncounted visits, then today, then past days whose pageviews may still reach Cloud. */
+export function partialDays(days: ReadonlyArray<string>, evidence: DayEvidence): PartialDay[] {
+  const gapped = new Set(evidence.gaps.filter((gap) => gap.count > 0).map((gap) => gap.day));
+  const dirty = new Set(evidence.dirty);
+  const reason = (day: string): PartialReason | undefined =>
+    gapped.has(day) ? "gap"
+    : day === evidence.today ? "today"
+    : day > evidence.closedThrough || dirty.has(day) ? "late"
+    : undefined;
+  return days.flatMap((day): PartialDay[] => {
+    const why = reason(day);
+    return why === undefined ? [] : [{ day, reason: why }];
+  });
 }
 
 export type AnalyticsPlan = "paid" | "unpaid" | "self-host-on" | "self-host-off";

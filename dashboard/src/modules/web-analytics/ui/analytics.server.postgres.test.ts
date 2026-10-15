@@ -5,7 +5,9 @@ import { expect } from "vitest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { setSiteAnalytics } from "#/modules/web-analytics/salts.server";
-import { analyticsGapDaily, analyticsGoal } from "#/modules/web-analytics/tables";
+import { addDays, localDay } from "#/modules/web-analytics/local-time";
+import { ensurePartitions, forgetPartitions, monthOf } from "#/modules/web-analytics/postgres/partitions";
+import { analyticsGapDaily, analyticsGoal, analyticsPageview, analyticsRollupState } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { createGoal, deleteGoal, readAnalyticsView } from "./analytics.server";
@@ -25,6 +27,7 @@ const unpaid: PolarService = {
 
 /** Acme's production Environment with one goal on `/kept`, on the given plan, with analytics on or off there. */
 const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnabled: boolean }, siteEnabled: boolean) {
+  forgetPartitions();
   const services = yield* Layer.build(yield* storeTestCloud({
     ...(plan.polar && { polar: plan.polar }),
     env: { ANALYTICS_ENABLED: String(plan.analyticsEnabled) },
@@ -81,4 +84,28 @@ it.live("a site whose every visit was lost says which days, not that it has no v
   }).pipe(Effect.orDie));
   const view = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
   expect(view).toMatchObject({ gate: "on", empty: true, lostDays: ["2026-10-10", "2026-10-12"], goals: [{ pathPattern: "/kept", visitors: 0 }] });
+}).pipe(Effect.scoped));
+
+it.live("a past day is partial until the rollup closes it, and again while late pageviews dirty it", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);
+  const today = localDay("UTC", Date.now());
+  const day = (offset: number) => addDays("UTC", today, offset);
+  const first = new Date(`${day(-20)}T12:00:00Z`);
+  const read = (rollup: { rolledUpTo: string | null; dirty: string[] }) => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(analyticsRollupState).set(rollup).where(eq(analyticsRollupState.environmentId, PRODUCTION));
+    const view = yield* readAnalyticsView(actor, { ...scope, range: "30d" });
+    if (view.gate !== "on" || view.empty) return expect.unreachable("the site has a pageview");
+    return view.partialDays.filter((partial) => partial.reason === "late").map((partial) => partial.day);
+  }));
+  yield* provide(Effect.gen(function* () {
+    yield* ensurePartitions([monthOf(first)]);
+    const { drizzle } = yield* Database;
+    yield* drizzle.insert(analyticsPageview).values({ environmentId: PRODUCTION, ts: first, visitorId: 1n, host: "shop.test", pathname: "/", source: "direct" });
+  }).pipe(Effect.orDie));
+
+  expect(yield* read({ rolledUpTo: day(-3), dirty: [] })).toEqual([day(-2), day(-1)]);
+  expect(yield* read({ rolledUpTo: day(-1), dirty: [day(-9)] })).toEqual([day(-9)]);
+  expect(yield* read({ rolledUpTo: day(-1), dirty: [] })).toEqual([]);
+  expect((yield* read({ rolledUpTo: null, dirty: [] }))[0]).toEqual(day(-20));
 }).pipe(Effect.scoped));

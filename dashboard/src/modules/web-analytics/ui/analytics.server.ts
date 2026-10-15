@@ -8,9 +8,9 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Validation } from "#/server/public-error";
 import * as analytics from "../adapter";
-import { localDay, localDays } from "../local-time";
+import { addDays, localDay, localDays } from "../local-time";
 import { setSiteAnalytics } from "../salts.server";
-import { analyticsGapDaily, analyticsGoal, analyticsPageview, analyticsSite } from "../tables";
+import { analyticsGapDaily, analyticsGoal, analyticsPageview, analyticsRollupState, analyticsSite } from "../tables";
 import {
   analyticsGate,
   type CreateGoalInput,
@@ -47,7 +47,7 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
   const goals = yield* drizzle.select({ id: analyticsGoal.id, name: analyticsGoal.name, pathPattern: analyticsGoal.pathPattern })
     .from(analyticsGoal).where(eq(analyticsGoal.environmentId, input.environmentId)).orderBy(asc(analyticsGoal.createdAt));
   const [seen] = yield* drizzle.select({ ts: analyticsPageview.ts }).from(analyticsPageview)
-    .where(eq(analyticsPageview.environmentId, input.environmentId)).limit(1);
+    .where(eq(analyticsPageview.environmentId, input.environmentId)).orderBy(asc(analyticsPageview.ts)).limit(1);
   if (seen === undefined) {
     // Every visit can be dropped, for a day with no salt: then the count of lost visits is all the site has.
     const lost = yield* drizzle.select({ day: analyticsGapDaily.day }).from(analyticsGapDaily)
@@ -70,7 +70,7 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
     filters: page === null ? [] : [page],
     limit: TABLE_ROWS,
   };
-  const [overview, series, pages, sources, entryPages, campaigns, languages, hosts, conversions, gaps] = yield* Effect.all([
+  const [overview, series, pages, sources, entryPages, campaigns, languages, hosts, conversions, gaps, [rollup]] = yield* Effect.all([
     analytics.overview(q),
     analytics.timeseries(q, interval),
     analytics.topPages(q),
@@ -85,7 +85,10 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
       gte(analyticsGapDaily.day, localDay(site.timezone, range.start)),
       lte(analyticsGapDaily.day, localDay(site.timezone, range.end.getTime() - 1)),
     )),
+    drizzle.select({ rolledUpTo: analyticsRollupState.rolledUpTo, dirty: analyticsRollupState.dirty }).from(analyticsRollupState)
+      .where(eq(analyticsRollupState.environmentId, input.environmentId)),
   ], { concurrency: "unbounded" });
+  const today = localDay(site.timezone, now);
   const byGoal = new Map(conversions.goals.map((goal) => [goal.goalId, goal]));
   return {
     gate: "on",
@@ -96,7 +99,13 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
     interval,
     overview: overview.totals,
     buckets: series.buckets.map(({ bucket, pageviews, visitors }) => ({ at: bucket.getTime(), pageviews, visitors })),
-    partialDays: partialDays(localDays(site.timezone, overview.range.start, overview.range.end), gaps, localDay(site.timezone, now)),
+    partialDays: partialDays(localDays(site.timezone, overview.range.start, overview.range.end), {
+      gaps,
+      today,
+      // Before the rollup closes its first day, every day from the first pageview on is still open.
+      closedThrough: rollup?.rolledUpTo ?? addDays(site.timezone, localDay(site.timezone, seen.ts), -1),
+      dirty: rollup?.dirty ?? [],
+    }),
     pages: pages.values,
     sources: sources.values,
     entryPages: entryPages.values.map(({ value, visitors, visits, bounceRatePercent }) => ({ value, visitors, visits, bounceRatePercent })),

@@ -90,7 +90,7 @@ function OverviewCards({ overview }: { overview: OnView["overview"] }) {
   );
 }
 
-const PARTIAL_WORDS = { gap: "Some visits not counted", today: "Still arriving" } as const;
+const PARTIAL_WORDS = { gap: "Some visits not counted", today: "Still arriving", late: "May still be arriving" } as const;
 
 /**
  * Visitors and pageviews per bucket. A partial day draws dashed, joined to its neighbours, so a short day never reads
@@ -149,10 +149,12 @@ function tooltipTime(timezone: string, interval: OnView["interval"], at: number)
 
 function PartialNote({ days }: { days: ReadonlyArray<PartialDay> }) {
   const gaps = days.filter((day) => day.reason === "gap").map((day) => day.day);
+  const late = days.filter((day) => day.reason === "late").map((day) => day.day);
   return (
     <p className="text-xs text-muted-foreground" data-analytics-partial={days.map((day) => day.day).join(" ")}>
       Dashed days are partial.
       {gaps.length > 0 ? ` Some visits on ${gaps.join(", ")} could not be counted.` : ""}
+      {late.length > 0 ? ` Visits for ${late.join(", ")} may still be arriving.` : ""}
       {days.some((day) => day.reason === "today") ? " Today is still arriving." : ""}
     </p>
   );

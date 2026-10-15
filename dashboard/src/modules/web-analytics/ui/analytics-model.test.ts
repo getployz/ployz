@@ -56,17 +56,41 @@ describe("resolveRange", () => {
 });
 
 describe("partialDays", () => {
+  const settled = { gaps: [], today: "2026-10-15", closedThrough: "2026-10-14", dirty: [] };
+
   it("marks days with uncounted visits, then today", () => {
     const days = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"];
     const gaps = [{ day: "2026-10-13", count: 4 }, { day: "2026-10-14", count: 0 }];
-    expect(partialDays(days, gaps, "2026-10-15")).toEqual([
+    expect(partialDays(days, { ...settled, gaps })).toEqual([
       { day: "2026-10-13", reason: "gap" },
       { day: "2026-10-15", reason: "today" },
     ]);
   });
 
   it("calls today a gap when visits were lost on it", () => {
-    expect(partialDays(["2026-10-15"], [{ day: "2026-10-15", count: 1 }], "2026-10-15")).toEqual([{ day: "2026-10-15", reason: "gap" }]);
+    expect(partialDays(["2026-10-15"], { ...settled, gaps: [{ day: "2026-10-15", count: 1 }] })).toEqual([{ day: "2026-10-15", reason: "gap" }]);
+  });
+
+  it("keeps yesterday partial until the rollup closes it", () => {
+    const days = ["2026-10-13", "2026-10-14", "2026-10-15"];
+    expect(partialDays(days, { ...settled, closedThrough: "2026-10-13" })).toEqual([
+      { day: "2026-10-14", reason: "late" },
+      { day: "2026-10-15", reason: "today" },
+    ]);
+    expect(partialDays(days, settled)).toEqual([{ day: "2026-10-15", reason: "today" }]);
+  });
+
+  it("marks a closed day partial again while late pageviews have dirtied it", () => {
+    const days = ["2026-10-11", "2026-10-12", "2026-10-13", "2026-10-14"];
+    expect(partialDays(days, { ...settled, dirty: ["2026-10-12"] })).toEqual([{ day: "2026-10-12", reason: "late" }]);
+  });
+
+  it("names lost visits over lateness when a day has both", () => {
+    const evidence = { ...settled, closedThrough: "2026-10-12", dirty: ["2026-10-11"], gaps: [{ day: "2026-10-11", count: 2 }, { day: "2026-10-13", count: 1 }] };
+    expect(partialDays(["2026-10-11", "2026-10-13"], evidence)).toEqual([
+      { day: "2026-10-11", reason: "gap" },
+      { day: "2026-10-13", reason: "gap" },
+    ]);
   });
 });
 
