@@ -40,6 +40,7 @@ import { AppRuntime } from "#/server/runtime.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 const BOB_PASSWORD = "verify-bob-password";
+const ADA_GITHUB_ID = 9001;
 const MACHINE_ID = "0123456789abcdef0123456789abcdef";
 const env = (name: string) => {
   const value = process.env[name];
@@ -100,6 +101,10 @@ const seed = Effect.gen(function* () {
   const [org] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, organizationId));
   const organizationSlug = org?.slug ?? "";
   const bob = process.env["PLOYZ_VERIFY_GITHUB_ORIGIN"] ? yield* linkFakeGithub(ada, organizationId).pipe(Effect.andThen(seedBob)) : null;
+  // Ada signed in with GitHub, so her pull requests deploy on their own.
+  if (!process.env["PLOYZ_VERIFY_GITHUB_ORIGIN"]) {
+    yield* drizzle.insert(account).values({ userId: ada.id, providerId: "github", accountId: String(ADA_GITHUB_ID) });
+  }
 
   // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
   const token = env("VERIFY_SESSION_TOKEN");
@@ -246,7 +251,8 @@ const seed = Effect.gen(function* () {
     copy: null, setup: null, remove_on_close: null, include_bots: null,
   });
   const pullRequest = (number: number, second: number, facts: Partial<PullRequest> = {}): PullRequest => ({
-    repository_id: 4242, number, title: `Change ${number}`, author: "ada", bot: false, head_branch: `change-${number}`,
+    repository_id: 4242, number, title: `Change ${number}`, author: "ada", author_id: ADA_GITHUB_ID, bot: false,
+    head_repository_id: 4242, head_branch: `change-${number}`,
     head: String(number).repeat(14).slice(0, 40), target_branch: "main", commits: 1, open: true,
     merge_commit: null, target_head: null, updated: `2026-10-01T10:00:${String(second).padStart(2, "0")}Z`, ...facts,
   });

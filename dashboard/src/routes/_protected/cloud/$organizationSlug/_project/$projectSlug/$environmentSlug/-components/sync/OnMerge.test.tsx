@@ -43,7 +43,7 @@ const branch: BranchView = {
 };
 const facts = (open: boolean): PullRequestView => ({
   pull_request: {
-    repository_id: 7, number: 146, title: "Faster cache", author: "nick", bot: false, head_branch: "cache", head: "abc",
+    repository_id: 7, number: 146, title: "Faster cache", author: "nick", author_id: 7, bot: false, head_repository_id: 7, head_branch: "cache", head: "abc",
     target_branch: "main", commits: 1, open, merge_commit: null, target_head: null, updated: "2026-10-11T00:00:00Z",
   },
   environments: [],

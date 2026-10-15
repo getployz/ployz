@@ -28,7 +28,7 @@ function github(pull: PullState, posted: unknown[]) {
     if (path.endsWith("/check-runs")) posted.push(body);
     return path.endsWith("/pulls/5")
       ? {
-        number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: HEAD },
+        number: 5, title: "Add search", user: { id: 7, login: "ada", type: "User" }, head: { ref: "search", sha: HEAD, repo: { id: 42 } },
         base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
       }
       : path.includes("/check-runs?")

@@ -8,7 +8,7 @@ import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.ser
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
-import { member, user } from "#/modules/identity/tables";
+import { account, member, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { organization } from "#/modules/organization/tables";
 import { makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -79,6 +79,7 @@ export const seedStoreOrganization = Effect.fn(function* (id: string, named: { n
   const userId = owner?.id ?? "";
   yield* drizzle.insert(organization).values({ id, ...named });
   yield* drizzle.insert(member).values({ userId, organizationId: id, role: "owner" });
+  yield* drizzle.insert(account).values({ userId, providerId: "github", accountId: "7" });
   yield* drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
   yield* drizzle.insert(organizationGithubInstallation).values({ organizationId: id, installationId: 7, connectedByUserId: userId, connectedGithubLogin: "ada" });
   return userId;
