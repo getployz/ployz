@@ -13,7 +13,7 @@ use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::SettingPath;
 use crate::storage::Tx;
-use crate::{Actor, Asks, Trusted, deployment};
+use crate::{Actor, Trusted, deployment};
 
 /// Put Working State in Saved State without deploying it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -152,9 +152,8 @@ pub(crate) fn publish(
         who,
         &environment.summary.id,
         &review,
-        &target,
-        &trusted.approval,
-        Asks::Destroys,
+        (&target, review::Shipping::Publish),
+        trusted,
     )?;
     let lost = review::lost(losses);
     let (saved, created) = review::publish(

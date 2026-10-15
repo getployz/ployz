@@ -3307,6 +3307,45 @@ fn an_agent_approval_admits_one_deploy() {
     assert_ne!(again.details["approval"], refused.details["approval"]);
 }
 
+fn agent_deploys_only(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    service: &str,
+    approval: Approval,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: vec![ServiceName::parse(service).unwrap()],
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+        }),
+        &Trusted {
+            approval,
+            asks: Asks::EveryDeploy,
+            ..Trusted::default()
+        },
+    )
+}
+
+#[test]
+fn an_agent_approval_admits_only_the_services_it_named() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "web", 2);
+    set_replicas(&store, &who, "api", 2);
+    let refused = agent_deploys_only(&store, &who, 2, "web", Approval::Required).unwrap_err();
+    let other = agent_deploys_only(&store, &who, 2, "api", approved(&refused)).unwrap_err();
+    assert_eq!(other.code.as_str(), "approval_required");
+    assert_ne!(other.details["approval"], refused.details["approval"]);
+    agent_deploys_only(&store, &who, 2, "web", approved(&refused)).unwrap();
+}
+
 #[test]
 fn an_agent_deploy_of_saved_state_asks() {
     let (store, who) = shop();

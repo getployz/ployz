@@ -247,9 +247,8 @@ fn deploy(
         who,
         id,
         &review,
-        &saved_intent,
-        &trusted.approval,
-        trusted.asks,
+        (&saved_intent, review::Shipping::Deploy(&admit.services)),
+        trusted,
     )?;
     let (saved, _) = review::publish(
         tx,

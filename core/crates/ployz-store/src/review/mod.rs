@@ -391,6 +391,7 @@ pub(crate) fn service_rows(
 }
 
 /// What the destructive review gates.
+#[derive(Clone, Copy)]
 pub(crate) enum Shipping<'a> {
     /// Deploying these Services of Working State; none deploys all of it.
     Deploy(&'a [ployz_core::ServiceName]),

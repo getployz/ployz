@@ -12,8 +12,8 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::id::{ApprovalDigest, EnvironmentId, Hostname};
-use crate::review::{Head, Review};
-use crate::{Actor, Approval, Asks};
+use crate::review::{DiffView, Head, Review, Shipping};
+use crate::{Actor, Approval, Asks, Trusted};
 
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
@@ -226,21 +226,32 @@ pub(crate) fn approval_digest(
     version: &str,
     effects: &BTreeSet<DestructiveEffect>,
 ) -> ApprovalDigest {
-    let bound = json!({
+    digest(version, &bound(who, environment, effects))
+}
+
+fn bound(
+    who: &Actor,
+    environment: &EnvironmentId,
+    effects: &BTreeSet<DestructiveEffect>,
+) -> serde_json::Value {
+    json!({
         "organization": who.organization,
         "environment": environment,
         "effects": effects,
-    });
+    })
+}
+
+fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
     let digest = crate::removal::short_digest(&bound.to_string());
     ApprovalDigest::parse(format!("{version}:{digest}"))
         .expect("a version and a 16-digit hex digest form an approval")
 }
 
-/// Refuse publishing `target` while it destroys something, unless no approval is
+/// Refuse shipping `target` while it destroys something, unless no approval is
 /// required or Cloud holds a human's approval of exactly this version and set.
 /// Publishing already-Saved State asks nothing: the Publish that saved it did. Under
 /// [`Asks::EveryDeploy`] every Deploy asks, even one that destroys nothing or ships
-/// already-Saved State; Publish passes [`Asks::Destroys`].
+/// already-Saved State, and the approval covers only the Services it deploys.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
@@ -249,9 +260,8 @@ pub(crate) fn approve(
     who: &Actor,
     environment: &EnvironmentId,
     review: &Review,
-    target: &SavedEnvironmentIntent,
-    trusted: &Approval,
-    asks: Asks,
+    (target, shipping): (&SavedEnvironmentIntent, Shipping<'_>),
+    trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let diff = &review.view;
     let effects = &diff.effects;
@@ -259,16 +269,19 @@ pub(crate) fn approve(
         .saved
         .as_ref()
         .is_some_and(|saved| saved.intent == *target);
-    match trusted {
-        Approval::NotRequired => return Ok(()),
-        Approval::Required | Approval::Approved(_) => {}
-    }
+    let asks = match shipping {
+        Shipping::Publish => Asks::Destroys,
+        Shipping::Deploy(_) => trusted.asks,
+    };
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }
-    let digest = approval_digest(who, environment, &diff.version, effects);
-    if matches!(trusted, Approval::Approved(approved) if *approved == digest) {
-        return Ok(());
+    let mut bound = bound(who, environment, effects);
+    if let Shipping::Deploy(services) = shipping
+        && let Some(bound) = bound.as_object_mut()
+    {
+        let services = services.iter().collect::<BTreeSet<_>>();
+        bound.insert("services".to_owned(), json!(services));
     }
     let message = if effects.is_empty() {
         "A human must approve this deploy first.".to_owned()
@@ -280,8 +293,22 @@ pub(crate) fn approve(
             .join(", ");
         format!("A human must approve this first: {asked}")
     };
-    Err(error::approval_required(
-        message,
-        json!({"effects": effects, "approval": digest, "diff": diff}),
-    ))
+    let digest = digest(&diff.version, &bound);
+    require(&trusted.approval, digest, message, (effects, diff))
+}
+
+fn require(
+    trusted: &Approval,
+    digest: ApprovalDigest,
+    message: String,
+    (effects, diff): (&BTreeSet<DestructiveEffect>, &DiffView),
+) -> Result<(), RpcError> {
+    match trusted {
+        Approval::NotRequired => Ok(()),
+        Approval::Approved(approved) if *approved == digest => Ok(()),
+        Approval::Required | Approval::Approved(_) => Err(error::approval_required(
+            message,
+            json!({"effects": effects, "approval": digest, "diff": diff}),
+        )),
+    }
 }
