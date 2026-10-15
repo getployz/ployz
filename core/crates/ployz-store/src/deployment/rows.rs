@@ -336,7 +336,7 @@ pub struct RowTracker {
 impl RowTracker {
     /// The rows of `snapshot` whose state changed since the last snapshot.
     pub fn changes(&mut self, snapshot: &[OperationRow]) -> Vec<ServerProgress> {
-        let mut grouped: BTreeMap<Key, (String, Vec<&OperationStatus>, Option<bool>)> =
+        let mut grouped: BTreeMap<Key, (String, Vec<(&OperationStatus, bool)>, Option<bool>)> =
             BTreeMap::new();
         self.failed.clear();
         for row in snapshot {
@@ -359,7 +359,7 @@ impl RowTracker {
             let (_, statuses, serving) = grouped
                 .entry(key)
                 .or_insert_with(|| (server, Vec::new(), None));
-            statuses.push(&row.status);
+            statuses.push((&row.status, starts_container(&row.operation)));
             if starts_container(&row.operation) {
                 let done = matches!(row.status, OperationStatus::Completed);
                 *serving = Some(serving.unwrap_or(true) && done);
@@ -442,14 +442,14 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
 
 /// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
 fn state(
-    statuses: &[&OperationStatus],
+    statuses: &[(&OperationStatus, bool)],
     last: Option<&RowState>,
     container: bool,
     serving: bool,
 ) -> RowState {
     let (mut failed, mut running, mut switching, mut pending, mut completed) =
         (None, None, None, 0, 0);
-    for status in statuses {
+    for (status, _) in statuses {
         match status {
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
             OperationStatus::Running {
@@ -683,7 +683,8 @@ mod tests {
     use super::{Failure, RowPhase, RowState};
 
     fn server(statuses: &[OperationStatus]) -> RowState {
-        super::state(&statuses.iter().collect::<Vec<_>>(), None, true, false)
+        let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
+        super::state(&statuses, None, true, false)
     }
 
     #[test]
@@ -709,8 +710,18 @@ mod tests {
             running(RowPhase::Starting)
         );
         assert_eq!(
-            server(&[switch.clone(), switch]),
+            server(&[switch.clone(), switch.clone()]),
             running(RowPhase::WaitingForSwitch)
+        );
+        assert_eq!(
+            super::state(
+                &[(&switch, true), (&OperationStatus::Pending, false)],
+                None,
+                true,
+                false
+            ),
+            running(RowPhase::WaitingForSwitch),
+            "the old copy's removal waits for the switch, not the Server"
         );
     }
 
