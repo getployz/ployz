@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { toast } from "sonner";
 import { Link, useParams } from "@tanstack/react-router";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { AgentDock } from "#/components/agent-sidebar/agent-dock";
@@ -44,13 +45,13 @@ type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
   runtimeChanges?: number;
-  canPublish: boolean;
+  canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
   /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
   admitting?: boolean;
-  /** Saves without deploying; resolves true once saved. */
-  onPublish: (message: string) => Promise<boolean>;
+  /** Save only: saves without deploying; resolves true once saved. */
+  onSave: (message: string) => Promise<boolean>;
   onDiscardAll: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
@@ -67,7 +68,7 @@ type BottomBarProps = {
   notes: Pick<ReviewProps, "noteFor" | "neverSyncFor" | "originFor" | "after">;
   /** Details' Included list: the sources Syncs included here, with Include newer changes and Remove. */
   proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;
-  /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
+  /** The Organization has no Server to deploy to: Deploy becomes Add a server; Save only still works. */
   noServers?: boolean;
   /** Secrets without a value: the next Deploy leaves them out. */
   notSet?: number;
@@ -85,9 +86,9 @@ export function BottomBar({
   groups,
   totalChanges,
   runtimeChanges = totalChanges,
-  canPublish,
+  canSave,
   onDeploy,
-  onPublish,
+  onSave,
   onDiscardAll,
   onDiscardNode,
   onDiscardRow,
@@ -115,7 +116,7 @@ export function BottomBar({
   const wasOpen = useRef(false);
   // Oldest first: the oldest holds, or is next for, the Environment's one run.
   const active = [...newestFirst].reverse();
-  const hasChanges = totalChanges > 0 || canPublish;
+  const hasChanges = totalChanges > 0 || canSave;
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
   // Seen in flight here, or its page opened before it was listed (as Deploy does): how a Deployment ends shows only
@@ -151,6 +152,19 @@ export function BottomBar({
     onDeploy(message);
     setMessage("");
   }
+
+  // A message edited while the save is in flight is the next one: keep it.
+  function save() {
+    void onSave(message).then((saved) => {
+      if (!saved) return;
+      setTyped((now) => now.message === message && now.stages === stages ? { message: "", stages } : now);
+      toast.success("Saved, not deployed");
+    });
+  }
+
+  // Alt turns Deploy into Save only.
+  const alt = useAltHeld();
+  const savesOnly = alt && canSave;
 
   // New Services and Volumes go for good with a Discard: name them and ask first.
   const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
@@ -197,8 +211,9 @@ export function BottomBar({
       {noServers ? (
         <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
-        <TooltipTrigger render={<Button variant="intent" disabled={!deployable || admitting} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
-          {active.length > 0 ? "Deploy next" : "Deploy"}
+        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? false : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
+          onClick={(event) => { if (event.altKey && canSave) save(); else deploy(); }} />}>
+          {savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>}
@@ -207,6 +222,7 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
+          <DropdownMenuItem disabled={!canSave} onClick={save}>Save only</DropdownMenuItem>
           <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
@@ -225,10 +241,9 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canPublish,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
-    // A message edited while the Save is in flight is the next one: keep it.
-    onPublish: () => void onPublish(message).then((saved) => { if (saved) setTyped((now) => now.message === message && now.stages === stages ? { message: "", stages } : now); }),
+    onSave: save,
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
@@ -247,6 +262,24 @@ export function BottomBar({
         actionLabel="Discard all" variant="destructive" onConfirm={discardAll} />
     </>
   );
+}
+
+/** Whether Alt is held, so a button can say what an Alt-click does. */
+function useAltHeld() {
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const track = (event: KeyboardEvent) => setHeld(event.altKey);
+    const release = () => setHeld(false);
+    window.addEventListener("keydown", track);
+    window.addEventListener("keyup", track);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keydown", track);
+      window.removeEventListener("keyup", track);
+      window.removeEventListener("blur", release);
+    };
+  }, []);
+  return held;
 }
 
 function AttemptState({ deployment, storage, onDismiss }: { deployment: DeploymentSummary; storage: string | null; onDismiss?: () => void }) {

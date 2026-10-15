@@ -31,7 +31,7 @@ export const approvalInterrupt = defineInterrupt({
 });
 
 /**
- * What every sidebar tool hands the model: the Store's answer or its refusal, as `ployz --json` prints them. A Publish or
+ * What every sidebar tool hands the model: the Store's answer or its refusal, as `ployz --json` prints them. A Save or
  * Deploy the Store reviewed for an Organization that asks, and let through without asking, says it destroyed nothing.
  */
 export type ToolOutcome<T = unknown> =

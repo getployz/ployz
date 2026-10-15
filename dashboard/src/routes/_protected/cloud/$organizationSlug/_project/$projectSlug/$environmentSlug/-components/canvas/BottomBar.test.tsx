@@ -22,7 +22,7 @@ const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
 const cache = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
 const onDeploy = vi.fn();
 const onDiscardAll = vi.fn();
-const onPublish = vi.fn();
+const onSave = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
 let ended: DeploymentSummary[] | undefined = [];
@@ -40,9 +40,9 @@ beforeEach(() => {
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); onPublish.mockReset(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); onDeploy.mockClear(); onSave.mockReset(); });
 
-function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPublish = false) {
+function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave = false) {
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
@@ -63,7 +63,7 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canPubl
         <button type="button" onClick={() => setStages(stages + 1)}>Stage from History</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
-        <BottomBar groups={groups} totalChanges={totalChanges} canPublish={canPublish} onDeploy={onDeploy} onPublish={onPublish}
+        <BottomBar groups={groups} totalChanges={totalChanges} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}} notSet={notSet}
           proposals={{ included: [] }} />
         <Outlet />
@@ -108,6 +108,24 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
   fireEvent.click(await screen.findByRole("menuitem", { name: "Discard all changes" }));
   expect(onDiscardAll).toHaveBeenCalledOnce();
+});
+
+it("saves without deploying from Alt+click on Deploy and from Save only under ⋮", async () => {
+  onSave.mockResolvedValue(true);
+  open(canvasUrl, [replicas], 1, true);
+  const staged = await bar();
+  act(() => { fireEvent.keyDown(window, { key: "Alt", altKey: true }); });
+  const button = staged.getByRole("button", { name: /^Save only/ });
+  await act(async () => { fireEvent.click(button, { altKey: true }); });
+  expect(onSave).toHaveBeenCalledOnce();
+  expect(onDeploy).not.toHaveBeenCalled();
+  act(() => { fireEvent.keyUp(window, { key: "Alt", altKey: false }); });
+  expect(staged.getByRole("button", { name: /^Deploy/ }).textContent).toBe("Deploy");
+
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  await act(async () => { fireEvent.click(await screen.findByRole("menuitem", { name: "Save only" })); });
+  expect(onSave).toHaveBeenCalledTimes(2);
+  expect(onDeploy).not.toHaveBeenCalled();
 });
 
 it("counts the secrets the Deploy leaves out beside the changes", async () => {
@@ -252,34 +270,34 @@ it("hides while nothing is staged or running, and while the only Deployment's pa
 
 
 it("preserves the Change message when a Save is refused or fails", async () => {
-  onPublish.mockResolvedValue(false);
+  onSave.mockResolvedValue(false);
   open(canvasUrl, [replicas], 1, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
-  expect(onPublish).toHaveBeenCalledWith("Explain this change");
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save only" })); });
+  expect(onSave).toHaveBeenCalledWith("Explain this change");
   expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "Explain this change");
   expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
 });
 
 it("clears the Change message once a Save succeeds", async () => {
-  onPublish.mockResolvedValue(true);
+  onSave.mockResolvedValue(true);
   open(canvasUrl, [replicas], 1, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
-  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save" })); });
-  expect(onPublish).toHaveBeenCalledWith("Explain this change");
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save only" })); });
+  expect(onSave).toHaveBeenCalledWith("Explain this change");
   expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "");
 });
 
 it("keeps a Change message edited while the Save is in flight", async () => {
   let saved: (value: boolean) => void = () => {};
-  onPublish.mockReturnValue(new Promise<boolean>((resolve) => { saved = resolve; }));
+  onSave.mockReturnValue(new Promise<boolean>((resolve) => { saved = resolve; }));
   open(canvasUrl, [replicas], 1, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   const box = () => screen.getByRole("textbox", { name: "Change message" });
   fireEvent.change(box(), { target: { value: "Explain this change" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save only" }));
   fireEvent.change(box(), { target: { value: "The next change" } });
   await act(async () => { saved(true); });
   expect(box()).toHaveProperty("value", "The next change");

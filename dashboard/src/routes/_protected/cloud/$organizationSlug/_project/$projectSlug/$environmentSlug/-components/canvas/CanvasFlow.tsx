@@ -260,10 +260,10 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         runtimeChanges={diff.total_count + placements.count}
         notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}
-        canPublish={hasSomethingToSave}
+        canSave={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
-        onPublish={actions.publish}
+        onSave={actions.save}
         // The Store goes first, at the version the user sees: a staged restore's own discard writes the Store too.
         onDiscardAll={() => placements.discardAll(() =>
           storeGroups.length > 0 || diff.total_count > 0 ? actions.discard(null, "review") : Promise.resolve(undefined))}

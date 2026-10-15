@@ -91,7 +91,8 @@ const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${appr
 
 /**
  * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, so a second one replays the
- * first, and a Publish of exactly the reviewed version, which the Store refuses as stale once that Publish committed.
+ * first, and a save (the Store's publish) of exactly the reviewed version, which the Store refuses as stale once that save
+ * committed.
  */
 const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
   if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
@@ -108,7 +109,7 @@ const StaleReview = Schema.Struct({
 });
 
 /**
- * The Publish `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
+ * The save `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
  * landed: Saved State holds the very Working State the human reviewed. Any other version keeps the Store's conflict.
  */
 const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRefusal): ConfigWritten | null => {
@@ -136,7 +137,7 @@ type Gated =
 
 const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "publish" : "deploy", trusted.refusal) } satisfies Gated;
+  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : "deploy", trusted.refusal) } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const call = { operation: "write", command } as const;

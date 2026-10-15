@@ -46,7 +46,7 @@ function open(view: DiffView) {
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug",
     loader: ({ params }) => ({ store: { project: params.projectSlug, environment: params.environmentSlug } }),
     component: () => (
-      <EnvironmentChangesReview environment="fix-api" groups={groups} totalChanges={view.total_count} canDeploy canPublish={false} onPublish={() => {}}
+      <EnvironmentChangesReview environment="fix-api" groups={groups} totalChanges={view.total_count} canDeploy canSave={false} onSave={() => {}}
         onDiscardAll={() => {}} onClose={() => {}} onDeploy={() => {}} message="" onMessageChange={() => {}}
         onDiscardNode={() => {}} onDiscardRow={() => {}} {...notes} />
     ),

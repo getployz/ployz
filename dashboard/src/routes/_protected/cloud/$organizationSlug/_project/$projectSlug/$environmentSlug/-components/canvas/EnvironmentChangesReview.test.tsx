@@ -37,10 +37,10 @@ const config = (rows: ChangeRow[]): ChangeGroup => ({
 const fromProduction = { title: "From production's deploy", description: "fix-api is a Branch of production, so what production deploys arrives here too." };
 
 function review(props: Partial<EnvironmentChangesReviewProps> & Pick<EnvironmentChangesReviewProps, "groups">) {
-  const handlers = { onClose: vi.fn(), onDiscardNode: vi.fn(), onDiscardRow: vi.fn(), onPublish: vi.fn(), onDiscardAll: vi.fn() };
+  const handlers = { onClose: vi.fn(), onDiscardNode: vi.fn(), onDiscardRow: vi.fn(), onSave: vi.fn(), onDiscardAll: vi.fn() };
   render(
     <EnvironmentChangesReview environment="fix-api" totalChanges={props.groups.flatMap((group) => group.rows).length || 1}
-      canDeploy={false} canPublish onDeploy={vi.fn()} message="" onMessageChange={vi.fn()} {...handlers} {...props} />,
+      canDeploy={false} canSave onDeploy={vi.fn()} message="" onMessageChange={vi.fn()} {...handlers} {...props} />,
   );
   return handlers;
 }
@@ -221,16 +221,16 @@ describe("Details", () => {
 
     expect(lineOf("LOG_LEVEL").getByText("production has since set info")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Discard all" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save only" }));
     expect(test.onDiscardAll).toHaveBeenCalledOnce();
-    expect(test.onPublish).toHaveBeenCalledOnce();
+    expect(test.onSave).toHaveBeenCalledOnce();
   });
 });
 
 it("offers a Save message when the draft reverses Saved with no runtime changes", () => {
-  review({ groups: [api([row("api.replicas")])], totalChanges: 1, canDeploy: false, canPublish: true });
+  review({ groups: [api([row("api.replicas")])], totalChanges: 1, canDeploy: false, canSave: true });
   expect(screen.getByRole("textbox", { name: "Change message" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+  expect(screen.getByRole("button", { name: "Save only" }).hasAttribute("disabled")).toBe(false);
   expect(screen.queryByRole("button", { name: "Deploy changes" })).toBeNull();
 });
 
@@ -247,12 +247,12 @@ describe("Included", () => {
   it("lists each included source with Remove, and Include newer changes once an Environment changed since", async () => {
     const onRemoveIncluded = vi.fn();
     const onIncludeNewer = vi.fn();
-    review({ groups: [], totalChanges: 0, canPublish: true, included: [staging], onRemoveIncluded, onIncludeNewer });
+    review({ groups: [], totalChanges: 0, canSave: true, included: [staging], onRemoveIncluded, onIncludeNewer });
 
     const list = within(screen.getByRole("region", { name: "Included" }));
     expect(list.getByText("staging · 2 changes")).toBeTruthy();
     expect(list.getByText("staging changed since")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("button", { name: "Save only" }).hasAttribute("disabled")).toBe(false);
     fireEvent.click((await menuOf("staging")).getByRole("menuitem", { name: "Include newer changes" }));
     expect(onIncludeNewer).toHaveBeenCalledWith(staging);
     fireEvent.click((await menuOf("staging")).getByRole("menuitem", { name: "Remove" }));
@@ -260,7 +260,7 @@ describe("Included", () => {
   });
 
   it("offers no Include newer changes once a pull request's preview is gone", async () => {
-    review({ groups: [], totalChanges: 0, canPublish: true, included: [{ ...pr, source: { ...pr.source, environment: null } as Included["source"] }],
+    review({ groups: [], totalChanges: 0, canSave: true, included: [{ ...pr, source: { ...pr.source, environment: null } as Included["source"] }],
       onRemoveIncluded: vi.fn(), onIncludeNewer: vi.fn() });
 
     const items = await menuOf("pr-142");
