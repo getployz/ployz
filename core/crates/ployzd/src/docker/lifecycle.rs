@@ -932,6 +932,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stop_cancelled_before_it_proceeds_releases_its_hold() {
+        let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        let (asked, was_asked) = tokio::sync::oneshot::channel();
+        let stopping = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .stop_if(&container_id, None, None, async move {
+                        let _ = asked.send(());
+                        std::future::pending::<Result<bool, Error>>().await
+                    })
+                    .await
+            }
+        });
+        was_asked.await.unwrap();
+        assert!(runtime.stranded().await.held.contains(&container_id));
+
+        stopping.abort();
+        assert!(stopping.await.unwrap_err().is_cancelled());
+        assert!(
+            !runtime.stranded().await.held.contains(&container_id),
+            "a dropped stop must not keep the ingress from its retry"
+        );
+    }
+
+    #[tokio::test]
     async fn a_container_stays_withdrawn_until_its_last_withdrawal_drops() {
         let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
         for first_released_first in [true, false] {
