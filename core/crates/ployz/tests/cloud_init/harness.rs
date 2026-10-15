@@ -46,9 +46,15 @@ pub const TOKEN: &str = "pmet_test";
 pub fn token_file() -> &'static str {
     static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FILE.get_or_init(|| {
-        let path = concat!(env!("CARGO_TARGET_TMPDIR"), "/cloud-init-enroll-token");
-        std::fs::write(path, format!("{TOKEN}\n")).unwrap();
-        path.to_owned()
+        // One file per test process: nextest runs tests in parallel processes, and a
+        // shared file read mid-rewrite is empty.
+        let path = format!(
+            "{}/cloud-init-enroll-token-{}",
+            env!("CARGO_TARGET_TMPDIR"),
+            std::process::id()
+        );
+        std::fs::write(&path, format!("{TOKEN}\n")).unwrap();
+        path
     })
 }
 pub const PAIRING: &str = "pairing-secret";
