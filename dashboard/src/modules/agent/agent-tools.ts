@@ -1,4 +1,4 @@
-import { type AgentTurn, type Answer, agentResume, agentTools, type Ask, type Step, type ToolResult, type Write } from "@ployz/sdk";
+import { type AgentTurn, type Answer, agentResume, agentStart, agentTools, type Ask, type Step, type ToolResult, type Write } from "@ployz/sdk";
 import { Effect } from "effect";
 import { COMMANDS } from "#/modules/commands/registry.server";
 
@@ -6,6 +6,9 @@ import { COMMANDS } from "#/modules/commands/registry.server";
 export const AGENT = { source: "agent" } as const;
 
 export const CATALOG = agentTools();
+
+// The compiled tools' turn steps, for the runner, which imports only types from the SDK.
+export { agentResume, agentStart };
 
 /** Every tool whose write may wait on a human: the compiled catalog's and Cloud's published commands'. */
 export const GATED = new Set([
