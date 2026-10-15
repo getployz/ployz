@@ -577,7 +577,7 @@ impl TermLike for EchoRoom {
 
 fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState) -> Row {
     crate::deploy::service_row(
-        QualifiedService::parse(&format!("shop/{name}")).unwrap(),
+        QualifiedService::parse(format!("shop/{name}")).unwrap(),
         Some(depth),
         (0..servers).map(|_| crate::deploy::Replica {
             machine: MachineId::random(),
