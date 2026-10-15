@@ -15,7 +15,7 @@ import { RunTime, runNodeIcons, runNodeKinds } from "./RunCanvas";
 /** The picked node: its status, each Server's row as reported, then its logs. */
 export function RunPanel({ deployment, node }: { deployment: DeploymentView; node: RunNode | undefined }) {
   return (
-    <aside aria-label="Run node" className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm max-lg:max-h-[60%] lg:w-md lg:shrink-0">
+    <aside aria-label="Run node" className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm max-lg:h-full max-lg:shrink-0 lg:w-md lg:shrink-0">
       {node ? <RunNodeDetail key={node.id} deployment={deployment} node={node} /> : (
         <LogEmpty title="Nothing in this deployment" />
       )}
