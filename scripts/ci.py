@@ -76,7 +76,7 @@ def select_normal(paths):
             selected.add("macos-cli")
             if crate == "ployz-testkit":
                 continue
-            if crate not in shipped_crates():
+            if crate not in sdk_and_config_wasm_crates():
                 return NORMAL.copy()
             if not relative.startswith("tests/") or crate == "ployz-sdk":
                 selected |= {"cloud", "sdk-types"}
@@ -96,8 +96,7 @@ def select_normal(paths):
 
 
 @functools.cache
-def shipped_crates():
-    """Workspace crates compiled into the SDK addon or the Cloud's config wasm."""
+def sdk_and_config_wasm_crates():
     metadata = json.loads(
         subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT / "core")
     )

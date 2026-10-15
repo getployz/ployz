@@ -46,9 +46,9 @@ class CiTest(unittest.TestCase):
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
 
-    def test_shipped_crates_follow_the_sdk_and_wasm_dependency_graph(self):
+    def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(
-            ci["shipped_crates"](),
+            ci["sdk_and_config_wasm_crates"](),
             {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-store", "ployz-build"},
         )
 
