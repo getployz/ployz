@@ -34,7 +34,7 @@ function RunNodeDetail({ deployment, node }: { deployment: DeploymentView; node:
           <DeploymentStatusIcon status={node.light} />
           <h2 className="truncate font-medium">{node.name}</h2>
           <span className={cn("text-sm", deleted ? "text-destructive" : "text-muted-foreground")}>{deleted ? "Deleted" : status}</span>
-          <span className="ml-auto text-sm">{node.type === "build" ? null : <RunTime timing={node.timing} />}</span>
+          <span className="ml-auto text-sm"><RunTime timing={node.timing} /></span>
         </div>
         <p className="flex items-center gap-1.5 text-sm text-muted-foreground [&_svg]:size-3.5">
           <Icon aria-hidden />{runNodeKinds[node.type]}
