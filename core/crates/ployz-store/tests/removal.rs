@@ -1310,6 +1310,7 @@ fn nothing_builds_on_a_removal_whose_deployment_failed() {
         message: None,
     }))));
     being_removed(write(ployz_store::Command::Publish(Publish {
+        id: None,
         environment: at("production"),
         version: None,
         message: None,

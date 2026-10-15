@@ -158,7 +158,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       return;
     }
     case "publish":
-      await views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true, draft_changes: [], draft_count: 0 }));
+      await views<DiffView>("diff", command.environment, (view) => ({ ...view, holds_staged: true, draft_changes: [], draft_count: 0 }));
       return;
     case "discard":
     case "stage_history":

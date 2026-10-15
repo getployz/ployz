@@ -13,7 +13,7 @@ export const ACTS = new Set([
 ]);
 
 export const STORE_WRITES = new Set([
-  ...TAPE_WRITES, "deploy", "publish", "project_create", "service_update", "service_rename", "service_remove", "volume_update",
+  ...TAPE_WRITES, "deploy", "project_create", "service_update", "service_rename", "service_remove", "volume_update",
   "volume_remove", "domain_update", "domain_remove", "config_write", "config_remove", "config_rename", "project_rename", "history",
   "deployment_cancel", "deployment_retry", "deployment_start", "environment_pr",
 ]);

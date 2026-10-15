@@ -20,13 +20,22 @@ export type ApprovalReview =
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
-/** What an approval asks about, as verb and name: "Deploy production", "Publish production" or "Drain fra-1". */
+/** What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
-  return { verb: command === "publish" ? "Publish" : "Deploy", name: review.diff.environment.name };
+  return { verb: command === "publish" ? "Save" : "Deploy", name: review.diff.environment.name };
 }
 
-/** The writes the Store reviews for destruction: Publish, and a manual Deploy. Nothing else waits for a human. */
+/** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. */
+export function approvalBadge(command: string, { effects }: ApprovalReview) {
+  if (command === "publish") return "Deletes on deploy";
+  if (effects.length > 0 && effects.every((effect) => effect.kind === "deletes_volume")) {
+    return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
+  }
+  return `Destroys ${effects.length} ${effects.length === 1 ? "thing" : "things"}`;
+}
+
+/** The writes the Store reviews for destruction: Save only (the Store's publish), and a manual Deploy. Nothing else waits for a human. */
 export function asksApproval(command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy");
 }
@@ -49,10 +58,16 @@ const destroys = {
   revokes_invite: { verb: "Revokes", noun: "invite for", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
-/** One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. */
-export function destroyedLine(effect: DestructiveEffect) {
-  const { verb, noun, after } = destroys[effect.kind];
+/**
+ * One thing the plan destroys, worded as the card leads with it: by name, or as "a volume" when it has none. A Save
+ * destroys nothing itself, so its lines say the next Deploy does.
+ */
+export function destroyedLine(effect: DestructiveEffect, command = "admit") {
+  const { verb: does, noun, after } = destroys[effect.kind];
+  const save = command === "publish";
+  const verb = save ? `Next deploy ${does.toLowerCase()}` : does;
+  const end = save ? "." : after;
   const mount = effect.kind === "detaches_volume" ? effect.path.split(".mounts.") : [];
-  const tail = mount.length === 2 ? ` from ${mount[0]}${after}` : after;
+  const tail = mount.length === 2 ? ` from ${mount[0]}${end}` : end;
   return effect.name === undefined ? { verb: `${verb} a ${noun}`, name: null, after: tail } : { verb: `${verb} ${noun}`, name: effect.name, after: tail };
 }

@@ -671,7 +671,7 @@ fn deploy_asks() -> Value {
                 },
                 "version": "3:abc",
                 "saved": 2,
-                "published": false,
+                "holds_staged": false,
                 "changes": [],
                 "total_count": 3,
             },

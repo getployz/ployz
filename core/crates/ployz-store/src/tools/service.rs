@@ -478,7 +478,7 @@ pub(crate) struct ServiceRemove {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
-    const DESCRIPTION: &'static str = "Remove a Service. Staged: Review lists it and Discard undoes it; the next Publish or Deploy asks a human to approve.";
+    const DESCRIPTION: &'static str = "Remove a Service. Staged: Review lists it and Discard undoes it; the next deploy asks a human to approve.";
     const READ_ONLY: bool = false;
 
     fn example() -> Value {

@@ -64,7 +64,6 @@ pub(crate) const TOOLS: &[Entry] = &[
     entry::<release::Review>(),
     entry::<release::DiscardInput>(),
     entry::<history::History>(),
-    entry::<release::PublishInput>(),
     entry::<release::DeployInput>(),
     entry::<deployment::DeploymentList>(),
     entry::<deployment::DeploymentShow>(),

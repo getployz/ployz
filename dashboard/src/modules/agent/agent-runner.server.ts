@@ -91,7 +91,8 @@ const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${appr
 
 /**
  * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, so a second one replays the
- * first, and a Publish of exactly the reviewed version, which the Store refuses as stale once that Publish committed.
+ * first, and a save (the Store's publish) of exactly the reviewed version, which the Store refuses as stale once that save
+ * committed.
  */
 const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
   if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
@@ -103,21 +104,21 @@ const StaleReview = Schema.Struct({
   diff: Schema.Struct({
     environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String, revision: Schema.Number }),
     saved: Schema.NullOr(Schema.Number),
-    published: Schema.Boolean,
+    holds_staged: Schema.Boolean,
   }),
 });
 
 /**
- * The Publish `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
+ * The save `reviewed` approved, when the Store refuses a replay of exactly its version as stale because it already
  * landed: Saved State holds the very Working State the human reviewed. Any other version keeps the Store's conflict.
  */
 const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRefusal): ConfigWritten | null => {
   if (sent.command !== "publish" || sent.version !== reviewed.version || refusal.code !== "conflict") return null;
   const stale = Schema.decodeUnknownOption(StaleReview)(refusal.details);
   if (Option.isNone(stale)) return null;
-  const { environment, saved, published } = stale.value.diff;
+  const { environment, saved, holds_staged: holdsStaged } = stale.value.diff;
   const same = environment.id === reviewed.environment.id && environment.revision === reviewed.environment.revision;
-  return published && same ? { written: "published", environment, saved, created: false } : null;
+  return holdsStaged && same ? { written: "published", environment, saved, created: false } : null;
 };
 
 /** A Store answer as `caller` may read it: support sees it under the Organization's rules. */
@@ -136,7 +137,7 @@ type Gated =
 
 const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "publish" : "deploy", trusted.refusal) } satisfies Gated;
+  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : "deploy", trusted.refusal) } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const call = { operation: "write", command } as const;
@@ -196,8 +197,8 @@ const done = (outcome: ToolOutcome): AgentResult => ({ outcome });
 
 /**
  * Runs one agent tool call as `caller`. An ungated tool runs to its own answer. A gated write that waits on a human
- * answers `asking`; the retry carrying that approval runs it. A gated Store write's answer is the call's outcome; a
- * Cloud act's answer lets the compiled tool finish.
+ * answers `asking`; the retry carrying that approval runs it. A gated save and a Cloud act let the compiled tool finish;
+ * any other gated Store write's answer is the call's outcome.
  */
 export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentCaller, call: AgentCall) {
   const published = findCommand(call.tool);
@@ -220,7 +221,9 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
     if ("asking" in gated) return gated;
     if ("denied" in gated) return done({ ok: false, refusal: gated.denied });
-    return done(gated.result.ok && gated.nothingDestroyed ? { ...gated.result, nothing_destroyed: true } : gated.result);
+    // A save finishes in its tool, so it answers `saved` as native MCP does. A Deployment's answer stays the Store's: the Run card draws it.
+    const outcome = write.write.command === "publish" ? yield* finish(agentResume(state, [answered(gated.result)]), read, agentWrite(caller)) : gated.result;
+    return done(outcome.ok && gated.nothingDestroyed ? { ...outcome, nothing_destroyed: true } : outcome);
   }
   const acted = yield* runGatedAct(caller, write.write, call.approvalId);
   if ("asking" in acted) return acted;

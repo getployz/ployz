@@ -61,7 +61,7 @@ claude mcp add -s user ployz -- ployz mcp
 ```
 
 For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
-Projects, read and stage changes in them, review, publish and deploy them, restore or undo a
+Projects, read and stage changes in them, review and deploy them (or save them for the next deploy), restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
 without running it twice. Each call acts where the agent's directory is linked when the call
@@ -75,7 +75,7 @@ Some things are not tools. Run these yourself in a terminal:
 - Branches and tokens.
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
 
-Tools that can remove something are marked destructive: `publish`, `deploy`,
+Tools that can remove something are marked destructive: `deploy`,
 `environment_remove`, `project_remove`, the server commands that drain, clean or remove a
 server, and the Volume commands that move, mirror, release or restore a copy. When one of them needs your
 approval (see
@@ -237,8 +237,8 @@ A command that deletes something, such as `ployz project rm shop`, shows what go
 to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, or with
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
 with `--confirm`. Commands that would otherwise ask you to choose, such as `ployz ctx use` without
-a name or the storage choice in `ployz server add`, work the same way. A `publish` or `deploy`
-that needs an approval asks the same way in a terminal. Without one it waits for the approval in
+a name or the storage choice in `ployz server add`, work the same way. A `deploy`, with or without
+`--skip-deploy`, that needs an approval asks the same way in a terminal. Without one it waits for the approval in
 Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 

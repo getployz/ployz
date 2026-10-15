@@ -316,6 +316,7 @@ impl Db {
             .write(
                 &self.who,
                 &ployz_store::Publish {
+                    id: None,
                     environment: at(environment),
                     version: None,
                     message: None,

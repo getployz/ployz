@@ -20,8 +20,8 @@ use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RunnerId, Start, UploadBase,
-    UploadedSource, VolumeName,
+    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, Publish, RunnerId, Start,
+    UploadBase, UploadedSource, VolumeName,
 };
 
 use super::store::{Next, Store, environment, mint, next, scoped, store};
@@ -33,7 +33,7 @@ pub(crate) fn deploy_command() -> Command {
     following(
         scoped(base(
             "deploy",
-            "Publish staged changes if needed, then deploy them and follow the Deployment",
+            "Deploy everything staged and follow the Deployment",
         ))
         .arg(
             positional("service", false)
@@ -43,6 +43,11 @@ pub(crate) fn deploy_command() -> Command {
         .arg(
             switch("plan", None)
                 .help("Show what would deploy, and any ingress it brings back; run nothing"),
+        )
+        .arg(
+            switch("skip-deploy", None)
+                .conflicts_with_all(["service", "plan", "upload", "events", "detach"])
+                .help("Save everything staged for the next deploy instead of deploying it"),
         )
         .arg(crate::cli::reviewed_version())
         .arg(crate::cli::approval())
@@ -164,7 +169,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     // A retry uploads again, as the hidden `deploy --upload` does.
     let upload = source.as_deref().and_then(Path::to_str);
     let message = matches.get_one::<String>("message").map(String::as_str);
+    let skip = matches.get_flag("skip-deploy");
     let store = store(root)?
+        .args(skip.then_some("--skip-deploy"))
         .args(names.iter().copied())
         .args(upload.into_iter().flat_map(|source| ["--upload", source]))
         .args(
@@ -173,6 +180,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 .flat_map(|message| ["--message", message]),
         )
         .args(following_args(matches));
+    if skip {
+        return save(matches, &store);
+    }
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
@@ -186,6 +196,38 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         message: matches.get_one::<String>("message").cloned(),
     };
     upload_and_ship(matches, &store, request, events)?.finish()
+}
+
+/// `deploy --skip-deploy`: save everything staged for the next deploy.
+fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
+    let saving = Publish {
+        id: None,
+        environment: environment(matches)?,
+        version: matches.get_one::<String>("expect-version").cloned(),
+        message: matches.get_one::<String>("message").cloned(),
+        accept_volume_loss: super::teardown::accepted(matches)?,
+    };
+    let saved = store
+        .publish(&saving)
+        .map_err(|error| store.accepting(store.at_review(error, "diff")))?;
+    let where_ = format!("{}/{}", saved.environment.project, saved.environment.name);
+    let Some(version) = saved.saved else {
+        return ui::done(
+            &Next::new(&saved, None),
+            format_args!("Nothing staged in {where_}."),
+        );
+    };
+    let hint = next(matches, &["deploy"]);
+    ui::finish(&Next::new(&saved, Some(hint.clone())), || {
+        if saved.created {
+            ui::stream(format_args!("Saved {where_} as #{version}. Not deployed."));
+        } else {
+            ui::stream(format_args!(
+                "#{version} already holds {where_}. Not deployed."
+            ));
+        }
+        ui::hint(&Hint::Next(hint));
+    })
 }
 
 /// What a Deploy admits; `source` is the directory it uploads first.

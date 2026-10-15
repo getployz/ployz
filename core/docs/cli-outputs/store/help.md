@@ -20,28 +20,30 @@ Commands:
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
-  deploy      Publish staged changes if needed, then deploy them and follow the Deployment
+  deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
   history     Show immutable saved versions
   discard     Undo staged Service, Volume, Config or Setting changes
+  docs        Search the Ployz docs, or print a page
   domain      Manage public domains
   env         Manage Environments and Branches
   exec        Run a command in a Service's container
-  explain     Describe one Setting, with an example
+  explain     Describe one Setting with an example, or list a Service's Settings
   get         Show Settings: every Service, one Service, or one Setting
   link        Link this directory to a Project and Environment
   github      Connect GitHub so Services can build your repositories
   login       Sign this device in to Ployz Cloud
   logout      End this device's Ployz Cloud sign-in
   logs        Show Service logs; every Service of the Environment when none is named
+  mcp         Serve the agent tools to a coding agent as MCP tools over stdio
+  metrics     Show CPU, memory, network and disk for a Service or a Server
   org         List or switch Organizations
   server      Manage Servers
   service     Manage services
   token       Manage Organization Tokens and signed-in devices
   project     Manage Projects
   ps          List the Environment's containers across Servers
-  publish     Put staged changes in Saved State without deploying
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
@@ -99,28 +101,30 @@ Commands:
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
-  deploy      Publish staged changes if needed, then deploy them and follow the Deployment
+  deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
   history     Show immutable saved versions
   discard     Undo staged Service, Volume, Config or Setting changes
+  docs        Search the Ployz docs, or print a page
   domain      Manage public domains
   env         Manage Environments and Branches
   exec        Run a command in a Service's container
-  explain     Describe one Setting, with an example
+  explain     Describe one Setting with an example, or list a Service's Settings
   get         Show Settings: every Service, one Service, or one Setting
   link        Link this directory to a Project and Environment
   github      Connect GitHub so Services can build your repositories
   login       Sign this device in to Ployz Cloud
   logout      End this device's Ployz Cloud sign-in
   logs        Show Service logs; every Service of the Environment when none is named
+  mcp         Serve the agent tools to a coding agent as MCP tools over stdio
+  metrics     Show CPU, memory, network and disk for a Service or a Server
   org         List or switch Organizations
   server      Manage Servers
   service     Manage services
   token       Manage Organization Tokens and signed-in devices
   project     Manage Projects
   ps          List the Environment's containers across Servers
-  publish     Put staged changes in Saved State without deploying
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
@@ -160,28 +164,30 @@ Commands:
   cloud       Manage Cloud
   config      Manage Configs: folders of text files Services mount
   ctx         Show where commands act, or manage local contexts
-  deploy      Publish staged changes if needed, then deploy them and follow the Deployment
+  deploy      Deploy everything staged and follow the Deployment
   deployment  Read, retry, start and cancel Deployments
   diff        Show staged Service, Volume and Config changes
   history     Show immutable saved versions
   discard     Undo staged Service, Volume, Config or Setting changes
+  docs        Search the Ployz docs, or print a page
   domain      Manage public domains
   env         Manage Environments and Branches
   exec        Run a command in a Service's container
-  explain     Describe one Setting, with an example
+  explain     Describe one Setting with an example, or list a Service's Settings
   get         Show Settings: every Service, one Service, or one Setting
   link        Link this directory to a Project and Environment
   github      Connect GitHub so Services can build your repositories
   login       Sign this device in to Ployz Cloud
   logout      End this device's Ployz Cloud sign-in
   logs        Show Service logs; every Service of the Environment when none is named
+  mcp         Serve the agent tools to a coding agent as MCP tools over stdio
+  metrics     Show CPU, memory, network and disk for a Service or a Server
   org         List or switch Organizations
   server      Manage Servers
   service     Manage services
   token       Manage Organization Tokens and signed-in devices
   project     Manage Projects
   ps          List the Environment's containers across Servers
-  publish     Put staged changes in Saved State without deploying
   schema      Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting
   set         Stage Setting values
   status      Show who you are, where commands act, and what is staged, deploying or needs attention
@@ -213,7 +219,7 @@ $ ployz --version
 
 stdout:
 ```
-0.2.3
+0.3.0-beta.2
 ```
 
 ### set --help
@@ -261,17 +267,23 @@ Options:
       --from-env-file <FILE>
           Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret
 
-      --expect <REVISION>
-          Refuse unless Working State is still at this revision
-
       --json
           Print the result as one JSON object on stdout
+
+      --rename <NAME>
+          Rename the variable SERVICE.env.KEY to NAME; its value moves with it, and a secret stays sealed
 
       --color <WHEN>
           When to color output; overrides NO_COLOR and CLICOLOR
           
           [default: auto]
           [possible values: auto, always, never]
+
+      --update-references
+          With --rename: switch the variables that reference it to the new name too
+
+      --expect <REVISION>
+          Refuse unless Working State is still at this revision
 
   -h, --help
           Print help (see a summary with '-h')

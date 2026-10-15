@@ -39,11 +39,12 @@ use crate::storage::Tx;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct DiffView {
     pub environment: EnvironmentSummary,
-    /// Pass back to `publish` or `discard` to act on exactly this review.
+    /// Pass back to `deploy` or `discard` to act on exactly this review.
     pub version: String,
     /// The latest Saved revision, if anything was ever published.
     pub saved: Option<Revision>,
     /// Whether Saved State already holds this Working State.
+    #[serde(rename = "holds_staged")]
     pub published: bool,
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.

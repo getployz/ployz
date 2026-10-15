@@ -18,9 +18,9 @@ export type EnvironmentChangesReviewProps = {
   groups: ChangeGroup[];
   totalChanges: number;
   canDeploy: boolean;
-  /** Working State differs from Saved State: Publish saves it without deploying. */
-  canPublish: boolean;
-  onPublish: () => void;
+  /** Working State differs from Saved State: Save only saves it without deploying. */
+  canSave: boolean;
+  onSave: () => void;
   onDiscardAll: () => void;
   onClose: () => void;
   onDeploy: () => void;
@@ -49,11 +49,11 @@ export type EnvironmentChangesReviewProps = {
 
 /**
  * Details: the changes to deploy in the Sync dialog's anatomy. A group per origin, "Your changes" first; one line per
- * change, coloured by its kind; Discard and Never sync in each line's ⋯; Discard all and Publish in the footer.
+ * change, coloured by its kind; Discard and Never sync in each line's ⋯; Discard all and Save only in the footer.
  */
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { environment, canPublish, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [] } = props;
-  const staged = canPublish || totalChanges > 0 || included.length > 0;
+  const { environment, canSave, canDeploy, totalChanges, onClose, after, message, onMessageChange, included = [] } = props;
+  const staged = canSave || totalChanges > 0 || included.length > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-xl">
@@ -61,9 +61,9 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           <DialogTitle>Environment changes</DialogTitle>
           <DialogDescription>
             {!staged ? "Nothing staged here"
-              : `${plural(totalChanges, "change")} in ${environment}, ${canPublish ? "not yet saved" : "saved, not yet deployed"}.`}
+              : `${plural(totalChanges, "change")} in ${environment}, ${canSave ? "not yet saved" : "saved, not deployed"}.`}
           </DialogDescription>
-          {staged && (canPublish || canDeploy) ? (
+          {staged && (canSave || canDeploy) ? (
             <InputGroup>
               <InputGroupInput aria-label="Change message" placeholder="Message (optional)" maxLength={500} value={message}
                 onChange={(event) => onMessageChange(event.target.value)} />
@@ -285,14 +285,14 @@ export function Value({ kind, before, after }: { kind: ChangeKind; before: strin
   );
 }
 
-/** Discard all, quiet on the left; Publish and Deploy on the right. */
-function Footer({ groups, canDeploy, canPublish, onPublish, onDiscardAll, onDeploy, admitting = false }: EnvironmentChangesReviewProps) {
+/** Discard all, quiet on the left; Save only and Deploy on the right. */
+function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, admitting = false }: EnvironmentChangesReviewProps) {
   return (
     <DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
         <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={onDiscardAll}>Discard all</Button>
       ) : null}
-      <Button variant={canDeploy ? "outline" : "default"} disabled={!canPublish} onClick={onPublish}>Save</Button>
+      <Button variant={canDeploy ? "outline" : "default"} disabled={!canSave} onClick={onSave}>Save only</Button>
       {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
     </DialogFooter>
   );

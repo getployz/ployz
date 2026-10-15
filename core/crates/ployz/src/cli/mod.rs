@@ -82,7 +82,6 @@ pub(crate) fn compiled() -> Command {
         .subcommand(handlers::account::token_command())
         .subcommand(handlers::project::command())
         .subcommand(handlers::operator::ps_command())
-        .subcommand(handlers::review::publish_command())
         .subcommand(handlers::catalog::schema_command())
         .subcommand(handlers::config::set_command())
         .subcommand(handlers::link::status_command())

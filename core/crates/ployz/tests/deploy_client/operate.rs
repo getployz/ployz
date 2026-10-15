@@ -460,7 +460,7 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
     let (code, removed) = cli(&["volume", "rm", "data"]).await;
     assert_eq!(code, 0, "{removed}");
 
-    let (code, refused) = cli(&["publish"]).await;
+    let (code, refused) = cli(&["deploy", "--skip-deploy"]).await;
     assert_ne!(code, 0, "{refused}");
     let refused = &refused["error"];
     assert_eq!(refused["code"], "confirmation_required", "{refused}");
@@ -471,18 +471,20 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
         retry,
         [
             "ployz",
-            "publish",
+            "deploy",
+            "--skip-deploy",
             "--accept-volume-loss",
             "data",
-            "--version",
+            "--expect-version",
             version
         ],
         "{refused}"
     );
 
     let (code, wrong) = cli(&[
-        "publish",
-        "--version",
+        "deploy",
+        "--skip-deploy",
+        "--expect-version",
         version,
         "--accept-volume-loss",
         "cache",
@@ -492,8 +494,9 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
     assert_eq!(wrong["error"]["code"], "invalid_argument", "{wrong}");
 
     let (code, published) = cli(&[
-        "publish",
-        "--version",
+        "deploy",
+        "--skip-deploy",
+        "--expect-version",
         version,
         "--accept-volume-loss",
         "data",
@@ -501,7 +504,7 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
     .await;
     assert_eq!(code, 0, "{published}");
     assert_eq!(published["created"], true, "{published}");
-    assert_eq!(held.lock().unwrap().len(), 1, "publishing deletes nothing");
+    assert_eq!(held.lock().unwrap().len(), 1, "saving deletes nothing");
     let (code, listed) = cli(&["deployment", "ls"]).await;
     assert_eq!(code, 0, "{listed}");
     assert_eq!(

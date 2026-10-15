@@ -432,8 +432,8 @@ pub(super) fn identity(store: &Store) -> Result<Identity, Error> {
 struct Staged {
     /// How many changes, counting each node and each Setting.
     changes: usize,
-    /// Whether Saved State already holds them.
-    published: bool,
+    /// Whether a saved version already holds them.
+    saved: bool,
     /// The `ployz diff` version they'd deploy by.
     version: String,
 }
@@ -534,7 +534,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     }
     let staged = diff.as_ref().map(|diff| Staged {
         changes: diff.total_count,
-        published: diff.published,
+        saved: diff.published,
         version: diff.version.clone(),
     });
     let hint = attention

@@ -194,7 +194,7 @@ stdout:
   },
   "staged": {
     "changes": 2,
-    "published": false,
+    "saved": false,
     "version": "9:1:1.0"
   }
 }
