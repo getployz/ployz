@@ -7,7 +7,7 @@ import { EMAIL_SETUP_DOCS, NotificationsSection } from "./notifications-section"
 
 const settings = (mailOn: boolean): NotificationSettings => ({
   mailOn,
-  channels: { uptime: "none", "deploy-failed": "email", "upgrade-failed": "email" },
+  channels: { uptime: "none", "deploy-failed": "email", "upgrade-failed": "email", crash: "email" },
 });
 
 const row = (name: string) => screen.getByRole<HTMLButtonElement>("combobox", { name });
@@ -21,10 +21,11 @@ describe("NotificationsSection", () => {
   it("shows one row per email type with its channel", () => {
     render(<NotificationsSection settings={settings(true)} onChange={vi.fn()} />);
 
-    expect(screen.getAllByRole("combobox")).toHaveLength(3);
+    expect(screen.getAllByRole("combobox")).toHaveLength(4);
     expect(row("Uptime incidents").textContent).toContain("None");
     expect(row("Failed GitHub deploys").textContent).toContain("Email");
     expect(row("Failed automatic upgrades").textContent).toContain("Email");
+    expect(row("Crashed services").textContent).toContain("Email");
     expect(screen.queryByText(/Email isn't set up/u)).toBeNull();
   });
 
