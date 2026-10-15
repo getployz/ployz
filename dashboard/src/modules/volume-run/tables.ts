@@ -27,6 +27,10 @@ import {
   type VolumeRunState,
 } from "#/modules/volume-run/volume-run";
 
+/**
+ * Cloud's bookkeeping for Volume runs: one active row per Volume serializes Cloud's own runs. It is not runtime truth;
+ * each Machine checks every step against its own copy.
+ */
 export const volumeRun = pgTable(
   "volume_run",
   {

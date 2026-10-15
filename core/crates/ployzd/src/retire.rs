@@ -1,3 +1,9 @@
+//! The retire loop: stops this Machine's own Containers a Serving Pointer
+//! superseded, once every Machine not Down acked the pointer's deploy without them,
+//! or `FORCE_AFTER` after it first saw them. It re-derives everything from rows
+//! and Docker, so a restart resumes it, and it never starts, places or moves a
+//! Container.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,

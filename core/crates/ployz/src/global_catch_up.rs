@@ -1,4 +1,9 @@
 //! Global catch-up: place observed eligible Globals onto this Machine only.
+//!
+//! It refuses partial Live Observations before it plans, reads fresh storage
+//! evidence, and stops on unknown eligibility or incomplete placement; nothing
+//! retries it in the background. Deleted slots, later eligibility changes and
+//! transient failures wait for an explicit redeploy.
 
 use ployz_core::{
     BridgeEndpointCapacity, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,

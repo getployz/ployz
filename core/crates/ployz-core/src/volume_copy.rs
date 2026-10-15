@@ -1,5 +1,10 @@
 //! `SetVolumeCopy`: one verb that moves a Machine's copy of a Volume between Writer,
 //! Mirror and nothing, and the pure planner that picks the one transition it runs.
+//!
+//! A request names the copy its sender last saw here and the copy it wants. A match
+//! takes one transition, a copy already at the want succeeds, and anything else is
+//! refused; every reply reports this Machine's copy as it is now. No Machine records
+//! the run, checks a Writer's epoch, or reads another Machine's copy or floor.
 
 use std::{fmt, time::Duration};
 
@@ -107,7 +112,7 @@ impl From<CreationKey> for String {
 }
 
 /// How long the Machine keeps a running Container out of ingress before it
-/// stops it. Patience, not a safety wait (DESIGN.md bet 6 amendment). The
+/// stops it. Patience, not a safety wait (DESIGN.md bet 6). The
 /// Machine does not check that any other Machine's proxy reloaded.
 ///
 /// Invariant: `0 ..= MAX` milliseconds, checked at deserialize. Required on the
