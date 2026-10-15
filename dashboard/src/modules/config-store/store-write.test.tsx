@@ -247,14 +247,35 @@ it("keeps a newer view when a write's answer or a read lands older", async () =>
   await act(async () => { await test.scope.queryClient.refetchQueries({ queryKey: key, exact: true }); });
   await waitFor(() => expect(test.replicas()).toBe(8));
 
-  // A Deploy ending moves a diff's version, not its revision.
-  const diffOptions = storeViewOptions("acme", test.scope, diffQuery(ref));
-  const diffKey = diffOptions.queryKey;
-  const diff = (version: string, total: number): StoreResult<{ view: "diff" } & DiffView> => ({ ok: true, value: { view: "diff", environment: view(6, 8).environment, version, saved: 2,
-    holds_staged: false, incoming: [], follow_hints: [], included: [], total_count: total, changes: [] } });
-  await test.scope.queryClient.ensureQueryData({ ...diffOptions, initialData: diff("6:2:3.1", 2) });
-  test.scope.queryClient.setQueryData<unknown>(diffKey, diff("6:2:2.9", 1));
-  expect(test.scope.queryClient.getQueryData<{ value: { total_count: number } }>(diffKey)?.value.total_count).toBe(2);
+});
+
+const diffAt = (revision: number, saved: number, head: string, total: number): StoreResult<{ view: "diff" } & DiffView> => ({ ok: true, value: { view: "diff",
+  environment: view(revision, 1).environment, version: `${revision}:${saved}:${head}`, saved, holds_staged: false, incoming: [], follow_hints: [], included: [],
+  total_count: total, changes: [] } });
+
+it("orders a diff by its Saved revision, and lets a Deploy's ending replace it at the same revisions", async () => {
+  const test = setup(view(6, 1));
+  const options = storeViewOptions("acme", test.scope, diffQuery(ref));
+  const key = options.queryKey;
+  const total = () => test.scope.queryClient.getQueryData<{ value: { total_count: number } }>(key)?.value.total_count;
+  const put = (result: StoreResult<DiffView>) => test.scope.queryClient.setQueryData<unknown>(key, result);
+  await test.scope.queryClient.ensureQueryData({ ...options, initialData: diffAt(6, 2, "3.1", 2) });
+  put(diffAt(6, 1, "3.1", 5));
+  expect(total()).toBe(2);
+  // The Deploy ended: Cloud's head token restarts, and every later read at the same revisions lands.
+  put(diffAt(6, 2, "0.2", 0));
+  expect(total()).toBe(0);
+  put(diffAt(6, 2, "0.2", 1));
+  expect(total()).toBe(1);
+});
+
+it("shows an Environment recreated under the name, not the deleted one's newer revision", () => {
+  const test = setup(view(9, 4));
+  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
+  const recreated = view(1, 1);
+  recreated.environment.id = "env-2";
+  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { view: "environment", ...recreated } });
+  expect(test.scope.queryClient.getQueryData<{ value: EnvironmentView }>(key)?.value.environment).toEqual(recreated.environment);
 });
 
 it("refetches only the views a changed Store table family backs", () => {

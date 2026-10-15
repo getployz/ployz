@@ -207,39 +207,25 @@ export function invalidateViews(queryClient: QueryClient, organizationSlug: stri
   return queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => leftovers.has(query) });
 }
 
-/** The parts of a diff version (`working:saved:deployment.ended`), as numbers. */
-const versionParts = (version: string) => version.split(/[:.]/u).map(Number);
-
-function compareVersions(a: string, b: string) {
-  const left = versionParts(a);
-  const right = versionParts(b);
-  const length = Math.max(left.length, right.length);
-  for (const index of Array.from({ length }, (_, at) => at)) {
-    const delta = (left[index] ?? 0) - (right[index] ?? 0);
-    if (delta !== 0) return delta;
-  }
-  return 0;
-}
-
 /**
- * The one revision guard: a read or a write's answer never replaces a view with an older one of the same query.
- * Working State's revision orders most views; where it doesn't move (a Deploy ends), a diff's version does.
+ * The one revision guard: a read or a write's answer never replaces a view with an older one of the same Environment.
+ * Working State's revision orders views, then a diff's Saved revision, which a publish moves alone. Nothing else is
+ * ordered: a view of another Environment under the name (one deleted and recreated) replaces, and so does a Deploy's
+ * progress, which no revision counts.
  */
 function keepNewer<T>(old: T | undefined, next: T): T {
-  if (!carriesRevision(old) || !carriesRevision(next)) return next;
-  const before = old.value.environment.revision;
-  const after = next.value.environment.revision;
-  if (after !== before) return after > before ? next : old;
-  if (!carriesVersion(old) || !carriesVersion(next) || old.value.version === next.value.version) return next;
-  return compareVersions(next.value.version, old.value.version) >= 0 ? next : old;
+  if (!carriesRevision(old) || !carriesRevision(next) || old.value.environment.id !== next.value.environment.id) return next;
+  const working = next.value.environment.revision - old.value.environment.revision;
+  return working < 0 || (working === 0 && (next.value.saved ?? 0) < (old.value.saved ?? 0)) ? old : next;
 }
 
 const carriesRevision = Schema.is(Schema.Struct({
   ok: Schema.Literal(true),
-  value: Schema.Struct({ environment: Schema.Struct({ revision: Schema.Number }) }),
+  value: Schema.Struct({
+    environment: Schema.Struct({ id: Schema.String, revision: Schema.Number }),
+    saved: Schema.optional(Schema.NullOr(Schema.Number)),
+  }),
 }));
-
-const carriesVersion = Schema.is(Schema.Struct({ value: Schema.Struct({ version: Schema.String }) }));
 
 /** The newest Working State revision any cached view of the Environment shows. */
 export function cachedRevision(queryClient: QueryClient, organizationSlug: string, key: string) {
