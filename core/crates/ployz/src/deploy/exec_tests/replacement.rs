@@ -677,6 +677,31 @@ async fn a_stop_first_step_retires_every_old_copy_in_one_amendment() {
     client.assert_done();
 }
 
+#[test]
+fn a_hold_outlasts_every_health_wait_the_plan_configures() {
+    let machine = machine('1');
+    let slow = Duration::from_secs(3 * 60 * 60);
+    let mut check = configured_healthcheck();
+    check.deadline_millis = Some(u64::try_from(slow.as_millis()).unwrap());
+    let mut spec = spec(
+        None,
+        Some(ployz_core::HealthcheckSpec::Configured(check)),
+        None,
+    );
+    spec.update.order = UpdateOrder::StopFirst;
+    let plan = [
+        DeployOperation::ReplaceContainer(ReplacementOperation {
+            machine_id: machine,
+            old_container_id: container('a'),
+            spec,
+            skip_health_monitor: false,
+        }),
+        swap(&machine, &container('c'), UpdateOrder::StopFirst),
+    ];
+
+    assert_eq!(hold_for(&plan), HOLD_BEYOND_HEALTH + slow);
+}
+
 #[tokio::test]
 async fn a_stopped_copy_stays_held_until_its_deploy_publishes() {
     let machine = machine('1');
@@ -707,8 +732,8 @@ async fn a_stopped_copy_stays_held_until_its_deploy_publishes() {
         panic!("one amendment: {amendments:?}");
     };
     assert_eq!(
-        amendment.pointer.deciding,
-        Some(run_id()),
+        amendment.pointer.deciding.as_ref().map(|hold| &hold.deploy),
+        Some(&run_id()),
         "the stop holds its copy for this deploy"
     );
     let published = client

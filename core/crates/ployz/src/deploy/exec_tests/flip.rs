@@ -1012,11 +1012,16 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
-    let pointers: Vec<_> = [client.pins(), client.publications()]
+    let (pointers, holds): (Vec<_>, Vec<_>) = [client.pins(), client.publications()]
         .concat()
         .into_iter()
-        .map(|publication| publication.pointer)
-        .collect();
+        .map(|publication| {
+            let mut pointer = publication.pointer;
+            let hold = pointer.deciding.take().map(|hold| hold.deploy);
+            (pointer, hold)
+        })
+        .unzip();
+    assert_eq!(holds, [Some(run_id()), None]);
     assert_eq!(
         pointers,
         [
@@ -1025,7 +1030,7 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
                 containers: Vec::new(),
                 previous: Some(older.clone()),
                 retiring: vec![old],
-                deciding: Some(run_id()),
+                deciding: None,
             },
             ServingPointer {
                 deploy: run_id(),
@@ -1739,5 +1744,59 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
         "{outcome:?}"
     );
     assert_eq!(client.publications().len(), 3);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
+    use crate::deploy::{ServiceGroup, Step};
+
+    let machine = machine('1');
+    let operations = vec![run(&machine, spec(None, None, None), true)];
+    let groups = vec![
+        ServiceGroup {
+            service: Some(ServiceName::parse("db").unwrap()),
+            dependencies: Vec::new(),
+            steps: Vec::new(),
+            publish: false,
+            kept: vec![container('d')],
+        },
+        ServiceGroup {
+            service: Some(ServiceName::parse("api").unwrap()),
+            dependencies: vec![ServiceName::parse("db").unwrap()],
+            steps: vec![Step::Parallel(vec![0])],
+            publish: true,
+            kept: Vec::new(),
+        },
+    ];
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        operations,
+        test_namespace(),
+        groups,
+    );
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &container('a'),
+    )]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    let recorded = ployz_core::config::project_runtime_outcome(
+        plan.preview(),
+        serde_json::json!({ "version": 1, "outcome": outcome }),
+    );
+    assert!(recorded.is_ok(), "{recorded:?}");
     client.assert_done();
 }

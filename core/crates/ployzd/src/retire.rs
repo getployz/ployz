@@ -643,11 +643,11 @@ mod tests {
         future::Future,
         io,
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use ployz_core::{
-        AdvertisedEndpoint, ContainerId, DeploymentLogId, Machine, MachineId, MachineName,
+        AdvertisedEndpoint, ContainerId, DeploymentLogId, Hold, Machine, MachineId, MachineName,
         MachineRuntime, MembershipEvidence, QualifiedService, ServingPointer, WireGuardPublicKey,
     };
     use tokio::{task::JoinSet, time::Instant};
@@ -1378,20 +1378,21 @@ mod tests {
         server.abort();
     }
 
-    #[tokio::test]
-    async fn a_copy_an_undecided_deploy_stopped_is_never_retired() {
-        let db = corrosion_db();
-        let local = machine("local", 1);
+    fn held_until(until: SystemTime) -> ServingPointer {
         let mut row = pointers().get(&service()).cloned().unwrap();
-        row.deciding = Some(deploy("d3"));
-        db.execute(
-            "INSERT INTO cluster (key, value) VALUES (?, ?)",
-            rusqlite::params![
-                ServingPointer::key(&service()),
-                serde_json::to_string(&row).unwrap()
-            ],
-        )
-        .unwrap();
+        row.deciding = Some(Hold {
+            deploy: deploy("d3"),
+            until_unix_seconds: until.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        });
+        row
+    }
+
+    async fn acked_store_holding(
+        row: &ServingPointer,
+        local: &Machine,
+    ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+        let db = corrosion_db();
+        insert_pointer(&db, row);
         db.execute(
             "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?)",
             rusqlite::params![
@@ -1402,14 +1403,81 @@ mod tests {
             ],
         )
         .unwrap();
-        let (store, server) = identity_store(db).await;
+        identity_store(db).await
+    }
+
+    #[tokio::test]
+    async fn a_copy_an_undecided_deploy_stopped_is_never_retired() {
+        let local = machine("local", 1);
+        let row = held_until(SystemTime::now() + Duration::from_secs(3600));
+        let (store, server) = acked_store_holding(&row, &local).await;
         let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
-        let mut retirer = Retirer::default();
         let mut stopping = JoinSet::new();
-        round(&host, &store, &mut retirer, &mut stopping).await;
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
         while stopping.join_next().await.is_some() {}
 
         assert_holds_a(&host);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_copy_whose_deploy_died_holding_it_is_retired_once_the_hold_lapses() {
+        let local = machine("local", 1);
+        let row = held_until(SystemTime::now() - Duration::from_secs(1));
+        let (store, server) = acked_store_holding(&row, &local).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_hold_older_than_the_cap_is_never_retired() {
+        let one = machine("one", 1);
+        let pointers = ServingPointers::from_iter([(
+            service(),
+            held_until(SystemTime::now() + Duration::from_secs(3600)),
+        )]);
+        let mut retirer = Retirer::default();
+        let required = ackers(&[&one, &machine("two", 2)]);
+        let acks = acked_away(&[&one]);
+        assert!(decide_now(&mut retirer, &pointers, &acks, &required, &[id("a")]).is_empty());
+        tokio::time::advance(FORCE_AFTER * 2).await;
+        assert!(decide_now(&mut retirer, &pointers, &acks, &required, &[id("a")]).is_empty());
+    }
+
+    /// A drain of the Machine waits until the retiring copy is gone, as in
+    /// `ployz::drain::retirement::retire_copies`.
+    #[tokio::test]
+    async fn an_orphaned_hold_lets_a_drain_finish_across_a_daemon_restart() {
+        let local = machine("local", 1);
+        let until = SystemTime::now() + Duration::from_secs(2);
+        let row = held_until(until);
+        let (store, server) = acked_store_holding(&row, &local).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+        assert_holds_a(&host);
+
+        while SystemTime::now() < until + Duration::from_secs(1) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let mut restarted = Retirer::default();
+        let drained = tokio::time::timeout(Duration::from_secs(5), async {
+            while host.local.lock().unwrap().contains(&id("a")) {
+                round(&host, &store, &mut restarted, &mut stopping).await;
+                while stopping.join_next().await.is_some() {}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        assert!(drained.is_ok(), "the drain still waits on the held copy");
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
         server.abort();
     }
 

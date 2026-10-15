@@ -211,10 +211,14 @@ impl Schedule {
             .collect()
     }
 
+    /// How each Service this Deploy changed ended. A Service the plan leaves
+    /// unchanged keeps its group for ordering but owns no operation, so it has
+    /// no result.
     pub(crate) fn services(&self) -> Vec<ServiceOutcome> {
         self.slots
             .iter()
             .enumerate()
+            .filter(|(_, Slot { group, .. })| group.publish || !group.steps.is_empty())
             .filter_map(|(index, Slot { group, phase })| {
                 let result = match phase {
                     _ if self.unconfirmed.contains(&index) => ServiceResult::Unconfirmed,
