@@ -115,6 +115,8 @@ export function BottomBar({
   // Oldest first: the oldest holds, or is next for, the Environment's one run.
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canSave;
+  // One Save at a time: a second sends the same version and comes back stale.
+  const saveable = canSave && busy !== "saving";
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
@@ -206,8 +208,8 @@ export function BottomBar({
       {noServers ? (
         <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
-        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !canSave : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
-          onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (canSave) save(); }} />}>
+        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
+          onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>
           {savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
@@ -217,7 +219,7 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem disabled={!canSave} onClick={save}>Save only</DropdownMenuItem>
+          <DropdownMenuItem disabled={!saveable} onClick={save}>Save only</DropdownMenuItem>
           <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
@@ -236,7 +238,7 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave: saveable,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,
