@@ -314,3 +314,114 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
         })
     );
 }
+
+#[derive(Clone, Default)]
+struct SlowRow {
+    row: crate::serving_publish::tests::FakeRow,
+    reads: std::sync::Arc<std::sync::Mutex<u32>>,
+}
+
+impl PointerClient for SlowRow {
+    async fn pointer_publisher(&mut self) -> Result<MachineTarget, RpcError> {
+        self.row.pointer_publisher().await
+    }
+
+    async fn read_pointer_at(
+        &mut self,
+        at: &mut MachineTarget,
+        service: &QualifiedService,
+    ) -> Result<Option<ployz_core::ServingPointer>, RpcError> {
+        *self.reads.lock().unwrap() += 1;
+        tokio::time::sleep(crate::connect::TARGET_RPC_TIMEOUT).await;
+        self.row.read_pointer_at(at, service).await
+    }
+
+    async fn publish_pointer_at(
+        &mut self,
+        at: &mut MachineTarget,
+        request: ployz_core::PublishServingPointerRequest,
+    ) -> Result<ployz_core::ServingPointerPublication, RpcError> {
+        self.row.publish_pointer_at(at, request).await
+    }
+}
+
+fn up_machine(hex: char) -> MachineObservation {
+    ployz_core::MachineObservation::new(
+        ployz_core::Machine {
+            labels: Default::default(),
+            accepts_builds: true,
+            accepts_services: true,
+            accepts_ingress: true,
+            id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
+            name: MachineName::parse(format!("machine-{hex}")).unwrap(),
+            subnet: format!("10.210.{}.0/24", hex.to_digit(16).unwrap())
+                .parse()
+                .unwrap(),
+            public_key: ployz_core::WireGuardPublicKey([hex as u8; 32]),
+            public_ip: None,
+            advertised_endpoints: Vec::new(),
+            runtime: Default::default(),
+            build_concurrency: None,
+        },
+        ployz_core::MembershipObservation::Up,
+    )
+}
+
+async fn retiring_with_publisher(
+    reached: bool,
+) -> (HashSet<ContainerId>, u32, std::time::Duration) {
+    use crate::serving_publish::tests::pointer;
+    let machines = [up_machine('a'), up_machine('b')];
+    let running = ContainerRuntimeObservation::Running {
+        health: HealthObservation::Healthy,
+    };
+    let publisher = machines[0].machine.id;
+    let failures = if reached {
+        Vec::new()
+    } else {
+        vec![MachineFailure {
+            machine_id: publisher,
+            error: RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "ployzd is down".into(),
+                details: serde_json::Value::Null,
+                cause: Vec::new(),
+            },
+        }]
+    };
+    let live = derive_live_services(PartialResult {
+        successes: vec![ployz_core::MachineSuccess {
+            machine_id: machines[1].machine.id,
+            value: vec![observation('b', 'b', "api", running)],
+        }],
+        failures,
+        omissions: Vec::new(),
+    });
+    let services = live.services();
+    let services = services.iter().collect::<Vec<_>>();
+    let client = SlowRow::default();
+    let (serving, retiring_ids) = (['c'], ['b']);
+    *client.row.row.lock().unwrap() = Some(pointer('d', &serving, &retiring_ids));
+    let started = tokio::time::Instant::now();
+    let ids = retiring(&client, &machines, &live.containers, &services).await;
+    let reads = *client.reads.lock().unwrap();
+    (ids, reads, started.elapsed())
+}
+
+#[tokio::test(start_paused = true)]
+async fn ps_does_not_reread_a_publisher_the_listing_could_not_reach() {
+    let (ids, reads, elapsed) = retiring_with_publisher(false).await;
+    assert!(ids.is_empty());
+    assert_eq!(reads, 0);
+    assert!(elapsed < crate::connect::TARGET_RPC_TIMEOUT, "{elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn ps_reads_retiring_ids_from_a_reached_publisher() {
+    let (ids, reads, _) = retiring_with_publisher(true).await;
+    assert_eq!(
+        ids,
+        HashSet::from([crate::serving_publish::tests::container('b')])
+    );
+    assert_eq!(reads, 1);
+}

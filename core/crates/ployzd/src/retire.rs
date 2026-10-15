@@ -626,7 +626,10 @@ fn finish(
             retirer
                 .retry_after
                 .insert(container, Instant::now() + PENDING_TICK);
-            tracing::info!("kept {container}: a pointer serves it or no longer retires it");
+            tracing::info!(
+                container = %container,
+                "kept retire: a pointer serves it or no longer retires it"
+            );
         }
         (Outcome::Failed(error), _) => {
             retirer
@@ -661,7 +664,7 @@ mod tests {
 
     use super::{
         Ackers, Candidate, FORCE_AFTER, Membership, Outcome, PENDING_TICK, RetireHost, Retirer,
-        Verdict, remove_drained, required_ackers, round, run,
+        Verdict, finish, remove_drained, required_ackers, round, run,
     };
     use crate::corrosion::{
         Error as CorrosionError, IngressRouteAck, IngressRouteChange, IngressRouteRow,
@@ -2376,6 +2379,30 @@ mod tests {
         assert_eq!(*host.marked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.unmarked.lock().unwrap(), vec![id("a")]);
         assert_eq!(*host.removals.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_kept_container_is_journalled_by_its_container_field() {
+        let local = machine("local", 1);
+        let (cluster, store) = acked_cluster(&[&local]).await;
+        let host = FakeHost {
+            on_drain: roll_back_to_a(&cluster),
+            ..FakeHost::new(&[id("a"), id("b")], ackers(&[&local]))
+        };
+        let (capture, _logging) = crate::diag::test_support::capture();
+        let mut retirer = Retirer::default();
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut retirer, &mut stopping).await;
+        while let Some(joined) = stopping.join_next().await {
+            finish(&mut retirer, joined);
+        }
+
+        let journal = capture.text();
+        let kept = journal
+            .lines()
+            .find(|line| line.contains("kept retire"))
+            .unwrap_or_else(|| panic!("no kept line in {journal:?}"));
+        assert!(kept.contains(&format!("container={}", id("a"))), "{kept}");
     }
 
     #[tokio::test]

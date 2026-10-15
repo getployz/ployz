@@ -8,13 +8,14 @@ use crate::cli::{base, positional, value};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     HealthFailure, HealthObservation, LiveServices, MachineFailure, MachineId, MachineName,
-    MachineObservation, QualifiedService, RpcError, RpcErrorCode, ServiceObservation,
-    ServiceSelector, select_service,
+    MachineObservation, MachineTarget, PartialResult, QualifiedService, RpcError, RpcErrorCode,
+    ServiceObservation, ServiceSelector, select_service,
 };
 use serde::Serialize;
 
 use crate::{
     cluster::HealthWaitError,
+    serving_publish::PointerClient,
     ui::{Cell, Gaps, Table, Tone},
 };
 use ployz_core::EnvironmentValues;
@@ -52,7 +53,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                         .is_none_or(|namespace| service.identity.namespace == *namespace)
                 })
                 .collect::<Vec<_>>();
-            let retiring = retiring(client, &machines, &services).await;
+            let retiring = retiring(client, &machines, &live.containers, &services).await;
             let mut containers = services
                 .iter()
                 .flat_map(|service| service.members())
@@ -69,24 +70,34 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-async fn retiring(
-    client: &crate::connect::Client,
+async fn retiring<C: PointerClient + Clone, E>(
+    client: &C,
     machines: &[MachineObservation],
+    listing: &PartialResult<Vec<ContainerObservation>, E>,
     services: &[&ServiceObservation],
 ) -> HashSet<ContainerId> {
     let Some(publisher) = crate::serving_publish::publisher_among(machines) else {
         return HashSet::new();
     };
+    let publisher_unreached = listing
+        .failures
+        .iter()
+        .map(|failure| &failure.machine_id)
+        .chain(&listing.omissions)
+        .any(|machine| MachineTarget::from(machine) == publisher);
+    if publisher_unreached {
+        return HashSet::new();
+    }
     let reads = services.iter().map(|service| {
         let mut client = client.clone();
         let mut at = publisher.clone();
-        async move { client.read_at(&mut at, &service.identity).await }
+        async move { client.read_pointer_at(&mut at, &service.identity).await }
     });
     join_all(reads)
         .await
         .into_iter()
         .flatten()
-        .filter_map(|read| read.pointer)
+        .flatten()
         .flat_map(|pointer| pointer.retiring)
         .collect()
 }
