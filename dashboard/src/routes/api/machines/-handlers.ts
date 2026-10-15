@@ -1,4 +1,5 @@
 import { Effect, Option, Result } from "effect";
+import { flow } from "effect/Function";
 import { crashPushInput, decodeCrashPush, decodePageviewPush, decodePushHeader, isObserveStream, pageviewPushInput } from "#/modules/observe-ingest/ingest";
 import { authenticateObservePush, ingestCrashPush, ingestPageviewPush, type ObservePusher, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
 import type { ObserveStream } from "#/modules/observe-ingest/tables";
@@ -9,13 +10,14 @@ const noStore = { "cache-control": "no-store" };
 const MAX_PUSH_BYTES = 256 * 1024;
 
 type Ingest = ReturnType<typeof ingestCrashPush> | ReturnType<typeof ingestPageviewPush>;
+type IngestRun = Effect.Effect<void, Effect.Error<Ingest>, Effect.Services<Ingest>>;
 
-const ingestStream: Record<ObserveStream, (pusher: ObservePusher, json: unknown) => Option.Option<Effect.Effect<void, Effect.Error<Ingest>, Effect.Services<Ingest>>>> = {
-  crash: (pusher, json) =>
-    Option.map(Option.flatMap(decodeCrashPush(json), crashPushInput), (push) => ingestCrashPush(pusher, push)),
-  pageviews: (pusher, json) =>
-    Option.map(Option.flatMap(decodePageviewPush(json), pageviewPushInput), (push) => ingestPageviewPush(pusher, push)),
-};
+const ingestStream = {
+  crash: (pusher: ObservePusher) =>
+    flow(decodeCrashPush, Option.flatMap(crashPushInput), Option.map((push): IngestRun => ingestCrashPush(pusher, push))),
+  pageviews: (pusher: ObservePusher) =>
+    flow(decodePageviewPush, Option.flatMap(pageviewPushInput), Option.map((push): IngestRun => ingestPageviewPush(pusher, push))),
+} satisfies Record<ObserveStream, (pusher: ObservePusher) => (json: Parameters<typeof decodeCrashPush>[0]) => Option.Option<IngestRun>>;
 
 function errorResponse(cause: unknown) {
   const publicError = encodePublicError(cause);
@@ -56,7 +58,7 @@ export function handleObservePush(request: Request, machineId: string) {
     if (!isObserveStream(header.value.stream)) {
       return errorResponse(new NotFound({ message: `Unknown observe stream ${header.value.stream}.` }));
     }
-    const ingest = ingestStream[header.value.stream](pusher.success, json);
+    const ingest = ingestStream[header.value.stream](pusher.success)(json);
     if (Option.isNone(ingest)) return malformed();
     const ingested = yield* Effect.result(ingest.value);
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
