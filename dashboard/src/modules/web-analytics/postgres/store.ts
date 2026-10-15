@@ -408,9 +408,9 @@ const asJson = (rows: SQL) => sql`(select coalesce(jsonb_agg(rows), '[]'::jsonb)
 
 /** A range's totals by bucket from the shared `visit_rows` and `range_visits`. */
 const sharedTotals = (bucket: SQL) => unionTotals([
-  sql`select ${bucket} as bucket, count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors,
+  sql`select bucket, sum(pageviews)::bigint as pageviews, count(*)::bigint as visitors,
     0::bigint as visits, 0::bigint as bounces, 0::bigint as total_duration
-    from visit_rows group by 1`,
+    from (select ${bucket} as bucket, count(*)::bigint as pageviews from visit_rows group by 1, visitor_id) visitors group by 1`,
   sql`select ${bucket} as bucket, 0::bigint as pageviews, 0::bigint as visitors, count(*)::bigint as visits,
     count(*) filter (where pageviews = 1)::bigint as bounces, coalesce(sum(duration), 0)::bigint as total_duration
     from range_visits group by 1`,
@@ -419,7 +419,8 @@ const sharedTotals = (bucket: SQL) => unionTotals([
 /**
  * Every figure of one range: its day series, its hour series for an hour interval, a breakdown per dim, its entry pages
  * and its goals. Rollups hold no filtered rows, so with filters each figure reads raw, and one statement sessionizes the
- * range once for all of them; without, each reads its rollup.
+ * range once for all of them; without, each reads its rollup. Each visitor count groups by visitor before it counts,
+ * which Postgres hashes, where `count(distinct)` sorts the range again for every figure.
  */
 export const figures = Effect.fn("WebAnalytics.figures")(function* (query: StoreQuery, interval: Interval, dims: ReadonlyArray<FilterKey>) {
   if (query.filters.length === 0) {
@@ -436,10 +437,10 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Store
   const { range, timezone } = query;
   const day = localDate(timezone);
   const breakdowns = dims.map((dim) => sql`${dim}::text, ${asJson(sql`
-    select value, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors from (
-      select ${column(dim)} as value, count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors
-      from visit_rows where ${column(dim)} is not null group by ${column(dim)}, ${day}
-    ) days group by value`)}`);
+    select value, sum(pageviews)::bigint as pageviews, count(*)::bigint as visitors from (
+      select ${column(dim)} as value, count(*)::bigint as pageviews
+      from visit_rows where ${column(dim)} is not null group by ${column(dim)}, ${day}, visitor_id
+    ) visitor_days group by value`)}`);
   const [row] = yield* drizzle.execute<FiguresDbRow>(sql`
     with ${visitCtes(query, range, true)},
     range_visits as (select * from visits where ts >= ${instant(range.start)} and ts < ${instant(range.end)}),
@@ -450,12 +451,12 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* (query: Store
       'hourly', ${interval === "hour" ? asJson(sharedTotals(epochMs(localHour(timezone)))) : sql`'[]'::jsonb`},
       'values', jsonb_build_object(${sql.join(breakdowns, sql`, `)}),
       'entries', ${asJson(sql`
-        select value, sum(visitors)::bigint as visitors, sum(visits)::bigint as visits, sum(bounces)::bigint as bounces,
+        select value, count(*)::bigint as visitors, sum(visits)::bigint as visits, sum(bounces)::bigint as bounces,
           sum(total_duration)::bigint as total_duration from (
-          select pathname as value, count(distinct visitor_id)::bigint as visitors, count(*)::bigint as visits,
+          select pathname as value, count(*)::bigint as visits,
             count(*) filter (where pageviews = 1)::bigint as bounces, coalesce(sum(duration), 0)::bigint as total_duration
-          from range_visits group by pathname, ${day}
-        ) days group by value`)},
+          from range_visits group by pathname, ${day}, visitor_id
+        ) visitor_days group by value`)},
       'goals', ${asJson(sql`select * from goal_rows`)}
     ) as figures`, "objects");
   const result = row?.figures;
