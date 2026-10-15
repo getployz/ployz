@@ -31,8 +31,13 @@ for (const path of ['/ready\u0001probe', '/ready\tprobe', '/ready\nprobe', '/rea
 }
 assert.equal(api.parseServiceSetting('healthcheckPath', '/café?escaped=%0A'), '/café?escaped=%0A');
 
-// Every method index.d.ts promises on Client is forwarded by the index.js wrapper.
-const declared = readFileSync(new URL('../index.d.ts', import.meta.url), 'utf8').match(/^export declare class Client \{\n([\s\S]*?)^\}/m)[1];
-const methods = [...declared.matchAll(/^  (\w+)[<(]/gm)].map(([, name]) => name);
+const read = (file) => readFileSync(new URL(file, import.meta.url), 'utf8');
+const names = (body) => [...body.matchAll(/^  (\w+)[<(]/gm)].map(([, name]) => name);
+const facade = read('../index.d.ts');
+const omitted = facade.match(/^type WrappedClientMethods =([^;]*);/m)[1].match(/\w+/g);
+const methods = [
+  ...names(read('../generated/native.d.ts').match(/^export declare class Client \{\n([\s\S]*?)^\}/m)[1]).filter(name => !omitted.includes(name)),
+  ...names(facade.match(/^export interface Client extends [^{]*\{\n([\s\S]*?)^\}/m)[1]),
+];
 assert.ok(methods.includes('removeContainer'));
 assert.deepEqual(methods.filter(name => typeof require('@ployz/sdk').Client.prototype[name] !== 'function'), []);

@@ -1,5 +1,6 @@
 //! Present the Store's recorded Deployment evidence without new Cluster reads.
 
+use crate::deploy::{Replica, service_row, starts};
 use crate::failure::Failure;
 use crate::ui::{
     Hint,
@@ -15,80 +16,68 @@ use std::time::{Duration, UNIX_EPOCH};
 pub(super) fn frame(view: &DeploymentView) -> Frame {
     let mut rows = Vec::new();
     for (index, node) in view.nodes.iter().enumerate() {
-        let service = match &node.node {
-            DeployedNode::Service { name, .. } => Some(QualifiedService::new(
-                view.namespace.clone(),
-                view.runtime_names.get(name).unwrap_or(name).clone(),
-            )),
-            DeployedNode::Volume { .. } | DeployedNode::Config { .. } => None,
-        };
-        if let Some(service) = &service
-            && !node.rows.is_empty()
-        {
-            rows.extend(node.rows.iter().map(|row| {
-                Row {
-                    subject: Subject::ServiceOnServer {
-                        service: service.clone(),
-                        machine: row.machine_id,
-                        server: row.server.clone(),
-                    },
-                    state: (&row.state).into(),
-                    detail: None,
-                    timing: match (row.started_at, row.finished_at) {
-                        (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
-                            u64::try_from(end.saturating_sub(start)).unwrap_or(0),
-                        )),
-                        (Some(start), None) => u64::try_from(start)
-                            .ok()
-                            .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
-                            .map_or(Timing::Unavailable, Timing::Started),
-                        (None, _) => Timing::Unavailable,
-                    },
-                }
-            }));
-        } else {
-            let build = view.builds.iter().find(|build| match &node.node {
-                DeployedNode::Service { name, .. } => build.service == *name,
-                DeployedNode::Volume { .. } | DeployedNode::Config { .. } => false,
-            });
+        let DeployedNode::Service { name, .. } = &node.node else {
             rows.push(Row {
-                subject: service.map_or_else(
-                    || Subject::Node {
-                        index,
-                        name: match &node.node {
-                            DeployedNode::Config { name, .. } => format!("Config {name}"),
-                            DeployedNode::Volume { name, .. } => format!("Volume {name}"),
-                            DeployedNode::Service { name, .. } => name.to_string(),
-                        },
+                subject: Subject::Node {
+                    index,
+                    name: match &node.node {
+                        DeployedNode::Config { name, .. } => format!("Config {name}"),
+                        DeployedNode::Volume { name, .. } => format!("Volume {name}"),
+                        DeployedNode::Service { name, .. } => name.to_string(),
                     },
-                    Subject::Service,
-                ),
-                state: match node.outcome {
-                    NodeStatus::Pending
-                        if build.is_some_and(|build| build.status == BuildStatus::Failed) =>
-                    {
-                        State::Failed
-                    }
-                    NodeStatus::Pending => State::Pending,
-                    NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
-                    NodeStatus::Failed => State::Failed,
-                    NodeStatus::NotAttempted => State::NotAttempted,
-                    NodeStatus::Unchanged => State::Unchanged,
-                    NodeStatus::Unknown => State::Unknown,
                 },
-                detail: build.map(|build| {
-                    match build.status {
-                        BuildStatus::Pending => "build pending",
-                        BuildStatus::Building => "building",
-                        BuildStatus::Built => "built",
-                        BuildStatus::Reused => "build reused",
-                        BuildStatus::Failed => "build failed",
-                    }
-                    .to_owned()
-                }),
+                state: node_state(node.outcome, false),
+                detail: None,
                 timing: Timing::Unavailable,
             });
+            continue;
+        };
+        let runtime = view.runtime_names.get(name).unwrap_or(name);
+        let depth = view
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.depths.get(runtime))
+            .copied();
+        let mut row = service_row(
+            QualifiedService::new(view.namespace.clone(), runtime.clone()),
+            depth,
+            node.rows.iter().map(|row| Replica {
+                machine: row.machine_id,
+                state: &row.state,
+                starts: view
+                    .preview
+                    .as_ref()
+                    .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
+                timing: match (row.started_at, row.finished_at) {
+                    (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
+                        u64::try_from(end.saturating_sub(start)).unwrap_or(0),
+                    )),
+                    (Some(start), None) => u64::try_from(start)
+                        .ok()
+                        .and_then(|secs| UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+                        .map_or(Timing::Unavailable, Timing::Started),
+                    (None, _) => Timing::Unavailable,
+                },
+            }),
+        );
+        if node.rows.is_empty() {
+            let build = view.builds.iter().find(|build| build.service == *name);
+            row.state = node_state(
+                node.outcome,
+                build.is_some_and(|build| build.status == BuildStatus::Failed),
+            );
+            row.detail = build.map(|build| {
+                match build.status {
+                    BuildStatus::Pending => "build pending",
+                    BuildStatus::Building => "building",
+                    BuildStatus::Built => "built",
+                    BuildStatus::Reused => "build reused",
+                    BuildStatus::Failed => "build failed",
+                }
+                .to_owned()
+            });
         }
+        rows.push(row);
     }
     rows.extend(view.deployment.ingress.iter().map(|repair| Row {
         subject: Subject::ServiceOnServer {
@@ -106,7 +95,7 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
     }));
     if ingress_unchecked(view).next().is_some() {
         rows.push(Row {
-            subject: Subject::Service(QualifiedService::system_ingress()),
+            subject: Subject::Unlocated(QualifiedService::system_ingress()),
             state: State::Unknown,
             detail: Some("not checked".to_owned()),
             timing: Timing::Unavailable,
@@ -125,6 +114,18 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             .flat_map(|preview| &preview.warnings)
             .cloned()
             .collect(),
+    }
+}
+
+fn node_state(outcome: NodeStatus, build_failed: bool) -> State {
+    match outcome {
+        NodeStatus::Pending if build_failed => State::Failed,
+        NodeStatus::Pending => State::Pending,
+        NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
+        NodeStatus::Failed => State::Failed,
+        NodeStatus::NotAttempted => State::NotAttempted,
+        NodeStatus::Unchanged => State::Unchanged,
+        NodeStatus::Unknown => State::Unknown,
     }
 }
 
@@ -331,18 +332,16 @@ mod tests {
     }
 
     #[test]
-    fn recorded_children_replace_aggregate_and_keep_runtime_identity() {
+    fn replicas_fold_into_one_service_row_under_its_runtime_identity() {
         let frame = frame(&view());
-        assert_eq!(frame.rows.len(), 4);
-        assert_eq!(frame.rows.iter().filter(|row| matches!(&row.subject, Subject::ServiceOnServer { service, .. } if service.to_string() == "shop-production/private-web")).count(), 2);
-        assert_eq!(
-            frame
-                .rows
-                .iter()
-                .filter(|row| matches!(&row.subject, Subject::Service(_)))
-                .count(),
-            1
-        );
+        assert_eq!(frame.rows.len(), 3);
+        assert!(frame.rows.iter().any(|row| matches!(
+            &row.subject,
+            Subject::Service(graph)
+                if graph.service.to_string() == "shop-production/private-web"
+                    && graph.total == 2
+                    && graph.machines.len() == 2
+        ) && row.state == State::Failed));
         assert!(frame.rows.iter().any(
             |row| matches!(&row.subject, Subject::Node { name, .. } if name == "Volume data")
         ));
@@ -513,11 +512,13 @@ mod tests {
         for node in &mut view.nodes {
             node.outcome = NodeStatus::Unchanged;
         }
-        view.preview = Some(DeployPreview::new(
-            Vec::new(),
-            Vec::new(),
-            view.namespace.clone(),
-        ));
+        let mut preview = DeployPreview::new(Vec::new(), Vec::new(), view.namespace.clone());
+        preview.depths = [
+            ("private-web".parse().unwrap(), 0),
+            ("api".parse().unwrap(), 1),
+        ]
+        .into();
+        view.preview = Some(preview);
         view.deployment.warnings = vec![
             DeploymentWarning::IngressUnchecked {
                 cause: "lab-1 went unobserved (connection refused)".into(),
@@ -529,9 +530,15 @@ mod tests {
         assert!(!noop(&view) && visible(&view));
         assert!(completion(&view, command).is_ok());
         assert!(frame(&view).rows.iter().any(|row| {
-            row.subject == Subject::Service(QualifiedService::system_ingress())
+            row.subject == Subject::Unlocated(QualifiedService::system_ingress())
                 && row.state == State::Unknown
         }));
+        let lines = crate::ui::progress::live_lines(&frame(&view), 0, 80, 40, false);
+        let unchecked = lines
+            .iter()
+            .position(|line| line == "! ingress  unknown (not checked)");
+        let graph = lines.iter().position(|line| line.starts_with("depth "));
+        assert!(unchecked.is_some() && unchecked < graph);
         assert_eq!(
             ingress_warnings(&view),
             [
@@ -566,12 +573,15 @@ mod tests {
             assert!(visible(&view));
             let frame = frame(&view);
             let row = frame.rows.first().unwrap();
-            assert_eq!(
-                row.subject,
-                Subject::Service(QualifiedService::parse("shop-production/private-web").unwrap())
-            );
+            assert!(matches!(
+                &row.subject,
+                Subject::Service(graph)
+                    if graph.service.to_string() == "shop-production/private-web" && graph.total == 0
+            ));
             assert_eq!(row.detail.as_deref(), Some(detail));
             assert_eq!(row.state, state);
+            let lines = crate::ui::progress::live_lines(&frame, 0, 80, 40, false);
+            assert!(!lines.iter().any(|line| line.starts_with("depth ")));
         }
         view.builds.first_mut().unwrap().status = BuildStatus::Reused;
         view.deployment.status = DeploymentStatus::Applied;

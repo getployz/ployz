@@ -46,9 +46,9 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 /// # Errors
 /// Returns `invalid_argument` for malformed input, or the connection's error when
 /// no Server can be reached.
-#[napi]
+#[napi(ts_return_type = "Promise<VolumeObservation>")]
 pub async fn observe_volumes(
-    connections: serde_json::Value,
+    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     sought: Vec<String>,
 ) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
@@ -67,8 +67,10 @@ pub async fn observe_volumes(
 /// # Errors
 /// Returns `invalid_argument` for malformed input, or the connection's error when
 /// no Server can be reached.
-#[napi]
-pub async fn observe_copies(connections: serde_json::Value) -> Result<serde_json::Value> {
+#[napi(ts_return_type = "Promise<CopyObservation>")]
+pub async fn observe_copies(
+    #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+) -> Result<serde_json::Value> {
     let connections = crate::parse_connections(connections)?;
     to_json(ployz::sdk::observe_copies(connections).await)
 }
@@ -80,12 +82,12 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns the Store's RPC error, or `unavailable` when it is too busy or slow.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ConfigView>")]
     pub async fn read(
         &self,
         organization: String,
-        query: serde_json::Value,
-        trusted: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "ConfigQuery")] query: serde_json::Value,
+        #[napi(ts_arg_type = "ConfigTrusted")] trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         #[expect(
@@ -105,12 +107,12 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns the Store's RPC error, or `unavailable` when it is too busy or slow.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ConfigCommitted>")]
     pub async fn write(
         &self,
         organization: String,
-        command: serde_json::Value,
-        trusted: Option<serde_json::Value>,
+        #[napi(ts_arg_type = "ConfigCommand")] command: serde_json::Value,
+        #[napi(ts_arg_type = "ConfigTrusted")] trusted: Option<serde_json::Value>,
         principal: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, principal)?;
@@ -130,7 +132,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns an error if the receipt can't be serialized.
-    #[napi]
+    #[napi(ts_return_type = "Converted | null")]
     pub fn converted(&self) -> Result<serde_json::Value> {
         serde_json::to_value(self.store.converted())
             .map_err(|error| Error::from_reason(error.to_string()))
@@ -141,7 +143,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed ID, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<PullRequestRef[]>")]
     pub async fn checks(&self, environment: String) -> Result<serde_json::Value> {
         let environment = ployz_store::EnvironmentId::parse(environment).map_err(rpc_to_napi)?;
         self.run(move |store| store.checks(&environment)).await
@@ -152,7 +154,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GitSource[]>")]
     pub async fn deployment_sources(&self, deployment: String) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         self.run(move |store| store.sources(&deployment)).await
@@ -165,11 +167,11 @@ impl ConfigStore {
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
     /// `invalid_argument` for a bad pin, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GitSource[]>")]
     pub async fn pin_sources(
         &self,
         deployment: String,
-        commits: serde_json::Value,
+        #[napi(ts_arg_type = "Record<string, string>")] commits: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         let commits = decode(commits, "Expected commits by Service name")?;
@@ -188,13 +190,16 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` when this runner has nothing to run, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<DeploymentSummary>")]
     pub async fn run_deployment(
         &self,
         organization: String,
         deployment: String,
         runner: String,
-        connections: serde_json::Value,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
+        #[napi(
+            ts_arg_type = "{ checkouts?: Record<string, string>; upload?: string; failure?: string }"
+        )]
         sources: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         #[derive(Default, serde::Deserialize)]
@@ -246,7 +251,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` when another runner owns the Deployment, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<DeploymentSummary>")]
     pub async fn abandon_deployment(
         &self,
         deployment: String,
@@ -264,11 +269,12 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` when a branch head's base is stale, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ConfigWritten>")]
     pub async fn system(
         &self,
         organization: String,
-        event: serde_json::Value,
+        #[napi(ts_arg_type = "SystemEvent")] event: serde_json::Value,
+        #[napi(ts_arg_type = "Pick<ConfigTrusted, 'servers' | 'domains' | 'volumes'>")]
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
@@ -283,7 +289,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` while it has a Project, or a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<OrganizationRemoved>")]
     pub async fn remove_organization(&self, organization: String) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         self.run(move |store| store.remove_organization(&who)).await
@@ -294,7 +300,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<AppliedVolume[]>")]
     pub async fn applied_volumes(&self, organization: String) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
         self.run(move |store| store.applied_volumes(&who)).await
@@ -306,7 +312,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<Unclaimed[]>")]
     pub async fn unclaimed(&self, before: i64) -> Result<serde_json::Value> {
         self.run(move |store| store.unclaimed(before)).await
     }
@@ -316,7 +322,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<string | null>")]
     pub async fn branch_head(
         &self,
         organization: String,
@@ -334,7 +340,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<number[]>")]
     pub async fn awaiting_merge(
         &self,
         organization: String,
@@ -357,11 +363,11 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` once the build started or ended.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GithubStart>")]
     pub async fn github_start(
         &self,
         build: String,
-        connections: serde_json::Value,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
         to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections).await)
@@ -371,11 +377,11 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment no longer wants it: cancel the run.
-    #[napi]
+    #[napi(ts_return_type = "Promise<null>")]
     pub async fn github_dispatched(
         &self,
         build: String,
-        run: serde_json::Value,
+        #[napi(ts_arg_type = "GithubRun")] run: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
         let run = decode(run, "Expected a GitHub run")?;
@@ -387,7 +393,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `not_found` unless GitHub holds or held it.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GithubBuild>")]
     pub async fn github_build(&self, build: String) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
         self.run(move |store| store.github_build(&build)).await
@@ -397,7 +403,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` once the build started or ended.
-    #[napi]
+    #[napi(ts_return_type = "Promise<BuildStatus>")]
     pub async fn github_skip(&self, build: String, message: String) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
         self.run(move |store| {
@@ -412,12 +418,12 @@ impl ConfigStore {
     /// # Errors
     /// Returns `unauthenticated` for another repository, workflow or run, `conflict`
     /// once it checked in or is no longer wanted, or the Machine's refusal.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GithubCheckIn>")]
     pub async fn github_check_in(
         &self,
         build: String,
-        claims: serde_json::Value,
-        connections: serde_json::Value,
+        #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
         let connections = crate::parse_connections(connections)?;
@@ -431,12 +437,12 @@ impl ConfigStore {
     /// # Errors
     /// As `githubCheckIn`, `invalid_argument` for a body that is not a report, and
     /// `conflict` before check-in, after the end, or for missing lines.
-    #[napi]
+    #[napi(ts_return_type = "Promise<{ received: number; ended: boolean }>")]
     pub async fn github_report(
         &self,
         build: String,
-        claims: serde_json::Value,
-        report: serde_json::Value,
+        #[napi(ts_arg_type = "GithubClaims")] claims: serde_json::Value,
+        #[napi(ts_arg_type = "unknown")] report: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, claims) = (github_id(&build)?, claims_of(claims)?);
         #[expect(
@@ -458,12 +464,12 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns a storage error, or `conflict` when it ended meanwhile.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GithubFinish>")]
     pub async fn github_finish(
         &self,
         build: String,
         timed_out: bool,
-        connections: serde_json::Value,
+        #[napi(ts_arg_type = "Connection[]")] connections: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, crate::parse_connections(connections)?);
         to_json(
@@ -476,7 +482,7 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns a storage error.
-    #[napi]
+    #[napi(ts_return_type = "Promise<GithubBuild[]>")]
     pub async fn github_cancel(&self, deployment: String) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment).await)

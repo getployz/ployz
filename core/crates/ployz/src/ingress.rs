@@ -158,7 +158,7 @@ pub(crate) async fn planned_slots(client: &mut Client) -> Result<IngressCheck, F
 }
 
 enum Work {
-    Create(DeployPlan),
+    Create(Box<DeployPlan>),
     Start(ContainerId),
 }
 

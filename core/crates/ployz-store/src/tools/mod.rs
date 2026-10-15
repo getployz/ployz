@@ -38,66 +38,99 @@ pub use step::{
     Timestamp, VolumeRun, Write, WriteSlot,
 };
 
-use machine::{Entry, entry};
+use machine::{Entry, Tool, entry};
 
-/// Every tool, in catalog order.
-pub(crate) const TOOLS: &[Entry] = &[
-    entry::<docs::Docs>(),
-    entry::<environment::EnvironmentShow>(),
-    entry::<project::ProjectCreate>(),
-    entry::<project::ProjectRename>(),
-    entry::<service::ServiceInspect>(),
-    entry::<service::ServiceAdd>(),
-    entry::<service::ServiceUpdate>(),
-    entry::<service::ServiceRename>(),
-    entry::<service::ServiceRemove>(),
-    entry::<domain::DomainCheck>(),
-    entry::<domain::DomainAdd>(),
-    entry::<domain::DomainUpdate>(),
-    entry::<domain::DomainRemove>(),
-    entry::<volume::VolumeAdd>(),
-    entry::<volume::VolumeUpdate>(),
-    entry::<volume::VolumeRemove>(),
-    entry::<config::ConfigWrite>(),
-    entry::<config::ConfigRename>(),
-    entry::<config::ConfigRemove>(),
-    entry::<release::Review>(),
-    entry::<release::DiscardInput>(),
-    entry::<history::History>(),
-    entry::<release::DeployInput>(),
-    entry::<deployment::DeploymentList>(),
-    entry::<deployment::DeploymentShow>(),
-    entry::<deployment::DeploymentRetry>(),
-    entry::<deployment::DeploymentStart>(),
-    entry::<deployment::DeploymentCancel>(),
-    entry::<environment::EnvironmentPr>(),
-    entry::<environment::EnvironmentSetup>(),
-    entry::<github::GithubLs>(),
-    entry::<github::GithubConnect>(),
-    entry::<server::ServerShow>(),
-    entry::<server::ServerLogs>(),
-    entry::<metrics::ServerMetrics>(),
-    entry::<runtime::ServiceState>(),
-    entry::<runtime::ServiceLogs>(),
-    entry::<metrics::ServiceMetrics>(),
-    entry::<copies::VolumeShow>(),
-    entry::<runtime::ServiceRestart>(),
-    entry::<runtime::ServiceStart>(),
-    entry::<runtime::ServiceStop>(),
-    entry::<server::ServerSet>(),
-    entry::<server::ServerDrain>(),
-    entry::<server::ServerUpgrade>(),
-    entry::<server::ServerClean>(),
-    entry::<copies::VolumeMirror>(),
-    entry::<copies::VolumeMirrorRemove>(),
-    entry::<copies::VolumeMove>(),
-    entry::<copies::VolumeRelease>(),
-    entry::<copies::VolumeRestore>(),
-    entry::<removal::EnvironmentRemove>(),
-    entry::<removal::ProjectRemove>(),
-    entry::<server::ServerRemove>(),
-    entry::<server::ServerForget>(),
-];
+macro_rules! tools {
+    ($($module:ident::$tool:ident),* $(,)?) => {
+        /// Every tool, in catalog order.
+        pub(crate) const TOOLS: &[Entry] = &[$(entry::<$module::$tool>(),)*];
+
+        /// One tool, named for its type.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum ToolId {
+            $($tool,)*
+        }
+
+        impl ToolId {
+            /// Every tool, in catalog order.
+            pub const ALL: &[Self] = &[$(Self::$tool,)*];
+
+            /// The name a model calls it by.
+            #[must_use]
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Self::$tool => <$module::$tool as Tool>::NAME,)*
+                }
+            }
+
+            /// Whether it only reads.
+            #[must_use]
+            pub fn read_only(self) -> bool {
+                match self {
+                    $(Self::$tool => <$module::$tool as Tool>::READ_ONLY,)*
+                }
+            }
+        }
+    };
+}
+
+tools! {
+    docs::Docs,
+    environment::EnvironmentShow,
+    project::ProjectCreate,
+    project::ProjectRename,
+    service::ServiceInspect,
+    service::ServiceAdd,
+    service::ServiceUpdate,
+    service::ServiceRename,
+    service::ServiceRemove,
+    domain::DomainCheck,
+    domain::DomainAdd,
+    domain::DomainUpdate,
+    domain::DomainRemove,
+    volume::VolumeAdd,
+    volume::VolumeUpdate,
+    volume::VolumeRemove,
+    config::ConfigWrite,
+    config::ConfigRename,
+    config::ConfigRemove,
+    release::Review,
+    release::DiscardInput,
+    history::History,
+    release::DeployInput,
+    deployment::DeploymentList,
+    deployment::DeploymentShow,
+    deployment::DeploymentRetry,
+    deployment::DeploymentStart,
+    deployment::DeploymentCancel,
+    environment::EnvironmentPr,
+    environment::EnvironmentSetup,
+    github::GithubLs,
+    github::GithubConnect,
+    server::ServerShow,
+    server::ServerLogs,
+    metrics::ServerMetrics,
+    runtime::ServiceState,
+    runtime::ServiceLogs,
+    metrics::ServiceMetrics,
+    copies::VolumeShow,
+    runtime::ServiceRestart,
+    runtime::ServiceStart,
+    runtime::ServiceStop,
+    server::ServerSet,
+    server::ServerDrain,
+    server::ServerUpgrade,
+    server::ServerClean,
+    copies::VolumeMirror,
+    copies::VolumeMirrorRemove,
+    copies::VolumeMove,
+    copies::VolumeRelease,
+    copies::VolumeRestore,
+    removal::EnvironmentRemove,
+    removal::ProjectRemove,
+    server::ServerRemove,
+    server::ServerForget,
+}
 
 /// What a model is told: every tool's name, description and schemas.
 #[must_use]

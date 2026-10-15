@@ -41,6 +41,7 @@ pub use ployz_core::{
 pub use schedule::{ServiceGroup, Step};
 
 pub(crate) use progress::pending_rows;
+pub(crate) use report::{Replica, service_row, starts};
 
 fn is_at_rest(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(

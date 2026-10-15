@@ -454,7 +454,7 @@ fn admit(intent: &DeployIntent, snapshot: &DeploySnapshot, mut planned: Planned)
 pub enum SlotAction {
     /// No Ingress Proxy is observed there, so one is created. Admission trouble here
     /// fails only this Server's repair.
-    Create(Result<DeployPlan, PlanError>),
+    Create(Result<Box<DeployPlan>, PlanError>),
     /// The newest Ingress Proxy at rest there starts again as it is.
     Start(ContainerId),
     /// Only dead Ingress Proxy containers are there, the newest given. Docker starts
@@ -500,11 +500,9 @@ pub fn plan_ingress_repairs(intent: &DeployIntent, snapshot: &DeploySnapshot) ->
                 HeldIngress::Restarting(restarting) => {
                     SlotAction::Restarting(restarting.container_id)
                 }
-                HeldIngress::None => SlotAction::Create(plan_create(
-                    intent,
-                    &snapshot.only(empty.machine),
-                    service_id,
-                )),
+                HeldIngress::None => SlotAction::Create(
+                    plan_create(intent, &snapshot.only(empty.machine), service_id).map(Box::new),
+                ),
             },
         });
     let mut all: Vec<_> = repairs.chain(unchecked).collect();
@@ -566,6 +564,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         would_remove: planned.would_remove,
         preserved_volumes: planned.preserved_volumes,
         prune_refusal: planned.prune_refusal,
+        depths: super::report::depths(&planned.groups),
     };
     DeployPlan {
         operations: planned.operations,

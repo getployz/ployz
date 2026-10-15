@@ -30,6 +30,7 @@ again, or `brew upgrade ployz`.
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
 your app's directory.
+`ployz ctx` shows where commands act from here.
 
 ## Set up your coding agent
 
@@ -109,6 +110,9 @@ Name a page instead to print it whole, as Markdown: `ployz docs services/domains
 `ployz docs domains.md`. With `--json`, a search returns `results` with each section's `path`,
 `anchor` and `excerpt`, and a page returns its `content`. Your coding agent gets the same search
 as the `docs` tool from `ployz mcp`.
+
+Many commands' `--help` ends with the page that shows them: `ployz config put --help` ends
+with `Docs: ployz docs services/configs.md`.
 
 ## Commands from Ployz Cloud
 

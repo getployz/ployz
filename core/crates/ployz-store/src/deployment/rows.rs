@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, ExecutionError,
-    HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase, OperationRow,
-    OperationStatus, RpcError, ServiceName,
+    ContainerId, ContainerRuntimeObservation, DependencyHealthFailure, DeployOperation,
+    ExecutionError, HealthFailure, HookFailure, MachineAction, MachineId, OperationPhase,
+    OperationRow, OperationStatus, RpcError, ServiceName,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -20,8 +20,12 @@ use crate::tools::{LogText, Withheld};
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum RowState {
     Pending,
+    /// `serving` is true once every new Container this Server starts serves,
+    /// so stop and remove phases then work on old ones.
     Running {
         phase: RowPhase,
+        #[serde(default)]
+        serving: bool,
     },
     Completed,
     /// `reason` is our sentence; `cause` lists what it came from, outermost first.
@@ -67,7 +71,7 @@ pub enum FailedAt {
 impl FailedAt {
     fn of(error: &ExecutionError, last: Option<&RowState>) -> Option<Self> {
         let from_phase = || match last {
-            Some(RowState::Running { phase }) => phase.failed_at(),
+            Some(RowState::Running { phase, .. }) => phase.failed_at(),
             Some(RowState::Failed { step, .. }) => *step,
             Some(
                 RowState::Pending
@@ -309,6 +313,15 @@ impl From<&ExecutionError> for Failure {
 
 type Key = (ServiceName, MachineId);
 
+/// Whether `operation` starts a new Service Container.
+#[must_use]
+pub const fn starts_container(operation: &DeployOperation) -> bool {
+    matches!(
+        operation,
+        DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_)
+    )
+}
+
 /// Turns a runner's Deploy Progress snapshots into the rows that changed, so it
 /// records only those.
 #[derive(Debug, Default)]
@@ -321,7 +334,8 @@ pub struct RowTracker {
 impl RowTracker {
     /// The rows of `snapshot` whose state changed since the last snapshot.
     pub fn changes(&mut self, snapshot: &[OperationRow]) -> Vec<ServerProgress> {
-        let mut grouped: BTreeMap<Key, (String, Vec<&OperationStatus>)> = BTreeMap::new();
+        let mut grouped: BTreeMap<Key, (String, Vec<&OperationStatus>, Option<bool>)> =
+            BTreeMap::new();
         self.failed.clear();
         for row in snapshot {
             let Some(service) = row.service_name() else {
@@ -340,19 +354,27 @@ impl RowTracker {
                 .machine_name
                 .as_ref()
                 .map_or_else(|| row.machine_id.to_string(), ToString::to_string);
-            grouped
+            let (_, statuses, serving) = grouped
                 .entry(key)
-                .or_insert_with(|| (server, Vec::new()))
-                .1
-                .push(&row.status);
+                .or_insert_with(|| (server, Vec::new(), None));
+            statuses.push(&row.status);
+            if starts_container(&row.operation) {
+                let done = matches!(row.status, OperationStatus::Completed);
+                *serving = Some(serving.unwrap_or(true) && done);
+            }
         }
         let mut changes = Vec::new();
-        for (key, (server, statuses)) in grouped {
+        for (key, (server, statuses, serving)) in grouped {
             let container = self
                 .failed
                 .get(&key)
                 .is_some_and(|index| self.containers.contains_key(index));
-            let state = state(&statuses, self.last.get(&key), container);
+            let state = state(
+                &statuses,
+                self.last.get(&key),
+                container,
+                serving.unwrap_or(false),
+            );
             if self.last.get(&key) == Some(&state) {
                 continue;
             }
@@ -416,7 +438,12 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
 }
 
 /// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
-fn state(statuses: &[&OperationStatus], last: Option<&RowState>, container: bool) -> RowState {
+fn state(
+    statuses: &[&OperationStatus],
+    last: Option<&RowState>,
+    container: bool,
+    serving: bool,
+) -> RowState {
     let (mut failed, mut running, mut pending, mut completed) = (None, None, 0, 0);
     for status in statuses {
         match status {
@@ -441,6 +468,7 @@ fn state(statuses: &[&OperationStatus], last: Option<&RowState>, container: bool
     if let Some(phase) = running {
         return RowState::Running {
             phase: phase.into(),
+            serving,
         };
     }
     if completed == statuses.len() {
@@ -449,11 +477,15 @@ fn state(statuses: &[&OperationStatus], last: Option<&RowState>, container: bool
         RowState::Pending
     } else if pending == 0 {
         RowState::NotAttempted
-    } else if let Some(running @ RowState::Running { .. }) = last {
-        running.clone()
+    } else if let Some(RowState::Running { phase, .. }) = last {
+        RowState::Running {
+            phase: *phase,
+            serving,
+        }
     } else {
         RowState::Running {
             phase: RowPhase::Starting,
+            serving,
         }
     }
 }

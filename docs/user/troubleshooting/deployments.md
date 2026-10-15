@@ -10,13 +10,21 @@ name first. That service's tab has its **Build** and **Deploy** logs. See
 ## Following a deploy in the CLI
 
 `ployz deploy` and `ployz up` show progress on stderr. On a terminal, the live block
-ends with the full Service and Server rows and a summary. In CI or redirected output,
+shows one row per Service, grouped under the depth at which it starts. The count on a
+row is Servers, not replicas. A booting Service reads `booting 0/N` until all its new
+Containers switch together, then `switched N/N`. A row whose new Containers already
+serve shows a `draining old` line while the deploy removes Containers it no longer
+needs, which waits until every Server routes to the new ones. Old copies that a
+replacement leaves behind drain on each Server after the switch, so they show in
+`ployz ps`, not in the live block. A Service the deploy only removes reads
+`waiting to remove`, then `stopping` and `removing`, then `removed`. The block ends
+with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also
 records the existing Deployment events as NDJSON. Source builds appear against their
-Service before Server placement is known. Once execution starts, the rows identify the
-Servers where work runs.
+Service before the Deploy is planned, without a depth. A failure names the Server
+where it happened.
 
 A failed deploy shows the deepest cause, available failed-container log tails, and
 `inspect:` and `retry:` commands. A Deployment result that did not fully succeed exits
