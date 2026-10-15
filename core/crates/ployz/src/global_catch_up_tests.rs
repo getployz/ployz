@@ -529,6 +529,7 @@ fn pointed(deploy: &str, containers: &[char], retiring: &[char]) -> ployz_core::
         previous: (!retiring.is_empty())
             .then(|| ployz_core::DeploymentLogId::parse(deploy).unwrap()),
         retiring: retiring.iter().map(|id| container_id(*id)).collect(),
+        deciding: None,
     }
 }
 

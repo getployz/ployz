@@ -17,7 +17,7 @@ import {
 import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, type VolumeRunState } from "#/modules/volume-run/volume-run";
 import {
-  askCopy, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
+  askCopy, commitment, type CopyObserver, getVolumeRun, inspectVolumeCopies, observeOrganizationCopies, observeVolumeMembers, requestVolumeRun,
 } from "#/modules/volume-run/volume-run.server";
 import { Database } from "#/server/database.server";
 
@@ -387,7 +387,8 @@ export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(functi
     if (found?.deploymentId != null) continue;
     const row = found === undefined ? null : view(found);
     const members = yield* inspect(organizationId, volume.environment, volume.volumeId);
-    const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server);
+    const { owed } = yield* commitment(volume.volumeId);
+    const staged = drainPlacement({ id: volume.volumeId, name: volume.name }, members, row, accepting, server, owed !== null);
     if (staged === null) {
       stuck.push(volume.name);
       continue;

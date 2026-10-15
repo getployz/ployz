@@ -384,6 +384,7 @@ export declare class Client {
 }
 
 export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;
+export declare function machineUpgradeAttemptId(uuid: string): import("./generated/payloads").MachineUpgradeAttemptId;
 
 /** One Config Store; every call acts in one Organization and rejects with RpcError. */
 export interface ConfigStore {

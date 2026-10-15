@@ -14,7 +14,7 @@ import {
 } from "#/modules/volume-placement/volume-placement";
 import { ACTIVE_VOLUME_RUN_STATES, dockerVolumeName, parseDockerVolumeName, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { insertRun, inspectVolumeCopies, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
+import { admitRun, inspectVolumeCopies, nameRefusal, planVolumeRun, resolveVolume } from "#/modules/volume-run/volume-run.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -388,7 +388,7 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);
   const point = held?.answered === true ? held.view.copy?.newest?.guid ?? null : null;
-  const requested = yield* requestUnclaimedRun({ userId, organizationId }, run, { server: old.server.id, point });
+  const requested = yield* requestUnclaimedRun({ userId, organizationId }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point });
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
@@ -405,7 +405,7 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
 ) {
   const database = yield* Database;
   const volume = yield* resolveVolume(caller.organizationId, input.environment, input.volumeId);
-  return yield* database.transaction(Effect.gen(function* () {
+  const admitted = yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     if (deletes !== null) yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${environmentLock(volume.environmentId)})`);
     const [row] = yield* drizzle.select().from(volumePlacement)
@@ -419,6 +419,7 @@ export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRu
       sql`${volumePlacement.staged} -> 'seed' ->> 'sourceVolumeId' = ${input.volumeId}`,
       sql`${volumePlacement.staged} -> 'seed' -> 'point' ->> 'guid' = ${deletes.point}`));
     if (reading !== undefined) return { ok: false, refusal: READ } as const;
-    return yield* insertRun(caller, input, volume, randomUUID());
+    return yield* admitRun(caller, input, volume, randomUUID());
   }));
+  return "owed" in admitted && !admitted.ok ? yield* nameRefusal(admitted) : admitted;
 });

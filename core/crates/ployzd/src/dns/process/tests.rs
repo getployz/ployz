@@ -188,6 +188,7 @@ async fn a_pointer_row_narrows_answers_to_the_pointed_containers() {
         containers: vec![pointed.container_id],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     harness.cluster.write_serving_pointer(
         &ServingPointer::key(&pointed.identity()),

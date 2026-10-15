@@ -38,6 +38,8 @@ it.each([17, null])("materializes pinned source with installation %s and cleans 
         json: (request) => Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "owner/repo" }).pipe(Effect.orDie),
         app: () => Effect.die("unused"),
         installationRepositories: () => Effect.die("unused"),
+        exchangeUserCode: () => Effect.die("unused"),
+        userJson: () => Effect.die("unused"),
         archive: (request) => {
           expect(request.access).toEqual(accessFor(organization, sourceInstallationId));
           expect(request.sha).toBe("a".repeat(40));

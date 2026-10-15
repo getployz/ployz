@@ -343,12 +343,15 @@ pub struct ServiceOutcome {
 
 /// A Service ends a Deploy wholly on one side: every replica new, every
 /// replica old, or untouched because the Deploy stopped before it.
+/// `Unconfirmed` means its serving pointer write got no answer and could not be
+/// read back, so it may serve either side.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceResult {
     New,
     Old,
     NotStarted,
+    Unconfirmed,
 }
 
 /// Why a Deploy Operation did not complete.

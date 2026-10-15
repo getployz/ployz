@@ -50,6 +50,9 @@ yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
 
+An agent app can also use the Ployz tools without the CLI; see
+[Connect an agent to Ployz Cloud](../account/connect-an-agent.md).
+
 `ployz mcp` gives your agent Ployz tools over MCP. The setup prompt above registers it. To add it
 by hand for every project:
 
@@ -174,6 +177,9 @@ address, builds your app, deploys it and prints the address.
 
 An upload can be at most 256 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
+
+`ployz github ls` lists the GitHub accounts your organization is connected to, and the link to
+connect another. `ployz github disconnect <login>` disconnects one from this organization only.
 
 ## Make an organization token
 

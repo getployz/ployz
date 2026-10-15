@@ -2757,6 +2757,7 @@ mod serving_pointer {
             containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         }
     }
 

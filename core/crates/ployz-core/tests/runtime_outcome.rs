@@ -42,6 +42,23 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     assert_eq!(result["confirmedServices"], json!(["api"]));
     assert_eq!(result["failedServices"], json!(["worker"]));
     assert_eq!(result["unattemptedServices"], json!([]));
+    assert_eq!(result["services"], json!([]));
+    let mut ended = partial.clone();
+    ended["services"] = json!([
+        {"service":"api","result":"new"},
+        {"service":"worker","result":"old"},
+    ]);
+    assert_eq!(
+        project(
+            preview(vec![("api", api.clone()), ("worker", worker.clone())]),
+            ended
+        )
+        .unwrap()["services"],
+        json!([
+            {"service":"api","result":"new"},
+            {"service":"worker","result":"old"},
+        ])
+    );
     let mut incomplete = partial;
     incomplete["unexecuted"] = json!([replica.clone()]);
     assert_eq!(
@@ -204,5 +221,35 @@ fn outcome_matches_a_preview_stored_before_hook_environment_redaction() {
             json!({"type":"success","completed":[run_container]})
         )["confirmedServices"],
         json!(["api"])
+    );
+}
+
+#[test]
+fn per_service_outcomes_name_each_planned_service_at_most_once() {
+    let preview = parse_runtime_preview(json!({
+        "namespace":"production",
+        "operations":[{"index":0,"machine_id":"a".repeat(32),"service_name":"api","operation":operation("a"),"status":{"type":"pending"}}],
+        "warnings":[]
+    }))
+    .unwrap();
+    let ended = |services: Value| {
+        project_runtime_outcome(
+            &preview,
+            json!({"version":1,"outcome":{"type":"success","completed":[operation("a")],"services":services}}),
+        )
+    };
+
+    assert!(ended(json!([{"service":"api","result":"new"}])).is_ok());
+    assert!(
+        ended(json!([{"service":"billing","result":"new"}])).is_err(),
+        "a Service outside the plan"
+    );
+    assert!(
+        ended(json!([
+            {"service":"api","result":"new"},
+            {"service":"api","result":"old"},
+        ]))
+        .is_err(),
+        "the same Service twice"
     );
 }

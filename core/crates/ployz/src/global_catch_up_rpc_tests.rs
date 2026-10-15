@@ -553,6 +553,7 @@ async fn an_ineligible_target_removes_a_copy_the_pointer_does_not_prove() {
             containers: vec![container_id('b')],
             previous: Some(DeploymentLogId::parse("dep-a").unwrap()),
             retiring: Vec::new(),
+            deciding: None,
         };
         let local = Arc::new(Mutex::new(vec![old]));
         let calls = Arc::new(Mutex::new(Vec::new()));

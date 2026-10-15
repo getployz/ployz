@@ -134,7 +134,7 @@ describe("placementChanges", () => {
     const placement = row([], { primary: "web-2", mirrors: ["web-3"] });
     expect(review(members, placement)).toEqual([{ kind: "add", name: "Mirror", currentValue: "", newValue: "web-3", detail: "Deletes pg-data-old first" }]);
     expect(steps(members, placement)).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null } },
+      { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null, machine: id("web-1") } },
       { kind: "mirror", args: { to: "web-3" } },
     ]);
   });
@@ -159,7 +159,7 @@ describe("placementChanges", () => {
   it("counts a mirror its answering Server no longer holds as removed, and still removes one on a silent Server", () => {
     expect(changes([member("web-1", "writer"), pooled("web-2")], row(["web-2"], { primary: "web-1" }))).toEqual([]);
     expect(steps([member("web-1", "writer"), member("web-2", "unanswered")], row(["web-2"], { primary: "web-1" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
+      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2") } },
     ]);
   });
 
@@ -170,7 +170,7 @@ describe("placementChanges", () => {
       { kind: "mirror", args: { to: "web-3" } },
     ]);
     expect(steps(members, row(["web-2"], { primary: "web-3" }))).toEqual([
-      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null } },
+      { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2") } },
       { kind: "move", args: { to: "web-3" } },
     ]);
   });
@@ -312,7 +312,7 @@ describe("nextPlacementStep", () => {
   it("keeps the mirrors while a change still has runs after this one", () => {
     const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
     expect(next(members, row([], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({
-      run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null } },
+      run: { kind: "delete_mirror", args: { slot: "web-1", confirmed_name: null, machine: id("web-1") } },
       mirrors: [],
       change: { kind: "add_mirror", server: id("web-3") },
     });
@@ -374,21 +374,26 @@ describe("placementTargets", () => {
 
   it("offers a move only to the mirror's Server while a mirror exists", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
-    const targets = placementTargets(volume, members, row(["web-2"]), servers);
+    const targets = placementTargets(volume, members, row(["web-2"]), servers, false);
     expect(targets.move.map((server) => server.name)).toEqual(["web-2"]);
     expect(targets.mirror).toEqual([]);
   });
 
   it("offers every other Server once the only other copy is detached, since the Deploy deletes it first", () => {
     const members = [member("web-2", "writer"), member("web-1", "mirror"), pooled("web-3")];
-    const targets = placementTargets(volume, members, row([]), servers);
+    const targets = placementTargets(volume, members, row([]), servers, false);
     expect(targets.move.map((server) => server.name)).toEqual(["web-1", "web-3"]);
     expect(targets.mirror.map((server) => server.name)).toEqual(["web-1", "web-3"]);
   });
 
+  it("offers no move and no mirror while a committed Move is still owed its finish", () => {
+    const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
+    expect(placementTargets(volume, members, row([]), servers, true)).toEqual({ move: [], mirror: [] });
+  });
+
   it("offers nothing on a Server that does not accept Services", () => {
     const members = [member("web-1", "writer"), pooled("web-2"), pooled("web-3")];
-    expect(placementTargets(volume, members, row([]), [id("web-2")]).move.map((server) => server.name)).toEqual(["web-2"]);
+    expect(placementTargets(volume, members, row([]), [id("web-2")], false).move.map((server) => server.name)).toEqual(["web-2"]);
   });
 });
 
@@ -421,7 +426,7 @@ describe("storageStep", () => {
 
 describe("drainPlacement", () => {
   const drain = (members: Member[], placement: PlacementRow | null, accepting = ["web-1", "web-2", "web-3"]) =>
-    drainPlacement(volume, members, placement, accepting.map(id), id("web-1"));
+    drainPlacement(volume, members, placement, accepting.map(id), id("web-1"), false);
 
   it("moves the primary to its mirror", () => {
     expect(drain([member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")], row(["web-2"])))

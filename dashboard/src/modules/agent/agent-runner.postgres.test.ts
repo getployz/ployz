@@ -1,9 +1,8 @@
 import { it } from "@effect/vitest";
-import type { ConfigCommand, JsonValue, Place } from "@ployz/sdk";
+import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { describe, expect } from "vitest";
-import { runTool } from "#/modules/agent/agent-chat.server";
-import type { Caller } from "#/modules/identity/actor";
+import { type AgentCaller, runAgentCall } from "#/modules/agent/agent-runner.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -12,7 +11,6 @@ const ORGANIZATION = "00000000-0000-4000-8000-00000000a701";
 const SHOP: ConfigCommand = {
   command: "create_project", id: "00000000-0000-4000-8000-00000000a702", name: "shop", default_environment: "00000000-0000-4000-8000-00000000a703",
 };
-const place: Place = { project: "shop", environment: "production", store: { at: "cloud", organization: ORGANIZATION } };
 
 type Step = { readonly tool: string; readonly input: JsonValue; readonly callKey?: string; readonly hears: object };
 
@@ -174,12 +172,16 @@ const tools = Effect.fn(function* (seed: boolean) {
     const store = yield* cloudStore.pipe(Effect.provide(services));
     yield* Effect.promise(() => store.write(ORGANIZATION, SHOP));
   }
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
+  const caller: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
   let calls = 0;
-  return ({ tool, input, callKey = `call-${++calls}` }: Step) => runTool(caller, tool, input, place, `run-1:${callKey}`).pipe(Effect.provide(services));
+  return ({ tool, input, callKey = `call-${++calls}` }: Step) =>
+    runAgentCall(caller, { tool, input, key: `run-1:${callKey}`, approvalId: null, page: { at: "here", project: "shop", environment: "production" } }).pipe(
+      Effect.map((result) => "asking" in result ? result : result.outcome),
+      Effect.provide(services),
+    );
 });
 
-describe("agent tools", () => {
+describe("agent runner", () => {
   for (const { name, seed = true, steps } of cases) {
     it.live(name, () =>
       Effect.gen(function* () {

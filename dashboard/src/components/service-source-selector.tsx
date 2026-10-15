@@ -7,7 +7,7 @@ import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picke
 import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
 import { ChevronRightIcon, InfoIcon, TriangleAlertIcon, RefreshCwIcon, Settings2Icon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { useMutation, useQueryClient, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
@@ -18,7 +18,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import { githubBranchesQueryOptions, githubRepoAccessQueryOptions, githubKeys, githubWebQueryOptions } from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
 import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -185,12 +185,12 @@ function SelectorCommandDialog({
   );
 }
 
+const githubConnectHref = (organizationSlug: string) =>
+  `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
+
 function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string }) {
   const queryClient = useQueryClient();
-  // Read together: sequential suspense would fetch these in series.
-  const [{ data: github }, { data: accessState }] = useSuspenseQueries({
-    queries: [githubWebQueryOptions(), githubRepoAccessQueryOptions(organizationSlug)],
-  });
+  const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
   const { mutate: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
       mutationKey: [...githubKeys.repos(), "refresh"],
@@ -217,11 +217,7 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button
-            onClick={() => {
-              window.open(github.installUrl, "_blank", "width=1020,height=680");
-            }}
-          >
+          <Button nativeButton={false} render={<a href={githubConnectHref(organizationSlug)} />}>
             Connect GitHub
           </Button>
         </EmptyContent>
@@ -235,7 +231,7 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
         value="Configure GitHub App"
         keywords={["github", "configure", "app"]}
         onSelect={() => {
-          window.open(github.installUrl, "_blank", "width=1020,height=680");
+          window.location.assign(githubConnectHref(organizationSlug));
         }}
       >
         <Settings2Icon />
@@ -262,6 +258,15 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
       </CommandItem>
     </CommandGroup>
   );
+}
+
+function groupByAccount<R extends { full_name: string }>(repos: ReadonlyArray<R>) {
+  const groups = new Map<string, R[]>();
+  for (const repo of repos) {
+    const account = repo.full_name.split("/")[0] ?? repo.full_name;
+    groups.set(account, [...(groups.get(account) ?? []), repo]);
+  }
+  return [...groups];
 }
 
 function GitRepoSelectorResults({
@@ -330,8 +335,9 @@ function GitRepoSelectorResults({
       ) : selectorState === "no-results" ? (
         <SelectorEmpty>No repositories match your search</SelectorEmpty>
       ) : (
-        <CommandGroup>
-          {repos.map((repo) => (
+        groupByAccount(repos).map(([account, accountRepos]) => (
+        <CommandGroup key={account} heading={account}>
+          {accountRepos.map((repo) => (
             <CommandItem
               key={repo.id}
               value={repo.full_name}
@@ -354,6 +360,7 @@ function GitRepoSelectorResults({
             </CommandItem>
           ))}
         </CommandGroup>
+        ))
       )}
 
       {!normalizedQuery && repoCount > INITIAL_GITHUB_REPO_LIMIT ? (

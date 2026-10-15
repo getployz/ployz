@@ -29,6 +29,9 @@
 /// `Exec` is deliberately absent: it is bidirectionally streamed and schema-blind, so it
 /// has no request variant and is wired up by hand. Its capability is an explicit extra
 /// Container row on the advertisement table.
+///
+/// Removing a row removes the RPC with no shim: the daemon stops advertising its
+/// capability and refuses the route, and a caller names the capability it lacks.
 #[macro_export]
 macro_rules! rpc_catalog {
     ($consumer:ident) => {

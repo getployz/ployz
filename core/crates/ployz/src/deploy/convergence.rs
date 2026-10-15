@@ -1147,6 +1147,7 @@ mod tests {
             containers: vec![id('2')],
             previous: None,
             retiring: vec![id('1')],
+            deciding: None,
         };
         let converged = converge(
             &mut client,

@@ -5,10 +5,6 @@ import { Auth, type AuthSession } from "#/server/auth.server";
 export type { AuthSession } from "#/server/auth.server";
 import { runAppEffect } from "#/server/run.server";
 
-export const handleAuthRequestEffect = Effect.fn("Auth.handleRequest")(
-  (request: Request) => Effect.flatMap(Auth, (auth) => auth.handler(request)),
-);
-
 export const getAuthSessionEffect = Effect.fn("Auth.getSessionForRequest")(
   (headers: Headers) => Effect.flatMap(Auth, (auth) => auth.getSession(headers)),
 );

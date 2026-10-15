@@ -1,7 +1,3 @@
-//! `ployz github`: install the GitHub App so Services can build private
-//! repositories, see what it grants, read a repository's files, and disconnect
-//! it. Acts in Cloud as this device's sign-in or `PLOYZ_TOKEN`; needs no Server.
-
 use super::catalog::{Approval::*, Runnable, cloud};
 use std::time::{Duration, Instant};
 
@@ -24,8 +20,7 @@ use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
 use crate::ui::{Cell, Hint, Table, Tone};
 
-/// How long `github connect` waits for the App to be installed.
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(3);
 
 pub(crate) fn command() -> Command {
@@ -33,13 +28,13 @@ pub(crate) fn command() -> Command {
         .about("Connect GitHub so Services can build your repositories")
         .subcommand(
             Command::new("connect")
-                .about("Print the GitHub App install link and wait until it is installed")
-                .long_about("Print the GitHub App install link and wait until GitHub reports the install. With --json, prints the link at once unless --wait is given. Public repositories need no install.")
-                .arg(switch("wait", None).help("Wait for the install, also with --json")),
+                .about("Print the link that connects a GitHub account and wait until it is connected")
+                .long_about("Print the link that connects a GitHub account to this Organization, and wait until it is connected. With --json, prints the link at once unless --wait is given. Public repositories need no connection.")
+                .arg(switch("wait", None).help("Wait for the connection, also with --json")),
         )
         .subcommand(
             Command::new("ls")
-                .about("List your GitHub installations and repositories, or one repository's branches")
+                .about("List this Organization's GitHub accounts and repositories, or one repository's branches")
                 .arg(positional("repository", false).help("OWNER/REPO: list its branches")),
         )
         .subcommand(
@@ -61,12 +56,8 @@ pub(crate) fn command() -> Command {
         )
         .subcommand(
             Command::new("disconnect")
-                .about("Forget one of your GitHub installations; uninstall the App on GitHub")
-                .arg(
-                    positional("installation", true)
-                        .value_parser(clap::value_parser!(u64).range(1..))
-                        .help("Installation ID, from ployz github ls"),
-                ),
+                .about("Disconnect a GitHub account from this Organization; uninstall the App on GitHub")
+                .arg(positional("account", true).help("GitHub login, from ployz github ls")),
         )
 }
 
@@ -81,13 +72,9 @@ pub(super) fn handler(path: &str) -> Option<Runnable> {
     })
 }
 
-/// The caller's GitHub connection, as Cloud reports it.
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 struct Connection {
-    install_url: String,
-    /// Whether the caller's GitHub account is linked; an install completes only then.
-    linked: bool,
-    /// Whether an installation grants at least one repository.
+    connect_url: String,
     ready: bool,
     installations: Vec<Installation>,
     repositories: Vec<Repository>,
@@ -99,6 +86,8 @@ struct Installation {
     account: String,
     account_type: String,
     repositories: u64,
+    connected_by: Option<String>,
+    connected_at: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -137,22 +126,18 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
     let wait = leaf_matches(root).get_flag("wait") || !crate::ui::json();
     let (before, after) = in_cloud(root, async |_, credential| {
         let before = connection(credential).await?;
-        if !before.linked || !wait {
+        if !wait {
             return Ok((before, None));
         }
-        crate::ui::note(format_args!(
-            "Install the Ployz GitHub App: {}",
-            before.install_url
-        ));
+        crate::ui::note(format_args!("Connect GitHub: {}", before.connect_url));
         if crate::ui::interactive() {
-            open_browser(&before.install_url);
+            open_browser(&before.connect_url);
         }
         crate::ui::note_inline(format_args!("Waiting for GitHub... "));
-        let deadline = Instant::now() + INSTALL_TIMEOUT;
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
         while Instant::now() < deadline {
             tokio::time::sleep(POLL).await;
             let now = connection(credential).await?;
-            // A new installation, or new repositories granted to an existing one.
             if now.installations != before.installations || now.repositories != before.repositories
             {
                 return Ok((before, Some(now)));
@@ -160,24 +145,17 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
         }
         Ok((before, None))
     })?;
-    if !before.linked {
-        return Err(Error::coded(
-            RpcErrorCode::Unsupported,
-            "GitHub reports installs by GitHub account, and yours isn't linked: sign in to Ployz Cloud with GitHub once, then rerun",
-        )
-        .hint(Hint::Next("ployz github connect".into())));
-    }
     let Some(after) = after else {
         if wait {
             return Err(Error::detailed(
                 RpcErrorCode::Unavailable,
-                "GitHub hasn't reported the install yet",
-                json!({ "url": before.install_url }),
+                "No GitHub account connected yet",
+                json!({ "url": before.connect_url }),
             )
             .hint(Hint::Retry("ployz github connect --wait".into())));
         }
         let pending =
-            json!({ "status": "pending", "url": before.install_url, "connection": before });
+            json!({ "status": "pending", "url": before.connect_url, "connection": before });
         return crate::ui::emit(&Next::new(
             &pending,
             Some("ployz github connect --wait".to_owned()),
@@ -318,18 +296,26 @@ fn read_repository<T: DeserializeOwned>(
 }
 
 fn disconnect(root: &ArgMatches) -> Result<(), Error> {
-    let id = *leaf_matches(root)
-        .get_one::<u64>("installation")
-        .expect("installation is required");
-    let path = format!("github/{id}");
+    let account = leaf_matches(root)
+        .get_one::<String>("account")
+        .expect("account is required");
+    if account.is_empty()
+        || account.len() > 39
+        || !account
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Err(Error::usage("Expected a GitHub login, like acme"));
+    }
+    let path = format!("github/{account}");
     let removed: Disconnected = in_cloud(root, async |_, credential| {
         found(cloud_account::call(credential, Method::DELETE, &path, None).await)
     })?
-    .ok_or_else(|| not_found("No such GitHub installation of yours"))?;
+    .ok_or_else(|| not_found("No GitHub account by that login in this Organization"))?;
     crate::ui::done(
         &removed,
         format_args!(
-            "Disconnected the GitHub installation on {}.",
+            "Disconnected {} from this Organization.",
             removed.disconnected.account
         ),
     )?;
@@ -340,12 +326,21 @@ fn disconnect(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// The repositories the App reaches, after a note per installation.
 fn repositories<T: serde::Serialize>(value: &T, connection: &Connection) -> Result<(), Error> {
     for installation in &connection.installations {
+        let by = installation
+            .connected_by
+            .as_deref()
+            .map(|name| format!(", connected by {name}"))
+            .unwrap_or_default();
+        let noun = if installation.repositories == 1 {
+            "repository"
+        } else {
+            "repositories"
+        };
         crate::ui::note(format_args!(
-            "Installed on {} (installation {}, {} repositories).",
-            installation.account, installation.id, installation.repositories
+            "{}: {} {noun}{by}.",
+            installation.account, installation.repositories
         ));
     }
     let mut table = Table::new(

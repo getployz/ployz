@@ -1,7 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
+import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth } from "better-auth";
+import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
   deviceAuthorization,
@@ -20,6 +23,17 @@ import {
   user,
   verification,
 } from "#/modules/identity/tables";
+import {
+  jwks,
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
+  rateLimit,
+} from "#/modules/identity/oauth-tables";
 import { organization } from "#/modules/organization/tables";
 import {
   createOrganizationBillingSyncEventsFromCustomerStatePayload,
@@ -40,6 +54,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
+import { type ConsentChoice, hostedMcpPlugins, MCP_SCOPES, mcpEndpoints, withConsentChoice } from "#/server/auth-mcp.server";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -90,6 +105,26 @@ export interface AuthService {
     Actor,
     Unauthorized | AuthenticationUnavailable | Schema.SchemaError
   >;
+  /** The remote MCP endpoint's authorization, on a hosted Cloud only. */
+  readonly mcp: RemoteMcpAuth | null;
+}
+
+type ProtectedHandler = Parameters<typeof createMcpProtectedRequestHandler>[1];
+
+export interface RemoteMcpAuth {
+  /** Verifies the request's access token, then answers with `handler`; a missing or bad token gets the challenge. */
+  readonly protect: (
+    request: Request,
+    handler: ProtectedHandler,
+  ) => Effect.Effect<Response, AuthenticationUnavailable>;
+  /** Whether better-auth signed `oauthQuery` and it hasn't expired, the check consent makes before it grants. */
+  readonly signed: (oauthQuery: string) => Effect.Effect<boolean, AuthenticationUnavailable>;
+  /** Accepts or denies the authorization request `oauthQuery` names, binding the grant to `choice`'s Organization. */
+  readonly consent: (
+    headers: Headers,
+    input: { readonly oauthQuery: string; readonly accept: boolean },
+    choice: ConsentChoice,
+  ) => Effect.Effect<{ readonly redirect: boolean; readonly url: string }, AuthenticationUnavailable>;
 }
 
 export class Auth extends Context.Service<Auth, AuthService>()("ployz/Auth") {}
@@ -100,8 +135,17 @@ const AuthSchema = {
   account,
   deviceCode,
   invitation,
+  jwks,
   member,
+  oauthAccessToken,
+  oauthClient,
+  oauthClientAssertion,
+  oauthClientResource,
+  oauthConsent,
+  oauthRefreshToken,
+  oauthResource,
   organization,
+  rateLimit,
   session,
   user,
   verification,
@@ -189,6 +233,7 @@ const makeAuth = Effect.gen(function* () {
   const organizations = organizationPlugin({
     schema: { invitation: { additionalFields: { tokenHash: { type: "string", required: true, input: false } } } },
   });
+  const hosted = config.polar.mode !== "self_hosted";
   const instance = betterAuth({
     secret: Redacted.value(config.auth.secret),
     baseURL: {
@@ -216,6 +261,7 @@ const makeAuth = Effect.gen(function* () {
     user: {
       additionalFields: userAdditionalFields,
     },
+    rateLimit: { storage: hosted ? "database" : "memory" },
     advanced: { database: { generateId: "uuid" }, ipAddress: { ipAddressHeaders: config.auth.clientIpHeaders } },
     databaseHooks: {
       user: {
@@ -255,13 +301,43 @@ const makeAuth = Effect.gen(function* () {
       organizations,
       ...cliSignInPlugins,
       ...(polarPlugin === null ? [] : [polarPlugin]),
+      ...(hosted ? hostedMcpPlugins(config.app.url) : []),
       tanstackStartCookies(),
     ],
   });
-  yield* Effect.tryPromise({
+  const context = yield* Effect.tryPromise({
     try: () => instance.$context,
     catch: (cause) => new AuthenticationUnavailable({ cause }),
   });
+  const replayStore = createDpopReplayStore(context.internalAdapter);
+  const endpoints = mcpEndpoints(config.app.url);
+  const mcp: RemoteMcpAuth | null = hosted
+    ? {
+      protect: (request, handler) => Effect.tryPromise({
+        try: () => createMcpProtectedRequestHandler({
+          issuer: endpoints.issuer,
+          audience: endpoints.resource,
+          jwksUrl: endpoints.jwks,
+          requiredScopes: [MCP_SCOPES[0]],
+          dpop: { replayStore },
+        }, handler)(request),
+        catch: (cause) => new AuthenticationUnavailable({ cause }),
+      }),
+      signed: (oauthQuery) => Effect.tryPromise({
+        try: () => verifyOAuthQueryParams(oauthQuery, Redacted.value(config.auth.secret)),
+        catch: (cause) => new AuthenticationUnavailable({ cause }),
+      }),
+      consent: (headers, { oauthQuery, accept }, choice) => Effect.tryPromise({
+        try: () => withConsentChoice(choice, () => instance.api.oauth2Consent({
+          headers,
+          request: new Request(`${endpoints.issuer}/oauth2/consent`, { method: "POST", headers }),
+          asResponse: false,
+          body: { accept, oauth_query: oauthQuery },
+        })),
+        catch: (cause) => new AuthenticationUnavailable({ cause }),
+      }),
+    }
+    : null;
 
   const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
     const authSession = yield* Effect.tryPromise({
@@ -293,6 +369,7 @@ const makeAuth = Effect.gen(function* () {
         userId: authSession.user.id,
       }, { onExcessProperty: "error" });
     }),
+    mcp,
   } satisfies AuthService;
 });
 

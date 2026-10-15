@@ -147,6 +147,7 @@ async fn dependency_gate_ignores_a_copy_the_dependency_row_no_longer_names() {
             containers: vec![serving_id],
             previous: None,
             retiring: vec![],
+            deciding: None,
         },
     );
 

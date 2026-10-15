@@ -955,6 +955,17 @@ pub fn set_volume_copy_refusal(details: serde_json::Value) -> Result<Option<serd
         .transpose()
 }
 
+/// The daemon's Machine upgrade attempt ID for a UUID.
+///
+/// # Errors
+/// Rejects a value that is not a UUID.
+#[napi]
+pub fn machine_upgrade_attempt_id(uuid: String) -> Result<String> {
+    ployz_core::MachineUpgradeAttemptId::from_uuid(&uuid)
+        .map(String::from)
+        .map_err(invalid_argument)
+}
+
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
 #[napi]
 #[must_use]

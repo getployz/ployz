@@ -103,7 +103,14 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const unknown = (member: Exclude<Member, AnsweredMember>) => member.lack === undefined
     ? refuse("unanswered", `${member.machine.name} did not answer; ${name}'s copies are unknown`)
     : refuse("server_lacks", member.lack);
-  const midRun = () => refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
+  const unfinishedCuts = () => {
+    // As `oldCopy` reads roots, the cut at the highest epoch began last, so its writes are the ones to keep.
+    const keptFirst = (a: AnsweredMember, b: AnsweredMember) => epochOf(b) - epochOf(a) || Number(holds(b)) - Number(holds(a)) || byServer(a, b);
+    const keep = cutting.reduce((best, each) => (keptFirst(each, best) < 0 ? each : best));
+    const { remove, step } = releaseOrMoveOntoSlot(name, keep, mirrors);
+    const older = cutting.filter((member) => member !== keep);
+    return refuse("volume_switching", `${name} has unfinished cuts on ${servers(cutting)}, so release cannot pick a writer; ${serverRm([...older, ...remove])}${step}`);
+  };
 
   if (input.kind === "delete_mirror") {
     if (input.orphan) {
@@ -116,7 +123,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (unanswered !== undefined) return unknown(unanswered);
     const writers = withRole("writer");
     if (writers.length > 1) return refuse("two_writers", `${name} has two writers, ${writers.map(named).join(" and ")}`);
-    if (cutting.length > 0) return midRun();
+    if (cutting.length > 0) return writers.length > 0 ? midRun(name, mirrors) : cutting.length > 1 ? unfinishedCuts() : midRun(name, mirrors, cutting[0]);
     const { slot, confirmed_name } = input.args;
     const destroy = slot === null ? mirrors : mirrors.filter((member) => member.machine.name === slot);
     if (destroy.length === 0) return refuse("no_mirror", slot === null ? `${name} has no mirror` : `${name} has no mirror on ${slot}`);
@@ -132,14 +139,14 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   if (input.kind === "restore") return planRestore(name, input.args, answered);
   if (roots.length > 1) {
     const old = oldCopy(roots);
-    if (old === null && withRole("writer").length < 2) return midRun();
+    if (old === null && withRole("writer").length < 2) return unfinishedCuts();
     if (old === null) return refuse("two_writers", `${name} has two writers, ${roots.map(named).join(" and ")}`);
     return { ok: true, phase: { kind: "demote", ...old } };
   }
   const [root] = roots;
 
   if (input.kind === "seed") {
-    if (root === undefined || roleOf(root) !== "writer") return root === undefined ? refuse("no_writer", `${name} has no primary to restore from`) : midRun();
+    if (root === undefined || roleOf(root) !== "writer") return root === undefined ? refuse("no_writer", `${name} has no primary to restore from`) : midRun(name, mirrors, root);
     return { ok: true, phase: { kind: "seed", source: root, args: input.args } };
   }
 
@@ -148,7 +155,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
       if (mirrors.length === 0) return refuse("no_writer", `${name} has no copy to release`);
       return { ok: true, phase: { kind: "release", from: { kind: "slots", slots: mirrors, plan: input.args.plan } } };
     }
-    if (roleOf(root) === "cutting") return { ok: true, phase: { kind: "release", from: { kind: "cut", root } } };
+    if (roleOf(root) === "cutting") return newestGuid(root.view.copy) === null ? stoppedEarly(name, root, mirrors) : { ok: true, phase: { kind: "release", from: { kind: "cut", root } } };
     const at = newestGuid(root.view.copy);
     const behind = at === null ? [] : mirrors.filter((member) => newestGuid(member.view.copy) === at);
     return { ok: true, phase: { kind: "release", from: { kind: "writer", writer: root, behind } } };
@@ -160,7 +167,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
     if (mirrors.length > 0) return refuse("no_writer", `${name} has no writer; ployz volume release ${name} ends a move cut short`);
     return refuse("no_writer", `${name} has no writer; deploy ${name} before mirroring it`);
   }
-  if (roleOf(root) === "cutting") return midRun();
+  if (roleOf(root) === "cutting") return midRun(name, mirrors, root);
 
   if (input.kind === "sync") {
     const [mirror, second] = mirrors;
@@ -178,6 +185,26 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
 }
 
+const holds = (member: AnsweredMember) => newestGuid(member.view.copy) !== null;
+const byServer = (a: AnsweredMember, b: AnsweredMember) => a.machine.name.localeCompare(b.machine.name);
+const servers = (each: readonly AnsweredMember[]) => each.map((member) => member.machine.name).join(" and ");
+const serverRm = (remove: readonly AnsweredMember[]) => remove.map(({ machine }) => `ployz server rm ${machine.name}, then `).join("");
+
+/** Release resumes a cut from its newest snapshot, so a cut with none moves again, onto the slot a root may keep. */
+function releaseOrMoveOntoSlot(name: string, kept: AnsweredMember, slots: readonly AnsweredMember[]) {
+  if (holds(kept)) return { remove: [], step: `ployz volume release ${name}` };
+  const [onto, ...extra] = [...slots].sort(byServer);
+  return { remove: extra, step: `ployz volume move ${name} --to ${onto?.machine.name ?? "<another server>"}` };
+}
+
+const stoppedEarly = (name: string, cut: AnsweredMember, slots: readonly AnsweredMember[]): Planned => {
+  const { remove, step } = releaseOrMoveOntoSlot(name, cut, slots);
+  return refuse("no_copy", `${name} on ${cut.machine.name} stopped before its first snapshot; ${serverRm(remove)}${step}`);
+};
+const midRun = (name: string, slots: readonly AnsweredMember[], lone?: AnsweredMember): Planned => lone !== undefined && !holds(lone)
+  ? stoppedEarly(name, lone, slots)
+  : refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
+
 /**
  * A Move is read from the copies alone. A is the root, or with no root the one slot besides B; G is A's newest once
  * A is a slot. The Move needs B's Writer while B's slot holds G, and is done but for A's Container once B is the writer
@@ -192,7 +219,7 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   const move = (writer: AnsweredMember, start: MoveStart): Planned => ({ ok: true, phase: { kind: "move", writer, target, start } });
 
   if (root === target) {
-    if (roleOf(root) === "cutting") return refuse("volume_switching", `${name} is mid-run; ployz volume release ${name} stops it`);
+    if (roleOf(root) === "cutting") return midRun(name, others, root);
     const at = newestGuid(root.view.copy);
     const behind = at === null ? [] : others.filter((member) => newestGuid(member.view.copy) === at);
     if (behind.length === 0) return { ok: false, refusal: alreadyOn(name, to) };
@@ -246,10 +273,59 @@ export function restoreSource(members: readonly Member[]): MachineName | undefin
   return new Set(top.map(({ newest }) => newest.guid)).size === 1 ? top[0]?.name : undefined;
 }
 
+export const restoreLine = (volumeName: string, holder: MachineName | undefined) => holder === undefined
+  ? ". No other server's copy is known to hold its newest data."
+  : `. Restore from ${holder}'s copy: ployz volume restore ${volumeName} --from ${holder}`;
+
 export const writerRemovedMessage = (volumeName: string, removed: string, holder: MachineName | undefined) =>
-  `${volumeName}'s writer was on ${removed} (removed)` + (holder === undefined
-    ? ". No other server's copy is known to hold its newest data."
-    : `. Restore from ${holder}'s copy: ployz volume restore ${volumeName} --from ${holder}`);
+  `${volumeName}'s writer was on ${removed} (removed)` + restoreLine(volumeName, holder);
+
+export type ForwardRelease =
+  | {
+      readonly kind: "ready";
+      readonly target: AnsweredMember;
+      readonly copy: VolumeCopy & { readonly newest: Snapshot };
+      readonly removeOn: readonly Member["machine"][];
+    }
+  | { readonly kind: "waiting"; readonly servers: readonly Member["machine"][]; readonly removeOn: readonly Member["machine"][] }
+  | { readonly kind: "blocked"; readonly message: string };
+
+/**
+ * How a release finishes a committed Move on its new Server `to`. Every Server must answer first: while B is a slot,
+ * starting it reads A's stopped Container. The rest are where the moved-off Container is removed.
+ */
+export function planForwardRelease(volumeName: string, to: Member["machine"], members: readonly Member[]): ForwardRelease {
+  const target = members.find((member) => member.machine.id === to.id);
+  if (target === undefined) return { kind: "blocked", message: writerRemovedMessage(volumeName, to.name, restoreSource(members)) };
+  for (const member of members) if (!member.answered && member.lack !== undefined) return { kind: "blocked", message: member.lack };
+  const removeOn = members.filter((member) => member !== target).map((member) => member.machine);
+  const silent = members.filter((member) => !member.answered);
+  if (silent.length > 0) return { kind: "waiting", servers: silent.map((member) => member.machine), removeOn };
+  const copy = target.answered ? target.view.copy : null;
+  if (!target.answered || copy === null || copy.newest === null) {
+    return { kind: "blocked", message: `${volumeName}'s Move committed, but ${to.name} holds no copy to start` + restoreLine(volumeName, restoreSource(members)) };
+  }
+  const writer = members.find((member) => member !== target && roleOf(member) === "writer");
+  if (writer !== undefined) {
+    const holder = writer.machine.name;
+    return {
+      kind: "blocked",
+      message: `${copyName(volumeName, holder)} is still a writer copy, so ${volumeName} can't finish on ${to.name}; ployz volume restore ${volumeName} --from ${holder} keeps ${holder}'s data`,
+    };
+  }
+  const cuts = unfinishedCutsBefore(volumeName, target, members);
+  if (cuts !== null) return { kind: "blocked", message: cuts };
+  return { kind: "ready", target, copy: { ...copy, newest: copy.newest }, removeOn };
+}
+
+/** A release finishes an owed Move on `target` only once no cut is left outside it, so every cut goes first. */
+function unfinishedCutsBefore(volumeName: string, target: AnsweredMember, members: readonly Member[]): string | null {
+  const cuts = members.filter((member): member is AnsweredMember => member !== target && roleOf(member) === "cutting").sort(byServer);
+  if (cuts.length === 0 || !holds(target)) return null;
+  const { remove, step } = releaseOrMoveOntoSlot(volumeName, target, []);
+  const each = cuts.length === 1 ? "an unfinished cut" : "unfinished cuts";
+  return `${volumeName} has ${each} on ${servers(cuts)}, so release cannot finish it on ${target.machine.name}; ${serverRm([...cuts, ...remove])}${step}`;
+}
 
 /**
  * A Server removed without a reset keeps its root; once Restore made a newer one elsewhere, the root with the lower
