@@ -2,9 +2,23 @@ import { sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { dayStart, localDay, retentionFloor } from "../local-time";
-import { LONGEST_RETENTION_MONTHS } from "../model";
+import { FILTER_KEYS, LONGEST_RETENTION_MONTHS, SESSION_DIMS } from "../model";
 import * as postgres from "../postgres/store";
 import * as clickhouse from "./store";
+
+/** The reads the store serves, each as the Postgres answer and the ClickHouse answer to the same query. */
+const PARITY_READS = [
+  [postgres.dailyTotals, clickhouse.dailyTotals],
+  ...FILTER_KEYS.map((dim) => [(query: postgres.StoreQuery) => postgres.breakdown(query, dim), (query: postgres.StoreQuery) => clickhouse.breakdown(query, dim)] as const),
+  ...SESSION_DIMS.map((dim) => [(query: postgres.StoreQuery) => postgres.sessionsBy(query, dim), (query: postgres.StoreQuery) => clickhouse.sessionsBy(query, dim)] as const),
+  [postgres.entryPages, clickhouse.entryPages],
+] as const;
+
+const canonical = (rows: ReadonlyArray<object>) =>
+  rows.map((row) => JSON.stringify(Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b))))).sort().join("\n");
+
+/** Whether two answers hold the same rows, whatever order each store returned them in. */
+export const sameRows = (expected: ReadonlyArray<object>, actual: ReadonlyArray<object>) => canonical(expected) === canonical(actual);
 
 export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
@@ -23,8 +37,10 @@ export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (en
     range: { start: retentionFloor(site.timezone, now, LONGEST_RETENTION_MONTHS), end: dayStart(site.timezone, today) },
     filters: [],
   };
-  const [expected, actual] = yield* Effect.all([postgres.dailyTotals(query), clickhouse.dailyTotals(query)]);
-  if (JSON.stringify(expected) !== JSON.stringify(actual)) return false;
+  for (const [expected, actual] of PARITY_READS) {
+    const [left, right] = yield* Effect.all([expected(query), actual(query)]);
+    if (!sameRows(left, right)) return false;
+  }
   const flipped = yield* drizzle.execute(sql`
     update analytics.clickhouse_site set reads = true, updated_at = now()
     where environment_id = ${environmentId}::text and rolled_up_to = ${site.rolled_up_to}::date and dirty = '{}'
