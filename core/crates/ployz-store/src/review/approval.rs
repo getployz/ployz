@@ -50,6 +50,10 @@ pub enum DestructiveKind {
     ChangesRole,
     /// A pending invite's link stops working.
     RevokesInvite,
+    /// A running Service's containers stop until started again.
+    StopsService,
+    /// A running Service's containers restart, dropping requests in flight.
+    RestartsService,
 }
 
 impl DestructiveEffect {
@@ -67,6 +71,8 @@ impl DestructiveEffect {
             DestructiveKind::RemovesMember => format!("remove member {name}"),
             DestructiveKind::ChangesRole => format!("change the role of {name}"),
             DestructiveKind::RevokesInvite => format!("revoke the invite for {name}"),
+            DestructiveKind::StopsService => format!("stop Service {name}"),
+            DestructiveKind::RestartsService => format!("restart Service {name}"),
         }
     }
 }

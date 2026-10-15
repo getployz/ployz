@@ -88,7 +88,7 @@ impl Tool for GithubLs {
             "repository": file.repository,
             "ref": file.git_ref,
             "path": file.path,
-            "content": content,
+            "untrusted": { "content": content },
             "note": note,
             "dockerfile": dockerfile,
         }))
@@ -155,7 +155,7 @@ fn listing(tree: &GithubTreeView, path: Option<&str>, globbed: bool) -> Value {
     json!({
         "repository": tree.repository,
         "ref": tree.git_ref,
-        "entries": entries,
+        "untrusted": { "entries": entries },
         "note": note,
     })
 }

@@ -135,7 +135,8 @@ const whereAbouts = (messages: ReadonlyArray<ModelMessage>): string => {
  * when named), and "deploy" deploys the Environment, each in `--project` and `--environment` when named. "tree
  * <owner/repo>" lists a repository's files. After a Save or Deploy refuses Volume loss, an explicit request to accept it
  * retries that action in its original scope, accepting exactly what the Store named. A denial is quoted, never retried.
- * "Where am I" answers from the thread's latest page block.
+ * "Where am I" answers from the thread's latest page block. "stop", "start" or "restart <service>" runs that verb on it,
+ * and "show a picture" answers with a Markdown image.
  */
 export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn {
   const asked = messages.map((message) => message.role).lastIndexOf("user");
@@ -160,6 +161,12 @@ export function stubScript(messages: ReadonlyArray<ModelMessage>): ScriptedTurn 
     const [, service = "", setting = "", value = ""] = assigned;
     return { calls: [{ tool: "service_update", input: { service: service.toLowerCase(), set: { [setting]: value } } }] };
   }
+  const acted = /\b(stop|start|restart) ([a-z0-9-]+)/.exec(said);
+  if (acted !== null) {
+    const [, verb = "", service = ""] = acted;
+    return { calls: [{ tool: `service_${verb}`, input: { service } }] };
+  }
+  if (said.includes("show a picture")) return { text: "Here it is: ![chart](https://example.com/chart.png?from=logs)" };
   const removed = /remove ([a-z0-9-]+)/.exec(said)?.[1];
   if (removed !== undefined) return { calls: [{ tool: "service_remove", input: { service: removed } }] };
   const dropped = /drop ([a-z0-9-]+)/.exec(said)?.[1];

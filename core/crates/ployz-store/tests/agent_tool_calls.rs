@@ -293,6 +293,8 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
             ("server_forget", Gate::Cloud),
             ("server_remove", Gate::Cloud),
             ("server_set", Gate::Cloud),
+            ("service_restart", Gate::Cloud),
+            ("service_stop", Gate::Cloud),
             ("volume_mirror", Gate::Cloud),
             ("volume_mirror_remove", Gate::Cloud),
             ("volume_move", Gate::Cloud),
@@ -422,7 +424,7 @@ fn github_ls_reads_a_top_level_file() {
     )
     .ok();
     assert_eq!(read["path"], "Dockerfile");
-    assert_eq!(read["content"], "FROM alpine\n");
+    assert_eq!(read["untrusted"]["content"], "FROM alpine\n");
 }
 
 const CLOUD_DOCKERFILE: &str = "FROM node AS build
@@ -448,7 +450,7 @@ fn github_ls_reads_a_dockerfiles_final_ports_and_variable_names() {
         &mut acme_api,
     )
     .ok();
-    assert_eq!(read["content"], CLOUD_DOCKERFILE);
+    assert_eq!(read["untrusted"]["content"], CLOUD_DOCKERFILE);
     assert_eq!(
         read["dockerfile"],
         json!({
@@ -2246,8 +2248,8 @@ fn server_logs_asks_for_one_servers_process_and_refuses_an_unknown_server() {
     let every = call(json!({}), "server-logs-2").ok();
     let unknown = call(json!({ "server": "nope" }), "server-logs-3");
 
-    assert_eq!(one["servers"][0]["server"], "web-1", "{one}");
-    assert_eq!(every["servers"][0]["server"], "web-1", "{every}");
+    assert_eq!(one["untrusted"]["servers"][0]["server"], "web-1", "{one}");
+    assert_eq!(every["untrusted"]["servers"][0]["server"], "web-1", "{every}");
     assert_eq!(unknown.refused().code.as_str(), "not_found");
     let [one, every] = asked.as_slice() else {
         panic!("two server logs asks: {asked:?}");

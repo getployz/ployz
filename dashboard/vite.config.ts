@@ -6,6 +6,7 @@ import { tanstackStart } from '@tanstack/react-start/plugin/vite'
 
 import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { SECURITY_HEADERS } from './src/server/security-headers'
 
 const marketingOrigin = process.env['MARKETING_ORIGIN']
 
@@ -39,18 +40,7 @@ const config = defineConfig({
     tanstackStart({ client: { entry: './client.tsx' } }),
     nitro({
       rollupConfig: { external: [/^@ployz\/sdk(?:\/|$)/] },
-      // No page of ours may be framed (clickjacking the Deploy and delete dialogs), always over HTTPS.
-      routeRules: {
-        '/**': {
-          headers: {
-            'content-security-policy': "frame-ancestors 'none'",
-            'x-frame-options': 'DENY',
-            'x-content-type-options': 'nosniff',
-            'referrer-policy': 'strict-origin-when-cross-origin',
-            'strict-transport-security': 'max-age=31536000',
-          },
-        },
-      },
+      routeRules: { '/**': { headers: { ...SECURITY_HEADERS } } },
     }),
     viteReact(),
   ],

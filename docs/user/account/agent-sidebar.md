@@ -119,9 +119,10 @@ server, like **Remove fra-1**.
 - **Approving never deletes data on its own.** When a deploy or save would delete a volume's
   data, the agent stops and tells you which volumes. It goes ahead only if you ask it to, like
   "save, accepting the volume loss", and only in the same project and environment.
-- **Only removals ask.** Deploys that roll out a new image, change variables or scale a service
+- **Only removals and interruptions ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
-  Restarting, starting or stopping a service never asks, and neither does upgrading a server or
+  Stopping or restarting a service asks first, with a card like **Stop web** marked **Stops service**,
+  because it takes the service down. Starting a service never asks, and neither does upgrading a server or
   changing what it takes, unless turning web traffic off leaves no online server with a public IP to
   serve your domains. Then the card lists the domains that go dark and everything else the change sets,
   and approving it covers only that change. Redeploying a deployment doesn't ask either, because it ships exactly
@@ -136,5 +137,10 @@ server, like **Remove fra-1**.
 - **Answer anywhere.** An approval is the same in every tab and on every device. Answer it once
   and every other card for it updates. If you answer a card someone already answered, it says the
   approval was already decided elsewhere, and how.
+- **Pictures show as links.** When a reply includes an image, you see its full address as a link
+  instead of the picture. Nothing loads until you click it, so a log line or repository file can't
+  get the agent to send your data to another site inside an image address.
+- **Logs and files are data, not orders.** The agent reads logs, repository files and pull
+  requests as text others wrote. It doesn't follow instructions written inside them.
 - **Keep backups.** An approved deploy that deletes a volume deletes its data. Keep
   [backups](../services/databases.md#back-up-a-database) of data you can't lose.

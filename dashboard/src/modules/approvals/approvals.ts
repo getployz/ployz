@@ -4,8 +4,8 @@ import { Schema } from "effect";
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
-/** The Server and Namespace operations the CLI runs through Cloud that may wait for a human. Upgrade never does. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror";
+/** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
@@ -29,6 +29,8 @@ export function approvalSubject(command: string, review: ApprovalReview) {
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. */
 export function approvalBadge(command: string, { effects }: ApprovalReview) {
   if (command === "publish") return "Deletes on deploy";
+  if (command === "stop") return "Stops service";
+  if (command === "restart") return "Restarts service";
   if (effects.length > 0 && effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
   }
@@ -56,6 +58,8 @@ const destroys = {
   removes_member: { verb: "Removes", noun: "member", after: "" },
   changes_role: { verb: "Changes", noun: "role of", after: "" },
   revokes_invite: { verb: "Revokes", noun: "invite for", after: "" },
+  stops_service: { verb: "Stops", noun: "service", after: " until started again" },
+  restarts_service: { verb: "Restarts", noun: "service", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /**

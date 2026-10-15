@@ -145,6 +145,23 @@ export const runVolume = (
         : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
   }));
 
+/** What a stop or restart interrupts, as a human approves it; a start interrupts nothing. */
+const interrupts = (input: { readonly environmentId: string; readonly service: string; readonly verb: ServiceVerb; readonly only: ServerRef | null }): OperationAsked | null => {
+  if (input.verb === "start") return null;
+  return {
+    subject: `service:${input.environmentId}/${input.service}`,
+    verb: input.verb,
+    name: input.service,
+    preview: { environment: input.environmentId, service: input.service, only: input.only?.name ?? null },
+    effects: [{
+      kind: input.verb === "stop" ? "stops_service" : "restarts_service",
+      name: input.service,
+      node: `${input.environmentId}/${input.service}`,
+      path: `services.${input.service}`,
+    }],
+  };
+};
+
 export const actService = (
   caller: Caller,
   input: {
@@ -161,5 +178,12 @@ export const actService = (
   admitOperation(
     caller.organization.id,
     { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
-    Effect.succeed((attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input })),
+    Effect.gen(function* () {
+      const asked = interrupts(input);
+      if (asked !== null) {
+        const gated = yield* gate(caller, call, asked);
+        if (!gated.ok) return refused(gated.refusal);
+      }
+      return (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input });
+    }),
   );

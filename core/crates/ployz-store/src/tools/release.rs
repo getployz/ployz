@@ -77,6 +77,8 @@ impl Tool for Review {
                     DestructiveKind::RemovesMember => "removes member",
                     DestructiveKind::ChangesRole => "changes role",
                     DestructiveKind::RevokesInvite => "revokes invite",
+                    DestructiveKind::StopsService => "stops service",
+                    DestructiveKind::RestartsService => "restarts service",
                 };
                 format!("{kind} {}", effect.name)
             })

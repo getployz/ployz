@@ -109,7 +109,8 @@ How you answer depends on where the command runs:
   Rolling out a new image or changing variables never asks.
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
-  would stop a service or delete volume data. `ployz server upgrade` never asks.
+  would stop a service or delete volume data. `ployz service stop` and `ployz service restart`
+  always ask; `ployz service start` and `ployz server upgrade` never ask.
 - Dashboard buttons and dialogs never ask: confirming a dialog is your approval. When the
   [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks

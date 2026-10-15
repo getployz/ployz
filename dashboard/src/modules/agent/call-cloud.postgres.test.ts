@@ -1,5 +1,6 @@
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServiceVerb } from "@ployz/sdk";
+import { sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { describe, expect, vi } from "vitest";
@@ -10,13 +11,18 @@ import type { Caller } from "#/modules/identity/actor";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
+import { serviceAct } from "#/modules/service-act/tables";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c101";
 const DRAIN = "00000000-0000-4000-8000-00000000c102";
+const PROJECT = "00000000-0000-4000-8000-00000000c104";
+const ENVIRONMENT = "00000000-0000-4000-8000-00000000c105";
+const SERVICE = "00000000-0000-4000-8000-00000000c106";
+const DEPLOYMENT = "00000000-0000-4000-8000-00000000c107";
 const MACHINE = "a".repeat(32) as MachineId;
 const OTHER_MACHINE = "e".repeat(32) as MachineId;
 const Asked = Schema.Struct({ approval: Schema.String, approval_id: Schema.String });
@@ -255,6 +261,44 @@ describe("callCloud", () => {
       expect(decided).toMatchObject({ ok: true });
       const approved = yield* callCloud(caller, { act }, approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
       expect(approved).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
+      expect(send).toHaveBeenCalledTimes(1);
+    }));
+
+  // Catches an agent stopping or restarting a Service without asking, or a start (which interrupts nothing) made to ask.
+  it.live("asks a human before an agent stops or restarts a Service, and runs a start straight away", () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "call-cloud-test" });
+      const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "admit", admit: "deploy", id: DEPLOYMENT, environment: { project: null, environment: null }, services: [], version: null, accept_volume_loss: [],
+      }, acmeWeb()));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = ${DEPLOYMENT}`);
+      yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
+        select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
+        from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
+      const caller: Caller = { ...member, userId };
+      const act = (verb: ServiceVerb, attempt: string): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb },
+      });
+
+      for (const [verb, attempt] of [["stop", "1"], ["restart", "2"]] as const) {
+        const asked = yield* callCloud(caller, { act: act(verb, attempt) }).pipe(Effect.provide(services));
+        expect(asked).toEqual({ ok: false, refusal: expect.objectContaining({
+          code: "approval_required",
+          details: expect.objectContaining({ operation: { verb, name: "web" } }),
+        }) });
+      }
+      expect(yield* drizzle.select().from(serviceAct)).toEqual([]);
+
+      const started = yield* callCloud(caller, { act: act("start", "3") }).pipe(Effect.provide(services));
+      expect(started).toEqual({ ok: true, value: expect.objectContaining({ state: "accepted" }) });
+      expect((yield* drizzle.select().from(serviceAct)).map((row) => row.verb)).toEqual(["start"]);
       expect(send).toHaveBeenCalledTimes(1);
     }));
 

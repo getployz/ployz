@@ -261,6 +261,10 @@ function RetryButton({ retryAt, onRetry }: { retryAt: number | null; onRetry: ()
 const markdownComponents: Components = {
   table: ({ node: _node, ...props }) => <div className="typeset-scroll"><table {...props} /></div>,
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+  // Loading an image the model wrote would send its URL, and whatever it smuggled into it, without a click.
+  img: ({ src }) => src === undefined || src === ""
+    ? null
+    : <a href={src} target="_blank" rel="noreferrer" className="break-all">{src}</a>,
 };
 
 type Part = UIMessage["parts"][number];

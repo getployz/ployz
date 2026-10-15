@@ -263,8 +263,8 @@ export const planRemove = Effect.fn("ServerOperations.planRemove")(function* (
 export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<typeof planClean>>> = (organizationId, subject, verb, stored, preview) => {
   const separator = subject.indexOf(":");
   const key = subject.slice(separator + 1);
-  // A member or invite approval is planned again when its command reruns; there is no Cluster to recompute it from.
-  if (["member", "invite"].includes(subject.slice(0, separator))) return Effect.succeed(stored);
+  // A member, invite or Service approval is planned again when its command reruns; there is no Cluster to recompute it from.
+  if (["member", "invite", "service"].includes(subject.slice(0, separator))) return Effect.succeed(stored);
   const fresh = Effect.gen(function* () {
     switch (verb) {
       case "drain": {
@@ -286,6 +286,8 @@ export const freshOperationDigest: OperationDigest<Effect.Services<ReturnType<ty
       }
       case "release":
       case "remove_mirror":
+      case "stop":
+      case "restart":
         return stored;
     }
   });
