@@ -229,16 +229,6 @@ export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummar
 }
 
 /**
- * A node's outcome in words: the glossary's Node Outcome once it has one; until then Queued or Deploying, as its
- * Deployment reads, and Not attempted once that ended without it.
- */
-export function nodeOutcomeLabel(outcome: NodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">) {
-  if (outcome !== "pending") return nodeStatusLabels[outcome];
-  if (deployment.status === "queued") return deploymentStatusLabels.queued;
-  return deployment.in_flight ? deploymentStatusLabels.running : nodeStatusLabels.not_attempted;
-}
-
-/**
  * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
  * Coming off the servers, then Off the servers; one that completed with no Server left to take it off (`forgotten`)
  * says what it left.
@@ -286,13 +276,6 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
     by ? `by ${by}` : null,
     commit ? commit.slice(0, 7) : deployment.upload ? uploadLabel(deployment.upload, by) : null,
   ].filter(Boolean).join(" · ");
-}
-
-/** The Service a Deployment page opens on: the picked one, else the one that failed, else one it didn't apply, else the first. */
-export function focusedService(deployment: DeploymentView, picked: string | undefined) {
-  const services = deployment.nodes.filter((node) => node.type === "service");
-  return services.find((node) => node.id === picked) ?? services.find((node) => node.outcome === "failed")
-    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
 }
 
 /**

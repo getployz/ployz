@@ -36,8 +36,7 @@ describe("run search", () => {
     });
   });
 
-  it("drops an origin or logs stage it can't read, keeping the rest", () => {
-    expect(decode({ job: "api-id", origin: { node: { kind: "service" } }, logs: "nope" })).toEqual({ job: "api-id" });
-    expect(decode({ logs: "deploy" })).toEqual({ logs: "deploy" });
+  it("drops an origin it can't read, keeping the rest", () => {
+    expect(decode({ job: "api-id", origin: { node: { kind: "service" } } })).toEqual({ job: "api-id" });
   });
 });

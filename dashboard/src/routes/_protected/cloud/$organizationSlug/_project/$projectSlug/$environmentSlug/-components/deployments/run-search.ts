@@ -30,10 +30,8 @@ const dropInvalid = () => Effect.succeed(Option.none());
 export const runSearchSchema = Schema.Struct({
   job: Schema.optional(Schema.String),
   origin: Schema.optional(RunOrigin.pipe(Schema.catchDecoding(dropInvalid))),
-  logs: Schema.optional(Schema.Literals(["build", "deploy"]).pipe(Schema.catchDecoding(dropInvalid))),
 });
 export type RunSearch = typeof runSearchSchema.Type;
-export type LogStage = NonNullable<RunSearch["logs"]>;
 
 function environmentOf({ organizationSlug, projectSlug, environmentSlug }: EnvironmentRouteParams): EnvironmentRouteParams {
   return { organizationSlug, projectSlug, environmentSlug };
