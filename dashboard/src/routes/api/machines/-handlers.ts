@@ -1,11 +1,23 @@
 import { Effect, Option, Result } from "effect";
-import { crashPushInput, decodeCrashPush, decodePushHeader, isObserveStream } from "#/modules/observe-ingest/ingest";
-import { authenticateObservePush, ingestCrashPush, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import { flow } from "effect/Function";
+import { crashPushInput, decodeCrashPush, decodePageviewPush, decodePushHeader, isObserveStream, pageviewPushInput } from "#/modules/observe-ingest/ingest";
+import { authenticateObservePush, ingestCrashPush, ingestPageviewPush, type ObservePusher, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import type { ObserveStream } from "#/modules/observe-ingest/tables";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
 
 const noStore = { "cache-control": "no-store" };
 const MAX_PUSH_BYTES = 256 * 1024;
+
+type Ingest = ReturnType<typeof ingestCrashPush> | ReturnType<typeof ingestPageviewPush>;
+type IngestRun = Effect.Effect<void, Effect.Error<Ingest>, Effect.Services<Ingest>>;
+
+const ingestStream = {
+  crash: (pusher: ObservePusher) =>
+    flow(decodeCrashPush, Option.flatMap(crashPushInput), Option.map((push): IngestRun => ingestCrashPush(pusher, push))),
+  pageviews: (pusher: ObservePusher) =>
+    flow(decodePageviewPush, Option.flatMap(pageviewPushInput), Option.map((push): IngestRun => ingestPageviewPush(pusher, push))),
+} satisfies Record<ObserveStream, (pusher: ObservePusher) => (json: Parameters<typeof decodeCrashPush>[0]) => Option.Option<IngestRun>>;
 
 function errorResponse(cause: unknown) {
   const publicError = encodePublicError(cause);
@@ -46,9 +58,9 @@ export function handleObservePush(request: Request, machineId: string) {
     if (!isObserveStream(header.value.stream)) {
       return errorResponse(new NotFound({ message: `Unknown observe stream ${header.value.stream}.` }));
     }
-    const push = Option.flatMap(decodeCrashPush(json), crashPushInput);
-    if (Option.isNone(push)) return malformed();
-    const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
+    const ingest = ingestStream[header.value.stream](pusher.success)(json);
+    if (Option.isNone(ingest)) return malformed();
+    const ingested = yield* Effect.result(ingest.value);
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
     return yield* ackSalts(pusher.success.organizationId).pipe(
       Effect.map((ack) => Response.json(ack, { headers: noStore })),

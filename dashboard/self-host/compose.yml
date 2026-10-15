@@ -11,6 +11,7 @@ x-app: &app
     INNGEST_BASE_URL: http://inngest:8288
     INNGEST_CONNECT_GATEWAY_URL: ws://inngest:8289/v0/connect
     NPM_CONFIG_UPDATE_NOTIFIER: 'false'
+    ANALYTICS_ENABLED: ${ANALYTICS_ENABLED:-false}
   depends_on:
     postgres:
       condition: service_healthy
