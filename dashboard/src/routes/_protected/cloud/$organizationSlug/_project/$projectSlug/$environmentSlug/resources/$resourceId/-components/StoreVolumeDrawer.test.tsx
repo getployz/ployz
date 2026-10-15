@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { Schema } from "effect";
-import type { ConfigQuery, ConfigView, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { ConfigQuery, ConfigView, ConfigWritten, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
 import * as mounts from "#/modules/config-store/StoreVolumeMounts";
 import * as functions from "#/modules/config-store/store.functions";
+import type { StoreResult } from "#/modules/config-store/store.contract";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { InspectorPresentation } from "../../../-components/CanvasInspectorHeader";
 import * as changes from "../../../-components/canvas/useStoreChangeActions";
@@ -73,4 +74,19 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
 it("opens a mirror on the Copies tab, even from a URL that had Settings open", async () => {
   await openDrawer("/cloud/acme/shop/production/resources/vol~web-2?tab=settings", {}, "web-2" as MachineId);
   expect(screen.getByRole("tab", { name: "Copies" }).getAttribute("aria-selected")).toBe("true");
+});
+
+it("locks the drawer while its rename is pending, so no edit names the volume by its old name", async () => {
+  await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings", {});
+  let answer!: (result: StoreResult<ConfigWritten>) => void;
+  const write = vi.spyOn(functions, "writeStoreServerFn").mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+  fireEvent.click(screen.getByTitle("Edit volume name"));
+  fireEvent.change(screen.getByRole("textbox", { name: "Edit volume name" }), { target: { value: "store" } });
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(screen.getByRole("tab", { name: "Settings", hidden: true }).closest("[inert]")).not.toBeNull());
+  expect(screen.getByTitle("Edit volume name").closest("[inert]")).not.toBeNull();
+  await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); });
+  await waitFor(() => expect(screen.getByRole("tab", { name: "Settings" }).closest("[inert]")).toBeNull());
+  expect(screen.getByTitle("Edit volume name").closest("[inert]")).toBeNull();
 });
