@@ -415,6 +415,7 @@ commands! {
         => crate::pull_request::set_plan(tx, who, c);
     /// Deploy a pull request's head that needed a member's approval.
     ApprovePullRequest(crate::ApprovePullRequest) -> Automated(crate::Automated)
+        agent none "A member approves a pull request's code to run with an Environment's secrets."
         => crate::pull_request::approve(tx, who, c, trusted);
     /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched)
