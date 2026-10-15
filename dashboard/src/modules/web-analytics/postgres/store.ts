@@ -291,18 +291,25 @@ export const entryPages = Effect.fn("WebAnalytics.entryPages")(function* (query:
 
 type GoalDbRow = { goal_id: string; name: string; visitors: string; conversions: string };
 
+/** One scan of the range: its pageviews fold to visitor-day-path counts, and only their distinct paths meet the goal patterns. */
 export const goalConversions = Effect.fn("WebAnalytics.goalConversions")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<GoalDbRow>(sql`
-    select goal.id as goal_id, goal.name, coalesce(sum(hits.visitors), 0)::bigint as visitors, coalesce(sum(hits.pageviews), 0)::bigint as conversions
-    from analytics.goal goal
-    left join lateral (
-      select count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors
+    with views as materialized (
+      select pathname, ${localDate(query.timezone)} as day, visitor_id, count(*)::bigint as pageviews
       ${rowsIn(query, query.range)}
-        and pathname like replace(replace(replace(replace(goal.path_pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), '*', '%') escape '\\'
-      group by ${localDate(query.timezone)}
-    ) hits on true
-    where goal.environment_id = ${query.environmentId}::text
-    group by goal.id, goal.name`, "objects");
+      group by 1, 2, 3
+    ), goals as (
+      select id, name, replace(replace(replace(replace(path_pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), '*', '%') as pattern
+      from analytics.goal where environment_id = ${query.environmentId}::text
+    ), matched as (
+      select goals.id as goal_id, paths.pathname
+      from goals join (select distinct pathname from views) paths on paths.pathname like goals.pattern escape '\\'
+    )
+    select goals.id as goal_id, goals.name, count(distinct (hits.day, hits.visitor_id)) filter (where hits.goal_id is not null)::bigint as visitors,
+      coalesce(sum(hits.pageviews), 0)::bigint as conversions
+    from goals
+    left join (select matched.goal_id, views.* from matched join views using (pathname)) hits on hits.goal_id = goals.id
+    group by goals.id, goals.name`, "objects");
   return rows.map((row): GoalRow => ({ goalId: row.goal_id, name: row.name, visitors: Number(row.visitors), conversions: Number(row.conversions) }));
 });
