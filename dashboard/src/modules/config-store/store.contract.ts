@@ -82,14 +82,24 @@ export const StoreCommand = envelope<ConfigCommand>("command");
 export const StoreView = envelope<ConfigView>("view");
 export const StoreChange = envelope<Change>("op");
 
-export const storeReadInput = Schema.Struct({ organizationSlug: Schema.String, query: StoreQuery });
-export const storeWriteInput = Schema.Struct({ organizationSlug: Schema.String, command: StoreCommand, shows: Schema.Array(StoreQuery) });
-
 /** An Environment as calls name it: either part left out means the default. */
 export const EnvironmentRef = Schema.Struct({
   project: Schema.optional(Schema.NullOr(Schema.String)),
   environment: Schema.optional(Schema.NullOr(Schema.String)),
 });
+
+const isSyncShown = Schema.is(Schema.Struct({ from: EnvironmentRef, into: Schema.optional(Schema.NullOr(EnvironmentRef)) }));
+const isEnvironmentShown = Schema.is(Schema.Struct({ environment: Schema.optional(Schema.NullOr(EnvironmentRef)) }));
+const isQuery = Schema.is(StoreQuery);
+/**
+ * A view a write rereads after it commits: a query whose Environments are well formed, since Cloud picks the views to
+ * reread by them before the Store sees the query. Checked before the write, so a bad one cannot fail a committed write.
+ */
+export const ShownQuery = Schema.declare<ConfigQuery>((value): value is ConfigQuery =>
+  isQuery(value) && (value.query === "sync" ? isSyncShown(value) : isEnvironmentShown(value)));
+
+export const storeReadInput = Schema.Struct({ organizationSlug: Schema.String, query: StoreQuery });
+export const storeWriteInput = Schema.Struct({ organizationSlug: Schema.String, command: StoreCommand, shows: Schema.Array(ShownQuery) });
 export const environmentOf = (ref: typeof EnvironmentRef.Type | undefined) =>
   ({ project: ref?.project ?? null, environment: ref?.environment ?? null });
 
