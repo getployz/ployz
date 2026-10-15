@@ -31,10 +31,10 @@ const NO_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], vers
 const shown = (version: string) => `${version}#loss-shown`;
 
 function Deploy({ placementLoss }: { placementLoss: PlacementLoss }) {
-  const { deploy, publish, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
+  const { deploy, save, discard, neverSync, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id), placementLoss);
   return <>
     <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
-    <button type="button" onClick={() => void publish("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
+    <button type="button" onClick={() => void save("  Save this draft  ").then((saved) => saves.push(saved))}>Save now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     <button type="button" onClick={() => neverSync("api.env.CACHE_TTL", "a:variables.CACHE_TTL" as RowId)}>Never sync CACHE_TTL</button>
     {dialog}
@@ -182,7 +182,7 @@ it("reports a Save as saved once the user accepts the data it deletes, and not s
   await screen.findByText("pg-data");
   expect(saves).toEqual([]);
   fireEvent.change(screen.getByPlaceholderText("shop/production"), { target: { value: "shop/production" } });
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save only" }));
   await waitFor(() => expect(saves).toEqual([true]));
 
   test.write.mockResolvedValueOnce(refusal("confirmation_required", loss));

@@ -40,7 +40,7 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
       case "volumes": return { view: "volumes", environment: env, volumes: [listing] };
       case "services": return { view: "services", environment: env, services };
       case "environment": return { view: "environment", environment: env, settings: [] };
-      case "diff": return { view: "diff", environment: env, version: "1", saved: 0, published: false, total_count: 0,
+      case "diff": return { view: "diff", environment: env, version: "1", saved: 0, holds_staged: false, total_count: 0,
         changes: [], incoming: [], follow_hints: [], included: [] };
       default: throw new Error(`Unexpected test query ${query.query}`);
     }

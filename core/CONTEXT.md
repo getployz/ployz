@@ -286,7 +286,7 @@ An Environment's immutable saved configuration revisions, with optional message,
 _Avoid_: Working State, deployed configuration, draft
 
 **Publish**:
-The Store and CLI command adding a revision to an Environment's Saved State from its Working State without deploying. The dashboard names this action Save. A manual Deploy saves first when needed and uses its message for that new revision.
+The Store command adding a revision to an Environment's Saved State from its Working State without deploying. Users never see the word: the CLI runs it as `ployz deploy --skip-deploy`, the agent tools as `deploy` with `skip_deploy`, and the dashboard names it Save only. A manual Deploy saves first when needed and uses its message for that new revision.
 _Avoid_: commit, promote
 
 **Deployment**:

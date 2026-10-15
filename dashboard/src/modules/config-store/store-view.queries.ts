@@ -56,6 +56,7 @@ const refreshedBy = {
   projects: ["store_project", "store_environment"],
   // Removals the Store still owes: Environments marked for removal and their Deployments.
   due: ["store_environment", "store_deployment"],
+  consented: ["store_environment", "store_deployment"],
   // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
   pr_plans: ["store_project", "store_environment"],
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.

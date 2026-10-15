@@ -171,6 +171,7 @@ pub(crate) fn save(store: &ConfigStore, who: &Actor, environment: &str) {
         .write(
             who,
             &ployz_store::Command::Publish(Publish {
+                id: None,
                 environment: at(environment),
                 version: None,
                 message: None,

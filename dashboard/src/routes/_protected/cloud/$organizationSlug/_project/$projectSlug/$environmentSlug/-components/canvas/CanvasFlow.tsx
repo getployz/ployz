@@ -250,7 +250,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
-  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
+  const hasSomethingToSave = (diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
   return (
@@ -260,10 +260,10 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         totalChanges={groups.reduce((count, group) => count + group.changeCount, 0)}
         runtimeChanges={diff.total_count + placements.count}
         notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}
-        canPublish={hasSomethingToSave}
+        canSave={hasSomethingToSave}
         onDeploy={actions.deploy}
         admitting={actions.admitting}
-        onPublish={actions.publish}
+        onSave={actions.save}
         // The Store goes first, at the version the user sees: a staged restore's own discard writes the Store too.
         onDiscardAll={() => placements.discardAll(() =>
           storeGroups.length > 0 || diff.total_count > 0 ? actions.discard(null, "review") : Promise.resolve(undefined))}

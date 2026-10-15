@@ -409,11 +409,21 @@ def overdue_drains(run, commands, backend):
     for holder in run["machines"]:
         if holder["machine_id"] not in draining:
             continue
-        log = backend.exec(holder, ["bash", "-c", "journalctl -u ployz --no-pager -o cat | grep -F 'forcing retire' || true"]).stdout.decode()
+        log = backend.exec(holder, ["bash", "-c", "journalctl -u ployz --no-pager -o cat | grep -F -e 'retire clock started' -e 'forcing retire' || true"]).stdout.decode()
+        forced = forced_retirements(log)
         lines += [f"{holder['name']}: {container['resolved_spec']['name']} Container {container['container_id'][:12]} "
                   f"still drains past 300 s; see journalctl -u ployz"
-                  for container in draining[holder["machine_id"]] if f"container={container['container_id']}" in log]
+                  for container in draining[holder["machine_id"]] if container["container_id"] in forced]
     return lines
+
+
+def forced_retirements(log):
+    latest = {}
+    for line in log.splitlines():
+        container = re.search(r"\bcontainer=(\S+)", line)
+        if container:
+            latest[container.group(1)] = "forcing retire" in line
+    return {container for container, forced in latest.items() if forced}
 
 
 def wait_ready(run, commands, backend):

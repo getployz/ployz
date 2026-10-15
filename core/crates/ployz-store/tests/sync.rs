@@ -969,6 +969,7 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
         .write(
             &who,
             &Publish {
+                id: None,
                 environment: at("fix-web"),
                 version: None,
                 message: None,

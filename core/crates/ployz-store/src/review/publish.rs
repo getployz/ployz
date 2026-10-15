@@ -35,6 +35,11 @@ pub struct Publish {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
+    /// Caller-minted: this save sent again with the same ID returns the first one's
+    /// answer instead of saving what is staged by then.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub id: Option<String>,
 }
 
 /// The Saved revision Working State is now in.
@@ -122,13 +127,27 @@ pub(crate) fn publish(
     // same destructive review, before anything is saved.
     let target = canonicalize_environment_intent(environment.working.clone());
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
-    review::destructive(
+    let losses = review::destructive(
         who,
         &review,
         (&target, &namespace, review::Shipping::Publish),
-        (publish.version.as_deref(), &publish.accept_volume_loss),
+        (
+            publish.version.as_deref(),
+            &publish.accept_volume_loss,
+            review::consent(review.saved.as_ref()),
+        ),
         trusted.volumes.as_ref(),
-    )?;
+    )
+    .map_err(|mut error| {
+        // Volume loss is the one confirmation `destructive` asks; saving deletes
+        // nothing itself, so the loss is the next deploy's.
+        if error.code == ployz_core::RpcErrorCode::ConfirmationRequired
+            && let Some(rest) = error.message.strip_prefix("This permanently deletes")
+        {
+            error.message = format!("Next deploy deletes{rest}");
+        }
+        error
+    })?;
     review::approve(
         who,
         &environment.summary.id,
@@ -136,14 +155,21 @@ pub(crate) fn publish(
         &target,
         &trusted.approval,
     )?;
+    let lost = review::lost(losses);
     let (saved, created) = review::publish(
         tx,
         who,
         &environment.summary.id,
         environment.working,
         review.saved.as_ref(),
-        publish.message.as_deref(),
+        (publish.message.as_deref(), &lost),
     )?;
+    if !created
+        && let Some(latest) = review.saved.as_ref()
+        && latest.accepted != lost
+    {
+        review::reconsent(tx, &environment.summary.id, latest.revision, &lost)?;
+    }
     // Saved State already held it: proposals ending still moves the revision.
     let mut summary = environment.summary;
     if consumed && !created {
@@ -156,6 +182,27 @@ pub(crate) fn publish(
         saved: Some(saved),
         created,
     })
+}
+
+/// Refuse a replayed save whose Environment resolves elsewhere now: an omitted one
+/// follows the Default Environment, which may have moved since the first save.
+pub(crate) fn same_environment(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    publish: &Publish,
+    first: &Published,
+) -> Result<(), RpcError> {
+    let (_, now) = scope::resolve(tx, who, &publish.environment)?;
+    if now == first.environment.id {
+        return Ok(());
+    }
+    Err(crate::error::conflict(
+        format!(
+            "This ID already saved {}/{}, not the Environment it names now",
+            first.environment.project, first.environment.name
+        ),
+        serde_json::json!({ "id": publish.id }),
+    ))
 }
 
 pub(crate) fn discard(

@@ -13,13 +13,13 @@ describe("agent tools", () => {
       ...CATALOG.tools.filter((tool) => tool.gate !== "never").map((tool) => tool.name),
       ...COMMANDS.filter((command) => command.gate !== "never").map((command) => command.name),
     ]));
-    expect(GATED).toContain("publish");
     expect(GATED).toContain("deploy");
+    expect(GATED).not.toContain("publish");
     expect(GATED).not.toContain("environment_show");
   });
 
-  it("stops at a Publish's write, in the place it was given", async () => {
-    const { step } = await Effect.runPromise(untilWrite(agentStart("publish", {}, place, "k"), () => Effect.succeed({ value: empty })));
+  it("stops at a skipped Deploy's save, in the place it was given", async () => {
+    const { step } = await Effect.runPromise(untilWrite(agentStart("deploy", { skip_deploy: true }, place, "k"), () => Effect.succeed({ value: empty })));
     expect(step).toMatchObject({
       step: "write",
       write: { at: "store", write: { command: "publish", environment: { project: "shop", environment: "production" } } },
@@ -32,7 +32,7 @@ describe("agent tools", () => {
       written.push(command);
       return { error: { code: "conflict", message: "The Environment moved.", details: null } };
     });
-    const result = await Effect.runPromise(finish(agentStart("publish", {}, place, "k"), () => Effect.succeed({ value: empty }), write));
+    const result = await Effect.runPromise(finish(agentStart("deploy", { skip_deploy: true }, place, "k"), () => Effect.succeed({ value: empty }), write));
     expect(written).toHaveLength(1);
     expect(result).toMatchObject({ ok: false, refusal: { code: "conflict", message: "The Environment moved." } });
   });

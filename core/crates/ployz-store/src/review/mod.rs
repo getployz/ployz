@@ -39,11 +39,12 @@ use crate::storage::Tx;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct DiffView {
     pub environment: EnvironmentSummary,
-    /// Pass back to `publish` or `discard` to act on exactly this review.
+    /// Pass back to `deploy` or `discard` to act on exactly this review.
     pub version: String,
     /// The latest Saved revision, if anything was ever published.
     pub saved: Option<Revision>,
     /// Whether Saved State already holds this Working State.
+    #[serde(rename = "holds_staged")]
     pub published: bool,
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.
@@ -146,6 +147,10 @@ pub enum DataEffect {
 pub(crate) struct Saved {
     pub(crate) revision: Revision,
     pub(crate) intent: SavedEnvironmentIntent,
+    /// The Volume losses accepted when this revision was saved, each with the
+    /// Docker Volumes seen holding its data then. They cover the next Deploy of
+    /// this revision until the evidence changes.
+    pub(crate) accepted: Vec<crate::VolumeLoss>,
 }
 
 /// What the Change Set compares Working State against: the submitted Deployment's
@@ -394,10 +399,10 @@ pub(crate) enum Shipping<'a> {
 }
 
 /// The Volume data shipping `target` would delete, each accepted by name in
-/// `accepted` under the reviewed `version`.
+/// `accepted` under the reviewed `version`, or covered by `consent` saved with it.
 /// A full Deploy removes what Applied State holds and `target` dropped; publishing
-/// puts that removal in Saved State for the next full Deploy, so it is reviewed
-/// then too. Only a full Deploy's losses come back: it alone deletes them.
+/// puts that removal in Saved State for the next Deploy, so it is reviewed then
+/// too, and the reviewed losses are saved as that Deploy's consent.
 ///
 /// # Errors
 /// `confirmation_required` until every loss is accepted; `unavailable` when the
@@ -410,27 +415,46 @@ pub(crate) fn destructive(
         &ployz_core::Namespace,
         Shipping<'_>,
     ),
-    (version, accepted): (Option<&str>, &[crate::id::VolumeName]),
+    (version, accepted, consent): (Option<&str>, &[crate::id::VolumeName], &[crate::VolumeLoss]),
     observed: Option<&crate::VolumeObservation>,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let full = matches!(shipping, Shipping::Deploy(services) if services.is_empty());
-    let publishes = review
-        .saved
-        .as_ref()
-        .is_none_or(|saved| saved.intent != *target);
-    let removed = match full || publishes {
+    // A Save reviews what Saved State holds pending even when it saves nothing
+    // new, so it can record or renew the consent the next Deploy reads.
+    let reviews = match shipping {
+        Shipping::Publish => true,
+        Shipping::Deploy(services) => {
+            services.is_empty()
+                || review
+                    .saved
+                    .as_ref()
+                    .is_none_or(|saved| saved.intent != *target)
+        }
+    };
+    let removed = match reviews {
         true => crate::removal::removed(&review.head.applied, target, namespace)?,
         false => Vec::new(),
     };
-    let losses = crate::removal::review(
+    crate::removal::review(
         who,
         &review.view.environment.id,
         (&review.view.version, version),
         removed,
         observed,
-        accepted,
-    )?;
-    Ok(if full { losses } else { Vec::new() })
+        (accepted, consent),
+    )
+}
+
+/// The losses saved with `saved` as consent for its next Deploy.
+pub(crate) fn consent(saved: Option<&Saved>) -> &[crate::VolumeLoss] {
+    saved.map_or(&[], |saved| saved.accepted.as_slice())
+}
+
+/// The reviewed losses that delete data, which saving keeps as that consent.
+pub(crate) fn lost(losses: Vec<crate::VolumeLoss>) -> Vec<crate::VolumeLoss> {
+    losses
+        .into_iter()
+        .filter(|loss| !loss.deletes.is_empty())
+        .collect()
 }
 
 /// Core compares Settings only, so a Service renamed since Head gets its name row
@@ -582,7 +606,7 @@ pub(crate) fn publish(
     environment: &EnvironmentId,
     intent: SavedEnvironmentIntent,
     latest: Option<&Saved>,
-    message: Option<&str>,
+    (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
     crate::volume::check_storage(tx, environment, &intent)?;
@@ -592,9 +616,11 @@ pub(crate) fn publish(
         return Ok((latest.revision, false));
     }
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
+    let accepted = (!accepted.is_empty())
+        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
     tx.execute(
-        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO config_saved (environment_id, revision, organization_id, intent, message, saved_by, saved_at, accepted_losses) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         &[
             environment.as_str().into(),
             revision_param(revision)?.into(),
@@ -606,10 +632,31 @@ pub(crate) fn publish(
             message.map(str::trim).filter(|message| !message.is_empty()).into(),
             who.principal.as_ref().map(crate::Principal::as_str).into(),
             crate::deployment::now().into(),
+            accepted.as_deref().into(),
         ],
     )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// Replace the consent saved with `revision`, which an unchanged Save renews.
+pub(crate) fn reconsent(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    revision: Revision,
+    accepted: &[crate::VolumeLoss],
+) -> Result<(), RpcError> {
+    let accepted = (!accepted.is_empty())
+        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
+    tx.execute(
+        "UPDATE config_saved SET accepted_losses = ?3 WHERE environment_id = ?1 AND revision = ?2",
+        &[
+            environment.as_str().into(),
+            revision_param(revision)?.into(),
+            accepted.as_deref().into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// Sealing a value removes every earlier copy of it from History: plain text
@@ -753,7 +800,7 @@ pub(crate) fn latest_saved(
     environment: &EnvironmentId,
 ) -> Result<Option<Saved>, RpcError> {
     let rows = tx.query(
-        "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 \
+        "SELECT revision, intent, accepted_losses FROM config_saved WHERE environment_id = ?1 \
          ORDER BY revision DESC LIMIT 1",
         &[environment.as_str().into()],
     )?;
@@ -761,9 +808,16 @@ pub(crate) fn latest_saved(
         return Ok(None);
     };
     let intent = row.intent(1, "Saved State")?;
+    let accepted = match row.optional_text(2)? {
+        Some(json) => {
+            serde_json::from_str(json).map_err(|_| error::corrupt("accepted Volume losses"))?
+        }
+        None => Vec::new(),
+    };
     Ok(Some(Saved {
         revision: Revision(row.number(0, "revision")?),
         intent: canonicalize_environment_intent(intent),
+        accepted,
     }))
 }
 

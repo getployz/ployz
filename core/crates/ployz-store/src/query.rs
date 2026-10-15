@@ -220,6 +220,9 @@ queries! {
         => crate::teardown::environments(tx, who, q);
     /// The Organization's Projects.
     Projects(crate::ProjectsQuery) -> crate::ProjectsView => crate::teardown::projects(tx, who);
+    /// The Docker Volumes a Git push may delete, consented to when they were saved.
+    Consented(crate::ConsentedQuery) -> crate::ConsentedView
+        => crate::removal::consented(tx, who);
     /// The Environments whose removal Deployment may be admitted now.
     Due(crate::DueQuery) -> Vec<crate::Due> => crate::removal::due(tx, who);
     /// What a finished removal left on old servers.

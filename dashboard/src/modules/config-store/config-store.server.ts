@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
-import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
+import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
@@ -189,17 +189,30 @@ export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (o
   return loaded.kind === "ready" ? loaded.connections : [];
 });
 
-/** Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits and the hostnames other Namespaces publish. */
+/** Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing. */
+const deploys = {
+  branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false,
+} satisfies Record<SystemEvent["event"], boolean>;
+
+/**
+ * Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits, the
+ * hostnames other Namespaces publish, and, for an event that can deploy, which Servers hold the data a Save accepted losing.
+ */
 export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizationId: string, event: SystemEvent) {
   const store = yield* cloudStore;
   const servers = yield* countOrganizationMachines(organizationId);
   const domains = yield* systemDomainEvidence(organizationId);
-  return yield* storeTry(() => store.system(organizationId, event, { servers, domains }));
+  const volumes = deploys[event.event]
+    ? yield* systemVolumeEvidence(organizationId, (query) => store.read(organizationId, query))
+    : undefined;
+  const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes"> = { servers, domains };
+  if (volumes !== undefined) trusted.volumes = volumes;
+  return yield* storeTry(() => store.system(organizationId, event, trusted));
 });
 
 /**
  * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
- * of domains, for a Publish or Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
+ * of domains, for a Save or Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
  * Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
  * can't answer.
  */

@@ -722,13 +722,14 @@ fn land_one(
         Some(&from.working),
         &applied.next,
     )?;
+    let consent = crate::removal::still_removed(review::consent(latest.as_ref()), &saved);
     review::publish(
         tx,
         who,
         &into,
         saved.clone(),
         latest.as_ref(),
-        Some(&format!("Merged #{}", pull_request.number)),
+        (Some(&format!("Merged #{}", pull_request.number)), &consent),
     )?;
 
     // Working: the nodes arriving as Saved has them, so their IDs match; then each

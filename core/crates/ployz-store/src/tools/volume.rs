@@ -243,7 +243,7 @@ pub(crate) struct VolumeRemove {
 
 impl Tool for VolumeRemove {
     const NAME: &'static str = "volume_remove";
-    const DESCRIPTION: &'static str = "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next Publish or Deploy, which asks a human to approve.";
+    const DESCRIPTION: &'static str = "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next deploy, which asks a human to approve.";
     const READ_ONLY: bool = false;
 
     fn example() -> Value {

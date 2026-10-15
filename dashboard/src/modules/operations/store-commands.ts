@@ -130,8 +130,8 @@ export const STORE_COMMANDS = {
     ui: { sender: "modules/config-store/store-write.ts" },
   },
   publish: {
-    cli: { paths: ["publish"] },
-    agent: { tools: ["publish"] },
+    cli: { paths: ["deploy"] },
+    agent: { tools: ["deploy"] },
     ui: { sender: `${ENV}/-components/canvas/useStoreChangeActions.tsx` },
   },
   stage_history: {

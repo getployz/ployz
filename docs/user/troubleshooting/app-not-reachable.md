@@ -117,6 +117,10 @@ certificate**, a DNS status, or **Certificate failed; retrying at …**. Fix any
   it**, Cloudflare's redirect is blocking your certificate. Set the DNS record to **DNS only**,
   or turn off **Always Use HTTPS** and add a redirect rule that sends http to https for every
   path except `/.well-known/acme-challenge/*`.
+- Your app sees the visitor's address, not Cloudflare's, in `X-Forwarded-For`. Your servers take
+  it from Cloudflare's `CF-Connecting-IP` header, and only from requests that come from
+  [Cloudflare's addresses](https://www.cloudflare.com/ips/). The header still reaches your app from
+  anyone who sends it, so read `X-Forwarded-For`, not `CF-Connecting-IP`.
 
 ## Port 80 is closed
 

@@ -90,7 +90,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
     "name": "production",
     "project": "shop",
     "revision": 21
@@ -113,7 +113,7 @@ stdout:
   },
   "staged": {
     "changes": 11,
-    "published": false,
+    "saved": false,
     "version": "21:0:0.0"
   }
 }
@@ -202,7 +202,7 @@ stdout:
   "attention": [],
   "deploying": [],
   "environment": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "32ce0e3e-844a-4be1-95f6-9bfebd3f696f",
     "name": "production",
     "project": "shop",
     "revision": 34
@@ -228,8 +228,8 @@ stdout:
   },
   "staged": {
     "changes": 10,
-    "published": false,
-    "version": "34:4:0.0"
+    "saved": false,
+    "version": "34:3:0.0"
   }
 }
 ```

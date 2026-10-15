@@ -124,7 +124,7 @@ pub(crate) fn command() -> Command {
                         "Stage the Environment's changes in another Environment of the \
                          Project (--to), or another's in it (--from), as the receiver's \
                          changes to deploy: the sender's Working State, deployed or not. \
-                         Nothing is deleted, published or deployed, and sizing, domains, \
+                         Nothing is deleted, saved or deployed, and sizing, domains, \
                          generated addresses, the Git branch and Volume data stay each \
                          Environment's own. --plan lists the changes and the version to pass \
                          back. A change left out is offered again next time, as is one the \

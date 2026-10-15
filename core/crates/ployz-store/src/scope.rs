@@ -447,7 +447,7 @@ fn owned(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<Environment
 }
 
 /// Which Environment `at` names, without reading its Working State.
-fn resolve(
+pub(crate) fn resolve(
     tx: &mut dyn Tx,
     who: &Actor,
     at: &EnvironmentRef,

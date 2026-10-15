@@ -152,7 +152,7 @@ it.live("an approval the plan moved past is superseded, and a denial answers the
       .toMatchObject({ ok: true, approval: { status: "denied", reason: "web still serves traffic" } });
     expect(yield* provided(trustedApproval(ORGANIZATION, fresh.approval_id))).toMatchObject({
       ok: false,
-      refusal: { code: "approval_denied", message: "A human denied the request to publish production: web still serves traffic" },
+      refusal: { code: "approval_denied", message: "A human denied the request to save production: web still serves traffic" },
     });
   }));
 
@@ -287,7 +287,7 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     yield* provided(decideApproval(caller, firstId, { reject: { reason: "not today" } }));
     const denied = yield* cli(publish, firstId);
     expect(denied.status).toBe(403);
-    expect(denied.json.error).toMatchObject({ code: "approval_denied", message: "A human denied the request to publish production: not today" });
+    expect(denied.json.error).toMatchObject({ code: "approval_denied", message: "A human denied the request to save production: not today" });
     expect(denied.json.error?.message).not.toContain(firstId);
 
     // A denial isn't remembered either: asking again opens a new approval.
@@ -316,7 +316,7 @@ const recorded = [
       return id;
     }),
     reachesStore: false,
-    answers: () => ({ status: 403, json: { error: { code: "approval_denied", message: "A human denied the request to publish production: web still serves traffic" } } }),
+    answers: () => ({ status: 403, json: { error: { code: "approval_denied", message: "A human denied the request to save production: web still serves traffic" } } }),
   },
   {
     state: "a superseded approval",

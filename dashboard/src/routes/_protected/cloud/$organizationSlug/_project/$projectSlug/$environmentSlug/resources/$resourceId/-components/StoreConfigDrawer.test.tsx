@@ -48,7 +48,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
       case "configs": return { view: "configs", environment: env, configs: [store.item, ...replacement ? [replacement] : []] };
       case "services": return { view: "services", environment: env, services: [asTestDouble<ServiceListing>()({ id: "api", name: "api", private_dns: "api", change: null })] };
       case "environment": return { view: "environment", environment: env, settings };
-      case "diff": return { view: "diff", environment: env, version: "1", saved: 0, published: false, total_count: 0,
+      case "diff": return { view: "diff", environment: env, version: "1", saved: 0, holds_staged: false, total_count: 0,
         changes: [], incoming: [], follow_hints: [], included: [] };
       default: throw new Error(`Unexpected test query ${query.query}`);
     }

@@ -88,7 +88,7 @@ fn a_body_digest_ignores_key_order_wait_and_request_key() {
     assert_ne!(
         one,
         BodyDigest::of(
-            "publish",
+            "review",
             &serde_json::json!({ "a": 1, "b": { "x": 3, "y": 2 } })
         )
     );
@@ -108,7 +108,7 @@ fn an_attempt_is_derived_from_tool_and_key() {
     );
     assert_ne!(
         AttemptId::derive("deploy", &key),
-        AttemptId::derive("publish", &key)
+        AttemptId::derive("review", &key)
     );
 }
 
