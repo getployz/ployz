@@ -135,7 +135,25 @@ it("a backfill replaces the site's ClickHouse copy with exactly what Postgres ho
   expect(await outboxSize()).toBe(0);
   expect(await drain()).toBe(0);
   const [site] = await harness.db.select().from(analyticsClickhouseSite);
-  expect(site).toMatchObject({ rolledUpTo: null, dirty: [], reads: false });
+  expect(site).toMatchObject({ rolledUpTo: null, dirty: [], reads: false, backfilledAt: expect.any(Date) });
+});
+
+it("a backfill of a promoted site sends its readers back to Postgres before it empties the ClickHouse copy", async () => {
+  await ingest([pageview(SHOP, 1)]);
+  await drain();
+  await harness.db.update(analyticsClickhouseSite).set({ reads: true });
+  const readsAtEachDelete: Array<boolean> = [];
+  const watched: ClickHouseService = {
+    ...clickhouse,
+    command: (query, params) => Effect.promise(async () => {
+      const [site] = await harness.db.select({ reads: analyticsClickhouseSite.reads }).from(analyticsClickhouseSite);
+      readsAtEachDelete.push(site?.reads ?? false);
+    }).pipe(Effect.andThen(clickhouse.command(query, params))),
+  };
+
+  expect(await harness.runEffect(backfillSite(watched, SHOP))).toBe(1);
+
+  expect(readsAtEachDelete).toEqual([false, false, false]);
 });
 
 it("a repeated backfill lands the same rows again instead of losing them to block deduplication", async () => {
