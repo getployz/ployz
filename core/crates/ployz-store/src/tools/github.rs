@@ -84,10 +84,12 @@ impl Tool for GithubLs {
             .as_deref()
             .filter(|_| is_dockerfile(&file.path))
             .map(DockerfileFacts::parse);
-        let mut untrusted = json!({ "content": content });
-        if let Some(facts) = &facts {
-            untrusted["dockerfile"] = json!({ "env": facts.env, "args": facts.args });
-        }
+        let untrusted = match &facts {
+            Some(facts) => {
+                json!({ "content": content, "dockerfile": { "env": facts.env, "args": facts.args } })
+            }
+            None => json!({ "content": content }),
+        };
         Ok(json!({
             "repository": file.repository,
             "ref": file.git_ref,
