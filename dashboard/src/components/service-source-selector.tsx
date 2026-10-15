@@ -12,7 +12,7 @@ import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { InputGroupAddon, InputGroupButton, InputGroupInput } from "#/components/ui/input-group";
-import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
@@ -192,7 +192,10 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
   const openGithub = () => {
     window.open(githubConnectHref(organizationSlug), "_blank", "width=1020,height=680");
     // Returning from GitHub resyncs, in case its webhook never arrives; focus and polling show the rows.
-    window.addEventListener("focus", () => void requestGithubRepoSyncServerFn({ data: { organizationSlug } }).catch(() => {}), { once: true });
+    // A failed resync waits for the next return to the tab.
+    const resync = () => void requestGithubRepoSyncServerFn({ data: { organizationSlug } })
+      .catch(() => window.addEventListener("focus", resync, { once: true }));
+    window.addEventListener("focus", resync, { once: true });
   };
 
   if (!accessState.hasInstallations) {
@@ -217,14 +220,18 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
   return (
     <>
       <CommandSeparator />
-      <div className="flex items-center gap-2 p-2">
-        <span className="grow text-xs text-muted-foreground">Missing a repo?</span>
-        <Button variant="outline" size="sm" onClick={openGithub}>
-          <GitHubMarkIcon data-icon="inline-start" />
-          Add from GitHub
-          <ExternalLinkIcon data-icon="inline-end" />
-        </Button>
-      </div>
+      <Item size="xs">
+        <ItemContent>
+          <ItemDescription>Missing a repo?</ItemDescription>
+        </ItemContent>
+        <ItemActions>
+          <Button variant="outline" size="sm" onClick={openGithub}>
+            <GitHubMarkIcon data-icon="inline-start" />
+            Add from GitHub
+            <ExternalLinkIcon data-icon="inline-end" />
+          </Button>
+        </ItemActions>
+      </Item>
     </>
   );
 }
