@@ -323,7 +323,7 @@ describe("callCloud", () => {
 
       const asked = yield* callCloud(caller, { act: stop("1") }).pipe(Effect.provide(services));
       const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
-      expect(yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+      expect(yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
       const ran = yield* callCloud(caller, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
       expect(ran).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
       const retried = yield* callCloud(caller, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
@@ -352,7 +352,7 @@ describe("callCloud", () => {
 
       const asked = yield* callCloud(caller, { act: stop("1", MACHINE) }).pipe(Effect.provide(services));
       const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
-      expect(yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+      expect(yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
 
       const elsewhere = yield* callCloud(caller, { act: stop("2", OTHER_MACHINE) }, approval_id).pipe(Effect.provide(services));
       expect(elsewhere).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
@@ -382,7 +382,7 @@ describe("callCloud", () => {
         effects: [{ kind: "stops_service", name: "web", node: `${ENVIRONMENT}/web`, path: "services.web" }],
       });
       yield* drizzle.execute(sql`update operation_approvals set digest = ${byName} where id = ${approval_id}`);
-      expect(yield* decideApproval(caller, approval_id, { approve: { digest: byName } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+      expect(yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: byName } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
 
       const elsewhere = yield* callCloud(caller, { act: stop("2", { machine: OTHER_MACHINE, name: "fra-2" }) }, approval_id).pipe(Effect.provide(services));
       expect(elsewhere).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
