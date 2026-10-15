@@ -14,7 +14,7 @@ use ployz_core::{
     ContainerWant, ContractDescription, CreationKey, DESCRIBE_CONTRACT_CAPABILITY, EnrollAs,
     EnrollRequest, Enrolled, EnsuredContainer, HealthObservation, Left, LeftPhase,
     LocalMachinePhase, Machine, MachineDetails, MachineId, MachineImages, MachineList, MachineName,
-    MachineNow, MachineObservation, MachineRpc, MachineToken, MembershipObservation, NewContainer,
+    MachineNow, MachineObservation, MachineToken, MembershipObservation, NewContainer,
     OpaquePayload, PROTOCOL_MAJOR, QualifiedService, Registered, RpcError, RpcErrorCode,
     RpcRequestBody, RpcResponse, RunTarget, ServingPointer, ServingPointerPublication,
     ServingPointerRead, SetManagementClientResponse, VolumeInventory, WireGuardPublicKey,
@@ -27,7 +27,8 @@ pub fn fixture_capability() -> ployz_core::ManagementCapability {
         [0xb2; 32],
     )
 }
-use tonic::{Request, Response, Status, Streaming};
+use ployz_testkit::fake_machine::FakeMachine;
+use tonic::{Request, Response, Status};
 
 #[path = "enroll_http.rs"]
 mod enroll_http;
@@ -442,20 +443,7 @@ fn unused<T>() -> Result<T, Status> {
 }
 
 #[tonic::async_trait]
-impl MachineRpc for JoinDaemon {
-    type ExecStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type BuildStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-
-    async fn build(
-        &self,
-        _request: Request<tonic::Streaming<OpaquePayload>>,
-    ) -> Result<Response<Self::BuildStream>, Status> {
-        Err(Status::unimplemented("Build is not used by this fixture"))
-    }
-    type LogHistoryStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-
+impl FakeMachine for JoinDaemon {
     async fn describe_contract(
         &self,
         _request: Request<OpaquePayload>,
@@ -563,13 +551,6 @@ impl MachineRpc for JoinDaemon {
         })
     }
 
-    async fn set_push_target(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn set_management_client(
         &self,
         request: Request<OpaquePayload>,
@@ -603,13 +584,6 @@ impl MachineRpc for JoinDaemon {
         rpc_ok(SetManagementClientResponse {
             capability: Some(fixture_capability()),
         })
-    }
-
-    async fn request_machine_upgrade(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
 
     async fn enroll(
@@ -860,52 +834,12 @@ impl MachineRpc for JoinDaemon {
             run: None,
         })
     }
-    async fn inspect_storage(
-        &self,
-        _request: tonic::Request<ployz_core::OpaquePayload>,
-    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "storage capacity not supplied by this fixture",
-        ))
-    }
-    async fn prepare_volumes(
-        &self,
-        _request: tonic::Request<ployz_core::OpaquePayload>,
-    ) -> Result<tonic::Response<ployz_core::OpaquePayload>, tonic::Status> {
-        Err(tonic::Status::unimplemented(
-            "storage preparation not supplied by this fixture",
-        ))
-    }
 
     async fn list_volumes(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(VolumeInventory::default())
-    }
-    async fn inspect_volume_copy(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn set_volume_copy(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn seed_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn remove_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
 
     async fn ensure_container(
@@ -962,24 +896,6 @@ impl MachineRpc for JoinDaemon {
             docker_root: None,
         })
     }
-    async fn ensure_image_ingest(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn mint_build_grant(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-    async fn inspect_build_grant(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
     async fn publish_serving_pointer(
         &self,
         request: Request<OpaquePayload>,
@@ -1030,35 +946,11 @@ impl MachineRpc for JoinDaemon {
             acks,
         })
     }
-    async fn prune_images(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn pull_image(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         rpc_ok(ployz_core::ImagePulled {})
-    }
-    async fn pull_image_from_machine(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn publish_certificate_material(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn metric_history(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
     async fn leave(
         &self,
@@ -1088,36 +980,6 @@ impl MachineRpc for JoinDaemon {
             phase: LeftPhase::Resetting,
             reset_warning: None,
         })
-    }
-    async fn forget(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn exec(
-        &self,
-        _request: Request<Streaming<OpaquePayload>>,
-    ) -> Result<Response<Self::ExecStream>, Status> {
-        unused()
-    }
-    async fn tail_logs(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::TailLogsStream>, Status> {
-        unused()
-    }
-    async fn log_history(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::LogHistoryStream>, Status> {
-        unused()
-    }
-    async fn runtime_watch(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
-        unused()
     }
 }
 

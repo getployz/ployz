@@ -20,13 +20,14 @@ use ployz_core::{
     ContractDescription, DockerVolume, DockerVolumeName, EnsuredContainer, ExecResponseFrame,
     HealthObservation, HealthVerdict, HealthcheckSpec, LocalMachinePhase,
     MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineDetails, MachineId, MachineImages,
-    MachineList, MachineName, MachineObservation, MachineRpc, MachineRpcServer,
-    MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, ServingPointer, ServingPointerPublication,
-    ServingPointerRead, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    MachineList, MachineName, MachineObservation, MachineRpcServer, MembershipObservation,
+    Namespace, OpaquePayload, PROTOCOL_MAJOR, QualifiedService, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse,
+    RunTarget, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference,
+    ServingPointer, ServingPointerPublication, ServingPointerRead, UpdateOrder, VolumeInventory,
+    WireGuardPublicKey,
 };
+use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -356,7 +357,7 @@ fn resolved(spec: RequestedServiceSpec) -> ResolvedServiceSpec {
 }
 
 #[tonic::async_trait]
-impl MachineRpc for DeployService {
+impl FakeMachine for DeployService {
     async fn inspect_storage(
         &self,
         _request: Request<OpaquePayload>,
@@ -382,21 +383,17 @@ impl MachineRpc for DeployService {
         }))
     }
 
-    type ExecStream = tokio_stream::wrappers::ReceiverStream<Result<OpaquePayload, Status>>;
-    type BuildStream = tokio_stream::wrappers::ReceiverStream<Result<OpaquePayload, Status>>;
-
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,
-    ) -> Result<Response<Self::BuildStream>, Status> {
-        self.builds
+    ) -> Result<Response<FakeStream>, Status> {
+        let frames = self
+            .builds
             .clone()
             .ok_or_else(|| Status::unimplemented("Build is not used by this fixture"))?
-            .stream(request)
+            .stream(request)?;
+        Ok(frames.map(|frames| Box::pin(frames) as FakeStream))
     }
-    type LogHistoryStream = tokio_stream::Iter<std::vec::IntoIter<Result<OpaquePayload, Status>>>;
-    type TailLogsStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
-    type RuntimeWatchStream = tokio_stream::Empty<Result<OpaquePayload, Status>>;
 
     async fn describe_contract(
         &self,
@@ -524,24 +521,11 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn set_push_target(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-
     async fn set_management_client(
         &self,
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
-    }
-    async fn request_machine_upgrade(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
         unused()
     }
     async fn inspect_container(
@@ -597,24 +581,6 @@ impl MachineRpc for DeployService {
             )
             .unwrap(),
         }))
-    }
-    async fn inspect_volume_copy(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn set_volume_copy(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
-    async fn seed_volume(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
     }
     async fn remove_volume(
         &self,
@@ -726,7 +692,7 @@ impl MachineRpc for DeployService {
     async fn exec(
         &self,
         request: Request<Streaming<OpaquePayload>>,
-    ) -> Result<Response<Self::ExecStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         self.record_mutation();
         let Some(code) = self.exec_exit else {
             return unused();
@@ -743,14 +709,14 @@ impl MachineRpc for DeployService {
             while let Ok(Some(_)) = requests.message().await {}
             drop(sender);
         });
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
-            receiver,
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(receiver),
         )))
     }
     async fn tail_logs(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::TailLogsStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         let RpcRequestBody::TailLogs(tail) = request.into_inner().decode_request().unwrap().body
         else {
             return Err(Status::invalid_argument("expected tail_logs"));
@@ -769,7 +735,7 @@ impl MachineRpc for DeployService {
     async fn log_history(
         &self,
         request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::LogHistoryStream>, Status> {
+    ) -> Result<Response<FakeStream>, Status> {
         let machine = machine_from_metadata(&request)?;
         let RpcRequestBody::LogHistory(history) =
             request.into_inner().decode_request().unwrap().body
@@ -780,9 +746,9 @@ impl MachineRpc for DeployService {
         self.history_requests.lock().unwrap().push(history.clone());
         if let Some(message) = self.history_failures.get(&machine) {
             let row = ployz_core::HistoryRow::Error(message.clone());
-            return Ok(Response::new(tokio_stream::iter(vec![Ok(row
+            return Ok(Response::new(Box::pin(tokio_stream::iter(vec![Ok(row
                 .encode()
-                .unwrap())])));
+                .unwrap())]))));
         }
         let service_wide = history.container_id.is_none();
         let container_id = history
@@ -823,13 +789,7 @@ impl MachineRpc for DeployService {
         for row in &page {
             payloads.push(Ok(row.encode().unwrap()));
         }
-        Ok(Response::new(tokio_stream::iter(payloads)))
-    }
-    async fn runtime_watch(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<Self::RuntimeWatchStream>, Status> {
-        unused()
+        Ok(Response::new(Box::pin(tokio_stream::iter(payloads))))
     }
     async fn list_images(
         &self,
@@ -862,18 +822,6 @@ impl MachineRpc for DeployService {
         }
         self.record_mutation();
         unused()
-    }
-    async fn mint_build_grant(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
-    }
-    async fn inspect_build_grant(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        Err(Status::unimplemented("unused"))
     }
     async fn publish_serving_pointer(
         &self,
@@ -970,12 +918,6 @@ impl MachineRpc for DeployService {
         self.record_mutation();
         unused()
     }
-    async fn metric_history(
-        &self,
-        _request: Request<OpaquePayload>,
-    ) -> Result<Response<OpaquePayload>, Status> {
-        unused()
-    }
     async fn update_machine(
         &self,
         _request: Request<OpaquePayload>,
@@ -1058,7 +1000,7 @@ pub(super) async fn listening(
     let address = tcp.local_addr().unwrap();
     let server = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(service))
+            .add_service(MachineRpcServer::new(Fake(service)))
             .serve_with_incoming(TcpListenerStream::new(tcp)),
     );
     (address, server)

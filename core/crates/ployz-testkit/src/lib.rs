@@ -2,6 +2,7 @@
 
 pub mod fake_acme;
 pub mod fake_fleet;
+pub mod fake_machine;
 mod machine_admin;
 
 use std::{
