@@ -68,9 +68,10 @@ While the agent is open on an environment's canvas, the bar with your staged cha
 **2 changes · Details · Deploy**, moves into the agent above the message box. Close the agent and
 it goes back to the bottom of the canvas.
 
-Each thing the agent runs shows as a short line under its reply, named for what it does, like
-**environment show**. When it deploys, that line becomes a card with the
-deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
+What the agent thinks and runs folds under one line in its reply, like **Thought, ran 2 commands**.
+Open it to see its thinking and each command, like **ployz environment show**. The line turns red
+when a command was refused, and the command shows why. When the agent deploys, a card under that
+line shows the deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run
 went to see where it got to.

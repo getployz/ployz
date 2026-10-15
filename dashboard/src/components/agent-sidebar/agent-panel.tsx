@@ -6,23 +6,24 @@ import { Option, Schema } from "effect";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remend from "remend";
-import { ArrowUpIcon, ChevronRightIcon, HistoryIcon, SquareIcon, SquarePenIcon } from "lucide-react";
+import { ArrowUpIcon, HistoryIcon, SquareIcon, SquarePenIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { Bubble, BubbleContent } from "#/components/ui/bubble";
 import { Button } from "#/components/ui/button";
 import { RelativeTime } from "#/components/relative-time";
 import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from "#/components/ui/command";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader } from "#/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "#/components/ui/input-group";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
-import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
 import { Message, MessageContent } from "#/components/ui/message";
 import {
   MessageScroller, MessageScrollerButton, MessageScrollerContent, MessageScrollerItem, MessageScrollerProvider, MessageScrollerViewport,
   useMessageScroller,
 } from "#/components/ui/message-scroller";
 import { Spinner } from "#/components/ui/spinner";
+import {
+  Trace, TraceCollapsible, TraceCollapsibleContent, TraceCollapsibleTrigger, TraceIcon, TraceLine, TraceTitle,
+} from "#/components/ui/trace";
 import { approvalInterrupt } from "#/modules/agent/agent";
 import { isPageContext, type PageContext } from "#/modules/agent/page-context";
 import { chatTitle } from "#/modules/agent/thread-title";
@@ -30,7 +31,7 @@ import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
 import { pendingApprovalsOptions } from "./approvals.queries";
 import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
-import { toolOutcome, ToolRow } from "./tool-row";
+import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
 const askedKey = (threadId: string) => `ployz.agent.asked.${threadId}`;
 const Asked = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
@@ -188,10 +189,10 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
             {chat.isLoading && !replying(chat.messages) && (
               <MessageScrollerItem>
                 <Message>
-                  <Marker role="status">
-                    <MarkerIcon><Spinner /></MarkerIcon>
-                    <MarkerContent className="shimmer">Thinking…</MarkerContent>
-                  </Marker>
+                  <TraceLine role="status" status="running">
+                    <TraceIcon><Spinner /></TraceIcon>
+                    <TraceTitle>Thinking…</TraceTitle>
+                  </TraceLine>
                 </Message>
               </MessageScrollerItem>
             )}
@@ -293,52 +294,88 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
   }
   const results = new Map(message.parts.flatMap((part) =>
     part.type === "tool-result" ? [[part.toolCallId, part] as const] : []));
+  const pieces = message.parts.flatMap((part, index): Piece[] => {
+    if (!shows(part)) return [];
+    if (part.type === "thinking") {
+      return [{ kind: "step", key: `t${index}`, node: <p className="whitespace-pre-wrap">{part.content}</p> }];
+    }
+    if (part.type === "text") {
+      return [{ kind: "block", key: `x${index}`, node: (
+        <Bubble variant="ghost">
+          <BubbleContent className="typeset typeset-chat">
+            <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{remend(part.content)}</Markdown>
+          </BubbleContent>
+        </Bubble>
+      ) }];
+    }
+    if (part.type !== "tool-call") return [];
+    const waitingOn = bound.find(({ key }) => key === part.id);
+    const approvalId = waitingOn?.approvalId ?? asked[part.id];
+    const outcome = toolOutcome(part, results.get(part.id));
+    const refused = Option.exists(outcome, (answer) => "refusal" in answer);
+    const deniedOnCard = approvalId !== undefined
+      && Option.exists(outcome, (answer) => "refusal" in answer && answer.refusal.code === "approval_denied");
+    const settle = waitingOn && (() => {
+      if (waitingOn.interrupt.canResolve && waitingOn.interrupt.status === "pending") waitingOn.interrupt.resolveInterrupt({});
+    });
+    const done = part.state === "complete" || results.has(part.id);
+    return [
+      ...(approvalId ? [{ kind: "block", key: `a${part.id}`, node: (
+        <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />
+      ) } as const] : []),
+      ...((!approvalId || Option.isSome(outcome)) && !deniedOnCard ? [{
+        kind: "step", key: part.id, call: { running: !done, refused },
+        node: <ToolStep name={part.name} outcome={outcome} done={done} />,
+        card: <ToolCard organizationSlug={organizationSlug} scope={scope} outcome={outcome} />,
+      } as const] : []),
+    ];
+  });
+  const runs: (Block | Steps)[] = [];
+  for (const piece of pieces) {
+    const last = runs.at(-1);
+    if (piece.kind === "step" && Array.isArray(last)) last.push(piece);
+    else runs.push(piece.kind === "step" ? [piece] : piece);
+  }
   return (
     <Message>
       <MessageContent>
-        {message.parts.map((part, index) => {
-          if (!shows(part)) return null;
-          if (part.type === "thinking") {
-            return (
-              <Collapsible key={index}>
-                <CollapsibleTrigger render={<Button type="button" variant="ghost" size="sm" className="group self-start text-muted-foreground" />}>
-                  Thinking
-                  <ChevronRightIcon data-icon="inline-end" className="transition-transform group-data-[panel-open]:rotate-90" />
-                </CollapsibleTrigger>
-                <CollapsibleContent className="whitespace-pre-wrap px-2 text-sm text-muted-foreground">{part.content}</CollapsibleContent>
-              </Collapsible>
-            );
-          }
-          if (part.type === "text") {
-            return (
-              <Bubble key={index} variant="ghost">
-                <BubbleContent className="typeset typeset-chat">
-                  <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{remend(part.content)}</Markdown>
-                </BubbleContent>
-              </Bubble>
-            );
-          }
-          if (part.type !== "tool-call") return null;
-          const waitingOn = bound.find(({ key }) => key === part.id);
-          const approvalId = waitingOn?.approvalId ?? asked[part.id];
-          const outcome = toolOutcome(part, results.get(part.id));
-          const deniedOnCard = approvalId !== undefined
-            && Option.exists(outcome, (answer) => "refusal" in answer && answer.refusal.code === "approval_denied");
-          const settle = waitingOn && (() => {
-            if (waitingOn.interrupt.canResolve && waitingOn.interrupt.status === "pending") waitingOn.interrupt.resolveInterrupt({});
-          });
-          return (
-            <Fragment key={part.id}>
-              {approvalId && <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />}
-              {(!approvalId || Option.isSome(outcome)) && !deniedOnCard && (
-                <ToolRow organizationSlug={organizationSlug} scope={scope} name={part.name} outcome={outcome}
-                  done={part.state === "complete" || results.has(part.id)} />
-              )}
-            </Fragment>
-          );
-        })}
+        {runs.map((run) => Array.isArray(run)
+          ? <StepGroup key={run[0].key} steps={run} />
+          : <Fragment key={run.key}>{run.node}</Fragment>)}
       </MessageContent>
     </Message>
+  );
+}
+
+type Block = { kind: "block"; key: string; node: ReactNode };
+type Step = { kind: "step"; key: string; node: ReactNode; call?: { running: boolean; refused: boolean }; card?: ReactNode };
+type Piece = Block | Step;
+type Steps = [Step, ...Step[]];
+
+/** A run of thinking and calls, folded under one summary like "Thought, ran 2 commands"; the cards the calls left stay outside. */
+function StepGroup({ steps }: { steps: Steps }) {
+  const calls = steps.flatMap(({ call }) => call ? [call] : []);
+  const running = calls.some((call) => call.running);
+  const summary = [
+    calls.length < steps.length && "thought",
+    calls.length > 0 && `${running ? "running" : "ran"} ${calls.length} ${calls.length === 1 ? "command" : "commands"}`,
+  ].filter(Boolean).join(", ");
+  return (
+    <>
+      <Trace>
+        <TraceCollapsible>
+          <TraceCollapsibleTrigger>
+            <TraceLine status={calls.some((call) => call.refused) ? "error" : running ? "running" : undefined}>
+              <TraceTitle>{summary.charAt(0).toUpperCase() + summary.slice(1)}</TraceTitle>
+            </TraceLine>
+          </TraceCollapsibleTrigger>
+          <TraceCollapsibleContent>
+            <Trace>{steps.map((step) => <Fragment key={step.key}>{step.node}</Fragment>)}</Trace>
+          </TraceCollapsibleContent>
+        </TraceCollapsible>
+      </Trace>
+      {steps.map((step) => <Fragment key={step.key}>{step.card}</Fragment>)}
+    </>
   );
 }
 
