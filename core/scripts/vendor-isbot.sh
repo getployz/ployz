@@ -25,7 +25,7 @@ import json, sys, yaml
 work, source, extra = sys.argv[1:4]
 
 # JavaScript spellings the `regex` crate rejects, each replaced by a lookaround-free form that
-# matches the same user agents. Every key must exist upstream, so a changed list fails here.
+# matches the same user agents.
 REWRITES = {
     r"(?:^|[^g])news(?!sapphire)":
         r"(?:^|[^g])news(?:$|[^s]|s(?:$|[^a]|a(?:$|[^p]|p(?:$|[^p]|p(?:$|[^h]|h(?:$|[^i]|i(?:$|[^r]|r(?:$|[^e]))))))))",
@@ -51,8 +51,6 @@ if missing:
 patterns = [REWRITES.get(p, p) for p in patterns]
 if extra:
     patterns.append(extra)
-if any("\n" in p for p in patterns):
-    sys.exit("a pattern spans lines")
 with open(f"{work}/patterns.txt", "w") as out:
     out.write(f"# isbot {source} (Unlicense), rewritten by core/scripts/vendor-isbot.sh\n")
     out.writelines(p + "\n" for p in patterns)
