@@ -386,7 +386,8 @@ fn build_steps_never_reach_the_host() {
     let suffix = std::process::id();
     let host = format!("p35-host-{suffix}");
     let step = format!("p35-step-{suffix}");
-    let _namespaces = Namespaces::new([&host, &step]);
+    let service = format!("p35-svc-{suffix}");
+    let _namespaces = Namespaces::new([&host, &step, &service]);
     sudo(&[
         "ip",
         "link",
@@ -400,9 +401,23 @@ fn build_steps_never_reach_the_host() {
     ]);
     sudo(&["ip", "link", "set", "host-build", "netns", &host]);
     sudo(&["ip", "link", "set", "step-if", "netns", &step]);
-    for namespace in [&host, &step] {
+    sudo(&[
+        "ip", "link", "add", "host-svc", "type", "veth", "peer", "name", "svc-if",
+    ]);
+    sudo(&["ip", "link", "set", "host-svc", "netns", &host]);
+    sudo(&["ip", "link", "set", "svc-if", "netns", &service]);
+    for namespace in [&host, &step, &service] {
         ns(namespace, "ip", &["link", "set", "lo", "up"]);
     }
+    ns(&host, "ip", &["link", "set", "host-svc", "name", "ployz"]);
+    configure_link(&host, "ployz", "10.210.1.1/24");
+    configure_link(&service, "svc-if", "10.210.1.2/24");
+    ns(
+        &service,
+        "ip",
+        &["route", "add", "default", "via", "10.210.1.1"],
+    );
+    ns(&host, "sysctl", &["-q", "-w", "net.ipv4.ip_forward=1"]);
     ns(
         &host,
         "ip",
@@ -411,19 +426,22 @@ fn build_steps_never_reach_the_host() {
     configure_link(&host, "ployz-build0", "10.10.0.1/24");
     configure_link(&step, "step-if", "10.10.0.2/24");
     ns(
-        &host,
-        "ip",
-        &["address", "add", "10.210.1.1/32", "dev", "lo"],
-    );
-    ns(
         &step,
         "ip",
         &["route", "add", "default", "via", "10.10.0.1"],
     );
     ns(&host, "iptables", &["-N", "DOCKER-USER"]);
+    ns(
+        &host,
+        "iptables",
+        &["-I", "FORWARD", "1", "-j", "DOCKER-USER"],
+    );
 
     let mut before = stream_server(&host, "10.10.0.1", 51503);
     connect(&step, "10.10.0.2", "10.10.0.1", 51503);
+    assert_eq!(before.peer(), "10.10.0.2");
+    let mut before = stream_server(&service, "10.210.1.2", 51503);
+    connect(&step, "10.10.0.2", "10.210.1.2", 51503);
     assert_eq!(before.peer(), "10.10.0.2");
 
     apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
@@ -431,6 +449,8 @@ fn build_steps_never_reach_the_host() {
         let _server = stream_server(&host, address, 51503);
         assert_connection_denied(&step, "10.10.0.2", address, 51503);
     }
+    let _server = stream_server(&service, "10.210.1.2", 51503);
+    assert_connection_denied(&step, "10.10.0.2", "10.210.1.2", 51503);
 }
 
 #[test]

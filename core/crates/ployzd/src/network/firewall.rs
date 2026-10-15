@@ -64,7 +64,26 @@ pub fn apply_firewall_rules(
             "-j",
             "ACCEPT",
         ],
-    )
+    )?;
+    for rule in build_forwarding() {
+        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
+        ensure_rule("iptables", "filter", "DOCKER-USER", &rule)?;
+    }
+    Ok(())
+}
+
+/// Build steps route to the internet, never into the Machine's services or
+/// across the mesh.
+fn build_forwarding() -> Vec<Vec<String>> {
+    let bridges = format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX);
+    [DOCKER_NETWORK_NAME, WIREGUARD_INTERFACE_NAME]
+        .into_iter()
+        .map(|output| {
+            ["-i", &bridges, "-o", output, "-j", "DROP"]
+                .map(str::to_owned)
+                .to_vec()
+        })
+        .collect()
 }
 
 /// Build steps run on their slot's bridge and get only the internet: nothing
@@ -196,6 +215,10 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "ACCEPT",
         ],
     ));
+    for rule in build_forwarding() {
+        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
+        attempt(delete_rule("iptables", "filter", "DOCKER-USER", &rule));
+    }
     attempt(delete_rule(
         "iptables",
         "nat",
