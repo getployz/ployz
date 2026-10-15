@@ -21,6 +21,8 @@ pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
     name: String,
     lock: Option<Lock>,
+    // Released only after Drop removes the container that uses the bridge.
+    bridge: Option<Bridge>,
 }
 
 impl<'a> Builder<'a> {
@@ -38,17 +40,22 @@ impl<'a> Builder<'a> {
         resources: &crate::policy::Resources,
     ) -> Result<Self, BuildError> {
         let name = lock.name();
-        let slot = lock.slot;
         let mut builder = Self {
             docker,
             name,
             lock: Some(lock),
+            bridge: None,
         };
         // Mark before any Docker mutation so a killed daemon cannot silently
         // reuse state whose termination was never observed.
         builder.lock.as_mut().expect("owned lock").quarantine()?;
         let result = remove(&docker.releasing(), &builder.name)
-            .and_then(|()| create(docker, &builder.name, slot, resources));
+            .and_then(|()| Bridge::claim(&bridge_directory(), NETWORK_INTERFACES))
+            .and_then(|bridge| {
+                let index = bridge.index;
+                builder.bridge = Some(bridge);
+                create(docker, &builder.name, index, resources)
+            });
         if let Err(error) = result {
             return builder.finish(Err(error));
         }
@@ -255,13 +262,13 @@ impl Drop for Builder<'_> {
 fn create(
     docker: &Docker<'_>,
     name: &str,
-    slot: usize,
+    bridge: u8,
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     // Always supply a config, so ambient Buildx configuration cannot replace
     // execution-host policy.
     let config = docker.working_dir.join(format!("{name}.buildkitd.toml"));
-    fs::write(&config, resources.buildkit_config(slot)).map_err(|error| {
+    fs::write(&config, resources.buildkit_config(bridge)).map_err(|error| {
         BuildError::Prerequisite(format!("write BuildKit host configuration: {error}"))
     })?;
     let mut arguments = vec![
@@ -480,6 +487,91 @@ impl Drop for LockedFile {
     }
 }
 
+const NETWORK_INTERFACES: &str = "/sys/class/net";
+
+/// A host-wide claim on one build bridge and its subnet.
+///
+/// Every builder runs BuildKit on the host network, whichever Unix user and
+/// slot it belongs to, so bridges are claimed across all of them. A bridge
+/// that still exists belongs to a BuildKit that may outlive its claim, such as
+/// one orphaned by a killed daemon, and is skipped.
+struct Bridge {
+    _file: fs::File,
+    index: u8,
+}
+
+impl Bridge {
+    fn claim(directory: &std::path::Path, interfaces: &str) -> Result<Self, BuildError> {
+        use rustix::fs::{FlockOperation, flock};
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let shared = fs::Permissions::from_mode(0o1777);
+        match fs::DirBuilder::new().mode(0o1777).create(directory) {
+            Ok(()) => fs::set_permissions(directory, shared).map_err(bridge_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(bridge_error(error)),
+        }
+        if !fs::symlink_metadata(directory)
+            .map_err(bridge_error)?
+            .is_dir()
+        {
+            return Err(BuildError::Prerequisite(format!(
+                "{} must be a directory",
+                directory.display()
+            )));
+        }
+        for index in 0..=u8::MAX {
+            let file = match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o666)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .open(directory.join(format!("{index}.lock")))
+            {
+                Ok(file) => file,
+                // Another user's claim file that umask left private.
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
+                Err(error) => return Err(bridge_error(error)),
+            };
+            let metadata = file.metadata().map_err(bridge_error)?;
+            if metadata.uid() == rustix::process::getuid().as_raw()
+                && metadata.mode() & 0o666 != 0o666
+            {
+                file.set_permissions(fs::Permissions::from_mode(0o666))
+                    .map_err(bridge_error)?;
+            }
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::WOULDBLOCK) => continue,
+                Err(error) => return Err(bridge_error(error.into())),
+            }
+            if std::path::Path::new(interfaces)
+                .join(bridge_name(index))
+                .exists()
+            {
+                continue;
+            }
+            return Ok(Self { _file: file, index });
+        }
+        Err(BuildError::Prerequisite(
+            "every build bridge on this host is in use".into(),
+        ))
+    }
+}
+
+pub(crate) fn bridge_name(index: u8) -> String {
+    format!("{}{index}", crate::BUILD_BRIDGE_PREFIX)
+}
+
+fn bridge_directory() -> PathBuf {
+    PathBuf::from("/var/tmp/ployz-build-bridges")
+}
+
+fn bridge_error(error: std::io::Error) -> BuildError {
+    BuildError::Prerequisite(format!("claim a build bridge: {error}"))
+}
+
 /// Slot 0 keeps the historical builder name; others are numbered after it.
 fn slot_name(slot: usize) -> String {
     match slot {
@@ -510,6 +602,23 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
+
+    #[test]
+    fn bridge_claims_never_share_a_bridge() {
+        let root = std::env::temp_dir().join(format!("ployz-bridges-{}", uuid::Uuid::new_v4()));
+        let interfaces = root.join("net");
+        fs::create_dir_all(interfaces.join(bridge_name(1))).unwrap();
+        let claims = root.join("claims");
+
+        let first = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
+        let second = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
+        assert_eq!(
+            (first.index, second.index),
+            (0, 2),
+            "a held claim and a live bridge are both skipped"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn dockerfile_platforms_follow_the_running_workers_capabilities() {
