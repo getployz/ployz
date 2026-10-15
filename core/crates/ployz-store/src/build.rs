@@ -113,7 +113,8 @@ pub(crate) fn sources(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<GitSourc
 }
 
 /// Pin the commits of `commits` (by runtime Service name) that aren't pinned yet,
-/// and return every source with its pin. A pinned commit never changes.
+/// and return every source with its pin. A pinned commit never changes, and one its
+/// PR Environment's pull request doesn't admit never pins.
 pub(crate) fn pin(
     tx: &mut dyn Tx,
     id: &DeploymentId,
@@ -128,10 +129,17 @@ pub(crate) fn pin(
     }
     let sources = sources_of(tx, &stored)?;
     for (service, commit) in commits {
-        if !sources.iter().any(|source| source.service == *service) {
+        let Some(source) = sources.iter().find(|source| source.service == *service) else {
             return Err(error::invalid(
                 format!("This Deployment builds no Git Service {service}"),
                 json!({ "services": sources.iter().map(|source| &source.service).collect::<Vec<_>>() }),
+            ));
+        };
+        let environment = &stored.summary.environment_id;
+        if !crate::pull_request::admits(tx, environment, source.repository_id, commit)? {
+            return Err(error::invalid(
+                format!("{commit} needs approval before it deploys"),
+                json!({ "service": service, "commit": commit }),
             ));
         }
         tx.execute(

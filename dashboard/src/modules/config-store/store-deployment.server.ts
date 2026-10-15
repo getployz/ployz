@@ -55,7 +55,11 @@ export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function*
     }
     heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...identity(organizationId, source), branch: source.branch }));
   }
-  return Object.keys(heads).length > 0 ? yield* storeTry(() => store.pinSources(deploymentId, heads)) : sources;
+  if (Object.keys(heads).length === 0) return sources;
+  // A head it can never build, such as one its pull request hasn't approved, is why it failed.
+  return yield* storeTry(() => store.pinSources(deploymentId, heads)).pipe(
+    Effect.catchIf(refusedWith("invalid_argument"), (refused) => new SourceUnreadable({ message: refused.message })),
+  );
 });
 
 /** Pin the Deployment's Git Services, then check out every pin for the runner until the scope closes. */

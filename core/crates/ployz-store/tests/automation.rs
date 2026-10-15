@@ -704,6 +704,52 @@ fn a_push_refused_before_the_author_proved_a_member_deploys_once_they_do() {
     assert_eq!(pinned(&store, &reported, "web").as_deref(), Some(H3));
 }
 
+#[test]
+fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    open_as(&store, &who, &by_stranger(H2, 1));
+    assert!(system(&store, &push_search(None, H2)).admitted.is_empty());
+    let approved = approve(&store, &who, H2);
+    backend::run(&store, &approved.admitted[0].deployment.id);
+    assert!(system(&store, &by_stranger(H3, 2)).admitted.is_empty());
+    assert!(
+        system(&store, &push_search(Some(H2), H3))
+            .admitted
+            .is_empty()
+    );
+
+    let id = ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000201").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(ployz_store::EnvironmentName::parse("pr-5").unwrap()),
+                },
+                services: vec![ServiceName::parse("web").unwrap()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let refused = store
+        .pin(
+            &id,
+            &std::collections::BTreeMap::from([(
+                ServiceName::parse("web").unwrap(),
+                backend::sha(H3),
+            )]),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+}
+
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {
     items.iter().map(ToString::to_string).collect()
 }

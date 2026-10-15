@@ -311,8 +311,8 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
-    /// `invalid_argument` for a Service it doesn't build or a malformed commit, or a
-    /// storage error.
+    /// `invalid_argument` for a Service it doesn't build, a malformed commit or one
+    /// its pull request doesn't admit, or a storage error.
     pub fn pin(
         &self,
         deployment: &DeploymentId,

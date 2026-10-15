@@ -720,7 +720,7 @@ fn admit(
         false => deployment::retirements(tx, id, &saved.intent, &landed.removals)?,
     };
     let idle = selected.is_empty() && retire.is_empty();
-    if !idle && !approved(tx, who, id, push)? {
+    if !idle && !crate::pull_request::admits(tx, id, push.repository_id, push.head)? {
         tx.execute(
             "DELETE FROM config_waiting_deploy \
              WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
@@ -812,23 +812,6 @@ fn admit(
     })?;
     forget_landed(tx, id, push, &merges)?;
     Ok(Some(Deploy::Admitted(Box::new(summary))))
-}
-
-/// Whether `push` may deploy into `id`: anywhere but a PR Environment of its
-/// repository, whose pull request must admit the head.
-fn approved(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    id: &EnvironmentId,
-    push: &Push<'_>,
-) -> Result<bool, RpcError> {
-    match crate::pull_request::of(tx, id)? {
-        Some(pr) if pr.repository_id == push.repository_id => {
-            crate::pull_request::standing(tx, who, pr.repository_id, pr.number)
-                .map(|standing| standing.admits(push.head))
-        }
-        _ => Ok(true),
-    }
 }
 
 /// What a Deployment of `environment` shipped, which landed merges stop waiting on.

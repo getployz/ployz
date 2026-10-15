@@ -387,6 +387,25 @@ pub(crate) fn standing(
         .map_or(Ok(Standing::NeedsApproval), stored_standing)
 }
 
+/// Whether `head` of `repository_id` may deploy into `environment`: anywhere but a
+/// PR Environment of that repository, whose pull request must admit it.
+pub(crate) fn admits(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    repository_id: RepositoryId,
+    head: &CommitSha,
+) -> Result<bool, RpcError> {
+    let rows = tx.query(
+        "SELECT e.repository_id, e.number, p.standing FROM config_pr_environment e \
+         LEFT JOIN config_pull_request p ON p.organization_id = e.organization_id \
+         AND p.repository_id = e.repository_id AND p.number = e.number \
+         WHERE e.environment_id = ?1 AND e.repository_id = ?2",
+        &[environment.as_str().into(), repository_id.into()],
+    )?;
+    rows.first()
+        .map_or(Ok(true), |row| Ok(stored_standing(row)?.admits(head)))
+}
+
 /// The standing in column 2 of `row`.
 fn stored_standing(row: &crate::storage::Row) -> Result<Standing, RpcError> {
     row.optional_text(2)?
