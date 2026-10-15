@@ -1092,6 +1092,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn a_stale_cache_asks_with_an_empty_crash_batch_at_the_crash_cursor() {
         let (_root, store) = store();
         let outbox = Outbox::open(&store).unwrap();
@@ -1133,6 +1134,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     async fn pageviews_cloud_does_not_take_yet_stay_held_without_a_warning() {
         let (_root, store) = store();
         let outbox = pageviews(&store, 200);

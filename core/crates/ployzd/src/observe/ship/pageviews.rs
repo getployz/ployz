@@ -238,6 +238,10 @@ pub(in crate::observe) fn dir_has(dir: &std::path::Path, needle: &[u8]) -> bool 
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "segment and JSON fixture assertions"
+)]
 mod tests {
     use super::*;
     use crate::test_dir::TestDir;
