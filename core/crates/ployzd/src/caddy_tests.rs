@@ -177,6 +177,40 @@ fn every_site_answers_failures_with_the_error_page() {
 }
 
 #[test]
+fn only_cloudflare_peers_may_set_the_client_address() {
+    let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
+
+    let global = caddyfile
+        .split_once("\n{\n")
+        .and_then(|(_, rest)| rest.split_once("\n}\n"))
+        .expect("global options block")
+        .0;
+    let trusted = global
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("trusted_proxies static "))
+        .expect("trusted_proxies line");
+    let mut ranges = trusted.split(' ').collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut expected = super::trace::CLOUDFLARE_RANGES.to_vec();
+    expected.sort_unstable();
+    assert_eq!(ranges, expected, "every Cloudflare range, each once");
+    assert!(
+        global.contains("\n\t\tclient_ip_headers CF-Connecting-IP\n"),
+        "{global}"
+    );
+    assert_eq!(caddyfile.matches("servers {").count(), 1);
+
+    let proxy = automatic_site_block(&caddyfile, "(common_proxy)");
+    assert!(
+        proxy.contains(
+            "header_up X-Forwarded-For {client_ip} header_up X-Forwarded-Host {hostport} \
+             header_up X-Forwarded-Proto {scheme}"
+        ),
+        "forwarded headers from a trusted peer never reach the app: {proxy}"
+    );
+}
+
+#[test]
 fn shared_renderer_projection_drives_caddy() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
 

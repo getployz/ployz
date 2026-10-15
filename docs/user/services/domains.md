@@ -122,4 +122,5 @@ until you deploy. **Undo** keeps it.
 - **Domains like `app.example.co.uk`.** **Show DNS records** assumes your domain ends in one
   part, like `.com`. Here, use `app` as the name.
 - **Behind Cloudflare?** Set **SSL/TLS** to **Full (strict)**. See
-  [My domain is behind Cloudflare](../troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare).
+  [My domain is behind Cloudflare](../troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare). Your apps
+  see the visitor's address, not Cloudflare's.

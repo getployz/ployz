@@ -13,8 +13,7 @@ pub(crate) const TRACE_PATH: &str = "/.well-known/ployz/trace";
 
 /// Cloudflare's published edge ranges, checked 2026-10-13 against
 /// <https://www.cloudflare.com/ips-v4> and <https://www.cloudflare.com/ips-v6>.
-/// Only a peer in these ranges gets the Cloudflare keys; nothing else trusts them.
-const CLOUDFLARE_RANGES: [&str; 22] = [
+pub(super) const CLOUDFLARE_RANGES: [&str; 22] = [
     "173.245.48.0/20",
     "103.21.244.0/22",
     "103.22.200.0/22",
@@ -39,9 +38,13 @@ const CLOUDFLARE_RANGES: [&str; 22] = [
     "2c0f:f248::/32",
 ];
 
-/// Characters of a textual IP address, up to the longest form. Cloudflare sets the header, so
-/// this only has to keep the value to one `key=value` line, not prove it is an address.
-const CLIENT_IP_PATTERN: &str = "[0-9A-Fa-f:.]{2,45}";
+/// The `servers` global option that reads the visitor's address from a Cloudflare peer.
+pub(super) fn cloudflare_client_ip_servers() -> String {
+    format!(
+        "\tservers {{\n\t\ttrusted_proxies static {}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n",
+        CLOUDFLARE_RANGES.join(" ")
+    )
+}
 
 /// One line of the page. Keys are only ever appended, so readers can rely on the order.
 struct TraceField {
@@ -80,7 +83,7 @@ const TRACE_FIELDS: &[TraceField] = &[
     field("ts", "{time.now.unix}"),
     cloudflare("via", "cloudflare"),
     cloudflare("cf_ray", "{ployz_trace_ray}"),
-    cloudflare("client_ip", "{ployz_trace_client_ip}"),
+    cloudflare("client_ip", "{client_ip}"),
 ];
 
 /// What a routed hostname's trace page reports as `status`.
@@ -192,12 +195,6 @@ pub(super) fn write_snippets(output: &mut String) {
         "ployz_trace_ray",
         "[0-9A-Fa-f]{16,32}-[A-Z]{3}",
     );
-    write_map(
-        output,
-        "http.request.header.CF-Connecting-IP",
-        "ployz_trace_client_ip",
-        CLIENT_IP_PATTERN,
-    );
     let _ = write!(
         output,
         "\t\t@ployz_trace_cloudflare remote_ip {}\n\
@@ -230,36 +227,4 @@ fn write_body(output: &mut String, marker: &str, cloudflare: bool) {
         let _ = writeln!(output, "{}={}", field.key, field.value);
     }
     let _ = write!(output, "\n{marker} 200\n");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::CLIENT_IP_PATTERN;
-    use regex::Regex;
-
-    #[test]
-    fn client_ip_pattern_keeps_addresses_and_rejects_line_breaking_values() {
-        let pattern = Regex::new(&format!("^{CLIENT_IP_PATTERN}$")).unwrap();
-        for address in [
-            "::",
-            "203.0.113.7",
-            "255.255.255.255",
-            "2001:0db8:0000:0000:0000:ff00:0042:8329",
-            "0000:0000:0000:0000:0000:ffff:192.168.100.200",
-        ] {
-            assert!(pattern.is_match(address), "{address}");
-        }
-        for value in [
-            "",
-            "1",
-            "1.2.3.4 ",
-            "1.2.3.4\nx=y",
-            "1.2.3.4=",
-            "fe80::1%eth0",
-            "unknown",
-            "0000:0000:0000:0000:0000:ffff:192.168.100.2000",
-        ] {
-            assert!(!pattern.is_match(value), "{value:?}");
-        }
-    }
 }
