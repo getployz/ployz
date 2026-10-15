@@ -95,9 +95,11 @@ export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
+export const observeCrashReceivedEvent = "observe/crash.received";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
+export const observePushTargetRequestedEvent = "observe/push-target.requested";
 export const configFirstServerJoinedEvent = "config/first-server.joined";
 export const configSweepRequestedEvent = "config/sweep.requested";
 export const mailSendRequestedEvent = "mail/send";
@@ -175,6 +177,11 @@ export type ClusterDomainSyncRequestedEventData = {
 /** Sync every Environment's uptime checks with its Applied State, for Services applied before checks existed. */
 export type UptimeBackfillRequestedEventData = Record<string, never>;
 
+export type ObserveCrashReceivedEventData = {
+  organizationId: string;
+  serviceId: string;
+};
+
 /** The Organization's first Server joined: its published Environments deploy to it. */
 export type ConfigFirstServerJoinedEventData = {
   organizationId: string;
@@ -245,6 +252,10 @@ export const organizationBillingSyncRequestedEventType = eventType(
 export const configPrCheckRequestedEventType = eventType(
   configPrCheckRequestedEvent,
   { schema: staticSchema<ConfigPrCheckRequestedEventData>() },
+);
+export const observePushTargetRequestedEventType = eventType(
+  observePushTargetRequestedEvent,
+  { schema: staticSchema<Record<string, never>>() },
 );
 export const serverAccessRetireRequestedEventType = eventType(
   serverAccessRetireRequestedEvent,
@@ -325,6 +336,10 @@ export const clusterDomainSyncRequestedEventType = eventType(
 export const uptimeBackfillRequestedEventType = eventType(
   uptimeBackfillRequestedEvent,
   { schema: staticSchema<UptimeBackfillRequestedEventData>() },
+);
+export const observeCrashReceivedEventType = eventType(
+  observeCrashReceivedEvent,
+  { schema: staticSchema<ObserveCrashReceivedEventData>() },
 );
 export const inngestFunctionCancelledEventType = eventType(
   "inngest/function.cancelled",
@@ -449,6 +464,10 @@ export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventD
   return { name: configSweepRequestedEvent, data } as const;
 }
 
+export function createObserveCrashReceivedEvent(data: ObserveCrashReceivedEventData, crashEventId: string) {
+  return { id: `observe-crash-${crashEventId}`, name: observeCrashReceivedEvent, data } as const;
+}
+
 export function createClusterDomainSyncRequestedEvent(
   data: ClusterDomainSyncRequestedEventData,
 ) {
@@ -473,6 +492,11 @@ export function createConfigPrCheckRequestedEvent(input: { organizationId: strin
 
 export function createServerAccessRetireRequestedEvent() {
   return { name: serverAccessRetireRequestedEvent, data: {} satisfies ServerAccessRetireRequestedEventData } as const;
+}
+
+/** A Machine's capability was published: tell it where to push. The 5-minute sweep covers a lost event. */
+export function createObservePushTargetRequestedEvent() {
+  return { name: observePushTargetRequestedEvent, data: {} satisfies Record<string, never> } as const;
 }
 
 export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmittedEventData) {
@@ -612,10 +636,12 @@ export type InngestSendableEvent =
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createObserveCrashReceivedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
   | ReturnType<typeof createServerAccessRetireRequestedEvent>
+  | ReturnType<typeof createObservePushTargetRequestedEvent>
   | ReturnType<typeof createConfigPrCheckRequestedEvent>
   | ReturnType<typeof createConfigSweepRequestedEvent>
   | ReturnType<typeof createConfigDeploymentStartedEvent>

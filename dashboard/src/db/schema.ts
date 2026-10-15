@@ -19,3 +19,4 @@ export * from "#/modules/operations/tables";
 export * from "#/modules/service-act/tables";
 export * from "#/modules/uptime/tables";
 export * from "#/modules/notifications/tables";
+export * from "#/modules/observe-ingest/tables";

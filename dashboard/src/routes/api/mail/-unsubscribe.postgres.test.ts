@@ -87,7 +87,7 @@ describe("unsubscribe link", () => {
 describe("notification settings", () => {
   it("defaults every type to Email and reports whether this Cloud can send", async () => {
     const off = await run(getNotificationSettings({ userId: bob }));
-    expect(off).toEqual({ mailOn: false, channels: { uptime: "email", "deploy-failed": "email", "upgrade-failed": "email" } });
+    expect(off).toEqual({ mailOn: false, channels: { uptime: "email", "deploy-failed": "email", "upgrade-failed": "email", crash: "email" } });
     expect((await run(getNotificationSettings({ userId: bob }), MAIL)).mailOn).toBe(true);
   });
 
@@ -97,7 +97,7 @@ describe("notification settings", () => {
     await run(setNotificationChannel(bob, "uptime", "none"));
 
     expect((await run(getNotificationSettings({ userId: bob }))).channels)
-      .toEqual({ uptime: "none", "deploy-failed": "email", "upgrade-failed": "email" });
+      .toEqual({ uptime: "none", "deploy-failed": "email", "upgrade-failed": "email", crash: "email" });
     expect(await rowsOf(bob, "upgrade-failed")).toEqual([{ channel: "email" }]);
   });
 });

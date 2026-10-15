@@ -200,6 +200,20 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// Point this Machine's crash pushes at `url`, or stop them with `null`.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for an unparseable URL or one the Machine will not
+    /// push to, `unsupported` when the Machine predates push targets, and transport errors.
+    #[napi]
+    pub async fn set_push_target(&self, url: Option<String>) -> Result<()> {
+        let url = url
+            .map(|url| url.parse::<url::Url>())
+            .transpose()
+            .map_err(invalid_argument)?;
+        self.inner.set_push_target(url).await.map_err(rpc_to_napi)
+    }
+
     /// Inspect identity and Management Client labels on this session.
     ///
     /// # Errors

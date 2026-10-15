@@ -1,0 +1,2 @@
+ALTER TABLE "organization_machine" ADD COLUMN "management_identity" text;--> statement-breakpoint
+ALTER TABLE "organization_machine" ADD CONSTRAINT "organization_machine_management_identity_check" CHECK ("management_identity" ~ '^[0-9a-f]{64}$');

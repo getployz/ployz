@@ -96,6 +96,8 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
                         ours,
                         MarkerKind::Exit {
                             exit_code: Some(137),
+                            oom: false,
+                            stopped: false,
                         },
                     ),
                     marked(one.machine.id, 995, older, MarkerKind::Restart),
@@ -141,7 +143,9 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
                 Timestamp(991),
                 "one",
                 MarkerKind::Exit {
-                    exit_code: Some(137)
+                    exit_code: Some(137),
+                    oom: false,
+                    stopped: false,
                 },
                 Some(&ours)
             ),

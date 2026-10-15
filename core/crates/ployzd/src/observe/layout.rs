@@ -20,6 +20,13 @@
 //!         <hour>.jsonl                  that hour folded to 5 minute points
 //!                                       per Service and Deployment, plus
 //!                                       the host
+//!     outbox/
+//!       crash/
+//!         <seq>                         one crash marker waiting for Cloud,
+//!                                       named by its zero-padded seq
+//!         last_seq                      the newest seq handed out
+//!         dropped                       entries lost to the cap or refused
+//!                                       by Cloud
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -50,6 +57,8 @@ pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
+const OUTBOX_DIR: &str = "outbox";
+const CRASH_DIR: &str = "crash";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
@@ -87,6 +96,11 @@ impl StoreRoot {
     #[must_use]
     pub fn rollup_metrics(&self) -> PathBuf {
         self.0.join(METRICS_DIR).join(ROLLUP_DIR)
+    }
+
+    #[must_use]
+    pub fn crash_outbox(&self) -> PathBuf {
+        self.0.join(OUTBOX_DIR).join(CRASH_DIR)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.

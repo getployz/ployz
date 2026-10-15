@@ -145,7 +145,11 @@ fn a_server_shows_host_totals_its_own_interfaces_and_its_disk() {
     let history = history(
         MetricPoints::Machine(vec![point(2, 0.1), point(1, 0.3)]),
         Vec::new(),
-        vec![marker(MarkerKind::Exit { exit_code: Some(1) })],
+        vec![marker(MarkerKind::Exit {
+            exit_code: Some(1),
+            oom: false,
+            stopped: false,
+        })],
     );
     assert_eq!(
         shown(&history, "web-1"),

@@ -117,6 +117,7 @@ async function expectRpc(fn, code) {
     await expectRpc(() => client.run({ not: "a DeployIntent" }), "invalid_argument");
     await expectRpc(() => client.clearManagementClient("Cloud"), "invalid_argument");
     await expectRpc(() => client.setManagementClient("Cloud"), "invalid_argument");
+    await expectRpc(() => client.setPushTarget("not a url"), "invalid_argument");
     await expectRpc(() => client.requestMachineUpgrade("worker", "not a request"), "invalid_argument");
   const preparation = client.prepare({
     deployment: {

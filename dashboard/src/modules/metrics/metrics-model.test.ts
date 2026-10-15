@@ -31,7 +31,9 @@ const read = (history: Partial<MetricHistory>): MetricRead => ({
 const answering = (machine: MachineId, value: MetricHistoryReply) => ({ machine_id: machine, value });
 const failing = (machine: MachineId, error: RpcError) => ({ machine_id: machine, error });
 const servicePoint = (atMs: number, fields: Omit<ServicePoint, "ts"> = {}): ServicePoint => ({ ts: ms(atMs), ...fields });
-type MarkerFields = Pick<MetricMarker, "kind"> & { readonly exit_code?: number; readonly deployment_id?: string };
+type MarkerFields =
+  | { readonly kind: "oom" | "restart"; readonly deployment_id?: string }
+  | { readonly kind: "exit"; readonly exit_code?: number; readonly deployment_id?: string };
 const marker = (machine: MachineId, atMs: number, fields: MarkerFields): MetricMarker => ({
   machine_id: machine,
   container_id: containerId("c"),
@@ -39,7 +41,7 @@ const marker = (machine: MachineId, atMs: number, fields: MarkerFields): MetricM
   service: "ns/web",
   replica: "web-1",
   ts: ms(atMs),
-  ...fields,
+  ...(fields.kind === "exit" ? { oom: false, stopped: false, ...fields } : fields),
 });
 
 describe("serviceMetrics availability", () => {

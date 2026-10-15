@@ -366,6 +366,22 @@ pub struct SetManagementClientResponse {
     pub capability: Option<ManagementCapability>,
 }
 
+/// Where this Machine's observe process pushes crash events, or `None` to stop pushing.
+///
+/// Strict for the same reason as [`SetManagementClientRequest`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetPushTargetRequest {
+    pub url: Option<url::Url>,
+}
+
+/// The push target the Machine now holds.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PushTargetSet {
+    #[ts(type = "string | null")]
+    pub url: Option<url::Url>,
+}
+
 /// The place one Container creation lands on a Machine. The same slot names the
 /// same Container across resends; a different spec in it is an occupied slot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -1333,6 +1349,7 @@ define_responses! {
     Enrolled(Enrolled) => "enrolled";
     Registered(Registered) => "registered";
     SetManagementClientResponse(SetManagementClientResponse) => "management_client_set";
+    PushTargetSet(PushTargetSet) => "push_target_set";
     MachineList(MachineList) => "machine_list";
     ContainerList(ContainerList) => "container_list";
     ContainerDetails(ContainerDetails) => "container_details";
@@ -1688,6 +1705,26 @@ mod set_management_client_wire {
             json!({ "kind": "clear", "label": "cloud", "pairing": { "secret": "private" } }),
         ] {
             assert!(serde_json::from_value::<SetManagementClientRequest>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn push_target_requests_carry_a_url_or_null_and_nothing_else() {
+        let set = serde_json::from_value::<SetPushTargetRequest>(
+            json!({ "url": "https://cloud.example/api/machines/aa/observe" }),
+        )
+        .unwrap();
+        assert_eq!(
+            set.url.map(String::from).as_deref(),
+            Some("https://cloud.example/api/machines/aa/observe")
+        );
+        let clear = serde_json::from_value::<SetPushTargetRequest>(json!({ "url": null })).unwrap();
+        assert_eq!(clear.url, None);
+        for value in [
+            json!({ "url": "not a url" }),
+            json!({ "url": null, "token": "private" }),
+        ] {
+            assert!(serde_json::from_value::<SetPushTargetRequest>(value).is_err());
         }
     }
 

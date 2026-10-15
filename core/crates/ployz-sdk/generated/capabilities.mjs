@@ -25,6 +25,7 @@ export const capabilities = Object.freeze([
   "ployz.machine.list.v1",
   "ployz.machine.register.v1",
   "ployz.machine.set-management-client.v1",
+  "ployz.machine.set-push-target.v1",
   "ployz.machine.storage-observation.v1",
   "ployz.machine.update.v1",
   "ployz.machine.upgrade.request.v1",

@@ -75,6 +75,10 @@ class Client {
     return withRpcError(this._inner.clearManagementClient(label));
   }
 
+  setPushTarget(url) {
+    return withRpcError(this._inner.setPushTarget(url));
+  }
+
   inspect() {
     return withRpcError(this._inner.inspect());
   }

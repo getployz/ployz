@@ -2391,7 +2391,16 @@ export type MetricEvent = { at: Timestamp, server: MachineName, namespace: Names
 /**
  * Absent when Docker did not say.
  */
-exit_code?: number, } | { "kind": "restart" });
+exit_code?: number,
+/**
+ * Docker reported the kernel's OOM killer before this exit.
+ */
+oom: boolean,
+/**
+ * Docker was asked to kill the container, as `docker stop` does,
+ * before this exit.
+ */
+stopped: boolean, } | { "kind": "restart" });
 
 export type MetricGap = { from: number, to: number, reason: MetricGapReason, };
 
@@ -2429,7 +2438,16 @@ ts: number, } & ({ "kind": "oom" } | { "kind": "exit",
 /**
  * Absent when Docker did not say.
  */
-exit_code?: number, } | { "kind": "restart" });
+exit_code?: number,
+/**
+ * Docker reported the kernel's OOM killer before this exit.
+ */
+oom: boolean,
+/**
+ * Docker was asked to kill the container, as `docker stop` does,
+ * before this exit.
+ */
+stopped: boolean, } | { "kind": "restart" });
 
 export type MetricPoints = { "machine": Array<HostPoint> } | { "service": Array<ServicePoint> };
 
