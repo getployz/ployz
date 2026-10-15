@@ -114,8 +114,6 @@ pub(super) trait Stream: Send + Sync + 'static {
 
     fn ack(&self, seqs: &[u64]) -> io::Result<()>;
 
-    fn refuse(&self, seqs: &[u64]) -> io::Result<()>;
-
     fn wake(&self) -> &Notify;
 
     fn salt_refresh(&self) -> io::Result<Option<Held>> {
@@ -235,17 +233,6 @@ impl Outbox {
         Ok(entries)
     }
 
-    fn remove(&self, seqs: &[u64], refused: bool) -> io::Result<()> {
-        let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        for seq in seqs {
-            remove_entry(&self.dir, *seq, "")?;
-        }
-        if refused {
-            ledger.count_dropped(&self.dir, seqs.len())?;
-        }
-        Ok(())
-    }
-
     fn ledger(&self) -> (u64, u64) {
         let ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         (ledger.last_seq, ledger.dropped)
@@ -278,11 +265,11 @@ impl Stream for Outbox {
     }
 
     fn ack(&self, seqs: &[u64]) -> io::Result<()> {
-        self.remove(seqs, false)
-    }
-
-    fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
-        self.remove(seqs, true)
+        let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        for seq in seqs {
+            remove_entry(&self.dir, *seq, "")?;
+        }
+        Ok(())
     }
 
     fn wake(&self) -> &Notify {
@@ -426,8 +413,8 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
             StatusCode::BAD_REQUEST
             | StatusCode::PAYLOAD_TOO_LARGE
             | StatusCode::UNPROCESSABLE_ENTITY => {
-                tracing::warn!(stream = S::NAME, %status, "Cloud refused a batch; dropping it");
-                self.outbox.refuse(&held.seqs)
+                tracing::warn!(stream = S::NAME, %status, "Cloud refused a batch; keeping it");
+                return Shipped::Retry { after: None };
             }
             status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
                 return Shipped::Retry {
@@ -824,12 +811,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_batch_cloud_refuses_is_dropped_and_counted() {
+    async fn a_batch_cloud_refuses_stays_held_until_cloud_acks_it() {
         let (_root, store) = store();
         let outbox = Outbox::open(&store).unwrap();
         outbox.push(crash(5)).unwrap();
         let (cloud, url) = Cloud::serve(vec![
+            (StatusCode::BAD_REQUEST, None),
+            (StatusCode::PAYLOAD_TOO_LARGE, None),
             (StatusCode::UNPROCESSABLE_ENTITY, None),
+            (StatusCode::IM_A_TEAPOT, None),
             (StatusCode::NO_CONTENT, None),
         ])
         .await;
@@ -838,16 +828,13 @@ mod tests {
         })
         .unwrap();
 
+        for _ in 0..4 {
+            assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
+            assert_eq!(held(&outbox), [5]);
+        }
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
         assert_eq!(held(&outbox), [] as [u64; 0]);
-        outbox.push(crash(6)).unwrap();
-        assert_eq!(shipper.ship_once().await, Shipped::Progress);
-        let dropped: Vec<_> = cloud
-            .bodies()
-            .iter()
-            .map(|body| body["dropped"].clone())
-            .collect();
-        assert_eq!(dropped, [0, 1]);
+        assert!(cloud.bodies().iter().all(|body| body["dropped"] == 0));
     }
 
     #[tokio::test]
@@ -1144,6 +1131,26 @@ mod tests {
             last["events"][199],
             serde_json::json!({ "kind": "pageview", "n": 199 })
         );
+    }
+
+    #[tokio::test]
+    async fn pageviews_cloud_answers_413_to_stay_held() {
+        let (_root, store) = store();
+        let outbox = pageviews(&store, 300);
+        let (_cloud, url) = Cloud::serve(vec![
+            (StatusCode::PAYLOAD_TOO_LARGE, None),
+            (StatusCode::NO_CONTENT, None),
+        ])
+        .await;
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
+
+        assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
+        assert_eq!(outbox.held_rows(), 300);
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert_eq!(outbox.held_rows(), 0);
     }
 
     #[tokio::test]

@@ -16,6 +16,10 @@ use super::{
 
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const SEGMENT_ROWS: usize = 100;
+const SEGMENT_BYTES: usize = 16 * 1024;
+/// Cloud answers 413 past 256 KiB; a row is at most a few KiB, so a batch
+/// that stops adding segments here stays well under it.
+const BATCH_BYTES: usize = 192 * 1024;
 const SEGMENT_AGE: Duration = Duration::from_secs(1);
 pub(in crate::observe) const ROW_CAP: usize = 50_000;
 
@@ -27,9 +31,15 @@ pub(in crate::observe) struct PageviewOutbox {
 
 struct State {
     ledger: Ledger,
-    segments: BTreeMap<u64, usize>,
+    segments: BTreeMap<u64, Segment>,
     rows: usize,
     buffer: Buffer,
+}
+
+#[derive(Clone, Copy)]
+struct Segment {
+    rows: usize,
+    bytes: usize,
 }
 
 #[derive(Default)]
@@ -48,7 +58,14 @@ impl PageviewOutbox {
         for seq in seqs(&dir, SEGMENT_SUFFIX)? {
             match fs::read(dir.join(entry_name(seq, SEGMENT_SUFFIX))) {
                 Ok(bytes) => {
-                    segments.insert(seq, lines(&bytes).count());
+                    let rows = lines(&bytes).count();
+                    segments.insert(
+                        seq,
+                        Segment {
+                            rows,
+                            bytes: bytes.len(),
+                        },
+                    );
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
@@ -57,7 +74,7 @@ impl PageviewOutbox {
         let newest = segments.keys().next_back().copied().unwrap_or(0);
         let state = State {
             ledger: Ledger::open(&dir, newest),
-            rows: segments.values().sum(),
+            rows: segments.values().map(|segment| segment.rows).sum(),
             segments,
             buffer: Buffer::default(),
         };
@@ -74,7 +91,7 @@ impl PageviewOutbox {
         state.buffer.lines.push(b'\n');
         state.buffer.rows += 1;
         state.buffer.since.get_or_insert_with(Instant::now);
-        if state.buffer.rows >= SEGMENT_ROWS {
+        if state.buffer.rows >= SEGMENT_ROWS || state.buffer.lines.len() >= SEGMENT_BYTES {
             self.flush(&mut state)?;
         }
         Ok(())
@@ -103,16 +120,22 @@ impl PageviewOutbox {
             &buffer.lines,
             0o600,
         )?;
-        state.segments.insert(seq, buffer.rows);
+        state.segments.insert(
+            seq,
+            Segment {
+                rows: buffer.rows,
+                bytes: buffer.lines.len(),
+            },
+        );
         state.rows += buffer.rows;
         let mut dropped = 0;
         while state.rows > ROW_CAP {
-            let Some((oldest, rows)) = state.segments.pop_first() else {
+            let Some((oldest, segment)) = state.segments.pop_first() else {
                 break;
             };
             remove_entry(&self.dir, oldest, SEGMENT_SUFFIX)?;
-            state.rows -= rows;
-            dropped += rows;
+            state.rows -= segment.rows;
+            dropped += segment.rows;
         }
         if dropped > 0 {
             state.ledger.count_dropped(&self.dir, dropped)?;
@@ -122,22 +145,6 @@ impl PageviewOutbox {
             );
         }
         self.wake.notify_one();
-        Ok(())
-    }
-
-    fn remove(&self, seqs: &[u64], refused: bool) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut removed = 0;
-        for seq in seqs {
-            remove_entry(&self.dir, *seq, SEGMENT_SUFFIX)?;
-            if let Some(rows) = state.segments.remove(seq) {
-                state.rows -= rows;
-                removed += rows;
-            }
-        }
-        if refused {
-            state.ledger.count_dropped(&self.dir, removed)?;
-        }
         Ok(())
     }
 
@@ -173,12 +180,16 @@ impl Stream for PageviewOutbox {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut taken = Vec::new();
         let mut rows = 0;
-        for (seq, count) in &state.segments {
-            if !taken.is_empty() && rows + count > CAP {
+        let mut bytes = 0;
+        for (seq, segment) in &state.segments {
+            if !taken.is_empty()
+                && (rows + segment.rows > CAP || bytes + segment.bytes > BATCH_BYTES)
+            {
                 break;
             }
             taken.push(*seq);
-            rows += count;
+            rows += segment.rows;
+            bytes += segment.bytes;
         }
         let Some(last) = taken.last() else {
             return Ok(None);
@@ -188,6 +199,7 @@ impl Stream for PageviewOutbox {
             state.ledger.dropped
         )
         .into_bytes();
+        body.reserve(bytes);
         let mut first = true;
         for seq in &taken {
             let bytes = match fs::read(self.dir.join(entry_name(*seq, SEGMENT_SUFFIX))) {
@@ -208,11 +220,14 @@ impl Stream for PageviewOutbox {
     }
 
     fn ack(&self, seqs: &[u64]) -> io::Result<()> {
-        self.remove(seqs, false)
-    }
-
-    fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
-        self.remove(seqs, true)
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        for seq in seqs {
+            remove_entry(&self.dir, *seq, SEGMENT_SUFFIX)?;
+            if let Some(segment) = state.segments.remove(seq) {
+                state.rows -= segment.rows;
+            }
+        }
+        Ok(())
     }
 
     fn wake(&self) -> &Notify {
@@ -348,10 +363,78 @@ mod tests {
 
         let reopened = PageviewOutbox::open(&store).unwrap();
         assert_eq!(reopened.held_rows(), ROW_CAP);
-        let (body, seqs) = batch(&reopened);
-        assert_eq!(body["dropped"], 200);
-        reopened.refuse(&seqs).unwrap();
-        assert_eq!(batch(&reopened).0["dropped"], 1200);
+        assert_eq!(batch(&reopened).0["dropped"], 200);
+        push(&reopened, 0..100);
+        assert_eq!(batch(&reopened).0["dropped"], 300);
+    }
+
+    fn pageview(path: &str, query_value: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "pageview",
+            "ts": 1_792_026_000_123_i64,
+            "day": "2026-10-15",
+            "namespace": "acme-production",
+            "host": "www.acme-widgets.example.com",
+            "path": path,
+            "query": {
+                "utm_source": query_value, "utm_medium": query_value, "utm_campaign": query_value,
+                "utm_term": query_value, "utm_content": query_value, "ref": query_value,
+            },
+            "referrer_host": "news.ycombinator.com",
+            "language": "en",
+            "visitor": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "flags": ["no_sec_fetch", "click_id"],
+        })
+    }
+
+    fn batches_until_empty(outbox: &PageviewOutbox) -> Vec<usize> {
+        let mut sizes = Vec::new();
+        let mut events = 0;
+        while let Some(held) = outbox.next().unwrap() {
+            let body: serde_json::Value = serde_json::from_slice(&held.body).unwrap();
+            events += body["events"].as_array().unwrap().len();
+            sizes.push(held.body.len());
+            outbox.ack(&held.seqs).unwrap();
+        }
+        assert_eq!(events, 1000);
+        sizes
+    }
+
+    #[test]
+    fn a_thousand_realistic_rows_ship_in_batches_under_clouds_256_kib_cap() {
+        let (_root, store) = store();
+        let outbox = PageviewOutbox::open(&store).unwrap();
+        for n in 0..1000 {
+            outbox
+                .push(&pageview(
+                    &format!("/blog/2026/10/how-we-ship-{n}"),
+                    "newsletter",
+                ))
+                .unwrap();
+        }
+        outbox.state.lock().unwrap().buffer.since = Instant::now().checked_sub(SEGMENT_AGE);
+        outbox.tick().unwrap();
+        let sizes = batches_until_empty(&outbox);
+        assert!(sizes.iter().sum::<usize>() > 262_144, "{sizes:?}");
+        assert!(
+            sizes.iter().all(|size| *size <= BATCH_BYTES + 1024),
+            "{sizes:?}"
+        );
+    }
+
+    #[test]
+    fn the_largest_rows_the_harvester_writes_still_ship_under_the_cap() {
+        let (_root, store) = store();
+        let outbox = PageviewOutbox::open(&store).unwrap();
+        let path = "\u{1}".repeat(1024);
+        let value = "\u{1}".repeat(256);
+        for _ in 0..1000 {
+            outbox.push(&pageview(&path, &value)).unwrap();
+        }
+        outbox.state.lock().unwrap().buffer.since = Instant::now().checked_sub(SEGMENT_AGE);
+        outbox.tick().unwrap();
+        let sizes = batches_until_empty(&outbox);
+        assert!(sizes.iter().all(|size| *size < 262_144), "{sizes:?}");
     }
 
     #[test]
