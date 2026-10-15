@@ -1,31 +1,39 @@
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
-import { addDays, dayEnd, dayStart, localDay, retentionFloor, SESSION_GAP_SECONDS } from "../local-time";
-import { LONGEST_RETENTION_MONTHS } from "../model";
-import { ensurePartitions, monthOf, nextMonth, partitionName } from "./partitions";
+import { addDays, dayEnd, dayStart, localDay, retentionCutoff, SESSION_GAP_SECONDS } from "../local-time";
+import { ensurePartitions, monthOf, nextMonth, pageviewPartitions } from "./partitions";
 import { instant, localHour, sessionsIn, type StoreQuery } from "./store";
 
 export type RollupSite = { readonly environmentId: string; readonly timezone: string };
 
-const MAX_DAYS_PER_LOCK_HOLD = 31;
+type LockedSite = RollupSite & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string> };
+
+const MAX_DAYS_PER_SITE_RUN = 31;
 const PARTITION_MONTHS_AHEAD = 2;
 
 const siteQuery = (site: RollupSite, start: Date, end: Date): StoreQuery =>
   ({ environmentId: site.environmentId, timezone: site.timezone, range: { start, end }, filters: [] });
 
-const withRollupLock = <A, E, R>(environmentId: string, program: Effect.Effect<A, E, R>) =>
+/** Holds the site's rollup_state row lock, which ingest and timezone changes also take, so the site read here stays current until commit. */
+const withRollupLock = <A, E, R>(environmentId: string, program: (site: LockedSite) => Effect.Effect<A, E, R>, otherwise: A) =>
   Effect.gen(function* () {
     const database = yield* Database;
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       yield* drizzle.execute(sql`
-        insert into analytics.rollup_state (environment_id) values (${environmentId}::text) on conflict do nothing`);
-      yield* drizzle.execute(sql`
-        select rolled_up_to from analytics.rollup_state where environment_id = ${environmentId}::text for update`);
+        insert into analytics.rollup_state (environment_id)
+        select environment_id from analytics.site where environment_id = ${environmentId}::text
+        on conflict do nothing`);
+      const [state] = yield* drizzle.execute<{ rolled_up_to: string | null; dirty: string[] }>(sql`
+        select rolled_up_to::text as rolled_up_to, dirty::text[] as dirty from analytics.rollup_state
+        where environment_id = ${environmentId}::text for update`, "objects");
+      const [site] = yield* drizzle.execute<{ timezone: string; enabled: boolean }>(sql`
+        select timezone, enabled from analytics.site where environment_id = ${environmentId}::text`, "objects");
+      if (state === undefined || site === undefined) return otherwise;
       // A day's sessionization sorts and hashes a few hundred thousand rows; the default 4 MB spills every step to disk.
       yield* drizzle.execute(sql`set local work_mem = '64MB'`);
-      return yield* program;
+      return yield* program({ environmentId, timezone: site.timezone, enabled: site.enabled, rolledUpTo: state.rolled_up_to, dirty: state.dirty });
     }));
   });
 
@@ -85,44 +93,6 @@ const writeDay = Effect.fn("WebAnalytics.writeDay")(function* (site: RollupSite,
     from pv full join ss using (dim, value)`);
 });
 
-export const rebuildDay = Effect.fn("WebAnalytics.rebuildDay")(function* (site: RollupSite, day: string) {
-  yield* withRollupLock(site.environmentId, Effect.gen(function* () {
-    yield* writeDay(site, day);
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`
-      update analytics.rollup_state set dirty = array_remove(dirty, ${day}::date), updated_at = now()
-      where environment_id = ${site.environmentId}::text`);
-  }));
-});
-
-const closeDay = (site: RollupSite, day: string) =>
-  withRollupLock(site.environmentId, Effect.gen(function* () {
-    yield* writeDay(site, day);
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`
-      update analytics.rollup_state
-      set rolled_up_to = ${day}::date, dirty = array_remove(dirty, ${day}::date), updated_at = now()
-      where environment_id = ${site.environmentId}::text`);
-  }));
-
-type SiteState = RollupSite & { readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string> };
-
-const enabledSites = Effect.fn("WebAnalytics.enabledSites")(function* () {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.execute<{ environment_id: string; timezone: string; rolled_up_to: string | null; dirty: string }>(sql`
-    select s.environment_id, s.timezone, r.rolled_up_to::text as rolled_up_to,
-      coalesce(array_to_string(r.dirty, ','), '') as dirty
-    from analytics.site s left join analytics.rollup_state r using (environment_id)
-    where s.enabled
-    order by s.environment_id`, "objects");
-  return rows.map((row): SiteState => ({
-    environmentId: row.environment_id,
-    timezone: row.timezone,
-    rolledUpTo: row.rolled_up_to,
-    dirty: row.dirty === "" ? [] : row.dirty.split(","),
-  }));
-});
-
 const firstDay = Effect.fn("WebAnalytics.firstDay")(function* (site: RollupSite) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<{ ts: string | null }>(sql`
@@ -131,69 +101,72 @@ const firstDay = Effect.fn("WebAnalytics.firstDay")(function* (site: RollupSite)
   return ts == null ? null : localDay(site.timezone, new Date(ts));
 });
 
-export const rollupClosedDays = Effect.fn("WebAnalytics.rollupClosedDays")(function* (now: Date) {
-  let closed = 0;
-  for (const site of yield* enabledSites()) {
-    let day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
-    for (let n = 0; day !== null && n < MAX_DAYS_PER_LOCK_HOLD; n++) {
-      if (dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime()) break;
-      yield* closeDay(site, day);
-      closed++;
-      day = addDays(site.timezone, day, 1);
-    }
-  }
-  return closed;
-});
+const closeNextDay = (environmentId: string, now: Date) =>
+  withRollupLock(environmentId, (site) => Effect.gen(function* () {
+    if (!site.enabled) return false;
+    const day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
+    if (day === null || dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime()) return false;
+    yield* writeDay(site, day);
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`
+      update analytics.rollup_state
+      set rolled_up_to = ${day}::date, dirty = array_remove(dirty, ${day}::date), updated_at = now()
+      where environment_id = ${environmentId}::text`);
+    return true;
+  }), false);
 
-export const rebuildDirtyDays = Effect.fn("WebAnalytics.rebuildDirtyDays")(function* () {
-  let rebuilt = 0;
-  for (const site of yield* enabledSites()) {
-    for (const day of site.dirty) {
-      yield* rebuildDay(site, day);
-      rebuilt++;
-    }
-  }
-  return rebuilt;
-});
+const rebuildNextDirty = (environmentId: string) =>
+  withRollupLock(environmentId, (site) => Effect.gen(function* () {
+    const rolledUpTo = site.rolledUpTo;
+    const day = rolledUpTo === null ? undefined : site.dirty.filter((dirty) => dirty <= rolledUpTo).sort()[0];
+    if (day === undefined) return false;
+    yield* writeDay(site, day);
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`
+      update analytics.rollup_state set dirty = array_remove(dirty, ${day}::date), updated_at = now()
+      where environment_id = ${environmentId}::text`);
+    return true;
+  }), false);
 
-const PARTITION_PATTERN = /^pageview_(\d{4})(\d{2})$/;
+const repeat = <E, R>(step: Effect.Effect<boolean, E, R>) =>
+  Effect.gen(function* () {
+    let done = 0;
+    while (done < MAX_DAYS_PER_SITE_RUN && (yield* step)) done++;
+    return done;
+  });
 
-export const applyRetention = Effect.fn("WebAnalytics.applyRetention")(function* (now: Date) {
+export const rollupSites = Effect.fn("WebAnalytics.rollupSites")(function* () {
   const { drizzle } = yield* Database;
+  const rows = yield* drizzle.execute<{ environment_id: string }>(sql`
+    select environment_id from analytics.site where enabled order by environment_id`, "objects");
+  return rows.map((row) => row.environment_id);
+});
+
+export const closeDays = Effect.fn("WebAnalytics.closeDays")(function* (environmentId: string, now: Date) {
+  return yield* repeat(closeNextDay(environmentId, now));
+});
+
+export const rebuildDirtyDays = Effect.fn("WebAnalytics.rebuildDirtyDays")(function* (environmentId: string) {
+  return yield* repeat(rebuildNextDirty(environmentId));
+});
+
+export const ensureComingPartitions = Effect.fn("WebAnalytics.ensureComingPartitions")(function* (now: Date) {
   const months = [monthOf(now)];
   for (let n = 0; n < PARTITION_MONTHS_AHEAD; n++) months.push(nextMonth(months[months.length - 1] ?? monthOf(now)));
   yield* ensurePartitions(months);
+});
 
-  const oldest = new Date(now);
-  oldest.setUTCMonth(oldest.getUTCMonth() - LONGEST_RETENTION_MONTHS);
-  const children = yield* drizzle.execute<{ name: string }>(sql`
-    select c.relname as name
-    from pg_inherits i
-    join pg_class c on c.oid = i.inhrelid
-    join pg_class p on p.oid = i.inhparent
-    join pg_namespace n on n.oid = p.relnamespace
-    where n.nspname = 'analytics' and p.relname = 'pageview'`, "objects");
-  const dropped: string[] = [];
-  for (const { name } of children) {
-    const match = PARTITION_PATTERN.exec(name);
-    if (match === null) continue;
-    const month = `${match[1]}-${match[2]}`;
-    if (new Date(`${nextMonth(month)}-01T00:00:00Z`) > oldest) continue;
-    yield* drizzle.execute(sql.raw(`drop table if exists analytics.${partitionName(month)}`));
-    dropped.push(name);
-  }
+export const expiredPartitions = Effect.fn("WebAnalytics.expiredPartitions")(function* (now: Date) {
+  const cutoff = retentionCutoff(now.getTime());
+  return (yield* pageviewPartitions()).filter((month) => new Date(`${nextMonth(month)}-01T00:00:00Z`) <= cutoff);
+});
 
-  for (const site of yield* enabledSites()) {
-    const floor = retentionFloor(site.timezone, now.getTime(), LONGEST_RETENTION_MONTHS);
-    const floorDay = localDay(site.timezone, floor);
-    yield* drizzle.execute(sql`
-      delete from analytics.daily where environment_id = ${site.environmentId}::text and day < ${floorDay}::date`);
-    yield* drizzle.execute(sql`
-      delete from analytics.session_hourly where environment_id = ${site.environmentId}::text and hour < ${instant(floor)}`);
-    yield* drizzle.execute(sql`
-      delete from analytics.bot_daily where environment_id = ${site.environmentId}::text and day < ${floorDay}::date`);
-    yield* drizzle.execute(sql`
-      delete from analytics.gap_daily where environment_id = ${site.environmentId}::text and day < ${floorDay}::date`);
-  }
-  return dropped;
+export const deleteExpiredAggregates = Effect.fn("WebAnalytics.deleteExpiredAggregates")(function* (now: Date) {
+  const { drizzle } = yield* Database;
+  const cutoff = retentionCutoff(now.getTime());
+  const cutoffDay = cutoff.toISOString().slice(0, 10);
+  yield* drizzle.execute(sql`delete from analytics.daily where day < ${cutoffDay}::date`);
+  yield* drizzle.execute(sql`delete from analytics.session_hourly where hour < ${instant(cutoff)}`);
+  yield* drizzle.execute(sql`delete from analytics.bot_daily where day < ${cutoffDay}::date`);
+  yield* drizzle.execute(sql`delete from analytics.gap_daily where day < ${cutoffDay}::date`);
 });

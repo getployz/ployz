@@ -16,8 +16,8 @@ import { analyticsGoal, analyticsPageview, analyticsSite } from "#/modules/web-a
 import { Database } from "#/server/database.server";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-import { ensurePartitions, forgetPartitions } from "./partitions";
-import { applyRetention, rebuildDirtyDays, rollupClosedDays } from "./rollup";
+import { dropPartition, ensurePartitions, forgetPartitions, partitionName } from "./partitions";
+import { closeDays, deleteExpiredAggregates, ensureComingPartitions, expiredPartitions, rebuildDirtyDays } from "./rollup";
 import { rolledUpTo } from "./store";
 
 const setup = Effect.fn(function* () {
@@ -62,6 +62,16 @@ const rollupState = Effect.fn(function* (environmentId: string) {
   return rows[0];
 });
 
+const retention = Effect.fn(function* (now: Date) {
+  yield* ensureComingPartitions(now);
+  const dropped: string[] = [];
+  for (const month of yield* expiredPartitions(now)) {
+    if (yield* dropPartition(month)) dropped.push(partitionName(month));
+  }
+  yield* deleteExpiredAggregates(now);
+  return dropped;
+});
+
 const pageviewCount = Effect.fn(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<{ count: string }>(sql`
@@ -82,7 +92,7 @@ it.live("a pageview arriving late for a closed day on a DST site rebuilds only t
 
     const provide = yield* setup();
     yield* provide(seedSite(site, onTime, goals));
-    yield* provide(rollupClosedDays(new Date(fixture.now)));
+    expect(yield* provide(closeDays(site.environmentId, new Date(fixture.now)))).toBe(4);
     expect(yield* provide(rolledUpTo(site.environmentId))).toBe("2026-10-05");
     yield* provide(everyAnswerMatches(site, fixture, onTime, goals, "before the late rows"));
     const whole = wholeOverview(fixture);
@@ -94,7 +104,7 @@ it.live("a pageview arriving late for a closed day on a DST site rebuilds only t
       yield* drizzle.execute(sql`
         update analytics.rollup_state set dirty = array[${lateDay}::date] where environment_id = ${site.environmentId}::text`);
     }));
-    expect(yield* provide(rebuildDirtyDays())).toBe(1);
+    expect(yield* provide(rebuildDirtyDays(site.environmentId))).toBe(1);
     expect(yield* provide(rollupState(site.environmentId))).toEqual({ rolled_up_to: "2026-10-05", dirty: [] });
     for (const { spec, expected } of fixture.queries) {
       expect(serialized(yield* provide(storeAnswer(spec, site))), `${spec.name} after the rebuild`).toEqual(expected);
@@ -134,7 +144,7 @@ it.live("a batch replayed through ingest adds nothing, and late pageviews dirty 
     yield* push(1n, fixture.rows);
     yield* push(1n, fixture.rows);
     expect(yield* provide(pageviewCount(PRODUCTION))).toBe(fixture.rows.length);
-    expect(yield* provide(rollupClosedDays(new Date(fixture.now)))).toBe(7);
+    expect(yield* provide(closeDays(PRODUCTION, new Date(fixture.now)))).toBe(7);
     yield* push(1n, fixture.rows);
     expect(yield* provide(pageviewCount(PRODUCTION))).toBe(fixture.rows.length);
     expect(yield* provide(rollupState(PRODUCTION))).toEqual({ rolled_up_to: "2026-10-14", dirty: [] });
@@ -150,7 +160,7 @@ it.live("a batch replayed through ingest adds nothing, and late pageviews dirty 
     expect(yield* provide(rollupState(PRODUCTION))).toEqual({ rolled_up_to: "2026-10-14", dirty: ["2026-10-10", "2026-10-11", "2026-10-12"] });
     yield* provide(everyAnswerMatches(site, fixture, fixture.rows, fixture.goals, "while the late days are still dirty", late));
 
-    expect(yield* provide(rebuildDirtyDays())).toBe(3);
+    expect(yield* provide(rebuildDirtyDays(PRODUCTION))).toBe(3);
     expect(yield* provide(rollupState(PRODUCTION))).toEqual({ rolled_up_to: "2026-10-14", dirty: [] });
     yield* provide(everyAnswerMatches(site, fixture, [...fixture.rows, ...late], fixture.goals, "after the rebuild"));
   }).pipe(Effect.provide(TestClock.layer())), 120_000);
@@ -163,10 +173,20 @@ const partitions = Effect.fn(function* () {
   return rows.map((row) => row.name);
 });
 
-it.live("retention drops only the partition whose whole month is past the longest retention and trims rollups to the floor", () =>
+const aggregates = Effect.fn(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const days = yield* drizzle.execute<{ day: string }>(sql`
+    select day::text as day from analytics.daily where environment_id = ${environmentId}::text order by 1`, "objects");
+  const hours = yield* drizzle.execute<{ hour: string }>(sql`
+    select to_char(hour at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as hour from analytics.session_hourly
+    where environment_id = ${environmentId}::text order by 1`, "objects");
+  return { days: days.map((row) => row.day), hours: hours.map((row) => row.hour) };
+});
+
+it.live("retention drops only partitions wholly before the cutoff and trims every site's rollups to it, enabled or not", () =>
   Effect.gen(function* () {
     const provide = yield* setup();
-    const site = { organizationId: "00000000-0000-4000-8000-00000000a000", environmentId: "00000000-0000-4000-8000-00000000a0f0", enabled: true, timezone: "UTC" };
+    const site = { organizationId: "00000000-0000-4000-8000-00000000a000", environmentId: "00000000-0000-4000-8000-00000000a0f0", enabled: false, timezone: "UTC" };
     const row = (ts: string) => ({ ts, visitorId: "1", host: "acme.example", pathname: "/", source: "direct", referrerHost: null, utmSource: null, utmMedium: null, utmCampaign: null, utmTerm: null, utmContent: null, ref: null, language: null });
     yield* provide(Effect.gen(function* () {
       const { drizzle } = yield* Database;
@@ -176,23 +196,18 @@ it.live("retention drops only the partition whose whole month is past the longes
         .values(pageviewValues(site.environmentId, [row("2025-08-20T10:00:00Z"), row("2025-09-20T10:00:00Z"), row("2026-10-01T10:00:00Z")]));
       yield* drizzle.execute(sql`
         insert into analytics.daily (environment_id, day, dim, value, pageviews, visitors, visits, bounces, total_duration)
-        select ${site.environmentId}::text, d::date, '', '', 1, 1, 1, 0, 0 from unnest(array['2025-08-15', '2025-09-14', '2025-09-15', '2026-10-01']) d`);
+        select ${site.environmentId}::text, d::date, '', '', 1, 1, 1, 0, 0 from unnest(array['2025-08-15', '2025-09-13', '2025-09-14', '2026-10-01']) d`);
       yield* drizzle.execute(sql`
         insert into analytics.session_hourly (environment_id, hour, visits, bounces, total_duration)
-        select ${site.environmentId}::text, h::timestamptz, 1, 0, 0 from unnest(array['2025-09-14T23:00:00Z', '2025-09-15T00:00:00Z']) h`);
+        select ${site.environmentId}::text, h::timestamptz, 1, 0, 0 from unnest(array['2025-09-13T23:00:00Z', '2025-09-14T00:00:00Z']) h`);
     }));
 
-    expect(yield* provide(applyRetention(new Date("2026-10-15T10:30:00Z")))).toEqual(["pageview_202508"]);
+    expect(yield* provide(retention(new Date("2026-10-15T10:30:00Z")))).toEqual(["pageview_202508"]);
     expect(yield* provide(partitions())).toEqual(["pageview_202509", "pageview_202610", "pageview_202611", "pageview_202612"]);
     expect(yield* provide(pageviewCount(site.environmentId))).toBe(2);
-    const kept = yield* provide(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const days = yield* drizzle.execute<{ day: string }>(sql`
-        select day::text as day from analytics.daily where environment_id = ${site.environmentId}::text order by 1`, "objects");
-      const hours = yield* drizzle.execute<{ hour: string }>(sql`
-        select to_char(hour at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as hour from analytics.session_hourly
-        where environment_id = ${site.environmentId}::text order by 1`, "objects");
-      return { days: days.map((row) => row.day), hours: hours.map((row) => row.hour) };
-    }));
-    expect(kept).toEqual({ days: ["2025-09-15", "2026-10-01"], hours: ["2025-09-15T00:00:00Z"] });
+    expect(yield* provide(aggregates(site.environmentId))).toEqual({ days: ["2025-09-14", "2026-10-01"], hours: ["2025-09-14T00:00:00Z"] });
+
+    expect(yield* provide(retention(new Date("2026-11-01T03:20:00Z")))).toEqual([]);
+    expect(yield* provide(partitions())).toContain("pageview_202509");
+    expect(yield* provide(pageviewCount(site.environmentId))).toBe(2);
   }), 60_000);

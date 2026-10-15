@@ -8,7 +8,7 @@ import { analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { storeTestCloud } from "#/test/store-cloud";
 import { ensurePartitions, forgetPartitions } from "./partitions";
-import { rollupClosedDays } from "./rollup";
+import { closeDays } from "./rollup";
 import { dailyTotals, dailyTotalsSql, readPlan, rolledUpTo, type StoreQuery } from "./store";
 
 const setup = Effect.fn(function* () {
@@ -44,7 +44,7 @@ for (const name of ["utc", "sydney"] as const) {
       yield* provide(seedSite(fixture.site, fixture.rows, fixture.goals));
       yield* provide(everyAnswerMatches(fixture, "raw"));
 
-      const closed = yield* provide(rollupClosedDays(new Date(fixture.now)));
+      const closed = yield* provide(closeDays(fixture.site.environmentId, new Date(fixture.now)));
       const closedThrough = yield* provide(rolledUpTo(fixture.site.environmentId));
       expect(closedThrough).toBe(CLOSED[name].last);
       expect(closed).toBeGreaterThan(0);
@@ -94,8 +94,8 @@ perf("with a million pageviews stored, the daily rollup closes a day under 30 s 
       });
 
     const raw = yield* provide(timed(dailyTotals(query)));
-    const backfill = yield* provide(timed(rollupClosedDays(new Date(now.getTime() - 86_400_000))));
-    const rollup = yield* provide(timed(rollupClosedDays(now)));
+    const backfill = yield* provide(timed(closeDays(PERF_SITE.environmentId, new Date(now.getTime() - 86_400_000))));
+    const rollup = yield* provide(timed(closeDays(PERF_SITE.environmentId, now)));
     const rolled = yield* provide(timed(dailyTotals(query)));
     const plan = yield* provide(Effect.gen(function* () {
       const { drizzle } = yield* Database;
