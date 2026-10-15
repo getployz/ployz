@@ -29,14 +29,22 @@ for archive in ployz_linux_amd64:ployz,ployz-uninstall ployzd_linux_amd64:ployzd
     grep -Fq 'members are' "$TMP/error"
     mv "$TMP/original.tar.gz" "$TMP/dist/$archive.tar.gz"
 done
-# Publication must accept exactly these six archives and stop before gh on extras.
+# Publication must accept exactly these six archives with signed checksums and stop before gh on extras.
 cat > "$TMP/bin/gh" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$GH_CALLS"
 SH
 chmod 0755 "$TMP/bin/gh"
 export GH_CALLS="$TMP/gh-calls"
+if PATH="$TMP/bin:$PATH" DIST="$TMP/dist" bash "$ROOT/scripts/publish-github-release.sh" v1.2.3 > "$TMP/error" 2>&1; then
+    echo 'published without a checksums signature' >&2
+    exit 1
+fi
+grep -Fq 'release asset set differs' "$TMP/error"
+[ ! -e "$GH_CALLS" ]
+touch "$TMP/dist/checksums.txt.minisig"
 PATH="$TMP/bin:$PATH" DIST="$TMP/dist" bash "$ROOT/scripts/publish-github-release.sh" v1.2.3
+grep -Fq 'checksums.txt.minisig' "$GH_CALLS"
 grep -Fq 'release create v1.2.3 --draft' "$GH_CALLS"
 rm "$GH_CALLS"
 touch "$TMP/dist/retired_linux_amd64.tar.gz"
