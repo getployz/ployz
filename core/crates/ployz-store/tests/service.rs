@@ -11,8 +11,8 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService,
     DiffQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, RemoveService, RenameService, ServiceLineageId, ServiceQuery, ServicesQuery,
-    SetDefaultEnvironment, SettingPath, SourceKind, Written,
+    ProjectName, RemoveService, RenameProject, RenameService, ServiceLineageId, ServiceQuery,
+    ServicesQuery, SetDefaultEnvironment, SettingPath, SourceKind, Written,
 };
 use serde_json::json;
 
@@ -415,4 +415,55 @@ fn a_replayed_create_refuses_once_the_default_environment_moved() {
         .unwrap();
     let refused = store.write(&who, &create).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+}
+
+#[test]
+fn a_replayed_create_whose_scope_names_no_place_now_returns_its_first_answer() {
+    let (store, who) = shop();
+    let create = CreateService {
+        id: ServiceLineageId::parse(uuid(10)).unwrap(),
+        environment: EnvironmentRef {
+            project: Some(ProjectName::parse("shop").unwrap()),
+            environment: Some(EnvironmentName::parse("production").unwrap()),
+        },
+        name: name("api"),
+        image: Some("nginx:1".into()),
+        template: None,
+    };
+    let first = store.write(&who, &create).unwrap();
+    store
+        .write(
+            &who,
+            &RenameProject {
+                project: ProjectName::parse("shop").unwrap(),
+                name: ProjectName::parse("store").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.write(&who, &create).unwrap().environment.id,
+        first.environment.id
+    );
+
+    let defaulted = CreateService {
+        id: ServiceLineageId::parse(uuid(11)).unwrap(),
+        environment: EnvironmentRef::default(),
+        name: name("cron"),
+        ..create
+    };
+    let first = store.write(&who, &defaulted).unwrap();
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(uuid(12)).unwrap(),
+                name: ProjectName::parse("blog").unwrap(),
+                default_environment: EnvironmentId::parse(uuid(13)).unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.write(&who, &defaulted).unwrap().environment.id,
+        first.environment.id
+    );
 }
