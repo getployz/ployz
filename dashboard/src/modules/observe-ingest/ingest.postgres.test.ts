@@ -719,3 +719,35 @@ it.live("an environment deleted while a bot and pageview batch waits on its roll
   expect(yield* stored()).toEqual({ ...nothingStored, cursor: [{ stream: "pageviews", seq: 5n }] });
   expect(yield* rollupState()).toEqual([]);
 }), 60_000);
+
+it.live("a project deleted while a bot batch spanning two environments waits on their rollup state deadlocks neither", () => Effect.gen(function* () {
+  const { services, send, stored, rollupState } = yield* setup();
+  const race = lockRace(services);
+  // Created higher id first, so the delete trigger meets them in the reverse of ingest's id order.
+  const [low, high] = ["00000000-0000-4000-8000-00000000f205", "00000000-0000-4000-8000-00000000f206"] as const;
+  const project = "00000000-0000-4000-8000-00000000f207";
+  yield* Effect.gen(function* () {
+    const store = yield* cloudStore;
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: project, name: "shop", default_environment: high }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_environment", id: low, project: "shop", name: "staging" }));
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`
+      insert into config_namespace (organization_id, namespace, environment_id)
+      values (${ORGANIZATION}, 'shop-high', ${high}), (${ORGANIZATION}, 'shop-low', ${low})`);
+    yield* setSiteAnalytics(ORGANIZATION, high, { enabled: true, timezone: SYDNEY });
+    yield* setSiteAnalytics(ORGANIZATION, low, { enabled: true, timezone: SYDNEY });
+  }).pipe(Effect.provide(services), Effect.orDie);
+  const release = yield* race.holdRollupState(low);
+  const ingest = yield* Effect.forkChild(send(pageviews(5, [bots(3, { namespace: "shop-low" }), bots(2, { namespace: "shop-high" })])));
+  yield* race.untilWaiting(1);
+  const forget = yield* Effect.forkChild(race.provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`delete from config_project where id = ${project}`);
+  })));
+  yield* race.untilWaiting(2);
+  yield* release;
+  expect((yield* Fiber.join(ingest)).status).toBe(200);
+  yield* Fiber.join(forget);
+  expect(yield* stored()).toEqual({ ...nothingStored, cursor: [{ stream: "pageviews", seq: 5n }] });
+  expect(yield* rollupState()).toEqual([]);
+}), 60_000);
