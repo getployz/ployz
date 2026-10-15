@@ -162,7 +162,7 @@ export async function run() {
       : { suspended_at: "2026-10-01T00:00:00Z", suspended_by: { id: by.id, login: by.login, type: "User" } };
   };
   const pullJson = (i: Installation, r: Repository, p: PullRequest) => ({
-    number: p.number, state: p.state, title: p.title, user: { login: p.author, type: "User" },
+    number: p.number, state: p.state, title: p.title, user: { id: user(p.author)?.id ?? 1, login: p.author, type: "User" },
     head: { ref: p.head_branch, sha: p.head_sha, repo: repositoryJson(i, r) },
     base: { ref: p.base_branch, sha: commitSha(i, r, p.base_branch), repo: repositoryJson(i, r) },
     merged: p.merged, merge_commit_sha: p.merge_commit_sha, commits: p.commits, updated_at: p.updated_at,

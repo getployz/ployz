@@ -3647,10 +3647,10 @@ fn a_branch_follows_its_parent_and_diff_shows_where_changes_came_from_and_the_hi
     }
 }
 
-/// Only the in-process Store: Cloud reports the pull request, which the test does
-/// here through the Store itself.
-#[test]
-fn a_sync_from_a_pr_environment_stages_in_production_now() {
+/// A local Store whose Project shop has PR Environments on for acme/web, and ada's
+/// pull request #5 open at head 1111111, with `members` the Organization's GitHub
+/// accounts. Cloud reports the pull request, which this does through the Store itself.
+fn opened_pull_request(members: Vec<ployz_store::GithubUserId>) -> Target {
     let store = Target::Local(tempfile::tempdir().unwrap());
     let Target::Local(dir) = &store else {
         unreachable!("a local Store")
@@ -3701,8 +3701,10 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
         number: ployz_store::PullRequestNumber::parse(5).unwrap(),
         title: "Add search".into(),
         author: "ada".into(),
+        author_id: Some(ployz_store::GithubUserId::parse(9001).unwrap()),
         bot: false,
         head_branch: ployz_store::BranchName::parse("search").unwrap(),
+        head_repository_id: Some(ployz_store::RepositoryId::parse(11).unwrap()),
         head: ployz_store::CommitSha::parse("1".repeat(40)).unwrap(),
         target_branch: ployz_store::BranchName::parse("main").unwrap(),
         commits: 1,
@@ -3715,11 +3717,20 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
         .system(
             &who.organization,
             &ployz_store::SystemEvent::PullRequest(opened),
-            &Trusted::default(),
+            &Trusted {
+                members: Some(members),
+                ..Trusted::default()
+            },
         )
         .unwrap();
     drop(local);
+    store
+}
 
+/// Only the in-process Store, which [`opened_pull_request`] reaches directly.
+#[test]
+fn a_sync_from_a_pr_environment_stages_in_production_now() {
+    let store = opened_pull_request(vec![ployz_store::GithubUserId::parse(9001).unwrap()]);
     ok(&store, &["set", "--env", "pr-5", "web.env.MODE=fast"]);
     let (code, set) = ployz_with_stdin(
         &store,
@@ -3746,6 +3757,43 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
     assert_eq!(undone["into"]["name"], json!("production"));
     let plan = ok(&store, &["env", "sync", "--to", "--plan", "--env", "pr-5"]);
     assert_eq!(labels(&plan["rows"]), ["web.env.MODE", "web.env.TOKEN"]);
+}
+
+/// Only the in-process Store, which [`opened_pull_request`] reaches directly.
+#[test]
+fn an_outsiders_pull_request_deploys_once_a_member_approves_its_head() {
+    let store = opened_pull_request(Vec::new());
+    let waiting = ok(&store, &["env", "pr"]);
+    assert_eq!(
+        waiting["plans"][0]["open"][0],
+        json!({
+            "number": 5, "title": "Add search", "author": "ada", "head": "1".repeat(40),
+            "standing": "needs_approval", "environment": null,
+        })
+    );
+    let names = |listed: &Value| -> Vec<Value> {
+        listed["environments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|env| env["name"].clone())
+            .collect()
+    };
+    assert_eq!(names(&ok(&store, &["env", "ls"])), [json!("production")]);
+    assert_eq!(
+        error(&store, &["env", "pr", "approve", "6"])["code"],
+        json!("not_found")
+    );
+
+    let approved = ok(&store, &["env", "pr", "approve", "5"]);
+    assert_eq!(
+        (&approved["standing"], &approved["environment"]),
+        (&json!({ "approved": "1".repeat(40) }), &json!("pr-5"))
+    );
+    assert_eq!(
+        names(&ok(&store, &["env", "ls"])),
+        [json!("pr-5"), json!("production")]
+    );
 }
 
 #[test]

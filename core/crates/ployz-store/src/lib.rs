@@ -81,9 +81,10 @@ pub use id::*;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
-    MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto, OnMergeQuery, OpenPullRequest,
-    PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery,
-    PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Sweep,
+    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeInto,
+    OnMergeQuery, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
+    PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing,
+    Sweep,
 };
 pub use query::*;
 pub use removal::{
@@ -310,8 +311,8 @@ impl ConfigStore {
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
-    /// `invalid_argument` for a Service it doesn't build or a malformed commit, or a
-    /// storage error.
+    /// `invalid_argument` for a Service it doesn't build, a malformed commit or one
+    /// its pull request doesn't admit, or a storage error.
     pub fn pin(
         &self,
         deployment: &DeploymentId,

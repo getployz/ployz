@@ -278,9 +278,12 @@ pub(super) fn pr_command(command: Command) -> Command {
             "Show the Project's PR plans, or change one. With PR Environments on, \
                      each pull request of the repository gets a Branch of the start-from \
                      Environment named pr-NUMBER, with its own copies of the repository's \
-                     Services tracking the pull request's branch, deployed on open and on \
-                     each push. Only the flags given change.",
+                     Services tracking the pull request's branch. A pull request from the \
+                     repository itself by a member deploys on open and on each push; any \
+                     other waits until a member approves its head. Only the flags given \
+                     change.",
         )
+        .args_conflicts_with_subcommands(true)
         .arg(
             positional("repository", false)
                 .help("The repository, like acme/app [default: the Project's only one]"),
@@ -318,6 +321,22 @@ pub(super) fn pr_command(command: Command) -> Command {
                 .value_parser(clap::value_parser!(bool))
                 .help("Make PR Environments for bots' pull requests too"),
         )
+}
+
+pub(super) fn pr_approve_command(command: Command) -> Command {
+    command
+        .about("Let a pull request's current head deploy with its Environment's secrets")
+        .arg(
+            positional("number", true)
+                .value_parser(clap::value_parser!(u64))
+                .help("The pull request's number"),
+        )
+        .arg(
+            value("repository", None)
+                .value_name("REPOSITORY")
+                .help("The repository, like acme/app [default: the one with that pull request]"),
+        )
+        .arg(project_arg())
 }
 
 pub(super) fn new(root: &ArgMatches) -> Result<(), Error> {

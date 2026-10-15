@@ -26,7 +26,10 @@ fn org() -> OrganizationId {
 
 /// A Project with Git Services `web` and `api` on `acme/web`'s `main`, published.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(org());
     store
         .write(
@@ -122,7 +125,7 @@ fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8
 }
 
 fn system(store: &ConfigStore, event: &SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&org(), event, &Trusted::default()).unwrap()
+    let Written::Automated(automated) = store.system(&org(), event, &backend::members()).unwrap()
     else {
         panic!("a system event writes Automated")
     };
@@ -540,7 +543,12 @@ fn a_merge_keeps_the_destinations_accepted_loss() {
 }
 
 /// Turn on pull request environments from `production`, and open pull request #5.
-fn open_pull_request(store: &ConfigStore, who: &Actor) {
+fn open_pull_request(store: &ConfigStore, who: &Actor) -> Automated {
+    open_as(store, who, &pull_request(true))
+}
+
+/// Turn on pull request environments from `production`, and report `event`.
+fn open_as(store: &ConfigStore, who: &Actor, event: &SystemEvent) -> Automated {
     store
         .write(
             who,
@@ -556,7 +564,7 @@ fn open_pull_request(store: &ConfigStore, who: &Actor) {
             },
         )
         .unwrap();
-    system(store, &pull_request(true));
+    system(store, event)
 }
 
 /// Pull request #5 onto `main`: open, or merged.
@@ -566,8 +574,10 @@ fn pull_request(open: bool) -> SystemEvent {
         number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
+        author_id: Some(backend::ada()),
         bot: false,
         head_branch: backend::git_branch("search"),
+        head_repository_id: Some(backend::repo_id(11)),
         head: backend::sha(H2),
         target_branch: backend::git_branch("main"),
         commits: 1,
@@ -581,6 +591,249 @@ fn pull_request(open: bool) -> SystemEvent {
         })
         .unwrap(),
     })
+}
+
+/// Pull request #5 open at `head`, by someone outside the org, from `acme/web` itself.
+fn by_stranger(head: &str, minute: u8) -> SystemEvent {
+    let SystemEvent::PullRequest(open) = pull_request(true) else {
+        unreachable!("pull_request is a pull request")
+    };
+    SystemEvent::PullRequest(ployz_store::PullRequest {
+        author: "eve".into(),
+        author_id: Some(ployz_store::GithubUserId::parse(42).unwrap()),
+        head: backend::sha(head),
+        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:{minute:02}:00Z"))
+            .unwrap(),
+        ..open
+    })
+}
+
+/// A push to pull request #5's branch, from `base`.
+fn push_search(base: Option<&str>, head: &str) -> SystemEvent {
+    SystemEvent::BranchHead(BranchHead {
+        repository_id: backend::repo_id(11),
+        branch: backend::git_branch("search"),
+        base: base.map(backend::sha),
+        head: Some(backend::sha(head)),
+        changed: None,
+    })
+}
+
+fn approve(store: &ConfigStore, who: &Actor, head: &str) -> Automated {
+    store
+        .write(
+            who,
+            &ployz_store::ApprovePullRequest {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+                head: backend::sha(head),
+            },
+        )
+        .unwrap()
+}
+
+fn reasons(automated: &Automated) -> Vec<&str> {
+    automated
+        .skipped
+        .iter()
+        .map(|skipped| skipped.reason.as_str())
+        .collect()
+}
+
+#[test]
+fn a_push_to_a_members_pull_request_deploys_its_head() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+    let pushed = system(&store, &push_search(None, H3));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+    assert_eq!(pinned(&store, &pushed, "web").as_deref(), Some(H3));
+}
+
+#[test]
+fn a_push_to_a_non_members_pull_request_waits_for_approval_of_its_head() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_as(&store, &who, &by_stranger(H2, 1));
+    assert!(opened.admitted.is_empty(), "{opened:?}");
+    assert!(system(&store, &push_search(None, H2)).admitted.is_empty());
+    let approved = approve(&store, &who, H2);
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H2));
+    backend::run(&store, &approved.admitted[0].deployment.id);
+
+    // The push can arrive before the facts: the approval was for another head.
+    let early = system(&store, &push_search(Some(H2), H3));
+    assert!(early.admitted.is_empty(), "{early:?}");
+    assert_eq!(reasons(&early), ["Needs approval"]);
+    let reported = system(&store, &by_stranger(H3, 2));
+    assert!(reported.admitted.is_empty(), "{reported:?}");
+    assert!(
+        system(&store, &push_search(Some(H2), H3))
+            .admitted
+            .is_empty()
+    );
+
+    let approved = approve(&store, &who, H3);
+    assert_eq!(approved.admitted.len(), 1, "{approved:?}");
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H3));
+}
+
+#[test]
+fn an_approval_that_made_no_pr_environment_stays_listed_to_approve_again() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    assert!(
+        open_as(&store, &who, &by_stranger(H2, 1))
+            .admitted
+            .is_empty()
+    );
+    let approval = ployz_store::ApprovePullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        head: backend::sha(H2),
+    };
+    let serverless = Trusted {
+        servers: Some(0),
+        ..Trusted::default()
+    };
+    let stalled = store.write_trusted(&who, &approval, &serverless).unwrap();
+    assert!(stalled.admitted.is_empty(), "{stalled:?}");
+
+    let plans = store
+        .read(&who, &ployz_store::PrPlansQuery::default())
+        .unwrap();
+    let listed: Vec<_> = plans.plans[0]
+        .open
+        .iter()
+        .map(|open| {
+            (
+                open.number.get(),
+                open.standing.clone(),
+                open.environment.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [(5, ployz_store::Standing::Approved(backend::sha(H2)), None)]
+    );
+
+    let approved = approve(&store, &who, H2);
+    assert_eq!(approved.admitted.len(), 1, "{approved:?}");
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H2));
+}
+
+#[test]
+fn a_push_refused_before_the_author_proved_a_member_deploys_once_they_do() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let SystemEvent::PullRequest(open) = pull_request(true) else {
+        unreachable!("pull_request is a pull request")
+    };
+    let unknown = SystemEvent::PullRequest(ployz_store::PullRequest {
+        author_id: None,
+        ..open.clone()
+    });
+    assert!(open_as(&store, &who, &unknown).admitted.is_empty());
+    assert!(system(&store, &push_search(None, H2)).admitted.is_empty());
+    let approved = approve(&store, &who, H2);
+    backend::run(&store, &approved.admitted[0].deployment.id);
+
+    let early = system(&store, &push_search(Some(H2), H3));
+    assert_eq!(reasons(&early), ["Needs approval"]);
+    let member = SystemEvent::PullRequest(ployz_store::PullRequest {
+        head: backend::sha(H3),
+        updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:05:00Z").unwrap(),
+        ..open
+    });
+    let reported = system(&store, &member);
+    assert_eq!(reported.admitted.len(), 1, "{reported:?}");
+    assert_eq!(pinned(&store, &reported, "web").as_deref(), Some(H3));
+}
+
+#[test]
+fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    open_as(&store, &who, &by_stranger(H2, 1));
+    assert!(system(&store, &push_search(None, H2)).admitted.is_empty());
+    let approved = approve(&store, &who, H2);
+    backend::run(&store, &approved.admitted[0].deployment.id);
+    assert!(system(&store, &by_stranger(H3, 2)).admitted.is_empty());
+    assert!(
+        system(&store, &push_search(Some(H2), H3))
+            .admitted
+            .is_empty()
+    );
+
+    let id = ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000201").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(ployz_store::EnvironmentName::parse("pr-5").unwrap()),
+                },
+                services: vec![ServiceName::parse("web").unwrap()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let refused = store
+        .pin(
+            &id,
+            &std::collections::BTreeMap::from([(
+                ServiceName::parse("web").unwrap(),
+                backend::sha(H3),
+            )]),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+}
+
+#[test]
+fn an_approval_racing_news_of_a_push_refuses_the_head_it_moved_from() {
+    // SQLite writers never overlap.
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    publish(&store, &who);
+    open_as(&store, &who, &by_stranger(H2, 1));
+    // News of a push to H3, not yet committed when the approval of H2 arrives.
+    let mut news = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = news.transaction().unwrap();
+    held.execute(
+        "UPDATE config_pull_request SET facts = replace(facts, $1, $2)",
+        &[&H2, &H3],
+    )
+    .unwrap();
+    let approval = std::thread::scope(|threads| {
+        let approval = threads.spawn(|| {
+            store.write(
+                &who,
+                &ployz_store::ApprovePullRequest {
+                    repository_id: backend::repo_id(11),
+                    number: backend::pr_number(5),
+                    head: backend::sha(H2),
+                },
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        held.commit().unwrap();
+        approval.join().unwrap()
+    });
+    assert_eq!(approval.unwrap_err().code, RpcErrorCode::Conflict);
+    let approved = approve(&store, &who, H3);
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H3));
 }
 
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {
