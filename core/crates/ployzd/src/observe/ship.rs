@@ -277,13 +277,14 @@ impl Stream for Outbox {
 
     fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut removed = 0;
         for seq in seqs {
-            remove_entry(&self.dir, *seq, "")?;
+            removed += usize::from(remove_entry(&self.dir, *seq, "")?);
         }
-        if seqs.is_empty() {
+        if removed == 0 {
             return Ok(());
         }
-        ledger.count_dropped(&self.dir, seqs.len())
+        ledger.count_dropped(&self.dir, removed)
     }
 
     fn wake(&self) -> &Notify {
@@ -319,10 +320,12 @@ fn seqs(dir: &Path, suffix: &str) -> io::Result<Vec<u64>> {
     Ok(seqs)
 }
 
-fn remove_entry(dir: &Path, seq: u64, suffix: &str) -> io::Result<()> {
+/// Whether the entry was there to remove.
+fn remove_entry(dir: &Path, seq: u64, suffix: &str) -> io::Result<bool> {
     match fs::remove_file(dir.join(entry_name(seq, suffix))) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        result => result,
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -647,6 +650,24 @@ mod tests {
         assert_eq!(outbox.ledger().1, 2);
         drop(outbox);
         assert_eq!(Outbox::open(&store).unwrap().ledger().1, 2);
+    }
+
+    #[test]
+    fn refusing_a_batch_the_full_outbox_already_dropped_counts_it_once() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        let cap = i64::try_from(CAP).unwrap();
+        for ts in 1..=cap {
+            outbox.push(crash(ts)).unwrap();
+        }
+        let batch = outbox.next().unwrap().unwrap();
+        assert_eq!(batch.seqs.len(), BATCH);
+        for ts in cap + 1..=cap + 100 {
+            outbox.push(crash(ts)).unwrap();
+        }
+        assert_eq!(outbox.ledger().1, 100);
+        outbox.refuse(&batch.seqs).unwrap();
+        assert_eq!(outbox.ledger().1, 100);
     }
 
     #[test]
