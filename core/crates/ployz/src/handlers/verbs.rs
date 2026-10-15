@@ -763,11 +763,31 @@ pub(crate) fn find(path: &str) -> Option<&'static Verb> {
 
 /// `root` with every group, then every verb, each under its parent.
 pub(crate) fn tree(root: Command) -> Command {
-    let groups = GROUPS.iter().map(|group| (group.path, group.command));
-    let verbs = VERBS.iter().map(|verb| (verb.path, verb.command));
-    groups.chain(verbs).fold(root, |root, (path, command)| {
-        insert(root, path, path, command)
-    })
+    let groups = GROUPS
+        .iter()
+        .map(|group| (group.path, group.command, Vec::new()));
+    let verbs = VERBS
+        .iter()
+        .map(|verb| (verb.path, verb.command, verb.marked_flags()));
+    groups
+        .chain(verbs)
+        .fold(root, |root, (path, command, flags)| {
+            insert(root, path, path, command, &flags)
+        })
+}
+
+impl Verb {
+    fn marked_flags(&self) -> Vec<&'static str> {
+        let wait = match self.keeps_running {
+            KeepsRunning::With(flag) => Some(flag),
+            KeepsRunning::Never | KeepsRunning::Always => None,
+        };
+        self.stdin
+            .iter()
+            .map(|(flag, _)| *flag)
+            .chain(wait)
+            .collect()
+    }
 }
 
 fn insert(
@@ -775,15 +795,26 @@ fn insert(
     path: &'static str,
     rest: &'static str,
     command: fn(Command) -> Command,
+    flags: &[&'static str],
 ) -> Command {
     match rest.split_once(' ') {
-        None => parent.subcommand(command(Command::new(rest))),
+        None => {
+            let leaf = command(Command::new(rest));
+            for flag in flags {
+                assert!(
+                    leaf.get_arguments()
+                        .any(|arg| arg.get_long() == flag.strip_prefix("--")),
+                    "`{path}` marks `{flag}`, which it does not take"
+                );
+            }
+            parent.subcommand(leaf)
+        }
         Some((head, rest)) => {
             assert!(
                 parent.find_subcommand(head).is_some(),
                 "`{path}` needs its parent `{head}` listed first"
             );
-            parent.mut_subcommand(head, |child| insert(child, path, rest, command))
+            parent.mut_subcommand(head, |child| insert(child, path, rest, command, flags))
         }
     }
 }
