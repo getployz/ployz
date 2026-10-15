@@ -1,14 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { handleMachineSetupReport } from "#/routes/api/enroll/-handlers";
+import { handleMachineEnrollmentCallback } from "#/routes/api/enroll/-handlers";
 import { publicErrorResponse } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
-export const Route = createFileRoute("/api/enroll/$token/report")({
+export const Route = createFileRoute("/api/enroll/callback")({
   server: {
     handlers: {
-      POST: async ({ request, params }) =>
+      POST: async ({ request }) =>
         runAppEffect(
-          handleMachineSetupReport(request, params.token),
+          handleMachineEnrollmentCallback(request),
           { signal: request.signal },
         ).catch(publicErrorResponse),
     },

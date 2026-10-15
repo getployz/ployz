@@ -31,14 +31,31 @@ You don't need Docker: Ployz installs it if it's missing.
 3. Click **Copy** next to the command under **Run this as root**.
 4. Open a shell on the server, as root or as a user with `sudo`, and paste the command. The
    server takes its hostname as its name; to choose another, add `--name web-1` to the end.
+5. When it asks for the enrollment token, click **Copy** under **Paste the token when asked**
+   and paste it.
 
 ![The Add a server dialog with its command](../images/add-server-dialog.png)
 
 The command looks like this:
 
 ```sh
-curl -fsSL https://ployz.sh/ | sh && sudo ployz server add --token '...'
+curl -fsSL https://ployz.sh/ | sh && sudo ployz server add
 ```
+
+The command carries no token. `ployz server add` asks for it, and the prompt doesn't show what you
+paste. The token never enters your shell history or the server's process list, whatever your
+shell's history settings. If the server's root user is signed in to Cloud with `ployz login`, it
+doesn't ask: it enrolls into the organization it's signed in to.
+
+To enroll a server from a script, give `ployz server add` the token one of three ways:
+
+- `--token-stdin` reads it from standard input.
+- `--token-file <path>` reads it from a file, such as one your provisioning tool wrote.
+- The `PLOYZ_ENROLL_TOKEN` environment variable, set in the root shell or the service that runs
+  `ployz server add`. Don't write `sudo PLOYZ_ENROLL_TOKEN=... ployz`: that puts the token in the
+  process list.
+
+Use one of them, not two.
 
 When it finishes, the server shows on the **Servers** page, ready for builds, services and web
 traffic. The command works for 24 hours; open the dialog again for a new one. If the server

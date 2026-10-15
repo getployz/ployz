@@ -32,7 +32,9 @@ import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
-import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
+import { Route as ApiEnrollIndexRouteImport } from './routes/api/enroll/index'
+import { Route as ApiEnrollCallbackRouteImport } from './routes/api/enroll/callback'
+import { Route as ApiEnrollReportRouteImport } from './routes/api/enroll/report'
 import { Route as ApiGithubCallbackRouteImport } from './routes/api/github/callback'
 import { Route as ApiGithubConnectRouteImport } from './routes/api/github/connect'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
@@ -53,8 +55,6 @@ import { Route as ApiCliCloudResetRouteImport } from './routes/api/cli/cloud/res
 import { Route as ApiCliRunNameRouteImport } from './routes/api/cli/run/$name'
 import { Route as ApiCliServersEnrollRouteImport } from './routes/api/cli/servers/enroll'
 import { Route as ApiCliServersEnrollmentRouteImport } from './routes/api/cli/servers/enrollment'
-import { Route as ApiEnrollTokenCallbackRouteImport } from './routes/api/enroll/$token/callback'
-import { Route as ApiEnrollTokenReportRouteImport } from './routes/api/enroll/$token/report'
 import { Route as ApiMachinesMachineObserveRouteImport } from './routes/api/machines/$machine/observe'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/route'
 import { Route as ProtectedCloudOrganizationSlugProjectNewRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/new'
@@ -196,9 +196,19 @@ const ApiConfigSplatRoute = ApiConfigSplatRouteImport.update({
   path: '/api/config/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiEnrollTokenRoute = ApiEnrollTokenRouteImport.update({
-  id: '/api/enroll/$token',
-  path: '/api/enroll/$token',
+const ApiEnrollIndexRoute = ApiEnrollIndexRouteImport.update({
+  id: '/api/enroll/',
+  path: '/api/enroll/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEnrollCallbackRoute = ApiEnrollCallbackRouteImport.update({
+  id: '/api/enroll/callback',
+  path: '/api/enroll/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEnrollReportRoute = ApiEnrollReportRouteImport.update({
+  id: '/api/enroll/report',
+  path: '/api/enroll/report',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiGithubCallbackRoute = ApiGithubCallbackRouteImport.update({
@@ -303,16 +313,6 @@ const ApiCliServersEnrollmentRoute = ApiCliServersEnrollmentRouteImport.update({
   id: '/api/cli/servers/enrollment',
   path: '/api/cli/servers/enrollment',
   getParentRoute: () => rootRouteImport,
-} as any)
-const ApiEnrollTokenCallbackRoute = ApiEnrollTokenCallbackRouteImport.update({
-  id: '/callback',
-  path: '/callback',
-  getParentRoute: () => ApiEnrollTokenRoute,
-} as any)
-const ApiEnrollTokenReportRoute = ApiEnrollTokenReportRouteImport.update({
-  id: '/report',
-  path: '/report',
-  getParentRoute: () => ApiEnrollTokenRoute,
 } as any)
 const ApiMachinesMachineObserveRoute =
   ApiMachinesMachineObserveRouteImport.update({
@@ -512,7 +512,8 @@ export interface FileRoutesByFullPath {
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
-  '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
+  '/api/enroll/callback': typeof ApiEnrollCallbackRoute
+  '/api/enroll/report': typeof ApiEnrollReportRoute
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
@@ -522,6 +523,7 @@ export interface FileRoutesByFullPath {
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
+  '/api/enroll/': typeof ApiEnrollIndexRoute
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
@@ -532,8 +534,6 @@ export interface FileRoutesByFullPath {
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
-  '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
-  '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
@@ -577,7 +577,8 @@ export interface FileRoutesByTo {
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
-  '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
+  '/api/enroll/callback': typeof ApiEnrollCallbackRoute
+  '/api/enroll/report': typeof ApiEnrollReportRoute
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
@@ -587,6 +588,7 @@ export interface FileRoutesByTo {
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/cloud': typeof ProtectedCloudIndexRoute
+  '/api/enroll': typeof ApiEnrollIndexRoute
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
   '/api/builds/$build/check-in': typeof ApiBuildsBuildCheckInRoute
@@ -597,8 +599,6 @@ export interface FileRoutesByTo {
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
-  '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
-  '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/cloud/account': typeof ProtectedCloudAccountIndexRoute
   '/cloud/$organizationSlug/new': typeof ProtectedCloudOrganizationSlugProjectNewRoute
@@ -644,7 +644,8 @@ export interface FileRoutesById {
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
   '/api/config/$': typeof ApiConfigSplatRoute
-  '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
+  '/api/enroll/callback': typeof ApiEnrollCallbackRoute
+  '/api/enroll/report': typeof ApiEnrollReportRoute
   '/api/github/callback': typeof ApiGithubCallbackRoute
   '/api/github/connect': typeof ApiGithubConnectRoute
   '/api/github/webhook': typeof ApiGithubWebhookRoute
@@ -654,6 +655,7 @@ export interface FileRoutesById {
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
+  '/api/enroll/': typeof ApiEnrollIndexRoute
   '/_protected/cloud/$organizationSlug/_org': typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
@@ -666,8 +668,6 @@ export interface FileRoutesById {
   '/api/cli/run/$name': typeof ApiCliRunNameRoute
   '/api/cli/servers/enroll': typeof ApiCliServersEnrollRoute
   '/api/cli/servers/enrollment': typeof ApiCliServersEnrollmentRoute
-  '/api/enroll/$token/callback': typeof ApiEnrollTokenCallbackRoute
-  '/api/enroll/$token/report': typeof ApiEnrollTokenReportRoute
   '/api/machines/$machine/observe': typeof ApiMachinesMachineObserveRoute
   '/_protected/cloud/account/': typeof ProtectedCloudAccountIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugRouteRouteWithChildren
@@ -715,7 +715,8 @@ export interface FileRouteTypes {
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
-    | '/api/enroll/$token'
+    | '/api/enroll/callback'
+    | '/api/enroll/report'
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
@@ -725,6 +726,7 @@ export interface FileRouteTypes {
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
     | '/cloud/'
+    | '/api/enroll/'
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
@@ -735,8 +737,6 @@ export interface FileRouteTypes {
     | '/api/cli/run/$name'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
-    | '/api/enroll/$token/callback'
-    | '/api/enroll/$token/report'
     | '/api/machines/$machine/observe'
     | '/cloud/account/'
     | '/cloud/$organizationSlug/$projectSlug'
@@ -780,7 +780,8 @@ export interface FileRouteTypes {
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
-    | '/api/enroll/$token'
+    | '/api/enroll/callback'
+    | '/api/enroll/report'
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
@@ -790,6 +791,7 @@ export interface FileRouteTypes {
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server'
     | '/cloud'
+    | '/api/enroll'
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
     | '/api/builds/$build/check-in'
@@ -800,8 +802,6 @@ export interface FileRouteTypes {
     | '/api/cli/run/$name'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
-    | '/api/enroll/$token/callback'
-    | '/api/enroll/$token/report'
     | '/api/machines/$machine/observe'
     | '/cloud/account'
     | '/cloud/$organizationSlug/new'
@@ -846,7 +846,8 @@ export interface FileRouteTypes {
     | '/api/cli/$'
     | '/api/cli/manifest'
     | '/api/config/$'
-    | '/api/enroll/$token'
+    | '/api/enroll/callback'
+    | '/api/enroll/report'
     | '/api/github/callback'
     | '/api/github/connect'
     | '/api/github/webhook'
@@ -856,6 +857,7 @@ export interface FileRouteTypes {
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
     | '/_protected/cloud/'
+    | '/api/enroll/'
     | '/_protected/cloud/$organizationSlug/_org'
     | '/_protected/cloud/$organizationSlug/_project'
     | '/.well-known/oauth-authorization-server/api/auth'
@@ -868,8 +870,6 @@ export interface FileRouteTypes {
     | '/api/cli/run/$name'
     | '/api/cli/servers/enroll'
     | '/api/cli/servers/enrollment'
-    | '/api/enroll/$token/callback'
-    | '/api/enroll/$token/report'
     | '/api/machines/$machine/observe'
     | '/_protected/cloud/account/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug'
@@ -914,7 +914,8 @@ export interface RootRouteChildren {
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
   ApiConfigSplatRoute: typeof ApiConfigSplatRoute
-  ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
+  ApiEnrollCallbackRoute: typeof ApiEnrollCallbackRoute
+  ApiEnrollReportRoute: typeof ApiEnrollReportRoute
   ApiGithubCallbackRoute: typeof ApiGithubCallbackRoute
   ApiGithubConnectRoute: typeof ApiGithubConnectRoute
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
@@ -923,6 +924,7 @@ export interface RootRouteChildren {
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  ApiEnrollIndexRoute: typeof ApiEnrollIndexRoute
   DotwellKnownOauthAuthorizationServerApiAuthRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   ApiAgentOrganizationSlugChatRoute: typeof ApiAgentOrganizationSlugChatRoute
   ApiBuildsBuildCheckInRoute: typeof ApiBuildsBuildCheckInRoute
@@ -1099,11 +1101,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiConfigSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/enroll/$token': {
-      id: '/api/enroll/$token'
-      path: '/api/enroll/$token'
-      fullPath: '/api/enroll/$token'
-      preLoaderRoute: typeof ApiEnrollTokenRouteImport
+    '/api/enroll/': {
+      id: '/api/enroll/'
+      path: '/api/enroll'
+      fullPath: '/api/enroll/'
+      preLoaderRoute: typeof ApiEnrollIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/enroll/callback': {
+      id: '/api/enroll/callback'
+      path: '/api/enroll/callback'
+      fullPath: '/api/enroll/callback'
+      preLoaderRoute: typeof ApiEnrollCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/enroll/report': {
+      id: '/api/enroll/report'
+      path: '/api/enroll/report'
+      fullPath: '/api/enroll/report'
+      preLoaderRoute: typeof ApiEnrollReportRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/github/callback': {
@@ -1245,20 +1261,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/cli/servers/enrollment'
       preLoaderRoute: typeof ApiCliServersEnrollmentRouteImport
       parentRoute: typeof rootRouteImport
-    }
-    '/api/enroll/$token/callback': {
-      id: '/api/enroll/$token/callback'
-      path: '/callback'
-      fullPath: '/api/enroll/$token/callback'
-      preLoaderRoute: typeof ApiEnrollTokenCallbackRouteImport
-      parentRoute: typeof ApiEnrollTokenRoute
-    }
-    '/api/enroll/$token/report': {
-      id: '/api/enroll/$token/report'
-      path: '/report'
-      fullPath: '/api/enroll/$token/report'
-      preLoaderRoute: typeof ApiEnrollTokenReportRouteImport
-      parentRoute: typeof ApiEnrollTokenRoute
     }
     '/api/machines/$machine/observe': {
       id: '/api/machines/$machine/observe'
@@ -1610,20 +1612,6 @@ const PublicRouteRouteWithChildren = PublicRouteRoute._addFileChildren(
   PublicRouteRouteChildren,
 )
 
-interface ApiEnrollTokenRouteChildren {
-  ApiEnrollTokenCallbackRoute: typeof ApiEnrollTokenCallbackRoute
-  ApiEnrollTokenReportRoute: typeof ApiEnrollTokenReportRoute
-}
-
-const ApiEnrollTokenRouteChildren: ApiEnrollTokenRouteChildren = {
-  ApiEnrollTokenCallbackRoute: ApiEnrollTokenCallbackRoute,
-  ApiEnrollTokenReportRoute: ApiEnrollTokenReportRoute,
-}
-
-const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(
-  ApiEnrollTokenRouteChildren,
-)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
@@ -1643,7 +1631,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,
   ApiConfigSplatRoute: ApiConfigSplatRoute,
-  ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
+  ApiEnrollCallbackRoute: ApiEnrollCallbackRoute,
+  ApiEnrollReportRoute: ApiEnrollReportRoute,
   ApiGithubCallbackRoute: ApiGithubCallbackRoute,
   ApiGithubConnectRoute: ApiGithubConnectRoute,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
@@ -1653,6 +1642,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   DotwellKnownOauthAuthorizationServerIndexRoute:
     DotwellKnownOauthAuthorizationServerIndexRoute,
+  ApiEnrollIndexRoute: ApiEnrollIndexRoute,
   DotwellKnownOauthAuthorizationServerApiAuthRoute:
     DotwellKnownOauthAuthorizationServerApiAuthRoute,
   ApiAgentOrganizationSlugChatRoute: ApiAgentOrganizationSlugChatRoute,

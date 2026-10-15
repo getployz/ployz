@@ -1,6 +1,6 @@
-//! Best-effort setup report for `ployz server add --token`: the Server profile and step times.
+//! Best-effort setup report for token enrollment: the Server profile and step times.
 //!
-//! One POST to `<cloud>/api/enroll/<token>/report` once setup succeeds or fails. It never
+//! One POST to `<cloud>/api/enroll/report` once setup succeeds or fails. It never
 //! changes what the user sees: one attempt, a short timeout, every error swallowed.
 //! `DO_NOT_TRACK` turns it off. Its profile never carries hostnames, IPs, the Server name,
 //! labels, Machine ids or secrets. On failure, `error` is the message the user saw; Cloud
@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ployz_core::{MachineToken, StorageChoice};
+use ployz_core::{CloudEnrollToken, MachineToken, StorageChoice};
 use serde::Serialize;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -29,7 +29,7 @@ const PROVIDERS: &[(&str, &str, bool)] = &[
     ("oracle", "oracle", false),
 ];
 
-/// The steps of `server add --token`, in order.
+/// The steps of token enrollment, in order.
 ///
 /// The names are an analytics contract: renaming one breaks every chart built on it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -105,7 +105,7 @@ struct Body<'report> {
     total_seconds: f64,
 }
 
-/// Times the steps of one `server add --token` run and collects the Server profile.
+/// Times the steps of one token enrollment and collects the Server profile.
 pub(crate) struct SetupReport {
     started: Instant,
     finished: Vec<StepTime>,
@@ -186,6 +186,7 @@ impl SetupReport {
     pub(crate) async fn send<E: std::error::Error + 'static>(
         mut self,
         url: &str,
+        token: &CloudEnrollToken,
         error: Option<&E>,
     ) {
         if do_not_track() {
@@ -212,7 +213,12 @@ impl SetupReport {
         let Ok(http) = reqwest::Client::builder().timeout(TIMEOUT).build() else {
             return;
         };
-        let _ = http.post(url).json(&body).send().await;
+        let _ = http
+            .post(url)
+            .bearer_auth(token.as_str())
+            .json(&body)
+            .send()
+            .await;
     }
 }
 

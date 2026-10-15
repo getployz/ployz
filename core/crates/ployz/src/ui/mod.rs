@@ -20,7 +20,7 @@ pub(crate) use error::{retrying, row, rpc_error, warn_cause};
 pub(crate) use exit::plain;
 pub use exit::{PARTIAL_EXIT, exit, exit_code};
 pub use mode::{Mode, Surroundings, mode};
-pub(crate) use prompt::{can_prompt, confirm, confirm_name, select};
+pub(crate) use prompt::{can_prompt, confirm, confirm_name, secret, select};
 pub use result::json;
 pub(crate) use result::{
     Gaps, captured, done, emit, emit_committed, emit_line, emitted, fields, finish, finish_fanout,

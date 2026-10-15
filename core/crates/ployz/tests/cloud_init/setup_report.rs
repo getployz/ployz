@@ -1,4 +1,4 @@
-//! The best-effort setup report `server add --token` sends Cloud after it succeeds or fails.
+//! The best-effort setup report `server add` sends Cloud after token enrollment succeeds or fails.
 
 use std::time::{Duration, Instant};
 
@@ -43,8 +43,8 @@ async fn join_locally(do_not_track: bool) -> (std::process::Output, EnrollListen
         &connect,
         "server",
         "add",
-        "--token",
-        TOKEN,
+        "--token-file",
+        super::harness::token_file(),
         "--cloud-url",
         &enroll.url,
         "--name",
@@ -111,8 +111,8 @@ async fn a_run_dialing_another_host_reports_no_host_profile() {
             "tcp://127.0.0.1:1",
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            super::harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--yes",
@@ -162,8 +162,8 @@ async fn refuse_zfs(reply: ReportReply) -> (String, Vec<(usize, Value)>, Duratio
             &connect,
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            super::harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",

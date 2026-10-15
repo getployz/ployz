@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, fs, process::Output};
 
 use super::harness::{
-    EnrollListen, EventLog, JoinDaemon, PAIRING, TOKEN, founder_machine, ingress_on, registration,
+    EnrollListen, EventLog, JoinDaemon, PAIRING, founder_machine, ingress_on, registration,
     serve_machine,
 };
 use ployz::context::{Config, Connection, Context};
@@ -148,8 +148,8 @@ async fn cloud_join(target_failures: Fault, ensure_failures: Fault) -> (Output, 
             &format!("ssh://root@{address}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            super::harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",

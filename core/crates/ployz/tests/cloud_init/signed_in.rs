@@ -109,11 +109,14 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
             json!({ "organizationSlug": "acme" })
         )]
     );
-    assert_eq!(enroll.paths().get(1), Some(&format!("/api/enroll/{TOKEN}")));
+    assert_eq!(
+        enroll.paths().get(1).map(String::as_str),
+        Some("/api/enroll")
+    );
 }
 
 #[tokio::test]
-async fn server_add_without_a_sign_in_fails_fast_with_the_login_hint() {
+async fn server_add_without_a_sign_in_or_a_terminal_names_every_token_source() {
     let directory = tempfile::tempdir().unwrap();
     let output = harness::cli()
         .args([
@@ -134,6 +137,13 @@ async fn server_add_without_a_sign_in_fails_fast_with_the_login_hint() {
         error.pointer("/error/code"),
         Some(&json!("unauthenticated"))
     );
+    let message = error
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap();
+    for source in ["--token-stdin", "--token-file", "PLOYZ_ENROLL_TOKEN"] {
+        assert!(message.contains(source), "{message}");
+    }
     assert_eq!(
         error.pointer("/error/details/next"),
         Some(&json!("ployz login"))
@@ -181,11 +191,12 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
     assert_eq!(
         pending.pointer("/command"),
         Some(&json!(format!(
-            "curl -fsSL https://ployz.sh/ | sh -s -- {} && sudo ployz server add --token '{TOKEN}' --cloud-url '{}'",
+            "curl -fsSL https://ployz.sh/ | sh -s -- {} && sudo ployz server add --cloud-url '{}'",
             env!("CARGO_PKG_VERSION"),
             cloud.url
         )))
     );
+    assert_eq!(pending.pointer("/token"), Some(&json!(TOKEN)));
 
     let joined = harness::cli()
         .args([

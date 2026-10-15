@@ -34,6 +34,10 @@ const identity = {
   diskTotalBytes: 107_374_182_400,
   diskAvailableBytes: 85_899_345_920,
 };
+const headers = {
+  "content-type": "application/json",
+  authorization: `Bearer ${token}`,
+};
 const waiterIdentity = {
   ...identity,
   publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
@@ -41,26 +45,24 @@ const waiterIdentity = {
 
 function join(body: JsonValue, extra?: RequestInit) {
   return Effect.runPromise(handleMachineEnrollmentJoin(
-    new Request("https://cloud.example/api/enroll/pmet_secret", {
+    new Request("https://cloud.example/api/enroll", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       ...extra,
     }),
-    token,
     mocks.enroll,
   ));
 }
 
 function callback(body: JsonValue, extra?: RequestInit) {
   return Effect.runPromise(handleMachineEnrollmentCallback(
-    new Request("https://cloud.example/api/enroll/pmet_secret/callback", {
+    new Request("https://cloud.example/api/enroll/callback", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       ...extra,
     }),
-    token,
     mocks.completeFounding,
   ));
 }
@@ -156,23 +158,47 @@ describe("machine enrollment routes", () => {
     expect(JSON.stringify(body)).not.toMatch(/10\.\d+\.\d+\.\d+\/24/u);
   });
 
-  it("rejects a missing enrollment token without reading identity", async () => {
-    const response = await Effect.runPromise(
-      handleMachineEnrollmentJoin(
-        new Request("https://cloud.example/api/enroll/", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(identity),
-        }),
-        "",
-        mocks.enroll,
-      ),
-    );
-    const body = await response.text();
+  it("rejects a missing, malformed or path token without reading identity", async () => {
+    const json = { "content-type": "application/json" };
+    const requests: Array<{ url: string; headers: Record<string, string> }> = [
+      { url: "https://cloud.example/api/enroll", headers: json },
+      { url: `https://cloud.example/api/enroll/${token}`, headers: json },
+      { url: "https://cloud.example/api/enroll", headers: { ...json, authorization: token } },
+      { url: "https://cloud.example/api/enroll", headers: { ...json, authorization: "Bearer " } },
+      { url: "https://cloud.example/api/enroll", headers: { ...json, authorization: `Basic ${token}` } },
+    ];
+    for (const { url, headers: requestHeaders } of requests) {
+      const response = await Effect.runPromise(
+        handleMachineEnrollmentJoin(
+          new Request(url, { method: "POST", headers: requestHeaders, body: JSON.stringify(identity) }),
+          mocks.enroll,
+        ),
+      );
 
-    expect(response.status).toBe(401);
+      expect(response.status, `${url} ${requestHeaders["authorization"]}`).toBe(401);
+      expect(await response.text()).not.toContain(token);
+    }
     expect(mocks.enroll).not.toHaveBeenCalled();
-    expect(body).not.toContain(token);
+  });
+
+  it("rejects callback and report without the bearer header", async () => {
+    const unauthenticated = (path: string) =>
+      new Request(`https://cloud.example/api/enroll/${token}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+    const record = vi.fn();
+
+    const callbackResponse = await Effect.runPromise(
+      handleMachineEnrollmentCallback(unauthenticated("/callback"), mocks.completeFounding),
+    );
+    const reportResponse = await Effect.runPromise(handleMachineSetupReport(unauthenticated("/report"), record));
+
+    expect(callbackResponse.status).toBe(401);
+    expect(reportResponse.status).toBe(401);
+    expect(mocks.completeFounding).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
   });
 
   it("ignores unknown identity fields from newer CLIs", async () => {
@@ -394,12 +420,11 @@ describe("setup report route", () => {
 
   function report(body: JsonValue, record: Mock<RecordReport> = vi.fn<RecordReport>(() => Effect.succeed(undefined))) {
     const handled = handleMachineSetupReport(
-      new Request("https://cloud.example/api/enroll/pmet_secret/report", {
+      new Request("https://cloud.example/api/enroll/report", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify(body),
       }),
-      token,
       record,
     );
     return Effect.runPromise(handled).then((response) => ({ response, record }));
