@@ -29,8 +29,18 @@ export default defineConfig({
         },
       },
       {
+        resolve: {
+          alias: {
+            // The build-time entries TanStack Start's Vite plugin provides, so a test can dispatch a request the way the
+            // app's server does.
+            "#tanstack-router-entry": fileURLToPath(new URL("./src/router.tsx", import.meta.url)),
+            "#tanstack-start-entry": fileURLToPath(new URL("./src/start.ts", import.meta.url)),
+          },
+        },
         test: {
           ...sharedTestConfig,
+          // Inlined so start-server-core's imports of those entries resolve through the aliases above.
+          server: { deps: { inline: [...sharedTestConfig.server.deps.inline, /@tanstack\/(react-start|react-start-server|start-server-core)\//] } },
           name: "postgres",
           include: ["src/**/*.postgres.test.ts"],
           // One server for the run; each file gets its own copy of the migrated database.

@@ -62,6 +62,12 @@ claude mcp add -s user ployz -- ployz mcp
 In Codex, run `codex mcp add ployz -- ployz mcp` instead. If the server is already registered,
 leave it as it is.
 
+An agent app that can't run `ployz` on this computer can use the Ployz tools from Ployz Cloud
+instead. Add `https://ployz.dev/mcp` as a remote MCP server, for example
+`claude mcp add --transport http ployz https://ployz.dev/mcp`. The app opens the browser for the
+user to sign in and pick an organization. This works on ployz.dev only, not on a Self-hosted
+Cloud.
+
 ## 5. Finish
 
 Tell the user:

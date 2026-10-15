@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { and, asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
+import { oauthConsent } from "#/modules/identity/oauth-tables";
 import { member, organizationToken, session, user } from "#/modules/identity/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerAccessRetireRequestedEvent } from "#/modules/inngest/events";
@@ -20,9 +21,10 @@ const refusalFor = (members: ReadonlyArray<{ userId: string; role: Role }>, aske
 };
 
 /**
- * The one place a membership ends. The user's Organization Tokens there go with it, their sessions acting there move to
- * their next Organization or none, and their devices' holders on its Servers are retired once it commits. It refuses
- * to remove the last owner. Locks the Organization's member rows, so a concurrent removal or role change waits.
+ * The one place a membership ends. The user's Organization Tokens and agent connections there go with it, their
+ * sessions acting there move to their next Organization or none, and their devices' holders on its Servers are retired
+ * once it commits. It refuses to remove the last owner. Locks the Organization's member rows, so a concurrent removal
+ * or role change waits.
  */
 export const removeMembership = Effect.fn("Organization.removeMembership")(function* (organizationId: string, userId: string, askedBy: string) {
   const database = yield* Database;
@@ -40,6 +42,7 @@ export const removeMembership = Effect.fn("Organization.removeMembership")(funct
     yield* drizzle.delete(member).where(and(eq(member.organizationId, organizationId), eq(member.userId, userId)));
     yield* drizzle.delete(organizationToken)
       .where(and(eq(organizationToken.organizationId, organizationId), eq(organizationToken.userId, userId)));
+    yield* drizzle.delete(oauthConsent).where(and(eq(oauthConsent.referenceId, organizationId), eq(oauthConsent.userId, userId)));
     const [next] = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(member)
       .innerJoin(organization, eq(organization.id, member.organizationId))
       .where(eq(member.userId, userId)).orderBy(asc(member.createdAt)).limit(1);
