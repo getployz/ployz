@@ -18,7 +18,6 @@ beforeEach(() => {
 
 const drainFunction = (clickhouse: ClickHouseService | null) => {
   const run = makeEffectRunner<never, never>({ runPromiseExit: (effect) => Effect.runPromiseExit(Effect.provideService(effect, ClickHouse, clickhouse)) });
-  // SAFETY: The drain's effects here need only the ClickHouse reference this runner provides.
   const [drain] = createClickHouseFunctions(new Inngest({ id: "clickhouse-test" }), makeInngestEffectRunner(run) as Parameters<typeof createClickHouseFunctions>[1]);
   if (drain === undefined) throw new Error("no drain function");
   return new InngestTestEngine({ function: drain });

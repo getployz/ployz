@@ -53,7 +53,6 @@ const pageview = (environmentId: string, minute: number, pathname = "/") => ({
   flags: 0,
 });
 
-/** What ingest does for one push: the rows land in Postgres and in the outbox in one transaction. */
 const ingest = (rows: ReadonlyArray<ReturnType<typeof pageview>>) =>
   harness.runTransaction((drizzle) => Effect.gen(function* () {
     const inserted = yield* drizzle.insert(analyticsPageview).values([...rows]).returning();
@@ -116,7 +115,6 @@ it("a late pageview marks the ClickHouse rollup's closed days dirty, and leaves 
   await drain();
   await harness.db.update(analyticsClickhouseSite).set({ rolledUpTo: "2026-10-10" });
 
-  // 00:30 UTC is 11:30 in Sydney on the 10th; its session may start the day before and its entry lookback reaches the 11th.
   await ingest([pageview(SHOP, 30)]);
   await drain();
 

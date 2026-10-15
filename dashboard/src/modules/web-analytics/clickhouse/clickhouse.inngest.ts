@@ -13,7 +13,6 @@ type EffectRunner = typeof runInngestEffect;
 
 const DRAINS_PER_RUN = 30;
 
-/** Without `CLICKHOUSE_URL` ingest writes no outbox, so every ClickHouse job has nothing to do. */
 const withClickHouse = <A, E, R>(run: (clickhouse: ClickHouseService) => Effect.Effect<A, E, R>, otherwise: A) =>
   Effect.gen(function* () {
     const clickhouse = yield* ClickHouse;

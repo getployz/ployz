@@ -107,7 +107,6 @@ const rawFields = {
   marketingOrigin: optional(Config.url("MARKETING_ORIGIN")),
   uptimeEnabled: Config.boolean("UPTIME_ENABLED").pipe(Config.withDefault(false)),
   analyticsEnabled: Config.boolean("ANALYTICS_ENABLED").pipe(Config.withDefault(false)),
-  // Self-host never sets these: without ClickHouse, ingest keeps no outbox and every site reads Postgres.
   analyticsStore: Config.literals(["postgres", "clickhouse"], "ANALYTICS_STORE").pipe(Config.withDefault("postgres" as const)),
   clickhouseUrl: optional(Config.schema(NonEmptySecret, "CLICKHOUSE_URL")),
   inngestEventKey: Config.schema(NonEmptySecret, "INNGEST_EVENT_KEY"),
@@ -274,7 +273,6 @@ const makeAppConfig = Effect.gen(function* () {
     // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
     uptimeEnabled: raw.uptimeEnabled,
     analyticsEnabled: polar.mode !== "self_hosted" || raw.analyticsEnabled,
-    // Unset (Self-hosted Cloud): analytics lives only in Postgres. `reads` lets sites whose copy passed parity read it.
     clickhouse: raw.clickhouseUrl === undefined ? null : { url: raw.clickhouseUrl, reads: raw.analyticsStore === "clickhouse" },
     encryptionSecret: raw.encryptionSecret,
     // Ployz support exists only on Ployz-hosted Cloud: a Self-hosted Cloud never has staff, whatever the variable says.

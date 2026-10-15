@@ -126,7 +126,6 @@ export const analyticsRollupState = analytics.table("rollup_state", {
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
 });
 
-/** Pageview batches ingest admitted, held until the ClickHouse writer copies them; written only when ClickHouse is configured. */
 export const analyticsOutbox = analytics.table("outbox", {
   id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
   environmentId: text("environment_id").notNull(),
@@ -134,7 +133,6 @@ export const analyticsOutbox = analytics.table("outbox", {
   createdAt: timestamptz("created_at").defaultNow().notNull(),
 });
 
-/** The ClickHouse copy of a site: its rollup progress, and whether reads come from it. */
 export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   environmentId: text("environment_id").primaryKey(),
   rolledUpTo: date("rolled_up_to", { mode: "string" }),

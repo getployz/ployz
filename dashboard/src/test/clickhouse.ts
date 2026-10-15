@@ -4,7 +4,6 @@ import { inject } from "vitest";
 import { clickHouseClient, makeClickHouse } from "#/modules/web-analytics/clickhouse/client";
 import { ensureSchema } from "#/modules/web-analytics/clickhouse/schema";
 
-/** A fresh database with the analytics schema on the run's ClickHouse server (see `clickhouse.global-setup.ts`), dropped on release. */
 export const clickhouseTestDatabase = Effect.gen(function* () {
   const name = `test_${randomUUID().replaceAll("-", "")}`;
   const admin = makeClickHouse(yield* clickHouseClient(inject("clickhouseUrl")));

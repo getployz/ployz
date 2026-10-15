@@ -53,7 +53,6 @@ export default defineConfig({
           ...sharedTestConfig,
           name: "clickhouse",
           include: ["src/**/*.clickhouse.test.ts"],
-          // One server of each for the run; each file gets its own database on both.
           globalSetup: ["./src/test/postgres.global-setup.ts", "./src/test/clickhouse.global-setup.ts"],
           maxWorkers: 4,
         },

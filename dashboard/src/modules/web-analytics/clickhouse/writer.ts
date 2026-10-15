@@ -4,7 +4,7 @@ import { Database } from "#/server/database.server";
 import { ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
 import { analyticsOutbox, analyticsPageview } from "../tables";
 import type { ClickHouseService } from "./client";
-import { RETENTION_DAYS } from "./schema";
+import { TTL_DAYS } from "./schema";
 
 type Pageview = typeof analyticsPageview.$inferSelect;
 type ClickHouseRow = ReturnType<typeof clickHouseRow>;
@@ -12,7 +12,8 @@ type ClickHouseRow = ReturnType<typeof clickHouseRow>;
 export const DRAIN_BATCHES = 200;
 const BACKFILL_PAGE = 50_000;
 
-/** A `pageview` row as ClickHouse's JSONEachRow reads it: UTC wall time, and the visitor id quoted so it survives JSON. */
+const deduplicationToken = (outboxId: string) => `outbox-${outboxId}`;
+
 export const clickHouseRow = (row: Pageview) => ({
   environment_id: row.environmentId,
   ts: row.ts.toISOString().replace("T", " ").replace("Z", ""),
@@ -29,14 +30,12 @@ export const clickHouseRow = (row: Pageview) => ({
   ref: row.ref,
   language: row.language,
   flags: row.flags,
-  retention_days: RETENTION_DAYS,
+  retention_days: TTL_DAYS,
 });
 
-/** The local days whose rollup a pageview at `ts` can change: its own, the day a session it ends began on, and the next day's entry lookback. */
 export const rollupDaysChangedBy = (timezone: string, ts: Date) =>
   localDays(timezone, new Date(ts.getTime() - SESSION_GAP_SECONDS * 1000), new Date(ts.getTime() + ENTRY_LOOKBACK_SECONDS * 1000 + 1));
 
-/** Runs inside ingest's transaction, so a batch reaches the outbox exactly when its rows reach Postgres. */
 export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse")(function* (rows: ReadonlyArray<Pageview>) {
   const byEnvironment = new Map<string, Array<ClickHouseRow>>();
   for (const row of rows) {
@@ -49,11 +48,6 @@ export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse
   yield* drizzle.insert(analyticsOutbox).values([...byEnvironment].map(([environmentId, batch]) => ({ environmentId, rows: batch })));
 });
 
-/**
- * Copies the oldest outbox batches to ClickHouse and deletes them in one Postgres transaction. A crash after the
- * ClickHouse insert leaves the batch in the outbox, and its retry carries the same deduplication token, so it lands once.
- * The clickhouse_site rows stay locked across the insert, so a ClickHouse rollup of the same site never reads half a batch.
- */
 export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clickhouse: ClickHouseService) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
@@ -76,7 +70,7 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
     for (const batch of batches) {
       const site = byEnvironment.get(batch.environment_id);
       if (site === undefined) continue;
-      yield* clickhouse.insert("pageview", batch.rows, `outbox-${batch.id}`);
+      yield* clickhouse.insert("pageview", batch.rows, deduplicationToken(batch.id));
       const closed = site.rolled_up_to;
       if (closed === null) continue;
       const days = dirty.get(site.environment_id) ?? new Set<string>();
@@ -97,12 +91,6 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
   }));
 });
 
-/**
- * Replaces a site's ClickHouse copy with every pageview Postgres holds for it, and restarts its ClickHouse rollup.
- * One repeatable-read snapshot holds both the outbox batches it deletes and the pageviews it copies, so each row lands
- * once: a later batch is drained on top, an earlier one is replaced. The site's clickhouse_site lock holds the writer
- * off until the copy commits. Reads stay on Postgres until the rollup catches up and a parity check flips them.
- */
 export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const database = yield* Database;
   const copy = database.transaction(Effect.gen(function* () {
@@ -140,11 +128,9 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
       where environment_id = ${environmentId}::text`);
     return copied;
   }), { isolationLevel: "repeatable read" });
-  // A writer that drained one of this site's batches after the snapshot began fails the copy's locks; the next attempt sees it gone.
   return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }));
 });
 
-/** Drops the ClickHouse copy of every site whose environment was deleted; the delete trigger only reaches Postgres, and the writer drops their queued batches. */
 export const forgetDeletedSites = Effect.fn("WebAnalytics.forgetDeletedSites")(function* (clickhouse: ClickHouseService) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {

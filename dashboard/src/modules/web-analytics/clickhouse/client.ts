@@ -13,7 +13,6 @@ export type ClickHouseService = {
   readonly insert: (table: string, rows: ReadonlyArray<object>, token?: string) => Effect.Effect<void, ClickHouseFailure>;
 };
 
-/** Present only where `CLICKHOUSE_URL` is set; Self-hosted Cloud and the Postgres tests never have one. */
 export const ClickHouse = Context.Reference<ClickHouseService | null>("ployz/ClickHouse", { defaultValue: () => null });
 
 const attempt = <A>(message: string, run: () => Promise<A>) =>

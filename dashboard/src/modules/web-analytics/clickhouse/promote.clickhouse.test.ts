@@ -62,7 +62,6 @@ it.live("a site whose ClickHouse rollup matches Postgres flips to ClickHouse rea
     }));
     expect(reads).toEqual([{ environmentId: MATCHED, reads: true }, { environmentId: DRIFTED, reads: false }]);
 
-    // Postgres now holds a row ClickHouse lacks for both sites, so each answer names the store that gave it.
     yield* postgresOnly(MATCHED);
     const pageviews = (environmentId: string) => provide(adapter.overview({
       site: { environmentId, timezone: "UTC", retentionMonths: 13 },

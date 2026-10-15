@@ -6,11 +6,6 @@ import { LONGEST_RETENTION_MONTHS } from "../model";
 import * as postgres from "../postgres/store";
 import * as clickhouse from "./store";
 
-/**
- * Flips a site's reads to ClickHouse once its ClickHouse rollup has caught up and every closed day it retains reads
- * the same from both stores. Returns whether it flipped. A site that fails stays on Postgres and is checked again on
- * the next run; a pageview still in the outbox fails it until the writer drains it.
- */
 export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const [site] = yield* drizzle.execute<{ timezone: string; rolled_up_to: string | null; dirty: string[]; reads: boolean }>(sql`
@@ -30,7 +25,6 @@ export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (en
   };
   const [expected, actual] = yield* Effect.all([postgres.dailyTotals(query), clickhouse.dailyTotals(query)]);
   if (JSON.stringify(expected) !== JSON.stringify(actual)) return false;
-  // A backfill or late pageview since the check changed what was compared; the next run checks again.
   const flipped = yield* drizzle.execute(sql`
     update analytics.clickhouse_site set reads = true, updated_at = now()
     where environment_id = ${environmentId}::text and rolled_up_to = ${site.rolled_up_to}::date and dirty = '{}'

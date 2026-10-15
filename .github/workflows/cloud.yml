@@ -205,7 +205,6 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Its own job so `pnpm test` never needs ClickHouse, and the parity job's wall time stays visible.
   test-clickhouse:
     needs: [sdk]
     runs-on: ubuntu-24.04
@@ -223,7 +222,6 @@ jobs:
           run-id: ${{ needs.sdk.outputs.run-id }}
           github-token: ${{ github.token }}
           path: core/crates/ployz-sdk
-      # The tests start their own servers through the Docker CLI; pulling first keeps the pull out of the test timing.
       - run: docker pull --quiet clickhouse/clickhouse-server:26.9
       - name: ClickHouse tests
         env:

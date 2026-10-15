@@ -1,11 +1,10 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { testContainerName } from "./postgres.global-setup";
 import { promisify } from "node:util";
 import type { TestProject } from "vitest/node";
 
 declare module "vitest" {
   export interface ProvidedContext {
-    /** HTTP URL of the run's one ClickHouse server; each test file creates its own database on it. */
     clickhouseUrl: string;
   }
 }
@@ -25,9 +24,8 @@ async function waitForClickHouse(port: number) {
   throw new Error("ClickHouse test container did not become ready.");
 }
 
-/** Starts a throwaway ClickHouse server; `postgres.global-setup.ts` removes it if the run dies, by its `ployz-test-<pid>-` name. */
 export default async function setup(project: TestProject) {
-  const name = `ployz-test-${process.pid}-ch-${randomUUID().slice(0, 8)}`;
+  const name = testContainerName("ch");
   await docker(
     "run", "--detach", "--rm", "--name", name,
     "--tmpfs", "/var/lib/clickhouse:rw",

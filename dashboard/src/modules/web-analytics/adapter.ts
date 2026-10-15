@@ -19,7 +19,6 @@ export type Answered = { readonly range: Range; readonly clamped: boolean };
 const storeQuery = (q: Query, range: Range): store.StoreQuery =>
   ({ environmentId: q.site.environmentId, timezone: q.site.timezone, range, filters: q.filters });
 
-/** A site reads ClickHouse only where Cloud reads it at all and the site's backfill has passed its parity check. */
 const storeFor = Effect.fn("WebAnalytics.storeFor")(function* (environmentId: string) {
   const { clickhouse } = yield* AppConfig;
   if (clickhouse === null || !clickhouse.reads) return store;

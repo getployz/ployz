@@ -2,10 +2,8 @@ import { Effect } from "effect";
 import { LONGEST_RETENTION_MONTHS } from "../model";
 import type { ClickHouseService } from "./client";
 
-/** Every row outlives its plan's retention floor, which the adapter clamps reads to; parts drop whole once all their rows are past it. */
-export const RETENTION_DAYS = LONGEST_RETENTION_MONTHS * 31;
+export const TTL_DAYS = LONGEST_RETENTION_MONTHS * 31;
 
-/** How many recent insert tokens a table remembers; the writer never has more batches in flight than this. */
 export const DEDUPLICATION_WINDOW = 10_000;
 
 const DDL = [
@@ -46,7 +44,7 @@ const DDL = [
   ENGINE = MergeTree
   PARTITION BY toYYYYMM(day)
   ORDER BY (environment_id, dim, day, value)
-  TTL day + toIntervalDay(${RETENTION_DAYS})
+  TTL day + toIntervalDay(${TTL_DAYS})
   SETTINGS ttl_only_drop_parts = 1`,
   `CREATE TABLE IF NOT EXISTS session_hourly (
     environment_id String,
@@ -60,7 +58,7 @@ const DDL = [
   ENGINE = MergeTree
   PARTITION BY toYYYYMM(hour)
   ORDER BY (environment_id, hour)
-  TTL hour + toIntervalDay(${RETENTION_DAYS})
+  TTL hour + toIntervalDay(${TTL_DAYS})
   SETTINGS ttl_only_drop_parts = 1`,
 ];
 
