@@ -2,6 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
+import * as adapter from "#/modules/web-analytics/adapter";
 import { type Fixture, rangeOf, serialized, storeAnswer } from "#/modules/web-analytics/fixtures/fixture";
 import { FIXTURE_ORGANIZATION, loadFixture, seedSite } from "#/modules/web-analytics/fixtures/seed";
 import { type PageviewRecord, Reference } from "#/modules/web-analytics/fixtures/reference";
@@ -163,6 +164,19 @@ for (const day of ["2026-10-04", "2026-04-05"]) {
       expect(byBucket(yield* provide(hourlyTotals(query)))).toEqual(expected);
     }), 60_000);
 }
+
+it.live("every read of a range wholly before retention answers empty, the hour series included", () =>
+  Effect.gen(function* () {
+    const provide = yield* setup();
+    const site = { environmentId: "00000000-0000-4000-8000-00000000a0f5", timezone: "UTC" };
+    yield* provide(seedSite(site, [row("2026-10-01T12:00:00.000Z", "1")]));
+    const range = { start: new Date("2020-01-01T00:00:00Z"), end: new Date("2020-01-02T00:00:00Z") };
+    const q = { site: { ...site, retentionMonths: 13 }, range, filters: [], limit: 10 };
+    const empty = { start: range.end, end: range.end };
+    const hours = yield* provide(adapter.timeseries(q, "hour"));
+    expect({ range: hours.range, clamped: hours.clamped, buckets: hours.buckets }).toEqual({ range: empty, clamped: true, buckets: [] });
+    expect((yield* provide(adapter.timeseries(q, "day"))).buckets).toEqual([]);
+  }), 60_000);
 
 const perf = process.env["ANALYTICS_PERF"] === undefined ? it.live.skip : it.live;
 const PERF_SITE = { environmentId: "00000000-0000-4000-8000-00000000a0ff", timezone: "Europe/Berlin" };

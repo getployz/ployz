@@ -206,6 +206,7 @@ export const dailyTotals = Effect.fn("WebAnalytics.dailyTotals")(function* (quer
 export const hourlyTotals = Effect.fn("WebAnalytics.hourlyTotals")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
   const { timezone, range } = query;
+  if (range.start >= range.end) return [];
   const closedUntil = query.filters.length > 0 ? null : yield* rolledUpTo(query.environmentId);
   const rolledEnd = closedUntil === null ? range.start : new Date(Math.min(Math.max(dayEnd(timezone, closedUntil).getTime(), range.start.getTime()), range.end.getTime()));
   const parts: SQL[] = [];
