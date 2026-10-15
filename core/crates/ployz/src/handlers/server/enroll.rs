@@ -184,10 +184,13 @@ fn prompted_token() -> Result<CloudEnrollToken, Error> {
     let token = crate::ui::secret(
         "Enrollment token",
         || {
-            Error::usage(format!(
-                "Not signed in to Cloud. Pass the enrollment token with --token-stdin, --token-file or {}.",
-                env::ENROLL_TOKEN
-            ))
+            Error::coded(
+                RpcErrorCode::Unauthenticated,
+                format!(
+                    "Not signed in to Cloud. Pass the enrollment token with --token-stdin, --token-file or {}.",
+                    env::ENROLL_TOKEN
+                ),
+            )
             .hint(Hint::Next("ployz login".into()))
         },
         "Cancelled. Nothing was enrolled.",

@@ -131,11 +131,11 @@ async fn server_add_without_a_sign_in_or_a_terminal_names_every_token_source() {
         .await
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(1));
     let error = stdout_json(&output);
     assert_eq!(
         error.pointer("/error/code"),
-        Some(&json!("invalid_argument"))
+        Some(&json!("unauthenticated"))
     );
     let message = error
         .pointer("/error/message")
