@@ -317,13 +317,15 @@ pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     env::on_merge_command,
     env::pr::on_merge,
 );
-pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr);
+pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
+    .docs("environments/preview-environments.md");
 pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
     "env pr approve",
     Never,
     env::pr_approve_command,
     env::pr::approve,
-);
+)
+.docs("environments/preview-environments.md");
 pub(crate) const ENV_RM: Verb =
     Verb::cloud("env rm", Always, env::rm_command, env::rm).docs("cli/overview.md");
 pub(crate) const ENV_SETUP: Verb = Verb::cloud("env setup", Never, env::setup_command, env::setup);
