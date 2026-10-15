@@ -27,6 +27,11 @@ import artifacts  # noqa: E402
 KINDS = ["sdk", "config-wasm", "ployzd", "ployz"]
 
 
+def sdk_build(content):
+    """An SDK build's files, by name, each telling which build it came from."""
+    return {name: content if name == "ployz-sdk.node" else content + b" " + name.encode() for name in artifacts.SDK_FILES}
+
+
 def keys():
     return {kind: artifacts.key(kind).value for kind in KINDS}
 
@@ -83,6 +88,7 @@ class Keys(unittest.TestCase):
         self.assertEqual(self.changed_by("crates/ployz-core/tests/zz_probe.rs"), set())
         self.assertEqual(self.changed_by("crates/ployz-sdk/zz_probe.md"), set())
         self.assertEqual(self.changed_by("crates/ployz-sdk/generated/config-wasm.mjs"), set())
+        self.assertEqual(self.changed_by("crates/ployz-sdk/generated/payloads.d.ts"), set())
 
     def test_build_options_are_part_of_the_key(self):
         self.assertNotEqual(artifacts.key("sdk", "features=eval"), artifacts.key("sdk", "features="))
@@ -95,35 +101,53 @@ class Keys(unittest.TestCase):
         looked_up = re.search(r'artifacts\.py lookup sdk --extra ("[^"]*"|\S+)', workflow)[1].strip('"')
         self.assertEqual(looked_up, stored)
 
+    def build_sdk(self, *, ci, hit=False):
+        """What build-cloud-sdk.sh runs, with stubbed tools in a scratch checkout whose cache misses unless hit."""
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / "scripts").mkdir()
+            shutil.copy(artifacts.CORE / "scripts" / "build-cloud-sdk.sh", root / "scripts")
+            (root / "scripts" / "build-config-wasm.sh").touch()
+            (root / "crates" / "ployz-sdk").mkdir(parents=True)
+            stubs = root / "bin"
+            stubs.mkdir()
+            tools = [(stubs / "python3", 'echo "$*" >> "$STUB_LOG"\ncase "$2" in key) echo "key $*" ;; fetch) '
+                      + ("exit 0" if hit else "exit 1") + " ;; esac"),
+                     (stubs / "cargo", 'echo "cargo $*" >> "$STUB_LOG"'), (stubs / "node", ":")]
+            for profile in ["debug", "release"]:
+                (root / "target" / profile).mkdir(parents=True)
+                (root / "target" / profile / "libployz_sdk.so").touch()
+                (root / "target" / profile / "libployz_sdk.dylib").touch()
+                tools.append((root / "target" / profile / "sdk-generated", f'echo "sdk-generated {profile} $*" >> "$STUB_LOG"'))
+            for tool, body in tools:
+                tool.write_text(f"#!/usr/bin/env bash\n{body}\n")
+                tool.chmod(0o755)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            env = {"PATH": f"{stubs}:{os.environ['PATH']}", "HOME": scratch, "STUB_LOG": str(root / "log"),
+                   "CARGO_TARGET_DIR": str(root / "target"), **({"CI": "true"} if ci else {})}
+            subprocess.run(["bash", root / "scripts" / "build-cloud-sdk.sh"], env=env, check=True)
+            return (root / "log").read_text()
+
     def test_a_local_build_stores_the_sdk_under_other_options_than_ci(self):
         def stored_extra(ci):
-            """The --extra a cache-missing build stores the SDK under, run with stubbed tools in a scratch checkout."""
-            with tempfile.TemporaryDirectory() as scratch:
-                root = Path(scratch)
-                (root / "scripts").mkdir()
-                shutil.copy(artifacts.CORE / "scripts" / "build-cloud-sdk.sh", root / "scripts")
-                (root / "scripts" / "build-config-wasm.sh").touch()
-                (root / "crates" / "ployz-sdk").mkdir(parents=True)
-                for profile in ["debug", "release"]:
-                    (root / "target" / profile).mkdir(parents=True)
-                    (root / "target" / profile / "libployz_sdk.so").touch()
-                    (root / "target" / profile / "libployz_sdk.dylib").touch()
-                subprocess.run(["git", "init", "-q"], cwd=root, check=True)
-                stubs = root / "bin"
-                stubs.mkdir()
-                for tool, body in [("python3", 'echo "$*" >> "$STUB_LOG"\ncase "$2" in key) echo "key $*" ;; fetch) exit 1 ;; esac'),
-                                   ("cargo", ":"), ("node", ":")]:
-                    (stubs / tool).write_text(f"#!/usr/bin/env bash\n{body}\n")
-                    (stubs / tool).chmod(0o755)
-                env = {"PATH": f"{stubs}:{os.environ['PATH']}", "HOME": scratch, "STUB_LOG": str(root / "log"),
-                       "CARGO_TARGET_DIR": str(root / "target"), **({"CI": "true"} if ci else {})}
-                subprocess.run(["bash", root / "scripts" / "build-cloud-sdk.sh"], env=env, check=True)
-                stores = re.findall(r"^scripts/artifacts\.py store sdk --extra (.*) --expect ", (root / "log").read_text(), re.M)
-                self.assertEqual(len(stores), 1)
-                return stores[0]
+            stores = re.findall(r"^scripts/artifacts\.py store sdk --extra (.*) --expect ", self.build_sdk(ci=ci), re.M)
+            self.assertEqual(len(stores), 1)
+            return stores[0]
 
         self.assertEqual(stored_extra(ci=True), "features= profile=release")
         self.assertNotEqual(stored_extra(ci=False), stored_extra(ci=True))
+
+    def test_a_miss_generates_the_types_from_the_build_it_stores(self):
+        for ci, profile in [(True, "release"), (False, "debug")]:
+            log = self.build_sdk(ci=ci).splitlines()
+            generated = log.index(f"sdk-generated {profile} crates/ployz-sdk/generated")
+            stored = next(index for index, line in enumerate(log) if line.startswith("scripts/artifacts.py store sdk "))
+            self.assertLess(generated, stored)
+
+    def test_a_hit_keeps_the_types_it_restored(self):
+        log = self.build_sdk(ci=True, hit=True)
+        self.assertNotIn("sdk-generated", log)
+        self.assertNotIn("cargo", log)
 
     def test_a_clean_tree_has_its_commit_key(self):
         if artifacts.git("status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts"):
@@ -149,8 +173,8 @@ class Scratch(unittest.TestCase):
         """Record a CI upload of found, newest first, as the artifacts API lists them."""
         archive = io.BytesIO()
         with zipfile.ZipFile(archive, "w") as files:
-            files.writestr("ployz-sdk.node", content)
-            files.writestr("generated/config-wasm.mjs", content + b".mjs")
+            for name, data in sdk_build(content).items():
+                files.writestr(name, data)
         archive = archive.getvalue()
         row = {"id": len(self.uploads), "name": found.artifact, "expired": expired,
                "digest": digest or "sha256:" + hashlib.sha256(archive).hexdigest(),
@@ -169,9 +193,13 @@ class Scratch(unittest.TestCase):
     def build(self, name, content):
         directory = self.root / name
         (directory / "generated").mkdir(parents=True)
-        (directory / "ployz-sdk.node").write_bytes(content)
-        (directory / "generated" / "config-wasm.mjs").write_bytes(content + b".mjs")
+        for name, data in sdk_build(content).items():
+            (directory / name).write_bytes(data)
         return directory
+
+    def assertRestored(self, content):
+        """The scratch out/ directory holds the whole SDK build made from content."""
+        self.assertEqual({name: (self.root / "out" / name).read_bytes() for name in artifacts.SDK_FILES}, sdk_build(content))
 
 
 class Cache(Scratch):
@@ -182,15 +210,14 @@ class Cache(Scratch):
         meta = artifacts.fetch(found, self.root / "out")
         self.assertEqual(meta["revision"], "abc")
         self.assertEqual(meta["crates"], {"ployz-sdk": "digest"})
-        self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"addon")
-        self.assertEqual((self.root / "out" / "generated" / "config-wasm.mjs").read_bytes(), b"addon.mjs")
+        self.assertRestored(b"addon")
 
     def test_a_second_store_of_one_key_keeps_the_first(self):
         found = artifacts.Key("sdk", "b" * 32, {})
         artifacts.store(found, self.build("first", b"first"))
         artifacts.store(found, self.build("second", b"second"))
         artifacts.fetch(found, self.root / "out")
-        self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"first")
+        self.assertRestored(b"first")
         self.assertEqual([entry.name for entry in (self.root / "cache" / "sdk").iterdir()], ["b" * 32])
 
     def test_prune_drops_the_least_recently_used_beyond_the_cap(self):
@@ -199,7 +226,7 @@ class Cache(Scratch):
             artifacts.store(found, self.build(f"build-{index}", b"x" * 1000))
             os.utime(self.root / "cache" / "sdk" / found.value, (time.time() - 100 + index, time.time() - 100 + index))
         artifacts.fetch(used, self.root / "out")
-        with mock.patch.object(artifacts, "CACHE_BYTES", 5500):  # two entries of about 2.3 kB fit, three don't
+        with mock.patch.object(artifacts, "CACHE_BYTES", 18000):  # two entries of about 7.4 kB fit, three don't
             artifacts.prune()
         self.assertEqual(sorted(entry.name for entry in (self.root / "cache" / "sdk").iterdir()),
                          sorted([used.value, new.value]))
@@ -213,8 +240,7 @@ class Cache(Scratch):
         self.upload(found, b"branch", run=14, branch="feature")
         meta = artifacts.fetch(found, self.root / "out")
         self.assertEqual((meta["run"], meta["revision"]), (11, "sha11"))
-        self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"main")
-        self.assertEqual((self.root / "out" / "generated" / "config-wasm.mjs").read_bytes(), b"main.mjs")
+        self.assertRestored(b"main")
         self.uploads.clear()
         self.assertEqual(artifacts.fetch(found, self.root / "elsewhere")["run"], 11)
 
@@ -301,7 +327,7 @@ class Main(Scratch):
         self.write("crates/ployz-store/src/lib.rs", "// three\n")
         meta, said = self.stale()
         self.assertEqual(meta["revision"], self.built)
-        self.assertEqual((self.root / "out" / "ployz-sdk.node").read_bytes(), b"main")
+        self.assertRestored(b"main")
         self.assertEqual(said, f"sdk: stale main@{self.built[:9]} (ployz-store differs) -- SDK=exact to build")
 
     def test_an_edit_to_the_embedded_config_wasm_builds_though_the_interface_is_unchanged(self):

@@ -12,7 +12,7 @@ cargo build -p ployz-config-wasm --release --locked --target wasm32-unknown-unkn
 config_build_dir=$(mktemp -d)
 trap 'rm -rf "$config_build_dir"' EXIT
 wasm-bindgen "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/release/ployz_config_wasm.wasm" --out-dir "$config_build_dir" --target web \
-  --remove-name-section --remove-producers-section  # symbol names carry per-build crate hashes; keep the committed file stable
+  --remove-name-section --remove-producers-section  # symbol names carry per-build crate hashes; keep the output stable across builds
 node - "$config_build_dir" crates/ployz-sdk/generated/config-wasm.mjs <<'NODE'
 const fs = require('node:fs');
 const [source, destination] = process.argv.slice(2);

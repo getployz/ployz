@@ -46,11 +46,13 @@ class Kind:
 
 
 SDK = "crates/ployz-sdk"
+SDK_FILES = ("ployz-sdk.node", "generated/payloads.d.ts", "generated/capabilities.d.ts", "generated/capabilities.js",
+             "generated/capabilities.mjs", "generated/catalog.json", "generated/config-wasm.mjs")
 KINDS = {
-    "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), ("ployz-sdk.node", "generated/config-wasm.mjs"),
-                "sdk-v1", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
-                (f"{SDK}/generated/config-wasm.mjs",),
-                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts", f"{SDK}/generated"),
+    "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), SDK_FILES,
+                "sdk-v2", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
+                tuple(f"{SDK}/{name}" for name in SDK_FILES if name.startswith("generated/")),
+                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts"),
                 ("config-wasm",)),
     # Part of the SDK, cached on its own so the addon can rebuild without it. CI never uploads it alone.
     "config-wasm": Kind("config-wasm", ("ployz-config-wasm",), ("generated/config-wasm.mjs",), "wasm-v1",
