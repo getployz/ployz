@@ -217,8 +217,8 @@ component already does.
 **Bet.** Behavior lands in the client. The daemon owns only what must continue
 without a client, enforce a Machine-local safety boundary, or manage a
 Machine-local resource. Serving infrastructure (Corrosion, Internal DNS, the
-Observe Store) is daemon-owned but outlives every daemon stop, restart and
-upgrade. The Ingress Proxy is the only Service Container the daemon starts
+Observe Store) is daemon-owned but outlives every daemon stop, crash, restart
+and upgrade. The Ingress Proxy is the only Service Container the daemon starts
 unasked.
 
 **Why.** A client update ships instantly. A daemon change must reach every
@@ -256,4 +256,5 @@ correction of every difference between observations, a single writer inside
 the Cluster, an abstraction over container runtimes, or continuously
 replicated storage. One point-in-time Mirror per Volume, refreshed on request,
 is in scope. A feature that needs a boundary is fighting the design, not
-filling a gap.
+filling a gap. Add a stronger guarantee only when the product needs it and the
+system can prove it.

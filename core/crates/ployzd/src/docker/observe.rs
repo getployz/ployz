@@ -253,6 +253,9 @@ impl ContainerRuntime {
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
             .await?;
+        // The one Service Container the daemon starts unasked, and only while this Machine
+        // participates and accepts ingress. It starts an existing container; it never
+        // creates, replaces, moves or removes one.
         // Started after the guard drops, so a slow Docker start never stalls publication.
         // A reset that takes the guard meanwhile removes the container anyway. The record
         // is read again here, so a policy change that committed during publication holds.
