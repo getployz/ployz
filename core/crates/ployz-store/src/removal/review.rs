@@ -94,12 +94,7 @@ pub(crate) fn removed(
     applied
         .volumes
         .iter()
-        .filter(|old| {
-            target
-                .volumes
-                .iter()
-                .all(|new| new.resource_id != old.resource_id)
-        })
+        .filter(|old| drops(target, &old.resource_id))
         .map(|volume| {
             Ok(RemovedVolume {
                 id: VolumeId::parse(volume.resource_id.as_str())
@@ -109,6 +104,23 @@ pub(crate) fn removed(
                 docker_volume: docker_volume(namespace, &volume.resource_id)?,
             })
         })
+        .collect()
+}
+
+fn drops(target: &SavedEnvironmentIntent, volume: &str) -> bool {
+    target.volumes.iter().all(|kept| kept.resource_id != volume)
+}
+
+/// The losses of `consent` whose Volumes `target` still removes, so consent never
+/// outlives a revision that restores its Volume.
+pub(crate) fn still_removed(
+    consent: &[VolumeLoss],
+    target: &SavedEnvironmentIntent,
+) -> Vec<VolumeLoss> {
+    consent
+        .iter()
+        .filter(|loss| drops(target, loss.volume.id.as_str()))
+        .cloned()
         .collect()
 }
 
@@ -249,3 +261,7 @@ pub(crate) fn short_digest(text: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
     hex::encode(digest.as_ref().get(..8).unwrap_or_default())
 }
+
+#[cfg(test)]
+#[path = "review_tests.rs"]
+mod tests;
