@@ -10,6 +10,7 @@ pub mod error_chain;
 pub mod framing;
 pub use enrollment::*;
 mod host_config;
+pub mod labels;
 mod log_level;
 mod machine_telemetry;
 pub mod metrics;

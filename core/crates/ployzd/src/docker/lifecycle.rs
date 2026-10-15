@@ -10,6 +10,7 @@ use bollard::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
 };
+use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, Machine, MachineId,
     MachineStorageObservation, Namespace, ResolvedServiceSpec, ServicePlacementEligibility,
@@ -36,7 +37,6 @@ pub(crate) struct ContainerCreated {
     pub(crate) container_id: ContainerId,
     pub(crate) display_name: String,
 }
-const LABEL_CREATION_KEY: &str = "ployz.creation.key";
 
 /// Resolved container inputs shared by every Machine-local creation entry path.
 pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
@@ -190,7 +190,7 @@ impl ContainerRuntime {
         if let Some(key) = creation_key {
             body.labels
                 .get_or_insert_default()
-                .insert(LABEL_CREATION_KEY.into(), key.into());
+                .insert(CREATION_KEY.into(), key.into());
         }
         if let ImagePull::Policy(registry_auth) = image {
             prepare_image(
@@ -364,7 +364,7 @@ impl ContainerRuntime {
             .config
             .as_ref()
             .and_then(|config| config.labels.as_ref())
-            .and_then(|labels| labels.get(LABEL_CREATION_KEY))
+            .and_then(|labels| labels.get(CREATION_KEY))
             .map(String::as_str)
             != Some(key)
         {
