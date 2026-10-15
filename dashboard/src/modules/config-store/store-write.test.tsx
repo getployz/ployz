@@ -9,7 +9,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
-import { withPendingChanges } from "./store-pending";
+import { useStoreRenaming, withPendingChanges } from "./store-pending";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -241,6 +241,32 @@ it("rereads a view the write's answer says the Store was too busy to read, keepi
   reread.resolve({ ok: true, value: { view: "environment", ...view(3, 3) } });
   await persisted;
   expect(test.replicas()).toBe(3);
+});
+
+it("names a variable renaming until the Store answers, so its row takes no edit aimed at the old name", async () => {
+  const test = setup(view(2, 1));
+  const answer = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => answer.promise);
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
+  const renaming = renderHook(() => useStoreRenaming("acme", ref, "variable"), { wrapper });
+  const persisted = test.edit({ environment: ref, changes: [{ op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" }] }).isPersisted.promise;
+  await waitFor(() => expect([...renaming.result.current]).toEqual(["web.env.API_URL"]));
+  answer.resolve(edited(3));
+  await persisted;
+  await waitFor(() => expect(renaming.result.current.size).toBe(0));
+});
+
+it("names a Service renaming until the Store answers, so its drawer takes no edit aimed at the old name", async () => {
+  const test = setup(view(2, 1));
+  const answer = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => answer.promise);
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
+  const renaming = renderHook(() => useStoreRenaming("acme", ref, "service"), { wrapper });
+  const persisted = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" }).isPersisted.promise;
+  await waitFor(() => expect([...renaming.result.current]).toEqual(["web"]));
+  answer.resolve(edited(3));
+  await persisted;
+  await waitFor(() => expect(renaming.result.current.size).toBe(0));
 });
 
 it("lists a new Branch in its Project's Environments once the write persists, so its canvas opens", async () => {

@@ -3,6 +3,7 @@ import type { Persistable } from "#/collections/query-collection";
 import type { EnvironmentRef, EnvironmentView, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter, variableReferrers } from "#/modules/config-store/store-variables";
+import { useStoreRenaming } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { BracesIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
@@ -37,7 +38,9 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
 }) {
   const store = useStoreWriter(organizationSlug);
   const rows = serviceSettingRows(settings, service.name);
-  const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced));
+  const renaming = useStoreRenaming(organizationSlug, environment, "variable");
+  const variables = serviceVariables(rows, service.id, changes, new Set(settings.never_synced))
+    .map((variable) => renaming.has(`${service.name}.env.${variable.key}`) ? { ...variable, renaming: true } : variable);
   const writer = storeVariableWriter(store, environment, service.name, variables, rows);
 
   return (

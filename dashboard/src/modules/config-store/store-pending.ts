@@ -14,14 +14,14 @@ export type Mark =
   | { mark: "value"; environment: EnvironmentRef; path: string; value: Extract<Change, { op: "set" }>["value"] }
   | { mark: "leaving"; environment: EnvironmentRef; scope: Scope }
   | { mark: "arriving"; environment: EnvironmentRef; node: NodeKind; id: string; name: string }
-  | { mark: "renamed"; environment: EnvironmentRef | null; node: NodeKind | "project"; from: string; to: string }
+  | { mark: "renamed"; environment: EnvironmentRef | null; node: NodeKind | "project" | "variable"; from: string; to: string }
   | { mark: "busy"; environment: EnvironmentRef | null; why: Busy };
 
 const changeMarks = (environment: EnvironmentRef, changes: readonly Change[]): Mark[] => changes.flatMap((change): Mark[] => {
   switch (change.op) {
     case "set": return [{ mark: "value", environment, path: change.path, value: change.value }];
+    case "rename": return [{ mark: "renamed", environment, node: "variable", from: change.path, to: change.to }];
     case "unset":
-    case "rename":
     case "patch": return [];
   }
 });
@@ -130,6 +130,15 @@ export function useStorePendingNodes(organizationSlug: string, environment: Envi
 export function useStorePendingName(organizationSlug: string, environment: EnvironmentRef, node: NodeKind, name: string): string {
   const renamed = usePendingMarks(organizationSlug).filter((mark) => mark.mark === "renamed" && mark.node === node && sameEnvironment(mark, environment));
   return renamed.reduce((shown, mark) => mark.mark === "renamed" && mark.from === shown ? mark.to : shown, name);
+}
+
+/**
+ * What a pending rename still names by the old name: a Service by its name, a variable by its path. Each stays locked
+ * until the Store answers, since an edit made now would name what the rename moves.
+ */
+export function useStoreRenaming(organizationSlug: string, environment: EnvironmentRef, node: NodeKind | "variable"): ReadonlySet<string> {
+  return new Set(usePendingMarks(organizationSlug).flatMap((mark) =>
+    mark.mark === "renamed" && mark.node === node && sameEnvironment(mark, environment) ? [mark.from] : []));
 }
 
 /**

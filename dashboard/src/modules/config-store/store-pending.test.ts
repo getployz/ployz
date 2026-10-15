@@ -3,12 +3,15 @@ import { marksOf } from "./store-pending";
 
 const environment = { project: "shop", environment: "production" };
 
-it("echoes only a literal set from an edit: unsets, renames and patches wait for the Store's rows", () => {
+it("echoes only a literal set from an edit, marks a renamed variable by its old path, and leaves unsets and patches to the Store's rows", () => {
   expect(marksOf({ command: "edit", environment, expect: 2, changes: [
     { op: "set", path: "web.replicas", value: 3 },
     { op: "unset", path: "web.startCommand" },
     { op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" },
-  ] })).toEqual([{ mark: "value", environment, path: "web.replicas", value: 3 }]);
+  ] })).toEqual([
+    { mark: "value", environment, path: "web.replicas", value: 3 },
+    { mark: "renamed", environment, node: "variable", from: "web.env.API_URL", to: "PUBLIC_API_URL" },
+  ]);
 });
 
 it("marks a Discard's clicked line as leaving and the Environment as discarding", () => {
