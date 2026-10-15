@@ -415,7 +415,7 @@ commands! {
         => crate::pull_request::set_plan(tx, who, c);
     /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched)
-        agent [ServiceAdd, VolumeAdd, ConfigWrite, ConfigRemove, DiscardInput]
+        agent [ServiceAdd, VolumeAdd, ConfigWrite, ConfigRename, ConfigRemove, DiscardInput]
         => {
             crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
             let mut at = Call { tx, who, sealing, trusted };
