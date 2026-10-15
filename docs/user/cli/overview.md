@@ -23,6 +23,11 @@ The line installs the stable release to `/usr/local/bin`. For the beta channel, 
 curl -fsSL https://ployz.sh | INSTALL_BIN_DIR="$HOME/.local/bin" sh
 ```
 
+The install script checks that the release is signed by Ployz before it installs anything. It needs
+OpenSSL 3, which current Linux releases include, or [minisign](https://jedisct1.github.io/minisign/).
+On macOS, run `brew install minisign` first. Without either, it stops with
+`Cannot verify the release signature: install OpenSSL 3 or minisign, then rerun`.
+
 ## Sign in
 
 1. Run `ployz login`. It prints a code and opens your browser.
