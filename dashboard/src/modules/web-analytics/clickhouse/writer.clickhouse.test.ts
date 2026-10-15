@@ -138,6 +138,32 @@ it("a backfill replaces the site's ClickHouse copy with exactly what Postgres ho
   expect(site).toMatchObject({ rolledUpTo: null, dirty: [], reads: false });
 });
 
+it("a repeated backfill lands the same rows again instead of losing them to block deduplication", async () => {
+  await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
+
+  expect(await harness.runEffect(backfillSite(clickhouse, SHOP))).toBe(3);
+  expect(await harness.runEffect(backfillSite(clickhouse, SHOP))).toBe(3);
+
+  expect(await clickhouseCount(SHOP)).toBe(3);
+});
+
+it("a backfill killed after its insert retries into exactly Postgres's rows", async () => {
+  await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
+  let killed = false;
+  const killedOnce: ClickHouseService = {
+    ...clickhouse,
+    insert: (table, rows, token) => clickhouse.insert(table, rows, token).pipe(Effect.andThen(Effect.suspend(() => {
+      if (killed) return Effect.void;
+      killed = true;
+      return Effect.fail(new ClickHouseFailure({ message: "killed", cause: null }));
+    }))),
+  };
+
+  expect(await harness.runEffect(backfillSite(killedOnce, SHOP))).toBe(3);
+
+  expect(await clickhouseCount(SHOP)).toBe(3);
+});
+
 it("a deleted environment's ClickHouse copy is forgotten", async () => {
   await ingest([pageview(SHOP, 1)]);
   await drain();
