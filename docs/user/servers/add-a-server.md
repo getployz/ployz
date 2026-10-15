@@ -37,8 +37,21 @@ You don't need Docker: Ployz installs it if it's missing.
 The command looks like this:
 
 ```sh
-curl -fsSL https://ployz.sh/ | sh && sudo ployz server add --token '...'
+ curl -fsSL https://ployz.sh/ | sh && printf '%s\n' '...' | sudo ployz server add --token-stdin
 ```
+
+The leading space keeps the line out of your shell history, and the token reaches `ployz` through
+its input, so it never shows in the server's process list.
+
+To enroll a server from a script, give `ployz server add` the token one of three ways:
+
+- `--token-stdin` reads it from standard input, as the command above does.
+- `--token-file <path>` reads it from a file, such as one your provisioning tool wrote.
+- The `PLOYZ_ENROLL_TOKEN` environment variable, set in the root shell or the service that runs
+  `ployz server add`. Don't write `sudo PLOYZ_ENROLL_TOKEN=... ployz`: that puts the token in the
+  process list.
+
+Use one of them, not two.
 
 When it finishes, the server shows on the **Servers** page, ready for builds, services and web
 traffic. The command works for 24 hours; open the dialog again for a new one. If the server
