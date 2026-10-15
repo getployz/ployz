@@ -352,20 +352,22 @@ type Step = { kind: "step"; key: string; node: ReactNode; call?: { running: bool
 type Piece = Block | Step;
 type Steps = [Step, ...Step[]];
 
-/** A run of thinking and calls, folded under one summary like "Thought, ran 2 commands"; the cards the calls left stay outside. */
+/** A run of thinking and calls, folded under one summary like "Thought, ran 2 commands, 1 refused"; the cards the calls left stay outside. */
 function StepGroup({ steps }: { steps: Steps }) {
   const calls = steps.flatMap(({ call }) => call ? [call] : []);
   const running = calls.some((call) => call.running);
+  const refused = calls.filter((call) => call.refused).length;
   const summary = [
     calls.length < steps.length && "thought",
     calls.length > 0 && `${running ? "running" : "ran"} ${calls.length} ${calls.length === 1 ? "command" : "commands"}`,
+    refused > 0 && `${refused} refused`,
   ].filter(Boolean).join(", ");
   return (
     <>
       <Trace>
         <TraceCollapsible>
           <TraceCollapsibleTrigger>
-            <TraceLine status={calls.some((call) => call.refused) ? "error" : running ? "running" : undefined}>
+            <TraceLine status={refused > 0 ? "error" : running ? "running" : undefined}>
               <TraceTitle>{summary.charAt(0).toUpperCase() + summary.slice(1)}</TraceTitle>
             </TraceLine>
           </TraceCollapsibleTrigger>

@@ -69,8 +69,8 @@ While the agent is open on an environment's canvas, the bar with your staged cha
 it goes back to the bottom of the canvas.
 
 What the agent thinks and runs folds under one line in its reply, like **Thought, ran 2 commands**.
-Open it to see its thinking and each command, like **ployz environment show**. The line turns red
-when a command was refused, and the command shows why. When the agent deploys, a card under that
+Open it to see its thinking and each command, like **ployz environment show**. When a command was
+refused, the line turns red and counts it, like **1 refused**, and the command shows why. When the agent deploys, a card under that
 line shows the deployment's status, like **Deploying** and then **Deployed**, and a link to the deployment once it exists.
 When it starts a run on a server or volume, like a restart or a mirror, the card shows the run's
 name and its state when Cloud took it, like **Queued · restart web**. Ask the agent how the run

@@ -191,7 +191,7 @@ it("folds thinking and calls under one summary, leaving the Deployment card and 
   });
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
-  const summary = screen.getByRole("button", { name: "Thought, ran 2 commands" });
+  const summary = screen.getByRole("button", { name: "Thought, ran 2 commands, 1 refused" });
   expect(summary.querySelector("[data-status=error]")).not.toBeNull();
   expect(screen.getByText("Didn't ask. Nothing destroyed.")).toBeDefined();
   expect(screen.queryByText("No service named api.")).toBeNull();
