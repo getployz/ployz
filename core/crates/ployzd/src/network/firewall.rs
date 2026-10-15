@@ -287,7 +287,7 @@ fn move_to_top(
 fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
     let program = format!("{program}-restore");
     let mut child = Command::new(&program)
-        .arg("--noflush")
+        .args(["--noflush", "--wait"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
