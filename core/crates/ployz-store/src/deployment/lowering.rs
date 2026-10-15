@@ -8,8 +8,8 @@ pub(crate) enum Scope<'a> {
     /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
     All { losses: &'a [VolumeLoss] },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. It removes a Volume of `losses` only once it ships
-    /// every Service Applied State mounts it on.
+    /// Services `retire` names. It removes a Volume of `losses` once it ships
+    /// every Service Applied State mounts it on, at once when none does.
     Narrow {
         services: &'a [ServiceName],
         retire: &'a [Retire],
@@ -254,7 +254,7 @@ pub(crate) fn freeze(
     }
     let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
     let unmounts = |loss: &&VolumeLoss| {
-        let mounted: Vec<bool> = applied
+        full || applied
             .services
             .iter()
             .filter(|service| {
@@ -263,9 +263,7 @@ pub(crate) fn freeze(
                     .iter()
                     .any(|mount| mount.volume_resource_id == loss.volume.id.as_str())
             })
-            .map(|service| ships(&service.id))
-            .collect();
-        full || (mounted.contains(&true) && !mounted.contains(&false))
+            .all(|service| ships(&service.id))
     };
     let removed: Vec<TargetNode> = losses
         .iter()

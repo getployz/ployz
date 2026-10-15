@@ -332,6 +332,12 @@ fn held_on_a() -> ployz_store::VolumeObservation {
 /// Deploy Volume `data` on `web`, then remove it and Save, accepting its loss
 /// while Server `a` holds it.
 fn saved_volume_loss() -> (ConfigStore, Actor) {
+    saved_loss_of(false)
+}
+
+/// [`saved_volume_loss`], where `orphaned` unmounts `data` from `web` and
+/// deploys that before the removal, so no Applied Service mounts it.
+fn saved_loss_of(orphaned: bool) -> (ConfigStore, Actor) {
     let (store, who) = shop();
     let data = || ployz_store::VolumeName::parse("data").unwrap();
     store
@@ -352,6 +358,21 @@ fn saved_volume_loss() -> (ConfigStore, Actor) {
         )
         .unwrap();
     backend::deploy(&store, &who, "production", 1);
+    if orphaned {
+        store
+            .write(
+                &who,
+                &Command::Edit(Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse("web.mounts.data").unwrap(),
+                    }],
+                }),
+            )
+            .unwrap();
+        backend::deploy(&store, &who, "production", 2);
+    }
     store
         .write(
             &who,
@@ -475,6 +496,18 @@ fn a_push_that_leaves_out_the_service_mounting_the_volume_keeps_its_data() {
     assert!(deletes_of(&store, &narrow, Some(held_on_a())).is_empty());
     assert_eq!(
         deletes_of(&store, &push(Some(H2), Some(H3), None), Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_narrow_push_deletes_saved_loss_data_no_service_mounts() {
+    let (store, who) = saved_loss_of(true);
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    system(&store, &push(None, Some(H1), None));
+    let narrow = push(Some(H1), Some(H2), Some(&["api/main.rs"]));
+    assert_eq!(
+        deletes_of(&store, &narrow, Some(held_on_a())),
         [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
     );
 }
