@@ -29,7 +29,7 @@ inotify.workspace = true
 instant-acme = "0.8.5"
 listenfd = "1.0.2"
 memchr = "2.8.3"
-nix = { version = "0.29.0", default-features = false, features = ["dir", "fs", "feature", "signal"] }
+nix = { version = "0.29.0", default-features = false, features = ["dir", "fs", "feature"] }
 ipnet = "2.12.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring"] }
 ployz-core.workspace = true
