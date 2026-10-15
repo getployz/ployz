@@ -49,7 +49,7 @@ fn environment(
     };
     match now(scope::resolve(tx, who, at))? {
         Some((_, now)) if now != *first => Err(conflict(
-            "This ID was already used in another Environment; send a new ID to use this one",
+            "This ID was already used in another Environment; send a new ID to use this one.",
             serde_json::json!({ "id": id }),
         )),
         _ => Ok(()),
@@ -169,7 +169,7 @@ pub(crate) fn project(
     let first = row.parse::<ProjectId>(0, "Environment")?;
     match now(scope::project(tx, who, c.project.as_ref()))? {
         Some(now) if now.id != first => Err(conflict(
-            "This ID was already used in another Project; send a new ID to use this one",
+            "This ID was already used in another Project; send a new ID to use this one.",
             serde_json::json!({ "id": c.id }),
         )),
         _ => Ok(()),
