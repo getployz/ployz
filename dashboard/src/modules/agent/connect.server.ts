@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNull, lt, ne, or } from "drizzle-orm";
 import { Effect } from "effect";
-import { oauthClient } from "#/modules/identity/oauth-tables";
+import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type RemoteMcpAuth } from "#/server/auth.server";
@@ -74,7 +74,8 @@ const signedOAuthQuery = (pageQuery: string) => {
 
 /**
  * The member's answer on /connect. The grant is bound to the Organization they picked, which must be one they belong
- * to; their session's active Organization is left alone.
+ * to; their session's active Organization is left alone. Allow first deletes their consents there that predate this
+ * membership, which can never authorize a call again, so better-auth writes a fresh grant instead of keeping a dead one.
  */
 export const connectAgent = Effect.fn("Connect.decide")(function* (
   headers: Headers,
@@ -85,11 +86,20 @@ export const connectAgent = Effect.fn("Connect.decide")(function* (
   if (signedIn === null) return yield* new Unauthorized();
   const database = yield* Database;
   const [membership] = yield* database.drizzle
-    .select({ organizationId: member.organizationId })
+    .select({ organizationId: member.organizationId, joinedAt: member.createdAt })
     .from(member)
     .where(and(eq(member.userId, signedIn.user.id), eq(member.organizationId, input.organizationId)))
     .limit(1);
   if (membership === undefined) return yield* new Forbidden({ message: "You are not a member of that Organization." });
+  if (input.accept) {
+    // Truncated to the second as the caller check compares, so a consent made in the joining second survives.
+    const joinedSecond = new Date(Math.floor(membership.joinedAt.getTime() / 1000) * 1000);
+    yield* database.drizzle.delete(oauthConsent).where(and(
+      eq(oauthConsent.userId, signedIn.user.id),
+      eq(oauthConsent.referenceId, membership.organizationId),
+      lt(oauthConsent.createdAt, joinedSecond),
+    ));
+  }
   return yield* mcp.consent(
     headers,
     { oauthQuery: signedOAuthQuery(input.oauthQuery), accept: input.accept },

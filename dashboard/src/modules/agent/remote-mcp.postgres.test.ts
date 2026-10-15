@@ -423,6 +423,30 @@ it.live("leaving Shop ends the grant, and neither rejoining nor connecting again
       .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a membership that ends outside removeMembership leaves a consent that Allow replaces after rejoining", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const clientId = yield* registerAgent(shop);
+    const old = yield* connectTokens(shop, clientId);
+    const oldRefreshToken = old.refresh_token ?? expect.fail("no refresh token was issued");
+
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(member).where(sql`${member.userId} = ${shop.boId}`);
+    }));
+    yield* aSecondLater;
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(member).values({ userId: shop.boId, organizationId: ORGANIZATION, role: "owner" });
+    }));
+
+    const renewed = yield* connect(shop, clientId);
+    expect((yield* raw(shop, renewed)).status).toBe(200);
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, oldRefreshToken))
+      .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("/connect names the agent asking and the host its code returns to, and names none for a tampered link", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
