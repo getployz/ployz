@@ -155,7 +155,7 @@ const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentV
 });
 
 it("says who started a Deployment and what it ships: the Service's commit, else the first pinned one, else its upload", () => {
-  const builds = [{ service: "web", commit: "8a7ed6e9f0", status: "built", message: null }, { service: "api", commit: "1234567abc", status: "built", message: null }] as const;
+  const builds = [{ service: "web", commit: "8a7ed6e9f0", status: "built", message: null, started_at: null, finished_at: null }, { service: "api", commit: "1234567abc", status: "built", message: null, started_at: null, finished_at: null }] as const;
   expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "api")).toBe("by Nick · 1234567");
   expect(deploymentByline(deployment({ admitted_by: "Nick", builds: [...builds] }), "whoami")).toBe("by Nick · 8a7ed6e");
   // A retry of someone else's upload names both; one's own upload names the uploader once.

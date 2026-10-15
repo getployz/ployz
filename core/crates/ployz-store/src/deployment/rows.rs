@@ -205,20 +205,10 @@ pub struct RowTransition {
 
 impl RowTransition {
     fn new(at: i64, state: &RowState) -> Self {
-        let state = match state {
-            RowState::Failed {
-                reason,
-                cause,
-                step,
-                ..
-            } => RowState::Failed {
-                reason: reason.clone(),
-                cause: cause.clone(),
-                step: *step,
-                log: None,
-            },
-            state => state.clone(),
-        };
+        let mut state = state.clone();
+        if let RowState::Failed { log, .. } = &mut state {
+            *log = None;
+        }
         Self { at, state }
     }
 }
@@ -655,7 +645,9 @@ pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
 
 fn history(row: &Row, index: usize) -> Result<Option<Vec<RowTransition>>, RpcError> {
     row.optional_text(index)?
-        .map(|text| serde_json::from_str(text).map_err(|_| error::corrupt("Deployment row history")))
+        .map(|text| {
+            serde_json::from_str(text).map_err(|_| error::corrupt("Deployment row history"))
+        })
         .transpose()
 }
 

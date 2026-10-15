@@ -1309,6 +1309,138 @@ fn deployment_rows_record_state_changes_once() {
 }
 
 #[test]
+fn a_row_history_lists_every_state_change_and_keeps_recurring_phases() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &["web"], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    let compensating = json!({"type": "running", "phase": {"type": "compensating"}});
+    let mut tracker = RowTracker::default();
+    for status in [
+        json!({"type": "pending"}),
+        waiting(0),
+        waiting(500),
+        compensating,
+        waiting(0),
+    ] {
+        let changes = tracker.changes(&progress(&[("web", "alpha", status)]));
+        store
+            .record(&id(1), &a, RunEvidence::Progress(changes))
+            .unwrap();
+    }
+    let health = RowState::Running {
+        phase: RowPhase::WaitingForHealth,
+        serving: false,
+    };
+    let history = || {
+        let view = rows(&store, &who, 1);
+        let history = view[0].1[0].history.clone().unwrap();
+        assert!(history.windows(2).all(|pair| pair[0].at <= pair[1].at));
+        history
+            .into_iter()
+            .map(|entry| entry.state)
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![
+        RowState::Pending,
+        health.clone(),
+        RowState::Running {
+            phase: RowPhase::Compensating,
+            serving: false,
+        },
+        health.clone(),
+    ];
+    assert_eq!(history(), expected);
+
+    let again = RowTracker::default().changes(&progress(&[("web", "alpha", waiting(900))]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(again))
+        .unwrap();
+    assert_eq!(
+        history(),
+        expected,
+        "re-recording the current state adds nothing"
+    );
+}
+
+#[test]
+fn settling_a_run_ends_each_unfinished_history_at_its_finish_time() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let error = json!({
+        "type": "machine", "action": "RemoveContainer",
+        "error": {"code": "internal", "message": "disk failure", "details": {}}
+    });
+    let changes = RowTracker::default().changes(&progress(&[
+        ("web", "alpha", json!({"type": "failed", "error": error})),
+        ("api", "beta", waiting(0)),
+    ]));
+    store
+        .record(&id(1), &a, RunEvidence::Progress(changes))
+        .unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [],
+                    "failed": {"type": "operation", "operation": operation("web"), "error": error},
+                    "unexecuted": [operation("api")]
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let view = rows(&store, &who, 1);
+    let row = |service: &str| {
+        view.iter()
+            .find(|(name, _)| name == service)
+            .map(|(_, rows)| rows[0].clone())
+            .unwrap()
+    };
+    let web = row("web");
+    let [failed] = &web.history.unwrap()[..] else {
+        panic!("one state");
+    };
+    assert!(
+        matches!(&failed.state, RowState::Failed { cause, log: None, .. } if cause == &["disk failure"]),
+        "the log stays on the row, out of history"
+    );
+    assert!(web.state != failed.state, "the row itself keeps its log");
+    let api = row("api");
+    let states: Vec<_> = api
+        .history
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|entry| (entry.state.clone(), Some(entry.at)))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            (
+                RowState::Running {
+                    phase: RowPhase::WaitingForHealth,
+                    serving: false
+                },
+                api.started_at
+            ),
+            (RowState::NotAttempted, api.finished_at),
+        ]
+    );
+}
+
+#[test]
 fn terminal_row_retries_preserve_the_recorded_clocks() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
@@ -1584,6 +1716,12 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
                 serving: false,
             }));
         assert!(volume.iter().all(|row| row.started_at.is_some()));
+        assert!(
+            volume.iter().all(|row| row.history.is_none()),
+            "merged resource rows carry no history"
+        );
+        let web = &view.iter().find(|(name, _)| name == "web").unwrap().1;
+        assert!(web.iter().all(|row| row.history.is_some()));
         assert_eq!(
             volume
                 .iter()

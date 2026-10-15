@@ -378,9 +378,12 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let view = store
         .read(&who, &ployz_store::DeploymentQuery { id: first.clone() })
         .unwrap();
+    let started_at = view.builds[0].started_at;
+    assert!(started_at.is_some());
     assert_eq!(
         json!(view.builds),
-        json!([{"service": "web", "commit": a, "status": "building", "message": null}])
+        json!([{"service": "web", "commit": a, "status": "building", "message": null,
+                "started_at": started_at, "finished_at": null}])
     );
     store
         .record(
@@ -833,6 +836,58 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
             .unwrap_err()
             .code,
         RpcErrorCode::Conflict
+    );
+}
+
+#[test]
+fn a_build_clock_starts_at_its_first_building_and_reopens_when_a_later_builder_starts() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    let clock = || {
+        let build = store
+            .read(
+                &who,
+                &BuildLogQuery {
+                    deployment: id.deployment.clone(),
+                    service: ServiceName::parse("web").unwrap(),
+                },
+            )
+            .unwrap()
+            .build;
+        (build.status, build.started_at, build.finished_at)
+    };
+    let (status, started, finished) = clock();
+    assert_eq!((status, finished), (BuildStatus::Building, None));
+    assert!(started.is_some(), "dispatching to GitHub starts the clock");
+
+    let skip = GithubEnd::Skipped {
+        message: "the run ran out of time".into(),
+    };
+    store.github_end(&id, Some(RUN), &skip).unwrap();
+    assert_eq!(clock(), (BuildStatus::Pending, started, None));
+
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    store.claim(&id.deployment, &runner).unwrap();
+    for status in [BuildStatus::Building, BuildStatus::Failed] {
+        store
+            .record(&id.deployment, &runner, report(status, None, ""))
+            .unwrap();
+    }
+    let (status, again, finished) = clock();
+    assert_eq!((status, again), (BuildStatus::Failed, started));
+    assert!(finished >= started && finished.is_some());
+
+    store
+        .record(
+            &id.deployment,
+            &runner,
+            report(BuildStatus::Building, None, ""),
+        )
+        .unwrap();
+    assert_eq!(
+        clock(),
+        (BuildStatus::Building, started, None),
+        "a later Builder reopens the clock and keeps its start"
     );
 }
 

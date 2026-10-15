@@ -16,7 +16,8 @@ pub(crate) use history::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
 pub use rows::{
-    FailedAt, Failure, RowPhase, RowState, RowTracker, ServerProgress, ServerRow, starts_container,
+    FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
+    starts_container,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
