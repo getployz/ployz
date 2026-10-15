@@ -11,6 +11,7 @@ enum Silent {
     Ingest,
     PeerPull,
     RegistryPull,
+    ClusterDown,
     NeverSettles,
 }
 
@@ -62,7 +63,12 @@ async fn destination_and_holder(
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
-    let powered_off = || Status::unavailable("deadline has elapsed");
+    let powered_off = || {
+        ployz_core::rpc::target_unanswered_status(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "deadline has elapsed",
+        ))
+    };
     crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| async move {
         let target = rpc
             .metadata()
@@ -102,6 +108,9 @@ async fn destination_and_holder(
             }
             RpcRequestBody::PullImage(_) if silent == Silent::RegistryPull => {
                 return Err(powered_off());
+            }
+            RpcRequestBody::PullImage(_) if silent == Silent::ClusterDown => {
+                return Err(Status::unavailable("Cluster is not available"));
             }
             RpcRequestBody::ListContainers(_) | RpcRequestBody::EnsureContainer(_)
                 if silent == Silent::NeverSettles =>
@@ -169,6 +178,21 @@ async fn a_destination_silent_during_its_registry_pull_is_named() {
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);
     assert_eq!(error.message, silence(machine('1'), "deadline has elapsed"));
+    server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_that_answers_unavailable_keeps_its_words() {
+    let (client, server) = destination_and_holder("alpine:3.23.3", Silent::ClusterDown).await;
+    let mut service = spec(None, None, None);
+    service.container.pull_policy = ployz_core::PullPolicy::Always;
+
+    let error = MachineOperations::ensure_image(&client, &machine('1'), &service)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::Unavailable);
+    assert_eq!(error.message, "Cluster is not available");
     server.abort();
 }
 
