@@ -1,6 +1,6 @@
 ---
 name: verify-server
-description: Verify a Ployz feature on disposable real Machines. Use when core or dashboard verification needs an actual Cluster, Docker, WireGuard, systemd or ZFS, including multi-Machine service and volume moves.
+description: Verify a Ployz feature on disposable real Machines. Use only when a change touches Machine behaviour (daemon, Docker, WireGuard, systemd, ZFS, service and volume moves, deploys) and the question needs a real Cluster to answer. Skip it for store, settings, docs, CLI, agent-tool or snapshot changes; focused tests and CI cover those, per docs/agents/landing.md.
 ---
 
 # Verify a server feature
