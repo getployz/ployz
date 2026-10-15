@@ -24,13 +24,74 @@ const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
 pub(super) struct StrandedIngress {
     /// Stopped on request, so never started unasked. Held in daemon memory, so a
     /// daemon restart forgets it.
-    pub(super) held: BTreeSet<ContainerId>,
+    pub(super) held: Holds,
     /// The last one whose failure was logged. Docker names a fresh endpoint in
     /// every failure, so comparing the messages would log every scan.
     pub(super) reported: Option<ContainerId>,
     /// Taken through each start, so a stop that races it lands after it and holds,
     /// while other containers never wait on the Docker calls.
     pub(super) gates: BTreeMap<ContainerId, Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// Sync inside, so a [`Held`] dropped mid-await still lifts its hold.
+#[derive(Clone, Default)]
+pub(super) struct Holds(Arc<std::sync::Mutex<HoldTable>>);
+
+#[derive(Default)]
+struct HoldTable {
+    stopped: BTreeSet<ContainerId>,
+    /// Stops still deciding whether to proceed, counted so one refusal keeps the
+    /// others' holds.
+    deciding: BTreeMap<ContainerId, usize>,
+}
+
+impl Holds {
+    pub(super) fn hold(&self, container_id: ContainerId) -> Held {
+        *self.table().deciding.entry(container_id).or_default() += 1;
+        Held {
+            holds: self.clone(),
+            container_id,
+        }
+    }
+
+    pub(super) fn contains(&self, container_id: &ContainerId) -> bool {
+        let table = self.table();
+        table.stopped.contains(container_id) || table.deciding.contains_key(container_id)
+    }
+
+    pub(super) fn release(&self, container_id: &ContainerId) {
+        self.table().stopped.remove(container_id);
+    }
+
+    fn table(&self) -> std::sync::MutexGuard<'_, HoldTable> {
+        self.0.lock().expect("stranded holds are never poisoned")
+    }
+}
+
+/// One stop's hold while it decides whether to proceed.
+#[must_use = "the hold lifts when it drops unless kept"]
+pub(super) struct Held {
+    holds: Holds,
+    container_id: ContainerId,
+}
+
+impl Held {
+    pub(super) fn keep(self) {
+        self.holds.table().stopped.insert(self.container_id);
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut table = self.holds.table();
+        let Some(deciding) = table.deciding.get_mut(&self.container_id) else {
+            return;
+        };
+        *deciding -= 1;
+        if *deciding == 0 {
+            table.deciding.remove(&self.container_id);
+        }
+    }
 }
 
 #[derive(Clone)]

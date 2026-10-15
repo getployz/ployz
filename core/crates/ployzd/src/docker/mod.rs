@@ -242,7 +242,7 @@ impl ContainerRuntime {
             .expect("check records are never poisoned")
             .forget(container_id);
         let mut stranded = self.stranded().await;
-        stranded.held.remove(container_id);
+        stranded.held.release(container_id);
         stranded.gates.remove(container_id);
     }
 

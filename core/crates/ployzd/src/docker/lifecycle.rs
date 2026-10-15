@@ -404,7 +404,7 @@ impl ContainerRuntime {
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.ensure_managed(container_id).await?;
-        self.stranded().await.held.remove(container_id);
+        self.stranded().await.held.release(container_id);
         self.start_inspected(container_id, &inspected).await
     }
 
@@ -508,23 +508,25 @@ impl ContainerRuntime {
         still_wanted: impl std::future::Future<Output = Result<bool, E>>,
     ) -> Result<bool, E> {
         let managed = self.ensure_managed(container_id).await;
-        let mut newly_held = false;
-        if managed.is_ok() {
-            let gate = {
-                let mut stranded = self.stranded().await;
-                newly_held = stranded.held.insert(*container_id);
-                stranded.gates.get(container_id).cloned()
+        let hold = if managed.is_ok() {
+            let (hold, gate) = {
+                let stranded = self.stranded().await;
+                let hold = stranded.held.hold(*container_id);
+                (hold, stranded.gates.get(container_id).cloned())
             };
             if let Some(gate) = gate {
                 drop(gate.lock().await);
             }
-        }
+            Some(hold)
+        } else {
+            None
+        };
         let wanted = still_wanted.await;
         if !matches!(wanted, Ok(true)) {
-            if newly_held {
-                self.stranded().await.held.remove(container_id);
-            }
             return wanted;
+        }
+        if let Some(hold) = hold {
+            hold.keep();
         }
         managed?;
         let mut options = StopContainerOptionsBuilder::default();
