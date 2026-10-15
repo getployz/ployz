@@ -3,10 +3,11 @@ import { Link } from "@tanstack/react-router";
 import type { DeploymentStatus, RunState } from "@ployz/sdk";
 import type { ToolCallPart, ToolResultPart } from "@tanstack/ai-client";
 import { Option, Schema } from "effect";
-import { CircleCheckIcon, CircleDotIcon, CircleSlashIcon, CircleXIcon } from "lucide-react";
+import { CircleCheckIcon, CircleSlashIcon, CircleXIcon } from "lucide-react";
 import type { CollectionScope } from "#/collections/scope";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { Marker, MarkerContent, MarkerIcon } from "#/components/ui/marker";
+import { Spinner } from "#/components/ui/spinner";
+import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "#/components/ui/trace";
 import { type DeploymentLight, deploymentStatusIcons, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
@@ -53,7 +54,7 @@ const Refused = Schema.Struct({
   refusal: Schema.Struct({
     code: Schema.String,
     message: Schema.String,
-    details: Schema.optional(Schema.Struct({ approval: Schema.optional(Schema.Struct({ reason: Schema.NullOr(Schema.String) })) })),
+    details: Schema.optional(Schema.NullOr(Schema.Struct({ approval: Schema.optional(Schema.Struct({ reason: Schema.NullOr(Schema.String) })) }))),
   }),
 });
 const Cancelled = Schema.Struct({ ok: Schema.Literal(false), cancelled: Schema.Literal(true) });
@@ -69,46 +70,52 @@ export function toolOutcome(call: ToolCallPart, result: ToolResultPart | undefin
   return Schema.decodeUnknownOption(Schema.fromJsonString(Outcome))(result.content);
 }
 
-/**
- * One tool call, compact: a Deployment or a Cloud run it started as a Run card, a denial with its reason, a refusal with its message,
- * anything else as its command.
- */
-export function ToolRow({ organizationSlug, scope, name, outcome, done }: {
-  organizationSlug: string;
-  scope: CollectionScope;
-  name: string;
-  outcome: Option.Option<Outcome>;
-  done: boolean;
-}) {
-  const command = name.replaceAll("_", " ");
-  if (Option.isNone(outcome)) {
+/** One tool call as a Trace line: its command, ticked when done, dimmed when cancelled, red with its reason when refused. */
+export function ToolStep({ name, outcome, done }: { name: string; outcome: Option.Option<Outcome>; done: boolean }) {
+  const command = `ployz ${name.replaceAll("_", " ")}`;
+  const answer = Option.getOrUndefined(outcome);
+  if (answer === undefined || answer.ok) {
     return (
-      <Marker>
-        <MarkerIcon>{done ? <CircleCheckIcon /> : <CircleDotIcon className="text-info" />}</MarkerIcon>
-        <MarkerContent><span className="font-mono text-xs">ployz {command}</span></MarkerContent>
-      </Marker>
-    );
-  }
-  const answer = outcome.value;
-  if (isRan(answer)) return <OperationCard run={answer.value} />;
-  if ("value" in answer) {
-    return (
-      <div className="flex flex-col gap-1">
-        <RunCard organizationSlug={organizationSlug} scope={scope} deployment={answer.value} />
-        {answer.nothing_destroyed && <p className="text-xs text-muted-foreground">Didn't ask. Nothing destroyed.</p>}
-      </div>
+      <TraceLine status={done ? undefined : "running"}>
+        <TraceIcon>{done ? <CircleCheckIcon /> : <Spinner />}</TraceIcon>
+        <TraceTitle className="font-mono">{command}</TraceTitle>
+      </TraceLine>
     );
   }
   if ("cancelled" in answer) {
-    return <Marker><MarkerIcon><CircleSlashIcon /></MarkerIcon><MarkerContent>ployz {command} was cancelled.</MarkerContent></Marker>;
+    return (
+      <TraceLine status="pending">
+        <TraceIcon><CircleSlashIcon /></TraceIcon>
+        <TraceTitle className="font-mono">{command}</TraceTitle>
+        <TraceDescription>cancelled</TraceDescription>
+      </TraceLine>
+    );
   }
-  const { code, message, details } = answer.refusal;
-  const denied = code === "approval_denied";
   return (
-    <Marker>
-      <MarkerIcon><CircleXIcon className="text-destructive" /></MarkerIcon>
-      <MarkerContent>{denied ? `Denied${details?.approval?.reason ? `: ${details.approval.reason}` : "."}` : message}</MarkerContent>
-    </Marker>
+    <div className="flex flex-col gap-1">
+      <TraceLine status="error">
+        <TraceIcon><CircleXIcon /></TraceIcon>
+        <TraceTitle className="font-mono">{command}</TraceTitle>
+      </TraceLine>
+      <p>{refusalReason(answer.refusal)}</p>
+    </div>
+  );
+}
+
+function refusalReason({ code, message, details }: typeof Refused.Type["refusal"]): string {
+  return code === "approval_denied" ? `Denied${details?.approval?.reason ? `: ${details.approval.reason}` : "."}` : message;
+}
+
+/** The card a call leaves under the trace: a Deployment it started, or a Cloud run it started. */
+export function ToolCard({ organizationSlug, scope, outcome }: { organizationSlug: string; scope: CollectionScope; outcome: Option.Option<Outcome> }) {
+  const answer = Option.getOrUndefined(outcome);
+  if (answer === undefined || !answer.ok) return null;
+  if (isRan(answer)) return <OperationCard run={answer.value} />;
+  return (
+    <div className="flex flex-col gap-1">
+      <RunCard organizationSlug={organizationSlug} scope={scope} deployment={answer.value} />
+      {answer.nothing_destroyed && <p className="text-xs text-muted-foreground">Didn't ask. Nothing destroyed.</p>}
+    </div>
   );
 }
 
