@@ -227,6 +227,22 @@ it("puts the write's committed review in the cache as it answers, before any ref
   await waitFor(() => expect(test.scope.queryClient.getQueryData<{ value: { total_count: number } }>(key)?.value.total_count).toBe(1));
 });
 
+it("rereads a view the write's answer says the Store was too busy to read, keeping its rows meanwhile", async () => {
+  const test = setup(view(2, 1));
+  const read = vi.mocked(functions.readStoreViewServerFn);
+  const reread = deferred<unknown>();
+  read.mockImplementationOnce(() => reread.promise as never);
+  const busy = { ok: false, refusal: { code: "unavailable", message: "The Store is busy", details: null } };
+  test.write.mockResolvedValueOnce({ ...edited(3), answers: [{ query: environmentSettingsQuery(ref), result: busy }] } as never);
+  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
+  const persisted = test.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+  expect(test.scope.queryClient.getQueryData(key)).toEqual({ ok: true, value: { view: "environment", ...view(2, 1) } });
+  reread.resolve({ ok: true, value: { view: "environment", ...view(3, 3) } });
+  await persisted;
+  expect(test.replicas()).toBe(3);
+});
+
 it("keeps a newer view when a write's answer or a read lands older", async () => {
   const test = setup(view(2, 1));
   const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;

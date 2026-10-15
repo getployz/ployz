@@ -186,14 +186,15 @@ const carriesPages = Schema.is(Schema.Struct({ pages: Schema.Array(Schema.Unknow
 
 /**
  * A write's answers, in every cached view of the same query, through `keepNewer`: a read already in flight is
- * cancelled first, so it can't land over them. Views of the write's Environments it didn't answer are reread.
+ * cancelled first, so it can't land over them. Views of the write's Environments it didn't answer, or answered with a
+ * refusal, are reread.
  */
 export async function putAnswers(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null, answers: readonly ViewAnswer[]) {
   const answered = new Set<Query>();
   for (const query of viewsOf(queryClient, organizationSlug, keys)) {
     const config = queryOf(query);
     const answer = answers.find((candidate) => JSON.stringify(candidate.query) === JSON.stringify(config));
-    if (answer === undefined) continue;
+    if (answer === undefined || !answer.result.ok) continue;
     answered.add(query);
     await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
     queryClient.setQueryData(query.queryKey, answer.result);
