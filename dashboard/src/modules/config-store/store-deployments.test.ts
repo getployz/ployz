@@ -2,6 +2,7 @@ import type { DeploymentView, DiffView, JsonValue, Outcome, RowId, ServiceListin
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
+  showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
   nodeLight, reviewGroups, shownValue, uploadLabel,
 } from "./store-deployments";
@@ -308,4 +309,10 @@ it("words what a Deployment shipped despite", () => {
     .toBe("Ingress isn't running on web-1: image pull failed");
   expect(deploymentWarningText({ cause: "Couldn't list the Cluster's Servers." }))
     .toBe("Couldn't check ingress: Couldn't list the Cluster's Servers. Deploy again to retry");
+});
+
+it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and leaves an ended one alone", () => {
+  expect(showCancelling({ status: "running", in_flight: true }, true)).toEqual({ status: "cancelling", in_flight: true });
+  expect(showCancelling({ status: "queued", in_flight: true }, false)).toEqual({ status: "queued", in_flight: true });
+  expect(showCancelling({ status: "applied", in_flight: false }, true)).toEqual({ status: "applied", in_flight: false });
 });

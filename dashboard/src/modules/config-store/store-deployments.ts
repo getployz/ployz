@@ -187,6 +187,10 @@ export function shownValue(value: JsonValue): string {
   });
 }
 
+/** The Deployment as a Cancel the Store hasn't answered shows it: Cancelling, while it still runs or waits. */
+export const showCancelling = <D extends Pick<DeploymentSummary, "status" | "in_flight">>(deployment: D, cancelling: boolean): D =>
+  cancelling && deployment.in_flight ? { ...deployment, status: "cancelling" } : deployment;
+
 const deploymentStatusLabels = {
   queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
