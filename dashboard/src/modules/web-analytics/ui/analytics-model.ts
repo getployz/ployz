@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { addDays, dayStart, HOUR_MS, hourStart, localDay } from "../local-time";
+import { addDays, dayStart, hourStart, localDay } from "../local-time";
 import type { Filter, Interval, Range } from "../model";
 
 /** `today`, `7d`, `30d`, or `YYYY-MM-DD..YYYY-MM-DD`: site-local days, both ends included. */
@@ -26,6 +26,17 @@ export function customDays(spec: RangeSpec) {
 
 export const isRangeSpec = (spec: string) => PRESET_RANGES.some((preset) => preset.spec === spec) || customDays(spec) !== null;
 
+const QUARTER_HOUR_MS = 900_000;
+
+/** The next site-local hour boundary after `now`'s hour. Across a half-hour offset change that boundary is 30 minutes away, not an hour. */
+function nextHourStart(timezone: string, now: number) {
+  const start = hourStart(timezone, new Date(now)).getTime();
+  for (let at = start + QUARTER_HOUR_MS; ; at += QUARTER_HOUR_MS) {
+    const next = hourStart(timezone, new Date(at));
+    if (next.getTime() > start) return next;
+  }
+}
+
 export type ResolvedRange = { readonly range: Range; readonly interval: Interval };
 
 /**
@@ -33,7 +44,7 @@ export type ResolvedRange = { readonly range: Range; readonly interval: Interval
  * `pnpm analytics:query --range Nd`. A day range reads hourly; anything longer reads daily.
  */
 export function resolveRange(spec: RangeSpec, timezone: string, now: number): ResolvedRange {
-  const end = new Date(hourStart(timezone, new Date(now)).getTime() + HOUR_MS);
+  const end = nextHourStart(timezone, now);
   const today = localDay(timezone, end.getTime() - 1);
   const custom = customDays(spec);
   if (custom !== null) {

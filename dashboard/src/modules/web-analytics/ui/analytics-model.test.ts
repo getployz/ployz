@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isHourStart } from "../local-time";
 import { analyticsGate, customRange, goalRate, isRangeSpec, parsePageFilter, partialDays, resolveRange, viewsPerVisit } from "./analytics-model";
 
 const iso = (range: { start: Date; end: Date }) => [range.start.toISOString(), range.end.toISOString()];
@@ -23,6 +24,22 @@ describe("resolveRange", () => {
     expect(iso(resolveRange(customRange("2026-10-14", "2026-10-20"), "UTC", NOW).range))
       .toEqual(["2026-10-14T00:00:00.000Z", "2026-10-15T10:00:00.000Z"]);
     expect(resolveRange(customRange("2026-10-02", "2026-10-02"), "UTC", NOW).interval).toBe("hour");
+  });
+
+  it("ends at the next local hour boundary when a half-hour offset change shortens the hour", () => {
+    const zone = "Australia/Lord_Howe";
+    // Spring forward: local 02:00 jumps to 02:30, so the hour holding 02:45 ends at 03:00.
+    const spring = resolveRange("today", zone, Date.parse("2026-10-03T15:45:00Z"));
+    expect(iso(spring.range)).toEqual(["2026-10-03T13:30:00.000Z", "2026-10-03T16:00:00.000Z"]);
+    // Fall back: the repeated 01:30 to 02:00 is its own half-hour bucket.
+    const fall = resolveRange("today", zone, Date.parse("2026-04-04T15:15:00Z"));
+    expect(iso(fall.range)).toEqual(["2026-04-04T13:00:00.000Z", "2026-04-04T15:30:00.000Z"]);
+    for (const now of ["2026-10-03T15:45:00Z", "2026-04-04T15:15:00Z"]) {
+      for (const spec of ["today", "7d", "30d", customRange("2026-09-20", "2026-10-20")]) {
+        const { range } = resolveRange(spec, zone, Date.parse(now));
+        expect([isHourStart(zone, range.start), isHourStart(zone, range.end)]).toEqual([true, true]);
+      }
+    }
   });
 
   it("reads the default range for a custom range that starts after now", () => {
