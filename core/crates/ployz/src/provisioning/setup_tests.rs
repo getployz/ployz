@@ -179,9 +179,13 @@ async fn unsigned_bootstrap_is_rejected_before_execution() {
     let release = release_fixture(fixture.path(), &log, 0);
     fs::remove_file(release.join(ployz_core::RELEASE_SIGNATURE_ASSET)).unwrap();
 
-    assert!(
-        bootstrap(&release).await.is_err(),
-        "an unsigned bootstrap was accepted"
+    let Err(error) = bootstrap(&release).await else {
+        panic!("an unsigned bootstrap was accepted");
+    };
+
+    assert_eq!(
+        error.to_string(),
+        format!("Release {VERSION} is not signed, and Ployz installs only signed releases.")
     );
     assert!(!log.exists(), "unsigned bootstrap executed");
 }

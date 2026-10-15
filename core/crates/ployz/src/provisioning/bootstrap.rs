@@ -56,7 +56,7 @@ impl Bootstrap {
             "download bootstrap release checksums",
         )
         .await?;
-        let signature = download(
+        let signature = download_if_present(
             &client,
             &format!("{base}/{RELEASE_SIGNATURE_ASSET}"),
             "download bootstrap release checksums signature",
@@ -67,7 +67,7 @@ impl Bootstrap {
             archive_name,
             &archive,
             &checksums,
-            &signature,
+            signature.as_deref(),
         )
         .await
     }
@@ -79,6 +79,14 @@ impl Bootstrap {
         architecture: &str,
     ) -> Result<Self, ProvisionError> {
         let archive_name = daemon_archive(architecture)?;
+        let read_if_present = |name: &str| match fs::read(release.join(name)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(ProvisionError::BootstrapIo {
+                stage: "read local bootstrap release",
+                source,
+            }),
+        };
         let read = |name: &str| {
             fs::read(release.join(name)).map_err(|source| ProvisionError::BootstrapIo {
                 stage: "read local bootstrap release",
@@ -90,7 +98,7 @@ impl Bootstrap {
             archive_name,
             &read(archive_name)?,
             &read("checksums.txt")?,
-            &read(RELEASE_SIGNATURE_ASSET)?,
+            read_if_present(RELEASE_SIGNATURE_ASSET)?.as_deref(),
         )
         .await
     }
@@ -100,7 +108,7 @@ impl Bootstrap {
         archive_name: &str,
         archive: &[u8],
         checksums: &[u8],
-        signature: &[u8],
+        signature: Option<&[u8]>,
     ) -> Result<Self, ProvisionError> {
         verify_signature(public_key, checksums, signature)?;
         verify_checksum(archive, checksums, archive_name)?;
@@ -191,18 +199,42 @@ async fn download(
         .map_err(|source| ProvisionError::BootstrapDownload { stage, source })
 }
 
+/// Download `url`, or `None` when the release does not publish it.
+async fn download_if_present(
+    client: &reqwest::Client,
+    url: &str,
+    stage: &'static str,
+) -> Result<Option<Vec<u8>>, ProvisionError> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|source| ProvisionError::BootstrapDownload { stage, source })?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    response
+        .error_for_status()
+        .map_err(|source| ProvisionError::BootstrapDownload { stage, source })?
+        .bytes()
+        .await
+        .map(|bytes| Some(bytes.to_vec()))
+        .map_err(|source| ProvisionError::BootstrapDownload { stage, source })
+}
+
 fn verify_signature(
     public_key: &str,
     checksums: &[u8],
-    signature: &[u8],
+    signature: Option<&[u8]>,
 ) -> Result<(), ProvisionError> {
+    let version = MachineVersion::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| ProvisionError::BootstrapVerification(error.to_string()))?;
+    let signature = signature.ok_or_else(|| ProvisionError::BootstrapUnsigned(version.clone()))?;
     let signature = std::str::from_utf8(signature).map_err(|error| {
         ProvisionError::BootstrapVerification(format!(
             "{RELEASE_SIGNATURE_ASSET} is not UTF-8: {error}"
         ))
     })?;
-    let version = MachineVersion::parse(env!("CARGO_PKG_VERSION"))
-        .map_err(|error| ProvisionError::BootstrapVerification(error.to_string()))?;
     verify_release_checksums(public_key, checksums, signature, &version)
         .map_err(ProvisionError::BootstrapSignature)
 }
