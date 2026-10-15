@@ -26,6 +26,7 @@ class CiTest(unittest.TestCase):
             (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud", "sdk-types"}),
             (["core/crates/ployz-core/tests/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
             (["core/crates/ployz-store/src/lib.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud", "sdk-types"}),
+            (["core/crates/ployz-store/tests/snapshots/agent_tools.json"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud", "sdk-types"}),
             (["dashboard/uptime/src/main.rs"], {"contracts", "uptime"}),
             (["dashboard/uptime/Cargo.lock"], {"contracts", "uptime"}),
             (["dashboard/uptime/Dockerfile"], {"contracts", "uptime"}),

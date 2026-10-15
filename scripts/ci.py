@@ -78,7 +78,8 @@ def select_normal(paths):
                 continue
             if crate not in sdk_and_config_wasm_crates():
                 return NORMAL.copy()
-            if not relative.startswith("tests/") or crate == "ployz-sdk":
+            # The Cloud's parity tests read ployz-store's snapshots.
+            if not relative.startswith("tests/") or crate == "ployz-sdk" or relative.startswith("tests/snapshots/"):
                 selected |= {"cloud", "sdk-types"}
         elif path == "core/install.sh" or path.startswith("core/relay/"):
             continue
