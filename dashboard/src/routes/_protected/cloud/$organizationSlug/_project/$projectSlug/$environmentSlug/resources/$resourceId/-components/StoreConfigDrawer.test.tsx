@@ -13,6 +13,7 @@ import * as functions from "#/modules/config-store/store.functions";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, storeViewOptions, useStoreViews } from "#/modules/config-store/store-view.queries";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { InspectorPresentation } from "../../../-components/CanvasInspectorHeader";
+import { StoreRenameLock } from "../../../-components/StoreRenameLock";
 import * as changes from "../../../-components/canvas/useStoreChangeActions";
 import { StoreConfigDrawer } from "./StoreConfigDrawer";
 
@@ -68,7 +69,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
     if (!config) throw new Error("Config listing did not load");
     return (
       <InspectorPresentation value={{ takeover: false, toggleFullscreen() {} }}>
-        <StoreConfigDrawer params={params} config={config} />
+        <StoreRenameLock><StoreConfigDrawer params={params} config={config} /></StoreRenameLock>
       </InspectorPresentation>
     );
   } });
@@ -133,6 +134,59 @@ it("keeps text typed during a pending save when that save commits", async () => 
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(false);
 });
 
+it("counts restoring the stored text during a pending save as an edit, and saves it with the other files", async () => {
+  const test = await openDrawer(twoFiles);
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("submitted");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
+  test.edit("initial");
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).getByLabelText("Unsaved")).toBeTruthy();
+  await setPermissions("run.sh", { mode: "0750" });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).queryByLabelText("Unsaved")).toBeNull();
+  test.store.item = { ...twoFiles, contents: { ...twoFiles.contents, "config.yml": "submitted" } };
+  await act(async () => { pending.resolve(accepted); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+    organizationSlug: "acme", command: { command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "initial" },
+      { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0750" },
+    ] },
+  }) }));
+});
+
+it("keeps a file restored during a refused save unsaved", async () => {
+  const test = await openDrawer();
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("submitted");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  test.edit("initial");
+  await act(async () => { pending.resolve(refused); });
+  await screen.findByText("Unknown Config reference");
+  expect(test.text()).toBe("initial");
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).getByLabelText("Unsaved")).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(false);
+});
+
+it("hides a removed file while its removal is pending, and brings it back when the Store refuses", async () => {
+  const test = await openDrawer({ ...initial,
+    files: [...initial.files, { name: "extra.yml", bytes: 5, mode: "0444", uid: 0, gid: 0, references: [] }],
+    contents: { ...initial.contents, "extra.yml": "extra" } });
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "extra.yml options" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Remove file" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole("tab", { name: /extra.yml/ })).toBeNull();
+  await act(async () => { pending.resolve(refused); });
+  await screen.findByText("Unknown Config reference");
+  expect(screen.getByRole("tab", { name: /extra.yml/ })).toBeTruthy();
+});
+
 it("restores refused text and lets the user retry it", async () => {
   const test = await openDrawer();
   test.write.mockResolvedValueOnce(refused);
@@ -193,11 +247,11 @@ it("keeps a queued save visible through the preceding save's refresh and subsequ
   test.store.item = { ...initial, contents: { "config.yml": "version: B" } };
   await act(async () => { second.resolve(accepted); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(3));
-  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: {
+  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "version: B\nadded: true" },
     ] },
-  } }));
+  }) }));
   expect(test.text()).toBe("version: B\nadded: true");
   test.store.item = { ...initial, contents: { "config.yml": "version: B\nadded: true" } };
   await act(async () => { third.resolve(accepted); });
@@ -225,9 +279,23 @@ it("keeps unsaved text and new files through a successful Config rename", async 
   fireEvent.click(screen.getByRole("tab", { name: /config.yml/ }));
   await screen.findByRole("textbox", { name: "config.yml contents" });
   expect(test.text()).toBe("keep unsaved text");
-  expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "rename_config", environment, config: "sentry", name: "renamed" },
-  } }));
+  }) }));
+});
+
+it("locks the drawer while its rename is pending, so no file save names the config by its old name", async () => {
+  const test = await openDrawer();
+  const answer = deferred();
+  test.write.mockImplementationOnce(() => answer.promise);
+  fireEvent.click(screen.getByTitle("Edit config name"));
+  fireEvent.change(screen.getByRole("textbox", { name: "Edit config name" }), { target: { value: "renamed" } });
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "config.yml contents", hidden: true }).closest("[inert]")).not.toBeNull());
+  expect(screen.getByTitle("Edit config name").closest("[inert]")).not.toBeNull();
+  test.store.item = { ...initial, name: "renamed" };
+  await act(async () => { answer.resolve(accepted); });
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "config.yml contents" }).closest("[inert]")).toBeNull());
 });
 
 it("isolates undo when switching to a file with the same text", async () => {
@@ -252,11 +320,11 @@ it("adds a nested filename and submits its contents", async () => {
   await screen.findByRole("textbox", { name: "conf.d/site.yml contents" });
   test.edit("listen: 8080");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "conf.d/site.yml", content: "listen: 8080" },
     ] },
-  } })));
+  }) })));
 });
 
 
@@ -399,11 +467,11 @@ it("shows a hidden file as hidden, and keeps its permissions until new text repl
   expect(enabled.getAttribute("aria-disabled")).toBeNull();
   fireEvent.click(enabled);
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "replaced: true", mode: "0555" },
     ] },
-  } })));
+  }) })));
 });
 
 const twoFiles: ConfigItemView = { ...initial,
@@ -430,21 +498,21 @@ it("stages a permissions change as a draft, leaving another file's unsaved text 
   expect(within(screen.getByRole("tab", { name: /run.sh/ })).getByLabelText("Unsaved")).toBeTruthy();
   expect(test.text()).toBe("unsaved text");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "unsaved text" },
       { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0750" },
     ] },
-  } })));
+  }) })));
 });
 
 it("writes only the mode when the dialog changed only the mode, so the file's owner stays", async () => {
   const test = await openDrawer(twoFiles);
   await setPermissions("run.sh", { mode: "0640" });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0640" },
     ] },
-  } })));
+  }) })));
 });

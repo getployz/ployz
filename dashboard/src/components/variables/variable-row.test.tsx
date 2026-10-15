@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -158,6 +159,29 @@ describe("VariableRow", () => {
     expect(await screen.findByText("Delete")).toBeTruthy();
     expect(screen.queryByText("Seal")).toBeNull();
     expect(screen.queryByText("Edit")).toBeNull();
+  });
+
+  it("shows a saved value as the editor closes, and the stored one again when the write is refused", async () => {
+    let fail = (_error: Error) => {};
+    const write = new Promise<void>((_resolve, reject) => { fail = reject; });
+    const writer = asTestDouble<VariableWriter>()({ update: vi.fn(() => ({ isPersisted: { promise: write } })) });
+    render(<VariableRow variable={plainVariable()} collection={writer} onSealVariable={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show value" }));
+    fireEvent.click(screen.getByRole("button", { name: "Variable actions" }));
+    fireEvent.click(await screen.findByText("Edit"));
+    const input = screen.getByDisplayValue("super-secret");
+    fireEvent.change(input, { target: { value: "rotated" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(writer.update).toHaveBeenCalledOnce();
+    expect(screen.queryByDisplayValue("rotated")).toBeNull();
+    expect(screen.getByText("rotated")).toBeTruthy();
+
+    await act(async () => {
+      fail(new Error("refused"));
+      await write.catch(() => {});
+    });
+    expect(screen.getByText("super-secret")).toBeTruthy();
   });
 
   it("says a secret is Not set, and Set value seals the one typed", async () => {

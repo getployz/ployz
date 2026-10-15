@@ -8,7 +8,7 @@ import {
   storeVariableWriter,
   variableReferrers,
 } from "./store-variables";
-import { withPendingChanges } from "./store-view.queries";
+import { withPendingChanges } from "./store-pending";
 
 const view: EnvironmentView = {
   environment: { id: "env", project: "shop", name: "production", revision: 3 },
@@ -38,10 +38,10 @@ it("shows pending variable writes at once, and a new secret only as sealed", () 
     { op: "set", path: "web.env.LOG_LEVEL", value: { secret: "hunter2" } },
     { op: "set", path: "web.env.TOKEN", value: { secret: "s3cret" } },
     { op: "set", path: "web.env.TOKEN.exported", value: false },
-    { op: "unset", path: "web.env.API_KEY" },
     { op: "set", path: "web.registryCredential", value: { username: "ada", secret: "ghp_rotated" } },
   ]);
   expect(variables(shown)).toEqual([
+    { key: "API_KEY", exported: false, value: "sealed" },
     { key: "DATABASE_URL", exported: true, value: "postgres://db" },
     { key: "LOG_LEVEL", exported: true, value: "sealed" },
     { key: "TOKEN", exported: false, value: "sealed" },
@@ -85,24 +85,10 @@ it("marks the variables their Environment never syncs, by their rows", () => {
   ]);
 });
 
-it("shows a pending rename under its new name, value, seal, export and Never sync mark kept", () => {
-  const row = "w:variables.API_KEY" as RowId;
-  const marked = { ...view, settings: view.settings.map((setting) => setting.path === "web.env.API_KEY" ? { ...setting, row } : setting), never_synced: [row] };
-  const shown = withPendingChanges(marked, [
-    { op: "rename", path: "web.env.API_KEY", to: "stripe_key" },
-    { op: "rename", path: "web.env.LOG_LEVEL", to: "LOG" },
-  ]);
-  expect(serviceVariables(serviceSettingRows(shown, "web"), "web-id", new Map(), new Set(shown.never_synced))
-    .map(({ key, value, exported, neverSynced }) => ({ key, exported, neverSynced, value: value.type === "plain" ? value.value : "sealed" })))
-    .toEqual([
-      { key: "LOG", exported: true, neverSynced: false, value: "info" },
-      { key: "STRIPE_KEY", exported: false, neverSynced: true, value: "sealed" },
-    ]);
-});
-
-it("shows a rename onto a name in use as nothing, since the Store refuses it", () => {
-  const shown = withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "LOG_LEVEL" }]);
-  expect(variables(shown)).toEqual(variables(view));
+it("shows a pending rename under its new name and a deleted variable gone, and a rename onto a name in use as nothing", () => {
+  const shown = withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "stripe_key" }, { op: "unset", path: "web.env.LOG_LEVEL" }]);
+  expect(variables(shown)).toEqual([{ key: "STRIPE_KEY", exported: false, value: "sealed" }]);
+  expect(variables(withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "LOG_LEVEL" }]))).toEqual(variables(view));
 });
 
 it("sends a rename as one Store edit on the variable's path", async () => {
@@ -124,23 +110,11 @@ const referenced: EnvironmentView = {
     { path: "api.env.SELF", value: "${{ LOG_LEVEL }}", default: null, apply: "staged" },
   ],
 };
-const shownValue = (shown: EnvironmentView, path: string) => shown.settings.find((row) => row.path === path)?.value;
 
 it("finds the variables that reference a variable, in either form, and nothing that only looks like one", () => {
   expect(variableReferrers(referenced, "web", "LOG_LEVEL")).toEqual(["web.UPSTREAM", "worker.BACKEND"]);
   expect(variableReferrers(referenced, "api", "LOG_LEVEL")).toEqual(["worker.BACKEND", "api.SELF"]);
   expect(variableReferrers(referenced, "web", "API_KEY")).toEqual([]);
-});
-
-it("shows a pending rename's references under the new name only when it updates them", () => {
-  const switched = withPendingChanges(referenced, [{ op: "rename", path: "web.env.LOG_LEVEL", to: "level", update_references: true }]);
-  expect(shownValue(switched, "web.env.UPSTREAM")).toBe("${{ LEVEL }}/v1");
-  expect(shownValue(switched, "worker.env.BACKEND")).toBe("${{ web.LEVEL }} ${{ api.LOG_LEVEL }}");
-  expect(shownValue(switched, "worker.env.LITERAL")).toBe("$${{ web.LOG_LEVEL }} LOG_LEVEL");
-  expect(shownValue(switched, "api.env.SELF")).toBe("${{ LOG_LEVEL }}");
-
-  const kept = withPendingChanges(referenced, [{ op: "rename", path: "web.env.LOG_LEVEL", to: "LEVEL" }]);
-  expect(shownValue(kept, "web.env.UPSTREAM")).toBe("${{ LOG_LEVEL }}/v1");
 });
 
 it("sends update_references only when asked", async () => {

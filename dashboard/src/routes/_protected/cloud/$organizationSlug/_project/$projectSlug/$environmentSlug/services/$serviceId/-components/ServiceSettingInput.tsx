@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { SuggestibleConfirmableInput } from "#/components/stageable/suggestible-confirmable-input";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 
 type DraftState = {
   source: string;
@@ -20,7 +21,7 @@ function freshDraft(value: string): DraftState {
  * conversion in `validate`/`onCommit`.
  */
 export function ServiceSettingInput({
-  value,
+  value: stored,
   isChanged,
   baselineLabel = "Deployed",
   baselineValue,
@@ -54,6 +55,7 @@ export function ServiceSettingInput({
   validate?: (raw: string) => string | null;
   onCommit: (raw: string) => PersistableTransaction;
 }) {
+  const [value, hold] = useCommitHold(stored);
   const [draft, setDraft] = useState<DraftState>(() => freshDraft(value));
   // A new value from elsewhere (another tab, the CLI) replaces the field, unless the user is typing in it: then the
   // typing stays and says what it would replace.
@@ -72,8 +74,7 @@ export function ServiceSettingInput({
       return;
     }
 
-    // Optimistic: a failed save rolls `value` back and toasts, which resets this draft.
-    onCommit(raw);
+    hold(raw, onCommit(raw));
     setDraft(freshDraft(raw));
   }
 

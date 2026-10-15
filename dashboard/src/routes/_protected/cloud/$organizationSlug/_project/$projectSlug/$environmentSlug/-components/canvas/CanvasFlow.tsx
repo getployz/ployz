@@ -35,11 +35,13 @@ import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement"
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { deploymentDestination } from "../deployments/run-search";
 import { CanvasContextMenu } from "./CanvasContextMenu";
+import { useEnvironmentRenaming } from "../StoreRenameLock";
 import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
 import { OnMergeButton } from "../sync/OnMerge";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreBusy, useStoreDiscarding } from "#/modules/config-store/store-pending";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
@@ -77,6 +79,7 @@ export function CanvasFlow({
     organizationId,
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
+  const renaming = useEnvironmentRenaming();
   const findableNodes = [...store.services.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
     ...store.volumes.map((volume) => ({ id: volume.id, name: volume.name, type: "volume" as const })),
     ...store.configs.map((config) => ({ id: config.id, name: config.name, type: "config" as const }))];
@@ -115,7 +118,7 @@ export function CanvasFlow({
 
   return (
     <LitVolumeProvider>
-      <div className="canvas-graph" inert={selectedNodeId !== null}>
+      <div className="canvas-graph aria-busy:opacity-60" inert={selectedNodeId !== null || renaming} aria-busy={renaming}>
       <div className="hidden h-full min-[861px]:block">
         <CanvasContextMenu
           onCreateFromPanel={creator.openCreatorAtLastRightClick}
@@ -247,6 +250,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const hasSomethingToSave = (diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
+  const busy = useStoreBusy(params.organizationSlug, ref);
+  const discarding = useStoreDiscarding(params.organizationSlug, ref);
   return (
     <>
       <BottomBar
@@ -274,6 +279,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
           onIncludeNewer: ({ source }) => setIncluding(source.name),
         }}
         noServers={noServers}
+        busy={busy}
+        discarding={discarding}
       />
       {actions.dialog}
       {including === null ? null : (

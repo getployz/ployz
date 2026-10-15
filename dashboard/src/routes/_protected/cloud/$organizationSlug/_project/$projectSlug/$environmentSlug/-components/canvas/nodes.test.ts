@@ -6,7 +6,7 @@ import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import type { MachineId } from "@ployz/sdk";
 import type { MirrorCopy, OffsiteCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
-import { buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, volumeTrays } from "./nodes";
+import { arrivingNodes, buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
@@ -77,6 +77,20 @@ describe("Config Store nodes", () => {
     const web = nodes.find((node) => node.id === "s2");
     const clear = (web?.position.y ?? 0) >= 144 + 2 * 40 || (web?.position.x ?? 0) >= 288;
     expect(clear).toBe(true);
+  });
+
+  it("draws an arriving node where its creator saved it, so the Store's answer lands in the same spot", () => {
+    const saved = createCanvasPosition({ resourceType: "volume", resourceId: "new-vol", x: 960, y: 640 });
+    const nodes = buildStoreNodes({ ...store, arriving: [{ node: "volume", id: "new-vol", name: "cache" }] }, [saved], "e");
+    expect(nodes.find((node) => node.id === "new-vol")).toMatchObject({ type: "pending", position: { x: 960, y: 640 }, data: { name: "cache" } });
+  });
+
+  it("keeps only arriving Services, Volumes and Configs the Store has not answered", () => {
+    expect(arrivingNodes([
+      { pending: "arriving", node: "service", id: "s1", name: "postgres" },
+      { pending: "arriving", node: "domain", id: "d1", name: "shop.example.com" },
+      { pending: "arriving", node: "config", id: "c9", name: "nginx" },
+    ], listings)).toEqual([{ node: "config", id: "c9", name: "nginx" }]);
   });
 
   it("links only Live Nodes: a mount is a tray, not a link", () => {

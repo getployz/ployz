@@ -17,6 +17,7 @@ import { replicaCount } from "#/modules/config-store/volume-sharing";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
@@ -25,7 +26,8 @@ import { useStagedPlacements } from "#/modules/volume-placement/volume-placement
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
-import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
+import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
+import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
@@ -57,8 +59,9 @@ export function StoreVolumeDrawer({ params, volumeId = params.resourceId, copy =
   const settings = requireView(views[3]);
   const volumes = effectiveVolumes(listings, services, settings);
   const volume = volumes.find((candidate) => candidate.id === volumeId);
+  const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === volumeId);
   // A stale link, or removed while open (a new Volume's removal, or from the CLI).
-  if (!volume) return <CanvasInspectorNotFound noun="Volume" />;
+  if (!volume) return arriving ? <CanvasInspectorPending /> : <CanvasInspectorNotFound noun="Volume" />;
   return <VolumeDrawer params={params} environment={store} volume={volume} volumes={volumes} services={services}
     settings={settings} diff={requireView(views[2])} copy={copy} />;
 }
@@ -82,6 +85,7 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const replicasOf = (service: string) => replicaCount(serviceSettingRows(settings, service).get("replicas"));
   const state: StoreVolume = { organizationSlug, environment, volume };
   const removing = volume.change === "delete";
+  const shownName = useStorePendingName(organizationSlug, environment, "volume", volume.name);
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
@@ -98,10 +102,10 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
         {removing ? <p className="truncate font-semibold">{volume.name}</p> : (
-          <CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
+          <div className="min-w-0"><CanvasInspectorNameEditor value={shownName} schema={nameSchema} editTitle="Edit volume name"
             editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
             {...changedProps(renamed)}
-            onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} />
+            onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} /></div>
         )}
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
@@ -154,8 +158,8 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
 function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing: boolean }) {
   const writer = useStoreWriter(state.organizationSlug);
   const { storage, storage_locked } = state.volume;
-  const managed = storage.kind === "provisioned";
-  const sizeGB = managed ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
+  const [managed, holdManaged] = useCommitHold(storage.kind === "provisioned");
+  const sizeGB = managed && storage.kind === "provisioned" ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
   const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
     writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
 
@@ -175,7 +179,7 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   }
   return (
     <VolumeStorageFields managed={managed} sizeGB={sizeGB} onSizeChange={() => undefined} advanced={<StoreSharedWrites state={state} />}
-      onManagedChange={(next) => save(next ? { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 } : { kind: "docker" })}
+      onManagedChange={(next) => holdManaged(next, save(next ? { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 } : { kind: "docker" }))}
       limitInput={(
         <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB"
           placeholder={DEFAULT_VOLUME_GB} value={sizeGB} isChanged={false}
@@ -246,6 +250,7 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
 function StoreSharedWrites({ state }: { state: StoreVolume }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [shared, holdShared] = useCommitHold(state.volume.shared_writes);
   return (
     <Field orientation="horizontal" data-invalid={refusal ? true : undefined}>
       <FieldContent>
@@ -256,11 +261,12 @@ function StoreSharedWrites({ state }: { state: StoreVolume }) {
         </FieldDescription>
         {refusal ? <FieldError>{refusal}</FieldError> : null}
       </FieldContent>
-      <Switch id="volume-shared-writes" checked={state.volume.shared_writes}
+      <Switch id="volume-shared-writes" checked={shared}
         onCheckedChange={(sharedWrites) => {
           setRefusal(null);
-          writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites })
-            .isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
+          const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });
+          holdShared(sharedWrites, write);
+          write.isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
         }} />
     </Field>
   );

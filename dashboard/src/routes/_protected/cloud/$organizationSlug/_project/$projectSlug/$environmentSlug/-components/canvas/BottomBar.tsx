@@ -19,6 +19,7 @@ import { cn } from "#/lib/utils";
 import { deploymentDestination } from "../deployments/run-search";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
+import type { Busy } from "#/modules/config-store/store-pending";
 import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
 
 /**
@@ -68,6 +69,9 @@ type BottomBarProps = {
   noServers?: boolean;
   /** Secrets without a value: the next Deploy leaves them out. */
   notSet?: number;
+  /** A write the Store hasn't answered for yet, in words (Discarding…). */
+  busy?: Busy | null;
+  discarding?: ReadonlySet<string>;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
@@ -96,6 +100,8 @@ export function BottomBar({
   noServers = false,
   admitting = false,
   notSet = 0,
+  busy = null,
+  discarding,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const dock = useContext(AgentDock);
@@ -109,6 +115,8 @@ export function BottomBar({
   // Oldest first: the oldest holds, or is next for, the Environment's one run.
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canSave;
+  // One Save at a time: a second sends the same version and comes back stale.
+  const saveable = canSave && busy !== "saving";
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
@@ -193,15 +201,15 @@ export function BottomBar({
   });
 
   const staged = hasChanges ? (
-    <Row staged title={(totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : "")}
+    <Row staged title={busy === "discarding" ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
         <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
-        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !canSave : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
-          onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (canSave) save(); }} />}>
+        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
+          onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>
           {savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
@@ -211,7 +219,7 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem disabled={!canSave} onClick={save}>Save only</DropdownMenuItem>
+          <DropdownMenuItem disabled={!saveable} onClick={save}>Save only</DropdownMenuItem>
           <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
@@ -230,8 +238,8 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave,
-    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave: saveable,
+    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,

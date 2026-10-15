@@ -84,12 +84,20 @@ export type StoreCanvas = {
   diff: DiffView;
   /** Each Volume's copies by Volume id, as the Servers and the staged placement have them; empty until they answer. */
   copies: ReadonlyMap<string, VolumeCopies>;
+  /** The Services, Volumes and Configs this tab is adding, until the Store's answer draws them. */
+  arriving: ArrivingNode[];
 };
+
+export type ArrivingNode = { node: CanvasResourceType; id: string; name: string };
+
+/** A Service, Volume or Config this tab is adding, until the Store's answer draws it. */
+export type PendingNode = Node<{ name: string }, "pending">;
 
 export type CanvasResourceNode =
   | CanvasStoreServiceNode
   | CanvasStoreVolumeNode
   | CanvasStoreConfigNode
-  | CanvasStoreLiveNode;
+  | CanvasStoreLiveNode
+  | PendingNode;
 
 export type FlowPosition = { x: number; y: number };

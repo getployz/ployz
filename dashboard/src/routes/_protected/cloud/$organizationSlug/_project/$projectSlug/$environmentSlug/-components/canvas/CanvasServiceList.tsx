@@ -5,12 +5,13 @@ import { ServiceTrays } from "./VolumeTray";
 import type { StoreCanvas } from "./types";
 import { CopyHang } from "./MirrorNode";
 import { hangByNode } from "./nodes";
+import { PendingCard } from "./canvas-node-types";
 
 export function CanvasNodeList({
   store,
   selectedNodeId,
 }: {
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "copies">>;
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "copies" | "arriving">>;
   selectedNodeId: string | null;
 }) {
   const { services, unmountedVolumes, unmountedConfigs } = store;
@@ -36,6 +37,7 @@ export function CanvasNodeList({
         {unmountedConfigs.map((config) => (
           <StoreConfigCard key={config.id} config={config} selected={config.id === selectedNodeId} className="block" />
         ))}
+        {(store.arriving ?? []).map((arriving) => <PendingCard key={arriving.id} name={arriving.name} className="block" />)}
       </div>
     </div>
   );

@@ -23,6 +23,7 @@ import { deploymentQuery, useCachedStoreView, useInFlightDeployments } from "#/m
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { useUnreachableHost } from "#/modules/uptime/uptime.queries";
 import { useContainerTrouble } from "./use-container-trouble";
+import { usePendingNode } from "./usePendingNode";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
@@ -36,6 +37,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const runtimeLens = use(RuntimeLensContext);
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
+  const { name, leaving } = usePendingNode("service", service.name);
   const running = inFlight.find((deployment) => deployment.status !== "queued") ?? null;
   const plan = useCachedStoreView(params.organizationSlug, running === null ? null : deploymentQuery(running.id));
   const chip = deployChip(service, changeCount, inFlight, plan?.ok ? restartedServices(plan.value) : null);
@@ -47,7 +49,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const domain = publicDomain(domains);
   const surface = stagedSurface(service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
-  const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{service.name}</CardTitle>;
+  const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
   const chipBadge = <DeployChip chip={chip} />;
   const navigate = useNavigate();
@@ -83,7 +85,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
         className={cn("relative z-10 rounded-xl", className)}
       >
         <Card size={compact ? "sm" : "node"} state={surface}
-          className={cn("h-full justify-between")} data-selected={selected} data-down={status.down}>
+          className={cn("h-full justify-between", leaving && "opacity-40")} data-leaving={leaving || undefined} data-selected={selected} data-down={status.down}>
           {compact ? (
             <CardContent className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3">
               <div className="row-span-2">{icon}</div>

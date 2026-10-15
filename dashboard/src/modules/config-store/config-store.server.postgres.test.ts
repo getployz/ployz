@@ -11,7 +11,7 @@ import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { callStoreAsMember } from "#/modules/config-store/config-store.server";
+import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import * as ids from "#/test/ids";
 import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
@@ -694,11 +694,50 @@ it.live(
         const hostname = deploying.json.domains?.[1]?.hostname ?? "";
         assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/);
 
+        const caller = yield* resolveCaller(signedIn(alice));
+        const listQuery: ConfigQuery = { query: "domains", environment: here, service: null };
+        const edited = yield* writeStoreAsMember(caller, caller.organization.slug, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
+        }, [listQuery]);
+        const carried = edited.ok ? edited.answers?.[0]?.result : undefined;
+        const answered = carried?.ok && carried.value.view === "domains" ? carried.value.domains : [];
+        assert.deepStrictEqual(answered.map((domain) => domain.hostname), ["app.example.com", hostname],
+          "a write carries the domains view as the view's own read shows it, generated hostname included");
+
         // A check asks for a Cluster Domain sync before it reads the domain afresh.
         sent.length = 0;
         const checked = yield* request("read", alice, { query: "domain", environment: here, domain: "web" });
         assert.strictEqual(checked.json.domain?.hostname, hostname);
         assert.deepStrictEqual(sent.map((event) => event.name), ["cluster-domain/sync.requested"]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped),
+  60_000,
+);
+
+it.live(
+  "a committed write answers as committed when rereading a shown view fails, and leaves that view to the tab",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        const caller = yield* resolveCaller(signedIn(alice));
+        // Reading domains loads the Cluster Domain from Cloud's database; make that read fail after the write commits.
+        const { drizzle } = yield* Database;
+        yield* drizzle.execute(sql`ALTER TABLE organization_cluster_domain RENAME TO organization_cluster_domain_gone`);
+        const domains: ConfigQuery = { query: "domains", environment: here, service: null };
+        const edited = yield* writeStoreAsMember(caller, caller.organization.slug, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
+        }, [domains, get("web.replicas")]);
+        yield* drizzle.execute(sql`ALTER TABLE organization_cluster_domain_gone RENAME TO organization_cluster_domain`);
+
+        assert.isTrue(edited.ok, "the write committed, so it answers as committed");
+        assert.deepStrictEqual(edited.ok ? edited.answers?.map((answer) => answer.query) : null, [get("web.replicas")],
+          "only the views that reread answer; the tab refetches the domains view");
+        const read = yield* request("read", alice, get("web.replicas"));
+        assert.strictEqual(read.json.settings?.[0]?.value, 2);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,

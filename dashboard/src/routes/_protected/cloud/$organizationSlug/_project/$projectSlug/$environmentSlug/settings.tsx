@@ -5,6 +5,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { missingStorePrGrantsQueryOptions } from "#/modules/config-store/store-pr-grants.queries";
 import { StoreEnvironmentSettings, StoreProjectSettings } from "./-components/store-settings";
+import { StoreRenameLock } from "./-components/StoreRenameLock";
 
 const settingsSection = Schema.Literals(["environment", "project"]);
 
@@ -26,9 +27,9 @@ function RouteComponent() {
   const { scope: section = "environment" } = Route.useSearch();
   return (
     <DashboardPage width="content">
-      <div className="flex flex-col gap-6">
+      <StoreRenameLock className="flex flex-col gap-6">
         {section === "environment" ? <StoreEnvironmentSettings {...params} /> : <StoreProjectSettings {...params} />}
-      </div>
+      </StoreRenameLock>
     </DashboardPage>
   );
 }

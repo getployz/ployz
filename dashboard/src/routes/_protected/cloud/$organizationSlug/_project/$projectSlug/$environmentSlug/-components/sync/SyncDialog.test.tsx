@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { RowId, SyncRow, SyncView } from "@ployz/sdk";
 import { Suspense } from "react";
 import { toast } from "sonner";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import { storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
@@ -91,6 +91,23 @@ it("lists what is never synced from the footer, and offers to close the Branch a
   const list = within(sync.getByRole("list", { name: "Never synced" }));
   expect(list.getByText("STRIPE_KEY")).toBeTruthy();
   expect(list.getByText(/api, marked in fix-api/u)).toBeTruthy();
+});
+
+it("moves a row to never synced at once, and back, while the Store answers", async () => {
+  const { write } = open();
+  write.mockReturnValue(new Promise(() => {}));
+  const sync = await dialog();
+  fireEvent.click(sync.getByRole("checkbox", { name: /^MODE/u }));
+  fireEvent.click(sync.getByRole("button", { name: "Never sync" }));
+  await waitFor(() => expect(section(sync, "worker")).toEqual(["ServiceNew", "KEYSecret"]));
+  fireEvent.click(sync.getByRole("button", { name: "2 never synced" }));
+  const list = within(sync.getByRole("list", { name: "Never synced" }));
+  expect(list.getByText("MODE")).toBeTruthy();
+
+  const [stripe] = list.getAllByRole("button", { name: "Sync again" });
+  fireEvent.click(stripe ?? assert.fail("no Sync again"));
+  await waitFor(() => expect(sync.getByRole("button", { name: "1 never synced" })).toBeTruthy());
+  expect(list.queryByText("STRIPE_KEY")).toBeNull();
 });
 
 it("syncs a PR Environment into production now, with production's value for a secret and no Close", async () => {

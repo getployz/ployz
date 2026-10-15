@@ -1,7 +1,7 @@
-import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, NamespaceQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, ConfigItemQuery, ConfigQuery, ConfigsQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, SyncQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -9,8 +9,8 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
-import { type CommittedViews, StoreChange, StoreQuery, type StoreResult, StoreView, type StoreViewOf, viewOf } from "./store.contract";
-import { renameReferences } from "#/modules/variables/variable-template";
+import { MAX_SHOWN_VIEWS, StoreQuery, type StoreResult, StoreView, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
+import { usePendingMarks, showPending } from "./store-pending";
 
 /**
  * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
@@ -93,6 +93,7 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, query] as const,
     staleTime: Infinity,
     refetchInterval: (cached) => settling(cached.state.data) ? DOMAIN_POLL_MS : false,
+    structuralSharing: keepNewer,
     queryFn,
   });
 }
@@ -162,42 +163,69 @@ function isOfEnvironment(query: Query, key: string) {
 }
 
 /**
- * After a write: refetches the views of the Environment it named (`key`; null, every view of the Organization) and
- * waits for them, so the committed state shows before the overlay goes. The views the write's answer carried are
- * already committed and aren't read again; the Organization's views follow the change stream.
+ * The views this tab shows of a write's Environments, newest read first (cap `MAX_SHOWN_VIEWS`): the write's answer
+ * carries each, read after it committed. Only views with an observer are shown; the rest are invalidated.
  */
-export async function refetchAfterWrite(queryClient: QueryClient, organizationSlug: string, key: string | null, carried: CommittedViews = {}) {
-  await queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => {
-    const config = queryOf(query);
-    if (config === null || key === null) return config !== null;
-    return isOfEnvironment(query, key) && carriedView(config, carried) === undefined;
-  } });
+export function shownQueries(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null) {
+  return viewsOf(queryClient, organizationSlug, keys)
+    .filter((query) => query.getObserversCount() > 0 && !isPaged(query))
+    .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt)
+    .flatMap((query) => queryOf(query) ?? [])
+    .slice(0, MAX_SHOWN_VIEWS);
 }
 
-/** The view a write's answer carried for a cached query of its Environment, if it carried that one. */
-function carriedView(config: ConfigQuery, views: CommittedViews) {
-  if (config.query === "diff") return views.diff;
-  if (config.query === "services") return views.services;
-  return config.query === "environment" && config.path === null && config.all ? views.environment : undefined;
+function viewsOf(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null) {
+  return queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })
+    .filter((query) => queryOf(query) !== null && (keys === null || [...keys].some((key) => isOfEnvironment(query, key))));
+}
+
+/** A paged list (Deployments) caches pages, not one view: a write's answer can't replace it, so it is reread. */
+const isPaged = (query: Query) => carriesPages(query.state.data);
+
+const carriesPages = Schema.is(Schema.Struct({ pages: Schema.Array(Schema.Unknown) }));
+
+/**
+ * A write's answers, in every cached view of the same query, through `keepNewer`: a read already in flight is
+ * cancelled first, so it can't land over them. Views of the write's Environments it didn't answer, or answered with a
+ * refusal, are reread.
+ */
+export async function putAnswers(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null, answers: readonly ViewAnswer[]) {
+  const answered = new Set<Query>();
+  for (const query of viewsOf(queryClient, organizationSlug, keys)) {
+    const config = queryOf(query);
+    const answer = answers.find((candidate) => JSON.stringify(candidate.query) === JSON.stringify(config));
+    if (answer === undefined || !answer.result.ok) continue;
+    answered.add(query);
+    await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
+    queryClient.setQueryData(query.queryKey, answer.result);
+  }
+  await invalidateViews(queryClient, organizationSlug, keys, answered);
+}
+
+/** Rereads the views of `keys` (null, every view of the Organization), except `skip`. */
+export function invalidateViews(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null, skip: ReadonlySet<Query> = new Set()) {
+  const leftovers = new Set(viewsOf(queryClient, organizationSlug, keys).filter((query) => !skip.has(query)));
+  return queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => leftovers.has(query) });
 }
 
 /**
- * A write's committed views, in every cached view of the same kind and Environment: the review's rows, count and pink
- * arrive with the write, before any refetch. A read already in flight is cancelled first, so it can't land over them.
+ * The one revision guard: a read or a write's answer never replaces a view with an older one of the same Environment.
+ * Working State's revision orders views, then a diff's Saved revision, which a publish moves alone. Nothing else is
+ * ordered: a view of another Environment under the name (one deleted and recreated) replaces, and so does a Deploy's
+ * progress, which no revision counts.
  */
-export async function putCommittedViews(queryClient: QueryClient, organizationSlug: string, key: string, views: CommittedViews) {
-  for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
-    const config = queryOf(query);
-    const view = config === null ? undefined : carriedView(config, views);
-    if (view === undefined || !isOfEnvironment(query, key)) continue;
-    await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
-    queryClient.setQueryData(query.queryKey, { ok: true, value: view });
-  }
+function keepNewer<T>(old: T | undefined, next: T): T {
+  if (!carriesRevision(old) || !carriesRevision(next) || old.value.environment.id !== next.value.environment.id) return next;
+  const working = next.value.environment.revision - old.value.environment.revision;
+  return working < 0 || (working === 0 && (next.value.saved ?? 0) < (old.value.saved ?? 0)) ? old : next;
 }
 
 const carriesRevision = Schema.is(Schema.Struct({
   ok: Schema.Literal(true),
-  value: Schema.Struct({ environment: Schema.Struct({ revision: Schema.Number }) }),
+  value: Schema.Struct({
+    environment: Schema.Struct({ id: Schema.String, revision: Schema.Number }),
+    saved: Schema.optional(Schema.NullOr(Schema.Number)),
+  }),
 }));
 
 /** The newest Working State revision any cached view of the Environment shows. */
@@ -210,56 +238,6 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
     if (revision !== undefined && (latest === null || revision > latest)) latest = revision;
   }
   return latest;
-}
-
-/** The mutation key of an Environment's pending edits; `store-write.ts` files them under it. */
-export const storeEditKey = (organizationSlug: string, key: string) => ["store-edit", organizationSlug, key] as const;
-
-const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
-const isText = Schema.is(Schema.String);
-
-/**
- * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
- * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
- * its row), so a pending edit shows as its value, or the row's default once unset. A rename moves the variable's rows,
- * value and `.exported` alike, to its new name; onto a name in use it shows nothing, as the Store refuses it. A secret
- * shows as reads show it, `{"secret": true}`, or `{"secret": false}` while kept without a value. What the Store makes
- * of an edit arrives with the committed view.
- */
-export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
-  if (changes.length === 0) return view;
-  let settings = view.settings.map((row) => ({ ...row }));
-  for (const change of changes) {
-    if (change.op === "patch") continue;
-    if (change.op === "rename") {
-      const to = `${change.path.slice(0, change.path.lastIndexOf(".") + 1)}${change.to.toUpperCase()}`;
-      if (to === change.path || settings.some((row) => row.path === to && row.value !== null)) continue;
-      const moved = (path: string) => path === change.path || path.startsWith(`${change.path}.`);
-      settings = settings.flatMap((row) => moved(row.path) ? [{ ...row, path: `${to}${row.path.slice(change.path.length)}` }]
-        : row.path === to || row.path.startsWith(`${to}.`) ? [] : [row]);
-      const [, service, key] = SERVICE_VARIABLE.exec(change.path) ?? [];
-      if (change.update_references && service && key) {
-        settings = settings.map((row) => switchReferences(row, service, key, change.to.toUpperCase()));
-      }
-      continue;
-    }
-    let row = settings.find((candidate) => candidate.path === change.path);
-    if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
-    if (!row) continue;
-    const value = change.op === "set" ? change.value : row.default;
-    // Keeping a secret (`{"secret": true}`) keeps what it shows, a value or none.
-    row.value = !isSecret(value) ? value : value.secret === true && isSecret(row.value) ? row.value : { secret: true };
-  }
-  return { ...view, settings };
-}
-
-const SERVICE_VARIABLE = /^([^.]+)\.env\.([^.]+)$/u;
-
-/** `row`, a variable as the Store shows it, with its references to variable `key` of `service` switched to `to`. */
-function switchReferences(row: EnvironmentView["settings"][number], service: string, key: string, to: string) {
-  const owner = SERVICE_VARIABLE.exec(row.path)?.[1];
-  if (owner === undefined || !isText(row.value)) return row;
-  return { ...row, value: renameReferences(row.value, owner, service, key, to) ?? row.value };
 }
 
 /** An Environment's Settings (every one, defaults included): the view Service editors read and edit. */
@@ -395,27 +373,23 @@ export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: st
   return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
 }
 
-const isChanges = Schema.is(Schema.Array(StoreChange));
-
 /**
- * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this
- * tab's pending edits over the committed one; a failed save drops its edit, which is the rollback.
+ * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). Each shows the marks of this
+ * tab's pending writes over the committed view (`store-pending.ts`); a write's answer replaces both.
  */
 export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizationSlug: string, queries: Qs):
   { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> } {
   const scope = useCollectionScope();
   const results = useSuspenseQueries({ queries: queries.map((query) => storeViewOptions(organizationSlug, scope, query)) });
-  const pending = useMutationState({
-    filters: { mutationKey: ["store-edit", organizationSlug], status: "pending" },
-    select: (mutation) => ({ key: mutation.options.mutationKey?.[2], changes: isChanges(mutation.state.variables) ? mutation.state.variables : [] }),
-  });
+  const marks = usePendingMarks(organizationSlug);
   // SAFETY: `readView` checked each result against the query at its index; `map` types the tuple as an array.
   return results.map(({ data: result }, index) => {
     const query = queries[index];
-    if (!result.ok || result.value.view !== "environment" || !query || !("environment" in query)) return result;
+    if (marks.length === 0 || !result.ok || !query || !("environment" in query)) return result;
     const key = environmentKey(query.environment);
-    const changes = pending.flatMap((edit) => edit.key === key ? edit.changes : []);
-    return changes.length === 0 ? result : { ok: true, value: withPendingChanges(result.value, changes) };
+    const mine = marks.filter((mark) => "environment" in mark && environmentKey(mark.environment) === key);
+    if (mine.length === 0) return result;
+    return { ok: true, value: showPending(result.value, mine) };
   }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };
 }
 

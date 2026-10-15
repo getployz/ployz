@@ -3,6 +3,7 @@ import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-rou
 import type { DeploymentView } from "@ployz/sdk";
 import { ArrowLeftIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Badge } from "#/components/ui/badge";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
@@ -14,7 +15,7 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, nodeApplied, outcomeReason,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, nodeApplied, outcomeReason, showCancelling,
   type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -34,8 +35,12 @@ import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SE
 export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: string; search: RunSearch }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const result = useStoreView(organizationSlug, deploymentQuery(deploymentId));
+  const writer = useStoreWriter(organizationSlug);
+  // A Cancel reads Cancelling at once, until the Store answers with where the Deployment ended.
+  const [cancelling, holdCancel] = useCommitHold(false);
   if (!result.ok) return <Empty variant="placeholder" className="m-4"><EmptyDescription>Deployment not found</EmptyDescription></Empty>;
-  const deployment = result.value;
+  const deployment = showCancelling(result.value, cancelling);
+  const cancel = () => holdCancel(true, writer.commit({ command: "cancel", deployment: deployment.id }));
   const graph = makeRunGraph(deployment);
   const selected = selectRunNode(graph, search);
   return (
@@ -43,7 +48,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
     <div className="flex min-h-0 flex-1 gap-2 p-2 max-lg:flex-col max-lg:overflow-y-auto">
       <div className="relative min-h-80 flex-1 overflow-hidden rounded-xl border max-lg:flex-none">
         <RunCanvas graph={graph} selectedId={selected?.id}
-          header={<RunHeader deployment={deployment} graph={graph} selected={selected} search={search} />} />
+          header={<RunHeader deployment={deployment} graph={graph} selected={selected} search={search} onCancel={cancel} />} />
       </div>
       <RunPanel deployment={deployment} node={selected} />
     </div>
@@ -54,8 +59,8 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
  * The Run's header: back to the node it was opened from, its title, status, duration and how many nodes are done, over
  * who started it, the version it ships and when; then why it failed with the fix, and what it shipped despite.
  */
-function RunHeader({ deployment, graph, selected, search }: {
-  deployment: DeploymentView; graph: RunGraph; selected: RunNode | undefined; search: RunSearch;
+function RunHeader({ deployment, graph, selected, search, onCancel }: {
+  deployment: DeploymentView; graph: RunGraph; selected: RunNode | undefined; search: RunSearch; onCancel: () => void;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   // With no Server, nothing can run it: the way on is adding one.
@@ -108,7 +113,7 @@ function RunHeader({ deployment, graph, selected, search }: {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <StoreDeploymentActions deployment={deployment} storage={storage} noServers={noServers} search={search} />
+          <StoreDeploymentActions deployment={deployment} storage={storage} noServers={noServers} search={search} onCancel={onCancel} />
         </div>
       </div>
       {reason || fixing || needsSource.length ? (
@@ -169,8 +174,8 @@ export function RedeployAction({ copiesWait, disabled, onRedeploy }: { copiesWai
  * The action a Deployment's status allows, one at a time so the header fits a phone: a queued one's Cancel waits in ⋮.
  * Whoever admitted it, CLI or dashboard: they share one queue per Environment.
  */
-function StoreDeploymentActions({ deployment, storage, noServers, search }: {
-  deployment: DeploymentView; storage: string | null; noServers: boolean; search: RunSearch;
+function StoreDeploymentActions({ deployment, storage, noServers, search, onCancel }: {
+  deployment: DeploymentView; storage: string | null; noServers: boolean; search: RunSearch; onCancel: () => void;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
@@ -232,7 +237,7 @@ function StoreDeploymentActions({ deployment, storage, noServers, search }: {
             <AlertDialogCancel>Keep deploying</AlertDialogCancel>
             <Button variant="destructive" onClick={() => {
               setCancelOpen(false);
-              writer.commit({ command: "cancel", deployment: deployment.id });
+              onCancel();
             }}>Cancel deployment</Button>
           </AlertDialogFooter>
         </AlertDialogContent>

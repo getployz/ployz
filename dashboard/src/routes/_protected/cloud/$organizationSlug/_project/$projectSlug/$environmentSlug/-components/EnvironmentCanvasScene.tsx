@@ -19,10 +19,11 @@ import { canvasPositionSchema } from "#/modules/canvas/canvas-positions";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
+import { useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { useCanvasCopies } from "./canvas/useCanvasCopies";
-import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
+import { arrivingNodes, buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
@@ -33,6 +34,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
+import { StoreRenameLock } from "./StoreRenameLock";
 
 /** A `replicas` Setting that says how many. */
 const isReplicaCount = Schema.is(Schema.Int);
@@ -83,6 +85,7 @@ function CanvasWithData() {
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.environmentId, environmentId))
       .select(({ position }) => position),
   });
+  const pending = useStorePendingNodes(organizationSlug, ref);
   const copies = useCanvasCopies(organizationSlug, ref, environmentId, volumesResult.ok ? volumesResult.value.volumes : []);
   // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
   if ([servicesResult, settingsResult, diffResult, volumesResult, domainsResult, configsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
@@ -123,6 +126,7 @@ function CanvasWithData() {
     copies,
     live: isBranch(branch) ? liveNodes(branch.value.live, services.services) : [],
     diff,
+    arriving: arrivingNodes(pending.arriving, [...services.services, ...volumes.volumes, ...configListings]),
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
   const initialEdges = buildStoreEdges(store);
@@ -177,7 +181,7 @@ export function EnvironmentCanvasScene() {
         <div ref={setBottomBarSlot} className="contents" />
       </>}
     >
-      <Outlet />
+      <StoreRenameLock className="h-full"><Outlet /></StoreRenameLock>
     </CanvasInspectorOverlay>
     </StorePrPickingProvider>
     </StorePickingProvider>

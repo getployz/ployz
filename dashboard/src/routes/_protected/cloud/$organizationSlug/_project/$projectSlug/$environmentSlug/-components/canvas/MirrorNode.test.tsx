@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
@@ -35,7 +36,7 @@ async function show(elsewhere: VolumeCopies["elsewhere"]) {
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
   const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
-  const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", component: () => (
+  const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", loader: () => ({ store: { project: "shop", environment: "production" } }), component: () => (
     <CanvasNodeList store={{ services: [], unmountedVolumes: [volume], unmountedConfigs: [], copies: new Map([[volume.id, copiesOf(elsewhere)]]) }}
       selectedNodeId={null} />
   ) });
@@ -44,7 +45,7 @@ async function show(elsewhere: VolumeCopies["elsewhere"]) {
     routeTree: root.addChildren([protectedRoute.addChildren([organization.addChildren([projectGroup.addChildren([environment.addChildren([resource])])])])]),
     history: createMemoryHistory({ initialEntries: ["/cloud/acme/shop/production"] }),
   });
-  render(<RouterProvider router={router} />);
+  render(<QueryClientProvider client={new QueryClient()}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByText("data");
   return router;
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CheckIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldLabel } from "#/components/ui/field";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -43,8 +44,8 @@ export const BUILD_ORDER_QUERY = { query: "build_order" } as const;
 function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   const view = requireView(useStoreView(organizationSlug, BUILD_ORDER_QUERY));
   const writer = useStoreWriter(organizationSlug);
-  // Shown at once; the refetch after the write confirms it, and a refusal (toasted) puts the saved one back.
-  const buildOrder = view.build_order ?? "github-then-servers";
+  // Shown at once; a refusal toasts and the saved order shows again.
+  const [buildOrder, hold] = useCommitHold(view.build_order ?? "github-then-servers");
   return (
     <SettingsSection id="build-order" title="Where builds run">
       <Field orientation="responsive">
@@ -54,8 +55,7 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
         <Select value={buildOrder} onValueChange={(next) => {
           const order = BUILD_ORDERS.find((candidate) => candidate === next);
           if (!order) return;
-          // Shown at once; a refusal toasts and the saved order shows again.
-          writer.commit({ command: "set_build_order", build_order: order });
+          hold(order, writer.commit({ command: "set_build_order", build_order: order }));
         }}>
           <SelectTrigger aria-label="Where builds run" className="w-full @md/field-group:w-72">
             <SelectValue>{BUILD_ORDER_LABELS[buildOrder]}</SelectValue>

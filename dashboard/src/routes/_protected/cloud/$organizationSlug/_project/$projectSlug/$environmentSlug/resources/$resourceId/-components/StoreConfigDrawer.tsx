@@ -27,6 +27,8 @@ import { changedProps, dnsLabelError } from "#/modules/config-store/store-servic
 import { storeReferenceTargets } from "#/modules/config-store/store-variables";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useStorePendingName } from "#/modules/config-store/store-pending";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -56,6 +58,7 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const diff = requireView(views[2]);
   const settings = requireView(views[3]);
   const writer = useStoreWriter(organizationSlug);
+  const shownName = useStorePendingName(organizationSlug, store, "config", config.name);
   if (!views[4].ok) return <CanvasInspectorNotFound noun="Config" />;
   const item = views[4].value;
   const state: StoreConfig = { organizationSlug, environment: store, config };
@@ -72,14 +75,16 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
         {removing ? <p className="truncate font-semibold">{config.name}</p> : (
-          <CanvasInspectorNameEditor value={config.name} schema={nameSchema} editTitle="Edit config name"
+          <div className="min-w-0"><CanvasInspectorNameEditor value={shownName} schema={nameSchema} editTitle="Edit config name"
             editDescription="Rename this config. Its files and mounts stay." placeholder="Config name"
             {...changedProps(renamed)}
-            onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} />
+            onRename={(name) => writer.commit({ command: "rename_config", environment: store, config: config.name, name })} /></div>
         )}
       </CanvasInspectorHeader>
-      <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
-        values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <ConfigBody key={config.id} state={state} item={item} services={services} targets={targets} serviceNames={serviceNames}
+          values={values} removing={removing} params={params} version={diff.version} configs={configs} diff={diff} />
+      </div>
     </div>
   );
 }
@@ -95,13 +100,16 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const [failedSaves, setFailedSaves] = useState<ReadonlySet<string>>(new Set());
   const [pendingSaves, setPendingSaves] = useState<ReadonlySet<ReadonlyMap<string, FileDraft>>>(new Set());
   const submittedFiles = useRef(new Map<string, ReadonlyMap<string, FileDraft>>());
-  const stored = item.files.map((file) => file.name);
+  // A removed file stays gone until its write lands.
+  const [removed, holdRemoved] = useCommitHold<ReadonlySet<string>>(new Set());
+  const stored = item.files.map((file) => file.name).filter((name) => !removed.has(name));
   const fileNames = [...stored, ...[...drafts.keys()].filter((name) => !stored.includes(name))];
   const [selected, setSelected] = useState<string | null>(fileNames[0] ?? null);
   const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
   const textOf = (file: string) => drafts.get(file)?.content ?? item.contents[file] ?? "";
   const hidden = (file: string) => hiddenFile(item, file) && textOf(file) === "";
-  const edits = configEdits(item, drafts, failedSaves);
+  const inFlight = new Map([...pendingSaves].flatMap((submitted) => [...submitted]));
+  const edits = configEdits(item, drafts, failedSaves, inFlight);
   const dirty = new Set(edits.map((edit) => edit.file));
   const unsaved = new Set([...dirty, ...[...pendingSaves].flatMap((submitted) => [...submitted.keys()])]);
   const oversized = fileNames.map((file) => ({ file, error: configFileSizeError(utf8Bytes(textOf(file))) }))
@@ -147,12 +155,13 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     submittedFiles.current.set(file, submitted);
     setDrafts((current) => new Map([...current].filter(([name]) => name !== file)));
     if (!stored.includes(file)) return;
-    writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS)
-      .isPersisted.promise.catch((error) => {
-        if (submittedFiles.current.get(file) !== submitted) return;
-        setDrafts((current) => new Map([...submitted, ...current]));
-        setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
-      });
+    const write = writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS);
+    holdRemoved(new Set([...removed, file]), write);
+    write.isPersisted.promise.catch((error) => {
+      if (submittedFiles.current.get(file) !== submitted) return;
+      setDrafts((current) => new Map([...submitted, ...current]));
+      setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
+    });
   }
 
   return (

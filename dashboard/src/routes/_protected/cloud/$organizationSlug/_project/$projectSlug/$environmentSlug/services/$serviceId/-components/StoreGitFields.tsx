@@ -14,6 +14,7 @@ import { useCachedStoreView } from "#/modules/config-store/store-view.queries";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 
 /**
@@ -35,6 +36,7 @@ export function StoreBranchField({ organizationSlug, repository, gitRef, value, 
 }) {
   const setting = serviceSetting("branch");
   const [picking, setPicking] = useState(false);
+  const [shown, hold] = useCommitHold(value);
   return (
     <Field>
       <FieldLabel>{setting.title}</FieldLabel>
@@ -43,7 +45,7 @@ export function StoreBranchField({ organizationSlug, repository, gitRef, value, 
         <>
           <Item variant="muted" data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
             <ItemMedia variant="icon"><GitBranchIcon /></ItemMedia>
-            <ItemContent><ItemTitle>{value || "Default branch"}</ItemTitle></ItemContent>
+            <ItemContent><ItemTitle>{shown || "Default branch"}</ItemTitle></ItemContent>
             <ItemActions>
               <Button type="button" variant="ghost" size="icon" onClick={() => setPicking(true)}>
                 <PencilIcon /><span className="sr-only">Change branch</span>
@@ -52,7 +54,7 @@ export function StoreBranchField({ organizationSlug, repository, gitRef, value, 
           </Item>
           <GitBranchSelectorDialog open={picking} onOpenChange={setPicking} organizationSlug={organizationSlug} repositoryFullName={repository}
             repositoryId={gitRef.repositoryId} installationId={gitRef.installationId}
-            onSelectBranch={(branch) => { void onSet(branch); setPicking(false); }} />
+            onSelectBranch={(branch) => { hold(branch, onSet(branch)); setPicking(false); }} />
         </>
       ) : (
         <ServiceSettingInput ariaLabel={setting.title} placeholder="main" value={value} {...changedProps(change)} onCommit={(raw) => onSet(raw)} />
@@ -91,7 +93,7 @@ export function StoreDockerfileField({ organizationSlug, gitRef, branch, value, 
 
 /** Who builds a Git Service first; part of its Deployment Policy, so it applies at once and Discard leaves it. */
 export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
-  organizationSlug: string; value: string | null; onSet: (builder: string | null) => void;
+  organizationSlug: string; value: string | null; onSet: (builder: string | null) => PersistableTransaction;
 }) {
   const setting = serviceSetting("preferredBuilder");
   const { machines, status } = useRuntimeLens(organizationSlug);
@@ -99,7 +101,7 @@ export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
     { id: "github", label: "GitHub Actions" },
     ...machines.filter((machine) => machine.acceptsBuilds).map((machine) => ({ id: machine.id, label: machine.name })),
   ];
-  const current = value ?? "auto";
+  const [current, hold] = useCommitHold(value ?? "auto");
   const label = current === "auto" ? "Auto"
     : builders.find((builder) => builder.id === current)?.label
       // Only an observed machine list can say the server is gone.
@@ -108,7 +110,7 @@ export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
     <Field>
       <FieldLabel>{setting.title}</FieldLabel>
       <FieldDescription>{setting.description}</FieldDescription>
-      <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) onSet(next === "auto" ? null : next); }}>
+      <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, onSet(next === "auto" ? null : next)); }}>
         <SelectTrigger aria-label={setting.title} className="w-64"><SelectValue>{label}</SelectValue></SelectTrigger>
         <SelectContent>
           <SelectGroup><SelectItem value="auto" label="Auto">Auto</SelectItem></SelectGroup>

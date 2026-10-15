@@ -149,19 +149,29 @@ export const hiddenFile = (config: Pick<ConfigItemView, "files" | "contents">, f
 
 /**
  * What one Save writes: each drafted file whose text or access differs from the Store's, that is new, or whose last save
- * failed (a failed rollback read can leave the optimistic contents cached). A hidden file is written only once it has new
- * text, so neither an access change nor a retry ever empties it.
+ * failed (a failed rollback read can leave the optimistic contents cached). A file with a save in flight is measured
+ * against its latest submission instead, so restoring the Store's text then is an edit. A hidden file is written only
+ * once it has new text, so neither an access change nor a retry ever empties it.
  */
 export function configEdits(
   config: Pick<ConfigItemView, "files" | "contents">, drafts: ReadonlyMap<string, FileDraft>, failed: ReadonlySet<string> = new Set(),
+  submitted: ReadonlyMap<string, FileDraft> = new Map(),
 ) {
   return [...drafts].flatMap(([file, draft]) => {
     if (hiddenFile(config, file) && draft.content === "") return [];
     const stored = config.files.find((one) => one.name === file);
-    const changed = stored === undefined || failed.has(file) || config.contents[file] !== draft.content
-      || ACCESS_FIELDS.some((field) => draft[field] !== undefined && draft[field] !== stored[field]);
+    const pending = submitted.get(file);
+    const changed = pending ? !sameFile(stored, pending, draft)
+      : stored === undefined || failed.has(file) || config.contents[file] !== draft.content
+        || ACCESS_FIELDS.some((field) => draft[field] !== undefined && draft[field] !== stored[field]);
     return changed ? [{ file, ...draft }] : [];
   });
+}
+
+function sameFile(stored: FileAccess | undefined, a: FileDraft, b: FileDraft) {
+  const before = draftAccess(stored, a);
+  const after = draftAccess(stored, b);
+  return a.content === b.content && ACCESS_FIELDS.every((field) => before[field] === after[field]);
 }
 
 /** Preview's values by `service.KEY`: each Service's built-in exports, then its own variables over them; secrets carry no value. */

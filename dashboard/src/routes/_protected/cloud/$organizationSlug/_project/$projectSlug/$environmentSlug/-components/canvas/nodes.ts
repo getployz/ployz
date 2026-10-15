@@ -17,7 +17,10 @@ import type {
   StoreCanvas,
   StoreLiveNode,
   CanvasStoreLiveNode,
+  PendingNode,
+  ArrivingNode,
 } from "./types";
+import type { Arriving } from "#/modules/config-store/store-pending";
 
 /** A node's link handles: out of its top, into its bottom, below any trays. */
 const handles = (height: number) => [
@@ -71,7 +74,7 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
  * or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "copies">>,
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "copies" | "arriving">>,
   canvasPositions: CanvasPosition[],
   environmentId: string,
 ): CanvasResourceNode[] {
@@ -134,7 +137,21 @@ export function buildStoreNodes(
       draggable: false,
       data: { live },
     } satisfies CanvasStoreLiveNode)),
+    // Where its creator put it, which is saved before the Store is asked, so the answer lands in the same spot.
+    ...(store.arriving ?? []).map((arriving) => ({
+      ...SERVICE_NODE_SIZE,
+      id: arriving.id,
+      type: "pending",
+      position: place(arriving.node, arriving.id),
+      data: { name: arriving.name },
+    } satisfies PendingNode)),
   ];
+}
+
+/** What this tab is adding that the Store has not answered yet: a Domain arrives on its Service's card, not as a node. */
+export function arrivingNodes(arriving: readonly Arriving[], answered: readonly { id: string }[]): ArrivingNode[] {
+  const ids = new Set(answered.map((listing) => listing.id));
+  return arriving.flatMap(({ node, id, name }) => node !== "domain" && !ids.has(id) ? [{ node, id, name }] : []);
 }
 
 /** The copies of each Volume with any to hang, keyed by the node that shows the Volume: its first Service's, else its own. */

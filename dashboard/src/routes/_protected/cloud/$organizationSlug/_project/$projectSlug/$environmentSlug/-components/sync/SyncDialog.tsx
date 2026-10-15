@@ -11,7 +11,8 @@ import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
-import { flipRow, flipsMoved, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
+import { useStoreNeverSyncs } from "#/modules/config-store/store-pending";
+import { flipRow, flipsMoved, showNeverSyncing, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -36,7 +37,10 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   const [into, setInto] = useState(first);
   // The open review stays up while the picked place's loads.
   const [, startTransition] = useTransition();
-  const view = useStoreView(organizationSlug, syncQuery(from, into));
+  const read = useStoreView(organizationSlug, syncQuery(from, into));
+  // A Never sync shows at once: its row leaves the changes for the list, or back.
+  const neverSyncs = useStoreNeverSyncs(organizationSlug, from.project);
+  const view = read.ok && neverSyncs.length ? { ...read, value: showNeverSyncing(read.value, neverSyncs) } : read;
   // Rows the user flipped from their default: a flip survives a refetch until its row changes.
   const [flips, setFlips] = useState<Flips>(new Map());
   // `into`'s values typed for secrets it lacks: sent with the Sync, never shown back.

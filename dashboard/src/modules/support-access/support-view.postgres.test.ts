@@ -12,12 +12,19 @@ import { setSupportAccess } from "#/modules/support-access/support-access.server
 import { Auth, type AuthService, type AuthSession } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { Forbidden } from "#/server/public-error";
-import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { StoreRefusal, ViewAnswer } from "#/modules/config-store/store.contract";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a003";
 const SLUG = "shop";
 const production = { project: "shop", environment: "production" };
+const SHOWS: ConfigQuery[] = [{ query: "diff", environment: production }, { query: "environment", environment: production, path: null, all: true }];
+const answered = (answers: readonly ViewAnswer[]) => {
+  const view = (kind: ConfigView["view"]) => answers.flatMap((answer) => answer.result.ok && answer.result.value.view === kind ? [answer.result.value] : [])[0];
+  const diff = view("diff");
+  const environment = view("environment");
+  return { diff: diff?.view === "diff" ? diff : undefined, environment: environment?.view === "environment" ? environment : undefined };
+};
 const CONTENT = "token: plain-text\n";
 const DRAFT_CONTENT = "token: draft-text\n";
 
@@ -102,10 +109,10 @@ it.live(
         yield* allow({ setting: "configs", on: false });
         const staffWrite = yield* writeStoreAsMember({ userId: staff }, SLUG, {
           command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "api.replicas", value: 2 }],
-        }).pipe(asStaff);
+        }, SHOWS).pipe(asStaff);
         assert.isTrue(staffWrite.ok, "support may still write");
         if (staffWrite.ok) {
-          const views = staffWrite.views ?? assert.fail("a write answers with its Environment's views");
+          const views = answered(staffWrite.answers ?? []);
           const diff = seenInDiff(views.diff ?? assert.fail("no diff view"));
           assert.deepStrictEqual(diff, { plain: { secret: true }, sealed: { secret: true }, file: shownWith(false) });
           const environment = seenInEnvironment(views.environment ?? assert.fail("no environment view"));
@@ -113,8 +120,9 @@ it.live(
         }
         const ownerWrite = yield* writeStoreAsMember({ userId: owner }, SLUG, {
           command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "api.replicas", value: 3 }],
-        }).pipe(asStaff);
-        assert.deepStrictEqual(ownerWrite.ok && ownerWrite.views?.diff ? seenInDiff(ownerWrite.views.diff) : null,
+        }, SHOWS).pipe(asStaff);
+        const ownerDiff = ownerWrite.ok ? answered(ownerWrite.answers ?? []).diff : undefined;
+        assert.deepStrictEqual(ownerDiff ? seenInDiff(ownerDiff) : null,
           { plain: "debug", sealed: { secret: true }, file: shownWith(true) });
 
         const published = yield* callStoreAsMember({ userId: owner }, SLUG, { operation: "write", command: { command: "publish", environment: production, version: null } });

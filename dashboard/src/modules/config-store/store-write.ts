@@ -7,9 +7,9 @@ import { observeFailure, type Persistable } from "#/collections/query-collection
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
-import { commandEnvironment, type CommittedViews, StoreRefused } from "./store.contract";
-import { cachedRevision, environmentKey, putCommittedViews, refetchAfterWrite, storeEditKey } from "./store-view.queries";
-import { applyOptimistic } from "./store-optimistic";
+import { commandEnvironment, commandEnvironments, StoreRefused } from "./store.contract";
+import { cachedRevision, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
+import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
 export type StoreEdit = {
@@ -17,11 +17,14 @@ export type StoreEdit = {
   changes: Change[];
 };
 
-/** The committed views a write's answer carried, filled as it answers: its refresh skips them. */
-type Carried = { views?: CommittedViews };
-
-/** Commands that read or write an Environment besides the one they name. */
-const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["sync", "undo_sync", "remove_proposal", "take", "create_branch", "copy_node"]);
+/**
+ * Commands whose views reach past the Environment they name, so their views are every view. Most read or write
+ * another Environment, and may make or close one, which the Project's views (its Environments, the Projects) list.
+ * A Project's Default Environment and Branch setup show in those Project views, which name no Environment.
+ */
+const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set([
+  "sync", "undo_sync", "remove_proposal", "take", "create_branch", "copy_node", "set_default_environment", "set_branch_setup",
+]);
 
 /** The Environment revision a write produced; a Batch's is its last command's. */
 function writtenRevision(written: ConfigWritten): number | null {
@@ -36,6 +39,7 @@ const isStale = (error: Error) => error instanceof StoreRefused && error.code ==
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
 const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
+const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
 /**
  * The one way the dashboard writes to the Config Store.
@@ -52,14 +56,19 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   // Edits not yet settled, in any Environment: a command naming several Environments waits for all of them.
   const unsettled = new Set<Promise<unknown>>();
 
-  async function send(command: ConfigCommand, carried: Carried) {
-    const result = await writeStoreServerFn({ data: { organizationSlug, command } });
+  /** The Environments whose views a command moves (null, every view). */
+  function keysOf(command: ConfigCommand): ReadonlySet<string> | null {
+    const refs = commandEnvironments(command);
+    return refs.length === 0 || SPANS.has(command.command) ? null : new Set(refs.map(environmentKey));
+  }
+
+  /** Sends `command` with the views this tab shows of its Environments, and installs their answers. */
+  async function send(command: ConfigCommand) {
+    const keys = keysOf(command);
+    const shows = shownQueries(queryClient, organizationSlug, keys);
+    const result = await writeStoreServerFn({ data: { organizationSlug, command, shows } });
     if (!result.ok) throw new StoreRefused(result.refusal);
-    const environment = commandEnvironment(command);
-    if (result.views && environment) {
-      carried.views = result.views;
-      await putCommittedViews(queryClient, organizationSlug, environmentKey(environment), result.views);
-    }
+    await putAnswers(queryClient, organizationSlug, keys, result.answers ?? []);
     return result.value;
   }
 
@@ -75,19 +84,19 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   }
 
   /**
-   * Runs `work` in the Environment's queue, then waits for `refresh` so the committed state shows before the
-   * pending edit's overlay goes. Failure toasts, refreshes the same views (the rollback), and rejects.
+   * Runs `work` in the Environment's queue, filed under `storeWriteKey` with its command, whose marks show until the
+   * write's answers land. Failure toasts, rereads the command's views (the rollback), and rejects. A command a pending
+   * rename blocks (`renameBlocks`) is never sent: the UI locks for the rename, and this catches a control it missed.
    */
-  function queued<T>(key: string, mutationKey: readonly unknown[], variables: Change[], work: () => Promise<T>, refresh: () => Promise<void>,
-    expects: boolean, handled: readonly string[] = []) {
-    const observer = new MutationObserver<T, Error, Change[]>(queryClient, {
-      mutationKey,
+  function queued<T>(key: string, command: ConfigCommand, work: () => Promise<T>, expects: boolean, handled: readonly string[] = []) {
+    if (renameBlocks(pendingMarks(queryClient, organizationSlug), command)) {
+      toast.error(RENAMING);
+      return Promise.reject(new StoreRefused({ code: "renaming", message: RENAMING, details: null }));
+    }
+    const observer = new MutationObserver<T, Error, { command: ConfigCommand }>(queryClient, {
+      mutationKey: storeWriteKey(organizationSlug, key),
       scope: { id: `store:${organizationSlug}:${key}` },
-      mutationFn: async () => {
-        const value = await work();
-        await refresh();
-        return value;
-      },
+      mutationFn: work,
       onError: async (error) => {
         // Only a write that sent `expect` meets a stale revision, whose `conflict` names the revision; any other
         // `conflict` (a taken name, a referenced variable) says its own.
@@ -98,56 +107,49 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
           toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error.message);
         }
         // What the write was refused against shows: the rollback, or a Sync's fresh review.
-        await refresh();
+        await invalidateViews(queryClient, organizationSlug, keysOf(command));
       },
     });
-    return observer.mutate(variables);
+    return observer.mutate({ command });
   }
 
   return {
     edit({ environment, changes }: StoreEdit): Persistable {
       const key = environmentKey(environment);
-      const carried: Carried = {};
-      const promise = queued(key, storeEditKey(organizationSlug, key), changes, async () => {
-        const written = await send({ command: "edit", environment, expect: expected(key), changes }, carried);
+      const command: ConfigCommand = { command: "edit", environment, expect: null, changes };
+      const promise = queued(key, command, async () => {
+        const written = await send({ command: "edit", environment, expect: expected(key), changes });
         if (written.written === "edited") committed.set(key, written.environment.revision);
         return written;
-      }, () => refetchAfterWrite(queryClient, organizationSlug, key, carried.views), true);
+      }, true);
       trackEdit(promise);
       return observeFailure({ isPersisted: { promise } });
     },
     /**
-     * Any other command: shown at once in the cached views (`applyOptimistic`), saved in the background. One naming an
-     * Environment runs after that Environment's pending edits; one that reads or writes another Environment too (a
-     * Sync, a new Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once the
-     * views it may move have refetched (its Environment's; every view for one spanning several or naming none),
-     * which also replaces the guess. A refusal toasts here, unless its code
-     * is one the caller `handles`, rolls the views back, and rejects with `StoreRefused`. UI that awaits it (a Deploy,
-     * a destructive confirmation, an external service) is a listed command in the boundary test.
+     * Any other command: its marks show at once over the cached views (`store-pending.ts`), and it saves in the
+     * background. One naming an Environment runs after that Environment's pending edits; one that reads or writes
+     * another Environment too (a Sync, a new Branch, a copied node: often the implied Parent) runs after every pending
+     * edit. It persists once the write's answers replace its views. A refusal toasts here, unless its code is one the
+     * caller `handles`, rereads the views, and rejects with `StoreRefused`.
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const environment = commandEnvironment(command);
       const key = environment ? environmentKey(environment) : "";
-      void applyOptimistic(queryClient, organizationSlug, command);
       // A command that edits Working State expects the newest revision, as an edit does, and is tracked like one; a
       // Batch holding an edit is tracked too, so a command spanning Environments waits for it.
       const expects = "expect" in command;
       const edits = expects || (command.command === "batch" && command.commands.some((inner) => inner.command === "edit"));
-      const carried: Carried = {};
       const save = async () => {
-        const written = await send(expects ? { ...command, expect: expected(key) } : command, carried);
+        const written = await send(expects ? { ...command, expect: expected(key) } : command);
         const revision = writtenRevision(written);
         if (revision !== null) committed.set(key, revision);
         return written;
       };
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
-      // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
-      const spans = SPANS.has(command.command);
+      const spans = SPANS.has(command.command) || commandEnvironments(command).length > 1;
       const preceding = spans ? [...unsettled] : [];
       const work = async () => { await Promise.all(preceding); return save(); };
-      const refreshed = environment === null || spans ? null : key;
-      const promise = queued(key, ["store-command", organizationSlug, key], [], work,
-        () => refetchAfterWrite(queryClient, organizationSlug, refreshed, carried.views), expects, handles);
+      const promise = queued(key, command, work, expects, handles);
       if (edits) trackEdit(promise);
       return observeFailure({ isPersisted: { promise } });
     },
@@ -155,8 +157,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
 });
 
 /**
- * Writes are optimistic: each shows at once where the cached views can guess its outcome, and saves in the background.
- * A refusal toasts and rolls the views back, so a caller handles failure only for state of its own, or for a refusal
+ * Writes show at once as marks of what the command says, and save in the background; the Store's answers replace them.
+ * A refusal toasts and rereads the views, so a caller handles failure only for state of its own, or for a refusal
  * code it passes to `commit` as `handles` and shows itself.
  */
 export function useStoreWriter(organizationSlug: string) {
