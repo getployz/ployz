@@ -264,7 +264,8 @@ A node answers two questions in two places, and neither ever stands in for the o
 - An optional value is an input with a placeholder, blank while unset. Only a setting most resources never need (pre-deploy command, root directory) hides behind a small link.
 - Danger comes last as plain rows: what it does, what follows in muted text, and a soft destructive button. Never red text on a red surface.
 - Panel headers are the same shape: the name, renameable, without a kind label, and no second line.
-- Settings pages (Environment, Project, Organization's General, Members and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
+- Settings pages (Environment, Project, Organization's General, Members, GitHub and Builds, a Server) use the same sections, rows and danger rows as the panels. There is one Danger section per page, last.
+- Organization › GitHub is where an organization's GitHub accounts connect and disconnect. Each account is a row: avatar, login, its repository count, who connected it and when, and Disconnect. Disconnect affects only this organization, so its confirmation says so and uninstalling stays on GitHub. Members see the rows without the buttons. Every Connect GitHub prompt elsewhere, like the source picker's, goes through the same route and lands here.
 - Settings autosave, except a name: renaming changes addresses and URLs, so it waits for an explicit Rename (a project's Rename button, a service's or volume's pencil and its dialog). Everything else saves as it's set, staged where it deploys.
 - Buttons and titles use sentence case: "Forget servers", "Generate domain".
 
@@ -302,7 +303,8 @@ The agent sidebar is a chat with Ployz Cloud that runs the same commands as `plo
 - The card is drawn from Cloud's Approval, read fresh each time it shows, so a reload, a second browser or a `ployz` CLI waiting on the same Approval all see one card, and a superseded Approval says the plan changed.
 - After Approve, or when nothing needed approving, the card becomes a **Run card** that follows the Deployment in the Deployments place's words and statuses and opens its Deployment Page. A run on Servers or Volumes shows as a Run card with the run's name and the state Cloud admitted it in.
 - While an Approval waits, the closed Agent button reads how many wait, like "1 waiting", and shows just the count on phones.
-- Its commands are the compiled agent tools plus the Cloud-published commands marked `agents: true`, read from the one registry Cloud also serves to `ployz`. A command marked `agents: false` never reaches an agent, in the sidebar or in `ployz mcp`.
+- Its commands are the compiled agent tools plus the Cloud-published commands marked `agents: true`, read from the one registry Cloud also serves to `ployz`. A command marked `agents: false` never reaches an agent, in the sidebar, in `ployz mcp` or at `/mcp`.
+- **Remote agents are a third surface on the same runner, and only on hosted Cloud.** `/mcp` serves the sidebar's tool list to an agent app over streamable HTTP, behind an OAuth grant a member makes on `/connect` for one Organization. Each call runs through the sidebar's runner as that member with `via: "agent"`, so the same approval gate applies. A remote agent can't show an Approval card, so a gated call fails with `approval_required` and a link; the Approval waits under **Waiting on you** here, and the agent retries with the approval's ID. No new approval route exists. A Self-hosted Cloud installs no OAuth provider and answers 404 on these routes; `ployz mcp` serves it.
 
 **The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
 

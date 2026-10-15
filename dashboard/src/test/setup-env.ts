@@ -17,6 +17,12 @@ loadEnvFile(envPath);
 if (!process.env["GITHUB_APP_ID"]) {
   process.env["GITHUB_APP_ID"] = "test-app";
 }
+if (!process.env["GITHUB_APP_CLIENT_ID"]) {
+  process.env["GITHUB_APP_CLIENT_ID"] = "test-app-client";
+}
+if (!process.env["GITHUB_APP_CLIENT_SECRET"]) {
+  process.env["GITHUB_APP_CLIENT_SECRET"] = "test-app-client-secret";
+}
 if (!process.env["GITHUB_APP_SLUG"]) {
   process.env["GITHUB_APP_SLUG"] = "test-app";
 }

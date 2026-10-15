@@ -83,7 +83,7 @@ else
   setsid nohup node scripts/verify/runner.mjs /scripts/verify/hosted-dns.ts > "$run/hosted-dns.log" 2>&1 < /dev/null &
   echo $! > "$run/hosted-dns.pid"
   if [ "${FAKE_GITHUB:-0}" = 1 ]; then
-    FAKE_GITHUB_CLOUD_URL=http://127.0.0.1:$port GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret \
+    FAKE_GITHUB_CLOUD_URL=http://localhost:$port GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret \
       setsid nohup node scripts/verify/runner.mjs /scripts/verify/fake-github.ts > "$run/fake-github.log" 2>&1 < /dev/null &
     echo $! > "$run/fake-github.pid"
   fi
@@ -165,6 +165,8 @@ GITHUB_CLIENT_ID=verify-oauth-client
 GITHUB_CLIENT_SECRET=verify-oauth-secret
 GITHUB_APP_ID=1
 GITHUB_APP_SLUG=ployz-verify
+GITHUB_APP_CLIENT_ID=verify-app-client
+GITHUB_APP_CLIENT_SECRET=verify-app-client-secret
 GITHUB_APP_WEBHOOK_SECRET=verify-webhook-secret
 GITHUB_APP_PRIVATE_KEY='$key'
 $github_origin

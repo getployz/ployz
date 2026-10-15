@@ -101,6 +101,8 @@ How you answer depends on where the command runs:
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
 - In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
   panel, and the agent waits for you.
+- In an agent you [connected to Ployz Cloud](connect-an-agent.md), the call fails with a link.
+  Approve or deny under **Waiting on you** in the Ployz agent, then have the agent try again.
 
 - `ployz publish` and `ployz deploy` ask only when the change removes something that's running.
   Rolling out a new image or changing variables never asks.

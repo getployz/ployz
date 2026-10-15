@@ -100,7 +100,8 @@ click it to see them.
 The agent picks up your answer and carries on. If you denied it, the agent gets your reason.
 
 While approvals are waiting, the **Agent** button shows how many, like **1 waiting**. An approval you didn't
-start from this chat, like one a coding agent opened from the CLI, appears at the top of the
+start from this chat, like one a coding agent opened from the CLI or an agent you
+[connected to Ployz Cloud](connect-an-agent.md), appears at the top of the
 panel under **Waiting on you**, and you answer it the same way. That includes
 `ployz server rm`, `ployz server drain` and `ployz server clean`, whose cards are named for the
 server, like **Remove fra-1**.

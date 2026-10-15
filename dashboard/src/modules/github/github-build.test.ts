@@ -30,6 +30,8 @@ function check(replies: { repository: Reply; workflow?: Reply }) {
       archive: () => Effect.die("unused"),
       app: () => Effect.die("unused"),
       installationRepositories: () => Effect.die("unused"),
+      exchangeUserCode: () => Effect.die("unused"),
+      userJson: () => Effect.die("unused"),
       json: (request) => {
         urls.push(request.path);
         const reply = request.path.endsWith("/repositories/42") ? replies.repository : replies.workflow;

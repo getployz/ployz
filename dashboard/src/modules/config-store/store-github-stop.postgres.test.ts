@@ -66,7 +66,7 @@ for (const { stop, failed } of cases) {
 
       if (stop === "disconnect") {
         const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
-        yield* provided(disconnectGithub(caller, 7));
+        yield* provided(disconnectGithub(caller, "shop", "acme"));
       } else {
         yield* Effect.promise(() => executeProcessGithubInstallationReceived({ event: webhook(stop), step }, run, run));
       }

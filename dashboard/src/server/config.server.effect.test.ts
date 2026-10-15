@@ -11,6 +11,8 @@ const requiredEnvironment = {
   GITHUB_APP_ID: "12345",
   GITHUB_APP_PRIVATE_KEY: "github-app-private-key",
   GITHUB_APP_SLUG: "ployz-test",
+  GITHUB_APP_CLIENT_ID: "github-app-client-id",
+  GITHUB_APP_CLIENT_SECRET: "github-app-client-secret",
   GITHUB_APP_WEBHOOK_SECRET: "github-app-webhook-secret",
   INNGEST_EVENT_KEY: "inngest-event-key",
   INNGEST_SIGNING_KEY: "inngest-signing-key",

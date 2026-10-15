@@ -153,10 +153,11 @@ const Reply = Schema.Struct({
   unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
   servers: Schema.optionalKey(Schema.Struct({ confirmed: Schema.Array(Schema.String), unconfirmed: Schema.Array(Schema.String) })),
   signed_out: Schema.optionalKey(Schema.Struct({ id: Schema.String })),
-  linked: Schema.optionalKey(Schema.Boolean),
   ready: Schema.optionalKey(Schema.Boolean),
-  install_url: Schema.optionalKey(Schema.String),
-  installations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.Number, account: Schema.String, repositories: Schema.Number }))),
+  connect_url: Schema.optionalKey(Schema.String),
+  installations: Schema.optionalKey(Schema.Array(Schema.Struct({
+    id: Schema.Number, account: Schema.String, repositories: Schema.Number, connected_by: Schema.NullOr(Schema.String),
+  }))),
   repositories: Schema.optionalKey(Schema.Array(Schema.Struct({ repository: Schema.String, installation: Schema.Number }))),
   branches: Schema.optionalKey(Schema.Array(Schema.String)),
   access: Schema.optionalKey(Schema.String),
@@ -522,8 +523,8 @@ it.live(
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         const empty = yield* cli("GET", "github", alice);
-        assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
-        assert.match(empty.json.install_url ?? "", /^http:\/\/127\.0\.0\.1:4555\/apps\/.+\/installations\/new$/);
+        assert.deepInclude(empty.json, { ready: false, installations: [], repositories: [] });
+        assert.match(empty.json.connect_url ?? "", /\/api\/github\/connect\?organization=[a-z0-9-]+$/);
 
         const database = yield* Database;
         const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
@@ -543,8 +544,10 @@ it.live(
         });
         const connected = yield* cli("GET", "github", alice);
         assert.deepInclude(connected.json, { ready: true });
-        assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
-          [{ id: 7, account: "acme", repositories: 1 }, { id: 8, account: "alice", repositories: 0 }]);
+        assert.deepStrictEqual(
+          connected.json.installations?.map(({ id, account, repositories, connected_by }) => ({ id, account, repositories, connected_by })),
+          [{ id: 7, account: "acme", repositories: 1, connected_by: "alice" }, { id: 8, account: "alice", repositories: 0, connected_by: "alice" }],
+        );
 
         const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
         assert.deepInclude(branches.json, { access: "connected", branches: ["dev", "main"] });
@@ -570,11 +573,12 @@ it.live(
           details: { valid_children: ["acme/web"] },
         });
 
-        const removed = yield* cli("DELETE", "github/7", alice);
+        const removed = yield* cli("DELETE", "github/ACME", alice);
         assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
         assert.strictEqual(removed.json.uninstall_url, "http://127.0.0.1:4555/organizations/acme/settings/installations/7");
+        assert.strictEqual((yield* cli("DELETE", "github/acme", alice)).status, 404);
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
-        const personal = yield* cli("DELETE", "github/8", alice);
+        const personal = yield* cli("DELETE", "github/alice", alice);
         assert.strictEqual(personal.json.uninstall_url, "http://127.0.0.1:4555/settings/installations/8");
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));

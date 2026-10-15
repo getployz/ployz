@@ -233,13 +233,8 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       });
       return yield* read.pipe(Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))));
     }
-    case "DELETE github/:id": {
-      const installation = Number(id);
-      if (!Number.isSafeInteger(installation) || installation <= 0) {
-        return yield* new NotFound({ message: "No such GitHub installation of yours." });
-      }
-      return yield* disconnectGithub(caller, installation);
-    }
+    case "DELETE github/:id":
+      return yield* disconnectGithub(caller, caller.organization.slug, id ?? "");
     case "POST volumes/:id/runs": {
       const body = yield* decodeBody(NewVolumeRun, request, "A volume run takes its environment and what to run.");
       const call = yield* operationCall(request);

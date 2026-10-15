@@ -51,6 +51,15 @@ const notOrganizationOwned = {
   uptime_region: "Display names for the probe regions, shared by every Organization and written only by the uptime checker.",
   uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",
   uptime_result_hourly: "Hourly probe rollups, read as a Remote Read; growing history that would flood the change log.",
+  jwks: "The keys Cloud signs agent access tokens with, shared by every Organization.",
+  oauth_client: "An agent app registered to connect; one app serves every Organization its users pick.",
+  oauth_resource: "The resources Cloud issues agent tokens for, shared by every Organization.",
+  oauth_client_resource: "Which resources an agent app may ask for; it belongs to the app, not an Organization.",
+  oauth_client_assertion: "Client assertions already spent, kept to refuse a replay; it belongs to no Organization.",
+  oauth_consent: "An agent's grant names its Organization in reference_id but is read only when a token is minted or used; no view reads it, so it needs no change log.",
+  oauth_refresh_token: "An agent's refresh token, read only by the token endpoint; no view reads it, so it needs no change log.",
+  oauth_access_token: "An agent's access token, read only by the token endpoint; no view reads it, so it needs no change log.",
+  rate_limit: "Request counts per caller and path for auth rate limiting; it belongs to no Organization.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;
