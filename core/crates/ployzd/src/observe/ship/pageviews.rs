@@ -148,6 +148,23 @@ impl PageviewOutbox {
         Ok(())
     }
 
+    /// Writes the buffer and returns every held row, oldest first.
+    #[cfg(test)]
+    pub(in crate::observe) fn rows(&self) -> Vec<serde_json::Value> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.flush(&mut state).unwrap();
+        state
+            .segments
+            .keys()
+            .flat_map(|seq| {
+                let bytes = fs::read(self.dir.join(entry_name(*seq, SEGMENT_SUFFIX))).unwrap();
+                lines(&bytes)
+                    .map(|line| serde_json::from_slice(line).unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(in crate::observe) fn held_rows(&self) -> usize {
         self.state

@@ -12,6 +12,8 @@ use std::{
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 pub(super) use pageviews::PageviewOutbox;
+#[cfg(test)]
+pub(super) use pageviews::dir_has;
 use ployz_core::{MachineId, metrics::MetricMarker};
 use reqwest::{
     RequestBuilder, StatusCode, Url,

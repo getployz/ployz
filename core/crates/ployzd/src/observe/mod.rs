@@ -13,6 +13,7 @@ mod harvest;
 mod integration_tests;
 pub mod layout;
 pub(crate) mod metrics;
+mod pageview;
 mod query;
 mod salts;
 mod serve;
@@ -80,6 +81,7 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
     let pageviews = ship::PageviewOutbox::open(&store)?;
     spawn_shipper(pageviews.clone(), salts.clone(), data_dir)?;
+    pageview::spawn(run_dir, salts, pageviews)?;
     harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
 }
 
