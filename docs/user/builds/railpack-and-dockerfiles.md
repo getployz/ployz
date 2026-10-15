@@ -99,14 +99,14 @@ services on it. Fetch what a build needs from the internet, and talk to your ser
 deploy.
 
 A build step can still reach your services' public web addresses on ports 80 and 443, and your
-other servers' public addresses. It also reaches anything on the build
-server's own local network, like a cloud VPC or office LAN, including your other servers there.
-Don't leave anything on those addresses open without a login.
+other servers' public addresses. Don't leave anything on those addresses open without a login. It
+can't reach the build server's local network, like a cloud VPC or office LAN, any other private
+address, or the cloud's metadata service. Its DNS keeps working.
 
-A Dockerfile `ADD` of a URL or Git repository follows the same rule. It reaches the internet,
-and nothing on the server running the build or your servers' private network, except the image
-servers Ployz uses to share build images between your servers. If Ployz can't put that limit in
-place, the build fails instead of running without it.
+A Dockerfile `ADD` of a URL or Git repository reaches the internet, and nothing on the server
+running the build or your servers' private network, except the image servers Ployz uses to share
+build images between your servers. Unlike a build step, it still reaches the build server's local
+network. If Ployz can't put that limit in place, the build fails instead of running without it.
 
 ## When your servers mix x86 and ARM
 
