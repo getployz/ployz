@@ -201,6 +201,10 @@ fn row_state(state: &str) -> RowState {
             phase: RowPhase::WaitingForHealth,
             serving: false,
         },
+        "switch" => RowState::Running {
+            phase: RowPhase::WaitingForSwitch,
+            serving: false,
+        },
         "compensating" => RowState::Running {
             phase: RowPhase::Compensating,
             serving: false,
@@ -336,6 +340,23 @@ fn a_partially_healthy_service_shows_its_ready_count() {
             "depth 1",
             "  ◐ app  booting 1/3",
         ]
+    );
+}
+
+#[test]
+fn a_server_ready_for_the_switch_counts_while_another_still_boots() {
+    let groups = [group("app", &[])];
+    assert_eq!(
+        lines(&graph_frame(&groups, &[("app", &["switch", "booting"])])),
+        ["depth 0", "  ◐ app  booting 1/2"]
+    );
+    assert_eq!(
+        lines(&graph_frame(&groups, &[("app", &["booting", "switch"])])),
+        ["depth 0", "  ◐ app  booting 1/2"]
+    );
+    assert_eq!(
+        lines(&graph_frame(&groups, &[("app", &["switch", "switch"])])),
+        ["depth 0", "  ⠋ app  switching 2/2"]
     );
 }
 

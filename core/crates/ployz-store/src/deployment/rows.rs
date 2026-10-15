@@ -131,6 +131,7 @@ pub enum RowPhase {
     StartingContainer,
     WaitingForHealth,
     WaitingForHook,
+    WaitingForSwitch,
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
@@ -147,7 +148,7 @@ impl RowPhase {
             Self::StoppingContainer => Some(FailedAt::Stop),
             Self::RemovingContainer => Some(FailedAt::Remove),
             Self::RemovingVolume => Some(FailedAt::Volume),
-            Self::Starting | Self::Compensating => None,
+            Self::Starting | Self::WaitingForSwitch | Self::Compensating => None,
         }
     }
 }
@@ -160,6 +161,7 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::StartingContainer => Self::StartingContainer,
             OperationPhase::WaitingForHealth { .. } => Self::WaitingForHealth,
             OperationPhase::WaitingForHook { .. } => Self::WaitingForHook,
+            OperationPhase::WaitingForSwitch { .. } => Self::WaitingForSwitch,
             OperationPhase::StoppingContainer => Self::StoppingContainer,
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
@@ -403,7 +405,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
     match &row.status {
         OperationStatus::Running { phase } => match phase {
             OperationPhase::WaitingForHealth { container_id, .. }
-            | OperationPhase::WaitingForHook { container_id, .. } => Some(*container_id),
+            | OperationPhase::WaitingForHook { container_id, .. }
+            | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
             OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
                 row.operation.container_id()
             }
