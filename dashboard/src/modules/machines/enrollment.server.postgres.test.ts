@@ -286,17 +286,21 @@ describe("organization enrollment coordinator", () => {
     expect(tokens.rows[0]?.count).toBe(3);
   });
 
-  it("grants exactly one Organization founding attempt across twenty calls and multiple tokens", async () => {
+  it("grants exactly one Organization founding attempt across twenty Machines with their own tokens", async () => {
     const fake = fakeSession(harness.database);
     const coordinator = fake.coordinator;
+    // One token per Machine: a token claimed by the founder refuses every other Machine.
+    const machineTokens = Array.from({ length: 20 }, (_, index) => tokens[index] ?? `pmet_founding_cas_${index}`);
+    for (const token of machineTokens.slice(tokens.length)) {
+      await harness.pool.query(
+        `insert into machine_enrollment_token (organization_id, created_by_user_id, token_hash, expires_at)
+         values ($1, $2, $3, now() + interval '1 day')`,
+        [organizationId, userId, hashEnrollmentToken(token)],
+      );
+    }
 
     const outcomes = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
-        coordinator.enroll({
-          token: tokens[index % tokens.length] ?? "",
-          identity: identity(index),
-        }),
-      ),
+      machineTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index) })),
     );
     const directives = outcomes.flatMap((outcome) =>
       Result.isFailure(outcome) ? [] : [outcome.success],
