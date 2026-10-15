@@ -17,8 +17,7 @@ use super::{
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const SEGMENT_ROWS: usize = 100;
 const SEGMENT_BYTES: usize = 16 * 1024;
-/// Cloud answers 413 past 256 KiB; a row is at most a few KiB, so a batch
-/// that stops adding segments here stays well under it.
+/// Cloud answers 413 past 256 KiB. A whole batch body, envelope included, stays under this.
 const BATCH_BYTES: usize = 192 * 1024;
 const SEGMENT_AGE: Duration = Duration::from_secs(1);
 pub(in crate::observe) const ROW_CAP: usize = 50_000;
@@ -160,6 +159,21 @@ impl PageviewOutbox {
         Ok(())
     }
 
+    fn discard(&self, state: &mut State, seqs: &[u64]) -> io::Result<()> {
+        let mut dropped = 0;
+        for seq in seqs {
+            remove_entry(&self.dir, *seq, SEGMENT_SUFFIX)?;
+            if let Some(segment) = state.segments.remove(seq) {
+                state.rows -= segment.rows;
+                dropped += segment.rows;
+            }
+        }
+        if dropped == 0 {
+            return Ok(());
+        }
+        state.ledger.count_dropped(&self.dir, dropped)
+    }
+
     #[cfg(test)]
     pub(in crate::observe) fn rows(&self) -> Vec<serde_json::Value> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -190,27 +204,34 @@ impl Stream for PageviewOutbox {
 
     fn next(&self) -> io::Result<Option<Held>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let frame = envelope(u64::MAX, u64::MAX).len() + b"]}".len();
         let mut taken = Vec::new();
+        let mut oversized = Vec::new();
         let mut rows = 0;
-        let mut bytes = 0;
+        let mut bytes = frame;
         for (seq, segment) in &state.segments {
-            if !taken.is_empty()
-                && (rows + segment.rows > CAP || bytes + segment.bytes > BATCH_BYTES)
-            {
+            if rows + segment.rows > CAP || bytes + segment.bytes > BATCH_BYTES {
+                if taken.is_empty() {
+                    oversized.push(*seq);
+                    continue;
+                }
                 break;
             }
             taken.push(*seq);
             rows += segment.rows;
             bytes += segment.bytes;
         }
+        if !oversized.is_empty() {
+            tracing::warn!(
+                segments = oversized.len(),
+                "a pageviews segment is too large for any batch; dropping it"
+            );
+            self.discard(&mut state, &oversized)?;
+        }
         let Some(last) = taken.last() else {
             return Ok(None);
         };
-        let mut body = format!(
-            r#"{{"stream":"{PAGEVIEWS}","seq":"{last}","dropped":{},"events":["#,
-            state.ledger.dropped
-        )
-        .into_bytes();
+        let mut body = envelope(*last, state.ledger.dropped);
         body.reserve(bytes);
         let mut first = true;
         for seq in &taken {
@@ -246,24 +267,17 @@ impl Stream for PageviewOutbox {
 
     fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut dropped = 0;
-        for seq in seqs {
-            remove_entry(&self.dir, *seq, SEGMENT_SUFFIX)?;
-            if let Some(segment) = state.segments.remove(seq) {
-                state.rows -= segment.rows;
-                dropped += segment.rows;
-            }
-        }
         state.in_flight.clear();
-        if dropped == 0 {
-            return Ok(());
-        }
-        state.ledger.count_dropped(&self.dir, dropped)
+        self.discard(&mut state, seqs)
     }
 
     fn wake(&self) -> &Notify {
         &self.wake
     }
+}
+
+fn envelope(seq: u64, dropped: u64) -> Vec<u8> {
+    format!(r#"{{"stream":"{PAGEVIEWS}","seq":"{seq}","dropped":{dropped},"events":["#).into_bytes()
 }
 
 fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -466,10 +480,7 @@ mod tests {
         outbox.tick().unwrap();
         let sizes = batches_until_empty(&outbox);
         assert!(sizes.iter().sum::<usize>() > 262_144, "{sizes:?}");
-        assert!(
-            sizes.iter().all(|size| *size <= BATCH_BYTES + 1024),
-            "{sizes:?}"
-        );
+        assert!(sizes.iter().all(|size| *size <= BATCH_BYTES), "{sizes:?}");
     }
 
     #[test]
@@ -485,6 +496,25 @@ mod tests {
         outbox.tick().unwrap();
         let sizes = batches_until_empty(&outbox);
         assert!(sizes.iter().all(|size| *size < 262_144), "{sizes:?}");
+    }
+
+    #[test]
+    fn a_segment_too_large_for_any_batch_is_dropped_and_counted_never_sent() {
+        let (_root, store) = store();
+        let outbox = PageviewOutbox::open(&store).unwrap();
+        outbox
+            .push(&serde_json::json!({ "kind": "pageview", "blob": "x".repeat(BATCH_BYTES) }))
+            .unwrap();
+        push(&outbox, 0..100);
+        assert_eq!(segments(&store).len(), 2);
+
+        let held = outbox.next().unwrap().unwrap();
+        assert!(held.body.len() <= BATCH_BYTES);
+        let body: serde_json::Value = serde_json::from_slice(&held.body).unwrap();
+        assert_eq!(body["dropped"], 1);
+        assert_eq!(body["events"].as_array().unwrap().len(), 100);
+        assert_eq!(segments(&store), held.seqs);
+        assert_eq!(outbox.held_rows(), 100);
     }
 
     #[test]

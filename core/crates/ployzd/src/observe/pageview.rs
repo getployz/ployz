@@ -25,6 +25,7 @@ const COUNTS_EVERY: Duration = Duration::from_secs(60);
 const READ_CHUNK: usize = 64 * 1024;
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_PATH: usize = 1024;
+const MAX_HOST: usize = 253;
 const MAX_QUERY_VALUE: usize = 256;
 const QUERY_KEYS: [&str; 6] = [
     "utm_source",
@@ -314,7 +315,7 @@ impl Line {
         let referrer_host = first(headers.referer.as_ref())
             .and_then(|referer| url::Url::parse(referer).ok())
             .and_then(|referer| referer.host_str().map(str::to_ascii_lowercase))
-            .filter(|referrer| *referrer != host);
+            .filter(|referrer| *referrer != host && referrer.len() <= MAX_HOST);
         Pageview {
             ts,
             day,

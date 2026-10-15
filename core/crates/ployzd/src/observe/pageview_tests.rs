@@ -269,6 +269,28 @@ fn missing_headers_flag_the_row_instead_of_dropping_it() {
 }
 
 #[test]
+fn a_referrer_host_longer_than_dns_allows_is_nulled() {
+    let lab = Lab::today();
+    let label = "a".repeat(63);
+    let longest = format!("{label}.{label}.{label}.{}", "b".repeat(61));
+    let longer = format!("{longest}b");
+    let rows = lab.harvest(&[
+        with(
+            request("/a"),
+            "/request/headers/Referer",
+            json!([format!("https://{longest}/")]),
+        ),
+        with(
+            request("/b"),
+            "/request/headers/Referer",
+            json!([format!("https://{longer}/")]),
+        ),
+    ]);
+    assert_eq!(rows[0]["referrer_host"], longest.as_str());
+    assert_eq!(rows[1]["referrer_host"], Value::Null);
+}
+
+#[test]
 fn a_request_takes_the_salt_whose_window_holds_it_across_a_dst_change() {
     let short = day_start();
     let long = short + 23 * 3600;
