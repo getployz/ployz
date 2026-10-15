@@ -198,6 +198,9 @@ const deploymentStatusLabels = {
  */
 export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "cancelled";
 
+/** A build's node on its Run page, as `?job=` names it; links into a Run use it to open the build. */
+export const buildNodeId = (service: string) => `build:${service}`;
+
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
@@ -223,16 +226,6 @@ export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummar
   if (outcome === "pending" && deployment.status === "queued") return "queued";
   if (outcome === "pending" && deployment.in_flight) return "deploying";
   return "not_applied";
-}
-
-/**
- * A node's outcome in words: the glossary's Node Outcome once it has one; until then Queued or Deploying, as its
- * Deployment reads, and Not attempted once that ended without it.
- */
-export function nodeOutcomeLabel(outcome: NodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">) {
-  if (outcome !== "pending") return nodeStatusLabels[outcome];
-  if (deployment.status === "queued") return deploymentStatusLabels.queued;
-  return deployment.in_flight ? deploymentStatusLabels.running : nodeStatusLabels.not_attempted;
 }
 
 /**
@@ -283,13 +276,6 @@ export function deploymentByline(deployment: DeploymentView, service: string | u
     by ? `by ${by}` : null,
     commit ? commit.slice(0, 7) : deployment.upload ? uploadLabel(deployment.upload, by) : null,
   ].filter(Boolean).join(" · ");
-}
-
-/** The Service a Deployment page opens on: the picked one, else the one that failed, else one it didn't apply, else the first. */
-export function focusedService(deployment: DeploymentView, picked: string | undefined) {
-  const services = deployment.nodes.filter((node) => node.type === "service");
-  return services.find((node) => node.id === picked) ?? services.find((node) => node.outcome === "failed")
-    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
 }
 
 /**

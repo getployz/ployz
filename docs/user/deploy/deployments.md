@@ -111,11 +111,13 @@ few seconds, or **Failed** until you dismiss it, with **Logs** to open its page.
 after a reload and in other tabs, as long as the failed deployment is the newest one.
 
 **Runs**, under **Deployments** in the sidebar, lists every deployment, newest first. A
-deployment's page shows its status, who started it and the commit it ships, and if it failed, the
-reason in red under the header. Each service it included has a tab with its **Build** and **Deploy**
-[logs](../observe/logs.md).
+deployment's page shows its status, who started it and, if it failed, the reason in red under the
+header. Below that is one card for each build, service, volume and config it touched, laid out left
+to right in the order they deploy. Click a card to see each server's progress and its
+[logs](../observe/logs.md). A build's card shows the build output, and a service's card shows what
+its new containers printed. A failed deployment opens on the card that failed.
 
-![A deployment's page showing its Deploy logs](../images/deployment-page-deploy.png)
+![A failed deployment: its cards, with the failed service's servers and logs](../images/deployment-run.png)
 
 | Status | What it means |
 | --- | --- |
