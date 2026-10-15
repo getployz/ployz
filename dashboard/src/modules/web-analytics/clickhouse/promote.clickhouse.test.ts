@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 import * as adapter from "#/modules/web-analytics/adapter";
@@ -22,6 +22,9 @@ const DRIFTED = "00000000-0000-4000-8000-00000000c4a2";
 const RENAMED = "00000000-0000-4000-8000-00000000c4a3";
 const FED_BY_OUTBOX = "00000000-0000-4000-8000-00000000c4a4";
 const CUT_OFF = "00000000-0000-4000-8000-00000000c4a5";
+const HOURLY_GONE = "00000000-0000-4000-8000-00000000c4a6";
+const GOAL_DRIFT = "00000000-0000-4000-8000-00000000c4a7";
+const PAUSED = "00000000-0000-4000-8000-00000000c4a8";
 
 const row = (ts: Date, visitorId: string): PageviewRecord => ({
   ts: ts.toISOString(), visitorId, host: "shop.example", pathname: "/", source: "", referrerHost: null, utmSource: null,
@@ -146,4 +149,50 @@ it.live("while ClickHouse is unreachable a promoted site's reads fail instead of
     expect(yield* provide(queued)).toBe(0);
     yield* provide(rebuildDirtyDays(CUT_OFF));
     expect((yield* provide(overview)).totals.pageviews).toBe(3);
+  }).pipe(Effect.provide(TestClock.layer())), 300_000);
+
+it.live("a site whose hourly rollup or goal conversions differ from Postgres stays on Postgres", () =>
+  Effect.gen(function* () {
+    const { clickhouse, provide, now, rows } = yield* cloud;
+    const home = { id: "00000000-0000-4000-8000-00000000c4b1", name: "home", pathPattern: "/" };
+    for (const [environmentId, goals] of [[HOURLY_GONE, []], [GOAL_DRIFT, [home]]] as const) {
+      yield* provide(seedSite({ environmentId, timezone: "UTC" }, rows, goals));
+      yield* provide(backfillSite(clickhouse, environmentId));
+      yield* provide(closeDays(environmentId, now));
+    }
+    yield* clickhouse.command("DELETE FROM session_hourly WHERE environment_id = {environmentId:String}", { environmentId: HOURLY_GONE });
+    yield* clickhouse.command("DELETE FROM pageview WHERE environment_id = {environmentId:String}", { environmentId: GOAL_DRIFT });
+
+    expect(yield* provide(promoteReads(HOURLY_GONE))).toBe(false);
+    expect(yield* provide(promoteReads(GOAL_DRIFT))).toBe(false);
+  }).pipe(Effect.provide(TestClock.layer())), 300_000);
+
+it.live("a read that routed to ClickHouse before a backfill of its site still answers from the copy it routed to", () =>
+  Effect.gen(function* () {
+    const { clickhouse, provide, today, now, rows } = yield* cloud;
+    yield* provide(seedSite({ environmentId: PAUSED, timezone: "UTC" }, rows));
+    yield* provide(backfillSite(clickhouse, PAUSED));
+    yield* provide(closeDays(PAUSED, now));
+    expect(yield* provide(promoteReads(PAUSED))).toBe(true);
+
+    const paused = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const gated: ClickHouseService = {
+      ...clickhouse,
+      query: <A>(query: string, params?: Parameters<ClickHouseService["query"]>[1]) => Effect.gen(function* () {
+        if (yield* Deferred.succeed(paused, undefined)) yield* Deferred.await(release);
+        return yield* clickhouse.query<A>(query, params);
+      }),
+    };
+    const reader = yield* Effect.forkChild(provide(adapter.overview({
+      site: { environmentId: PAUSED, timezone: "UTC", retentionMonths: 13 },
+      range: { start: new Date(today - 7 * DAY), end: new Date(today) },
+      filters: [],
+      limit: 10,
+    }).pipe(Effect.provideService(ClickHouse, gated))));
+    yield* Deferred.await(paused);
+    yield* provide(backfillSite(clickhouse, PAUSED));
+    yield* Deferred.succeed(release, undefined);
+
+    expect((yield* Fiber.join(reader)).totals.pageviews).toBe(2);
   }).pipe(Effect.provide(TestClock.layer())), 300_000);

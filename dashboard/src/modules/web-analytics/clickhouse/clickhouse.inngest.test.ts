@@ -18,6 +18,9 @@ vi.spyOn(writer, "ensureBackfilled").mockImplementation(() => Effect.succeed(2))
 vi.spyOn(postgresRollup, "rollupSites").mockImplementation(() => Effect.succeed([SHOP]));
 vi.spyOn(rollup, "closeDays").mockImplementation(() => Effect.succeed(1));
 vi.spyOn(promote, "promoteReads").mockImplementation(() => Effect.succeed(false));
+const pins: Array<writer.Pinned> = [{ environmentId: SHOP, timezone: "UTC", copy: 2, floor: 1, generation: 4 }];
+vi.spyOn(writer, "publishedPins").mockImplementation(() => Effect.succeed(pins));
+vi.spyOn(writer, "collectGarbage").mockImplementation(() => Effect.succeed(3));
 
 beforeEach(() => {
   queued.length = 0;
@@ -26,9 +29,9 @@ beforeEach(() => {
 
 const functions = (clickhouse: ClickHouseService | null) => {
   const run = makeEffectRunner<never, never>({ runPromiseExit: (effect) => Effect.runPromiseExit(Effect.provideService(effect, ClickHouse, clickhouse)) });
-  const [drain, rollupFunction] = createClickHouseFunctions(new Inngest({ id: "clickhouse-test" }), makeInngestEffectRunner(run) as Parameters<typeof createClickHouseFunctions>[1]);
-  if (drain === undefined || rollupFunction === undefined) throw new Error("missing ClickHouse functions");
-  return { drain: new InngestTestEngine({ function: drain }), rollup: new InngestTestEngine({ function: rollupFunction }) };
+  const [drain, rollupFunction, , , gc] = createClickHouseFunctions(new Inngest({ id: "clickhouse-test" }), makeInngestEffectRunner(run) as Parameters<typeof createClickHouseFunctions>[1]);
+  if (drain === undefined || rollupFunction === undefined || gc === undefined) throw new Error("missing ClickHouse functions");
+  return { drain: new InngestTestEngine({ function: drain }), rollup: new InngestTestEngine({ function: rollupFunction }), gc: new InngestTestEngine({ function: gc }) };
 };
 
 it("without ClickHouse the drain stops before touching the outbox", async () => {
@@ -56,4 +59,11 @@ it("the rollup backfills a site's ClickHouse copy before closing its days, with 
   expect(backfill).toBeLessThan(close ?? 0);
   expect(rollup.closeDays).toHaveBeenCalledWith(SHOP, expect.any(Date));
   expect(Object.keys(state)).toHaveLength(["now", "sites", "backfill", "close-days", "promote"].length);
+});
+
+it("garbage collection pins what each site publishes, waits out a grace period, then collects against those pins", async () => {
+  const { state } = await functions(fake).gc.execute({ steps: [{ id: "grace", handler: () => undefined }] });
+
+  expect(writer.collectGarbage).toHaveBeenCalledWith(fake, pins);
+  expect(Object.keys(state)).toHaveLength(["pin", "grace", "collect"].length);
 });

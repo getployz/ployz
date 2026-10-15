@@ -8,16 +8,21 @@ import { ClickHouse } from "./client";
 
 type Params = Record<string, string | number | ReadonlyArray<string>>;
 
+export type Pin = { readonly copy: number; readonly floor: number; readonly generation: number };
+
 export type Binder = {
   readonly params: Params;
   readonly env: string;
+  readonly copy: string;
+  readonly floor: string;
+  readonly generation: string;
   readonly tz: string;
   readonly text: (value: string) => string;
   readonly texts: (values: ReadonlyArray<string>) => string;
   readonly at: (instant: Date) => string;
 };
 
-export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">): Binder {
+export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">, pin: Pin): Binder {
   const params: Params = {};
   let next = 0;
   const bind = (type: string, value: string | number | ReadonlyArray<string>) => {
@@ -29,6 +34,9 @@ export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">): B
   return {
     params,
     env: text(query.environmentId),
+    copy: bind("UInt64", pin.copy),
+    floor: bind("UInt64", pin.floor),
+    generation: bind("UInt64", pin.generation),
     tz: text(query.timezone),
     text,
     texts: (values) => bind("Array(String)", values),
@@ -42,7 +50,7 @@ const ORDER = "ORDER BY ts, pathname, host";
 const plus = (instant: Date, seconds: number) => new Date(instant.getTime() + seconds * 1000);
 
 const pageviewsIn = (b: Binder, start: Date, end: Date) =>
-  `environment_id = ${b.env} AND ts >= ${b.at(start)} AND ts < ${b.at(end)} AND ${RETAINED}`;
+  `environment_id = ${b.env} AND copy = ${b.copy} AND ts >= ${b.at(start)} AND ts < ${b.at(end)} AND ${RETAINED}`;
 
 const localDate = (b: Binder) => `toString(toDate(ts, ${b.tz}))`;
 
@@ -110,15 +118,21 @@ const rowsIn = (b: Binder, query: StoreQuery, range: Range, needsVisit = false) 
     ? `FROM pageview WHERE ${pageviewsIn(b, range.start, range.end)}`
     : `FROM (WITH ${visitCtes(b, query, range)} SELECT * FROM visit_rows) WHERE true`;
 
-const rollupMarker = Effect.fn("WebAnalytics.clickHouseRollupMarker")(function* (environmentId: string) {
+const published = Effect.fn("WebAnalytics.clickHousePublished")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle.execute<{ day: string | null; dirty: string[] }>(sql`
-    select rolled_up_to::text as day, dirty::text[] as dirty from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  return { rolledUpTo: rows[0]?.day ?? null, dirty: rows[0]?.dirty ?? [] };
+  const [row] = yield* drizzle.execute<{ day: string | null; dirty: string[]; copy: string; floor: string; generation: string }>(sql`
+    select rolled_up_to::text as day, dirty::text[] as dirty, copy::text as copy, floor::text as floor, generation::text as generation
+    from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+  return {
+    rolledUpTo: row?.day ?? null,
+    dirty: row?.dirty ?? [],
+    pin: { copy: Number(row?.copy ?? 0), floor: Number(row?.floor ?? 0), generation: Number(row?.generation ?? 0) },
+  };
 });
 
 const planned = Effect.fn("WebAnalytics.clickHousePlan")(function* (query: StoreQuery, rolled?: boolean) {
-  return readPlan(query, (yield* rollupMarker(query.environmentId)).rolledUpTo, rolled);
+  const marker = yield* published(query.environmentId);
+  return { ...readPlan(query, marker.rolledUpTo, rolled), pin: marker.pin };
 });
 
 export const requiredClickHouse = Effect.gen(function* () {
@@ -127,20 +141,23 @@ export const requiredClickHouse = Effect.gen(function* () {
   return clickhouse;
 });
 
-const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQuery, build: (b: Binder) => string) {
+const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQuery, pin: Pin, build: (b: Binder) => string) {
   const clickhouse = yield* requiredClickHouse;
-  const b = binder(query);
+  const b = binder(query, pin);
   return yield* clickhouse.query<A>(build(b), b.params);
 });
 
-const published = (b: Binder, first: string, last: string) => `(day, generation) IN (
+export const newestPublished = (b: Binder, days: string) => `(day, generation) IN (
   SELECT day, max(generation) FROM daily
-  WHERE environment_id = ${b.env} AND day BETWEEN toDate(${b.text(first)}) AND toDate(${b.text(last)}) GROUP BY day)`;
+  WHERE environment_id = ${b.env} AND generation > ${b.floor} AND generation <= ${b.generation}${days} GROUP BY day)`;
+
+const publishedIn = (b: Binder, first: string, last: string) =>
+  newestPublished(b, ` AND day BETWEEN toDate(${b.text(first)}) AND toDate(${b.text(last)})`);
 
 const dailyRows = (b: Binder, days: NonNullable<Plan["days"]>, dim: string, value?: string) => `
   FROM daily
   WHERE environment_id = ${b.env} AND dim = ${b.text(dim)}${value === undefined ? "" : ` AND value = ${b.text(value)}`}
-    AND day BETWEEN toDate(${b.text(days.first)}) AND toDate(${b.text(days.last)}) AND ${published(b, days.first, days.last)}`;
+    AND day BETWEEN toDate(${b.text(days.first)}) AND toDate(${b.text(days.last)}) AND ${publishedIn(b, days.first, days.last)}`;
 
 const ZERO = "toUInt64(0)";
 
@@ -164,7 +181,7 @@ const totalsOf = (row: Totals) => ({
 export const dailyTotals = Effect.fn("WebAnalytics.clickHouseDailyTotals")(function* (query: StoreQuery) {
   const key = totalsKey(query.filters);
   const plan = yield* planned(query, key !== null);
-  const rows = yield* run<Totals & { local_day: string }>(query, (b) => {
+  const rows = yield* run<Totals & { local_day: string }>(query, plan.pin, (b) => {
     const parts: string[] = [];
     if (plan.days !== null && key !== null) {
       parts.push(`SELECT toString(day) AS local_day, pageviews AS pv, visitors AS vi, visits AS vs, bounces AS bo, total_duration AS td
@@ -187,19 +204,19 @@ const staleVisitHours = (timezone: string, dirty: ReadonlyArray<string>, range: 
 export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(function* (query: StoreQuery) {
   const { timezone, range } = query;
   if (range.start >= range.end) return [];
-  const marker = query.filters.length > 0 ? null : yield* rollupMarker(query.environmentId);
-  const closedUntil = marker?.rolledUpTo ?? null;
+  const marker = yield* published(query.environmentId);
+  const closedUntil = query.filters.length > 0 ? null : marker.rolledUpTo;
   const rolledEnd = closedUntil === null ? range.start : new Date(Math.min(Math.max(dayEnd(timezone, closedUntil).getTime(), range.start.getTime()), range.end.getTime()));
-  const rows = yield* run<Totals & { bucket: number }>(query, (b) => {
+  const rows = yield* run<Totals & { bucket: number }>(query, marker.pin, (b) => {
     const parts: string[] = [];
     if (rolledEnd > range.start) {
-      const dirty = staleVisitHours(timezone, marker?.dirty ?? [], { start: range.start, end: rolledEnd });
+      const dirty = staleVisitHours(timezone, marker.dirty, { start: range.start, end: rolledEnd });
       const inDirty = dirty.length === 0 ? "false" : dirty.map((part) => `(hour >= ${b.at(part.start)} AND hour < ${b.at(part.end)})`).join(" OR ");
       parts.push(`
         SELECT toInt64(toUnixTimestamp(hour)) * 1000 AS bucket, if(${inDirty}, 0, pageviews) AS pv, if(${inDirty}, 0, visitors) AS vi,
           visits AS vs, bounces AS bo, total_duration AS td
         FROM session_hourly WHERE environment_id = ${b.env} AND hour >= ${b.at(range.start)} AND hour < ${b.at(rolledEnd)}
-          AND ${published(b, localDay(timezone, range.start), localDay(timezone, rolledEnd.getTime() - 1))}`);
+          AND ${publishedIn(b, localDay(timezone, range.start), localDay(timezone, rolledEnd.getTime() - 1))}`);
       for (const part of dirty) parts.push(`SELECT ${localHour(b)} AS bucket, ${pageCounts} ${rowsIn(b, query, part)} GROUP BY bucket`);
     }
     if (rolledEnd < range.end) {
@@ -215,7 +232,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(fun
 export const breakdown = Effect.fn("WebAnalytics.clickHouseBreakdown")(function* (query: StoreQuery, dim: FilterKey) {
   const plan = yield* planned(query);
   const column = COLUMN[dim];
-  const rows = yield* run<{ value: string; pageviews: number; visitors: number }>(query, (b) => {
+  const rows = yield* run<{ value: string; pageviews: number; visitors: number }>(query, plan.pin, (b) => {
     const parts: string[] = [];
     if (plan.days !== null) parts.push(`SELECT value, pageviews AS pv, visitors AS vi ${dailyRows(b, plan.days, dim)}`);
     for (const edge of plan.edges) {
@@ -229,7 +246,7 @@ export const breakdown = Effect.fn("WebAnalytics.clickHouseBreakdown")(function*
 
 export const sessionsBy = Effect.fn("WebAnalytics.clickHouseSessionsBy")(function* (query: StoreQuery, dim: SessionDim) {
   const plan = yield* planned(query);
-  const rows = yield* run<Totals & { value: string }>(query, (b) => {
+  const rows = yield* run<Totals & { value: string }>(query, plan.pin, (b) => {
     const parts: string[] = [];
     if (plan.days !== null) {
       parts.push(`SELECT value, ${ZERO} AS pv, ${ZERO} AS vi, visits AS vs, bounces AS bo, total_duration AS td
@@ -245,7 +262,7 @@ export const sessionsBy = Effect.fn("WebAnalytics.clickHouseSessionsBy")(functio
 
 export const entryPages = Effect.fn("WebAnalytics.clickHouseEntryPages")(function* (query: StoreQuery) {
   const plan = yield* planned(query);
-  const rows = yield* run<Totals & { value: string }>(query, (b) => {
+  const rows = yield* run<Totals & { value: string }>(query, plan.pin, (b) => {
     const parts: string[] = [];
     if (plan.days !== null) {
       parts.push(`SELECT value, ${ZERO} AS pv, visitors AS vi, visits AS vs, bounces AS bo, total_duration AS td
@@ -268,7 +285,8 @@ export const goalConversions = Effect.fn("WebAnalytics.clickHouseGoalConversions
   const goals = yield* drizzle.execute<{ id: string; name: string; path_pattern: string }>(sql`
     select id, name, path_pattern from analytics.goal where environment_id = ${query.environmentId}::text`, "objects");
   if (goals.length === 0) return [];
-  const rows = yield* run<{ goal: number; visitors: number; conversions: number }>(query, (b) => `
+  const { pin } = yield* published(query.environmentId);
+  const rows = yield* run<{ goal: number; visitors: number; conversions: number }>(query, pin, (b) => `
     WITH range_rows AS (SELECT pathname, ts, visitor_id ${rowsIn(b, query, query.range)}),
     goals AS (
       SELECT goal, replaceAll(replaceAll(replaceAll(replaceAll(path_pattern, '\\\\', '\\\\\\\\'), '%', '\\\\%'), '_', '\\\\_'), '*', '%') AS pattern

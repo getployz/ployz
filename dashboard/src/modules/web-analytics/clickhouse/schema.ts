@@ -9,6 +9,7 @@ export const DEDUPLICATION_WINDOW = 10_000;
 const DDL = [
   `CREATE TABLE IF NOT EXISTS pageview (
     environment_id String,
+    copy UInt64,
     ts DateTime64(3, 'UTC') CODEC(Delta, ZSTD(1)),
     visitor_id Int64,
     host LowCardinality(String),
@@ -27,7 +28,7 @@ const DDL = [
   )
   ENGINE = MergeTree
   PARTITION BY (retention_days, toYYYYMM(ts))
-  ORDER BY (environment_id, toDate(ts), visitor_id, ts)
+  ORDER BY (environment_id, copy, toDate(ts), visitor_id, ts)
   TTL toDateTime(ts) + toIntervalDay(retention_days)
   SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = ${DEDUPLICATION_WINDOW}`,
   `CREATE TABLE IF NOT EXISTS daily (

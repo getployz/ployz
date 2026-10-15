@@ -3,9 +3,9 @@ import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { addDays, dayEnd, dayStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import type { RollupSite } from "../postgres/rollup";
-import { type Binder, binder, localHour, pageCounts, RETAINED, requiredClickHouse, sessionCounts, visitCtes } from "./store";
+import { type Binder, binder, localHour, pageCounts, type Pin, RETAINED, requiredClickHouse, sessionCounts, visitCtes } from "./store";
 
-type LockedSite = RollupSite & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string> };
+type LockedSite = RollupSite & Pin & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string> };
 
 const MAX_DAYS_PER_SITE_RUN = 31;
 
@@ -18,13 +18,22 @@ const withRollupLock = <A, E, R>(environmentId: string, program: (site: LockedSi
         insert into analytics.clickhouse_site (environment_id)
         select environment_id from analytics.site where environment_id = ${environmentId}::text
         on conflict do nothing`);
-      const [state] = yield* drizzle.execute<{ rolled_up_to: string | null; dirty: string[] }>(sql`
-        select rolled_up_to::text as rolled_up_to, dirty::text[] as dirty from analytics.clickhouse_site
-        where environment_id = ${environmentId}::text for update`, "objects");
+      const [state] = yield* drizzle.execute<{ rolled_up_to: string | null; dirty: string[]; copy: string; floor: string; generation: string }>(sql`
+        select rolled_up_to::text as rolled_up_to, dirty::text[] as dirty, copy::text as copy, floor::text as floor, generation::text as generation
+        from analytics.clickhouse_site where environment_id = ${environmentId}::text for update`, "objects");
       const [site] = yield* drizzle.execute<{ timezone: string; enabled: boolean }>(sql`
         select timezone, enabled from analytics.site where environment_id = ${environmentId}::text`, "objects");
       if (state === undefined || site === undefined) return otherwise;
-      return yield* program({ environmentId, timezone: site.timezone, enabled: site.enabled, rolledUpTo: state.rolled_up_to, dirty: state.dirty });
+      return yield* program({
+        environmentId,
+        timezone: site.timezone,
+        enabled: site.enabled,
+        rolledUpTo: state.rolled_up_to,
+        dirty: state.dirty,
+        copy: Number(state.copy),
+        floor: Number(state.floor),
+        generation: Number(state.generation),
+      });
     }));
   });
 
@@ -35,28 +44,31 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
-const newestGeneration = Effect.fn("WebAnalytics.clickHouseNewestGeneration")(function* (site: RollupSite, day: string) {
+const AGGREGATES = ["daily", "session_hourly"];
+
+const dropUnpublished = Effect.fn("WebAnalytics.clickHouseDropUnpublished")(function* (site: LockedSite) {
   const clickhouse = yield* requiredClickHouse;
-  const b = binder(site);
-  const scope = `environment_id = ${b.env} AND day = toDate(${b.text(day)})`;
-  const [row] = yield* clickhouse.query<{ generation: number }>(`
-    SELECT greatest((SELECT max(generation) FROM daily WHERE ${scope}), (SELECT max(generation) FROM session_hourly WHERE ${scope})) AS generation`, b.params);
-  return row?.generation ?? 0;
+  const b = binder(site, site);
+  const above = `environment_id = ${b.env} AND generation > ${b.generation}`;
+  const [row] = yield* clickhouse.query<{ n: number }>(`
+    SELECT (SELECT count() FROM daily WHERE ${above}) + (SELECT count() FROM session_hourly WHERE ${above}) AS n`, b.params);
+  if (row === undefined || row.n === 0) return;
+  for (const table of AGGREGATES) yield* clickhouse.command(`DELETE FROM ${table} WHERE ${above}`, b.params);
 });
 
-const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: RollupSite, day: string) {
+const writeUnpublishedDay = Effect.fn("WebAnalytics.clickHouseWriteUnpublishedDay")(function* (site: LockedSite, day: string) {
   const clickhouse = yield* requiredClickHouse;
   const start = dayStart(site.timezone, day);
   const end = dayEnd(site.timezone, day);
   const query = { environmentId: site.environmentId, timezone: site.timezone, range: { start, end }, filters: [] };
   const statement = (build: (b: Binder) => string) => {
-    const b = binder(site);
+    const b = binder(site, site);
     return clickhouse.command(build(b), b.params);
   };
   const ctes = (b: Binder) => `WITH ${visitCtes(b, query, { start, end })},
     sessions AS (SELECT * FROM visits WHERE ts >= ${b.at(start)} AND ts < ${b.at(end)})`;
-  const scope = (b: Binder) => `environment_id = ${b.env} AND day = toDate(${b.text(day)})`;
-  const generation = (yield* newestGeneration(site, day)) + 1;
+  yield* dropUnpublished(site);
+  const generation = site.generation + 1;
   yield* statement((b) => `
     INSERT INTO session_hourly (environment_id, day, generation, hour, pageviews, visitors, visits, bounces, total_duration)
     ${ctes(b)}
@@ -85,21 +97,15 @@ const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: R
         WHERE kv.2 IS NOT NULL GROUP BY dim, value, visitor_id
       ) GROUP BY dim, value
     ) GROUP BY dim, value`);
-  for (const table of ["daily", "session_hourly"]) yield* statement((b) => `DELETE FROM ${table} WHERE ${scope(b)} AND generation < ${generation}`);
+  return generation;
 });
 
-const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: RollupSite) {
+const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: LockedSite) {
   const clickhouse = yield* requiredClickHouse;
-  const b = binder(site);
+  const b = binder(site, site);
   const [row] = yield* clickhouse.query<{ n: number; first: number }>(`
-    SELECT count() AS n, toUnixTimestamp64Milli(min(ts)) AS first FROM pageview WHERE environment_id = ${b.env} AND ${RETAINED}`, b.params);
+    SELECT count() AS n, toUnixTimestamp64Milli(min(ts)) AS first FROM pageview WHERE environment_id = ${b.env} AND copy = ${b.copy} AND ${RETAINED}`, b.params);
   return row === undefined || row.n === 0 ? null : localDay(site.timezone, row.first);
-});
-
-const forgetAggregates = Effect.fn("WebAnalytics.clickHouseForgetAggregates")(function* (site: RollupSite) {
-  const clickhouse = yield* requiredClickHouse;
-  const b = binder(site);
-  for (const table of ["daily", "session_hourly"]) yield* clickhouse.command(`DELETE FROM ${table} WHERE environment_id = ${b.env}`, b.params);
 });
 
 const closeNextDay = (environmentId: string, now: Date) =>
@@ -107,12 +113,11 @@ const closeNextDay = (environmentId: string, now: Date) =>
     if (!site.enabled) return false;
     const day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
     if (day === null || dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime()) return false;
-    if (site.rolledUpTo === null) yield* forgetAggregates(site);
-    yield* writeDay(site, day);
+    const generation = yield* writeUnpublishedDay(site, day);
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`
       update analytics.clickhouse_site
-      set rolled_up_to = ${day}::date, dirty = array_remove(dirty, ${day}::date), updated_at = now()
+      set rolled_up_to = ${day}::date, dirty = array_remove(dirty, ${day}::date), generation = ${generation}, updated_at = now()
       where environment_id = ${environmentId}::text`);
     return true;
   }), false);
@@ -122,10 +127,10 @@ const rebuildNextDirty = (environmentId: string) =>
     const rolledUpTo = site.rolledUpTo;
     const day = rolledUpTo === null ? undefined : site.dirty.filter((dirty) => dirty <= rolledUpTo).sort()[0];
     if (day === undefined) return false;
-    yield* writeDay(site, day);
+    const generation = yield* writeUnpublishedDay(site, day);
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`
-      update analytics.clickhouse_site set dirty = array_remove(dirty, ${day}::date), updated_at = now()
+      update analytics.clickhouse_site set dirty = array_remove(dirty, ${day}::date), generation = ${generation}, updated_at = now()
       where environment_id = ${environmentId}::text`);
     return true;
   }), false);

@@ -7,7 +7,7 @@ import { ClickHouse, type ClickHouseService } from "./client";
 import { promoteReads } from "./promote";
 import { closeDays, rebuildDirtyDays } from "./rollup";
 import { ensureSchema } from "./schema";
-import { DRAIN_BATCHES, DRAINS_PER_RUN, drainOutbox, ensureBackfilled, forgetDeletedSites } from "./writer";
+import { collectGarbage, DRAIN_BATCHES, DRAINS_PER_RUN, drainOutbox, ensureBackfilled, forgetDeletedSites, publishedPins } from "./writer";
 
 type EffectRunner = typeof runInngestEffect;
 
@@ -62,9 +62,21 @@ const createForget = (inngest: PloyzInngest, runEffect: EffectRunner) =>
     },
   );
 
+const createGarbageCollection = (inngest: PloyzInngest, runEffect: EffectRunner) =>
+  inngest.createFunction(
+    { id: "analytics-clickhouse-gc", retries: 3, triggers: [{ cron: "TZ=UTC 20 * * * *" }], concurrency: [{ limit: 1 }] },
+    async ({ step }) => {
+      const pins = await step.run("pin", () => runEffect(withClickHouse(() => publishedPins(), [])));
+      if (pins.length === 0) return;
+      await step.sleep("grace", "10m");
+      await step.run("collect", () => runEffect(withClickHouse((clickhouse) => collectGarbage(clickhouse, pins), 0)));
+    },
+  );
+
 export const createClickHouseFunctions = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => [
   createDrain(inngest, runEffect),
   createRollup(inngest, runEffect),
   createDirtyRebuild(inngest, runEffect),
   createForget(inngest, runEffect),
+  createGarbageCollection(inngest, runEffect),
 ];

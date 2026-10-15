@@ -19,6 +19,9 @@ export type Answered = { readonly range: Range; readonly clamped: boolean };
 const storeQuery = (q: Query, range: Range): store.StoreQuery =>
   ({ environmentId: q.site.environmentId, timezone: q.site.timezone, range, filters: q.filters });
 
+export type ReadName = "dailyTotals" | "hourlyTotals" | "breakdown" | "sessionsBy" | "entryPages" | "goalConversions";
+export type Stores = Pick<typeof store, ReadName> | Pick<typeof clickhouseStore, ReadName>;
+
 const storeFor = Effect.fn("WebAnalytics.storeFor")(function* (environmentId: string) {
   const { clickhouse } = yield* AppConfig;
   if (clickhouse === null || !clickhouse.reads) return store;
@@ -39,7 +42,8 @@ const resolve = Effect.fn("WebAnalytics.resolve")(function* (q: Query) {
   const floor = retentionFloor(timezone, yield* Clock.currentTimeMillis, q.site.retentionMonths);
   const start = q.range.start < floor ? new Date(Math.min(floor.getTime(), q.range.end.getTime())) : q.range.start;
   const range: Range = { start, end: q.range.end };
-  return { range, clamped: start.getTime() !== q.range.start.getTime(), store: storeQuery(q, range), stores: yield* storeFor(q.site.environmentId) };
+  const stores: Stores = yield* storeFor(q.site.environmentId);
+  return { range, clamped: start.getTime() !== q.range.start.getTime(), store: storeQuery(q, range), stores };
 });
 
 export const overview = Effect.fn("WebAnalytics.overview")(function* (q: Query) {

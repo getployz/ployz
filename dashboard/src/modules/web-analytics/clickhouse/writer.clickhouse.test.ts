@@ -2,7 +2,8 @@ import { sql } from "drizzle-orm";
 import { Effect, Exit, Scope } from "effect";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
-import { backfillSite, drainOutbox, enqueueForClickHouse, forgetDeletedSites } from "#/modules/web-analytics/clickhouse/writer";
+import { DEDUPLICATION_WINDOW } from "#/modules/web-analytics/clickhouse/schema";
+import { backfillSite, collectGarbage, drainOutbox, enqueueForClickHouse, forgetDeletedSites, publishedPins } from "#/modules/web-analytics/clickhouse/writer";
 import { ensurePartitions } from "#/modules/web-analytics/postgres/partitions";
 import { analyticsClickhouseSite, analyticsOutbox, analyticsPageview, analyticsSite } from "#/modules/web-analytics/tables";
 import { clickhouseTestDatabase } from "#/test/clickhouse";
@@ -11,6 +12,7 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c401";
 const SHOP = "00000000-0000-4000-8000-00000000c403";
 const GONE = "00000000-0000-4000-8000-00000000c404";
+const BUSY = "00000000-0000-4000-8000-00000000c405";
 
 let harness: PostgresTestHarness;
 let clickhouse: ClickHouseService;
@@ -35,9 +37,9 @@ beforeEach(async () => {
   ]);
 });
 
-const pageview = (environmentId: string, minute: number, pathname = "/") => ({
+const pageview = (environmentId: string, minute: number, pathname = "/", ts = new Date(Date.UTC(2026, 9, 10, 0, minute))) => ({
   environmentId,
-  ts: new Date(Date.UTC(2026, 9, 10, 0, minute)),
+  ts,
   visitorId: BigInt(minute % 7),
   host: "shop.example",
   pathname,
@@ -59,11 +61,22 @@ const ingest = (rows: ReadonlyArray<ReturnType<typeof pageview>>) =>
     yield* enqueueForClickHouse(inserted);
   }));
 
-const clickhouseCount = async (environmentId: string) => {
+const storedCount = async (environmentId: string) => {
   const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(
     "SELECT count() AS n FROM pageview WHERE environment_id = {environmentId:String}", { environmentId }));
   return row?.n;
 };
+
+const clickhouseCount = async (environmentId: string) => {
+  const [site] = await harness.db.select({ copy: analyticsClickhouseSite.copy }).from(analyticsClickhouseSite)
+    .where(sql`${analyticsClickhouseSite.environmentId} = ${environmentId}`);
+  const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(
+    "SELECT count() AS n FROM pageview WHERE environment_id = {environmentId:String} AND copy = {copy:UInt64}",
+    { environmentId, copy: Number(site?.copy ?? 0) }));
+  return row?.n;
+};
+
+const collect = () => harness.runEffect(Effect.flatMap(publishedPins(), (pins) => collectGarbage(clickhouse, pins)));
 
 const outboxSize = async () => (await harness.db.select().from(analyticsOutbox)).length;
 
@@ -138,29 +151,49 @@ it("a backfill replaces the site's ClickHouse copy with exactly what Postgres ho
   expect(site).toMatchObject({ rolledUpTo: null, dirty: [], reads: false, backfilledAt: expect.any(Date) });
 });
 
-it("a backfill of a promoted site sends its readers back to Postgres before it empties the ClickHouse copy", async () => {
-  await ingest([pageview(SHOP, 1)]);
-  await drain();
-  await harness.db.update(analyticsClickhouseSite).set({ reads: true });
-  const readsAtEachDelete: Array<boolean> = [];
-  const watched: ClickHouseService = {
-    ...clickhouse,
-    command: (query, params) => Effect.promise(async () => {
-      const [site] = await harness.db.select({ reads: analyticsClickhouseSite.reads }).from(analyticsClickhouseSite);
-      readsAtEachDelete.push(site?.reads ?? false);
-    }).pipe(Effect.andThen(clickhouse.command(query, params))),
-  };
-
-  expect(await harness.runEffect(backfillSite(watched, SHOP))).toBe(1);
-
-  expect(readsAtEachDelete).toEqual([false, false, false]);
-});
-
 it("a repeated backfill lands the same rows again instead of losing them to block deduplication", async () => {
   await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
 
   expect(await harness.runEffect(backfillSite(clickhouse, SHOP))).toBe(3);
   expect(await harness.runEffect(backfillSite(clickhouse, SHOP))).toBe(3);
+
+  expect(await clickhouseCount(SHOP)).toBe(3);
+});
+
+it("garbage collection drops the raw rows of superseded copies and keeps the published one", async () => {
+  await ingest([pageview(SHOP, 1), pageview(SHOP, 2)]);
+  await drain();
+  await harness.runEffect(backfillSite(clickhouse, SHOP));
+  await harness.runEffect(backfillSite(clickhouse, SHOP));
+  expect(await storedCount(SHOP)).toBe(6);
+
+  expect(await collect()).toBe(4);
+
+  expect([await storedCount(SHOP), await clickhouseCount(SHOP)]).toEqual([2, 2]);
+  expect(await collect()).toBe(0);
+});
+
+it("a drain replay still lands once after a backfill of another site writes more partitions than the deduplication window holds", async () => {
+  const window = 3;
+  await harness.db.insert(analyticsSite).values({ organizationId: ORGANIZATION, environmentId: BUSY, enabled: true, timezone: "UTC" });
+  const months = Array.from({ length: window + 2 }, (_, back) => new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - back, 2)));
+  await harness.runEffect(ensurePartitions(months.map((month) => month.toISOString().slice(0, 7))));
+  await harness.db.insert(analyticsPageview).values(months.map((month, index) => pageview(BUSY, index, "/", month)));
+  await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
+  const crashesAfterInsert: ClickHouseService = {
+    ...clickhouse,
+    insert: (table, rows, token) => clickhouse.insert(table, rows, token).pipe(
+      Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "killed", cause: null })))),
+  };
+  await Effect.runPromise(clickhouse.command(`ALTER TABLE pageview MODIFY SETTING non_replicated_deduplication_window = ${window}`));
+  try {
+    await expect(drain(crashesAfterInsert)).rejects.toThrow();
+    for (let run = 0; run < window; run++) expect(await harness.runEffect(backfillSite(clickhouse, BUSY))).toBe(months.length);
+
+    expect(await drain()).toBe(1);
+  } finally {
+    await Effect.runPromise(clickhouse.command(`ALTER TABLE pageview MODIFY SETTING non_replicated_deduplication_window = ${DEDUPLICATION_WINDOW}`));
+  }
 
   expect(await clickhouseCount(SHOP)).toBe(3);
 });
@@ -189,7 +222,7 @@ it("a deleted environment's ClickHouse copy is forgotten", async () => {
 
   expect(await harness.runEffect(forgetDeletedSites(clickhouse))).toBe(1);
 
-  expect(await clickhouseCount(SHOP)).toBe(0);
+  expect(await storedCount(SHOP)).toBe(0);
   expect(await harness.db.select().from(analyticsClickhouseSite)).toEqual([]);
 });
 

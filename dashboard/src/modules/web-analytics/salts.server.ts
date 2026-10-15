@@ -78,7 +78,7 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
         .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, updatedAt: new Date(now) })
         .where(eq(analyticsRollupState.environmentId, environmentId));
       yield* drizzle.update(analyticsClickhouseSite)
-        .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, reads: false, updatedAt: new Date(now) })
+        .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, reads: false, floor: sql`${analyticsClickhouseSite.generation}`, updatedAt: new Date(now) })
         .where(eq(analyticsClickhouseSite.environmentId, environmentId));
     }
     if (!setting.enabled || site === undefined) return;

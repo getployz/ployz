@@ -8,7 +8,7 @@ import { ClickHouse } from "#/modules/web-analytics/clickhouse/client";
 import { promoteReads } from "#/modules/web-analytics/clickhouse/promote";
 import { closeDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
-import { backfillSite } from "#/modules/web-analytics/clickhouse/writer";
+import { backfillSite, collectGarbage, publishedPins } from "#/modules/web-analytics/clickhouse/writer";
 import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
 import { pageviewValues } from "#/modules/web-analytics/fixtures/seed";
 import { addDays, dayStart, localDay } from "#/modules/web-analytics/local-time";
@@ -76,6 +76,7 @@ it.live("changing a promoted site's timezone sends readers back to Postgres, and
     yield* provide(closeDays(PRODUCTION, now));
     expect(yield* provide(promoteReads(PRODUCTION))).toBe(true);
 
+    yield* provide(Effect.flatMap(publishedPins(), (pins) => collectGarbage(clickhouse, pins)));
     const sydneyDays = rows.map((pageview) => localDay(SYDNEY, new Date(pageview.ts).getTime()));
     const days = yield* clickhouse.query<{ day: string }>(
       "SELECT DISTINCT toString(day) AS day FROM daily WHERE environment_id = {environmentId:String} ORDER BY day", { environmentId: PRODUCTION });

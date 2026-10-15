@@ -4,7 +4,7 @@ import { expect } from "vitest";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
-import { backfillSite, drainOutbox, enqueueForClickHouse } from "#/modules/web-analytics/clickhouse/writer";
+import { backfillSite, collectGarbage, drainOutbox, enqueueForClickHouse, publishedPins } from "#/modules/web-analytics/clickhouse/writer";
 import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
 import { pageviewValues, seedSite } from "#/modules/web-analytics/fixtures/seed";
 import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
@@ -34,6 +34,14 @@ const failingAtCommand = (real: ClickHouseService, step: number): ClickHouseServ
   };
 };
 
+const writesPartOfDaily = (real: ClickHouseService): ClickHouseService => ({
+  query: real.query,
+  insert: real.insert,
+  command: (query, params) => query.trim().startsWith("INSERT INTO daily")
+    ? real.command(`${query} HAVING dim = ''`, params).pipe(Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "injected", cause: null }))))
+    : real.command(query, params),
+});
+
 const setup = Effect.gen(function* () {
   forgetPartitions();
   const services = yield* Layer.build(yield* storeTestCloud({ env: { ANALYTICS_ENABLED: "true" } }));
@@ -43,29 +51,34 @@ const setup = Effect.gen(function* () {
   return { clickhouse, provide: provideWith(clickhouse), provideWith };
 });
 
+const lateRowOnClosedDay = Effect.gen(function* () {
+  const { clickhouse, provide, provideWith } = yield* setup;
+  const today = Math.floor(Date.now() / DAY) * DAY;
+  const now = new Date(today + 12 * HOUR);
+  const day = localDay("UTC", today - 3 * DAY);
+  const query: postgresStore.StoreQuery = { environmentId: SHOP, timezone: "UTC", range: { start: dayStart("UTC", day), end: dayEnd("UTC", day) }, filters: [] };
+  const reads = (store: typeof clickHouseStore | typeof postgresStore) => Effect.all([store.dailyTotals(query), store.hourlyTotals(query), store.breakdown(query, "page")]);
+
+  yield* provide(seedSite({ environmentId: SHOP, timezone: "UTC" }, [row(new Date(today - 3 * DAY + 10 * HOUR), "1"), row(new Date(today - 3 * DAY + 10 * HOUR), "2")]));
+  yield* provide(backfillSite(clickhouse, SHOP));
+  yield* provide(closeDays(SHOP, now));
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const late = row(new Date(today - 3 * DAY + 11 * HOUR), "3");
+    yield* ensurePartitions([monthOf(new Date(late.ts))]);
+    const inserted = yield* drizzle.insert(analyticsPageview).values(pageviewValues(SHOP, [late])).returning();
+    yield* enqueueForClickHouse(inserted);
+    yield* drainOutbox(clickhouse);
+  }));
+  const before = yield* provide(reads(clickHouseStore));
+  const truth = yield* provide(reads(postgresStore));
+  expect(before).not.toEqual(truth);
+  return { clickhouse, provide, provideWith, reads, before, truth };
+});
+
 it.live("a rebuild that fails part way leaves readers on the day's previous totals, and a rebuild that completes replaces them once", () =>
   Effect.gen(function* () {
-    const { clickhouse, provide, provideWith } = yield* setup;
-    const today = Math.floor(Date.now() / DAY) * DAY;
-    const now = new Date(today + 12 * HOUR);
-    const day = localDay("UTC", today - 3 * DAY);
-    const query: postgresStore.StoreQuery = { environmentId: SHOP, timezone: "UTC", range: { start: dayStart("UTC", day), end: dayEnd("UTC", day) }, filters: [] };
-    const reads = (store: typeof clickHouseStore | typeof postgresStore) => Effect.all([store.dailyTotals(query), store.hourlyTotals(query)]);
-
-    yield* provide(seedSite({ environmentId: SHOP, timezone: "UTC" }, [row(new Date(today - 3 * DAY + 10 * HOUR), "1"), row(new Date(today - 3 * DAY + 10 * HOUR), "2")]));
-    yield* provide(backfillSite(clickhouse, SHOP));
-    yield* provide(closeDays(SHOP, now));
-    yield* provide(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const late = row(new Date(today - 3 * DAY + 11 * HOUR), "3");
-      yield* ensurePartitions([monthOf(new Date(late.ts))]);
-      const inserted = yield* drizzle.insert(analyticsPageview).values(pageviewValues(SHOP, [late])).returning();
-      yield* enqueueForClickHouse(inserted);
-      yield* drainOutbox(clickhouse);
-    }));
-    const before = yield* provide(reads(clickHouseStore));
-    const truth = yield* provide(reads(postgresStore));
-    expect(before).not.toEqual(truth);
+    const { clickhouse, provide, provideWith, reads, before, truth } = yield* lateRowOnClosedDay;
 
     let failed = 0;
     for (let step = 1; ; step++) {
@@ -77,9 +90,22 @@ it.live("a rebuild that fails part way leaves readers on the day's previous tota
     expect(failed).toBeGreaterThan(0);
     expect(yield* provide(reads(clickHouseStore))).toEqual(truth);
 
+    yield* provide(Effect.flatMap(publishedPins(), (pins) => collectGarbage(clickhouse, pins)));
+    expect(yield* provide(reads(clickHouseStore))).toEqual(truth);
     const [daily] = yield* clickhouse.query<{ n: number }>(
       "SELECT count() AS n FROM daily WHERE environment_id = {environmentId:String} AND dim = '' AND value = ''", { environmentId: SHOP });
     const [hourly] = yield* clickhouse.query<{ n: number }>(
       "SELECT count() AS n FROM session_hourly WHERE environment_id = {environmentId:String}", { environmentId: SHOP });
     expect([daily?.n, hourly?.n]).toEqual([1, 2]);
+  }), 300_000);
+
+it.live("a rebuild that dies after writing only part of the day's daily rows leaves totals, hours and breakdowns on the previous numbers", () =>
+  Effect.gen(function* () {
+    const { clickhouse, provide, provideWith, reads, before, truth } = yield* lateRowOnClosedDay;
+
+    expect(yield* provideWith(writesPartOfDaily(clickhouse))(Effect.flip(rebuildDirtyDays(SHOP)))).toBeInstanceOf(ClickHouseFailure);
+    expect(yield* provide(reads(clickHouseStore))).toEqual(before);
+
+    yield* provide(rebuildDirtyDays(SHOP));
+    expect(yield* provide(reads(clickHouseStore))).toEqual(truth);
   }), 300_000);

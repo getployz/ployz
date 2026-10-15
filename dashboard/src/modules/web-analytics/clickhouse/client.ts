@@ -11,10 +11,9 @@ export type ClickHouseService = {
   readonly command: (query: string, params?: Params) => Effect.Effect<void, ClickHouseFailure>;
   /**
    * A retry with the same `token` is dropped by the table's deduplication window, so a replayed batch lands once.
-   * The window also drops a tokenless insert whose rows hash like an earlier block, even after a DELETE, and
-   * `insert_deduplicate = 0` does not stop it on this MergeTree, so every insert names the write it belongs to.
+   * A null token inserts outside the window. It takes no slot, so it cannot evict a live token before its replay.
    */
-  readonly insert: (table: string, rows: ReadonlyArray<object>, token: string) => Effect.Effect<void, ClickHouseFailure>;
+  readonly insert: (table: string, rows: ReadonlyArray<object>, token: string | null) => Effect.Effect<void, ClickHouseFailure>;
 };
 
 export const ClickHouse = Context.Reference<ClickHouseService | null>("ployz/ClickHouse", { defaultValue: () => null });
@@ -33,7 +32,7 @@ export const makeClickHouse = (client: ClickHouseClient): ClickHouseService => (
       table,
       values: rows,
       format: "JSONEachRow",
-      clickhouse_settings: { insert_deduplicate: 1, insert_deduplication_token: token },
+      clickhouse_settings: token === null ? { deduplicate_insert: "disable" } : { insert_deduplication_token: token },
     })).pipe(Effect.asVoid),
 });
 
