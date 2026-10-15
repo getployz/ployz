@@ -244,6 +244,23 @@ impl Stream for PageviewOutbox {
         Ok(())
     }
 
+    fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut dropped = 0;
+        for seq in seqs {
+            remove_entry(&self.dir, *seq, SEGMENT_SUFFIX)?;
+            if let Some(segment) = state.segments.remove(seq) {
+                state.rows -= segment.rows;
+                dropped += segment.rows;
+            }
+        }
+        state.in_flight.clear();
+        if dropped == 0 {
+            return Ok(());
+        }
+        state.ledger.count_dropped(&self.dir, dropped)
+    }
+
     fn wake(&self) -> &Notify {
         &self.wake
     }
