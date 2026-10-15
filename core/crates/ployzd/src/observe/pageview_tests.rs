@@ -32,7 +32,7 @@ impl Lab {
         fs::create_dir_all(&root.0).unwrap();
         let store = StoreRoot::under(&root.0);
         store.prepare().unwrap();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         let windows: Vec<_> = windows
             .iter()
             .map(

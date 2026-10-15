@@ -76,13 +76,24 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         store.clone(),
         data_dir.to_path_buf(),
     ));
-    let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds())?);
+    let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
     spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
-    let pageviews = ship::PageviewOutbox::open(&store)?;
-    spawn_shipper(pageviews.clone(), salts.clone(), data_dir)?;
-    pageview::spawn(run_dir, salts, pageviews)?;
+    if let Err(error) = harvest_pageviews(&store, run_dir, data_dir, salts) {
+        tracing::warn!(%error, "cannot harvest pageviews; crash reports still ship");
+    }
     harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
+}
+
+fn harvest_pageviews(
+    store: &StoreRoot,
+    run_dir: &Path,
+    data_dir: &Path,
+    salts: Arc<salts::Salts>,
+) -> io::Result<()> {
+    let pageviews = ship::PageviewOutbox::open(store)?;
+    spawn_shipper(pageviews.clone(), salts.clone(), data_dir)?;
+    pageview::spawn(run_dir, salts, pageviews)
 }
 
 fn spawn_shipper<S: ship::Stream>(

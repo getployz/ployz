@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs, io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{PoisonError, RwLock},
     time::Duration,
 };
@@ -62,35 +62,25 @@ pub(super) struct Salts {
 }
 
 impl Salts {
-    pub(super) fn open(store: &StoreRoot, now: i64) -> io::Result<Self> {
+    /// Load the cached salts. A cache that cannot be read or created is an empty, stale one:
+    /// pageviews wait for Cloud's next salts, and crash reports ship regardless.
+    pub(super) fn open(store: &StoreRoot, now: i64) -> Self {
         let path = store.salts();
-        if let Some(parent) = path.parent() {
-            create_store_dir(parent)?;
-        }
-        let cache = match fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<Persisted>(&bytes) {
-                Ok(persisted) => Cache {
-                    fetched: Some(persisted.fetched),
-                    sites: persisted
-                        .sites
-                        .into_iter()
-                        .map(|site| (site.namespace, site.salts))
-                        .collect(),
-                },
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "ignoring an unreadable salt cache");
-                    Cache::default()
-                }
-            },
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Cache::default(),
-            Err(error) => return Err(error),
+        let cache = match read(&path) {
+            Ok(cache) => cache,
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "ignoring an unreadable salt cache");
+                Cache::default()
+            }
         };
         let salts = Self {
             path,
             cache: RwLock::new(cache),
         };
-        salts.prune(now)?;
-        Ok(salts)
+        if let Err(error) = salts.prune(now) {
+            tracing::warn!(%error, "cannot forget closed salts");
+        }
+        salts
     }
 
     /// Replace the cache with the sites Cloud lists. A site that does not decode is skipped, so
@@ -167,6 +157,26 @@ impl Salts {
                 }),
         }
     }
+}
+
+fn read(path: &Path) -> io::Result<Cache> {
+    if let Some(parent) = path.parent() {
+        create_store_dir(parent)?;
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Cache::default()),
+        Err(error) => return Err(error),
+    };
+    let persisted = serde_json::from_slice::<Persisted>(&bytes).map_err(io::Error::other)?;
+    Ok(Cache {
+        fetched: Some(persisted.fetched),
+        sites: persisted
+            .sites
+            .into_iter()
+            .map(|site| (site.namespace, site.salts))
+            .collect(),
+    })
 }
 
 /// Remove closed salts, keeping every site so one with no open salt still reads as on. True when
@@ -255,7 +265,7 @@ mod tests {
     #[test]
     fn an_ack_replaces_the_cache_prunes_closed_salts_and_survives_a_restart() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         assert!(salts.stale(0));
         salts
             .accept(
@@ -272,7 +282,7 @@ mod tests {
 
         let mode = fs::metadata(store.salts()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        let reopened = Salts::open(&store, 160).unwrap();
+        let reopened = Salts::open(&store, 160);
         assert!(!reopened.stale(160));
         assert_eq!(
             day_at(&reopened, &acme(), 199),
@@ -286,7 +296,7 @@ mod tests {
     #[test]
     fn a_body_that_does_not_decode_leaves_the_cache_untouched() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).unwrap();
         for body in [&b""[..], b"not json", br#"{"sites":{}}"#] {
             salts.accept(body, 20).unwrap();
@@ -298,7 +308,7 @@ mod tests {
     #[test]
     fn a_site_that_does_not_decode_is_skipped_and_the_rest_are_kept() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         let body = serde_json::json!({ "sites": [
             { "namespace": "short", "salts": [{ "day": "2026-10-15", "start": 0, "end": 100, "salt": "c2hvcnQ" }] },
             { "namespace": "Not_A_Label", "salts": [] },
@@ -327,7 +337,7 @@ mod tests {
     #[test]
     fn closed_salts_are_forgotten_on_the_clock_without_cloud() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         salts
             .accept(
                 &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
@@ -357,13 +367,12 @@ mod tests {
     fn startup_forgets_salts_that_closed_while_the_daemon_was_down() {
         let (_root, store) = store();
         Salts::open(&store, 0)
-            .unwrap()
             .accept(
                 &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
                 50,
             )
             .unwrap();
-        let reopened = Salts::open(&store, 150).unwrap();
+        let reopened = Salts::open(&store, 150);
         let on_disk = String::from_utf8(fs::read(store.salts()).unwrap()).unwrap();
         assert!(!on_disk.contains("2026-10-14"), "{on_disk}");
         assert!(on_disk.contains("2026-10-15"), "{on_disk}");
@@ -377,7 +386,7 @@ mod tests {
     #[test]
     fn a_site_cloud_does_not_list_is_off() {
         let (_root, store) = store();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).unwrap();
         assert_eq!(
             day_at(&salts, &Namespace::parse("other").unwrap(), 50),
@@ -386,11 +395,21 @@ mod tests {
     }
 
     #[test]
+    fn a_cache_directory_that_cannot_be_made_is_an_empty_stale_cache() {
+        let (_root, store) = store();
+        fs::write(store.salts().parent().unwrap(), b"in the way").unwrap();
+        let salts = Salts::open(&store, 0);
+        assert!(salts.stale(0));
+        assert_eq!(day_at(&salts, &acme(), 0), None);
+        assert!(salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).is_err());
+    }
+
+    #[test]
     fn an_unreadable_cache_file_is_an_empty_stale_cache() {
         let (_root, store) = store();
         create_store_dir(store.salts().parent().unwrap()).unwrap();
         fs::write(store.salts(), b"{").unwrap();
-        let salts = Salts::open(&store, 0).unwrap();
+        let salts = Salts::open(&store, 0);
         assert!(salts.stale(0));
         assert_eq!(day_at(&salts, &acme(), 0), None);
     }

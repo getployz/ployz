@@ -588,7 +588,7 @@ mod tests {
     }
 
     fn fresh_salts(store: &StoreRoot) -> Arc<Salts> {
-        let salts = Salts::open(store, 0).unwrap();
+        let salts = Salts::open(store, 0);
         salts.accept(br#"{"sites":[]}"#, unix_seconds()).unwrap();
         Arc::new(salts)
     }
@@ -1040,7 +1040,7 @@ mod tests {
             (StatusCode::OK, Some("not json")),
         ])
         .await;
-        let salts = Arc::new(Salts::open(&store, 0).unwrap());
+        let salts = Arc::new(Salts::open(&store, 0));
         let shipper =
             Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
 
@@ -1066,7 +1066,7 @@ mod tests {
             (StatusCode::OK, Some(ACK)),
         ])
         .await;
-        let salts = Arc::new(Salts::open(&store, 0).unwrap());
+        let salts = Arc::new(Salts::open(&store, 0));
         let shipper =
             Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
 
@@ -1158,7 +1158,7 @@ mod tests {
         let (_root, store) = store();
         let outbox = pageviews(&store, 0);
         let (cloud, url) = Cloud::serve(Vec::new()).await;
-        let salts = Arc::new(Salts::open(&store, 0).unwrap());
+        let salts = Arc::new(Salts::open(&store, 0));
         let shipper = Shipper::new(outbox, salts, move || Some(pusher(&url))).unwrap();
         assert_eq!(shipper.ship_once().await, Shipped::Idle);
         assert!(cloud.bodies().is_empty());
