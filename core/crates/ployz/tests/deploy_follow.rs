@@ -475,7 +475,7 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
     *failed.get_mut("runtime_names").unwrap() = json!({"web": "private-web"});
     *failed.get_mut("outcome").unwrap() =
         json!({"type": "executed", "summary": {}, "reason": "web failed", "cause": ["denied"]});
-    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["denied"], "step": null, "log": null, "started_at": 1, "finished_at": 2}]}]);
+    *failed.get_mut("nodes").unwrap() = json!([{"type": "service", "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "name": "web", "outcome": "failed", "rows": [{"machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "server": "edge", "state": "failed", "reason": "CreateContainer failed", "cause": ["denied"], "step": null, "log": null, "history": null, "started_at": 1, "finished_at": 2}]}]);
     let mut reply = observed(7, DeploymentStatus::Failed);
     reply.body = serde_json::to_value(View::Deployment(Box::new(
         serde_json::from_value(failed.clone()).unwrap(),

@@ -287,6 +287,35 @@ fn a_chain_starts_one_depth_after_another() {
 }
 
 #[test]
+fn dependencies_pair_each_deployed_dependency_with_its_dependent() {
+    let groups = [
+        group("db", &[]),
+        group("cache", &["redis"]),
+        group("queue", &["db"]),
+        group("api", &["queue", "cache"]),
+        ServiceGroup {
+            service: None,
+            ..group("unused", &["db"])
+        },
+    ];
+    let pair = |dependency: &str, dependent: &str| {
+        (
+            ServiceName::parse(dependency).unwrap(),
+            ServiceName::parse(dependent).unwrap(),
+        )
+    };
+    assert_eq!(
+        dependencies(&groups),
+        [
+            pair("db", "queue"),
+            pair("queue", "api"),
+            pair("cache", "api")
+        ],
+        "redis is not deployed, so cache waits on nothing here"
+    );
+}
+
+#[test]
 fn a_diamond_places_the_join_below_its_deepest_side() {
     let groups = [
         group("db", &[]),

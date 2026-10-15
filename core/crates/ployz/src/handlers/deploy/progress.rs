@@ -562,6 +562,8 @@ mod tests {
             commit: None,
             status: BuildStatus::Pending,
             message: None,
+            started_at: None,
+            finished_at: None,
         });
         assert!(!visible(&view));
         for (status, detail, state) in [

@@ -7,7 +7,7 @@ import { makeRunGraph, rowLabel, rowPhaseLabel, selectRunNode } from "./run-grap
 const deployment = (fields: Partial<DeploymentView>) => asTestDouble<DeploymentView>()({
   id: "d1", status: "running", in_flight: true, builds: [], nodes: [], runtime_names: {}, preview: null, ...fields,
 });
-const at = { machine_id: machineId("1"), server: "fsn-1", started_at: 10, finished_at: null };
+const at = { machine_id: machineId("1"), server: "fsn-1", started_at: 10, finished_at: null, history: null };
 const running = (phase: RowPhase): ServerRow => ({ ...at, state: "running", phase, serving: false });
 const completed = (server = "fsn-1", started_at = 10, finished_at = 20): ServerRow =>
   ({ ...at, server, state: "completed", started_at, finished_at });
@@ -17,7 +17,7 @@ const service = (name: string, rows: ServerRow[], outcome: NodeOutcome["outcome"
 describe("run graph", () => {
   it("mirrors the Deployment's builds and nodes, Volumes and Configs included", () => {
     const view = deployment({
-      builds: [{ service: "api", commit: "abc", status: "building", message: null }],
+      builds: [{ service: "api", commit: "abc", status: "building", message: null, started_at: null, finished_at: null }],
       nodes: [
         service("api", [running("starting")]),
         { type: "volume", id: "v", name: "data", outcome: "deployed", rows: [completed()] },
@@ -39,7 +39,7 @@ describe("run graph", () => {
   });
 
   it("stops showing a build as running once the Deployment ended", () => {
-    const view = deployment({ status: "failed", in_flight: false, builds: [{ service: "api", commit: null, status: "building", message: null }] });
+    const view = deployment({ status: "failed", in_flight: false, builds: [{ service: "api", commit: null, status: "building", message: null, started_at: null, finished_at: null }] });
     expect(makeRunGraph(view).nodes[0]?.light).toBe("not_applied");
   });
 
@@ -61,7 +61,7 @@ describe("run graph", () => {
 
   it("opens the picked node, then the origin's, then the first failed, running, or Service", () => {
     const view = deployment({
-      builds: [{ service: "web", commit: "abc", status: "built", message: null }],
+      builds: [{ service: "web", commit: "abc", status: "built", message: null, started_at: null, finished_at: null }],
       nodes: [service("api", [completed()], "deployed"), service("web", [running("starting")]), service("db", [], "failed")],
     });
     const graph = makeRunGraph(view);
@@ -76,7 +76,7 @@ describe("run graph", () => {
   });
 
   it("opens the node doing work over one still waiting its turn", () => {
-    const waiting = { service: "api", commit: null, status: "pending" as const, message: null };
+    const waiting = { service: "api", commit: null, status: "pending" as const, message: null, started_at: null, finished_at: null };
     const view = deployment({ builds: [waiting], nodes: [service("api", []), service("web", [running("starting")])] });
     expect(selectRunNode(makeRunGraph(view), {})?.id).toBe("web-id");
     const building = deployment({ builds: [waiting, { ...waiting, service: "web", status: "building" }], nodes: [service("api", [])] });

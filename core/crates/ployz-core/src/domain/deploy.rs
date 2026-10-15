@@ -561,6 +561,11 @@ pub struct DeployPreview {
     /// deployed dependency, else one more than its deepest deployed dependency.
     #[serde(default)]
     pub depths: BTreeMap<ServiceName, u32>,
+    /// Each `(dependency, dependent)` pair among the deployed Services. The
+    /// dependent starts after its dependency, and waits for it to be healthy
+    /// unless the Deploy skips health checks.
+    #[serde(default)]
+    pub dependencies: Vec<(ServiceName, ServiceName)>,
 }
 
 /// One managed Docker Volume current observations indicate a container operation would create.
@@ -630,6 +635,7 @@ impl DeployPreview {
             preserved_volumes: Vec::new(),
             prune_refusal: None,
             depths: BTreeMap::new(),
+            dependencies: Vec::new(),
         }
     }
 

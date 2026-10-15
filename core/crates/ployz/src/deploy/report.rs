@@ -40,6 +40,25 @@ pub(super) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
     depths
 }
 
+/// Each `(dependency, dependent)` pair of Services this Deploy runs, in the order
+/// `groups` place them.
+pub(super) fn dependencies(groups: &[ServiceGroup]) -> Vec<(ServiceName, ServiceName)> {
+    let deployed: BTreeSet<&ServiceName> = groups
+        .iter()
+        .filter_map(|group| group.service.as_ref())
+        .collect();
+    groups
+        .iter()
+        .filter_map(|group| Some((group.service.as_ref()?, &group.dependencies)))
+        .flat_map(|(service, dependencies)| {
+            dependencies
+                .iter()
+                .filter(|dependency| deployed.contains(dependency))
+                .map(|dependency| (dependency.clone(), service.clone()))
+        })
+        .collect()
+}
+
 pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,

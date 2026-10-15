@@ -16,7 +16,7 @@ use crate::builders::{self, Builder};
 use crate::deployment::{self, Stored};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::{Tx, name_of};
+use crate::storage::{Param, Tx, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -85,6 +85,16 @@ pub struct BuildView {
     pub status: BuildStatus,
     /// Why it failed.
     pub message: Option<String>,
+    /// When it first reported Building since it last waited for a Builder, in
+    /// Unix seconds.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub started_at: Option<i64>,
+    /// When it reached Built, Reused or Failed, in Unix seconds; cleared when a
+    /// later Builder starts it again or it waits for one.
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub finished_at: Option<i64>,
 }
 
 /// Ask for the log of `service`'s build in `deployment`; `not_found` when that
@@ -199,6 +209,34 @@ pub(crate) fn record(
             log.as_str().into(),
         ],
     )?;
+    clock(tx, id, &report.service, report.status)
+}
+
+/// Start the build's clock at its first Building, stop it at its first terminal
+/// status, reopen it when a later Builder starts again, and clear it when the
+/// build goes back to Pending to wait for the next Builder.
+fn clock(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    service: &ServiceName,
+    status: BuildStatus,
+) -> Result<(), RpcError> {
+    let (set, now) = match status {
+        BuildStatus::Building => (
+            "started = COALESCE(started, ?3), finished = NULL",
+            Some(deployment::now()),
+        ),
+        BuildStatus::Built | BuildStatus::Reused | BuildStatus::Failed => {
+            ("finished = COALESCE(finished, ?3)", Some(deployment::now()))
+        }
+        BuildStatus::Pending => ("started = NULL, finished = NULL", None),
+    };
+    let mut params: Vec<Param<'_>> = vec![id.as_str().into(), service.as_str().into()];
+    params.extend(now.map(Param::from));
+    tx.execute(
+        &format!("UPDATE config_build SET {set} WHERE deployment_id = ?1 AND service = ?2"),
+        &params,
+    )?;
     Ok(())
 }
 
@@ -245,6 +283,8 @@ struct BuildRow {
     /// The GitHub run it was handed to, if any.
     github: Option<GithubState>,
     organization: OrganizationId,
+    started: Option<i64>,
+    finished: Option<i64>,
 }
 
 impl BuildRow {
@@ -267,13 +307,16 @@ impl BuildRow {
             commit: self.commit.clone(),
             status: self.status,
             message: self.message.clone(),
+            started_at: self.started,
+            finished_at: self.finished,
         }
     }
 }
 
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
-        "SELECT service, commit_sha, status, message, log, github, organization_id \
+        "SELECT service, commit_sha, status, message, log, github, organization_id, \
+         started, finished \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -293,6 +336,8 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
                 })
                 .transpose()?,
             organization: row.parse(6, "build")?,
+            started: row.optional_int(7)?,
+            finished: row.optional_int(8)?,
         })
     })
     .collect()
@@ -582,7 +627,7 @@ fn save_github(
             github.as_deref().into(),
         ],
     )?;
-    Ok(())
+    clock(tx, &id.deployment, &id.service, status)
 }
 
 impl BuildRow {

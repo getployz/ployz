@@ -15,7 +15,7 @@ const mail = (fields: Partial<DeploymentView>, sources = [source("web")]) =>
   deployFailedMail({ origin: "https://ployz.dev", organization: { name: "Shop", slug: "shop co" }, deployment: deployment(fields), sources });
 
 it("names the push, the Service and the Environment, and links the failed build's logs", () => {
-  const failed = mail({ builds: [{ service: "web", commit: "8a7ed6e", status: "failed", message: "npm ci exited 1" }] });
+  const failed = mail({ builds: [{ service: "web", commit: "8a7ed6e", status: "failed", message: "npm ci exited 1", started_at: null, finished_at: null }] });
   expect(failed).toMatchObject({
     subject: "web failed to deploy to shop / pr 7",
     preview: "8a7ed6e on feature/login didn't deploy.",
@@ -42,7 +42,7 @@ it("gives the run's reason over a build's, opens the run when no build failed, a
 
 it("describes the Service whose build failed and opens its build log", () => {
   const failed = mail({
-    builds: [{ service: "web", commit: "8a7ed6e", status: "built", message: null }, { service: "api", commit: "8a7ed6e", status: "failed", message: "no Dockerfile" }],
+    builds: [{ service: "web", commit: "8a7ed6e", status: "built", message: null, started_at: null, finished_at: null }, { service: "api", commit: "8a7ed6e", status: "failed", message: "no Dockerfile", started_at: null, finished_at: null }],
     nodes: [serviceNode("svc web", "web"), serviceNode("svc api", "api")],
   }, [source("web"), source("api", "acme/api")]);
   expect(failed.facts?.[0]).toEqual({ label: "Repository", value: "acme/api", mono: true });
@@ -51,7 +51,7 @@ it("describes the Service whose build failed and opens its build log", () => {
 
 it("names Services as authored, not by their Private DNS names", () => {
   const failed = mail({
-    builds: [{ service: "api", commit: "8a7ed6e", status: "failed", message: "no Dockerfile" }],
+    builds: [{ service: "api", commit: "8a7ed6e", status: "failed", message: "no Dockerfile", started_at: null, finished_at: null }],
     nodes: [serviceNode("svc web", "web"), serviceNode("svc api", "api")],
     runtime_names: { api: "private-api" },
   }, [source("web"), source("private-api", "acme/api")]);

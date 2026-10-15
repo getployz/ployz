@@ -1,6 +1,6 @@
 import type {
   Automated, ConfigItemView, ConfigView, ConfigWritten, DeploymentSummary, DeploymentView, DiffView, EnvironmentsView, EnvironmentView, FollowHint, JsonValue, MergeRow,
-  NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, Removal, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
+  NodeChange, OnMerge, OnMergeInto, Outcome, PullRequestView, Removal, RowTransition, ServerRow, ServiceSettingChange, ServiceView, SettingRow, SyncRow,
 } from "@ployz/sdk";
 import type { ApprovalReview } from "#/modules/approvals/approvals";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
@@ -69,8 +69,13 @@ function redactions(shows: SupportShows) {
     return { ...row, production: cell(row.production, kind), lands: cell(row.lands, kind), preview: cell(row.preview, kind) };
   };
   const destination = (into: OnMergeInto): OnMergeInto => ({ ...into, rows: into.rows.map(merge) });
-  const server = (row: ServerRow): ServerRow =>
-    row.state === "failed" && !shows.logs ? { ...row, log: null, cause: row.cause.map(withoutCheckOutput) } : row;
+  const failure = <T extends ServerRow | RowTransition>(row: T): T =>
+    row.state === "failed" ? { ...row, log: null, cause: row.cause.map(withoutCheckOutput) } : row;
+  const server = (row: ServerRow): ServerRow => {
+    if (shows.logs) return row;
+    const shown = failure(row);
+    return shown.history ? { ...shown, history: shown.history.map(failure) } : shown;
+  };
   const outcome = (shown: Outcome | null): Outcome | null =>
     shown && "cause" in shown && !shows.logs ? { ...shown, cause: shown.cause.map(withoutCheckOutput) } : shown;
   const summary = <T extends DeploymentSummary>(view: T): T => ({ ...view, outcome: outcome(view.outcome) });

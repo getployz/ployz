@@ -137,7 +137,10 @@ describe("everything support reads, with every switch off", () => {
   const cause = [`timed out; last check exited 1: ${CHECK}`, `container db failed health monitoring: running; last check exited 127: ${CHECK}`];
   const outcome = { type: "executed", summary: { deployed: 1 }, reason: "A Service failed", cause };
   const summary = { number: 3, outcome };
-  const failed = { machine_id: "m1", server: "one", started_at: 1, finished_at: 2, state: "failed", reason: "The Container failed its health check", cause, step: null, log: LOG };
+  const failed = {
+    machine_id: "m1", server: "one", started_at: 1, finished_at: 2, state: "failed", reason: "The Container failed its health check", cause, step: null, log: LOG,
+    history: [{ at: 1, state: "pending" }, { at: 2, state: "failed", reason: "The Container failed its health check", cause: [cause[0]], step: null, log: null }],
+  };
   const deployment = { ...summary, nodes: [{ type: "service", id: API, name: "api", outcome: "failed", rows: [failed] }] };
 
   const views: ReadonlyArray<ConfigView> = [

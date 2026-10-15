@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{DeploymentStatus, Stored, TargetNode, json_text, now, saved_at};
-use crate::storage::Tx;
+use crate::error;
+use crate::storage::{Row, Tx};
 use crate::tools::{LogText, Withheld};
 
 /// What one Service's work on one Server is doing.
@@ -185,6 +186,41 @@ pub struct ServerRow {
     /// When it finished, in Unix seconds.
     #[ts(type = "number | null")]
     pub finished_at: Option<i64>,
+    /// Every state the row passed through, oldest first, a phase that recurs listed
+    /// again. Absent for rows recorded before history was kept and for Volume and
+    /// Config rows, which merge several Services' rows. The row's current state is
+    /// `state`, which can differ from the last entry when a lost run shows Unknown.
+    #[serde(default)]
+    pub history: Option<Vec<RowTransition>>,
+}
+
+/// One state a row entered and when, in Unix seconds. A failed state's `log` is
+/// left on the row itself, not repeated here.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct RowTransition {
+    #[ts(type = "number")]
+    pub at: i64,
+    #[serde(flatten)]
+    pub state: RowState,
+}
+
+impl RowTransition {
+    fn new(at: i64, state: &RowState) -> Self {
+        let mut state = state.clone();
+        if let RowState::Failed { log, .. } = &mut state {
+            *log = None;
+        }
+        Self { at, state }
+    }
+}
+
+/// `history` with `state` appended at `at`, unless it is already the latest.
+fn entered(mut history: Vec<RowTransition>, at: i64, state: &RowState) -> Vec<RowTransition> {
+    let next = RowTransition::new(at, state);
+    if history.last().is_none_or(|last| last.state != next.state) {
+        history.push(next);
+    }
+    history
 }
 
 /// A row whose state changed, as the runner records it.
@@ -543,15 +579,30 @@ pub(super) fn record(
         .then_some(now);
         let finished = row.state.finished().then_some(now);
         let machine = row.machine.to_string();
+        let kept = tx.query(
+            "SELECT history FROM config_deployment_row \
+             WHERE deployment_id = ?1 AND service = ?2 AND machine = ?3",
+            &[
+                stored.summary.id.as_str().into(),
+                row.service.as_str().into(),
+                machine.as_str().into(),
+            ],
+        )?;
+        let history = match kept.first() {
+            None => Some(Vec::new()),
+            Some(kept) => history(kept, 0)?,
+        }
+        .map(|history| json_text(&entered(history, now, &row.state)));
         tx.execute(
             "INSERT INTO config_deployment_row \
-             (deployment_id, service, machine, organization_id, server, state, started, finished) \
-             SELECT id, ?2, ?3, organization_id, ?4, ?5, ?6, ?7 \
+             (deployment_id, service, machine, organization_id, server, state, started, finished, history) \
+             SELECT id, ?2, ?3, organization_id, ?4, ?5, ?6, ?7, ?8 \
              FROM config_deployment WHERE id = ?1 \
              ON CONFLICT (deployment_id, service, machine) DO UPDATE SET \
              server = excluded.server, state = excluded.state, \
              started = COALESCE(config_deployment_row.started, excluded.started), \
-             finished = COALESCE(config_deployment_row.finished, excluded.finished)",
+             finished = COALESCE(config_deployment_row.finished, excluded.finished), \
+             history = excluded.history",
             &[
                 stored.summary.id.as_str().into(),
                 row.service.as_str().into(),
@@ -560,6 +611,7 @@ pub(super) fn record(
                 json_text(&row.state).as_str().into(),
                 started.into(),
                 finished.into(),
+                history.as_deref().into(),
             ],
         )?;
     }
@@ -567,16 +619,37 @@ pub(super) fn record(
 }
 
 pub(super) fn settle(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
-    tx.execute(
-        "UPDATE config_deployment_row SET state = ?2, finished = ?3 \
+    let now = now();
+    let open = tx.query(
+        "SELECT service, machine, history FROM config_deployment_row \
          WHERE deployment_id = ?1 AND finished IS NULL",
-        &[
-            stored.summary.id.as_str().into(),
-            json_text(&RowState::NotAttempted).as_str().into(),
-            now().into(),
-        ],
+        &[stored.summary.id.as_str().into()],
     )?;
+    for row in &open {
+        let history = history(row, 2)?
+            .map(|history| json_text(&entered(history, now, &RowState::NotAttempted)));
+        tx.execute(
+            "UPDATE config_deployment_row SET state = ?4, finished = ?5, history = ?6 \
+             WHERE deployment_id = ?1 AND service = ?2 AND machine = ?3",
+            &[
+                stored.summary.id.as_str().into(),
+                row.text(0)?.into(),
+                row.text(1)?.into(),
+                json_text(&RowState::NotAttempted).as_str().into(),
+                now.into(),
+                history.as_deref().into(),
+            ],
+        )?;
+    }
     Ok(())
+}
+
+fn history(row: &Row, index: usize) -> Result<Option<Vec<RowTransition>>, RpcError> {
+    row.optional_text(index)?
+        .map(|text| {
+            serde_json::from_str(text).map_err(|_| error::corrupt("Deployment row history"))
+        })
+        .transpose()
 }
 
 pub(super) fn of_nodes(
@@ -584,7 +657,8 @@ pub(super) fn of_nodes(
     stored: &Stored,
 ) -> Result<BTreeMap<String, Vec<ServerRow>>, RpcError> {
     let found = tx.query(
-        "SELECT service, server, state, started, finished, machine FROM config_deployment_row \
+        "SELECT service, server, state, started, finished, machine, history \
+         FROM config_deployment_row \
          WHERE deployment_id = ?1 ORDER BY service, server, machine",
         &[stored.summary.id.as_str().into()],
     )?;
@@ -614,6 +688,7 @@ pub(super) fn of_nodes(
                     },
                     started_at: row.optional_int(3)?,
                     finished_at: row.optional_int(4)?,
+                    history: history(row, 6)?,
                 },
             );
     }
@@ -663,7 +738,10 @@ pub(super) fn of_nodes(
             {
                 rows.entry(*machine)
                     .and_modify(|kept| merge_mounting_row(kept, row))
-                    .or_insert_with(|| row.clone());
+                    .or_insert_with(|| ServerRow {
+                        history: None,
+                        ..row.clone()
+                    });
             }
         }
         if !rows.is_empty() {
