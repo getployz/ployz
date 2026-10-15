@@ -131,6 +131,16 @@ describe("Saving drafts", () => {
     expect(configEdits(hidden, new Map([["config.yml", { content: "" }]]), failed)).toEqual([]);
   });
 
+  it("measures a file with a save in flight against that submission, so restoring the Store's text or mode is an edit", () => {
+    const submitted = new Map([["config.yml", { content: "b: 2", mode: "0555" }]]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "b: 2", mode: "0555" }]]), new Set(), submitted)).toEqual([]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "a: 1", mode: "0555" }]]), new Set(), submitted))
+      .toEqual([{ file: "config.yml", content: "a: 1", mode: "0555" }]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "b: 2", mode: "0444" }]]), new Set(), submitted))
+      .toEqual([{ file: "config.yml", content: "b: 2", mode: "0444" }]);
+    expect(configEdits(stored, new Map([["config.yml", { content: "b: 2", mode: "0555", uid: 0 }]]), new Set(), submitted)).toEqual([]);
+  });
+
   it("still writes a readable file left empty on purpose", () => {
     expect(configEdits(stored, new Map([["config.yml", { content: "" }]]))).toEqual([{ file: "config.yml", content: "" }]);
   });

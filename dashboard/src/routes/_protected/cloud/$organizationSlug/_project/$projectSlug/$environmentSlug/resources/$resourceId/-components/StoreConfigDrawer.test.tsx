@@ -134,6 +134,44 @@ it("keeps text typed during a pending save when that save commits", async () => 
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(false);
 });
 
+it("counts restoring the stored text during a pending save as an edit, and saves it with the other files", async () => {
+  const test = await openDrawer(twoFiles);
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("submitted");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.queryByRole<HTMLButtonElement>("button", { name: "Save" })?.disabled ?? true).toBe(true));
+  test.edit("initial");
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).getByLabelText("Unsaved")).toBeTruthy();
+  await setPermissions("run.sh", { mode: "0750" });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).queryByLabelText("Unsaved")).toBeNull();
+  test.store.item = { ...twoFiles, contents: { ...twoFiles.contents, "config.yml": "submitted" } };
+  await act(async () => { pending.resolve(accepted); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
+  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
+    organizationSlug: "acme", command: { command: "batch", environment, commands: [
+      { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "initial" },
+      { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0750" },
+    ] },
+  }) }));
+});
+
+it("keeps a file restored during a refused save unsaved", async () => {
+  const test = await openDrawer();
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  test.edit("submitted");
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  test.edit("initial");
+  await act(async () => { pending.resolve(refused); });
+  await screen.findByText("Unknown Config reference");
+  expect(test.text()).toBe("initial");
+  expect(within(screen.getByRole("tab", { name: /config.yml/ })).getByLabelText("Unsaved")).toBeTruthy();
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(false);
+});
+
 it("restores refused text and lets the user retry it", async () => {
   const test = await openDrawer();
   test.write.mockResolvedValueOnce(refused);
