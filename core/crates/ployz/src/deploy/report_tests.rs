@@ -361,6 +361,28 @@ fn a_server_ready_for_the_switch_counts_while_another_still_boots() {
 }
 
 #[test]
+fn a_server_ready_for_the_switch_never_reads_switching_before_every_server_starts() {
+    assert_eq!(
+        lines(&graph_frame(
+            &[group("app", &[])],
+            &[("app", &["switch", "pending"])]
+        )),
+        ["depth 0", "  ◐ app  booting 1/2"]
+    );
+}
+
+#[test]
+fn a_failure_cancels_the_switch_a_ready_server_waited_for() {
+    assert_eq!(
+        lines(&graph_frame(
+            &[group("app", &[])],
+            &[("app", &["switch", "failed"])]
+        )),
+        ["depth 0", "  ✘ app  failed (0/2 ready)"]
+    );
+}
+
+#[test]
 fn a_failure_leaves_every_later_service_not_started() {
     let frame = graph_frame(
         &[
