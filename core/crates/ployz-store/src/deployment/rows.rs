@@ -188,7 +188,8 @@ pub struct ServerRow {
     pub finished_at: Option<i64>,
     /// Every state the row passed through, oldest first, a phase that recurs listed
     /// again. Absent for rows recorded before history was kept and for Volume and
-    /// Config rows, which merge several Services' rows.
+    /// Config rows, which merge several Services' rows. The row's current state is
+    /// `state`, which can differ from the last entry when a lost run shows Unknown.
     #[serde(default)]
     pub history: Option<Vec<RowTransition>>,
 }

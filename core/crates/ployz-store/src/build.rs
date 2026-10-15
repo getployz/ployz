@@ -16,7 +16,7 @@ use crate::builders::{self, Builder};
 use crate::deployment::{self, Stored};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::{Tx, name_of};
+use crate::storage::{Param, Tx, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -85,12 +85,13 @@ pub struct BuildView {
     pub status: BuildStatus,
     /// Why it failed.
     pub message: Option<String>,
-    /// When it first reported Building, in Unix seconds.
+    /// When it first reported Building since it last waited for a Builder, in
+    /// Unix seconds.
     #[serde(default)]
     #[ts(type = "number | null")]
     pub started_at: Option<i64>,
     /// When it reached Built, Reused or Failed, in Unix seconds; cleared when a
-    /// later Builder starts it again.
+    /// later Builder starts it again or it waits for one.
     #[serde(default)]
     #[ts(type = "number | null")]
     pub finished_at: Option<i64>,
@@ -212,27 +213,29 @@ pub(crate) fn record(
 }
 
 /// Start the build's clock at its first Building, stop it at its first terminal
-/// status, and reopen it when a later Builder starts again.
+/// status, reopen it when a later Builder starts again, and clear it when the
+/// build goes back to Pending to wait for the next Builder.
 fn clock(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     service: &ServiceName,
     status: BuildStatus,
 ) -> Result<(), RpcError> {
-    let set = match status {
-        BuildStatus::Building => "started = COALESCE(started, ?3), finished = NULL",
+    let (set, now) = match status {
+        BuildStatus::Building => (
+            "started = COALESCE(started, ?3), finished = NULL",
+            Some(deployment::now()),
+        ),
         BuildStatus::Built | BuildStatus::Reused | BuildStatus::Failed => {
-            "finished = COALESCE(finished, ?3)"
+            ("finished = COALESCE(finished, ?3)", Some(deployment::now()))
         }
-        BuildStatus::Pending => return Ok(()),
+        BuildStatus::Pending => ("started = NULL, finished = NULL", None),
     };
+    let mut params: Vec<Param<'_>> = vec![id.as_str().into(), service.as_str().into()];
+    params.extend(now.map(Param::from));
     tx.execute(
         &format!("UPDATE config_build SET {set} WHERE deployment_id = ?1 AND service = ?2"),
-        &[
-            id.as_str().into(),
-            service.as_str().into(),
-            deployment::now().into(),
-        ],
+        &params,
     )?;
     Ok(())
 }

@@ -840,7 +840,7 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
 }
 
 #[test]
-fn a_build_clock_starts_at_its_first_building_and_reopens_when_a_later_builder_starts() {
+fn a_build_clock_starts_at_building_clears_when_skipped_and_reopens_for_a_later_builder() {
     let (store, who) = shop();
     let id = dispatched(&store, &who);
     let clock = || {
@@ -864,7 +864,11 @@ fn a_build_clock_starts_at_its_first_building_and_reopens_when_a_later_builder_s
         message: "the run ran out of time".into(),
     };
     store.github_end(&id, Some(RUN), &skip).unwrap();
-    assert_eq!(clock(), (BuildStatus::Pending, started, None));
+    assert_eq!(
+        clock(),
+        (BuildStatus::Pending, None, None),
+        "a build waiting for the next Builder has no clock"
+    );
 
     let runner = RunnerId::parse("cloud-1").unwrap();
     store.claim(&id.deployment, &runner).unwrap();
@@ -874,8 +878,12 @@ fn a_build_clock_starts_at_its_first_building_and_reopens_when_a_later_builder_s
             .unwrap();
     }
     let (status, again, finished) = clock();
-    assert_eq!((status, again), (BuildStatus::Failed, started));
-    assert!(finished >= started && finished.is_some());
+    assert_eq!(status, BuildStatus::Failed);
+    assert!(
+        again.is_some() && again >= started,
+        "the runner restarts the clock"
+    );
+    assert!(finished.is_some() && finished >= again);
 
     store
         .record(
@@ -886,7 +894,7 @@ fn a_build_clock_starts_at_its_first_building_and_reopens_when_a_later_builder_s
         .unwrap();
     assert_eq!(
         clock(),
-        (BuildStatus::Building, started, None),
+        (BuildStatus::Building, again, None),
         "a later Builder reopens the clock and keeps its start"
     );
 }
