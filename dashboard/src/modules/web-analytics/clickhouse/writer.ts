@@ -9,7 +9,7 @@ import { RETENTION_DAYS } from "./schema";
 type Pageview = typeof analyticsPageview.$inferSelect;
 type ClickHouseRow = ReturnType<typeof clickHouseRow>;
 
-const DRAIN_BATCHES = 200;
+export const DRAIN_BATCHES = 200;
 const BACKFILL_PAGE = 50_000;
 
 /** A `pageview` row as ClickHouse's JSONEachRow reads it: UTC wall time, and the visitor id quoted so it survives JSON. */
