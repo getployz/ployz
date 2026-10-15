@@ -1,14 +1,14 @@
 //! One terminal-size observation for indicatif's width and per-row height checks.
 
 use std::io;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 
 use console::Term;
 use indicatif::{ProgressDrawTarget, TermLike};
 
-/// Columns kept free right of the live block. indicatif pads rows to the width it is
-/// given, so a full-width row would let the terminal's `^C` echo wrap onto a row
-/// indicatif doesn't count, and its next clear would leave the caption behind.
+/// Columns kept free right of the last live row's text, so the terminal's `^C` echo
+/// can't wrap onto a row indicatif doesn't count, where its next clear would leave the
+/// caption behind.
 pub(super) const ECHO_ROOM: u16 = 2;
 
 pub(super) fn draw_target() -> ProgressDrawTarget {
@@ -17,7 +17,7 @@ pub(super) fn draw_target() -> ProgressDrawTarget {
         return ProgressDrawTarget::hidden();
     }
     let height = AtomicU16::new(term.size().0);
-    ProgressDrawTarget::term_like_with_hz(Box::new(EchoRoom(DrawTerm { term, height })), 20)
+    ProgressDrawTarget::term_like_with_hz(Box::new(EchoRoom::new(DrawTerm { term, height })), 20)
 }
 
 #[derive(Debug)]
@@ -71,48 +71,86 @@ impl TermLike for DrawTerm {
     }
 }
 
-/// Keeps [`ECHO_ROOM`] free right of the live block.
+/// Ends the live block with the cursor right after the last row's text.
+///
+/// indicatif writes no newline between rows. It pads each row with spaces to the width
+/// it is given and relies on the terminal wrapping the cursor onto the next line. Held
+/// padding goes out before the next write, so every row still wraps, and the padding
+/// still held at a flush is cleared to the end of the line instead.
 #[derive(Debug)]
-pub(super) struct EchoRoom<T>(pub(super) T);
+pub(super) struct EchoRoom<T> {
+    term: T,
+    padding: AtomicUsize,
+}
+
+impl<T: TermLike> EchoRoom<T> {
+    pub(super) fn new(term: T) -> Self {
+        Self {
+            term,
+            padding: AtomicUsize::new(0),
+        }
+    }
+
+    fn pad(&self) -> io::Result<()> {
+        match self.padding.swap(0, Ordering::Relaxed) {
+            0 => Ok(()),
+            n => self.term.write_str(&" ".repeat(n)),
+        }
+    }
+}
 
 impl<T: TermLike> TermLike for EchoRoom<T> {
     fn width(&self) -> u16 {
-        self.0.width().saturating_sub(ECHO_ROOM)
+        self.term.width()
     }
 
     fn height(&self) -> u16 {
-        self.0.height()
+        self.term.height()
     }
 
     fn move_cursor_up(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_up(n)
+        self.pad()?;
+        self.term.move_cursor_up(n)
     }
 
     fn move_cursor_down(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_down(n)
+        self.pad()?;
+        self.term.move_cursor_down(n)
     }
 
     fn move_cursor_right(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_right(n)
+        self.pad()?;
+        self.term.move_cursor_right(n)
     }
 
     fn move_cursor_left(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_left(n)
+        self.pad()?;
+        self.term.move_cursor_left(n)
     }
 
     fn write_line(&self, value: &str) -> io::Result<()> {
-        self.0.write_line(value)
+        self.pad()?;
+        self.term.write_line(value)
     }
 
     fn write_str(&self, value: &str) -> io::Result<()> {
-        self.0.write_str(value)
+        if value.bytes().all(|byte| byte == b' ') {
+            self.padding.fetch_add(value.len(), Ordering::Relaxed);
+            return Ok(());
+        }
+        self.pad()?;
+        self.term.write_str(value)
     }
 
     fn clear_line(&self) -> io::Result<()> {
-        self.0.clear_line()
+        self.pad()?;
+        self.term.clear_line()
     }
 
     fn flush(&self) -> io::Result<()> {
-        self.0.flush()
+        if self.padding.swap(0, Ordering::Relaxed) > 0 {
+            self.term.write_str("\x1b[K")?;
+        }
+        self.term.flush()
     }
 }

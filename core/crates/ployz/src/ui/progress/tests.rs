@@ -527,7 +527,7 @@ fn ctrl_c_echo_after_a_full_width_frame_leaves_no_stale_caption() {
     let terminal = InMemoryTerm::new(20, 90);
     let backend = Backend::new(
         Mode::Interactive,
-        ProgressDrawTarget::term_like(Box::new(terminal::EchoRoom(terminal.clone()))),
+        ProgressDrawTarget::term_like(Box::new(terminal::EchoRoom::new(terminal.clone()))),
         room,
     );
     let mut wide = frame(State::Running(RowPhase::Starting));
@@ -545,7 +545,7 @@ fn live_rows_each_keep_their_own_line_on_an_80_column_terminal() {
     let terminal = InMemoryTerm::new(20, 80);
     let backend = Backend::new(
         Mode::Interactive,
-        ProgressDrawTarget::term_like(Box::new(terminal::EchoRoom(terminal.clone()))),
+        ProgressDrawTarget::term_like(Box::new(terminal::EchoRoom::new(terminal.clone()))),
         || (80, 20),
     );
     let frame = Frame {
