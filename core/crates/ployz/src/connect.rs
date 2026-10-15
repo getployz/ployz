@@ -942,6 +942,8 @@ fn transient_io(error: &io::Error) -> bool {
                 | io::ErrorKind::UnexpectedEof
                 | io::ErrorKind::NetworkUnreachable
                 | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::Interrupted
         )
 }
 
@@ -966,10 +968,10 @@ impl SshFailure {
             "Connection closed",
             "Temporary failure in name resolution",
         ];
-        if NETWORK.iter().any(|message| detail.contains(message)) {
-            Self::Network
-        } else if detail.contains("Permission denied") {
+        if detail.contains("Permission denied") {
             Self::Auth
+        } else if NETWORK.iter().any(|message| detail.contains(message)) {
+            Self::Network
         } else {
             Self::Other
         }

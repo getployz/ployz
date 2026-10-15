@@ -13,6 +13,11 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         ("Connection refused", Retry::Now, Retry::AfterRestart),
         ("Permission denied (publickey)", Retry::Never, Retry::Never),
         ("Host key verification failed", Retry::Never, Retry::Never),
+        (
+            "user@jump: Permission denied (publickey).\nConnection closed by UNKNOWN port 65535",
+            Retry::Never,
+            Retry::Never,
+        ),
     ] {
         let ssh_error = ConnectError::SshProbe {
             target: "host".to_owned(),
@@ -28,7 +33,13 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
             last: Some(Box::new(ssh_error)),
         };
         assert_eq!(error.retry(), aggregate);
-        assert!(crate::ui::chain_text(&error).contains(detail));
+        let text = crate::ui::chain_text(&error);
+        assert!(detail.lines().all(|line| text.contains(line)), "{text}");
+        assert_eq!(
+            text.contains("ssh-add"),
+            detail.contains("Permission denied"),
+            "{detail}"
+        );
     }
 }
 
@@ -252,6 +263,10 @@ fn each_connect_failure_names_one_retry_class() {
     for (error, retry) in [
         (
             ConnectError::Io(io::ErrorKind::ConnectionRefused.into()),
+            Retry::Now,
+        ),
+        (
+            ConnectError::Io(io::Error::from_raw_os_error(11)),
             Retry::Now,
         ),
         (
