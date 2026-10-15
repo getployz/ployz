@@ -69,11 +69,8 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
       order by received_at, id
       for update skip locked`, "objects");
     const [first] = unmailed;
-    const last = unmailed.reduce<Unmailed | undefined>(
-      (latest, row) => latest === undefined || row.occurredMs >= latest.occurredMs ? row : latest,
-      undefined,
-    );
-    if (first === undefined || last === undefined) return { kind: "none" } satisfies CrashClaim;
+    if (first === undefined) return { kind: "none" } satisfies CrashClaim;
+    const last = unmailed.reduce((latest, row) => row.occurredMs >= latest.occurredMs ? row : latest, first);
 
     const [mailed] = yield* drizzle.execute<{ ms: number | null }>(sql`
       select (extract(epoch from max(mailed_at)) * 1000)::float8 as ms from crash_event

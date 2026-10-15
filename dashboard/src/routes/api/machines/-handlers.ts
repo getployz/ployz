@@ -24,14 +24,14 @@ export function handleObservePush<R = never>(
     if (Result.isFailure(pusher)) return errorResponse(pusher.failure);
 
     const json = Option.getOrNull(yield* Effect.option(Effect.tryPromise(() => request.json())));
-    const malformed = errorResponse(new Validation({ message: "Invalid observe push." }));
+    const malformed = () => errorResponse(new Validation({ message: "Invalid observe push." }));
     const header = decodePushHeader(json);
-    if (Option.isNone(header)) return malformed;
+    if (Option.isNone(header)) return malformed();
     if (!isObserveStream(header.value.stream)) {
       return errorResponse(new NotFound({ message: `Unknown observe stream ${header.value.stream}.` }));
     }
     const push = Option.flatMap(decodeCrashPush(json), crashPushInput);
-    if (Option.isNone(push)) return malformed;
+    if (Option.isNone(push)) return malformed();
     const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
     return new Response(null, { status: 204, headers: noStore });
