@@ -34,19 +34,45 @@ pub(super) fn reason(user_agent: &str) -> Option<Cow<'static, str>> {
             .build()
             .expect("vendor-isbot.sh validated every pattern")
     });
-    let matched = regex.find(user_agent)?.as_str();
-    Some(Cow::Owned(label(matched)))
+    let matched = regex.find(user_agent)?;
+    Some(Cow::Owned(label(
+        user_agent,
+        matched.start(),
+        matched.end(),
+    )))
 }
 
-/// The matched text lowercased, trimmed to alphanumerics at both ends and cut
-/// to 64 bytes. A match with no alphanumerics is `unlabeled`.
-fn label(matched: &str) -> String {
-    let lower = matched.to_lowercase();
-    let trimmed = lower.trim_matches(|c: char| !c.is_alphanumeric());
-    let cut = trimmed
-        .get(..trimmed.floor_char_boundary(MAX_REASON_BYTES))
+/// The user agent's token around its first token byte in `start..end`,
+/// lowercased, trimmed to alphanumerics at both ends and cut to 64 bytes. A
+/// token runs over `[A-Za-z0-9._-]`, so `/` stops it before a version. A match
+/// with no token byte is `unlabeled`.
+fn label(user_agent: &str, start: usize, end: usize) -> String {
+    let bytes = user_agent.as_bytes();
+    let is_token = |byte: &u8| byte.is_ascii_alphanumeric() || b"._-".contains(byte);
+    let Some(seed) = bytes
+        .get(start..end)
+        .and_then(|matched| matched.iter().position(is_token))
+        .map(|offset| start + offset)
+    else {
+        return "unlabeled".to_owned();
+    };
+    let first = bytes
+        .get(..seed)
+        .and_then(|before| before.iter().rposition(|byte| !is_token(byte)))
+        .map_or(0, |stop| stop + 1);
+    let last = bytes
+        .get(seed..)
+        .and_then(|after| after.iter().position(|byte| !is_token(byte)))
+        .map_or(bytes.len(), |stop| seed + stop);
+    let token = user_agent
+        .get(first..last)
         .unwrap_or_default()
-        .trim_end_matches(|c: char| !c.is_alphanumeric());
+        .to_ascii_lowercase();
+    let trimmed = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    let cut = trimmed
+        .get(..trimmed.len().min(MAX_REASON_BYTES))
+        .unwrap_or_default()
+        .trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
     if cut.is_empty() {
         "unlabeled".to_owned()
     } else {
@@ -171,21 +197,17 @@ mod tests {
         .collect();
         assert_eq!(
             labels,
-            [
-                "googleb",
-                "gbot",
-                "curl/8.5.0",
-                "python-requests/2.32.3",
-                "daum"
-            ]
+            ["googlebot", "bingbot", "curl", "python-requests", "daum"]
         );
     }
 
     #[test]
-    fn a_label_is_trimmed_lowercase_and_at_most_64_bytes() {
-        assert_eq!(label(" /DaumBot-/ "), "daumbot");
-        assert_eq!(label("/:"), "unlabeled");
-        let long = format!("{}é{}", "a".repeat(63), "b".repeat(10));
-        assert_eq!(label(&long), "a".repeat(63));
+    fn a_label_is_the_trimmed_lowercase_token_around_the_match_cut_to_64_bytes() {
+        let whole = |ua: &str| label(ua, 0, ua.len());
+        assert_eq!(label("x MegaIndex.ru/2.0 y", 6, 8), "megaindex.ru");
+        assert_eq!(whole("-.Some_Bot-."), "some_bot");
+        assert_eq!(whole(" /:( "), "unlabeled");
+        assert_eq!(whole("._-"), "unlabeled");
+        assert_eq!(whole(&"a".repeat(70)), "a".repeat(64));
     }
 }
