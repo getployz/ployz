@@ -1,18 +1,19 @@
 import { useState } from "react";
 import type { PersistableTransaction } from "./collection-field-resources";
 
+/**
+ * Shows the value a control last wrote until that write settles, over whatever the Store shows meanwhile. A settled
+ * write has put its answer (or, refused, the reread) in the views, so `value` is right from then on.
+ */
 export function useCommitHold<T>(value: T) {
-  const [held, setHeld] = useState<{ from: T; to: T } | null>(null);
-  if (held && held.from !== value) setHeld(null);
-  const shown = held && held.from === value ? held.to : value;
+  const [held, setHeld] = useState<{ to: T } | null>(null);
 
   function hold(to: T, write: PersistableTransaction) {
-    if (to === value) return;
-    const next = { from: value, to };
+    const next = { to };
     setHeld(next);
     const release = () => setHeld((current) => (current === next ? null : current));
     write.isPersisted.promise.then(release, release);
   }
 
-  return [shown, hold] as const;
+  return [held ? held.to : value, hold] as const;
 }
