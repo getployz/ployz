@@ -201,3 +201,99 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
         "/ployz.rpc.v1.MachineRpc/RequestMachineUpgrade"
     );
 }
+
+/// Capabilities every Machine in the field serves: those of v0.3.0-beta.2, the
+/// oldest daemon still running. Raise it only when no Machine runs older.
+const FIELD_FLOOR: &[&str] = &[
+    "ployz.build.grant.inspect.v1",
+    "ployz.build.grant.mint.v1",
+    "ployz.build.v1",
+    "ployz.certificates.policy.v1",
+    "ployz.certificates.publish.v1",
+    "ployz.container.ensure.v1",
+    "ployz.container.exec.v1",
+    "ployz.container.inspect.v1",
+    "ployz.container.list.v1",
+    "ployz.image.ingest.ensure.v1",
+    "ployz.image.list.v1",
+    "ployz.image.prune.v1",
+    "ployz.image.pull-from-machine.v1",
+    "ployz.logs.history.v2",
+    "ployz.logs.tail.v1",
+    "ployz.machine.enroll.v1",
+    "ployz.machine.forget.v1",
+    "ployz.machine.inspect.v1",
+    "ployz.machine.leave.v1",
+    "ployz.machine.list.v1",
+    "ployz.machine.register.v1",
+    "ployz.machine.set-management-client.v1",
+    "ployz.machine.storage-observation.v1",
+    "ployz.machine.update.v1",
+    "ployz.machine.upgrade.request.v1",
+    "ployz.metrics.history.v1",
+    "ployz.rpc.describe-contract.v1",
+    "ployz.runtime.watch.v1",
+    "ployz.storage.inspect.v1",
+    "ployz.storage.prepare.v1",
+    "ployz.volume.copy.floor.v1",
+    "ployz.volume.copy.inspect.v1",
+    "ployz.volume.copy.set.v1",
+    "ployz.volume.list.v1",
+    "ployz.volume.remove.v1",
+    "ployz.volume.seed.v1",
+];
+
+/// Each capability above the floor, and what a caller does when a Machine lacks it.
+const ABOVE_FLOOR: &[(&str, &str)] = &[
+    (
+        "ployz.machine.set-push-target.v1",
+        "gated: the SDK checks the contract before calling",
+    ),
+    (
+        "ployz.image.pull.v1",
+        "falls back: an older daemon pulls when it creates the Container",
+    ),
+    (
+        "ployz.serving.read.v1",
+        "refused legibly: the deploy names the Server to upgrade",
+    ),
+    (
+        "ployz.serving.publish.v1",
+        "refused legibly: the deploy names the Server to upgrade",
+    ),
+];
+
+/// A new RPC reaches Machines that predate it. Before adding a catalog row, decide
+/// what callers do when a Machine refuses it, and record that in `ABOVE_FLOOR`.
+#[test]
+fn every_capability_above_the_field_floor_says_how_older_machines_are_handled() {
+    let mut catalogued: Vec<String> = [
+        CapabilityAdvertisement::Always,
+        CapabilityAdvertisement::Container,
+        CapabilityAdvertisement::Cluster,
+    ]
+    .into_iter()
+    .flat_map(names)
+    .collect();
+    catalogued.sort();
+    let mut known: Vec<&str> = FIELD_FLOOR
+        .iter()
+        .copied()
+        .chain(ABOVE_FLOOR.iter().map(|(name, _)| *name))
+        .collect();
+    known.sort_unstable();
+    let unhandled: Vec<&String> = catalogued
+        .iter()
+        .filter(|name| !known.contains(&name.as_str()))
+        .collect();
+    assert!(
+        unhandled.is_empty(),
+        "{unhandled:?} reach Machines older than the floor. Gate the call on the contract, \
+         fall back, or let the refusal name the Server, then add a row to ABOVE_FLOOR"
+    );
+    let stale: Vec<&&str> = known
+        .iter()
+        .filter(|name| !catalogued.iter().any(|c| c == **name))
+        .collect();
+    assert!(stale.is_empty(), "{stale:?} are no longer catalogued");
+}

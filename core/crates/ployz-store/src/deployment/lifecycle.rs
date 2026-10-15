@@ -810,7 +810,7 @@ pub(crate) fn record(
                 running(&stored)?;
             }
             let success = matches!(*outcome, DeployOutcome::Success { .. });
-            let (reason, cause) = failure(&outcome, &stored.nodes)
+            let (reason, cause) = failure(&outcome, &stored.nodes, &preview.operations)
                 .map_or((None, Vec::new()), |failure| {
                     (Some(failure.reason), failure.cause)
                 });
@@ -996,7 +996,11 @@ pub(crate) fn record(
 
 /// Why a Deploy failed, for users: the failed operation's Service, by its current
 /// name, and its error. None when it succeeded.
-fn failure(outcome: &DeployOutcome<ExecutionError>, nodes: &[TargetNode]) -> Option<Failure> {
+fn failure(
+    outcome: &DeployOutcome<ExecutionError>,
+    nodes: &[TargetNode],
+    operations: &[ployz_core::OperationRow],
+) -> Option<Failure> {
     let DeployOutcome::Failed { failed, .. } = outcome else {
         return None;
     };
@@ -1006,7 +1010,7 @@ fn failure(outcome: &DeployOutcome<ExecutionError>, nodes: &[TargetNode]) -> Opt
             operation, error, ..
         } => (Some(&operation.spec.name), error),
     };
-    let Failure { reason, cause } = error.into();
+    let Failure { reason, cause } = Failure::of(error, operations);
     let reason = match service {
         Some(service) => format!("{}: {reason}", current_name(nodes, service)),
         None => reason,

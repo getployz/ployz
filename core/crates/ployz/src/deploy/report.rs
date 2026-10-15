@@ -379,7 +379,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             operation, error, ..
         } => (Some(&operation.spec.name), operation.machine_id, error),
     };
-    let stored = ployz_store::Failure::from(error);
+    let stored = ployz_store::Failure::of(error, &[]);
     let message = service.map_or_else(
         || "Deployment failed.".to_owned(),
         |service| format!("Deployment of {service} failed."),
@@ -436,7 +436,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
 }
 
 fn failure_causes(error: &ExecutionError) -> Vec<String> {
-    let failure = ployz_store::Failure::from(error);
+    let failure = ployz_store::Failure::of(error, &[]);
     std::iter::once(failure.reason)
         .chain(failure.cause)
         .collect()
