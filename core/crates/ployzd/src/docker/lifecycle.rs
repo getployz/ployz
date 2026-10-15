@@ -404,7 +404,7 @@ impl ContainerRuntime {
 
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.ensure_managed(container_id).await?;
-        self.stranded().await.held.remove(container_id);
+        self.stranded().await.held.release(container_id);
         self.start_inspected(container_id, &inspected).await
     }
 
@@ -508,23 +508,25 @@ impl ContainerRuntime {
         still_wanted: impl std::future::Future<Output = Result<bool, E>>,
     ) -> Result<bool, E> {
         let managed = self.ensure_managed(container_id).await;
-        let mut newly_held = false;
-        if managed.is_ok() {
-            let gate = {
-                let mut stranded = self.stranded().await;
-                newly_held = stranded.held.insert(*container_id);
-                stranded.gates.get(container_id).cloned()
+        let hold = if managed.is_ok() {
+            let (hold, gate) = {
+                let stranded = self.stranded().await;
+                let hold = stranded.held.hold(*container_id);
+                (hold, stranded.gates.get(container_id).cloned())
             };
             if let Some(gate) = gate {
                 drop(gate.lock().await);
             }
-        }
+            Some(hold)
+        } else {
+            None
+        };
         let wanted = still_wanted.await;
         if !matches!(wanted, Ok(true)) {
-            if newly_held {
-                self.stranded().await.held.remove(container_id);
-            }
             return wanted;
+        }
+        if let Some(hold) = hold {
+            hold.keep();
         }
         managed?;
         let mut options = StopContainerOptionsBuilder::default();
@@ -929,6 +931,84 @@ mod tests {
             .start_stranded(&container_id, runtime.docker.creates())
             .await;
         assert!(started(&fake), "a requested start lifts the stop");
+    }
+
+    #[tokio::test]
+    async fn a_stop_cancelled_before_it_proceeds_releases_its_hold() {
+        let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        let (asked, was_asked) = tokio::sync::oneshot::channel();
+        let stopping = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .stop_if(&container_id, None, None, async move {
+                        let _ = asked.send(());
+                        std::future::pending::<Result<bool, Error>>().await
+                    })
+                    .await
+            }
+        });
+        was_asked.await.unwrap();
+        assert!(runtime.stranded().await.held.contains(&container_id));
+
+        stopping.abort();
+        assert!(stopping.await.unwrap_err().is_cancelled());
+        assert!(
+            !runtime.stranded().await.held.contains(&container_id),
+            "a dropped stop must not keep the ingress from its retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_deciding_when_its_container_is_forgotten_keeps_no_hold() {
+        let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        let (asked, was_asked) = tokio::sync::oneshot::channel();
+        let (decide, decided) = tokio::sync::oneshot::channel::<()>();
+        let stopping = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .stop_if(&container_id, None, None, async move {
+                        let _ = asked.send(());
+                        let _ = decided.await;
+                        Ok::<_, Error>(true)
+                    })
+                    .await
+            }
+        });
+        was_asked.await.unwrap();
+
+        runtime.forget(&container_id).await;
+        decide.send(()).unwrap();
+        let _ = stopping.await.unwrap();
+        assert!(
+            !runtime.stranded().await.held.contains(&container_id),
+            "a forgotten container must not stay held"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hold_forget_voided_never_touches_a_later_hold() {
+        let (_runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        let holds = super::super::observe::Holds::default();
+
+        let voided = holds.hold(container_id);
+        holds.forget(&container_id);
+        let later = holds.hold(container_id);
+        voided.keep();
+        drop(later);
+        assert!(
+            !holds.contains(&container_id),
+            "a voided keep must not hold"
+        );
+
+        let voided = holds.hold(container_id);
+        holds.forget(&container_id);
+        let later = holds.hold(container_id);
+        drop(voided);
+        assert!(holds.contains(&container_id), "a voided drop must not lift");
+        later.keep();
+        assert!(holds.contains(&container_id), "the later stop is kept");
     }
 
     #[tokio::test]

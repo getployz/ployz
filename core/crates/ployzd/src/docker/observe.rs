@@ -24,13 +24,97 @@ const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
 pub(super) struct StrandedIngress {
     /// Stopped on request, so never started unasked. Held in daemon memory, so a
     /// daemon restart forgets it.
-    pub(super) held: BTreeSet<ContainerId>,
+    pub(super) held: Holds,
     /// The last one whose failure was logged. Docker names a fresh endpoint in
     /// every failure, so comparing the messages would log every scan.
     pub(super) reported: Option<ContainerId>,
     /// Taken through each start, so a stop that races it lands after it and holds,
     /// while other containers never wait on the Docker calls.
     pub(super) gates: BTreeMap<ContainerId, Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// Sync inside, so a [`Held`] dropped mid-await still lifts its hold.
+#[derive(Clone, Default)]
+pub(super) struct Holds(Arc<std::sync::Mutex<HoldTable>>);
+
+#[derive(Default)]
+struct HoldTable {
+    stopped: BTreeSet<ContainerId>,
+    /// Stops still deciding whether to proceed, one ticket each, so a hold that
+    /// `forget` voided can never lift or keep a later stop's hold.
+    deciding: BTreeMap<ContainerId, BTreeSet<u64>>,
+    next_ticket: u64,
+}
+
+impl Holds {
+    pub(super) fn hold(&self, container_id: ContainerId) -> Held {
+        let mut table = self.table();
+        let ticket = table.next_ticket;
+        table.next_ticket += 1;
+        table
+            .deciding
+            .entry(container_id)
+            .or_default()
+            .insert(ticket);
+        Held {
+            holds: self.clone(),
+            container_id,
+            ticket,
+        }
+    }
+
+    pub(super) fn contains(&self, container_id: &ContainerId) -> bool {
+        let table = self.table();
+        table.stopped.contains(container_id) || table.deciding.contains_key(container_id)
+    }
+
+    pub(super) fn release(&self, container_id: &ContainerId) {
+        self.table().stopped.remove(container_id);
+    }
+
+    pub(super) fn forget(&self, container_id: &ContainerId) {
+        let mut table = self.table();
+        table.stopped.remove(container_id);
+        table.deciding.remove(container_id);
+    }
+
+    fn table(&self) -> std::sync::MutexGuard<'_, HoldTable> {
+        self.0.lock().expect("stranded holds are never poisoned")
+    }
+}
+
+/// One stop's hold while it decides whether to proceed.
+#[must_use = "the hold lifts when it drops unless kept"]
+pub(super) struct Held {
+    holds: Holds,
+    container_id: ContainerId,
+    ticket: u64,
+}
+
+impl Held {
+    pub(super) fn keep(self) {
+        let mut table = self.holds.table();
+        if table
+            .deciding
+            .get(&self.container_id)
+            .is_some_and(|tickets| tickets.contains(&self.ticket))
+        {
+            table.stopped.insert(self.container_id);
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut table = self.holds.table();
+        let Some(tickets) = table.deciding.get_mut(&self.container_id) else {
+            return;
+        };
+        tickets.remove(&self.ticket);
+        if tickets.is_empty() {
+            table.deciding.remove(&self.container_id);
+        }
+    }
 }
 
 #[derive(Clone)]
