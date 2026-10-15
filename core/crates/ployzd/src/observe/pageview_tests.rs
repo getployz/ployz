@@ -40,9 +40,7 @@ impl Lab {
             )
             .collect();
         let ack = json!({ "sites": [{ "namespace": "acme-prod", "salts": windows }] });
-        salts
-            .accept(&serde_json::to_vec(&ack).unwrap(), day_start())
-            .unwrap();
+        salts.accept(&serde_json::to_vec(&ack).unwrap(), day_start());
         let outbox = PageviewOutbox::open(&store).unwrap();
         Self {
             _root: root,

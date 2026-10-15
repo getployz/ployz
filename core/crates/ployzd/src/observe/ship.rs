@@ -467,9 +467,7 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
                 return;
             }
         };
-        if let Err(error) = self.salts.accept(&body, unix_seconds()) {
-            tracing::warn!(%error, "cannot keep the salts Cloud sent");
-        }
+        self.salts.accept(&body, unix_seconds());
     }
 }
 
@@ -603,7 +601,7 @@ mod tests {
 
     fn fresh_salts(store: &StoreRoot) -> Arc<Salts> {
         let salts = Salts::open(store, 0);
-        salts.accept(br#"{"sites":[]}"#, unix_seconds()).unwrap();
+        salts.accept(br#"{"sites":[]}"#, unix_seconds());
         Arc::new(salts)
     }
 

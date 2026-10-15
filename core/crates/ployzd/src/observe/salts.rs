@@ -85,9 +85,9 @@ impl Salts {
 
     /// Replace the cache with the sites Cloud lists. A site that does not decode is skipped, so
     /// the Machine stops hashing for it until Cloud sends it whole.
-    pub(super) fn accept(&self, body: &[u8], now: i64) -> io::Result<()> {
+    pub(super) fn accept(&self, body: &[u8], now: i64) {
         let Ok(ack) = serde_json::from_slice::<Ack>(body) else {
-            return Ok(());
+            return;
         };
         let mut sites = HashMap::new();
         for site in ack.sites {
@@ -100,13 +100,13 @@ impl Salts {
         }
         prune(&mut sites, now);
         let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
-        let fresh = Cache {
+        *cache = Cache {
             fetched: Some(now),
             sites,
         };
-        self.persist(&fresh)?;
-        *cache = fresh;
-        Ok(())
+        if let Err(error) = self.persist(&cache) {
+            tracing::warn!(%error, "cannot keep the salts Cloud sent on disk; using them from memory");
+        }
     }
 
     /// Drop the salts whose day has closed, from memory and from disk, so a Machine that cannot
@@ -267,12 +267,10 @@ mod tests {
         let (_root, store) = store();
         let salts = Salts::open(&store, 0);
         assert!(salts.stale(0));
-        salts
-            .accept(
-                &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
-                150,
-            )
-            .unwrap();
+        salts.accept(
+            &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
+            150,
+        );
         assert!(!salts.stale(150));
         assert_eq!(day_at(&salts, &acme(), 50), Some(None));
         assert_eq!(
@@ -289,7 +287,7 @@ mod tests {
             Some(Some("2026-10-15".into()))
         );
 
-        reopened.accept(br#"{"sites":[]}"#, 170).unwrap();
+        reopened.accept(br#"{"sites":[]}"#, 170);
         assert_eq!(day_at(&reopened, &acme(), 199), None);
     }
 
@@ -297,9 +295,9 @@ mod tests {
     fn a_body_that_does_not_decode_leaves_the_cache_untouched() {
         let (_root, store) = store();
         let salts = Salts::open(&store, 0);
-        salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).unwrap();
+        salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10);
         for body in [&b""[..], b"not json", br#"{"sites":{}}"#] {
-            salts.accept(body, 20).unwrap();
+            salts.accept(body, 20);
         }
         assert_eq!(day_at(&salts, &acme(), 50), Some(Some("2026-10-15".into())));
         assert!(salts.stale(10 + 3600));
@@ -316,9 +314,7 @@ mod tests {
             { "namespace": "acme-prod", "salts": [{ "day": "2026-10-15", "start": 0, "end": 100, "salt": SALT }] },
             { "namespace": "quiet", "salts": [] },
         ] });
-        salts
-            .accept(&serde_json::to_vec(&body).unwrap(), 10)
-            .unwrap();
+        salts.accept(&serde_json::to_vec(&body).unwrap(), 10);
         assert_eq!(day_at(&salts, &acme(), 50), Some(Some("2026-10-15".into())));
         for skipped in ["short", "bad-day"] {
             assert_eq!(
@@ -338,12 +334,10 @@ mod tests {
     fn closed_salts_are_forgotten_on_the_clock_without_cloud() {
         let (_root, store) = store();
         let salts = Salts::open(&store, 0);
-        salts
-            .accept(
-                &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
-                50,
-            )
-            .unwrap();
+        salts.accept(
+            &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
+            50,
+        );
         let on_disk = || String::from_utf8(fs::read(store.salts()).unwrap()).unwrap();
         assert!(on_disk().contains("2026-10-14"));
 
@@ -366,12 +360,10 @@ mod tests {
     #[test]
     fn startup_forgets_salts_that_closed_while_the_daemon_was_down() {
         let (_root, store) = store();
-        Salts::open(&store, 0)
-            .accept(
-                &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
-                50,
-            )
-            .unwrap();
+        Salts::open(&store, 0).accept(
+            &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
+            50,
+        );
         let reopened = Salts::open(&store, 150);
         let on_disk = String::from_utf8(fs::read(store.salts()).unwrap()).unwrap();
         assert!(!on_disk.contains("2026-10-14"), "{on_disk}");
@@ -387,7 +379,7 @@ mod tests {
     fn a_site_cloud_does_not_list_is_off() {
         let (_root, store) = store();
         let salts = Salts::open(&store, 0);
-        salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).unwrap();
+        salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10);
         assert_eq!(
             day_at(&salts, &Namespace::parse("other").unwrap(), 50),
             None
@@ -395,13 +387,15 @@ mod tests {
     }
 
     #[test]
-    fn a_cache_directory_that_cannot_be_made_is_an_empty_stale_cache() {
+    fn a_cache_directory_that_cannot_be_made_still_serves_the_salts_cloud_sends() {
         let (_root, store) = store();
         fs::write(store.salts().parent().unwrap(), b"in the way").unwrap();
         let salts = Salts::open(&store, 0);
         assert!(salts.stale(0));
         assert_eq!(day_at(&salts, &acme(), 0), None);
-        assert!(salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).is_err());
+        salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10);
+        assert!(!salts.stale(10));
+        assert_eq!(day_at(&salts, &acme(), 50), Some(Some("2026-10-15".into())));
     }
 
     #[test]
