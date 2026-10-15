@@ -1,5 +1,5 @@
-//! Tools that move Staged changes on: review them, discard them, publish them,
-//! deploy them.
+//! Tools that move Staged changes on: review them, discard them, deploy them
+//! or save them for the next deploy.
 
 use ployz_core::config::{ChangeKind, EnvironmentNodeType, ReviewLifecycleKind};
 use ployz_core::{ConfigName, ServiceName};
@@ -54,7 +54,7 @@ pub(crate) struct Review {
 
 impl Tool for Review {
     const NAME: &'static str = "review";
-    const DESCRIPTION: &'static str = "What Publish would save and Deploy would apply, in plain lines, with the version publish and deploy take and what a human must approve.";
+    const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines, with the version deploy takes and what a human must approve.";
     const READ_ONLY: bool = true;
 
     fn example() -> Value {
@@ -85,8 +85,10 @@ impl Tool for Review {
             "at": at(&diff.environment),
             "revision": diff.environment.revision.0,
             "version": diff.version,
-            "saved_revision": diff.saved.map(|saved| saved.0),
-            "published": diff.published,
+            "saved": diff.saved.map(|saved| json!({
+                "version": saved.0,
+                "holds_staged": diff.published,
+            })),
             "staged": diff.total_count,
             "lines": diff.changes.iter().flat_map(lines).collect::<Vec<_>>(),
             "asks_approval": !destroys.is_empty(),
@@ -249,53 +251,6 @@ impl Tool for DiscardInput {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PublishInput {
-    /// Only if review still shows this version. Required with accept_volume_loss.
-    #[serde(default)]
-    version: Option<String>,
-    /// Volumes whose data this may delete. Only when the member asked for exactly that loss.
-    #[serde(default)]
-    #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
-    accept_volume_loss: Vec<VolumeName>,
-    /// Project name.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    project: Option<ProjectName>,
-    /// Environment name, e.g. staging.
-    #[serde(default)]
-    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
-    environment: Option<EnvironmentName>,
-}
-
-impl Tool for PublishInput {
-    const NAME: &'static str = "publish";
-    const DESCRIPTION: &'static str = "Save everything Staged as the next Saved revision, without deploying. Usually call deploy instead: it publishes and deploys. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve.";
-    const GATE: Gate = Gate::Store;
-    const READ_ONLY: bool = false;
-
-    fn example() -> Value {
-        json!({ "environment": "staging" })
-    }
-
-    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
-        version_for_loss(&self.accept_volume_loss, self.version.as_ref())?;
-        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let published = cx.write(&Publish {
-            environment: scope,
-            version: self.version,
-            message: None,
-            accept_volume_loss: self.accept_volume_loss,
-        })?;
-        Ok(json!({
-            "at": at(&published.environment),
-            "saved_revision": published.saved.map(|saved| saved.0),
-            "published": published.created,
-        }))
-    }
-}
-
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct DeployInput {
     /// Deploy only these Services. Omit to deploy every Service.
     #[serde(default)]
@@ -316,6 +271,9 @@ pub(crate) struct DeployInput {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
     request_key: Option<RequestKey>,
+    /// Save everything staged for the next deploy instead of deploying it.
+    #[serde(default)]
+    skip_deploy: bool,
     /// Project name.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
@@ -328,7 +286,7 @@ pub(crate) struct DeployInput {
 
 impl Tool for DeployInput {
     const NAME: &'static str = "deploy";
-    const DESCRIPTION: &'static str = "Deploy what is Staged and Saved: publishes first if needed, then queues a Deployment and returns. Follow it with deployment_show. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve.";
+    const DESCRIPTION: &'static str = "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns: follow it with deployment_show. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve.";
     const GATE: Gate = Gate::Store;
     const READ_ONLY: bool = false;
 
@@ -339,6 +297,28 @@ impl Tool for DeployInput {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         version_for_loss(&self.accept_volume_loss, self.version.as_ref())?;
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        if self.skip_deploy {
+            if !self.services.is_empty() {
+                return Err(Refusal::invalid(
+                    "skip_deploy saves everything staged; omit services",
+                    "services",
+                )
+                .into());
+            }
+            let saved = cx.write(&Publish {
+                environment: scope,
+                version: self.version,
+                message: self.message,
+                accept_volume_loss: self.accept_volume_loss,
+            })?;
+            return Ok(json!({
+                "at": at(&saved.environment),
+                "saved": {
+                    "version": saved.saved.map(|saved| saved.0),
+                    "created": saved.created,
+                },
+            }));
+        }
         let here = cx.one(&ServicesQuery {
             environment: scope.clone(),
         })?;

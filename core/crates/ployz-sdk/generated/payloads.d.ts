@@ -1246,7 +1246,7 @@ export type DiffQuery = { environment: EnvironmentRef, };
 
 export type DiffView = { environment: EnvironmentSummary,
 /**
- * Pass back to `publish` or `discard` to act on exactly this review.
+ * Pass back to `deploy` or `discard` to act on exactly this review.
  */
 version: string,
 /**

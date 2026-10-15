@@ -128,7 +128,13 @@ pub(crate) fn publish(
         (&target, &namespace, review::Shipping::Publish),
         (publish.version.as_deref(), &publish.accept_volume_loss),
         trusted.volumes.as_ref(),
-    )?;
+    )
+    .map_err(|mut error| {
+        if error.code == ployz_core::RpcErrorCode::ConfirmationRequired {
+            "Next deploy deletes volume data".clone_into(&mut error.message);
+        }
+        error
+    })?;
     review::approve(
         who,
         &environment.summary.id,

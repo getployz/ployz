@@ -1,9 +1,9 @@
-//! `ployz diff`, `publish` and `discard`: review staged changes in the Config Store,
-//! put them in Saved State, or undo them.
+//! `ployz diff` and `discard`: review staged changes in the Config Store, or undo
+//! them.
 
 use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
-use ployz_store::{DiffQuery, DiffView, Discard, Publish, SettingPath};
+use ployz_store::{DiffQuery, DiffView, Discard, SettingPath};
 use serde::Serialize;
 
 use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
@@ -12,14 +12,6 @@ use crate::cli::{positional, switch, value};
 
 pub(crate) fn diff_command() -> Command {
     scoped(Command::new("diff").about("Show staged Service, Volume and Config changes"))
-}
-
-pub(crate) fn publish_command() -> Command {
-    scoped(Command::new("publish").about("Put staged changes in Saved State without deploying"))
-        .arg(version())
-        .arg(crate::cli::volume_acceptance())
-        .arg(value("message", None).help("Message saved with the new revision"))
-        .arg(crate::cli::approval())
 }
 
 pub(crate) fn history_command() -> Command {
@@ -85,7 +77,12 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let view = store(root)?.read(&query)?;
     let changes = view.review_changes();
     let hint = (view.draft_count > 0)
-        .then(|| next(matches, &["publish", "--version", &view.version]))
+        .then(|| {
+            next(
+                matches,
+                &["deploy", "--skip-deploy", "--expect-version", &view.version],
+            )
+        })
         .or_else(|| {
             (!view.changes.is_empty())
                 .then(|| next(matches, &["deploy", "--expect-version", &view.version]))
@@ -123,7 +120,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             restarts(change);
             match change.data {
                 Some(ployz_store::DataEffect::Deleted) => crate::ui::stream(format_args!(
-                    "  deletes this Volume's data on the Servers: publish and deploy ask to accept it by name"
+                    "  deletes this Volume's data on the Servers: deploy asks to accept it by name"
                 )),
                 Some(ployz_store::DataEffect::Kept) => {
                     crate::ui::stream(format_args!("  a detached Volume keeps its data"));
@@ -152,7 +149,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         }
         if view.published && !view.changes.is_empty() {
             crate::ui::stream(format_args!(
-                "Published as Saved revision {}.",
+                "Saved as version {}. Not deployed.",
                 view.saved.map_or(0, |saved| saved.0)
             ));
         }
@@ -168,43 +165,6 @@ pub(super) fn restarts(change: &ployz_store::NodeChange) {
         let services: Vec<&str> = change.restarts.iter().map(ServiceName::as_str).collect();
         crate::ui::stream(format_args!("  restarts {}", services.join(", ")));
     }
-}
-
-pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let publish = Publish {
-        environment: environment(matches)?,
-        version: matches.get_one::<String>("version").cloned(),
-        message: matches.get_one::<String>("message").cloned(),
-        accept_volume_loss: super::teardown::accepted(matches)?,
-    };
-    let store = store(root)?;
-    let published = store
-        .publish(&publish)
-        .map_err(|error| store.accepting(with_refresh_hint(error, matches, "diff")))?;
-    let where_ = format!(
-        "{}/{}",
-        published.environment.project, published.environment.name
-    );
-    let Some(saved) = published.saved else {
-        return crate::ui::done(
-            &Next::new(&published, None),
-            format_args!("Nothing staged in {where_}; nothing to publish."),
-        );
-    };
-    let hint = next(matches, &["deploy"]);
-    crate::ui::finish(&Next::new(&published, Some(hint.clone())), || {
-        if published.created {
-            crate::ui::stream(format_args!(
-                "Published {where_} as Saved revision {saved}."
-            ));
-        } else {
-            crate::ui::stream(format_args!(
-                "Saved revision {saved} already holds {where_}."
-            ));
-        }
-        crate::ui::hint(&crate::ui::Hint::Next(hint));
-    })
 }
 
 pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {

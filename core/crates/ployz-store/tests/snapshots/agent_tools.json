@@ -817,7 +817,7 @@
       "read_only": false
     },
     {
-      "description": "Remove a Service. Staged: Review lists it and Discard undoes it; the next Publish or Deploy asks a human to approve. Never asks a human to approve.",
+      "description": "Remove a Service. Staged: Review lists it and Discard undoes it; the next deploy asks a human to approve. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -997,7 +997,7 @@
       "read_only": false
     },
     {
-      "description": "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next Publish or Deploy. Never asks a human to approve.",
+      "description": "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next deploy. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1148,7 +1148,7 @@
       "read_only": false
     },
     {
-      "description": "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next Publish or Deploy, which asks a human to approve. Never asks a human to approve.",
+      "description": "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next deploy, which asks a human to approve. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1339,7 +1339,7 @@
       "read_only": false
     },
     {
-      "description": "What Publish would save and Deploy would apply, in plain lines, with the version publish and deploy take and what a human must approve. Never asks a human to approve.",
+      "description": "What the next deploy applies, in plain lines, with the version deploy takes and what a human must approve. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1409,7 +1409,7 @@
       "read_only": false
     },
     {
-      "description": "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; publish or deploy asks a human if it removes something. Sealed values and Volume data do not come back. Never asks a human to approve.",
+      "description": "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; the next deploy asks a human if it removes something. Sealed values and Volume data do not come back. Never asks a human to approve.",
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1454,44 +1454,7 @@
       "read_only": false
     },
     {
-      "description": "Save everything Staged as the next Saved revision, without deploying. Usually call deploy instead: it publishes and deploys. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
-      "gate": "store",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "accept_volume_loss": {
-            "description": "Volumes whose data this may delete. Only when the member asked for exactly that loss.",
-            "items": {
-              "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "environment": {
-            "description": "Environment name, e.g. staging.",
-            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
-            "type": "string"
-          },
-          "project": {
-            "description": "Project name.",
-            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
-            "type": "string"
-          },
-          "version": {
-            "description": "Only if review still shows this version. Required with accept_volume_loss.",
-            "type": "string"
-          }
-        },
-        "type": "object"
-      },
-      "name": "publish",
-      "output_schema": {
-        "type": "object"
-      },
-      "read_only": false
-    },
-    {
-      "description": "Deploy what is Staged and Saved: publishes first if needed, then queues a Deployment and returns. Follow it with deployment_show. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
+      "description": "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns: follow it with deployment_show. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve. It may stop to ask a human to approve; call it alone, never alongside another tool.",
       "gate": "store",
       "input_schema": {
         "additionalProperties": false,
@@ -1531,6 +1494,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "skip_deploy": {
+            "description": "Save everything staged for the next deploy instead of deploying it.",
+            "type": "boolean"
           },
           "version": {
             "description": "Only if review still shows this version. Required with accept_volume_loss.",

@@ -202,7 +202,7 @@ try:
     restored = services()
     assert {name: restored[name]["id"] for name in ("web", "db")} == \
         {name: before["services"][name] for name in ("web", "db")}, "Undo restores web and db with their original ids"
-    cli("publish")
+    cli("deploy", "--skip-deploy")
     cli("deploy", "web", "db")
     again = keep("containers-after-undo", containers())
     assert again.get("worker") == before["containers"]["worker"], "worker's container is untouched by the Undo deploy"

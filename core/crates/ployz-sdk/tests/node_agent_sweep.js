@@ -159,7 +159,7 @@ const FIXTURES = [
   ["service_inspect", { service: "web" }],
   ["service_update", { service: "web", set: { image: "nginx:1.28" } }],
   ["review", {}],
-  ["publish", {}],
+  ["deploy", { skip_deploy: true }],
   ["history", { revision: 1 }],
   ["history", { revision: 1, undo: true }, "conflict"],
   ["deploy", { message: "first", request_key: "deploy-shop-0001" }],

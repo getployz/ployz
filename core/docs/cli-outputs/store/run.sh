@@ -194,19 +194,19 @@ c context "status --json (staged changes)" --json status
 m staging "discard one Setting" discard web.healthcheck
 m staging "discard --json one Setting" --json discard web.env.B
 m staging "discard: unknown path" discard nope
-m staging "publish: stale --version" publish --version 1:0:0.0
-need m staging "publish" publish
-c staging "diff (after publish, not deployed)" diff
-m staging "publish again (nothing new)" publish
-m staging "publish --json again" --json publish
+m staging "deploy --skip-deploy: stale --expect-version" deploy --skip-deploy --expect-version 1:0:0.0
+need m staging "deploy --skip-deploy" deploy --skip-deploy
+c staging "diff (after save, not deployed)" diff
+m staging "deploy --skip-deploy again (nothing new)" deploy --skip-deploy
+m staging "deploy --skip-deploy --json again" --json deploy --skip-deploy
 s set web.replicas=4
-m staging "publish --json" --json publish
+m staging "deploy --skip-deploy --json" --json deploy --skip-deploy
 s project new empty
 c staging "diff (nothing staged)" diff --project empty
 c staging "diff --json (nothing staged)" --json diff --project empty
 m staging "discard (nothing staged)" discard --project empty
 m staging "discard --json (nothing staged)" --json discard --project empty
-m staging "publish (nothing staged)" publish --project empty
+m staging "deploy --skip-deploy (nothing staged)" deploy --skip-deploy --project empty
 s set web.env.LOG_LEVEL=debug
 need m staging "discard everything" discard
 m staging "discard: stale --version" discard --version 1:0:0.0
@@ -218,7 +218,7 @@ s service add db --image postgres:16
 s volume add pgdata
 s set db.mounts.pgdata=/var/lib/postgresql/data
 s set 'web.env.DB_URL=postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app'
-s publish
+s deploy --skip-deploy
 
 c env "env ls" env ls
 c env "env ls --json" --json env ls

@@ -139,26 +139,32 @@ fn every_cli_line_the_store_names_has_a_row() {
 
 #[test]
 fn a_confirmation_retry_accepts_exactly_the_named_loss() {
-    let call = Call::new("publish", json!({ "environment": "staging" }));
+    let call = Call::new(
+        "deploy",
+        json!({ "environment": "staging", "skip_deploy": true }),
+    );
     let error = store_error(
         RpcErrorCode::ConfirmationRequired,
-        "Publishing deletes data; pass --accept-volume-loss data",
+        "Next deploy deletes volume data; pass --accept-volume-loss data",
         json!({ "accept": ["data"], "version": "v7" }),
     );
     let refusal = from_store(error, &call, Writes::None);
-    assert_eq!(refusal.message, "Publishing deletes data");
+    assert_eq!(refusal.message, "Next deploy deletes volume data");
     assert_eq!(
         refusal.retry,
         Call::new(
-            "publish",
-            json!({ "environment": "staging", "accept_volume_loss": ["data"], "version": "v7" })
+            "deploy",
+            json!({ "environment": "staging", "skip_deploy": true, "accept_volume_loss": ["data"], "version": "v7" })
         )
     );
 }
 
 #[test]
 fn another_refusal_keeps_the_same_call_as_its_retry() {
-    let call = Call::new("publish", json!({ "environment": "staging" }));
+    let call = Call::new(
+        "deploy",
+        json!({ "environment": "staging", "skip_deploy": true }),
+    );
     let error = store_error(
         RpcErrorCode::Conflict,
         "The Environment moved",

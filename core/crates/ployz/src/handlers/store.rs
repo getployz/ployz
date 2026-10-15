@@ -188,7 +188,8 @@ impl<'m> Store<'m> {
         }
     }
 
-    /// Publish Working State. Locally this CLI observes Volume loss; Cloud gathers its own evidence.
+    /// Save Working State for the next deploy. Locally this CLI observes Volume loss;
+    /// Cloud gathers its own evidence.
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let volumes = match &self.backend {
             Backend::Local(..) => {
@@ -281,7 +282,7 @@ impl<'m> Store<'m> {
         if sought.is_empty() {
             return Ok(None);
         }
-        // Publish takes no `--context`; it reaches the Cluster `--connect` or the current context names.
+        // Without `--context`, this reaches the Cluster `--connect` or the current context names.
         let context = self
             .matches
             .try_get_one::<String>("context")
@@ -421,8 +422,8 @@ impl<'m> Store<'m> {
         })
     }
 
-    /// The flag this command passes a reviewed version with: Publish's `--version`,
-    /// or `--expect-version` elsewhere.
+    /// The flag this command passes a reviewed version with: `discard`'s and
+    /// `history`'s `--version`, or `--expect-version` elsewhere.
     fn version_flag(&self) -> (&'static str, &'static str) {
         match self.matches.try_get_one::<String>("version") {
             Ok(_) => ("version", "--version"),
@@ -1024,15 +1025,16 @@ mod tests {
     }
 
     #[test]
-    fn a_publish_retry_keeps_its_version_flag_scope_names_and_approval() {
+    fn a_skip_deploy_retry_keeps_its_flag_scope_names_and_approval() {
         let typed = [
             "ployz",
-            "publish",
+            "deploy",
+            "--skip-deploy",
             "--project",
             "shop",
             "--env",
             "production",
-            "--version",
+            "--expect-version",
             "3:1:0.1",
             "--approval",
             "apr_1",
@@ -1045,16 +1047,16 @@ mod tests {
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
             matches: leaf_matches(&root),
-            words: vec!["publish".to_owned()],
+            words: vec!["deploy".to_owned(), "--skip-deploy".to_owned()],
         };
         let refused = ployz_core::RpcError {
             code: RpcErrorCode::ConfirmationRequired,
-            message: "This permanently deletes the data of pg-data, logs".into(),
+            message: "Next deploy deletes volume data".into(),
             details: json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }),
             cause: Vec::new(),
         };
-        let loss = "ployz publish --accept-volume-loss pg-data --accept-volume-loss logs \
-                    --version 3:1:0.1:9f2c --approval apr_1 --project shop --env production";
+        let loss = "ployz deploy --skip-deploy --accept-volume-loss pg-data --accept-volume-loss logs \
+                    --expect-version 3:1:0.1:9f2c --approval apr_1 --project shop --env production";
         assert_eq!(
             store.accepting(StoreCallError::Refused(refused)).hints(),
             [Hint::Retry(loss.into())]
@@ -1062,7 +1064,7 @@ mod tests {
         let approval = store.approving("apr_2");
         assert_eq!(
             approval,
-            "ployz publish --version 3:1:0.1 --approval apr_2 --project shop --env production"
+            "ployz deploy --skip-deploy --expect-version 3:1:0.1 --approval apr_2 --project shop --env production"
         );
         let reparsed = |retry: &str| {
             let root = crate::cli::command()
@@ -1074,7 +1076,8 @@ mod tests {
                 .into_iter()
                 .map(str::to_owned)
                 .collect();
-            for id in ["project", "env", "version", "approval"] {
+            words.push(leaf.get_flag("skip-deploy").to_string());
+            for id in ["project", "env", "expect-version", "approval"] {
                 words.extend(leaf.get_one::<String>(id).cloned());
             }
             words.extend(crate::handlers::string_values(leaf, "accept-volume-loss"));
@@ -1083,7 +1086,8 @@ mod tests {
         assert_eq!(
             reparsed(loss),
             [
-                "publish",
+                "deploy",
+                "true",
                 "shop",
                 "production",
                 "3:1:0.1:9f2c",
@@ -1094,7 +1098,16 @@ mod tests {
         );
         assert_eq!(
             reparsed(&approval),
-            ["publish", "shop", "production", "3:1:0.1", "apr_2"]
+            ["deploy", "true", "shop", "production", "3:1:0.1", "apr_2"]
+        );
+    }
+
+    #[test]
+    fn publish_is_not_a_command() {
+        assert!(
+            crate::cli::command()
+                .try_get_matches_from(["ployz", "publish"])
+                .is_err()
         );
     }
 

@@ -10,7 +10,7 @@ This file tracks the latest Ployz release. The installed CLI is the source of tr
 - `ployz --help` and `ployz COMMAND --help` list the commands and their flags.
 - `ployz schema --json` lists every command and Setting.
 - `ployz explain SERVICE.SETTING` describes one Setting, with an example.
-- `ployz mcp` serves the Ployz tools over MCP: reads, staged edits, review, publish and deploy, Servers and Volumes. Ployz Cloud does not support `service_logs` yet. Its instructions list what it leaves to the terminal. Register it with `claude mcp add -s user ployz -- ployz mcp` or `codex mcp add ployz -- ployz mcp`. A tool marked destructive can remove something live; it asks the user itself when Ployz needs their approval.
+- `ployz mcp` serves the Ployz tools over MCP: reads, staged edits, review and deploy, Servers and Volumes. Ployz Cloud does not support `service_logs` yet. Its instructions list what it leaves to the terminal. Register it with `claude mcp add -s user ployz -- ployz mcp` or `codex mcp add ployz -- ployz mcp`. A tool marked destructive can remove something live; it asks the user itself when Ployz needs their approval.
 
 ## Where commands act
 
@@ -23,11 +23,11 @@ This file tracks the latest Ployz release. The installed CLI is the source of tr
 
 - `ployz up` deploys the current directory: it creates and links a Project if needed, uploads, builds and deploys. It uploads every file except `.git`, including files Git ignores such as `.env` and `node_modules`. Run it from a clean checkout, or move secrets out first. In CI, always pass `--project`, or it creates a new Project named after the checkout.
 - `ployz get SERVICE --json` shows every Setting of a Service, including unset ones with their defaults.
-- `ployz set SERVICE.SETTING=VALUE` stages an edit; `ployz diff` shows what is staged and `ployz publish` saves it.
+- `ployz set SERVICE.SETTING=VALUE` stages an edit; `ployz diff` shows what is staged, `ployz deploy` ships it and `ployz deploy --skip-deploy` saves it for the next deploy.
 - Reach another Service by reference, so Ployz knows the two are linked: `ployz set 'web.env.API_URL=http://${{ api.PLOYZ_PRIVATE_DOMAIN }}:${{ api.PORT }}'`. Single-quote it: in double quotes the shell rejects `${{`. A typed `api.internal` comes back in `typed_addresses` with the reference to set instead.
 - `ployz diff --json` carries a `version`; `ployz deploy --expect-version VERSION` deploys exactly that review or refuses with `conflict`.
 - A destructive command without its confirmation fails with `confirmation_required` (a person at a terminal is asked instead), naming what goes; `details.retry` is the exact command that confirms it.
-- A `publish` or `deploy` that removes something running can fail with `approval_required`: the organization asks a human first. Its `details` list what it removes under `effects` and name the approval under `approval_id`. Show the user what it removes and ask them to approve it in Ployz Cloud, then run `details.retry`, which adds `--approval ID`. Never approve it yourself. Through `ployz mcp`, the user is asked in a dialog instead; an app without dialogs gets the approval id, so call the tool again with `approval` once they approve. A denial comes back with their reason when they gave one, so don't retry it unless they ask.
+- A `deploy` (with or without `--skip-deploy`) that removes something running can fail with `approval_required`: the organization asks a human first. Its `details` list what it removes under `effects` and name the approval under `approval_id`. Show the user what it removes and ask them to approve it in Ployz Cloud, then run `details.retry`, which adds `--approval ID`. Never approve it yourself. Through `ployz mcp`, the user is asked in a dialog instead; an app without dialogs gets the approval id, so call the tool again with `approval` once they approve. A denial comes back with their reason when they gave one, so don't retry it unless they ask.
 
 ## Output and errors
 

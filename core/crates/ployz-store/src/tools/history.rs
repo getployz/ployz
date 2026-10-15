@@ -39,7 +39,7 @@ pub(crate) struct History {
 
 impl Tool for History {
     const NAME: &'static str = "history";
-    const DESCRIPTION: &'static str = "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; publish or deploy asks a human if it removes something. Sealed values and Volume data do not come back.";
+    const DESCRIPTION: &'static str = "Stage a Saved revision's whole configuration, or with undo only the reverse of its changes. Staged; the next deploy asks a human if it removes something. Sealed values and Volume data do not come back.";
     const READ_ONLY: bool = false;
 
     fn example() -> Value {

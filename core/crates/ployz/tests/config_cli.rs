@@ -1,5 +1,5 @@
 //! Authoring through the Config Store: the JSON contract of `project new`, `env new`,
-//! `service add`, `get`, `set`, `unset`, `diff`, `publish`, `discard`, `schema` and
+//! `service add`, `get`, `set`, `unset`, `diff`, `deploy --skip-deploy`, `discard`, `schema` and
 //! `explain`, and Setting path completion. Store cases run twice: on the hidden
 //! in-process Store (`PLOYZ_STORE=sqlite:PATH`) and over HTTPS to a Cloud that hosts
 //! the Store behind `/api/config/{read,write}`, as `PLOYZ_TOKEN`. `link`, `status`
@@ -409,7 +409,7 @@ impl Approvals {
             Some((id, "denied")) => {
                 let error = denied(
                     id,
-                    "A human denied the request to publish production: the worker still drains",
+                    "A human denied the request to save production: the worker still drains",
                 );
                 return Some((403, json!({ "error": error })));
             }
@@ -1923,7 +1923,7 @@ fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "nginx", "--image", "nginx"]);
-        ok(store, &["publish"]);
+        ok(store, &["deploy", "--skip-deploy"]);
         ok(store, &["set", "nginx.preDeployCommand=Jenje"]);
         let diff = ok(store, &["diff"]);
         let nginx = &diff["changes"][0];
@@ -2013,7 +2013,7 @@ fn mistakes_fail_with_their_codes() {
 }
 
 #[test]
-fn an_agent_reviews_publishes_and_discards() {
+fn an_agent_reviews_saves_and_discards() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         let added = ok(store, &["service", "add", "web", "--image", "nginx:1"]);
@@ -2035,31 +2035,44 @@ fn an_agent_reviews_publishes_and_discards() {
         );
         assert_eq!(
             diff.get("next"),
-            Some(&json!(format!("ployz publish --version {version}")))
+            Some(&json!(format!(
+                "ployz deploy --skip-deploy --expect-version {version}"
+            )))
         );
 
         // A review taken before another edit is stale.
         ok(store, &["set", "web.startCommand=nginx"]);
-        let stale = error(store, &["publish", "--version", &version]);
+        let stale = error(
+            store,
+            &["deploy", "--skip-deploy", "--expect-version", &version],
+        );
         assert_eq!(stale.get("code"), Some(&json!("conflict")));
-        assert_eq!(stale.pointer("/details/next"), Some(&json!("ployz diff")));
         let fresh = stale
             .pointer("/details/diff/version")
             .unwrap()
             .as_str()
             .unwrap();
+        assert_eq!(
+            stale.pointer("/details/next"),
+            Some(&json!(format!(
+                "ployz deploy --skip-deploy --expect-version {fresh}"
+            )))
+        );
 
-        let published = ok(store, &["publish", "--version", fresh]);
-        assert_eq!(published.get("saved"), Some(&json!(1)));
-        assert_eq!(published.get("created"), Some(&json!(true)));
-        assert_eq!(published.get("next"), Some(&json!("ployz deploy")));
+        let saved = ok(
+            store,
+            &["deploy", "--skip-deploy", "--expect-version", fresh],
+        );
+        assert_eq!(saved.get("saved"), Some(&json!(1)));
+        assert_eq!(saved.get("created"), Some(&json!(true)));
+        assert_eq!(saved.get("next"), Some(&json!("ployz deploy")));
         let diff = ok(store, &["diff"]);
         assert_eq!(diff.get("published"), Some(&json!(true)));
         let version = diff["version"].as_str().unwrap();
         assert_eq!(
             diff.get("next"),
             Some(&json!(format!("ployz deploy --expect-version {version}"))),
-            "published is not yet deployed"
+            "saved is not yet deployed"
         );
 
         let discarded = ok(store, &["discard", "web"]);
@@ -2076,7 +2089,9 @@ fn an_agent_reviews_publishes_and_discards() {
         let version = inverse["version"].as_str().unwrap();
         assert_eq!(
             inverse.get("next"),
-            Some(&json!(format!("ployz publish --version {version}")))
+            Some(&json!(format!(
+                "ployz deploy --skip-deploy --expect-version {version}"
+            )))
         );
         assert_eq!(
             ok(store, &["history"])["revisions"]
@@ -2085,7 +2100,10 @@ fn an_agent_reviews_publishes_and_discards() {
                 .len(),
             1
         );
-        let saved = ok(store, &["publish", "--version", version]);
+        let saved = ok(
+            store,
+            &["deploy", "--skip-deploy", "--expect-version", version],
+        );
         assert_eq!(saved.get("saved"), Some(&json!(2)));
         assert_eq!(saved.get("created"), Some(&json!(true)));
         let after = ok(store, &["diff"]);
@@ -2099,7 +2117,10 @@ fn an_agent_reviews_publishes_and_discards() {
                 .len(),
             2
         );
-        assert_eq!(ok(store, &["publish"]).get("created"), Some(&json!(false)));
+        assert_eq!(
+            ok(store, &["deploy", "--skip-deploy"]).get("created"),
+            Some(&json!(false))
+        );
         assert_eq!(
             ok(store, &["history"])["revisions"]
                 .as_array()
@@ -2713,7 +2734,7 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
         let failed_id = deployed["id"].as_str().unwrap().to_owned();
         // Saved since: a retry still ships what the failed one froze.
         ok(store, &["set", "web.replicas=2"]);
-        ok(store, &["publish"]);
+        ok(store, &["deploy", "--skip-deploy"]);
 
         let retried = no_server_answers(store, &["deployment", "retry", &failed_id]);
         assert_eq!(
@@ -2935,7 +2956,7 @@ fn two_linked_directories_act_on_their_own_environments() {
             status.pointer("/scope/link"),
             Some(&json!(a_dir.to_str().unwrap()))
         );
-        assert_eq!(status.pointer("/staged/published"), Some(&json!(false)));
+        assert_eq!(status.pointer("/staged/saved"), Some(&json!(false)));
         assert_eq!(status.get("deploying"), Some(&json!([])));
         assert_eq!(status.get("attention"), Some(&json!([])));
         assert_eq!(status.get("next"), Some(&json!("ployz diff")));
@@ -3659,7 +3680,7 @@ fn a_sync_from_a_pr_environment_stages_in_production_now() {
             &github(),
         )
         .unwrap();
-    ok(&store, &["publish"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
     local
         .write(
             &who,
@@ -3798,7 +3819,7 @@ fn history_scope_flags_work_before_or_after_the_action() {
                 "service", "add", "web", "--image", "web:1", "--env", "staging",
             ],
         );
-        ok(store, &["publish", "--env", "staging"]);
+        ok(store, &["deploy", "--skip-deploy", "--env", "staging"]);
         for args in [
             ["history", "--env", "staging", "restore", "1", "--preview"],
             ["history", "restore", "1", "--preview", "--env", "staging"],
@@ -3810,17 +3831,17 @@ fn history_scope_flags_work_before_or_after_the_action() {
 }
 
 #[test]
-fn an_agent_gets_the_approval_a_publish_needs_and_retries_with_it() {
+fn an_agent_gets_the_approval_a_save_needs_and_retries_with_it() {
     let (target, approvals) = approving(&[("apr_1", "approved")]);
-    let refused = error(&target, &["publish"]);
+    let refused = error(&target, &["deploy", "--skip-deploy"]);
     assert_eq!(refused["code"], json!("approval_required"), "{refused}");
     assert_eq!(refused["details"]["approval_id"], json!("apr_1"));
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz publish --approval apr_1"),
+        json!("ployz deploy --skip-deploy --approval apr_1"),
         "{refused}"
     );
-    let pending = error(&target, &["publish", "--approval", "apr_1"]);
+    let pending = error(&target, &["deploy", "--skip-deploy", "--approval", "apr_1"]);
     assert_eq!(pending["code"], json!("approval_required"), "{pending}");
     assert!(
         approvals.calls().is_empty(),
@@ -3829,14 +3850,14 @@ fn an_agent_gets_the_approval_a_publish_needs_and_retries_with_it() {
 }
 
 #[test]
-fn without_a_terminal_a_publish_waits_until_a_human_approves_it() {
+fn without_a_terminal_a_save_waits_until_a_human_approves_it() {
     let (target, approvals) = approving(&[("apr_1", "approved")]);
     let home = tempfile::tempdir().unwrap();
-    let (code, stderr) = person(&target, home.path(), &["publish"]);
+    let (code, stderr) = person(&target, home.path(), &["deploy", "--skip-deploy"]);
     assert_eq!(code, Some(0), "{stderr}");
     assert!(
         stderr.contains(
-            "This publish destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
+            "The next deploy after this save destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes"
         ),
         "{stderr}"
     );
@@ -3849,30 +3870,29 @@ fn without_a_terminal_a_publish_waits_until_a_human_approves_it() {
 }
 
 #[test]
-fn without_a_terminal_a_denied_publish_fails_with_the_reason() {
+fn without_a_terminal_a_denied_save_fails_with_the_reason() {
     let (target, approvals) = approving(&[("apr_1", "denied")]);
     let home = tempfile::tempdir().unwrap();
-    let (code, stderr) = person(&target, home.path(), &["publish"]);
+    let (code, stderr) = person(&target, home.path(), &["deploy", "--skip-deploy"]);
     assert_eq!(code, Some(1), "{stderr}");
     assert!(
-        stderr
-            .contains("A human denied the request to publish production: the worker still drains"),
+        stderr.contains("A human denied the request to save production: the worker still drains"),
         "{stderr}"
     );
     assert!(!stderr.contains("apr_1"), "{stderr}");
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
-    assert_eq!(diff["published"], json!(false), "nothing was published");
+    assert_eq!(diff["published"], json!(false), "nothing was saved");
 }
 
 #[cfg(unix)]
 #[test]
-fn without_a_terminal_ctrl_c_stops_the_wait_and_publishes_nothing() {
+fn without_a_terminal_ctrl_c_stops_the_wait_and_saves_nothing() {
     let (target, approvals) = approving(&[("apr_1", "pending")]);
     let home = tempfile::tempdir().unwrap();
     let mut child = target
         .command(home.path())
-        .arg("publish")
+        .args(["deploy", "--skip-deploy"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -3901,17 +3921,19 @@ fn without_a_terminal_ctrl_c_stops_the_wait_and_publishes_nothing() {
     );
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
-    assert_eq!(diff["published"], json!(false), "nothing was published");
+    assert_eq!(diff["published"], json!(false), "nothing was saved");
 }
 
 #[test]
 fn without_a_terminal_a_superseded_approval_waits_on_the_new_one() {
     let (target, approvals) = approving(&[("apr_1", "superseded"), ("apr_2", "approved")]);
     let home = tempfile::tempdir().unwrap();
-    let (code, stderr) = person(&target, home.path(), &["publish"]);
+    let (code, stderr) = person(&target, home.path(), &["deploy", "--skip-deploy"]);
     assert_eq!(code, Some(0), "{stderr}");
     assert_eq!(
-        stderr.matches("This publish destroys 1 thing:").count(),
+        stderr
+            .matches("The next deploy after this save destroys 1 thing:")
+            .count(),
         2,
         "{stderr}"
     );
@@ -4000,11 +4022,11 @@ fn at_a_terminal(target: &Target, args: &str, typed: &str) -> (Option<i32>, Stri
 #[test]
 fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
     let (target, approvals) = approving(&[("apr_1", "approved")]);
-    let (code, screen) = at_a_terminal(&target, "publish", "staging\n");
+    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "staging\n");
     assert_eq!(code, Some(130), "{screen}");
     assert!(screen.contains("Type production to continue"), "{screen}");
     assert!(
-        screen.contains("Nothing published; the approval stays pending in Ployz Cloud."),
+        screen.contains("Nothing saved; the approval stays pending in Ployz Cloud."),
         "{screen}"
     );
     assert!(approvals.calls().is_empty(), "nothing was decided in Cloud");
@@ -4012,9 +4034,9 @@ fn at_a_terminal_a_wrong_name_leaves_the_approval_pending() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn at_a_terminal_the_environment_name_approves_and_publishes() {
+fn at_a_terminal_the_environment_name_approves_and_saves() {
     let (target, approvals) = approving(&[("apr_1", "pending")]);
-    let (code, screen) = at_a_terminal(&target, "publish", "production\n");
+    let (code, screen) = at_a_terminal(&target, "deploy --skip-deploy", "production\n");
     assert_eq!(code, Some(0), "{screen}");
     assert!(screen.contains("Type production to continue"), "{screen}");
     let approve = json!({ "approve": { "digest": "3:abc" } });

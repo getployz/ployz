@@ -103,7 +103,6 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "project rename",
             "project rm",
             "ps",
-            "publish",
             "schema",
             "server",
             "server add",

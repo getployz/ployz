@@ -83,8 +83,10 @@ fn answered(result: Result<Value, RpcError>) -> Answer {
 }
 
 fn record(tool: &str, store_at: StoreAt) -> Transcript {
-    let store = shop();
-    let input = example(tool).unwrap();
+    record_on(&shop(), tool, example(tool).unwrap(), store_at)
+}
+
+fn record_on(store: &ConfigStore, tool: &str, input: Value, store_at: StoreAt) -> Transcript {
     let place = Place {
         project: Some(ProjectName::parse("shop").unwrap()),
         environment: None,
@@ -95,8 +97,8 @@ fn record(tool: &str, store_at: StoreAt) -> Transcript {
     let mut turns = Vec::new();
     loop {
         let answers: Vec<Answer> = match &step {
-            Step::Read { asks } => asks.iter().map(|each| ask(&store, each)).collect(),
-            Step::Wait { then, .. } => then.iter().map(|each| ask(&store, each)).collect(),
+            Step::Read { asks } => asks.iter().map(|each| ask(store, each)).collect(),
+            Step::Wait { then, .. } => then.iter().map(|each| ask(store, each)).collect(),
             Step::Write { write } => vec![match write.as_ref() {
                 Write::Store(command) => answered(
                     store
@@ -187,4 +189,74 @@ fn every_transcript_replays_to_its_recorded_steps() {
             transcript.place.store
         );
     }
+}
+
+#[test]
+fn deploy_with_skip_deploy_saves_everything_staged_and_queues_nothing() {
+    let store = shop();
+    let added = record_on(
+        &store,
+        "service_add",
+        example("service_add").unwrap(),
+        StoreAt::Local,
+    );
+    assert!(matches!(
+        added.turns.last().unwrap().step,
+        Step::Done { .. }
+    ));
+    let saving = |store: &ConfigStore| {
+        record_on(
+            store,
+            "deploy",
+            serde_json::json!({ "skip_deploy": true }),
+            StoreAt::Local,
+        )
+    };
+    let writes = |transcript: &Transcript| {
+        transcript
+            .turns
+            .iter()
+            .filter_map(|turn| {
+                let Step::Write { write } = &turn.step else {
+                    return None;
+                };
+                Some(serde_json::to_value(write).unwrap())
+            })
+            .collect::<Vec<_>>()
+    };
+    let result = |transcript: &Transcript| {
+        let step = &transcript.turns.last().unwrap().step;
+        let Step::Done { result } = step else {
+            panic!("not done: {step:?}");
+        };
+        serde_json::to_value(result).unwrap()
+    };
+
+    let first = saving(&store);
+    let written = writes(&first);
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(
+        written
+            .first()
+            .and_then(|write| write.pointer("/write/command")),
+        Some(&serde_json::json!("publish"))
+    );
+    let done = result(&first);
+    assert_eq!(
+        done.pointer("/value/saved/version"),
+        Some(&serde_json::json!(1)),
+        "{done}"
+    );
+    assert_eq!(
+        done.pointer("/value/saved/created"),
+        Some(&serde_json::json!(true)),
+        "{done}"
+    );
+
+    let again = result(&saving(&store));
+    assert_eq!(
+        again.pointer("/value/saved/created"),
+        Some(&serde_json::json!(false)),
+        "{again}"
+    );
 }

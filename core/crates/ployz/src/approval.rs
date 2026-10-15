@@ -62,7 +62,7 @@ pub(crate) enum Verb {
 impl Verb {
     pub(crate) fn noun(self) -> &'static str {
         match self {
-            Self::Publish => "publish",
+            Self::Publish => "save",
             Self::Deploy => "deploy",
             Self::Drain => "drain",
             Self::Set => "change",
@@ -76,7 +76,7 @@ impl Verb {
 
     pub(crate) fn past(self) -> &'static str {
         match self {
-            Self::Publish => "published",
+            Self::Publish => "saved",
             Self::Deploy => "deployed",
             Self::Drain => "drained",
             Self::Set => "changed",
@@ -152,7 +152,12 @@ impl Asked {
                 .effects
                 .iter()
                 .all(|effect| effect.kind == DestructiveKind::ChangesRole);
-        let mut lines = vec![if changes_only {
+        let mut lines = vec![if verb == Verb::Publish {
+            format!(
+                "The next deploy{within} after this save destroys {}:",
+                things(self.effects.len())
+            )
+        } else if changes_only {
             format!("This {}{within}:", verb.noun())
         } else {
             format!(
