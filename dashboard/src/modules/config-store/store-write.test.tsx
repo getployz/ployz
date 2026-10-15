@@ -315,6 +315,23 @@ it("lists a new Branch in its Project's Environments once the write persists, so
   expect(test.scope.queryClient.getQueryData(key)).toEqual(listing(["production", "feature"]));
 });
 
+it("rereads the Project's Environments after a new Default Environment, which names no Environment", async () => {
+  const test = setup(view(2, 1));
+  const listing = (fallback: string) => ({ ok: true as const, value: { view: "environments" as const, project: { name: "shop" },
+    environments: ["production", "staging"].map((name) => ({ name, default: name === fallback })) } });
+  const key = storeViewOptions("acme", test.scope, environmentsQuery("shop")).queryKey;
+  test.scope.queryClient.setQueryData<unknown>(key, listing("production"));
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
+  renderHook(() => useStoreView("acme", environmentsQuery("shop")), { wrapper });
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(async ({ data }) =>
+    // SAFETY: the Store now lists staging as the Default Environment; these tests read no other Project view.
+    (data.query.query === "environments" ? listing("staging") : { ok: true, value: { view: "environment", ...test.store.current } }) as never);
+  // The Store answers only views of the command's Environment; the Project's list names none.
+  test.write.mockImplementationOnce(async () => ({ ok: true, value: { written: "project" } as never, answers: [] }));
+  await test.writer.commit({ command: "set_default_environment", environment: { project: "shop", environment: "staging" } }).isPersisted.promise;
+  expect(test.scope.queryClient.getQueryData(key)).toEqual(listing("staging"));
+});
+
 it("keeps a newer view when a write's answer or a read lands older", async () => {
   const test = setup(view(2, 1));
   const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
