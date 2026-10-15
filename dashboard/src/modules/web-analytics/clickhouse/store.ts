@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
-import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, SESSION_GAP_SECONDS } from "../local-time";
+import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 import { COLUMN, pageFilters, type Plan, readPlan, SESSION_KEYS, sessionFilters, type StoreQuery, totalsKey } from "../postgres/store";
 import { ClickHouse } from "./client";
@@ -133,10 +133,15 @@ const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQ
   return yield* clickhouse.query<A>(build(b), b.params);
 });
 
+/** The rollup publishes a day by inserting its `daily` rows, so the newest generation there is the day readers see. */
+const published = (b: Binder, first: string, last: string) => `(day, generation) IN (
+  SELECT day, max(generation) FROM daily
+  WHERE environment_id = ${b.env} AND day BETWEEN toDate(${b.text(first)}) AND toDate(${b.text(last)}) GROUP BY day)`;
+
 const dailyRows = (b: Binder, days: NonNullable<Plan["days"]>, dim: string, value?: string) => `
   FROM daily
   WHERE environment_id = ${b.env} AND dim = ${b.text(dim)}${value === undefined ? "" : ` AND value = ${b.text(value)}`}
-    AND day BETWEEN toDate(${b.text(days.first)}) AND toDate(${b.text(days.last)})`;
+    AND day BETWEEN toDate(${b.text(days.first)}) AND toDate(${b.text(days.last)}) AND ${published(b, days.first, days.last)}`;
 
 const ZERO = "toUInt64(0)";
 
@@ -194,7 +199,8 @@ export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(fun
       parts.push(`
         SELECT toInt64(toUnixTimestamp(hour)) * 1000 AS bucket, if(${inDirty}, 0, pageviews) AS pv, if(${inDirty}, 0, visitors) AS vi,
           visits AS vs, bounces AS bo, total_duration AS td
-        FROM session_hourly WHERE environment_id = ${b.env} AND hour >= ${b.at(range.start)} AND hour < ${b.at(rolledEnd)}`);
+        FROM session_hourly WHERE environment_id = ${b.env} AND hour >= ${b.at(range.start)} AND hour < ${b.at(rolledEnd)}
+          AND ${published(b, localDay(timezone, range.start), localDay(timezone, rolledEnd.getTime() - 1))}`);
       for (const part of dirty) parts.push(`SELECT ${localHour(b)} AS bucket, ${pageCounts} ${rowsIn(b, query, part)} GROUP BY bucket`);
     }
     if (rolledEnd < range.end) {

@@ -33,6 +33,7 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS daily (
     environment_id String,
     day Date,
+    generation UInt64,
     dim LowCardinality(String),
     value String,
     pageviews UInt64,
@@ -48,6 +49,8 @@ const DDL = [
   SETTINGS ttl_only_drop_parts = 1`,
   `CREATE TABLE IF NOT EXISTS session_hourly (
     environment_id String,
+    day Date,
+    generation UInt64,
     hour DateTime('UTC'),
     pageviews UInt64,
     visitors UInt64,

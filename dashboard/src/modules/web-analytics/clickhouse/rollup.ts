@@ -35,6 +35,20 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
+/**
+ * A day's aggregates carry the generation that wrote them. Readers take the newest generation `daily` holds for
+ * the day, so a rebuild publishes when its `daily` insert lands and a rebuild that stops earlier leaves the
+ * previous generation in place. Both tables count, so rows a stopped rebuild left behind never share a number.
+ */
+const publishedGeneration = Effect.fn("WebAnalytics.clickHousePublishedGeneration")(function* (site: RollupSite, day: string) {
+  const clickhouse = yield* requiredClickHouse;
+  const b = binder(site);
+  const scope = `environment_id = ${b.env} AND day = toDate(${b.text(day)})`;
+  const [row] = yield* clickhouse.query<{ generation: number }>(`
+    SELECT greatest((SELECT max(generation) FROM daily WHERE ${scope}), (SELECT max(generation) FROM session_hourly WHERE ${scope})) AS generation`, b.params);
+  return row?.generation ?? 0;
+});
+
 const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: RollupSite, day: string) {
   const clickhouse = yield* requiredClickHouse;
   const start = dayStart(site.timezone, day);
@@ -46,21 +60,21 @@ const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: R
   };
   const ctes = (b: Binder) => `WITH ${visitCtes(b, query, { start, end })},
     sessions AS (SELECT * FROM visits WHERE ts >= ${b.at(start)} AND ts < ${b.at(end)})`;
-  yield* statement((b) => `DELETE FROM daily WHERE environment_id = ${b.env} AND day = toDate(${b.text(day)})`);
-  yield* statement((b) => `DELETE FROM session_hourly WHERE environment_id = ${b.env} AND hour >= ${b.at(start)} AND hour < ${b.at(end)}`);
+  const scope = (b: Binder) => `environment_id = ${b.env} AND day = toDate(${b.text(day)})`;
+  const generation = (yield* publishedGeneration(site, day)) + 1;
   yield* statement((b) => `
-    INSERT INTO session_hourly (environment_id, hour, pageviews, visitors, visits, bounces, total_duration)
+    INSERT INTO session_hourly (environment_id, day, generation, hour, pageviews, visitors, visits, bounces, total_duration)
     ${ctes(b)}
-    SELECT ${b.env}, toDateTime(intDiv(bucket, 1000), 'UTC'), sum(pv), sum(vi), sum(vs), sum(bo), sum(td)
+    SELECT ${b.env}, toDate(${b.text(day)}), ${generation}, toDateTime(intDiv(bucket, 1000), 'UTC'), sum(pv), sum(vi), sum(vs), sum(bo), sum(td)
     FROM (
       SELECT ${localHour(b)} AS bucket, ${pageCounts} FROM visit_rows GROUP BY bucket
       UNION ALL
       SELECT ${localHour(b)} AS bucket, ${sessionCounts} FROM sessions GROUP BY bucket
     ) GROUP BY bucket`);
   yield* statement((b) => `
-    INSERT INTO daily (environment_id, day, dim, value, pageviews, visitors, visits, bounces, total_duration)
+    INSERT INTO daily (environment_id, day, generation, dim, value, pageviews, visitors, visits, bounces, total_duration)
     ${ctes(b)}
-    SELECT ${b.env}, toDate(${b.text(day)}), dim, value, sum(pv), if(dim = 'entry_page', sum(svi), sum(pvi)), sum(vs), sum(bo), sum(td)
+    SELECT ${b.env}, toDate(${b.text(day)}), ${generation}, dim, value, sum(pv), if(dim = 'entry_page', sum(svi), sum(pvi)), sum(vs), sum(bo), sum(td)
     FROM (
       SELECT dim, value, sum(n) AS pv, count() AS pvi, toUInt64(0) AS svi, toUInt64(0) AS vs, toUInt64(0) AS bo, toUInt64(0) AS td
       FROM (
@@ -76,6 +90,7 @@ const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: R
         WHERE kv.2 IS NOT NULL GROUP BY dim, value, visitor_id
       ) GROUP BY dim, value
     ) GROUP BY dim, value`);
+  for (const table of ["daily", "session_hourly"]) yield* statement((b) => `DELETE FROM ${table} WHERE ${scope(b)} AND generation < ${generation}`);
 });
 
 const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: RollupSite) {
