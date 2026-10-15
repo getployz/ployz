@@ -110,6 +110,9 @@ How you answer depends on where the command runs:
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
   would stop a service or delete volume data. `ployz server upgrade` never asks.
+- An agent's stop or restart of a service always asks, and one approval covers one stop or
+  restart. Typed in a terminal, `ployz service stop` and `ployz service restart` don't ask yet.
+  Starting a service never asks.
 - Dashboard buttons and dialogs never ask: confirming a dialog is your approval. When the
   [Ployz agent](agent-sidebar.md) does the same thing for you, it asks.
 - If the change moves on after Ployz asked, your approval no longer fits it, and the command asks

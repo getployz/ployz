@@ -214,7 +214,7 @@ impl Tool for ServerLogs {
             .into_iter();
         let logs = cx.cloud::<LogsAnswer>(answers.next())?;
         Ok(json!({
-            "servers": logs.servers,
+            "untrusted": { "servers": logs.servers },
             "seen": logs.seen,
             "notes": logs.notes,
         }))

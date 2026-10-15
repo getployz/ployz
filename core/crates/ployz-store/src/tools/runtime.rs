@@ -20,7 +20,7 @@ use super::refusal::{Call, Refusal};
 use super::release::place;
 use super::status::{Container, ServiceFacts, Watch, service_status};
 use super::step::{
-    Action, Ask, CloudQuery, LogsQuery, RequestKey, ServerName, ServiceVerb, Subject,
+    Action, Ask, CloudQuery, Gate, LogsQuery, RequestKey, ServerName, ServiceVerb, Subject,
 };
 use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
@@ -324,7 +324,7 @@ impl Tool for ServiceLogs {
         let logs = cx.cloud::<LogsAnswer>(answers.next())?;
         Ok(json!({
             "at": at(&namespace.environment),
-            "servers": logs.servers,
+            "untrusted": { "servers": logs.servers },
             "seen": logs.seen,
             "notes": logs.notes,
         }))
@@ -394,7 +394,7 @@ fn service_act(
 }
 
 macro_rules! service_act_tool {
-    ($tool:ident, $name:literal, $verb:expr, $description:literal) => {
+    ($tool:ident, $name:literal, $verb:expr, $gate:expr, $description:literal) => {
         #[derive(Deserialize, JsonSchema)]
         #[serde(deny_unknown_fields)]
         pub(crate) struct $tool {
@@ -422,6 +422,7 @@ macro_rules! service_act_tool {
             const NAME: &'static str = $name;
             const DESCRIPTION: &'static str = $description;
             const READ_ONLY: bool = false;
+            const GATE: Gate = $gate;
             const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
 
             fn example() -> Value {
@@ -448,17 +449,20 @@ service_act_tool!(
     ServiceRestart,
     "service_restart",
     ServiceVerb::Restart,
+    Gate::Cloud,
     "Restart a Service's containers. Only when the member asked to restart."
 );
 service_act_tool!(
     ServiceStart,
     "service_start",
     ServiceVerb::Start,
+    Gate::Never,
     "Start a Service's stopped containers."
 );
 service_act_tool!(
     ServiceStop,
     "service_stop",
     ServiceVerb::Stop,
+    Gate::Cloud,
     "Stop a Service's containers until started again. Deletes nothing."
 );

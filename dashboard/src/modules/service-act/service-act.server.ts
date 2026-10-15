@@ -98,6 +98,13 @@ export const requestServiceAct = Effect.fn("ServiceAct.request")(function* (
   } satisfies Admission;
 });
 
+export const serviceActExists = Effect.fn("ServiceAct.exists")(function* (organizationId: string, actId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ id: serviceAct.id }).from(serviceAct)
+    .where(and(eq(serviceAct.organizationId, organizationId), eq(serviceAct.id, actId)));
+  return row !== undefined;
+});
+
 const readAct = Effect.fn("ServiceAct.read")(function* (actId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(serviceAct).where(eq(serviceAct.id, actId));

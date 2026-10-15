@@ -70,10 +70,10 @@ const STAGED = { absent: "The dashboard stages it in the Volume's placement, and
 const VOLUME_RUNS = "POST volumes/:id/runs";
 
 /** Restart, start or stop a Service's containers, on one Server or all. */
-const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T) =>
+const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T, gate: "approval" | "none") =>
   operation({
     options: Schema.Struct({ service: Name, environment: Name, only: Name, wait: Seconds }),
-    gate: "none",
+    gate,
     idempotency: tool,
     surfaces: {
       cli: { absent: "`ployz service` reaches the Servers through Server Access, not a Cloud run." },
@@ -366,9 +366,9 @@ export const OPERATIONS = {
       },
     },
   }),
-  "service.restart": serviceAct("service_restart"),
-  "service.start": serviceAct("service_start"),
-  "service.stop": serviceAct("service_stop"),
+  "service.restart": serviceAct("service_restart", "approval"),
+  "service.start": serviceAct("service_start", "none"),
+  "service.stop": serviceAct("service_stop", "approval"),
   "servers.forget_all": operation({
     options: Schema.Struct({ organization: Name }),
     gate: "none",

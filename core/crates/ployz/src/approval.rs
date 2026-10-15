@@ -57,6 +57,8 @@ pub(crate) enum Verb {
     Forget,
     Release,
     RemoveMirror,
+    Stop,
+    Restart,
 }
 
 impl Verb {
@@ -71,6 +73,8 @@ impl Verb {
             Self::Forget => "forgetting",
             Self::Release => "release",
             Self::RemoveMirror => "mirror removal",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
         }
     }
 
@@ -85,6 +89,8 @@ impl Verb {
             Self::Forget => "forgotten",
             Self::Release => "released",
             Self::RemoveMirror => "removed",
+            Self::Stop => "stopped",
+            Self::Restart => "restarted",
         }
     }
 
@@ -99,7 +105,9 @@ impl Verb {
             | Self::Remove
             | Self::Forget
             | Self::Release
-            | Self::RemoveMirror => "of",
+            | Self::RemoveMirror
+            | Self::Stop
+            | Self::Restart => "of",
         }
     }
 }
@@ -147,11 +155,8 @@ impl Asked {
             Some(organization) => format!(" in Organization {organization}"),
             None => String::new(),
         };
-        let changes_only = !self.effects.is_empty()
-            && self
-                .effects
-                .iter()
-                .all(|effect| effect.kind == DestructiveKind::ChangesRole);
+        let changes_only =
+            !self.effects.is_empty() && self.effects.iter().all(|effect| !destroys(effect.kind));
         let mut lines = vec![if verb == Verb::Publish && changes_only {
             format!("The next deploy{within} after this save:")
         } else if verb == Verb::Publish {
@@ -169,11 +174,7 @@ impl Asked {
             )
         }];
         lines.extend(self.effects.iter().map(|effect| {
-            let mark = if effect.kind == DestructiveKind::ChangesRole {
-                "~"
-            } else {
-                "✕"
-            };
+            let mark = if destroys(effect.kind) { "✕" } else { "~" };
             format!("  {mark} {}", line(effect))
         }));
         let others = match &self.subject {
@@ -188,6 +189,16 @@ impl Asked {
         }
         lines
     }
+}
+
+/// A role change, a stop or a restart interrupts or alters something; it leaves nothing gone.
+fn destroys(kind: DestructiveKind) -> bool {
+    !matches!(
+        kind,
+        DestructiveKind::ChangesRole
+            | DestructiveKind::StopsService
+            | DestructiveKind::RestartsService
+    )
 }
 
 fn things(count: usize) -> String {
@@ -208,6 +219,8 @@ fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::RemovesMember => format!("removes member {name}"),
         DestructiveKind::ChangesRole => format!("changes the role of {name}"),
         DestructiveKind::RevokesInvite => format!("revokes the invite for {name}"),
+        DestructiveKind::StopsService => format!("stops Service {name} until started again"),
+        DestructiveKind::RestartsService => format!("restarts Service {name}"),
     }
 }
 

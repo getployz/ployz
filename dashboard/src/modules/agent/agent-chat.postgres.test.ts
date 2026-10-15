@@ -248,16 +248,14 @@ it.live("a turn Claude fails tells the member what happened in plain words, neve
     expect(JSON.stringify(failed)).not.toContain("credit balance");
   }));
 
-it.live("a Service restart runs through Cloud without asking anyone", () =>
+it.live("a Service restart from the sidebar waits on a human before it runs", () =>
   Effect.gen(function* () {
     const { say, pending } = yield* sidebar({ removeWeb: false });
     const model = fakeText();
     model.setResponses([{ toolCalls: [{ name: "service_restart", input: { service: "web", wait_seconds: 0 } }] }, { text: "Restarting." }]);
-    const answered = yield* say("restart web", { page: architecture }, model);
-    expect(answered.results).toMatchObject([{ ok: true, value: { run: "restart web", state: "accepted", at: "shop/production" } }]);
-    expect(answered.said).toBe("Restarting.");
-    expect(answered.interrupts).toEqual([]);
-    expect(yield* pending).toEqual([]);
+    const asked = yield* say("restart web", { page: architecture }, model);
+    expect(asked.results).toEqual([]);
+    expect(yield* waitingApproval(asked, pending)).toMatchObject({ command: "restart", status: "pending" });
   }));
 
 const architecture = { page: "architecture", project: "shop", environment: "production", service: "web" };

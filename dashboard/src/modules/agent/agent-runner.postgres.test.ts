@@ -124,7 +124,7 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     steps: [{
       tool: "github_ls",
       input: { repository: "acme/docs" },
-      hears: { ok: true, value: { repository: "acme/docs", ref: "main", entries: [{ path: "README.md", kind: "file" }, { path: "src", kind: "directory" }] } },
+      hears: { ok: true, value: { repository: "acme/docs", ref: "main", untrusted: { entries: [{ path: "README.md", kind: "file" }, { path: "src", kind: "directory" }] } } },
     }],
   },
   {
@@ -132,7 +132,7 @@ const cases: ReadonlyArray<{ readonly name: string; readonly seed?: boolean; rea
     steps: [{
       tool: "github_ls",
       input: { repository: "acme/docs", path: "README.md" },
-      hears: { ok: true, value: { repository: "acme/docs", ref: "main", path: "README.md", content: "# Docs\n" } },
+      hears: { ok: true, value: { repository: "acme/docs", ref: "main", path: "README.md", untrusted: { content: "# Docs\n" } } },
     }],
   },
   {

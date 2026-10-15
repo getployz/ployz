@@ -234,7 +234,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>` or `invite:<invite id>`. */
+  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>` or `service:<environment id>/<name>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -288,6 +288,10 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
 });
+
+/** A new ask for `asked` once the approval that covered it has run its one operation. */
+export const askAgain = (caller: Caller, asked: OperationAsked) =>
+  requestOperationApproval(caller, asked, operationDigest(asked)).pipe(Effect.orDie);
 
 /** One approval in the caller's Organization, superseded first if its Environment moved on or its preview changed. */
 export const getApproval = <R = never>(organizationId: string, id: string, operationDigest?: OperationDigest<R>) =>

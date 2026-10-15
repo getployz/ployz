@@ -82,7 +82,7 @@ fn node(node: &NodeOutcome) -> Value {
         object.insert("server".into(), server.into());
         object.insert("reason".into(), reason.as_str().into());
         object.insert("step".into(), json!(step));
-        object.insert("excerpt".into(), json!(log));
+        object.insert("untrusted".into(), json!({ "excerpt": log }));
     }
     shown
 }
@@ -144,7 +144,7 @@ fn summary(deployment: &DeploymentSummary) -> Value {
         "status": deployment.status,
         "in_flight": deployment.in_flight,
         "reason": reason(deployment.outcome.as_ref()),
-        "message": deployment.message,
+        "untrusted": { "message": deployment.message },
         "saved_revision": deployment.saved.0,
         "started_at": deployment.started_at,
         "ended_at": deployment.ended_at,
