@@ -102,7 +102,7 @@ A build step can still reach any port your services publish on a public address,
 address on 80 and 443, and your other servers' public addresses. Don't leave anything on those
 addresses open without a login. It can't reach the build server's local network, like a cloud VPC
 or office LAN, any other private address, or the cloud's metadata service, even through a port
-published there. Its DNS keeps working.
+published there. Its DNS keeps working, so port 53 stays open to any address, private ones too.
 
 A Dockerfile `ADD` of a URL or Git repository reaches the internet, and nothing on the server
 running the build or your servers' private network, except the image servers Ployz uses to share
