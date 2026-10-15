@@ -9,7 +9,7 @@ use clap::ArgMatches;
 use serde_json::json;
 
 use super::harness::{
-    EnrollListen, JoinDaemon, PAIRING, TOKEN, registration, serve_local_machine, serve_machine,
+    EnrollListen, JoinDaemon, PAIRING, registration, serve_local_machine, serve_machine,
 };
 
 #[derive(Clone, Copy)]
@@ -46,8 +46,8 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             connect,
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            super::harness::token_file(),
             "--cloud-url",
             cloud_url,
             "--name",

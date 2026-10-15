@@ -1,4 +1,4 @@
-//! Best-effort setup report for `ployz server add --token`: the Server profile and step times.
+//! Best-effort setup report for token enrollment: the Server profile and step times.
 //!
 //! One POST to `<cloud>/api/enroll/report` once setup succeeds or fails. It never
 //! changes what the user sees: one attempt, a short timeout, every error swallowed.
@@ -29,7 +29,7 @@ const PROVIDERS: &[(&str, &str, bool)] = &[
     ("oracle", "oracle", false),
 ];
 
-/// The steps of `server add --token`, in order.
+/// The steps of token enrollment, in order.
 ///
 /// The names are an analytics contract: renaming one breaks every chart built on it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -105,7 +105,7 @@ struct Body<'report> {
     total_seconds: f64,
 }
 
-/// Times the steps of one `server add --token` run and collects the Server profile.
+/// Times the steps of one token enrollment and collects the Server profile.
 pub(crate) struct SetupReport {
     started: Instant,
     finished: Vec<StepTime>,

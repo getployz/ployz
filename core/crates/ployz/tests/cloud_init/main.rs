@@ -30,23 +30,32 @@ async fn cloud_init_join_participates() {
     let daemon = JoinDaemon::new(registration.clone()).lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    let output = harness::cli()
+    // The pasted line's shape: the token arrives on stdin, never in argv.
+    let mut child = harness::cli()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-stdin",
             "--cloud-url",
             &enroll.url,
             "--name",
             "joiner",
             "--yes",
         ])
-        .output()
-        .await
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut child.stdin.take().unwrap(),
+        format!("{TOKEN}\n").as_bytes(),
+    )
+    .await
+    .unwrap();
+    let output = child.wait_with_output().await.unwrap();
     assert!(
         output.status.success(),
         "stderr: {}\nstdout: {}",
@@ -71,9 +80,9 @@ async fn cloud_init_join_participates() {
     assert_eq!(
         enroll.paths(),
         [
-            format!("/api/enroll/{TOKEN}"),
-            format!("/api/enroll/{TOKEN}/callback"),
-            format!("/api/enroll/{TOKEN}/callback"),
+            "/api/enroll".to_owned(),
+            "/api/enroll/callback".to_owned(),
+            "/api/enroll/callback".to_owned(),
         ]
     );
     assert_eq!(
@@ -159,13 +168,12 @@ async fn cloud_init_initialize_participates() {
     let machine_addr = serve_machine(daemon.clone()).await;
 
     let output = harness::cli()
+        .env("PLOYZ_ENROLL_TOKEN", TOKEN)
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -218,9 +226,9 @@ async fn cloud_init_initialize_participates() {
     assert_eq!(
         enroll.paths(),
         [
-            format!("/api/enroll/{TOKEN}"),
-            format!("/api/enroll/{TOKEN}/callback"),
-            format!("/api/enroll/{TOKEN}/callback"),
+            "/api/enroll".to_owned(),
+            "/api/enroll/callback".to_owned(),
+            "/api/enroll/callback".to_owned(),
         ]
     );
     assert_eq!(
@@ -301,8 +309,8 @@ async fn caddy_lookup_failure_happens_before_initialize() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -354,8 +362,8 @@ async fn cloud_init_retries_not_yet_then_joins() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -390,10 +398,10 @@ async fn cloud_init_retries_not_yet_then_joins() {
     assert_eq!(
         enroll.paths(),
         [
-            format!("/api/enroll/{TOKEN}"),
-            format!("/api/enroll/{TOKEN}"),
-            format!("/api/enroll/{TOKEN}/callback"),
-            format!("/api/enroll/{TOKEN}/callback"),
+            "/api/enroll".to_owned(),
+            "/api/enroll".to_owned(),
+            "/api/enroll/callback".to_owned(),
+            "/api/enroll/callback".to_owned(),
         ]
     );
     assert_eq!(enroll.publications().len(), 1);
@@ -434,8 +442,8 @@ async fn cloud_init_retries_not_yet_then_initializes() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -481,8 +489,8 @@ async fn init_cloud(
         connect,
         "server",
         "add",
-        "--token",
-        TOKEN,
+        "--token-file",
+        harness::token_file(),
         "--cloud-url",
         enroll_url,
         "--name",
@@ -646,8 +654,8 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -836,8 +844,8 @@ async fn join_places_observed_ingress_on_this_machine() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -886,8 +894,8 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -932,8 +940,8 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -987,8 +995,8 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -1043,8 +1051,8 @@ async fn join_starts_created_ingress_before_success() {
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -1112,8 +1120,8 @@ async fn join_against_founder(founder: &ployz_core::Machine) -> Vec<ployz_core::
             &format!("ssh://root@{machine_addr}"),
             "server",
             "add",
-            "--token",
-            TOKEN,
+            "--token-file",
+            harness::token_file(),
             "--cloud-url",
             &enroll.url,
             "--name",
@@ -1201,4 +1209,25 @@ fn container_on(
         labels: Default::default(),
     })
     .unwrap()
+}
+
+#[tokio::test]
+async fn enrollment_token_comes_from_exactly_one_source() {
+    for extra in [
+        ["--token-stdin"].as_slice(),
+        ["--token-file", harness::token_file()].as_slice(),
+        ["--command"].as_slice(),
+    ] {
+        let output = harness::cli()
+            .env("PLOYZ_ENROLL_TOKEN", TOKEN)
+            .args(["--json", "server", "add"])
+            .args(extra)
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{extra:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("PLOYZ_ENROLL_TOKEN"), "{extra:?}: {stdout}");
+        assert!(!stdout.contains(TOKEN), "{extra:?}: {stdout}");
+    }
 }

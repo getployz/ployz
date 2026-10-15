@@ -42,14 +42,14 @@ pub(super) fn enroll(
     })
 }
 
-/// Run `server add --token` enrollment, installing this CLI's daemon version with `install`.
+/// Run token enrollment, installing this CLI's daemon version with `install`.
 ///
 /// `install` receives `none` for software-only synchronization and `zfs` for
 /// storage preparation; tests substitute it to avoid provisioning a real daemon.
 ///
 /// # Errors
 ///
-/// Returns the same CLI failure as `ployz server add --token`.
+/// Returns the same CLI failure as `ployz server add --token-stdin`.
 #[doc(hidden)]
 pub fn enroll_with_installer<Install, InstallFuture>(
     root: &ArgMatches,

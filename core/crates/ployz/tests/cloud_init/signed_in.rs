@@ -109,7 +109,10 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
             json!({ "organizationSlug": "acme" })
         )]
     );
-    assert_eq!(enroll.paths().get(1), Some(&format!("/api/enroll/{TOKEN}")));
+    assert_eq!(
+        enroll.paths().get(1).map(String::as_str),
+        Some("/api/enroll")
+    );
 }
 
 #[tokio::test]
@@ -181,7 +184,7 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
     assert_eq!(
         pending.pointer("/command"),
         Some(&json!(format!(
-            "curl -fsSL https://ployz.sh/ | sh -s -- {} && sudo ployz server add --token '{TOKEN}' --cloud-url '{}'",
+            " curl -fsSL https://ployz.sh/ | sh -s -- {} && printf '%s\\n' '{TOKEN}' | sudo ployz server add --token-stdin --cloud-url '{}'",
             env!("CARGO_PKG_VERSION"),
             cloud.url
         )))

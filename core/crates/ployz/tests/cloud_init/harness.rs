@@ -41,6 +41,16 @@ pub use enroll_http::{EnrollListen, EventLog, ReportReply};
 pub use servers::{cli, serve_local_machine, serve_machine};
 
 pub const TOKEN: &str = "pmet_test";
+
+/// A file holding [`TOKEN`], for `--token-file`.
+pub fn token_file() -> &'static str {
+    static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FILE.get_or_init(|| {
+        let path = concat!(env!("CARGO_TARGET_TMPDIR"), "/cloud-init-enroll-token");
+        std::fs::write(path, format!("{TOKEN}\n")).unwrap();
+        path.to_owned()
+    })
+}
 pub const PAIRING: &str = "pairing-secret";
 pub const RESET_PUBLIC_KEY: WireGuardPublicKey = WireGuardPublicKey([0xff; 32]);
 

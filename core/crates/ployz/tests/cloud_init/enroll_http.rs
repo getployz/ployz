@@ -138,6 +138,14 @@ impl EnrollListen {
                     .nth(1)
                     .unwrap()
                     .to_owned();
+                if path.starts_with("/api/enroll")
+                    && !request
+                        .lines()
+                        .any(|line| line == format!("authorization: Bearer {}", super::TOKEN))
+                {
+                    write_http(&mut stream, 401, "Unauthorized", &[]).await;
+                    continue;
+                }
                 // Reports stay out of `paths`: they follow every outcome.
                 if path.ends_with("/report") {
                     let completions = recorded_callbacks.lock().unwrap().len();

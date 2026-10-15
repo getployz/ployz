@@ -744,7 +744,7 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
         vec!["server", "set", "node"],
         vec!["server", "add", "--standalone"],
         vec!["server", "add", "root@node"],
-        vec!["server", "add", "--token", "pmet_test"],
+        vec!["server", "add", "--token-stdin"],
     ] {
         let mut args = vec!["ployz"];
         args.extend(path);

@@ -771,7 +771,7 @@ mod tests {
             tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
                 .await
                 .unwrap();
-            String::from_utf8_lossy(&buf[..read]).into_owned()
+            String::from_utf8_lossy(buf.get(..read).unwrap()).into_owned()
         });
         let url = enroll_url(&origin);
         enroll(&url, &token(), &identity()).await.unwrap();
