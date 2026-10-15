@@ -54,7 +54,9 @@ impl MachineService {
         )
         .await;
         // Detached with the switch guard, so a caller that hangs up mid-drain does not
-        // free the next request to plan against a cut still running.
+        // free the next request to plan against a cut still running. The task runs this
+        // one transition and ends when ZFS or Docker answers; it never retries or starts
+        // other work.
         let service = self.clone();
         let admitted = tokio::spawn(async move {
             let _guard = guard;

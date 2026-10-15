@@ -1,5 +1,8 @@
 //! The Log Store: Docker's `local` log files for Ployz containers, kept
 //! after Docker would delete them.
+//!
+//! The Observe Store only observes this Machine: it never places, moves, restarts
+//! or removes a container, and no Deploy waits on it.
 
 pub mod cleanup;
 mod client;
