@@ -1256,7 +1256,7 @@ saved: Revision | null,
 /**
  * Whether Saved State already holds this Working State.
  */
-published: boolean, changes: Array<NodeChange>,
+holds_staged: boolean, changes: Array<NodeChange>,
 /**
  * How many changes there are, counting each node and each Setting.
  */

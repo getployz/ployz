@@ -106,7 +106,7 @@ it("says a Save deletes nothing until the next deploy, and approving it saves wi
   expect(card.getByRole("list", { name: "Destroys" }).textContent).toBe("Next deploy deletes volume pg-data.");
   fireEvent.click(card.getByRole("button", { name: /^Approve/ }));
   await waitFor(() => expect(onSettled).toHaveBeenCalled());
-  expect(screen.getByText("Approved. Saved, not deployed.")).toBeTruthy();
+  expect(screen.getByText("Approved. Saves without deploying.")).toBeTruthy();
 });
 
 it("counts a Deploy's deleted Volumes, and anything else it destroys as things", () => {

@@ -16,7 +16,7 @@ use crate::{
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct History {
-    /// Saved revision number. review shows the latest as saved_revision.
+    /// Saved revision number. review shows the latest as saved.revision.
     revision: u64,
     /// Reverse only what this revision changed, keeping later ones.
     #[serde(default)]

@@ -130,8 +130,12 @@ pub(crate) fn publish(
         trusted.volumes.as_ref(),
     )
     .map_err(|mut error| {
-        if error.code == ployz_core::RpcErrorCode::ConfirmationRequired {
-            "Next deploy deletes volume data".clone_into(&mut error.message);
+        // Volume loss is the one confirmation `destructive` asks; saving deletes
+        // nothing itself, so the loss is the next deploy's.
+        if error.code == ployz_core::RpcErrorCode::ConfirmationRequired
+            && let Some(rest) = error.message.strip_prefix("This permanently deletes")
+        {
+            error.message = format!("Next deploy deletes{rest}");
         }
         error
     })?;

@@ -27,7 +27,7 @@ pub(super) fn command() -> Command {
          deleted. Cloud tries each Server first, waiting up to ten seconds for it, and \
          refuses while any answers. Projects, settings and Deployment history stay; \
          Volume data on these Servers can't be recovered. The next ployz server add \
-         starts over, and published Environments deploy to it. Type the Organization's \
+         starts over, and Environments with a saved or deployed revision deploy to it. Type the Organization's \
          slug with --confirm.\n\n\
          Without --confirm outside a terminal, either form fails with \
          confirmation_required, naming what goes and the exact command to retry.",

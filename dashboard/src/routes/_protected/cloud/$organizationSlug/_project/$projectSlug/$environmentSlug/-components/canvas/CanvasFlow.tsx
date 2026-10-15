@@ -250,7 +250,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
   const groups = mergeRestoreGroups(storeGroups, placements.groups);
   const discardNode = (group: ChangeGroup) => group.owner === "placement" ? placements.discard(group.nodeId) : actions.discard(group.discardPath, group.discardTarget);
-  const hasSomethingToSave = (diff.draft_count ?? (diff.published ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
+  const hasSomethingToSave = (diff.draft_count ?? (diff.holds_staged ? 0 : diff.total_count)) > 0 || diff.included.length > 0;
   const writer = useStoreWriter(params.organizationSlug);
   const [including, setIncluding] = useState<string | null>(null);
   return (

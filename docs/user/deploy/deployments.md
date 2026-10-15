@@ -28,7 +28,7 @@ private image.
    **Message (optional)** if you like.
 2. Click **Deploy changes**. **Deploy** in the bottom bar skips the review.
 
-![Details: each change, a deploy message, and Discard all changes, Save and Deploy changes](../images/review-changes.png)
+![Details: a message box, each staged change, and Discard all, Save only and Deploy changes](../images/review-changes.png)
 
 Ployz opens the new deployment's page. A deploy covers the whole environment, not only what you
 changed: every GitHub service moves to the newest commit on its Git branch, and if you've added

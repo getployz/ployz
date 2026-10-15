@@ -332,10 +332,10 @@ stdout:
     "revision": 21
   },
   "follow_hints": [],
+  "holds_staged": false,
   "included": [],
   "incoming": [],
   "next": "ployz deploy --skip-deploy --expect-version 21:0:0.0 --project shop",
-  "published": false,
   "saved": null,
   "total_count": 11,
   "version": "21:0:0.0"
@@ -416,7 +416,7 @@ $ ployz deploy --skip-deploy
 
 stdout:
 ```
-Saved shop/production as version 1. Not deployed.
+Saved shop/production as #1. Not deployed.
 ```
 
 stderr:
@@ -442,7 +442,7 @@ web (create)
   web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
   web.env.LOG_LEVEL: null → "info"
 pgdata (create)
-Saved as version 1. Not deployed.
+Saved as #1. Not deployed.
 ```
 
 stderr:
@@ -459,7 +459,7 @@ $ ployz deploy --skip-deploy
 
 stdout:
 ```
-Version 1 already holds shop/production. Not deployed.
+#1 already holds shop/production. Not deployed.
 ```
 
 stderr:
@@ -544,9 +544,9 @@ stdout:
     "revision": 1
   },
   "follow_hints": [],
+  "holds_staged": false,
   "included": [],
   "incoming": [],
-  "published": false,
   "saved": null,
   "total_count": 0,
   "version": "1:0:0.0"
@@ -839,6 +839,7 @@ stdout:
     "revision": 33
   },
   "follow_hints": [],
+  "holds_staged": false,
   "included": [
     {
       "changes": 3,
@@ -856,7 +857,6 @@ stdout:
   ],
   "incoming": [],
   "next": "ployz deploy --skip-deploy --expect-version 33:3:0.0 --project shop",
-  "published": false,
   "saved": 3,
   "total_count": 8,
   "version": "33:3:0.0"

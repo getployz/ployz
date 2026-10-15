@@ -17,7 +17,7 @@ function cached() {
   const put = (query: Parameters<typeof storeViewOptions>[2], value: DiffView | EnvironmentView | ServicesView) =>
     queryClient.setQueryData<unknown>(key(query), { ok: true, value: { view: query.query, ...value } });
   put(diffQuery(ref), {
-    environment, version: "3:1:1", saved: 1, published: false, incoming: [], follow_hints: [], included: [], total_count: 3, changes: [
+    environment, version: "3:1:1", saved: 1, holds_staged: false, incoming: [], follow_hints: [], included: [], total_count: 3, changes: [
       { type: "service", id: "w", row: rowId("w:node"), name: "web", lifecycle: "update", comparison: null, data: null, restarts: [], settings: [
         { path: "web.replicas", kind: "update", before: 1, after: 3, canRestore: true, row: null },
         { path: "web.startCommand", kind: "update", before: null, after: "serve", canRestore: true, row: null },

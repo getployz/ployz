@@ -44,6 +44,7 @@ pub struct DiffView {
     /// The latest Saved revision, if anything was ever published.
     pub saved: Option<Revision>,
     /// Whether Saved State already holds this Working State.
+    #[serde(rename = "holds_staged")]
     pub published: bool,
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.

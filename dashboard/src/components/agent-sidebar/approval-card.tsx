@@ -32,7 +32,7 @@ export function ApprovalCard({ organizationSlug, id, seed, autoFocus, onSettled 
   if (approval === undefined) return null;
   switch (approval.status) {
     case "pending": return <PendingCard organizationSlug={organizationSlug} approval={approval} autoFocus={autoFocus} />;
-    case "approved": return <Marker><MarkerContent>Approved. {approval.command === "publish" ? "Saved, not deployed." : `${approvalSubject(approval.command, approval.review).verb} goes ahead.`}</MarkerContent></Marker>;
+    case "approved": return <Marker><MarkerContent>Approved. {approval.command === "publish" ? "Saves without deploying." : `${approvalSubject(approval.command, approval.review).verb} goes ahead.`}</MarkerContent></Marker>;
     case "denied": return <Marker><MarkerContent>Denied{approval.reason ? `: ${approval.reason}` : "."}</MarkerContent></Marker>;
     case "superseded": return <Marker><MarkerContent>The plan changed since this was asked. Ask again to review the new one.</MarkerContent></Marker>;
   }

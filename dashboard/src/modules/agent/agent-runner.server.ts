@@ -104,7 +104,7 @@ const StaleReview = Schema.Struct({
   diff: Schema.Struct({
     environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String, revision: Schema.Number }),
     saved: Schema.NullOr(Schema.Number),
-    published: Schema.Boolean,
+    holds_staged: Schema.Boolean,
   }),
 });
 
@@ -116,9 +116,9 @@ const landedPublish = (sent: ConfigCommand, reviewed: DiffView, refusal: StoreRe
   if (sent.command !== "publish" || sent.version !== reviewed.version || refusal.code !== "conflict") return null;
   const stale = Schema.decodeUnknownOption(StaleReview)(refusal.details);
   if (Option.isNone(stale)) return null;
-  const { environment, saved, published } = stale.value.diff;
+  const { environment, saved, holds_staged: holdsStaged } = stale.value.diff;
   const same = environment.id === reviewed.environment.id && environment.revision === reviewed.environment.revision;
-  return published && same ? { written: "published", environment, saved, created: false } : null;
+  return holdsStaged && same ? { written: "published", environment, saved, created: false } : null;
 };
 
 /** A Store answer as `caller` may read it: support sees it under the Organization's rules. */

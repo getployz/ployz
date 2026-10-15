@@ -219,12 +219,10 @@ fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
     let hint = next(matches, &["deploy"]);
     ui::finish(&Next::new(&saved, Some(hint.clone())), || {
         if saved.created {
-            ui::stream(format_args!(
-                "Saved {where_} as version {version}. Not deployed."
-            ));
+            ui::stream(format_args!("Saved {where_} as #{version}. Not deployed."));
         } else {
             ui::stream(format_args!(
-                "Version {version} already holds {where_}. Not deployed."
+                "#{version} already holds {where_}. Not deployed."
             ));
         }
         ui::hint(&Hint::Next(hint));

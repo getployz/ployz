@@ -791,6 +791,10 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     let refused = publish(&[], Some(observed(&['a'])), None, free.clone()).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(refused.details["accept"], json!(["data"]));
+    assert_eq!(
+        refused.message,
+        "Next deploy deletes the data of data. Accept each by name"
+    );
     let bound = refused.details["version"].as_str().unwrap().to_owned();
     let bound = Some(bound.as_str());
 

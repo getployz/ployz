@@ -576,7 +576,7 @@ fn asked(id: &str) -> Value {
                 },
                 "version": "3:abc",
                 "saved": 2,
-                "published": false,
+                "holds_staged": false,
                 "changes": [],
                 "total_count": 3,
             },
@@ -2067,7 +2067,7 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(saved.get("created"), Some(&json!(true)));
         assert_eq!(saved.get("next"), Some(&json!("ployz deploy")));
         let diff = ok(store, &["diff"]);
-        assert_eq!(diff.get("published"), Some(&json!(true)));
+        assert_eq!(diff.get("holds_staged"), Some(&json!(true)));
         let version = diff["version"].as_str().unwrap();
         assert_eq!(
             diff.get("next"),
@@ -2081,7 +2081,7 @@ fn an_agent_reviews_saves_and_discards() {
         let inverse = ok(store, &["diff"]);
         assert_eq!(inverse.get("changes"), Some(&json!([])));
         assert_eq!(inverse.get("draft_count"), Some(&json!(1)));
-        assert_eq!(inverse.get("published"), Some(&json!(false)));
+        assert_eq!(inverse.get("holds_staged"), Some(&json!(false)));
         assert_eq!(
             inverse.pointer("/draft_changes/0/lifecycle"),
             Some(&json!("delete"))
@@ -2109,7 +2109,7 @@ fn an_agent_reviews_saves_and_discards() {
         let after = ok(store, &["diff"]);
         assert_eq!(after.get("changes"), Some(&json!([])));
         assert_eq!(after.get("draft_count"), Some(&json!(0)));
-        assert_eq!(after.get("published"), Some(&json!(true)));
+        assert_eq!(after.get("holds_staged"), Some(&json!(true)));
         assert_eq!(
             ok(store, &["history"])["revisions"]
                 .as_array()
@@ -3882,7 +3882,7 @@ fn without_a_terminal_a_denied_save_fails_with_the_reason() {
     assert!(!stderr.contains("apr_1"), "{stderr}");
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
-    assert_eq!(diff["published"], json!(false), "nothing was saved");
+    assert_eq!(diff["holds_staged"], json!(false), "nothing was saved");
 }
 
 #[cfg(unix)]
@@ -3921,7 +3921,7 @@ fn without_a_terminal_ctrl_c_stops_the_wait_and_saves_nothing() {
     );
     assert!(approvals.calls().iter().all(|call| call.0 == "GET"));
     let diff = ok(&target, &["diff"]);
-    assert_eq!(diff["published"], json!(false), "nothing was saved");
+    assert_eq!(diff["holds_staged"], json!(false), "nothing was saved");
 }
 
 #[test]
@@ -4044,7 +4044,7 @@ fn at_a_terminal_the_environment_name_approves_and_saves() {
         approvals.calls(),
         [("POST".to_owned(), "apr_1".to_owned(), approve)]
     );
-    assert_eq!(ok(&target, &["diff"])["published"], json!(true));
+    assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(true));
 }
 
 #[test]

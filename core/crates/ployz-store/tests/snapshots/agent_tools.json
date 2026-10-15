@@ -1429,7 +1429,7 @@
             "type": "string"
           },
           "revision": {
-            "description": "Saved revision number. review shows the latest as saved_revision.",
+            "description": "Saved revision number. review shows the latest as saved.revision.",
             "minimum": 0,
             "type": "integer"
           },

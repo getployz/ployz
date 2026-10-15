@@ -1051,7 +1051,7 @@ mod tests {
         };
         let refused = ployz_core::RpcError {
             code: RpcErrorCode::ConfirmationRequired,
-            message: "Next deploy deletes volume data".into(),
+            message: "Next deploy deletes the data of pg-data, logs. Accept each by name".into(),
             details: json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }),
             cause: Vec::new(),
         };

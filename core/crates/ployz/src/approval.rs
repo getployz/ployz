@@ -152,7 +152,9 @@ impl Asked {
                 .effects
                 .iter()
                 .all(|effect| effect.kind == DestructiveKind::ChangesRole);
-        let mut lines = vec![if verb == Verb::Publish {
+        let mut lines = vec![if verb == Verb::Publish && changes_only {
+            format!("The next deploy{within} after this save:")
+        } else if verb == Verb::Publish {
             format!(
                 "The next deploy{within} after this save destroys {}:",
                 things(self.effects.len())
@@ -365,6 +367,18 @@ mod tests {
             asked.review(asked.verb()),
             [
                 "This change in Organization acme:",
+                "  ~ changes the role of bob@example.com",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_save_that_only_changes_roles_destroys_nothing() {
+        let asked = asked("set", "changes_role");
+        assert_eq!(
+            asked.review(Verb::Publish),
+            [
+                "The next deploy in Organization acme after this save:",
                 "  ~ changes the role of bob@example.com",
             ]
         );

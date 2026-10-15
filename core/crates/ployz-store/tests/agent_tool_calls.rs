@@ -672,7 +672,7 @@ fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged()
         "This Organization has no servers yet, so nothing deployed. Add one from a terminal, then deploy again."
     );
     let review = call(&store, "review", json!({}), "review-1").ok();
-    assert_eq!(review["saved_revision"], Value::Null, "nothing was saved");
+    assert_eq!(review.get("saved"), Some(&Value::Null), "nothing was saved");
     assert_eq!(review["staged"], 1, "the change stays Staged");
 }
 

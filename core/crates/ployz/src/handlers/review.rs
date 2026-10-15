@@ -149,7 +149,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         }
         if view.published && !view.changes.is_empty() {
             crate::ui::stream(format_args!(
-                "Saved as version {}. Not deployed.",
+                "Saved as #{}. Not deployed.",
                 view.saved.map_or(0, |saved| saved.0)
             ));
         }

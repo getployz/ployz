@@ -86,7 +86,7 @@ impl Tool for Review {
             "revision": diff.environment.revision.0,
             "version": diff.version,
             "saved": diff.saved.map(|saved| json!({
-                "version": saved.0,
+                "revision": saved.0,
                 "holds_staged": diff.published,
             })),
             "staged": diff.total_count,
@@ -314,7 +314,7 @@ impl Tool for DeployInput {
             return Ok(json!({
                 "at": at(&saved.environment),
                 "saved": {
-                    "version": saved.saved.map(|saved| saved.0),
+                    "revision": saved.saved.map(|saved| saved.0),
                     "created": saved.created,
                 },
             }));

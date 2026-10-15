@@ -243,7 +243,7 @@ fn deploy_with_skip_deploy_saves_everything_staged_and_queues_nothing() {
     );
     let done = result(&first);
     assert_eq!(
-        done.pointer("/value/saved/version"),
+        done.pointer("/value/saved/revision"),
         Some(&serde_json::json!(1)),
         "{done}"
     );
