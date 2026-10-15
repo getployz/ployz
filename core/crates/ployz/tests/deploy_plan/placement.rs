@@ -1752,13 +1752,23 @@ fn deploy_replaces_the_serving_container_and_removes_a_requested_one_that_never_
         },
         ServiceMode::Global,
     ] {
-        for health in [HealthObservation::Starting, HealthObservation::Unhealthy] {
+        for (health, stray_sorts_first) in [
+            (HealthObservation::Starting, false),
+            (HealthObservation::Starting, true),
+            (HealthObservation::Unhealthy, false),
+            (HealthObservation::Unhealthy, true),
+        ] {
             let requested = requested(mode.clone());
             let mut current = requested.clone();
             current.container.image = "ghcr.io/getployz/api:old".into();
             let current_service_id = service_id('a');
-            let serving = container('b', '1', &current, &current_service_id);
-            let mut stray = container('c', '1', &requested, &current_service_id);
+            let (serving_id, stray_id) = if stray_sorts_first {
+                ('c', 'b')
+            } else {
+                ('b', 'c')
+            };
+            let serving = container(serving_id, '1', &current, &current_service_id);
+            let mut stray = container(stray_id, '1', &requested, &current_service_id);
             stray
                 .try_update(|parts| {
                     parts.runtime = ContainerRuntimeObservation::Running {
@@ -1766,11 +1776,16 @@ fn deploy_replaces_the_serving_container_and_removes_a_requested_one_that_never_
                     }
                 })
                 .unwrap();
+            let containers = if stray_sorts_first {
+                vec![stray, serving]
+            } else {
+                vec![serving, stray]
+            };
             let plan = plan_deploy(
                 [&requested],
                 &DeploySnapshot {
                     machines: vec![machine('1', "first")],
-                    containers: vec![serving, stray],
+                    containers,
                     ..Default::default()
                 },
                 PlanOptions::default(),
@@ -1784,26 +1799,26 @@ fn deploy_replaces_the_serving_container_and_removes_a_requested_one_that_never_
                     DeployOperation::ReplaceContainer(ReplacementOperation {
                         old_container_id,
                         ..
-                    }) if old_container_id == &container_id('b')
+                    }) if old_container_id == &container_id(serving_id)
                 )),
-                "{mode:?} {health:?}: {operations:?}"
+                "{mode:?} {health:?} stray sorts first {stray_sorts_first}: {operations:?}"
             );
             assert!(
                 operations.iter().any(|operation| matches!(
                     operation,
                     DeployOperation::RemoveContainer { container_id: removed, .. }
-                        if removed == &container_id('c')
+                        if removed == &container_id(stray_id)
                 )),
-                "{mode:?} {health:?}: {operations:?}"
+                "{mode:?} {health:?} stray sorts first {stray_sorts_first}: {operations:?}"
             );
             assert!(
                 !operations.iter().any(|operation| matches!(
                     operation,
                     DeployOperation::RemoveContainer { container_id: removed, .. }
                         | DeployOperation::StopContainer { container_id: removed, .. }
-                        if removed == &container_id('b')
+                        if removed == &container_id(serving_id)
                 )),
-                "{mode:?} {health:?}: {operations:?}"
+                "{mode:?} {health:?} stray sorts first {stray_sorts_first}: {operations:?}"
             );
         }
     }
