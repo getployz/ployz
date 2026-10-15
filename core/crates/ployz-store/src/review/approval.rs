@@ -11,7 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::{ApprovalDigest, EnvironmentId, Hostname};
+use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
 use crate::review::{DiffView, Head, Review, Shipping};
 use crate::{Actor, Approval, Asks, Trusted};
 
@@ -295,6 +295,38 @@ pub(crate) fn approve(
     };
     let digest = digest(&diff.version, &bound);
     require(&trusted.approval, digest, message, (effects, diff))
+}
+
+/// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
+/// retry. Only [`Asks::EveryDeploy`] asks: a retry ships nothing a review hasn't.
+/// `review` is taken before the retry queues, so its version moves once it does: one
+/// approval admits one retry.
+///
+/// # Errors
+/// `approval_required`, naming the `version:digest` to approve and the `diff`.
+pub(crate) fn approve_retry(
+    who: &Actor,
+    environment: &EnvironmentId,
+    review: &Review,
+    source: &DeploymentId,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    let bound = json!({
+        "organization": who.organization,
+        "environment": environment,
+        "retry": source,
+    });
+    // The retry destroys only what its source's review already accepted.
+    let mut diff = review.view.clone();
+    diff.effects.clear();
+    let digest = digest(&diff.version, &bound);
+    let message = "A human must approve this retry first.".to_owned();
+    require(
+        &trusted.approval,
+        digest,
+        message,
+        (&BTreeSet::new(), &diff),
+    )
 }
 
 fn require(

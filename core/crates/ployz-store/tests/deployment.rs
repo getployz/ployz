@@ -3346,6 +3346,49 @@ fn an_agent_approval_admits_only_the_services_it_named() {
     agent_deploys_only(&store, &who, 2, "web", approved(&refused)).unwrap();
 }
 
+fn agent_retries(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    source: u8,
+    approval: Approval,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Retry(Retry {
+            id: id(n),
+            deployment: id(source),
+        }),
+        &Trusted {
+            approval,
+            asks: Asks::EveryDeploy,
+            ..Trusted::default()
+        },
+    )
+}
+
+#[test]
+fn an_agent_approval_admits_one_retry() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let refused = agent_retries(&store, &who, 3, 2, Approval::Required).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(refused.message, "A human must approve this retry first.");
+    assert_eq!(refused.details["effects"], json!([]));
+    let version = refused.details["diff"]["version"].as_str().unwrap();
+    let approval = refused.details["approval"].as_str().unwrap();
+    assert!(approval.starts_with(&format!("{version}:")), "{approval}");
+    agent_retries(&store, &who, 3, 2, approved(&refused)).unwrap();
+    agent_retries(&store, &who, 3, 2, approved(&refused)).unwrap();
+    cancel(&store, &who, 3).unwrap();
+    let again = agent_retries(&store, &who, 4, 2, approved(&refused)).unwrap_err();
+    assert_eq!(again.code.as_str(), "approval_required");
+    assert_ne!(again.details["approval"], refused.details["approval"]);
+}
+
 #[test]
 fn an_agent_deploy_of_saved_state_asks() {
     let (store, who) = shop();
