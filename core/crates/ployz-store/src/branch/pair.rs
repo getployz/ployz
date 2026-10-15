@@ -142,7 +142,13 @@ impl Move {
                     arrived(tx, &row.parent, Which::From(&from.summary.id))?
                         .into_iter()
                         .filter(|arrived| {
-                            matches!(arrived.arrival, Arrival::Pending { owner: Some(_), .. })
+                            matches!(
+                                arrived.arrival,
+                                Arrival::Pending {
+                                    claim: Claim::Owned { .. },
+                                    ..
+                                }
+                            )
                         })
                         .map(|arrived| arrived.row),
                 );
@@ -318,19 +324,21 @@ impl Checked<'_> {
             Way::Follow => How::Follow,
             Way::Sync | Way::Merge | Way::Copy => How::Sync,
         };
-        let (sync, proposal) = match owner {
-            Owner::None => (None, None),
-            Owner::Proposal { id, sync } => (Some(sync.clone()), Some(id.clone())),
-        };
         for landed in applied.landed {
-            let source = proposal.as_ref().map(|_| {
-                self.plan
-                    .rows()
-                    .iter()
-                    .find(|row| row.id == landed.row)
-                    .map_or(Cell::Absent, |row| row.from.clone())
-            });
-            let source = source.map(Box::new);
+            let claim = match owner {
+                Owner::None => Claim::Nobody,
+                Owner::Proposal { id, sync } => Claim::Owned {
+                    sync: sync.clone(),
+                    proposal: id.clone(),
+                    source: Box::new(
+                        self.plan
+                            .rows()
+                            .iter()
+                            .find(|row| row.id == landed.row)
+                            .map_or(Cell::Absent, |row| row.from.clone()),
+                    ),
+                },
+            };
             let arrived = Arrived {
                 other: of.other.clone(),
                 row: landed.row,
@@ -339,9 +347,7 @@ impl Checked<'_> {
                 arrival: Arrival::Pending {
                     prior: landed.prior,
                     was: landed.was,
-                    sync: sync.clone(),
-                    owner: proposal.clone(),
-                    source,
+                    claim,
                 },
             };
             arrive(tx, who, &into.summary.id, &arrived)?;
@@ -682,20 +688,27 @@ pub(super) enum How {
 /// Where an arrived row stands in its receiver.
 pub(super) enum Arrival {
     /// Staged, not deployed: `prior` is what the pair base held before it landed and
-    /// `was` the receiver's own, to rewind a discard and to undo `sync`, the Sync
-    /// that landed it. `owner` is the proposal that still owns it, and `source` the
-    /// source's cell it accepted.
+    /// `was` the receiver's own, to rewind a discard and to undo the Sync that landed
+    /// it.
     Pending {
         prior: Cell,
         was: SealedCell,
-        sync: Option<SyncId>,
-        owner: Option<ProposalId>,
-        source: Option<Box<Cell>>,
+        claim: Claim,
     },
     /// A Follow the receiver changed too, or discarded.
     Hint,
     /// Deployed.
     Settled,
+}
+
+pub(super) enum Claim {
+    Nobody,
+    Released(SyncId),
+    Owned {
+        sync: SyncId,
+        proposal: ProposalId,
+        source: Box<Cell>,
+    },
 }
 
 /// A row that arrived in a receiver from `other`.
@@ -720,20 +733,29 @@ fn arrive(
     arrived: &Arrived,
 ) -> Result<(), RpcError> {
     let (state, prior, was, sync, owner, source) = match &arrived.arrival {
-        Arrival::Pending {
-            prior,
-            was,
-            sync,
-            owner,
-            source,
-        } => (
-            "pending",
-            Some(json_of(prior)),
-            Some(json_of(was)),
-            sync.as_ref().map(SyncId::as_str),
-            owner.as_ref().map(ProposalId::as_str),
-            source.as_deref().map(json_of),
-        ),
+        Arrival::Pending { prior, was, claim } => {
+            let (sync, owner, source) = match claim {
+                Claim::Nobody => (None, None, None),
+                Claim::Released(sync) => (Some(sync.as_str()), None, None),
+                Claim::Owned {
+                    sync,
+                    proposal,
+                    source,
+                } => (
+                    Some(sync.as_str()),
+                    Some(proposal.as_str()),
+                    Some(json_of(source)),
+                ),
+            };
+            (
+                "pending",
+                Some(json_of(prior)),
+                Some(json_of(was)),
+                sync,
+                owner,
+                source,
+            )
+        }
         Arrival::Hint => ("hint", None, None, None, None, None),
         Arrival::Settled => ("settled", None, None, None, None, None),
     };
@@ -820,13 +842,19 @@ pub(super) fn arrived(
                 "pending" => Arrival::Pending {
                     prior: row.json(6, "Sync")?,
                     was: row.json(7, "Sync")?,
-                    sync: row.parse_optional(8, "Sync")?,
-                    owner: row.parse_optional(9, "Sync")?,
-                    source: row
-                        .optional_text(10)?
-                        .map(serde_json::from_str)
-                        .transpose()
-                        .map_err(|_| error::corrupt("Sync"))?,
+                    claim: match (
+                        row.parse_optional(8, "Sync")?,
+                        row.parse_optional(9, "Sync")?,
+                    ) {
+                        (None, None) => Claim::Nobody,
+                        (Some(sync), None) => Claim::Released(sync),
+                        (Some(sync), Some(proposal)) => Claim::Owned {
+                            sync,
+                            proposal,
+                            source: Box::new(row.json(10, "Sync")?),
+                        },
+                        (None, Some(_)) => return Err(error::corrupt("Sync")),
+                    },
                 },
                 "hint" => Arrival::Hint,
                 "settled" => Arrival::Settled,
