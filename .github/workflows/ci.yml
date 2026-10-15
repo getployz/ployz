@@ -61,6 +61,8 @@ jobs:
           "$RUNNER_TEMP/ployz-tools/actionlint"
       - name: Check routing and the required result
         run: python3 scripts/test-ci.py
+      - name: Keep generated SDK files out of git
+        run: test -z "$(git ls-files -- core/crates/ployz-sdk/generated)"
       - run: bash core/scripts/check-layer3-runner.sh
       - run: bash core/scripts/test-cli-installer.sh
       - run: bash core/scripts/test-release-packaging.sh
@@ -207,18 +209,6 @@ jobs:
         working-directory: .
         run: docker build --file dashboard/uptime/Dockerfile .
 
-  sdk-types:
-    needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'sdk-types')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bash core/scripts/check-sdk-types.sh
-
   macos-cli:
     defaults:
       run:
@@ -302,7 +292,7 @@ jobs:
   ready:
     name: CI ready
     if: always()
-    needs: [changes, contracts, rust-lint, rust-tests, uptime, sdk-types, macos-cli, cloud, release-contracts]
+    needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
