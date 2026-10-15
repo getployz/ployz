@@ -234,6 +234,12 @@ echo 'Waiting for approval'
         tar.add(binary, arcname='ployz')
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (root / 'release/checksums.txt').write_text(f'{digest}  {archive.name}\n')
+    # A throwaway key stands in for the release key.
+    subprocess.run(['minisign', '-G', '-W', '-p', root / 'test.pub', '-s', root / 'test.key'],
+                   check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(['minisign', '-S', '-l', '-s', root / 'test.key', '-m', root / 'release/checksums.txt',
+                    '-x', root / 'release/checksums.txt.minisig', '-t', 'ployz v1.2.3'],
+                   check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     stub(root / 'bin/curl', '''#!/bin/sh
 write_out=
 while [ "$#" -gt 0 ]; do
@@ -249,7 +255,8 @@ cp "$FAKE_RELEASE/${url##*/}" "$output"
     env.pop('PLOYZ_VERSION', None)
     env.update(PATH=f'{root}/bin:{env["PATH"]}', PLOYZ_TEST_ROOT=tmp,
                INSTALL_BIN_DIR=str(root / 'install'), FAKE_RELEASE=str(root / 'release'),
-               PLOYZ_GITHUB_URL='https://example.invalid', PROBE_ENV=str(root / 'env'),
+               PLOYZ_GITHUB_URL='https://example.invalid',
+               PLOYZ_RELEASE_PUBLIC_KEY=(root / 'test.pub').read_text().splitlines()[1], PROBE_ENV=str(root / 'env'),
                PROBE_ARGV=str(root / 'argv'), PROBE_STDIN=str(root / 'stdin'))
 
     shells = [shell for shell in ['/bin/sh', shutil.which('dash'), shutil.which('bash')] if shell]

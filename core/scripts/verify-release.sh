@@ -113,7 +113,12 @@ install_native() {
     mkdir -p "$release/releases/download/v$EXPECTED_VERSION" "$release/bin"
     cp "$DIST/$archive" "$release/releases/download/v$EXPECTED_VERSION/"
     (cd "$release/releases/download/v$EXPECTED_VERSION" && printf '%s  %s\n' "$(sha256 "$archive")" "$archive" > checksums.txt)
-    PLOYZ_GITHUB_URL="file://$release" INSTALL_BIN_DIR="$release/bin" sh "$ROOT/install.sh" "$EXPECTED_VERSION" \
+    # The release key only signs in the release environment; a throwaway key stands in here.
+    minisign -G -W -p "$release/test.pub" -s "$release/test.key" >/dev/null
+    minisign -S -l -s "$release/test.key" -m "$release/releases/download/v$EXPECTED_VERSION/checksums.txt" \
+        -t "ployz v$EXPECTED_VERSION" < /dev/null >/dev/null
+    PLOYZ_RELEASE_PUBLIC_KEY=$(sed -n 2p "$release/test.pub") \
+        PLOYZ_GITHUB_URL="file://$release" INSTALL_BIN_DIR="$release/bin" sh "$ROOT/install.sh" "$EXPECTED_VERSION" \
         || fail "install.sh could not install $archive"
     [ "$("$release/bin/ployz" --version)" = "$EXPECTED_VERSION" ] || fail "install.sh installed the wrong ployz"
     rm -rf "$release"
