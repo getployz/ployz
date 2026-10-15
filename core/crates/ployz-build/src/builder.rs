@@ -519,6 +519,7 @@ impl Bridge {
                 directory.display()
             )));
         }
+        let mut unusable = None;
         for index in 0..=u8::MAX {
             let file = match fs::OpenOptions::new()
                 .read(true)
@@ -532,7 +533,10 @@ impl Bridge {
                 Ok(file) => file,
                 // Another user's private claim file, or anything else at the
                 // path, takes that index out of use rather than every build.
-                Err(_) => continue,
+                Err(error) => {
+                    unusable = Some(error);
+                    continue;
+                }
             };
             let metadata = file.metadata().map_err(bridge_error)?;
             if metadata.uid() == rustix::process::getuid().as_raw()
@@ -554,9 +558,10 @@ impl Bridge {
             }
             return Ok(Self { _file: file, index });
         }
-        Err(BuildError::Prerequisite(
-            "every build bridge on this host is in use".into(),
-        ))
+        Err(match unusable {
+            Some(error) => bridge_error(error),
+            None => BuildError::Prerequisite("every build bridge on this host is in use".into()),
+        })
     }
 }
 
@@ -618,6 +623,24 @@ mod tests {
             (first.index, second.index, third.index),
             (0, 2, 4),
             "a held claim, a live bridge and an unusable claim file are all skipped"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bridge_claims_report_why_no_claim_file_opens() {
+        let root = std::env::temp_dir().join(format!("ployz-bridges-{}", uuid::Uuid::new_v4()));
+        let claims = root.join("claims");
+        for index in 0..=u8::MAX {
+            fs::create_dir_all(claims.join(format!("{index}.lock"))).unwrap();
+        }
+
+        let Err(error) = Bridge::claim(&claims, root.join("net").to_str().unwrap()) else {
+            panic!("no claim file can be opened");
+        };
+        assert!(
+            error.to_string().contains("Is a directory"),
+            "the open failure is reported, not exhaustion: {error}"
         );
         fs::remove_dir_all(root).unwrap();
     }
