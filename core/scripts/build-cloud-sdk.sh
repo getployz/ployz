@@ -29,6 +29,10 @@ fi
 fetch() { python3 scripts/artifacts.py fetch sdk "$@" crates/ployz-sdk; }
 if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ] && fetch --extra "$extra"; } ||
   { [ -n "$stale" ] && fetch --extra "$release" --stale-ok "$stale"; }; }; then
+  # napi-derive writes each #[napi] item's TS declaration here; a fresh path makes napi-build re-emit them all.
+  TYPE_DEF_TMP_PATH=$(mktemp)
+  export TYPE_DEF_TMP_PATH
+  trap 'rm -f "$TYPE_DEF_TMP_PATH"' EXIT
   # CI and images ship this SDK, so they build release. A local build only serves the dev loop, so it
   # skips release's optimizations.
   if [ -n "$key" ] && [ -z "${CI:-}" ]; then
@@ -46,6 +50,7 @@ if [ -z "$key" ] || ! { fetch --extra "$release" || { [ "$extra" != "$release" ]
   # Replace, don't overwrite: macOS caches the code signature per inode and SIGKILLs a stale one.
   rm -f "$node_out" && cp "$binding" "$node_out"
   "${CARGO_TARGET_DIR:-target}/$profile_dir/sdk-generated" crates/ployz-sdk/generated
+  node crates/ployz-sdk/scripts/native-dts.mjs "$TYPE_DEF_TMP_PATH" crates/ployz-sdk/generated/native.d.ts
   # The config WASM depends on fewer crates than the addon, so an addon edit often leaves it current.
   wasm_key=
   if [ -n "$key" ]; then
