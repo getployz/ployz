@@ -107,33 +107,27 @@ impl<'a> Harvest<'a> {
             return;
         };
         let ts = line.millis();
-        let salt = self
-            .salts
-            .lookup(&namespace, ts.div_euclid(1000), |lookup| match lookup {
-                Lookup::Off => None,
-                Lookup::Gap => Some(None),
-                Lookup::Covered(salt) => Some(Some((salt.day.clone(), salt.salt))),
-            });
-        let Some(covered) = salt else {
+        let lookup = self.salts.lookup(&namespace, ts.div_euclid(1000));
+        if lookup == Lookup::Off {
             return;
-        };
+        }
         let headers = &line.request.headers;
         let user_agent = first(headers.user_agent.as_ref()).unwrap_or_default();
-        let count = match (bots::reason(user_agent), covered) {
-            (None, Some((day, salt))) => {
+        let count = match (lookup, bots::reason(user_agent)) {
+            (Lookup::Off, _) | (Lookup::Gap, Some(_)) => return,
+            (Lookup::Covered { day, salt }, None) => {
                 let row = line.pageview(ts, &day, &namespace, &salt, user_agent);
                 if let Err(error) = self.outbox.push(&Row::Pageview(row)) {
                     tracing::warn!(%error, "cannot hold a pageview");
                 }
                 return;
             }
-            (None, None) => Count::Gap { namespace },
-            (Some(reason), Some((day, _))) => Count::Bots {
+            (Lookup::Gap, None) => Count::Gap { namespace },
+            (Lookup::Covered { day, .. }, Some(reason)) => Count::Bots {
                 namespace,
                 day,
                 reason,
             },
-            (Some(_), None) => return,
         };
         *self.counts.entry(count).or_default() += 1;
     }
@@ -396,10 +390,17 @@ fn visitor(salt: &[u8], namespace: &Namespace, client_ip: &str, user_agent: &str
 }
 
 /// Follows a file Caddy appends to and rolls by renaming.
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    /// The first file, so a restart does not count old requests again.
+    End,
+    Beginning,
+}
+
 struct Tail {
     path: PathBuf,
     file: Option<(File, u64)>,
-    opened: bool,
+    start: Start,
     position: u64,
     partial: Vec<u8>,
     skipping: bool,
@@ -411,7 +412,7 @@ impl Tail {
         Self {
             path,
             file: None,
-            opened: false,
+            start: Start::End,
             position: 0,
             partial: Vec::new(),
             skipping: false,
@@ -460,12 +461,11 @@ impl Tail {
             Err(error) => return Err(error),
         };
         let inode = file.metadata()?.ino();
-        self.position = if self.opened {
-            0
-        } else {
-            file.seek(SeekFrom::End(0))?
+        self.position = match self.start {
+            Start::End => file.seek(SeekFrom::End(0))?,
+            Start::Beginning => 0,
         };
-        self.opened = true;
+        self.start = Start::Beginning;
         self.file = Some((file, inode));
         Ok(true)
     }

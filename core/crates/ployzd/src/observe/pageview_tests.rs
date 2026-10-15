@@ -13,7 +13,11 @@ use crate::{
 const SALT: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const IP: &str = "203.0.113.77";
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36";
-const DAY_START: i64 = 1_792_026_000;
+fn day_start() -> i64 {
+    chrono::DateTime::parse_from_rfc3339("2026-10-15T00:00:00+01:00")
+        .unwrap()
+        .timestamp()
+}
 
 struct Lab {
     _root: TestDir,
@@ -37,7 +41,7 @@ impl Lab {
             .collect();
         let ack = json!({ "sites": [{ "namespace": "acme-prod", "salts": windows }] });
         salts
-            .accept(&serde_json::to_vec(&ack).unwrap(), DAY_START)
+            .accept(&serde_json::to_vec(&ack).unwrap(), day_start())
             .unwrap();
         let outbox = PageviewOutbox::open(&store).unwrap();
         Self {
@@ -49,7 +53,7 @@ impl Lab {
     }
 
     fn today() -> Self {
-        Self::new(&[("2026-10-15", DAY_START, DAY_START + 24 * 3600)])
+        Self::new(&[("2026-10-15", day_start(), day_start() + 24 * 3600)])
     }
 
     fn harvest(&self, lines: &[Value]) -> Vec<Value> {
@@ -65,7 +69,7 @@ impl Lab {
 fn request(uri: &str) -> Value {
     json!({
         "level": "info",
-        "ts": DAY_START as f64 + 3600.25,
+        "ts": day_start() as f64 + 3600.25,
         "logger": "http.log.access.ployz_pageviews",
         "msg": "handled request",
         "request": {
@@ -126,7 +130,7 @@ fn a_browser_page_load_becomes_the_contract_row() {
         rows,
         [json!({
             "kind": "pageview",
-            "ts": (DAY_START + 3600) * 1000 + 250,
+            "ts": (day_start() + 3600) * 1000 + 250,
             "day": "2026-10-15",
             "namespace": "acme-prod",
             "host": "acme.com",
@@ -266,7 +270,7 @@ fn missing_headers_flag_the_row_instead_of_dropping_it() {
 
 #[test]
 fn a_request_takes_the_salt_whose_window_holds_it_across_a_dst_change() {
-    let short = DAY_START;
+    let short = day_start();
     let long = short + 23 * 3600;
     let after = long + 25 * 3600;
     let lab = Lab::new(&[("2026-10-04", short, long), ("2026-10-05", long, after)]);
@@ -302,14 +306,18 @@ fn a_request_takes_the_salt_whose_window_holds_it_across_a_dst_change() {
 
 #[test]
 fn bots_and_gaps_become_counts_and_an_off_site_leaves_no_trace() {
-    let lab = Lab::new(&[("2026-10-15", DAY_START, DAY_START + 24 * 3600)]);
+    let lab = Lab::new(&[("2026-10-15", day_start(), day_start() + 24 * 3600)]);
     let bot = with(
         request("/"),
         "/request/headers/User-Agent",
         json!(["Googlebot/2.1"]),
     );
     let empty = without(request("/"), "/request/headers/User-Agent");
-    let late = with(request("/"), "/ts", json!(DAY_START as f64 + 25.0 * 3600.0));
+    let late = with(
+        request("/"),
+        "/ts",
+        json!(day_start() as f64 + 25.0 * 3600.0),
+    );
     let late_bot = with(
         late.clone(),
         "/request/headers/User-Agent",

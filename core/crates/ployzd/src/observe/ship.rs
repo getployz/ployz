@@ -1037,9 +1037,10 @@ mod tests {
 
     fn acme_covered(salts: &Salts) -> bool {
         let acme = ployz_core::Namespace::parse("acme-prod").unwrap();
-        salts.lookup(&acme, unix_seconds(), |lookup| {
-            matches!(lookup, super::super::salts::Lookup::Covered(_))
-        })
+        matches!(
+            salts.lookup(&acme, unix_seconds()),
+            super::super::salts::Lookup::Covered { .. }
+        )
     }
 
     #[tokio::test]

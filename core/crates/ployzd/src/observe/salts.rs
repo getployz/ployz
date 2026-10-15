@@ -43,10 +43,10 @@ struct Persisted {
 }
 
 #[derive(Debug, PartialEq)]
-pub(super) enum Lookup<'a> {
+pub(super) enum Lookup {
     Off,
     Gap,
-    Covered(&'a Salt),
+    Covered { day: String, salt: [u8; SALT_BYTES] },
 }
 
 #[derive(Debug, Default)]
@@ -121,21 +121,18 @@ impl Salts {
             .is_none_or(|fetched| now.saturating_sub(fetched) >= fresh_for)
     }
 
-    pub(super) fn lookup<R>(
-        &self,
-        namespace: &Namespace,
-        at: i64,
-        with: impl FnOnce(Lookup<'_>) -> R,
-    ) -> R {
+    pub(super) fn lookup(&self, namespace: &Namespace, at: i64) -> Lookup {
         let cache = self.cache.read().unwrap_or_else(PoisonError::into_inner);
-        let lookup = match cache.sites.get(namespace) {
+        match cache.sites.get(namespace) {
             None => Lookup::Off,
             Some(salts) => salts
                 .iter()
                 .find(|salt| salt.start <= at && at < salt.end)
-                .map_or(Lookup::Gap, Lookup::Covered),
-        };
-        with(lookup)
+                .map_or(Lookup::Gap, |salt| Lookup::Covered {
+                    day: salt.day.clone(),
+                    salt: salt.salt,
+                }),
+        }
     }
 }
 
@@ -213,11 +210,11 @@ mod tests {
     }
 
     fn day_at(salts: &Salts, namespace: &Namespace, at: i64) -> Option<Option<String>> {
-        salts.lookup(namespace, at, |lookup| match lookup {
+        match salts.lookup(namespace, at) {
             Lookup::Off => None,
             Lookup::Gap => Some(None),
-            Lookup::Covered(salt) => Some(Some(salt.day.clone())),
-        })
+            Lookup::Covered { day, .. } => Some(Some(day)),
+        }
     }
 
     #[test]
