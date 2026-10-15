@@ -44,6 +44,9 @@ describe("retention", () => {
   });
 });
 
+const localHourOf = (instant: Date) =>
+  new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Lord_Howe", hour: "2-digit", hourCycle: "h23", day: "2-digit" }).format(instant);
+
 describe("hour buckets", () => {
   it("follows Lord Howe's half-hour spring forward without dropping local 03:00", () => {
     const day = "2026-10-04";
@@ -51,10 +54,11 @@ describe("hour buckets", () => {
     expect(iso(buckets.slice(0, 4))).toEqual([
       "2026-10-03T13:30:00.000Z",
       "2026-10-03T14:30:00.000Z",
-      "2026-10-03T15:00:00.000Z",
+      "2026-10-03T15:30:00.000Z",
       "2026-10-03T16:00:00.000Z",
     ]);
     expect(buckets).toHaveLength(24);
+    for (const bucket of buckets) expect(localHourOf(bucket), bucket.toISOString()).toBe(localHourOf(new Date(bucket.getTime() + 60_000)));
     expect(buckets.map((bucket) => bucket.getTime())).toContain(Date.parse("2026-10-03T16:00:00Z"));
   });
 
@@ -64,9 +68,10 @@ describe("hour buckets", () => {
     expect(iso(buckets.slice(0, 4))).toEqual([
       "2026-04-04T13:00:00.000Z",
       "2026-04-04T14:00:00.000Z",
-      "2026-04-04T14:30:00.000Z",
+      "2026-04-04T15:00:00.000Z",
       "2026-04-04T15:30:00.000Z",
     ]);
     expect(buckets).toHaveLength(25);
+    for (const bucket of buckets) expect(localHourOf(bucket), bucket.toISOString()).toBe(localHourOf(new Date(bucket.getTime() + 60_000)));
   });
 });

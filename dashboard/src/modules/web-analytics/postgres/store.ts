@@ -26,10 +26,19 @@ const COLUMN = {
 const column = (key: FilterKey) => sql.raw(COLUMN[key]);
 export const instant = (date: Date) => sql`${date.toISOString()}::timestamptz`;
 export const localDate = (timezone: string) => sql`(ts at time zone ${timezone}::text)::date`;
-/** The instant at which the site-local hour holding `ts` starts. Subtracting the wall-clock seconds past the hour stays
- * exact through a repeated DST hour, where truncating a wall time would pick one of its two instants. */
-export const localHour = (timezone: string) =>
-  sql`ts - make_interval(secs => mod(extract(epoch from (ts at time zone ${timezone}::text)), 3600)::double precision)`;
+/**
+ * The instant at which the site-local hour holding `ts` starts, as {@link hourStart} computes it. Subtracting the
+ * wall-clock seconds past the hour stays exact through a repeated DST hour, where truncating a wall time would pick one
+ * of its two instants. When an offset change falls inside the hour that lands before it, so the hour starts at the
+ * change, found by the minute; only rows in such an hour run the search.
+ */
+export const localHour = (timezone: string) => {
+  const offset = (at: SQL) => sql`((${at}) at time zone ${timezone}::text) - ((${at}) at time zone 'UTC')`;
+  const back = sql`ts - make_interval(secs => mod(extract(epoch from (ts at time zone ${timezone}::text)), 3600)::double precision)`;
+  return sql`case when ${offset(back)} = ${offset(sql`ts`)} then ${back} else (
+    select min(m) from generate_series(${back} + interval '1 minute', ts, interval '1 minute') m
+    where ${offset(sql`m`)} = ${offset(sql`ts`)}) end`;
+};
 const gap = sql.raw(`interval '${SESSION_GAP_SECONDS} seconds'`);
 const epochMs = (expr: SQL) => sql`(extract(epoch from ${expr}) * 1000)::bigint`;
 

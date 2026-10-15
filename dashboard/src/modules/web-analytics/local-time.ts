@@ -20,9 +20,22 @@ export const dayEnd = (timezone: string, day: string) => dayStart(timezone, day,
 
 export const addDays = (timezone: string, day: string, offset: number) => localDay(timezone, dayStart(timezone, day, offset));
 
+const MINUTE_MS = 60_000;
+const offsetAt = (timezone: string, at: number) => new TZDate(at, timezone).getTimezoneOffset();
+
+/**
+ * The first instant of the site-local hour holding `instant`. Stepping back the wall-clock time past the hour lands
+ * before an offset change when one falls inside the hour, so the hour then starts at the change: Lord Howe's local
+ * 02 on a spring-forward day starts at 02:30, and its repeated 01:30 on a fall-back day starts a bucket of its own.
+ */
 export function hourStart(timezone: string, instant: Date) {
   const local = new TZDate(instant.getTime(), timezone);
-  return new Date(instant.getTime() - (local.getMinutes() * 60 + local.getSeconds()) * 1000 - local.getMilliseconds());
+  const back = instant.getTime() - (local.getMinutes() * 60 + local.getSeconds()) * 1000 - local.getMilliseconds();
+  const offset = offsetAt(timezone, instant.getTime());
+  if (offsetAt(timezone, back) === offset) return new Date(back);
+  let at = back + MINUTE_MS;
+  while (offsetAt(timezone, at) !== offset) at += MINUTE_MS;
+  return new Date(at);
 }
 
 export const isHourStart = (timezone: string, instant: Date) => hourStart(timezone, instant).getTime() === instant.getTime();
