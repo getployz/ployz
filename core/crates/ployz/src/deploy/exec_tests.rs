@@ -162,6 +162,8 @@ struct Scripted {
     lost_hold_reply: bool,
     /// This many writes that release a held copy fail in transit.
     dropped_releases: Mutex<usize>,
+    /// Another Deploy holds the row's copies as soon as this run holds them.
+    hold_taken_by: Option<ployz_core::DeploymentLogId>,
     /// No Machine routes a pin.
     unrouted_pin: bool,
     /// No Machine routes a row naming one of these Containers.
@@ -196,6 +198,7 @@ impl Scripted {
             dropped_publish: false,
             lost_hold_reply: false,
             dropped_releases: Mutex::new(0),
+            hold_taken_by: None,
             unrouted_pin: false,
             dead: Vec::new(),
             rival: None,
@@ -518,7 +521,13 @@ impl MachineOperations for Scripted {
             return Ok(ServingPointerPublication::Superseded { current });
         }
         let holds = !flip && request.pointer.is_held();
-        pointers.insert(request.service, request.pointer);
+        let mut pointer = request.pointer;
+        if let (true, Some(rival), Some(hold)) =
+            (holds, &self.hold_taken_by, pointer.deciding.as_mut())
+        {
+            hold.deploy = rival.clone();
+        }
+        pointers.insert(request.service, pointer);
         if holds && self.lost_hold_reply {
             return Err(error("reply lost"));
         }

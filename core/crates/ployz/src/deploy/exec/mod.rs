@@ -1214,7 +1214,7 @@ fn hold_for(operations: &[DeployOperation]) -> Duration {
     operations
         .iter()
         .filter_map(DeployOperation::spec)
-        .filter_map(|spec| spec.container.healthcheck.as_ref()?.deadline())
+        .map(ployz_core::settle_deadline)
         .fold(HOLD_BEYOND_HEALTH, Duration::saturating_add)
 }
 
@@ -1484,7 +1484,13 @@ impl<'a> Rows<'a> {
                     next.containers.push(*copy);
                 }
             }
-            next.deciding = None;
+            if next
+                .deciding
+                .as_ref()
+                .is_some_and(|hold| hold.deploy == *self.run)
+            {
+                next.deciding = None;
+            }
             if next.retiring.is_empty() && next.previous.as_ref() == Some(&next.deploy) {
                 next.previous = None;
             }

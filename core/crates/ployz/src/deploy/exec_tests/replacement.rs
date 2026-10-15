@@ -593,6 +593,55 @@ async fn a_dropped_release_of_a_held_copy_is_retried() {
 }
 
 #[tokio::test]
+async fn a_failed_deploy_leaves_another_deploys_hold_in_place() {
+    let first = machine('1');
+    let old = container('a');
+    let plan = vec![swap(&first, &old, UpdateOrder::StopFirst)];
+    let rival = DeploymentLogId::parse("rival").unwrap();
+    let client = Scripted {
+        hold_taken_by: Some(rival.clone()),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(first, old), running()),
+            ok(Call::Stop(first, old)),
+            failed(
+                Call::Run(first, ContainerKind::ServiceContainer),
+                "start failed",
+            ),
+            ok(Call::DiscardSlot(first, ContainerKind::ServiceContainer)),
+            ok(Call::Restart(first, old)),
+        ])
+    };
+    client.pointers.lock().unwrap().insert(
+        api(),
+        ServingPointer {
+            deploy: DeploymentLogId::parse("older").unwrap(),
+            containers: vec![old],
+            previous: None,
+            retiring: Vec::new(),
+            deciding: None,
+        },
+    );
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+    let row = client
+        .pointers
+        .lock()
+        .unwrap()
+        .get(&api())
+        .cloned()
+        .unwrap();
+    assert_eq!(row.containers, vec![old], "the restarted copy serves again");
+    assert_eq!(
+        row.deciding.map(|hold| hold.deploy),
+        Some(rival),
+        "the other deploy still holds its copies"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_hold_whose_reply_is_lost_is_released() {
     let first = machine('1');
     let old = container('a');
@@ -683,23 +732,27 @@ fn a_hold_outlasts_every_health_wait_the_plan_configures() {
     let slow = Duration::from_secs(3 * 60 * 60);
     let mut check = configured_healthcheck();
     check.deadline_millis = Some(u64::try_from(slow.as_millis()).unwrap());
-    let mut spec = spec(
+    let slow_check = spec(
         None,
         Some(ployz_core::HealthcheckSpec::Configured(check)),
         None,
     );
-    spec.update.order = UpdateOrder::StopFirst;
-    let plan = [
-        DeployOperation::ReplaceContainer(ReplacementOperation {
-            machine_id: machine,
-            old_container_id: container('a'),
-            spec,
-            skip_health_monitor: false,
-        }),
-        swap(&machine, &container('c'), UpdateOrder::StopFirst),
-    ];
+    let mut slow_monitor = spec(None, None, None);
+    slow_monitor.update.monitor_millis = Some(u64::try_from(slow.as_millis()).unwrap());
+    for mut spec in [slow_check, slow_monitor] {
+        spec.update.order = UpdateOrder::StopFirst;
+        let plan = [
+            DeployOperation::ReplaceContainer(ReplacementOperation {
+                machine_id: machine,
+                old_container_id: container('a'),
+                spec,
+                skip_health_monitor: false,
+            }),
+            swap(&machine, &container('c'), UpdateOrder::StopFirst),
+        ];
 
-    assert_eq!(hold_for(&plan), HOLD_BEYOND_HEALTH + slow);
+        assert!(hold_for(&plan) >= HOLD_BEYOND_HEALTH + slow);
+    }
 }
 
 #[tokio::test]
