@@ -31,7 +31,7 @@ let storage: (deploymentId: string) => string | null = () => null;
 /** Secrets without a value the next Deploy leaves out. */
 let notSet = 0;
 /** A write the Store hasn't answered for yet. */
-let busy: Busy | null = null;
+let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
 let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] | undefined }) => void = () => {};
 
@@ -40,7 +40,7 @@ beforeEach(() => {
   ended = [];
   storage = () => null;
   notSet = 0;
-  busy = null;
+  busy = new Set();
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
@@ -129,17 +129,35 @@ it("saves without deploying from Alt+click on Deploy and from Save only under �
 });
 
 it("offers no second Save while one is unanswered", async () => {
-  busy = "saving";
+  busy = new Set(["saving"]);
   open(canvasUrl, [replicas], 1, true);
   const staged = await bar();
-  act(() => { fireEvent.keyDown(window, { key: "Alt", altKey: true }); });
-  expect(staged.getByRole("button", { name: /^Save only/ })).toHaveProperty("disabled", true);
-  act(() => { fireEvent.keyUp(window, { key: "Alt", altKey: false }); });
+  expect(staged.getByRole("button", { name: /Saving…/ })).toHaveProperty("disabled", true);
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
-  expect((await screen.findByRole("menuitem", { name: "Save only" })).getAttribute("aria-disabled")).toBe("true");
+  expect((await screen.findByRole("menuitem", { name: /Saving…/ })).getAttribute("aria-disabled")).toBe("true");
   fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   fireEvent.click(staged.getByRole("button", { name: "Details" }));
+  expect(screen.getByRole("button", { name: /Saving…/ })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: /^Deploy changes/ })).toHaveProperty("disabled", true);
+});
+
+it("offers no Save or second Deploy while a Deploy is unanswered", async () => {
+  busy = new Set(["deploying"]);
+  open(canvasUrl, [replicas], 1, true);
+  const staged = await bar();
+  expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
+  fireEvent.click(staged.getByRole("button", { name: "Details" }));
   expect(screen.getByRole("button", { name: "Save only" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
+});
+
+it("shows a Deploy as pending even behind an older unanswered Discard", async () => {
+  busy = new Set(["discarding", "deploying"]);
+  open(canvasUrl, [replicas], 1, true);
+  const staged = await bar();
+  expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  expect((await screen.findByRole("menuitem", { name: "Discard all changes" })).getAttribute("aria-disabled")).toBe("true");
 });
 
 it("never deploys from Alt+click, even once everything is saved and the changes still wait to deploy", async () => {

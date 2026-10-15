@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { OpenPullRequest, PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
@@ -13,6 +12,7 @@ import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { useMissingStorePrGrant } from "#/modules/config-store/store-pr-grants.queries";
 import { ownLineages } from "#/modules/config-store/branch-picks";
 import { branchPlanQuery, environmentSettingsQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { useStorePrPlanPending, type PrPlanChange } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import {
@@ -22,8 +22,6 @@ import { PickingViewProvider, usePickingView, type PickingView } from "../new-br
 import { ServicesSection } from "../new-branch/ServicesSection";
 import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";
 import { SetupSection } from "../new-branch/SetupSection";
-
-type PlanChange = Partial<Pick<PrPlan, "enabled" | "start_from" | "copy" | "setup" | "remove_on_close" | "include_bots">>;
 
 /**
  * A repository's PR Environments plan over the Config Store, over its start-from Environment's canvas. Every change
@@ -50,21 +48,18 @@ export function StorePrPlanPanel({ repositoryId }: { repositoryId: number }) {
 /** The plan, and its writer: a change shows at once, until its write settles; a refusal rereads the plan, which is the rollback. */
 function usePlanWrite(organizationSlug: string, project: string, saved: PrPlan) {
   const writer = useStoreWriter(organizationSlug);
-  const { enabled, start_from: startFrom, copy, setup, remove_on_close: removeOnClose, include_bots: includeBots } = saved;
-  const [shown, hold] = useCommitHold<PlanChange>({ enabled, start_from: startFrom, copy, setup, remove_on_close: removeOnClose, include_bots: includeBots });
-  function set(change: PlanChange) {
-    const write = writer.commit({
+  const pending = useStorePrPlanPending(organizationSlug, project, saved.repository);
+  function set(change: PrPlanChange) {
+    return writer.commit({
       command: "set_pr_plan", project, repository: saved.repository, enabled: null, start_from: null, copy: null, setup: null,
       remove_on_close: null, include_bots: null, ...change,
     });
-    hold({ ...shown, ...change }, write);
-    return write;
   }
   function approve(open: OpenPullRequest & { head: string }) {
     return writer.commit({ command: "approve_pull_request", repository_id: saved.repository_id, number: open.number, head: open.head })
       .isPersisted.promise;
   }
-  return { plan: { ...saved, ...shown }, set, approve };
+  return { plan: { ...saved, ...pending }, set, approve };
 }
 
 function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan; prEnvironments: ReadonlySet<string> }) {
@@ -228,7 +223,8 @@ function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView
     return setting === "repository" && row.value === active.repository && service ? [service] : [];
   }) : [];
   // Shown at once; a refusal toasts and the saved copies show again.
-  const [picks, holdPicks] = useCommitHold(active?.copy ?? []);
+  const pending = useStorePrPlanPending(params.organizationSlug, params.projectSlug, active?.repository ?? "");
+  const picks = pending.copy ?? active?.copy ?? [];
   const result = useBranchPlan(params.organizationSlug, active ? branchPlanQuery(store, focus, { copy: [...focus, ...picks] }) : null);
   const view = result?.ok ? result.value : null;
   if (!active || !view) return null;
@@ -244,10 +240,10 @@ function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView
     setPreset: () => undefined,
     toggle: (name) => {
       const next = own.includes(name) ? own.filter((other) => other !== name) : [...own, name];
-      holdPicks(next, writer.commit({
+      void writer.commit({
         command: "set_pr_plan", project: params.projectSlug, repository: active.repository, enabled: null, start_from: null,
         copy: next, setup: null, remove_on_close: null, include_bots: null,
-      }));
+      });
     },
   };
 }

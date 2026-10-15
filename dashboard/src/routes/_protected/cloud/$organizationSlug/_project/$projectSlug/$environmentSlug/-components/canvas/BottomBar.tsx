@@ -7,6 +7,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { Button } from "#/components/ui/button";
+import { Spinner } from "#/components/ui/spinner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
@@ -45,8 +46,6 @@ type BottomBarProps = {
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
-  /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
-  admitting?: boolean;
   /** Save only: saves without deploying; resolves true once saved. */
   onSave: (message: string) => Promise<boolean>;
   onDiscardAll: () => void;
@@ -70,7 +69,7 @@ type BottomBarProps = {
   /** Secrets without a value: the next Deploy leaves them out. */
   notSet?: number;
   /** A write the Store hasn't answered for yet, in words (Discarding…). */
-  busy?: Busy | null;
+  busy?: ReadonlySet<Busy>;
   discarding?: ReadonlySet<string>;
 };
 
@@ -98,9 +97,8 @@ export function BottomBar({
   notes,
   proposals,
   noServers = false,
-  admitting = false,
   notSet = 0,
-  busy = null,
+  busy = new Set(),
   discarding,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
@@ -116,7 +114,9 @@ export function BottomBar({
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canSave;
   // One Save at a time: a second sends the same version and comes back stale.
-  const saveable = canSave && busy !== "saving";
+  const saveable = canSave && !busy.has("saving") && !busy.has("deploying");
+  // A double click admits one Deploy: Deploy waits until the Store answers.
+  const admitting = busy.has("saving") || busy.has("deploying");
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
@@ -201,7 +201,7 @@ export function BottomBar({
   });
 
   const staged = hasChanges ? (
-    <Row staged title={busy === "discarding" ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
+    <Row staged title={busy.has("discarding") ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
@@ -210,7 +210,8 @@ export function BottomBar({
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>
-          {savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
+          {admitting ? <Spinner data-icon="inline-start" /> : null}
+          {busy.has("deploying") ? "Deploying…" : busy.has("saving") ? "Saving…" : savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>}
@@ -219,8 +220,10 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem disabled={!saveable} onClick={save}>Save only</DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
+          <DropdownMenuItem disabled={!saveable} onClick={save}>
+            {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
+          </DropdownMenuItem>
+          <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -239,7 +242,7 @@ export function BottomBar({
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave: saveable,
-    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting, busy, discarding,
+    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,

@@ -11,7 +11,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { nodeName, settingName } from "#/modules/config-store/store-branches";
-import { useStoreNeverSyncs } from "#/modules/config-store/store-pending";
+import { useStoreBusy, useStoreNeverSyncs } from "#/modules/config-store/store-pending";
 import { flipRow, flipsMoved, showNeverSyncing, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -46,7 +46,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   // `into`'s values typed for secrets it lacks: sent with the Sync, never shown back.
   const [values, setValues] = useState<Readonly<Partial<Record<RowId, string>>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
-  const [pending, setPending] = useState(false);
+  const pending = useStoreBusy(organizationSlug, from).has("syncing");
   const [stale, setStale] = useState(false);
   // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
   // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.
@@ -61,7 +61,6 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
 
   async function sync() {
     if (!view.ok) return;
-    setPending(true);
     setStale(false);
     // A value lands with the Sync, in one transaction.
     const typed: Record<RowId, string> = {};
@@ -83,7 +82,6 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
     } catch (error) {
       // Any other refusal is the writer's toast.
       setStale(error instanceof StoreRefused && error.code === "conflict");
-      setPending(false);
       return;
     }
     if (written.written === "synced") onSynced(into, picked.length, written);
@@ -150,7 +148,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
           {rows.length ? <>
             <Button variant="outline" onClick={onClose}>Cancel</Button>
             <Button disabled={picked.length === 0 || pending} onClick={() => void sync()}>
-              {pending ? <Spinner data-icon="inline-start" /> : null}Sync {plural(picked.length, "change")}
+              {pending ? <><Spinner data-icon="inline-start" />Syncing…</> : `Sync ${plural(picked.length, "change")}`}
             </Button>
           </> : <Button variant="outline" onClick={onClose}>Done</Button>}
         </DialogFooter>

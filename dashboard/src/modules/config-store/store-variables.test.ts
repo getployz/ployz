@@ -85,10 +85,9 @@ it("marks the variables their Environment never syncs, by their rows", () => {
   ]);
 });
 
-it("shows a pending rename under its new name and a deleted variable gone, and a rename onto a name in use as nothing", () => {
+it("shows a deleted variable gone, and a pending rename under its old name until the Store names it", () => {
   const shown = withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "stripe_key" }, { op: "unset", path: "web.env.LOG_LEVEL" }]);
-  expect(variables(shown)).toEqual([{ key: "STRIPE_KEY", exported: false, value: "sealed" }]);
-  expect(variables(withPendingChanges(view, [{ op: "rename", path: "web.env.API_KEY", to: "LOG_LEVEL" }]))).toEqual(variables(view));
+  expect(variables(shown)).toEqual([{ key: "API_KEY", exported: false, value: "sealed" }]);
 });
 
 it("sends a rename as one Store edit on the variable's path", async () => {

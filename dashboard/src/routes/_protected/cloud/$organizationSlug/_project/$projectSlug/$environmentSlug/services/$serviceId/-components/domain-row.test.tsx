@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DomainTitle, PublicDomainRow, storeStatusView, type DomainStatusView } from "./domain-row";
 
-const row = (view: DomainStatusView, live = false) => (
+const row = (view: DomainStatusView, live = false, pending = false) => (
   <PublicDomainRow
     organizationSlug="acme"
     title={
@@ -15,6 +15,7 @@ const row = (view: DomainStatusView, live = false) => (
     view={view}
     dnsRecords={[{ type: "CNAME", name: "www", value: "acme.ployz.app" }]}
     changed={false}
+    pending={pending}
     onEdit={vi.fn()}
     onDelete={vi.fn()}
   />
@@ -32,6 +33,15 @@ describe("PublicDomainRow", () => {
     expect(screen.getByRole("link").getAttribute("href")).toBe("https://www.acme.com");
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Edit www.acme.com" })).toBeTruthy();
+  });
+
+  it("dims a domain the Store has not answered yet and offers no edit until it does", () => {
+    render(row({ icon: null, phrase: null, action: null }, false, true));
+
+    expect(screen.getByText("Saving…")).toBeTruthy();
+    expect(document.querySelector("[aria-busy='true']")?.textContent).toContain("www.acme.com");
+    expect(screen.queryByRole("button", { name: "Edit www.acme.com" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove www.acme.com" })).toBeNull();
   });
 
   it("stays quiet when the status is unknown", () => {

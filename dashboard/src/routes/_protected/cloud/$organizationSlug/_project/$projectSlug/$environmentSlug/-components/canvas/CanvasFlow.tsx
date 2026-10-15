@@ -261,7 +261,6 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         notSet={store.services.reduce((count, service) => count + service.notSet.length, 0)}
         canSave={hasSomethingToSave}
         onDeploy={actions.deploy}
-        admitting={actions.admitting}
         onSave={actions.save}
         // The Store goes first, at the version the user sees: a staged restore's own discard writes the Store too.
         onDiscardAll={() => placements.discardAll(() =>

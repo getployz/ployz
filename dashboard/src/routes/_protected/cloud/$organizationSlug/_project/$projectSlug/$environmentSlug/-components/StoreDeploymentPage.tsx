@@ -3,7 +3,6 @@ import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-rou
 import type { DeploymentView } from "@ployz/sdk";
 import { ArrowLeftIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Badge } from "#/components/ui/badge";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
@@ -19,6 +18,7 @@ import {
   type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { useStoreCancelling } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { formatDuration } from "#/utils/relative-time";
@@ -36,11 +36,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const result = useStoreView(organizationSlug, deploymentQuery(deploymentId));
   const writer = useStoreWriter(organizationSlug);
-  // A Cancel reads Cancelling at once, until the Store answers with where the Deployment ended.
-  const [cancelling, holdCancel] = useCommitHold(false);
+  const cancelling = useStoreCancelling(organizationSlug, deploymentId);
   if (!result.ok) return <Empty variant="placeholder" className="m-4"><EmptyDescription>Deployment not found</EmptyDescription></Empty>;
   const deployment = showCancelling(result.value, cancelling);
-  const cancel = () => holdCancel(true, writer.commit({ command: "cancel", deployment: deployment.id }));
+  const cancel = () => void writer.commit({ command: "cancel", deployment: deployment.id });
   const graph = makeRunGraph(deployment);
   const selected = selectRunNode(graph, search);
   return (

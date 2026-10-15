@@ -7,6 +7,7 @@ import { getDashboardDestination } from "#/components/dashboard-navigation-model
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
 import { ButtonGroup } from "#/components/ui/button-group";
+import { Spinner } from "#/components/ui/spinner";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -14,6 +15,7 @@ import {
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { plural } from "#/lib/plural";
+import { useStoreBusy } from "#/modules/config-store/store-pending";
 import { closesIn, syncButtonState } from "#/modules/config-store/store-sync";
 import {
   branchQuery, environmentsQuery, fetchStoreView, requireView, servicesQuery, syncQuery,
@@ -63,12 +65,13 @@ function RootSync({ params, store, environments }: {
   const name = store.environment ?? "";
   const places = placesFrom(environments, name);
   const synced = useSynced(params, name);
+  const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
   const [first] = places;
   if (first === undefined) return null;
   return (
     <>
-      <Button variant="outline" className="pointer-events-auto" onClick={() => setDialogInto(first)}>
-        <GitBranchIcon data-icon="inline-start" />Sync
+      <Button variant="outline" className="pointer-events-auto" disabled={syncing} onClick={() => setDialogInto(first)}>
+        {syncing ? <><Spinner data-icon="inline-start" />Syncing…</> : <><GitBranchIcon data-icon="inline-start" />Sync</>}
       </Button>
       {dialogInto === null ? null : (
         <Suspense fallback={null}>
@@ -100,15 +103,18 @@ function BranchSync({ params, store, branch, environments }: {
   const shuttable = branch.pull_request !== null;
   const synced = useSynced(params, name);
   const [kept, holdKept] = useCommitHold(branch.kept);
+  const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
 
   return (
     <>
       <ButtonGroup className="pointer-events-auto">
         <Button variant="outline" aria-label={state.count === null ? state.label : `${state.label} · ${state.count}`}
-          onClick={() => setDialogInto(state.into)}>
-          <GitBranchIcon data-icon="inline-start" />
-          {state.label}
-          {state.count === null ? null : <span className="text-muted-foreground tabular-nums">{state.count}</span>}
+          disabled={syncing} onClick={() => setDialogInto(state.into)}>
+          {syncing ? <><Spinner data-icon="inline-start" />Syncing…</> : <>
+            <GitBranchIcon data-icon="inline-start" />
+            {state.label}
+            {state.count === null ? null : <span className="text-muted-foreground tabular-nums">{state.count}</span>}
+          </>}
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="outline" size="icon" aria-label="More sync actions" />}>

@@ -1,5 +1,5 @@
 import { useMutationState, type Mutation, type MutationFilters, type QueryClient } from "@tanstack/react-query";
-import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView, RowId } from "@ployz/sdk";
+import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView, RowId, SetPrPlan } from "@ployz/sdk";
 import { Schema } from "effect";
 import { commandEnvironments } from "./store.contract";
 
@@ -8,7 +8,13 @@ export const storeWriteKey = (organizationSlug: string, key: string) => ["store-
 
 export type NodeKind = "service" | "volume" | "config" | "domain";
 type Scope = { path: string | null; target: DiscardTarget } | { node: NodeKind; name: string };
-export type Busy = "saving" | "restoring" | "syncing" | "discarding";
+export type Busy = "saving" | "restoring" | "syncing" | "discarding" | "deploying";
+
+const PLAN_FIELDS = ["enabled", "start_from", "copy", "setup", "remove_on_close", "include_bots"] as const;
+type PlanField = (typeof PLAN_FIELDS)[number];
+
+/** The fields a pending PR plan write sets, as it names them. */
+export type PrPlanChange = { [K in PlanField]?: NonNullable<SetPrPlan[K]> };
 
 /** What a pending command says outright about the views it moves: a closed vocabulary, never a Store row. */
 export type Mark =
@@ -19,7 +25,15 @@ export type Mark =
   | { mark: "renamed"; environment: EnvironmentRef; node: NodeKind | "variable"; from: string; to: string }
   | { mark: "project_renamed"; from: string; to: string }
   | { mark: "busy"; environment: EnvironmentRef; why: Busy }
-  | { mark: "never_sync"; environment: EnvironmentRef; rows: readonly string[]; off: boolean };
+  | { mark: "never_sync"; environment: EnvironmentRef; rows: readonly string[]; off: boolean }
+  | { mark: "domain"; environment: EnvironmentRef; service: string; name: string | null }
+  | { mark: "merge_value"; environment: EnvironmentRef; row: string }
+  | { mark: "cancel"; deployment: string }
+  | { mark: "pr_plan"; project: string | null; repository: string; change: PrPlanChange };
+
+function setFields(command: SetPrPlan): PrPlanChange {
+  return Object.fromEntries(PLAN_FIELDS.flatMap((field) => command[field] === null ? [] : [[field, command[field]]]));
+}
 
 const changeMarks = (environment: EnvironmentRef, changes: readonly Change[]): Mark[] => changes.flatMap((change): Mark[] => {
   switch (change.op) {
@@ -56,11 +70,14 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "take": return commandEnvironments(command).map((environment): Mark => ({ mark: "busy", environment, why: "syncing" }));
     case "batch": return command.commands.flatMap(marksOf);
     case "never_sync": return [{ mark: "never_sync", environment: command.environment, rows: command.rows, off: command.off ?? false }];
-    // A domain, a mount or a Config file carries no id the Store gave it; its row arrives with the answer.
-    // A Cancel or an Undo names no Environment, so none shows it busy.
-    case "cancel":
+    case "add_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.hostname ?? command.prefix ?? null }];
+    case "set_generated_domain": return [{ mark: "domain", environment: command.environment, service: command.service, name: command.domain ?? command.prefix }];
+    case "set_merge_value": return [{ mark: "merge_value", environment: command.environment, row: command.row }];
+    case "cancel": return [{ mark: "cancel", deployment: command.deployment }];
+    case "set_pr_plan": return [{ mark: "pr_plan", project: command.project, repository: command.repository, change: setFields(command) }];
+    case "admit": return command.admit === "deploy" ? [{ mark: "busy", environment: command.environment, why: "deploying" }] : [];
+    // A mount or a Config file carries no id the Store gave it; its row arrives with the answer.
     case "undo_sync":
-    case "add_domain":
     case "attach_config":
     case "detach_config":
     case "put_config_file":
@@ -69,20 +86,16 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "create_environment":
     case "set_volume_storage":
     case "set_volume_shared_writes":
-    case "admit":
     case "start":
-    case "set_generated_domain":
     case "create_branch":
     case "remove_proposal":
     case "copy_node":
-    case "set_merge_value":
     case "keep_branch":
     case "set_build_order":
     case "set_default_environment":
     case "set_branch_setup":
     case "remove":
     case "cancel_removal":
-    case "set_pr_plan":
     case "approve_pull_request": return [];
     default: return absurd(command);
   }
@@ -116,10 +129,14 @@ const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environmen
 /** Whether `project` names the one a Project rename moves; none means the Organization's only Project, which may be it. */
 const sameProject = (from: string, project: string | null | undefined) => project == null || project === from;
 
+/** Every reason the Environment is mid-command: a newer write shows its own even while an older one holds. */
+export function busyIn(marks: readonly Mark[], environment: EnvironmentRef): ReadonlySet<Busy> {
+  return new Set(marks.flatMap((mark) => mark.mark === "busy" && sameEnvironment(mark, environment) ? [mark.why] : []));
+}
+
 /** Why the Environment is mid-command, if it is: the bottom bar and review say so. */
-export function useStoreBusy(organizationSlug: string, environment: EnvironmentRef): Busy | null {
-  const busy = usePendingMarks(organizationSlug).find((mark) => mark.mark === "busy" && sameEnvironment(mark, environment));
-  return busy?.mark === "busy" ? busy.why : null;
+export function useStoreBusy(organizationSlug: string, environment: EnvironmentRef): ReadonlySet<Busy> {
+  return busyIn(usePendingMarks(organizationSlug), environment);
 }
 
 /** The paths of the Environment's pending Discards: the review dims each clicked line until the answer. */
@@ -189,20 +206,42 @@ export function useStoreNeverSyncs(organizationSlug: string, project: string | n
 /** A pending Never sync: `rows` of `environment` marked, or with `off` synced again. */
 export type NeverSyncing = { environment: string; rows: readonly string[]; off: boolean };
 
+/** The names pending domain writes give `service`, none for a domain the Store names: each shows Saving until the answer. */
+export function useStorePendingDomains(organizationSlug: string, environment: EnvironmentRef, service: string): (string | null)[] {
+  return usePendingMarks(organizationSlug).flatMap((mark) =>
+    mark.mark === "domain" && mark.service === service && sameEnvironment(mark, environment) ? [mark.name] : []);
+}
+
+/** The rows a pending On merge write or Never sync names in the Environment: each shows Saving until the answer. */
+export function useStoreMergeRowsPending(organizationSlug: string, environment: EnvironmentRef): ReadonlySet<string> {
+  return new Set(usePendingMarks(organizationSlug).flatMap((mark) => !sameEnvironment(mark, environment) ? []
+    : mark.mark === "merge_value" ? [mark.row] : mark.mark === "never_sync" ? mark.rows : []));
+}
+
+/** Whether a Cancel of the Deployment is pending: it reads Cancelling until the Store answers. */
+export function useStoreCancelling(organizationSlug: string, deployment: string): boolean {
+  return usePendingMarks(organizationSlug).some((mark) => mark.mark === "cancel" && mark.deployment === deployment);
+}
+
+/** What pending writes set on a repository's PR plan, the newest last: the panel shows it until the answer. */
+export function useStorePrPlanPending(organizationSlug: string, project: string | null, repository: string): PrPlanChange {
+  return usePendingMarks(organizationSlug).reduce((shown: PrPlanChange, mark) => mark.mark === "pr_plan"
+    && (mark.project ?? "") === (project ?? "") && mark.repository === repository ? { ...shown, ...mark.change } : shown, {});
+}
+
 /** The edit a mark echoes on an Environment view's rows, if any. */
 const changeOf = (mark: Mark): Change[] => {
   switch (mark.mark) {
     case "value": return [{ op: "set", path: mark.path, value: mark.value }];
     case "unset": return [{ op: "unset", path: mark.path }];
-    case "renamed": return mark.node === "variable" ? [{ op: "rename", path: mark.from, to: mark.to }] : [];
     default: return [];
   }
 };
 
 /**
- * `view` with the literal edits of `marks` echoed: a set value on its own row, an unset row at its default, a renamed
- * variable's rows under its new name, and a row marked Never sync or synced again. Nothing derived: the review,
- * counts, pink, references and dependents wait for the Store's rows in the write's answer.
+ * `view` with the literal edits of `marks` echoed: a set value on its own row, an unset row at its default, and a row
+ * marked Never sync or synced again. Nothing derived: a rename, the review, counts, pink, references and dependents
+ * wait for the Store's rows in the write's answer.
  */
 export function showPending<V extends ConfigView>(view: V, marks: readonly Mark[]): V {
   if (view.view !== "environment") return view;
@@ -219,23 +258,13 @@ const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
 
 /**
  * Shows pending edits over an Environment view, in order: a set as its value on its row (a new variable adds its row),
- * an unset as the row's default. A rename moves the variable's rows, value and `.exported` alike, to its new name;
- * onto a name in use it shows nothing, as the Store refuses it. References to the old name wait for the Store's
- * answer. A secret shows as reads show it. Patches wait too.
+ * an unset as the row's default. A secret shows as reads show it. Renames and patches wait for the Store's answer.
  */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
-  let settings = view.settings.map((row) => ({ ...row }));
+  const settings = view.settings.map((row) => ({ ...row }));
   for (const change of changes) {
-    if (change.op === "patch") continue;
-    if (change.op === "rename") {
-      const to = `${change.path.slice(0, change.path.lastIndexOf(".") + 1)}${change.to.toUpperCase()}`;
-      if (to === change.path || settings.some((row) => row.path === to && row.value !== null)) continue;
-      const moved = (path: string) => path === change.path || path.startsWith(`${change.path}.`);
-      settings = settings.flatMap((row) => moved(row.path) ? [{ ...row, path: `${to}${row.path.slice(change.path.length)}` }]
-        : row.path === to || row.path.startsWith(`${to}.`) ? [] : [row]);
-      continue;
-    }
+    if (change.op === "patch" || change.op === "rename") continue;
     let row = settings.find((candidate) => candidate.path === change.path);
     if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
     if (!row) continue;

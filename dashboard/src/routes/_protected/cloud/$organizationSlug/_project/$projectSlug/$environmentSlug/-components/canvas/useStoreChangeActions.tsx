@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
 import { DeletionDialog } from "#/components/deletion-dialog";
+import { useStoreBusy } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
@@ -34,8 +35,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const [loss, setLoss] = useState<Loss | null>(null);
   // Settles the Save waiting on the dialog: true once it saves, false when the dialog closes first.
   const savePending = useRef<((saved: boolean) => void) | null>(null);
-  // One admission at a time: a double click must not admit two Deployments.
-  const [admitting, setAdmitting] = useState(false);
+  const admitting = useStoreBusy(organizationSlug, environment).has("deploying");
+  // The mark shows only after a render, so two clicks in one tick need this lock to admit one Deployment.
   const inFlight = useRef(false);
 
   /** Deploys or saves; resolves with how it went, holding what it would delete when the Store asks first. */
@@ -81,11 +82,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
       return;
     }
     inFlight.current = true;
-    setAdmitting(true);
-    void run("deploy", { accept: [], version }, message).then(ask).finally(() => {
-      inFlight.current = false;
-      setAdmitting(false);
-    });
+    void run("deploy", { accept: [], version }, message).then(ask).finally(() => { inFlight.current = false; });
   }
 
   function discard(path: string | null, target: DiscardTarget = "head") {
