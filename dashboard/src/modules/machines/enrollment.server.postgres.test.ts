@@ -581,6 +581,17 @@ describe("organization enrollment coordinator", () => {
     expect(fake.closed()).toBe(fake.connected.length);
   });
 
+  it("keeps the management key each published capability carries", async () => {
+    const fake = fakeSession(harness.database);
+    const attempt = await pendingFounder(fake);
+    const keyed = (byte: number) => `ployz1:${Buffer.concat([Buffer.alloc(32, byte), Buffer.alloc(32, 0xee)]).toString("base64url")}`;
+    const identity = async () => (await harness.pool.query("select management_identity from organization_machine")).rows;
+    await fake.coordinator.publish({ ...attempt, capability: keyed(0xab) });
+    expect(await identity()).toEqual([{ management_identity: "ab".repeat(32) }]);
+    await fake.coordinator.publish({ ...attempt, capability: keyed(0xcd) });
+    expect(await identity()).toEqual([{ management_identity: "cd".repeat(32) }]);
+  });
+
   it.each(["unreachable", "identity mismatch"])("preserves saved credentials when refresh verification fails: %s", async (message) => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);

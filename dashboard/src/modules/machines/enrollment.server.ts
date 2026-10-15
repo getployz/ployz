@@ -39,6 +39,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
 } from "#/modules/machines/connections.server";
@@ -433,6 +434,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const token = yield* verifyEnrollmentToken(input.token);
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
+    const managementIdentity = managementIdentityOf(input.capability);
     const publish = (expectedIv?: string) => database.transaction(Effect.gen(function* () {
       yield* verifyEnrollmentToken(input.token);
       const { drizzle } = yield* Database;
@@ -461,14 +463,18 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (credentialsMatch(previous, input.capability)) return null;
         if (expectedIv === undefined) return saved.encryptedCapability.iv;
         yield* drizzle.update(organizationMachine).set({
-          encryptedCapability: encryption.encrypt(input.capability), updatedAt: new Date(),
+          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, updatedAt: new Date(),
         }).where(scope);
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
-          clusterKey, encryptedCapability: encryption.encrypt(input.capability), isDialEntry: pairing.founderClaimMachineId === input.machineId,
+          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity,
+          isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
-          set: { clusterKey, encryptedCapability: encryption.encrypt(input.capability), isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date() },
+          set: {
+            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity,
+            isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
+          },
         });
       }
       return null;
