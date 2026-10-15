@@ -8,7 +8,6 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { useStoreRenaming } from "#/modules/config-store/store-pending";
 import { dnsLabelError } from "#/modules/config-store/store-services";
 import { Input } from "#/components/ui/input";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
@@ -100,13 +99,12 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
-  const renaming = useStoreRenaming(organizationSlug, { project: projectSlug, environment: environmentSlug }, "project").has(projectSlug);
   // Deleted while open: nothing to show while the page moves on.
   if (!listing.ok) return null;
   const { environments } = listing.value;
   const defaultEnvironment = environments.find((row) => row.default);
   return (
-    <div inert={renaming} aria-busy={renaming} className="flex flex-col gap-6 aria-busy:opacity-60">
+    <div className="flex flex-col gap-6">
       <SettingsSection id="project" title="Project">
         <ProjectNameField project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.

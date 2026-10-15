@@ -38,6 +38,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
+import { StoreRenameLock } from "./StoreRenameLock";
 
 /** A `replicas` Setting that says how many. */
 const isReplicaCount = Schema.is(Schema.Int);
@@ -201,7 +202,7 @@ export function EnvironmentCanvasScene() {
         <div ref={setBottomBarSlot} className="contents" />
       </>}
     >
-      <Outlet />
+      <StoreRenameLock className="h-full"><Outlet /></StoreRenameLock>
     </CanvasInspectorOverlay>
     </StorePrPickingProvider>
     </StorePickingProvider>

@@ -9,7 +9,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import { commandEnvironment, commandEnvironments, StoreRefused } from "./store.contract";
 import { cachedRevision, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
-import { storeWriteKey } from "./store-pending";
+import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
 export type StoreEdit = {
@@ -36,6 +36,7 @@ const isStale = (error: Error) => error instanceof StoreRefused && error.code ==
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
 const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
+const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
 /**
  * The one way the dashboard writes to the Config Store.
@@ -81,9 +82,14 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
 
   /**
    * Runs `work` in the Environment's queue, filed under `storeWriteKey` with its command, whose marks show until the
-   * write's answers land. Failure toasts, rereads the command's views (the rollback), and rejects.
+   * write's answers land. Failure toasts, rereads the command's views (the rollback), and rejects. A command a pending
+   * rename blocks (`renameBlocks`) is never sent: the UI locks for the rename, and this catches a control it missed.
    */
   function queued<T>(key: string, command: ConfigCommand, work: () => Promise<T>, expects: boolean, handled: readonly string[] = []) {
+    if (renameBlocks(pendingMarks(queryClient, organizationSlug), command)) {
+      toast.error(RENAMING);
+      return Promise.reject(new StoreRefused({ code: "renaming", message: RENAMING, details: null }));
+    }
     const observer = new MutationObserver<T, Error, { command: ConfigCommand }>(queryClient, {
       mutationKey: storeWriteKey(organizationSlug, key),
       scope: { id: `store:${organizationSlug}:${key}` },

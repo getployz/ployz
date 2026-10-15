@@ -36,6 +36,7 @@ import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement"
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
+import { useEnvironmentRenaming } from "../StoreRenameLock";
 import { CanvasFinder } from "./CanvasFinder";
 import { SyncButton } from "../sync/SyncButton";
 import { OnMergeButton } from "../sync/OnMerge";
@@ -80,6 +81,7 @@ export function CanvasFlow({
     organizationId,
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
+  const renaming = useEnvironmentRenaming();
   const findableNodes = [...store.services.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
     ...store.volumes.map((volume) => ({ id: volume.id, name: volume.name, type: "volume" as const })),
     ...store.configs.map((config) => ({ id: config.id, name: config.name, type: "config" as const }))];
@@ -121,7 +123,7 @@ export function CanvasFlow({
 
   return (
     <LitVolumeProvider>
-      <div className="canvas-graph" inert={selectedNodeId !== null}>
+      <div className="canvas-graph aria-busy:opacity-60" inert={selectedNodeId !== null || renaming} aria-busy={renaming}>
       <div className="hidden h-full min-[861px]:block">
         <CanvasContextMenu
           onCreateFromPanel={creator.openCreatorAtLastRightClick}

@@ -1,6 +1,7 @@
-import { useMutationState } from "@tanstack/react-query";
+import { useMutationState, type Mutation, type MutationFilters, type QueryClient } from "@tanstack/react-query";
 import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView } from "@ployz/sdk";
 import { Schema } from "effect";
+import { commandEnvironments } from "./store.contract";
 
 /** The mutation key of an Environment's pending writes; `store-write.ts` files each with its command. */
 export const storeWriteKey = (organizationSlug: string, key: string) => ["store-write", organizationSlug, key] as const;
@@ -87,14 +88,22 @@ function absurd(command: never): never {
   throw new Error(`No marks for ${JSON.stringify(command)}`);
 }
 
+const pendingWrites = (organizationSlug: string): MutationFilters => ({ mutationKey: ["store-write", organizationSlug], status: "pending" });
+
+// SAFETY: every mutation under this key is `store-write.ts`'s, whose variables are `{ command }`.
+const commandOf = (mutation: Mutation<unknown, Error, unknown>) => (mutation.state.variables as { command: ConfigCommand } | undefined)?.command;
+
 /** The marks of this tab's pending writes, in submission order. */
 export function usePendingMarks(organizationSlug: string): Mark[] {
-  const commands = useMutationState({
-    filters: { mutationKey: ["store-write", organizationSlug], status: "pending" },
-    // SAFETY: every mutation under this key is `store-write.ts`'s, whose variables are `{ command }`.
-    select: (mutation) => (mutation.state.variables as { command: ConfigCommand } | undefined)?.command,
+  return useMutationState({ filters: pendingWrites(organizationSlug), select: commandOf }).flatMap((command) => command ? marksOf(command) : []);
+}
+
+/** The same marks, read outside React: the writer checks a command against them before queueing it. */
+export function pendingMarks(queryClient: QueryClient, organizationSlug: string): Mark[] {
+  return queryClient.getMutationCache().findAll(pendingWrites(organizationSlug)).flatMap((mutation) => {
+    const command = commandOf(mutation);
+    return command ? marksOf(command) : [];
   });
-  return commands.flatMap((command) => command ? marksOf(command) : []);
 }
 
 const sameEnvironment = (mark: Mark, environment: EnvironmentRef) =>
@@ -132,13 +141,25 @@ export function useStorePendingName(organizationSlug: string, environment: Envir
   return renamed.reduce((shown, mark) => mark.mark === "renamed" && mark.from === shown ? mark.to : shown, name);
 }
 
+type VersionedCommand = { [K in ConfigCommand["command"]]: "version" extends keyof Extract<ConfigCommand, { command: K }> ? K : never }[ConfigCommand["command"]];
+
+/** Commands that carry a version the Store checks: it refuses one a rename moved under it, so none waits on a rename. */
+const VERSIONED = { publish: true, stage_history: true, discard: true, sync: true, remove_proposal: true, take: true, remove: true } satisfies Record<VersionedCommand, true>;
+
+const renamesIn = (marks: readonly Mark[], environment: EnvironmentRef) =>
+  marks.some((mark) => mark.mark === "renamed" && sameEnvironment(mark, environment));
+
 /**
- * What a pending rename still names by the old name: a node or Project by its name, a variable by its path. Each stays
- * locked until the Store answers, since an edit made now would name what the rename moves.
+ * Whether a pending rename moves something `command` may name: any node, variable or Project of an Environment it
+ * writes, by a path, a mount, a reference or its Environment. It waits for the Store's answer, which names the new name.
  */
-export function useStoreRenaming(organizationSlug: string, environment: EnvironmentRef, node: NodeKind | "project" | "variable"): ReadonlySet<string> {
-  return new Set(usePendingMarks(organizationSlug).flatMap((mark) =>
-    mark.mark === "renamed" && mark.node === node && sameEnvironment(mark, environment) ? [mark.from] : []));
+export function renameBlocks(marks: readonly Mark[], command: ConfigCommand): boolean {
+  return !Object.hasOwn(VERSIONED, command.command) && commandEnvironments(command).some((environment) => renamesIn(marks, environment));
+}
+
+/** Whether a rename in the Environment is pending: its canvas, panels and settings lock until the Store answers. */
+export function useStoreRenamePending(organizationSlug: string, environment: EnvironmentRef): boolean {
+  return renamesIn(usePendingMarks(organizationSlug), environment);
 }
 
 /**

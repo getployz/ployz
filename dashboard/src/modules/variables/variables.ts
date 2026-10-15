@@ -10,8 +10,6 @@ export type VariableRecord = {
   changed?: boolean;
   /** Its Environment marks it Never sync: Sync never carries it in or out. */
   neverSynced?: boolean;
-  /** A rename of it is pending: it takes no edit until the Store answers, as one would name the old key. */
-  renaming?: boolean;
   id: string;
   serviceId: string;
   key: string;

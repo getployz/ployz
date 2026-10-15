@@ -78,8 +78,8 @@ export function VariableRow({
   }
 
   return (
-    <div data-changed={variable.changed || undefined} inert={variable.renaming} aria-busy={variable.renaming}
-      className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0 data-[changed=true]:bg-changed-soft aria-busy:opacity-60">
+    <div data-changed={variable.changed || undefined}
+      className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0 data-[changed=true]:bg-changed-soft">
       <VariableRowHeading
         variableKey={variable.key}
         exported={variable.exported}

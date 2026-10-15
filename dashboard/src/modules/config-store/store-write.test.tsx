@@ -9,7 +9,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
-import { useStoreRenaming, withPendingChanges } from "./store-pending";
+import { useStoreRenamePending, withPendingChanges } from "./store-pending";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -243,30 +243,39 @@ it("rereads a view the write's answer says the Store was too busy to read, keepi
   expect(test.replicas()).toBe(3);
 });
 
-it("names a variable renaming until the Store answers, so its row takes no edit aimed at the old name", async () => {
+it("reports a rename pending in its Environment until the Store answers, and none elsewhere", async () => {
   const test = setup(view(2, 1));
   const answer = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => answer.promise);
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
-  const renaming = renderHook(() => useStoreRenaming("acme", ref, "variable"), { wrapper });
-  const persisted = test.edit({ environment: ref, changes: [{ op: "rename", path: "web.env.API_URL", to: "PUBLIC_API_URL" }] }).isPersisted.promise;
-  await waitFor(() => expect([...renaming.result.current]).toEqual(["web.env.API_URL"]));
+  const here = renderHook(() => useStoreRenamePending("acme", ref), { wrapper });
+  const elsewhere = renderHook(() => useStoreRenamePending("acme", { project: "shop", environment: "staging" }), { wrapper });
+  const persisted = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" }).isPersisted.promise;
+  await waitFor(() => expect(here.result.current).toBe(true));
+  expect(elsewhere.result.current).toBe(false);
   answer.resolve(edited(3));
   await persisted;
-  await waitFor(() => expect(renaming.result.current.size).toBe(0));
+  await waitFor(() => expect(here.result.current).toBe(false));
 });
 
-it("names a Service renaming until the Store answers, so its drawer takes no edit aimed at the old name", async () => {
+it("sends no edit while a rename in its Environment saves, as it could name the old node, but lets a versioned discard through", async () => {
   const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
   const answer = deferred<StoreResult<ConfigWritten>>();
-  test.write.mockImplementationOnce(() => answer.promise);
-  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
-  const renaming = renderHook(() => useStoreRenaming("acme", ref, "service"), { wrapper });
-  const persisted = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" }).isPersisted.promise;
-  await waitFor(() => expect([...renaming.result.current]).toEqual(["web"]));
+  test.write.mockImplementationOnce(() => answer.promise).mockResolvedValue(edited(4));
+  const renamed = test.writer.commit({ command: "rename_service", environment: ref, service: "web", name: "site" }).isPersisted.promise;
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+
+  await expect(test.writer.edit({ environment: ref, changes: [{ op: "unset", path: "web.mounts.data" }] }).isPersisted.promise)
+    .rejects.toMatchObject({ code: "renaming" });
+  expect(error).toHaveBeenCalledOnce();
+  const discarded = test.writer.commit({ command: "discard", environment: ref, path: null, target: "saved", version: "4:2:1.0" }).isPersisted.promise;
+
   answer.resolve(edited(3));
-  await persisted;
-  await waitFor(() => expect(renaming.result.current.size).toBe(0));
+  await Promise.all([renamed, discarded]);
+  expect(test.write.mock.calls.map(([{ data }]) => data.command.command)).toEqual(["rename_service", "discard"]);
+  await test.writer.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
+  expect(test.write).toHaveBeenCalledTimes(3);
 });
 
 it("lists a new Branch in its Project's Environments once the write persists, so its canvas opens", async () => {

@@ -292,11 +292,4 @@ describe("VariableRow", () => {
     await screen.findByText("Delete");
     expect(screen.queryByText("Rename")).toBeNull();
   });
-
-  it("takes no edit while its rename is pending, and takes them again once the Store answers", () => {
-    const { rerender } = render(<VariableRow variable={plainVariable({ renaming: true })} collection={collection} onSealVariable={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Variable actions" }).closest("[inert]")).not.toBeNull();
-    rerender(<VariableRow variable={plainVariable()} collection={collection} onSealVariable={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Variable actions" }).closest("[inert]")).toBeNull();
-  });
 });

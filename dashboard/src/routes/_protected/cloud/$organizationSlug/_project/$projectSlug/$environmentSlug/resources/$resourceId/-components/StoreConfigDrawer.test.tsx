@@ -13,6 +13,7 @@ import * as functions from "#/modules/config-store/store.functions";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, storeViewOptions, useStoreViews } from "#/modules/config-store/store-view.queries";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { InspectorPresentation } from "../../../-components/CanvasInspectorHeader";
+import { StoreRenameLock } from "../../../-components/StoreRenameLock";
 import * as changes from "../../../-components/canvas/useStoreChangeActions";
 import { StoreConfigDrawer } from "./StoreConfigDrawer";
 
@@ -68,7 +69,7 @@ async function openDrawer(item = initial, settings: EnvironmentView["settings"] 
     if (!config) throw new Error("Config listing did not load");
     return (
       <InspectorPresentation value={{ takeover: false, toggleFullscreen() {}, returnTo: null }}>
-        <StoreConfigDrawer params={params} config={config} />
+        <StoreRenameLock><StoreConfigDrawer params={params} config={config} /></StoreRenameLock>
       </InspectorPresentation>
     );
   } });

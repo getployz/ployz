@@ -10,7 +10,6 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldLabel, FieldTit
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { useStoreRenaming } from "#/modules/config-store/store-pending";
 import { DEFAULT_VOLUME_GB, effectiveVolumes, gigabytes, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
 import { VolumeAdvanced, VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
@@ -83,7 +82,6 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
   const replicasOf = (service: string) => replicaCount(serviceSettingRows(settings, service).get("replicas"));
   const state: StoreVolume = { organizationSlug, environment, volume };
   const removing = volume.change === "delete";
-  const renaming = useStoreRenaming(organizationSlug, environment, "volume").has(volume.name);
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
   const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
@@ -100,13 +98,13 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
         {removing ? <p className="truncate font-semibold">{volume.name}</p> : (
-          <div inert={renaming} className="min-w-0"><CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
+          <div className="min-w-0"><CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
             editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
             {...changedProps(renamed)}
             onRename={(name) => writer.commit({ command: "rename_volume", environment, volume: volume.name, name })} /></div>
         )}
       </CanvasInspectorHeader>
-      <div inert={renaming} aria-busy={renaming} className="flex min-h-0 flex-1 flex-col px-4 pb-4 aria-busy:opacity-60">
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
         <Tabs value={page}
           onValueChange={(value) => {
             if (!Schema.is(volumePageSchema)(value)) return;

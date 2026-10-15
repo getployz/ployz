@@ -26,7 +26,7 @@ import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servi
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
-import { useStorePendingName, useStorePendingNodes, useStoreRenaming } from "#/modules/config-store/store-pending";
+import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
@@ -125,7 +125,6 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const act = useServiceAct({ organizationSlug, environmentId, service: service?.name ?? "" });
   const shownName = useStorePendingName(organizationSlug, store, "service", service?.name ?? "");
   const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === params.serviceId);
-  const renaming = useStoreRenaming(organizationSlug, store, "service").has(service?.name ?? "");
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
   if (!service) return arriving ? <CanvasInspectorPending /> : <CanvasInspectorNotFound noun="Service" />;
 
@@ -199,8 +198,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}
-        actions={<div inert={renaming} className="contents"><ServiceActions state={state} namespace={namespace} act={act} /></div>}>
-        <div inert={renaming} className="min-w-0"><CanvasInspectorNameEditor
+        actions={<ServiceActions state={state} namespace={namespace} act={act} />}>
+        <div className="min-w-0"><CanvasInspectorNameEditor
           value={shownName}
           schema={nameSchema(service, services)}
           editTitle="Edit service name"
@@ -210,7 +209,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           onRename={(name) => writer.commit({ command: "rename_service", environment: store, service: service.name, name })}
         /></div>
       </CanvasInspectorHeader>
-      <div inert={renaming} aria-busy={renaming} className="flex min-h-0 flex-1 flex-col px-4 pb-4 aria-busy:opacity-60">
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
         <ServiceActAlert act={act} />
         <Tabs value={tab ?? "settings"}
           onValueChange={(value) => {
