@@ -29,7 +29,7 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
   const failedNode = deployment.nodes.find((node) => node.type === "service" && node.name === failedBuild?.service);
-  const logs = failedBuild ? `build${failedNode ? `&service=${segment(failedNode.id)}` : ""}` : "deploy";
+  const logs = failedBuild ? `build${failedNode ? `&job=${segment(failedNode.id)}` : ""}` : "deploy";
   const url = `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}?logs=${logs}`;
   const facts: MailFact[] = [];
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });

@@ -46,7 +46,7 @@ it("describes the Service whose build failed and opens its build log", () => {
     nodes: [serviceNode("svc web", "web"), serviceNode("svc api", "api")],
   }, [source("web"), source("api", "acme/api")]);
   expect(failed.facts?.[0]).toEqual({ label: "Repository", value: "acme/api", mono: true });
-  expect(failed.action?.url).toMatch(/\?logs=build&service=svc%20api$/);
+  expect(failed.action?.url).toMatch(/\?logs=build&job=svc%20api$/);
 });
 
 it("names Services as authored, not by their Private DNS names", () => {
