@@ -11,8 +11,8 @@ use ployz_core::{
     PUBLISH_SERVING_POINTER_CAPABILITY, PULL_IMAGE_CAPABILITY, PULL_IMAGE_FROM_MACHINE_CAPABILITY,
     READ_SERVING_POINTER_CAPABILITY, REGISTER_MACHINE_CAPABILITY, REMOVE_VOLUME_CAPABILITY,
     REQUEST_MACHINE_UPGRADE_CAPABILITY, RUNTIME_WATCH_CAPABILITY, Rpc, SEED_VOLUME_CAPABILITY,
-    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_VOLUME_COPY_CAPABILITY, TAIL_LOGS_CAPABILITY,
-    UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
+    SET_MANAGEMENT_CLIENT_CAPABILITY, SET_PUSH_TARGET_CAPABILITY, SET_VOLUME_COPY_CAPABILITY,
+    TAIL_LOGS_CAPABILITY, UPDATE_MACHINE_CAPABILITY, VOLUME_FLOOR_CAPABILITY, op,
 };
 
 /// Capability constants are generated from the catalog, so a typo would stay
@@ -30,6 +30,10 @@ fn catalogued_capabilities_keep_stable_spellings() {
         (
             SET_MANAGEMENT_CLIENT_CAPABILITY,
             "ployz.machine.set-management-client.v1",
+        ),
+        (
+            SET_PUSH_TARGET_CAPABILITY,
+            "ployz.machine.set-push-target.v1",
         ),
         (LIST_MACHINES_CAPABILITY, "ployz.machine.list.v1"),
         (
@@ -108,6 +112,7 @@ fn advertised_capability_groups_match_the_frozen_catalog() {
             "ployz.machine.enroll.v1",
             "ployz.machine.register.v1",
             "ployz.machine.set-management-client.v1",
+            "ployz.machine.set-push-target.v1",
             "ployz.machine.list.v1",
             "ployz.machine.update.v1",
             "ployz.machine.upgrade.request.v1",
@@ -186,6 +191,10 @@ fn unary_grpc_paths_stay_on_the_machine_rpc_service() {
     assert_eq!(
         op::SetManagementClient::PATH,
         "/ployz.rpc.v1.MachineRpc/SetManagementClient"
+    );
+    assert_eq!(
+        op::SetPushTarget::PATH,
+        "/ployz.rpc.v1.MachineRpc/SetPushTarget"
     );
     assert_eq!(
         op::RequestMachineUpgrade::PATH,

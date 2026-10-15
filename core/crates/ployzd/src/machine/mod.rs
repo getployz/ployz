@@ -16,6 +16,7 @@ use ployz_core::{
     LocalMachinePhase, Machine, MachineId, MachineRuntime, MachineStorageObservation,
     ManagementClientLabel, SelectedEndpoint,
 };
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::machine_pool;
@@ -148,6 +149,9 @@ pub struct LocalMachineRecord {
     pub wireguard_mtu: Option<u32>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
+    /// Where the observe process pushes crash events. Absent means buffer only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    push_target: Option<Url>,
 }
 
 /// Public keys held by one Management Client slot. No secret is persisted.
@@ -432,7 +436,14 @@ impl LocalMachineRecord {
             management_clients: BTreeMap::new(),
             wireguard_mtu: None,
             selected_endpoints: BTreeMap::new(),
+            push_target: None,
         })
+    }
+
+    /// Where the observe process pushes crash events, if Cloud set one.
+    #[must_use]
+    pub fn push_target(&self) -> Option<&Url> {
+        self.push_target.as_ref()
     }
 
     /// Secret behind this Machine's Management Identity.
@@ -509,6 +520,7 @@ impl LocalMachineRecord {
             management_clients: self.management_clients,
             wireguard_mtu: self.wireguard_mtu,
             selected_endpoints: self.selected_endpoints,
+            push_target: self.push_target,
         }
     }
 }

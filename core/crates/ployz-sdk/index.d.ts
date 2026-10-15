@@ -272,6 +272,8 @@ export declare class Client {
   /** Sets `label`'s slot to a fresh key; resolves to its secret `ployz1:` Management Capability. */
   setManagementClient(label: string): Promise<string>;
   clearManagementClient(label: string): Promise<void>;
+  /** Points crash pushes at `url`, or stops them with null. Rejects with unsupported on a Machine that predates push targets. */
+  setPushTarget(url: string | null): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;
   register(assignment: EnrollmentAssignment): Promise<Registered>;

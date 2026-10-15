@@ -563,6 +563,13 @@ impl MachineRpc for JoinDaemon {
         })
     }
 
+    async fn set_push_target(
+        &self,
+        _request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        Err(Status::unimplemented("unused"))
+    }
+
     async fn set_management_client(
         &self,
         request: Request<OpaquePayload>,

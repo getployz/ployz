@@ -259,6 +259,14 @@ impl MachineRpc for MachineService {
         finish(self.local.set_management_client(request).await)
     }
 
+    async fn set_push_target(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        let request = expect::<op::SetPushTarget>(request)?;
+        finish(self.local.set_push_target(request).await)
+    }
+
     async fn list_machines(
         &self,
         request: Request<OpaquePayload>,
@@ -778,7 +786,7 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
         LocalMachineError::UnreadableLowerMachine(_) | LocalMachineError::MissingPeerRow(_) => {
             respond(RpcError::caused(RpcErrorCode::Unavailable, &error))
         }
-        LocalMachineError::MissingAssignment => {
+        LocalMachineError::MissingAssignment | LocalMachineError::InvalidPushTarget(_) => {
             respond(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
         LocalMachineError::Enrollment(error) => {

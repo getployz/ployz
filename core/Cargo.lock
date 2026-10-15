@@ -3848,6 +3848,7 @@ dependencies = [
  "ts-rs",
  "unicode-segmentation",
  "unicode-width",
+ "url",
  "uuid",
 ]
 
@@ -3895,6 +3896,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "ts-rs",
+ "url",
  "uuid",
 ]
 
@@ -3912,6 +3914,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -4013,6 +4016,7 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+ "url",
  "x509-parser",
 ]
 
