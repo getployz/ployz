@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import {
-  Background, BackgroundVariant, getViewportForBounds, Panel, ReactFlow, useReactFlow, useStore, type Node, type NodeProps, type Rect,
+  Background, BackgroundVariant, getViewportForBounds, Handle, Panel, Position, ReactFlow, useReactFlow, useStore,
+  type Edge, type Node, type NodeProps, type Rect,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Link } from "@tanstack/react-router";
@@ -26,14 +27,16 @@ export const runNodeIcons = { build: HammerIcon, service: BoxIcon, volume: Datab
 export const runNodeKinds = { build: "Build", service: "Service", volume: "Volume", config: "Config" } satisfies Record<RunNode["type"], string>;
 
 function placed(graph: RunGraph, selectedId: string | undefined): RunFlowNode[] {
-  return graph.nodes.map((node) => {
-    const column = graph.nodes.filter((candidate) => candidate.column === node.column);
-    const row = column.indexOf(node) - (column.length - 1) / 2;
-    return {
-      id: node.id, type: "run", data: { node, selected: node.id === selectedId },
-      position: { x: node.column * COLUMN_STEP, y: row * ROW_STEP }, width: NODE_WIDTH, height: NODE_HEIGHT,
-    };
-  });
+  return graph.nodes.map((node) => ({
+    id: node.id, type: "run", data: { node, selected: node.id === selectedId },
+    position: { x: node.column * COLUMN_STEP, y: node.row * ROW_STEP }, width: NODE_WIDTH, height: NODE_HEIGHT,
+  }));
+}
+
+const EDGE_STYLE = { stroke: "var(--border)", strokeWidth: 1.5 };
+
+function linked(graph: RunGraph): Edge[] {
+  return graph.edges.map((edge) => ({ ...edge, style: EDGE_STYLE, focusable: false, selectable: false }));
 }
 
 export function RunTime({ timing }: { timing: RunTiming | undefined }) {
@@ -62,13 +65,15 @@ function RunNodeCard({ data: { node, selected } }: NodeProps<RunFlowNode>) {
           <div className="flex min-w-0 items-center gap-2 [&_svg]:size-3.5">
             <DeploymentStatusIcon status={node.light} />
             <CardTitle className="min-w-0 flex-1">{node.name}</CardTitle>
-            {node.type === "build" ? null : <RunTime timing={node.timing} />}
+            <RunTime timing={node.timing} />
           </div>
           <CardDescription className="flex items-center gap-1.5 [&_svg]:size-3">
             <Icon aria-hidden />{runNodeKinds[node.type]}{on ? ` · ${on}` : null}
           </CardDescription>
         </CardHeader>
       </Card>
+      <Handle type="target" position={Position.Left} isConnectable={false} className="invisible" />
+      <Handle type="source" position={Position.Right} isConnectable={false} className="invisible" />
     </Link>
   );
 }
@@ -104,6 +109,7 @@ export function RunCanvas({ graph, selectedId, header }: { graph: RunGraph; sele
   return (
     <ReactFlow
       nodes={nodes}
+      edges={linked(graph)}
       nodeTypes={nodeTypes}
       minZoom={MIN_ZOOM}
       nodesDraggable={false}
