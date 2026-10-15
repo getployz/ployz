@@ -114,7 +114,8 @@ export function showNeverSyncing(view: SyncView, pending: readonly NeverSyncing[
     return {
       ...shown,
       rows: shown.rows.filter((row) => !rows.has(row.row)),
-      never_synced: [...shown.never_synced, ...marking.map(({ row, node, kind, name }) => ({ row, node, kind, name, marks: [{ environment, row }] }))],
+      never_synced: [...shown.never_synced.map((entry) => !rows.has(entry.row) || entry.marks.some((mark) => mark.environment === environment)
+        ? entry : { ...entry, marks: [...entry.marks, { environment, row: entry.row }] }), ...marking.map(({ row, node, kind, name }) => ({ row, node, kind, name, marks: [{ environment, row }] }))],
     };
   }, view);
 }

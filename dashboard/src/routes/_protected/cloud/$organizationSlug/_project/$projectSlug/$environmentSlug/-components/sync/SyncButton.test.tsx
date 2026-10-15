@@ -165,8 +165,11 @@ it("ticks Keep at once, while the Store answers", async () => {
   fireEvent.click(items.getByRole("menuitemcheckbox", { name: /Keep fix-api/u }));
   const keep = await screen.findByRole("menuitemcheckbox", { name: /Keep fix-api/u });
   await waitFor(() => expect(keep.getAttribute("aria-checked")).toBe("true"));
-  // Kept, it never closes for sitting idle.
+  // Kept, it never closes for sitting idle, nor after a Sync.
   expect(keep.textContent).toBe("Keep fix-api");
+  fireEvent.keyDown(keep, { key: "Escape" });
+  const sync = await dialog();
+  expect(sync.queryByRole("checkbox", { name: /Close fix-api/u })).toBeNull();
 });
 
 it("syncs sideways from the picker, without offering to close the Branch", async () => {

@@ -1,7 +1,7 @@
-import type { DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
+import type { DeploymentSummary, RowId, SyncRow, SyncView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { closesIn, flipRow, flipsMoved, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
+import { closesIn, flipRow, flipsMoved, showNeverSyncing, syncButtonState, syncLine, syncPicks, syncSections, type Flips } from "./store-sync";
 
 // A row by its RowId, node and name in the node; no name brings the node whole.
 const row = (id: string, node: string, name: string | null, extra: Partial<SyncRow> = {}): SyncRow => ({
@@ -95,5 +95,21 @@ describe("the Sync button", () => {
     const day = 24 * 60 * 60;
     expect([closesIn(5 * day, 0), closesIn(4.2 * day, 0), closesIn(60, 0), closesIn(0, 60)])
       .toEqual(["Closes in 5 days", "Closes in 5 days", "Closes in 1 day", "Closes in 1 day"]);
+  });
+});
+
+describe("showNeverSyncing", () => {
+  const view = asTestDouble<SyncView>()({
+    from: { name: "fix-api" }, into: { name: "production" }, rows: [logLevel],
+    never_synced: [{ row: appEnv.row, node: "api", kind: "service", name: "env.APP_ENV", marks: [{ environment: "staging", row: appEnv.row }] }],
+  });
+
+  it("adds a second Environment's mark to a row already never synced", () => {
+    const shown = showNeverSyncing(view, [{ environment: "production", rows: [appEnv.row, logLevel.row], off: false }]);
+    expect(shown.rows).toEqual([]);
+    expect(shown.never_synced.map(({ row, marks }) => [row, marks.map((mark) => mark.environment)])).toEqual([
+      [appEnv.row, ["staging", "production"]],
+      [logLevel.row, ["production"]],
+    ]);
   });
 });

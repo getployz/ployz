@@ -149,7 +149,7 @@ function BranchSync({ params, store, branch, environments }: {
           <SyncDialog organizationSlug={params.organizationSlug} from={store} into={dialogInto} places={placesFrom(environments, name)}
             // Closing after syncs only a Branch that isn't kept, and only into its Parent; a PR Environment closes
             // with its pull request.
-            closable={(to) => to === branch.parent && !branch.kept && !me?.default && !shuttable}
+            closable={(to) => to === branch.parent && !kept && !me?.default && !shuttable}
             onClose={() => setDialogInto(null)} onSynced={(to, changes, sync) => { setDialogInto(null); synced(to, changes, sync); }} />
         </Suspense>
       )}
