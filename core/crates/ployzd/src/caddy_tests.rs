@@ -216,10 +216,10 @@ fn only_cloudflare_peers_may_set_the_client_address() {
 #[test]
 fn only_the_pageview_file_names_the_visitor() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
-    let deletes = |block: &str| {
-        for field in super::VISITOR_FIELDS {
+    let deletes = |block: &str, fields: &[&str]| {
+        for field in fields {
             assert!(
-                block.contains(&format!("request>{field} delete")),
+                block.contains(&format!("{field} delete")),
                 "{field}: {block}"
             );
         }
@@ -230,8 +230,16 @@ fn only_the_pageview_file_names_the_visitor() {
         .and_then(|(_, rest)| rest.split_once("\n}\n"))
         .expect("global options block")
         .0;
-    deletes(global);
-    deletes(&automatic_site_block(&caddyfile, "(ployz_log)"));
+    deletes(global, &super::VISITOR_FIELDS);
+    deletes(global, &super::CONNECTION_FIELDS);
+    assert!(
+        global.contains("\t\texclude http.stdlib events\n"),
+        "handshake errors and TLS events name the client where no filter reaches: {global}"
+    );
+    deletes(
+        &automatic_site_block(&caddyfile, "(ployz_log)"),
+        &super::VISITOR_FIELDS,
+    );
     assert_eq!(
         automatic_site_block(&caddyfile, "(ployz_pageviews)"),
         "log_append namespace {args[0]} log ployz_pageviews { output file \

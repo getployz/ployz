@@ -29,16 +29,12 @@ mod trace;
 pub const CONFIG_FILE: &str = "Caddyfile";
 const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
 const CONTAINER_RUNTIME_DIR: &str = "/run/ingress";
-const VISITOR_FIELDS: [&str; 8] = [
-    "remote_ip",
-    "client_ip",
-    "headers>User-Agent",
-    "headers>X-Forwarded-For",
-    "headers>X-Real-Ip",
-    "headers>Cf-Connecting-Ip",
-    "headers>True-Client-Ip",
-    "headers>Forwarded",
-];
+/// Request fields that name the visitor. Every header goes, since any of them can carry an address.
+const VISITOR_FIELDS: [&str; 3] = ["request>remote_ip", "request>client_ip", "request>headers"];
+/// Fields Caddy's debug logs put the client address in outside any request, as TLS handshakes do.
+/// `http.stdlib` and `events` put it in a message or nested payload no filter reaches, so the
+/// default log drops those two loggers.
+const CONNECTION_FIELDS: [&str; 3] = ["remote_ip", "remote", "client_ip"];
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Set to any value to turn on Caddy's debug log: every upstream selection, failure and retry.
 pub(crate) const DEBUG_ENV: &str = "PLOYZ_INGRESS_DEBUG";
@@ -203,9 +199,12 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     };
     let _ = write!(
         output,
-        "{{\n{debug}\tauto_https off\n{}\tlog default {{\n{}\t}}\n}}\n\n",
+        "{{\n{debug}\tauto_https off\n{}\tlog default {{\n\t\texclude http.stdlib events\n{}\t}}\n}}\n\n",
         trace::cloudflare_client_ip_servers(),
-        visitor_filter("\t\t"),
+        visitor_filter(
+            "\t\t",
+            &[&VISITOR_FIELDS[..], &CONNECTION_FIELDS[..]].concat()
+        ),
     );
     trace::write_snippets(&mut output);
     write_log_snippets(&mut output);
@@ -330,10 +329,10 @@ fn route_summary(projection: &IngressProjection) -> String {
     summary
 }
 
-fn visitor_filter(indent: &str) -> String {
+fn visitor_filter(indent: &str, fields: &[&str]) -> String {
     let mut filter = format!("{indent}format filter {{\n");
-    for field in VISITOR_FIELDS {
-        let _ = writeln!(filter, "{indent}\trequest>{field} delete");
+    for field in fields {
+        let _ = writeln!(filter, "{indent}\t{field} delete");
     }
     let _ = writeln!(filter, "{indent}}}");
     filter
@@ -354,7 +353,7 @@ fn write_log_snippets(output: &mut String) {
 \t\t}}\n\
 \t}}\n\
 }}\n\n",
-        visitor_filter("\t\t"),
+        visitor_filter("\t\t", &VISITOR_FIELDS),
         super::ACCESS_LOG,
     );
 }
