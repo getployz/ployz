@@ -314,6 +314,10 @@ github_number!(
     /// A pull request's number in its repository.
     PullRequestNumber, "a pull request number"
 );
+github_number!(
+    /// GitHub's ID for a user account, which a rename keeps.
+    GithubUserId, "a GitHub user ID"
+);
 
 /// Working State's revision: it advances by one with every write that changes it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
