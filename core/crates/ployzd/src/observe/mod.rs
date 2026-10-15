@@ -5,6 +5,7 @@
 //! or removes a container, and no Deploy waits on it.
 
 pub mod cleanup;
+mod bots;
 mod client;
 pub mod frame;
 mod harvest;
