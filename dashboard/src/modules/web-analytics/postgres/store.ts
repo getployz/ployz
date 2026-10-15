@@ -2,7 +2,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
-import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
+import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Interval, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 
 export type StoreQuery = {
   readonly environmentId: string;
@@ -72,8 +72,9 @@ const HEAD_DIMS = sql.raw(SESSION_DIMS.map((dim) => `first_value(${dim}) over vi
  * sessionized: a visitor's visits never depend on another visitor's pageviews.
  * Each pageview takes its visit's first values and counts from window functions, never a join: the planner has no row
  * estimates for a CTE, and with a filter it picked nested loops that went quadratic.
+ * A read of one of `visits` or `visit_rows` inlines the sessionizing; `shared` sessionizes once for a read of both.
  */
-export const visitCtes = (query: StoreQuery, range: Range) => {
+export const visitCtes = (query: StoreQuery, range: Range, shared = false) => {
   const picks = pageFilters(query);
   const selected = sql`${filterClause(sessionFilters(query))}${picks.length > 0 ? sql` and picked > 0` : sql``}`;
   const candidates = sql.join(query.filters.filter((filter) => filter.op === "eq").map((filter) => sql`
@@ -103,7 +104,7 @@ export const visitCtes = (query: StoreQuery, range: Range) => {
   ), numbered as (
     select *, sum(is_new) over (partition by visitor_id order by ts, pathname, host rows unbounded preceding) as sn
     from marked
-  ), attributed as not materialized (
+  ), attributed as ${shared ? sql`materialized` : sql`not materialized`} (
     select ts, visitor_id, pathname, is_new, ${HEAD_DIMS}, max(ts) over visit as ended, count(*) over visit as pageviews,
       count(*) filter (where true${filterClause(picks)}) over visit as picked
     from numbered
@@ -290,6 +291,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.hourlyTotals")(function* (qu
 }, inSnapshot);
 
 type ValueDbRow = { value: string; pageviews: string; visitors: string };
+const toValueRow = (row: ValueDbRow): ValueRow => ({ value: row.value, pageviews: Number(row.pageviews), visitors: Number(row.visitors) });
 
 export const breakdown = Effect.fn("WebAnalytics.breakdown")(function* (query: StoreQuery, dim: FilterKey) {
   const { drizzle } = yield* Database;
@@ -304,7 +306,7 @@ export const breakdown = Effect.fn("WebAnalytics.breakdown")(function* (query: S
   const rows = yield* drizzle.execute<ValueDbRow>(sql`
     select value, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors
     from (${sql.join(parts, sql` union all `)}) parts group by value`, "objects");
-  return rows.map((row): ValueRow => ({ value: row.value, pageviews: Number(row.pageviews), visitors: Number(row.visitors) }));
+  return rows.map(toValueRow);
 }, inSnapshot);
 
 type SessionDbRow = { value: string; visits: string; bounces: string; total_duration: string };
@@ -329,6 +331,9 @@ export const sessionsBy = Effect.fn("WebAnalytics.sessionsBy")(function* (query:
 }, inSnapshot);
 
 type EntryDbRow = SessionDbRow & { visitors: string };
+const toEntryRow = (row: EntryDbRow): EntryRow => ({
+  value: row.value, visitors: Number(row.visitors), visits: Number(row.visits), bounces: Number(row.bounces), totalDuration: Number(row.total_duration),
+});
 
 export const entryPages = Effect.fn("WebAnalytics.entryPages")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
@@ -345,36 +350,120 @@ export const entryPages = Effect.fn("WebAnalytics.entryPages")(function* (query:
     select value, sum(visitors)::bigint as visitors, sum(visits)::bigint as visits, sum(bounces)::bigint as bounces,
       sum(total_duration)::bigint as total_duration
     from (${sql.join(parts, sql` union all `)}) parts group by value`, "objects");
-  return rows.map((row): EntryRow => ({
-    value: row.value, visitors: Number(row.visitors), visits: Number(row.visits), bounces: Number(row.bounces), totalDuration: Number(row.total_duration),
-  }));
+  return rows.map(toEntryRow);
 }, inSnapshot);
 
 type GoalDbRow = { goal_id: string; name: string; visitors: string; conversions: string };
+const toGoalRow = (row: GoalDbRow): GoalRow => ({ goalId: row.goal_id, name: row.name, visitors: Number(row.visitors), conversions: Number(row.conversions) });
 
-/**
- * Only the range's distinct paths meet the goal patterns, then the matched pageviews fold per goal, day and visitor.
- * Without session filters, the range is scanned twice, which beats spilling a million rows to a CTE; with them it is sessionized once.
- */
+/** The goal CTEs over `range_rows`, ending in `goal_rows`: only its distinct paths meet the goal patterns, then the matched pageviews fold per goal, day and visitor. */
+const goalCtes = (query: StoreQuery) => sql`
+  goals as (
+    select id, name, replace(replace(replace(replace(path_pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), '*', '%') as pattern
+    from analytics.goal where environment_id = ${query.environmentId}::text
+  ), matched as (
+    select goals.id as goal_id, paths.pathname
+    from goals join (select distinct pathname from range_rows) paths on paths.pathname like goals.pattern escape '\\'
+  ), hits as (
+    select matched.goal_id, ${localDate(query.timezone)} as day, visitor_id, count(*)::bigint as pageviews
+    from matched join range_rows using (pathname)
+    group by 1, 2, 3
+  ), per_goal as (
+    select goal_id, count(*)::bigint as visitors, sum(pageviews)::bigint as conversions from hits group by 1
+  ), goal_rows as (
+    select goals.id as goal_id, goals.name, coalesce(per_goal.visitors, 0)::bigint as visitors, coalesce(per_goal.conversions, 0)::bigint as conversions
+    from goals left join per_goal on per_goal.goal_id = goals.id
+  )`;
+
+/** Without session filters, the range is scanned twice, which beats spilling a million rows to a CTE; with them it is sessionized once. */
 export const goalConversions = Effect.fn("WebAnalytics.goalConversions")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<GoalDbRow>(sql`
     with range_rows as ${sessionFilters(query).length === 0 ? sql`not materialized` : sql`materialized`} (
       select pathname, ts, visitor_id ${rowsIn(query, query.range)}
-    ), goals as (
-      select id, name, replace(replace(replace(replace(path_pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), '*', '%') as pattern
-      from analytics.goal where environment_id = ${query.environmentId}::text
-    ), matched as (
-      select goals.id as goal_id, paths.pathname
-      from goals join (select distinct pathname from range_rows) paths on paths.pathname like goals.pattern escape '\\'
-    ), hits as (
-      select matched.goal_id, ${localDate(query.timezone)} as day, visitor_id, count(*)::bigint as pageviews
-      from matched join range_rows using (pathname)
-      group by 1, 2, 3
-    ), per_goal as (
-      select goal_id, count(*)::bigint as visitors, sum(pageviews)::bigint as conversions from hits group by 1
-    )
-    select goals.id as goal_id, goals.name, coalesce(per_goal.visitors, 0)::bigint as visitors, coalesce(per_goal.conversions, 0)::bigint as conversions
-    from goals left join per_goal on per_goal.goal_id = goals.id`, "objects");
-  return rows.map((row): GoalRow => ({ goalId: row.goal_id, name: row.name, visitors: Number(row.visitors), conversions: Number(row.conversions) }));
+    ), ${goalCtes(query)}
+    select * from goal_rows`, "objects");
+  return rows.map(toGoalRow);
+});
+
+export type Figures = {
+  readonly daily: ReadonlyArray<BucketRow>;
+  readonly hourly: ReadonlyArray<BucketRow>;
+  readonly values: ReadonlyMap<FilterKey, ReadonlyArray<ValueRow>>;
+  readonly entries: ReadonlyArray<EntryRow>;
+  readonly goals: ReadonlyArray<GoalRow>;
+};
+
+type FiguresDbRow = {
+  figures: {
+    daily: TotalsRow[];
+    hourly: TotalsRow[];
+    values: Record<string, ValueDbRow[]>;
+    entries: EntryDbRow[];
+    goals: GoalDbRow[];
+  };
+};
+
+const asJson = (rows: SQL) => sql`(select coalesce(jsonb_agg(rows), '[]'::jsonb) from (${rows}) rows)`;
+
+/** A range's totals by bucket from the shared `visit_rows` and `range_visits`. */
+const sharedTotals = (bucket: SQL) => unionTotals([
+  sql`select ${bucket} as bucket, count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors,
+    0::bigint as visits, 0::bigint as bounces, 0::bigint as total_duration
+    from visit_rows group by 1`,
+  sql`select ${bucket} as bucket, 0::bigint as pageviews, 0::bigint as visitors, count(*)::bigint as visits,
+    count(*) filter (where pageviews = 1)::bigint as bounces, coalesce(sum(duration), 0)::bigint as total_duration
+    from range_visits group by 1`,
+]);
+
+/**
+ * Every figure of one range: its day series, its hour series for an hour interval, a breakdown per dim, its entry pages
+ * and its goals. Rollups hold no filtered rows, so with filters each figure reads raw, and one statement sessionizes the
+ * range once for all of them; without, each reads its rollup.
+ */
+export const figures = Effect.fn("WebAnalytics.figures")(function* (query: StoreQuery, interval: Interval, dims: ReadonlyArray<FilterKey>) {
+  if (query.filters.length === 0) {
+    const [daily, hourly, values, entries, goals] = yield* Effect.all([
+      dailyTotals(query),
+      interval === "hour" ? hourlyTotals(query) : Effect.succeed([]),
+      Effect.all(dims.map((dim) => breakdown(query, dim).pipe(Effect.map((rows) => [dim, rows] as const))), { concurrency: "unbounded" }),
+      entryPages(query),
+      goalConversions(query),
+    ], { concurrency: "unbounded" });
+    return { daily, hourly, values: new Map(values), entries, goals } satisfies Figures;
+  }
+  const { drizzle } = yield* Database;
+  const { range, timezone } = query;
+  const day = localDate(timezone);
+  const breakdowns = dims.map((dim) => sql`${dim}::text, ${asJson(sql`
+    select value, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors from (
+      select ${column(dim)} as value, count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors
+      from visit_rows where ${column(dim)} is not null group by ${column(dim)}, ${day}
+    ) days group by value`)}`);
+  const [row] = yield* drizzle.execute<FiguresDbRow>(sql`
+    with ${visitCtes(query, range, true)},
+    range_visits as (select * from visits where ts >= ${instant(range.start)} and ts < ${instant(range.end)}),
+    range_rows as (select pathname, ts, visitor_id from visit_rows),
+    ${goalCtes(query)}
+    select jsonb_build_object(
+      'daily', ${asJson(sharedTotals(epochMs(sql`(${day}::timestamp at time zone ${timezone}::text)`)))},
+      'hourly', ${interval === "hour" ? asJson(sharedTotals(epochMs(localHour(timezone)))) : sql`'[]'::jsonb`},
+      'values', jsonb_build_object(${sql.join(breakdowns, sql`, `)}),
+      'entries', ${asJson(sql`
+        select value, sum(visitors)::bigint as visitors, sum(visits)::bigint as visits, sum(bounces)::bigint as bounces,
+          sum(total_duration)::bigint as total_duration from (
+          select pathname as value, count(distinct visitor_id)::bigint as visitors, count(*)::bigint as visits,
+            count(*) filter (where pageviews = 1)::bigint as bounces, coalesce(sum(duration), 0)::bigint as total_duration
+          from range_visits group by pathname, ${day}
+        ) days group by value`)},
+      'goals', ${asJson(sql`select * from goal_rows`)}
+    ) as figures`, "objects");
+  const result = row?.figures;
+  return {
+    daily: (result?.daily ?? []).map(toBucketRow),
+    hourly: (result?.hourly ?? []).map(toBucketRow),
+    values: new Map(dims.map((dim) => [dim, (result?.values[dim] ?? []).map(toValueRow)])),
+    entries: (result?.entries ?? []).map(toEntryRow),
+    goals: (result?.goals ?? []).map(toGoalRow),
+  } satisfies Figures;
 });

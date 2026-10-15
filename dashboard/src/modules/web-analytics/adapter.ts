@@ -61,3 +61,20 @@ export const goalConversions = Effect.fn("WebAnalytics.goalConversions")(functio
   const { range, clamped, store: sq } = yield* resolve(q);
   return { range, clamped, goals: compute.goalConversions(yield* store.goalConversions(sq)) };
 });
+
+/** Every figure of one range the view shows, with a breakdown per dim; with filters, one sessionization serves them all. */
+export const figures = Effect.fn("WebAnalytics.figures")(function* <Dim extends FilterKey>(q: Query, interval: Interval, dims: ReadonlyArray<Dim>) {
+  const { range, clamped, store: sq } = yield* resolve(q);
+  const rows = yield* store.figures(sq, interval, dims);
+  const values = new Map(dims.map((dim) => [dim, compute.breakdown(rows.values.get(dim) ?? [], q.limit)]));
+  return {
+    range,
+    clamped,
+    // A range's days sum to its totals, but its hours don't: a visitor seen in two hours is one visitor.
+    overview: compute.overview(rows.daily),
+    buckets: compute.timeseries(interval === "hour" ? rows.hourly : rows.daily, range, q.site.timezone, interval),
+    values: (dim: Dim) => values.get(dim) ?? [],
+    entryPages: compute.entryPages(rows.entries, q.limit),
+    goals: compute.goalConversions(rows.goals),
+  };
+});

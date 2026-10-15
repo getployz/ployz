@@ -8,8 +8,6 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Validation } from "#/server/public-error";
 import * as analytics from "../adapter";
-import * as compute from "../compute";
-import type { Interval } from "../model";
 import { addDays, localDay, localDays } from "../local-time";
 import { setSiteAnalytics } from "../salts.server";
 import { analyticsGapDaily, analyticsGoal, analyticsPageview, analyticsRollupState, analyticsSite } from "../tables";
@@ -35,23 +33,6 @@ const siteRow = Effect.fn("WebAnalyticsView.site")(function* (organizationId: st
   const [site] = yield* drizzle.select({ enabled: analyticsSite.enabled, timezone: analyticsSite.timezone }).from(analyticsSite)
     .where(and(eq(analyticsSite.organizationId, organizationId), eq(analyticsSite.environmentId, environmentId)));
   return site;
-});
-
-/** Every figure the view shows for one range, read concurrently. */
-const readFigures = Effect.fn("WebAnalyticsView.figures")(function* (q: analytics.Query, interval: Interval) {
-  const [series, hourTotals, pages, sources, entryPages, campaigns, languages, hosts, conversions] = yield* Effect.all([
-    analytics.timeseries(q, interval),
-    // A range's days sum to its totals, but its hours don't: a visitor seen in two hours is one visitor.
-    interval === "day" ? Effect.succeed(undefined) : analytics.overview(q),
-    analytics.topPages(q),
-    analytics.sources(q),
-    analytics.entryPages(q),
-    analytics.breakdown(q, "utm_campaign"),
-    analytics.breakdown(q, "language"),
-    analytics.breakdown(q, "host"),
-    analytics.goalConversions(q),
-  ], { concurrency: "unbounded" });
-  return { overview: hourTotals?.totals ?? compute.overview(series.buckets), series, pages, sources, entryPages, campaigns, languages, hosts, conversions };
 });
 
 /** An Environment's analytics for one range: nothing past the plan gate is read unless the gate is open. */
@@ -89,8 +70,8 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
     filters: page === null ? [] : [page],
     limit: TABLE_ROWS,
   };
-  const [{ overview, series, pages, sources, entryPages, campaigns, languages, hosts, conversions }, gaps, [rollup]] = yield* Effect.all([
-    readFigures(q, interval),
+  const [figures, gaps, [rollup]] = yield* Effect.all([
+    analytics.figures(q, interval, ["page", "source", "utm_campaign", "language", "host"]),
     drizzle.select({ day: analyticsGapDaily.day, count: analyticsGapDaily.count }).from(analyticsGapDaily).where(and(
       eq(analyticsGapDaily.environmentId, input.environmentId),
       gte(analyticsGapDaily.day, localDay(site.timezone, range.start)),
@@ -100,29 +81,29 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
       .where(eq(analyticsRollupState.environmentId, input.environmentId)),
   ], { concurrency: "unbounded" });
   const today = localDay(site.timezone, now);
-  const byGoal = new Map(conversions.goals.map((goal) => [goal.goalId, goal]));
+  const byGoal = new Map(figures.goals.map((goal) => [goal.goalId, goal]));
   return {
     gate: "on",
     empty: false,
     timezone: site.timezone,
-    range: { start: series.range.start.getTime(), end: series.range.end.getTime() },
-    clamped: series.clamped,
+    range: { start: figures.range.start.getTime(), end: figures.range.end.getTime() },
+    clamped: figures.clamped,
     interval,
-    overview,
-    buckets: series.buckets.map(({ bucket, pageviews, visitors }) => ({ at: bucket.getTime(), pageviews, visitors })),
-    partialDays: partialDays(localDays(site.timezone, series.range.start, series.range.end), {
+    overview: figures.overview,
+    buckets: figures.buckets.map(({ bucket, pageviews, visitors }) => ({ at: bucket.getTime(), pageviews, visitors })),
+    partialDays: partialDays(localDays(site.timezone, figures.range.start, figures.range.end), {
       gaps,
       today,
       // Before the rollup closes its first day, every day from the first pageview on is still open.
       closedThrough: rollup?.rolledUpTo ?? addDays(site.timezone, localDay(site.timezone, seen.ts), -1),
       dirty: rollup?.dirty ?? [],
     }),
-    pages: pages.values,
-    sources: sources.values,
-    entryPages: entryPages.values.map(({ value, visitors, visits, bounceRatePercent }) => ({ value, visitors, visits, bounceRatePercent })),
-    campaigns: campaigns.values,
-    languages: languages.values,
-    hosts: hosts.values,
+    pages: figures.values("page"),
+    sources: figures.values("source"),
+    entryPages: figures.entryPages.map(({ value, visitors, visits, bounceRatePercent }) => ({ value, visitors, visits, bounceRatePercent })),
+    campaigns: figures.values("utm_campaign"),
+    languages: figures.values("language"),
+    hosts: figures.values("host"),
     goals: goals.map((goal) => ({ ...goal, visitors: byGoal.get(goal.id)?.visitors ?? 0, conversions: byGoal.get(goal.id)?.conversions ?? 0 })),
   } as const;
 });
