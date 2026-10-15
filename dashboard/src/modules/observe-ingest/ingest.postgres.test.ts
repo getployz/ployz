@@ -641,8 +641,39 @@ const lockRace = (services: Effect.Success<ReturnType<typeof setup>>["services"]
       await client.end();
     });
   }));
-  return { provide, untilWaiting, holdRollupState };
+  return { provide, lockWaiters, untilWaiting, holdRollupState };
 };
+
+const SHOP = "00000000-0000-4000-8000-00000000f207";
+
+/** A project whose environments are created highest id first, each pushing as shop-<index>. */
+const shop = (services: Effect.Success<ReturnType<typeof setup>>["services"], environments: ReadonlyArray<string>, enabled: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const store = yield* cloudStore;
+    const [first, ...rest] = [...environments].reverse();
+    if (first === undefined) return yield* Effect.die(new Error("a shop needs an environment"));
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: SHOP, name: "shop", default_environment: first }));
+    for (const id of rest) {
+      yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_environment", id, project: "shop", name: `env-${id.slice(-4)}` }));
+    }
+    const { drizzle } = yield* Database;
+    for (const [n, id] of environments.entries()) {
+      yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id) values (${ORGANIZATION}, ${`shop-${n}`}, ${id})`);
+    }
+    for (const id of enabled) yield* setSiteAnalytics(ORGANIZATION, id, { enabled: true, timezone: SYDNEY });
+  }).pipe(Effect.provide(services), Effect.orDie);
+
+const deleteShop = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`delete from config_project where id = ${SHOP}`);
+});
+
+const analyticsLeft = (services: Effect.Success<ReturnType<typeof setup>>["services"]) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.execute<{ sites: number; salts: number }>(sql`
+    select (select count(*)::int from analytics.site) as sites, (select count(*)::int from analytics.salt) as salts`, "objects");
+  return row;
+}).pipe(Effect.provide(services), Effect.orDie);
 
 const totals = (query: StoreQuery) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
@@ -720,34 +751,46 @@ it.live("an environment deleted while a bot and pageview batch waits on its roll
   expect(yield* rollupState()).toEqual([]);
 }), 60_000);
 
-it.live("a project deleted while a bot batch spanning two environments waits on their rollup state deadlocks neither", () => Effect.gen(function* () {
+it.live("a project deleted while a bot batch spanning three environments waits on their rollup state deadlocks neither", () => Effect.gen(function* () {
   const { services, send, stored, rollupState } = yield* setup();
   const race = lockRace(services);
-  // Created higher id first, so the delete trigger meets them in the reverse of ingest's id order.
-  const [low, high] = ["00000000-0000-4000-8000-00000000f205", "00000000-0000-4000-8000-00000000f206"] as const;
-  const project = "00000000-0000-4000-8000-00000000f207";
-  yield* Effect.gen(function* () {
-    const store = yield* cloudStore;
-    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: project, name: "shop", default_environment: high }));
-    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_environment", id: low, project: "shop", name: "staging" }));
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`
-      insert into config_namespace (organization_id, namespace, environment_id)
-      values (${ORGANIZATION}, 'shop-high', ${high}), (${ORGANIZATION}, 'shop-low', ${low})`);
-    yield* setSiteAnalytics(ORGANIZATION, high, { enabled: true, timezone: SYDNEY });
-    yield* setSiteAnalytics(ORGANIZATION, low, { enabled: true, timezone: SYDNEY });
-  }).pipe(Effect.provide(services), Effect.orDie);
-  const release = yield* race.holdRollupState(low);
-  const ingest = yield* Effect.forkChild(send(pageviews(5, [bots(3, { namespace: "shop-low" }), bots(2, { namespace: "shop-high" })])));
+  // Postgres hashes these three ids into the order f302, f301, f303, so a delete that drops its id order locks f302
+  // before waiting on f301, which the batch takes next and then waits on f302 for.
+  const environments = ["00000000-0000-4000-8000-00000000f301", "00000000-0000-4000-8000-00000000f302", "00000000-0000-4000-8000-00000000f303"] as const;
+  const [lowest] = environments;
+  yield* shop(services, environments, environments);
+  const release = yield* race.holdRollupState(lowest);
+  const ingest = yield* Effect.forkChild(send(pageviews(5, environments.map((_, n) => bots(n + 1, { namespace: `shop-${n}` })))));
   yield* race.untilWaiting(1);
-  const forget = yield* Effect.forkChild(race.provide(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`delete from config_project where id = ${project}`);
-  })));
+  const forget = yield* Effect.forkChild(race.provide(deleteShop));
   yield* race.untilWaiting(2);
   yield* release;
   expect((yield* Fiber.join(ingest)).status).toBe(200);
   yield* Fiber.join(forget);
   expect(yield* stored()).toEqual({ ...nothingStored, cursor: [{ stream: "pageviews", seq: 5n }] });
   expect(yield* rollupState()).toEqual([]);
+}), 60_000);
+
+it.live("an environment enabled while its project's delete waits on another's rollup state waits for the delete and leaves nothing behind", () => Effect.gen(function* () {
+  const { services, send, stored, rollupState } = yield* setup();
+  const race = lockRace(services);
+  const environments = ["00000000-0000-4000-8000-00000000f301", "00000000-0000-4000-8000-00000000f302"] as const;
+  const [low, high] = environments;
+  yield* shop(services, environments, [high]);
+  const release = yield* race.holdRollupState(high);
+  const forget = yield* Effect.forkChild(race.provide(deleteShop));
+  yield* race.untilWaiting(1);
+  // The enable either finishes now or waits behind the delete; either way the batch below must not deadlock.
+  const enable = yield* Effect.forkChild(Effect.exit(setSiteAnalytics(ORGANIZATION, low, { enabled: true, timezone: SYDNEY }).pipe(Effect.provide(services))));
+  yield* Effect.raceFirst(Fiber.await(enable), race.untilWaiting(2));
+  const waiting = yield* race.lockWaiters();
+  const ingest = yield* Effect.forkChild(send(pageviews(5, [bots(3, { namespace: "shop-0" }), bots(2, { namespace: "shop-1" })])));
+  yield* race.untilWaiting(waiting + 1);
+  yield* release;
+  expect((yield* Fiber.join(ingest)).status).toBe(200);
+  yield* Fiber.join(forget);
+  yield* Fiber.join(enable);
+  expect(yield* stored()).toEqual({ ...nothingStored, cursor: [{ stream: "pageviews", seq: 5n }] });
+  expect(yield* rollupState()).toEqual([]);
+  expect(yield* analyticsLeft(services)).toEqual({ sites: 0, salts: 0 });
 }), 60_000);

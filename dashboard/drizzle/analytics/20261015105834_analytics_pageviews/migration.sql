@@ -73,12 +73,17 @@ CREATE TABLE "analytics"."session_hourly" (
 --> statement-breakpoint
 CREATE UNIQUE INDEX "goal_environment_path_idx" ON "analytics"."goal" ("environment_id","path_pattern");--> statement-breakpoint
 -- The Config Store creates config_environment when it opens, after these migrations, and attaches this then.
--- Raw pageviews are left to the partition drops. The rollup_state rows are locked first, in id order, the order ingest
--- and the rollup lock them, so deleting several environments waits behind a batch spanning them instead of deadlocking.
+-- Raw pageviews are left to the partition drops. Each environment's rollup_state row is made if missing and locked
+-- first, one at a time in id order, the way ingest takes them, so deleting several environments waits behind a batch
+-- spanning them instead of deadlocking, and an enable racing the delete waits for it rather than slipping a row in.
 CREATE FUNCTION "analytics"."forget_environments"() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  environment text;
 BEGIN
-  PERFORM 1 FROM analytics.rollup_state r JOIN (SELECT DISTINCT id FROM old_rows) o ON r.environment_id = o.id
-    ORDER BY r.environment_id COLLATE "C" FOR UPDATE OF r;
+  FOR environment IN SELECT DISTINCT id COLLATE "C" FROM old_rows ORDER BY 1 LOOP
+    INSERT INTO analytics.rollup_state (environment_id) VALUES (environment) ON CONFLICT DO NOTHING;
+    PERFORM 1 FROM analytics.rollup_state WHERE environment_id = environment FOR UPDATE;
+  END LOOP;
   DELETE FROM analytics.rollup_state USING old_rows WHERE rollup_state.environment_id = old_rows.id;
   DELETE FROM analytics.site USING old_rows WHERE site.environment_id = old_rows.id;
   DELETE FROM analytics.daily USING old_rows WHERE daily.environment_id = old_rows.id;
