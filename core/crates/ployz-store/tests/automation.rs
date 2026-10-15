@@ -122,7 +122,7 @@ fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8
 }
 
 fn system(store: &ConfigStore, event: &SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&org(), event, &Trusted::default()).unwrap()
+    let Written::Automated(automated) = store.system(&org(), event, &backend::members()).unwrap()
     else {
         panic!("a system event writes Automated")
     };
@@ -540,7 +540,12 @@ fn a_merge_keeps_the_destinations_accepted_loss() {
 }
 
 /// Turn on pull request environments from `production`, and open pull request #5.
-fn open_pull_request(store: &ConfigStore, who: &Actor) {
+fn open_pull_request(store: &ConfigStore, who: &Actor) -> Automated {
+    open_as(store, who, &pull_request(true))
+}
+
+/// Turn on pull request environments from `production`, and report `event`.
+fn open_as(store: &ConfigStore, who: &Actor, event: &SystemEvent) -> Automated {
     store
         .write(
             who,
@@ -556,7 +561,7 @@ fn open_pull_request(store: &ConfigStore, who: &Actor) {
             },
         )
         .unwrap();
-    system(store, &pull_request(true));
+    system(store, event)
 }
 
 /// Pull request #5 onto `main`: open, or merged.
@@ -566,8 +571,10 @@ fn pull_request(open: bool) -> SystemEvent {
         number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
+        author_id: Some(backend::ada()),
         bot: false,
         head_branch: backend::git_branch("search"),
+        head_repository_id: Some(backend::repo_id(11)),
         head: backend::sha(H2),
         target_branch: backend::git_branch("main"),
         commits: 1,
@@ -581,6 +588,92 @@ fn pull_request(open: bool) -> SystemEvent {
         })
         .unwrap(),
     })
+}
+
+/// Pull request #5 open at `head`, by someone outside the org, from `acme/web` itself.
+fn by_stranger(head: &str, minute: u8) -> SystemEvent {
+    let SystemEvent::PullRequest(open) = pull_request(true) else {
+        unreachable!("pull_request is a pull request")
+    };
+    SystemEvent::PullRequest(ployz_store::PullRequest {
+        author: "eve".into(),
+        author_id: Some(ployz_store::GithubUserId::parse(42).unwrap()),
+        head: backend::sha(head),
+        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:{minute:02}:00Z"))
+            .unwrap(),
+        ..open
+    })
+}
+
+/// A push to pull request #5's branch, from `base`.
+fn push_search(base: Option<&str>, head: &str) -> SystemEvent {
+    SystemEvent::BranchHead(BranchHead {
+        repository_id: backend::repo_id(11),
+        branch: backend::git_branch("search"),
+        base: base.map(backend::sha),
+        head: Some(backend::sha(head)),
+        changed: None,
+    })
+}
+
+fn approve(store: &ConfigStore, who: &Actor, head: &str) -> Automated {
+    store
+        .write(
+            who,
+            &ployz_store::ApprovePullRequest {
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
+                head: backend::sha(head),
+            },
+        )
+        .unwrap()
+}
+
+fn reasons(automated: &Automated) -> Vec<&str> {
+    automated
+        .skipped
+        .iter()
+        .map(|skipped| skipped.reason.as_str())
+        .collect()
+}
+
+#[test]
+fn a_push_to_a_members_pull_request_deploys_its_head() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+    let pushed = system(&store, &push_search(None, H3));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+    assert_eq!(pinned(&store, &pushed, "web").as_deref(), Some(H3));
+}
+
+#[test]
+fn a_push_to_a_non_members_pull_request_waits_for_approval_of_its_head() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_as(&store, &who, &by_stranger(H2, 1));
+    assert!(opened.admitted.is_empty(), "{opened:?}");
+    assert!(system(&store, &push_search(None, H2)).admitted.is_empty());
+    let approved = approve(&store, &who, H2);
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H2));
+    backend::run(&store, &approved.admitted[0].deployment.id);
+
+    // The push can arrive before the facts: the approval was for another head.
+    let early = system(&store, &push_search(Some(H2), H3));
+    assert!(early.admitted.is_empty(), "{early:?}");
+    assert_eq!(reasons(&early), ["Needs approval"]);
+    let reported = system(&store, &by_stranger(H3, 2));
+    assert!(reported.admitted.is_empty(), "{reported:?}");
+    assert!(
+        system(&store, &push_search(Some(H2), H3))
+            .admitted
+            .is_empty()
+    );
+
+    let approved = approve(&store, &who, H3);
+    assert_eq!(approved.admitted.len(), 1, "{approved:?}");
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H3));
 }
 
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {

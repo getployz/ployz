@@ -26,7 +26,9 @@ pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeV
 pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
 
-use crate::id::{BranchName, CommitSha, PullRequestNumber, RepositoryId, RepositoryName};
+use crate::id::{
+    BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
+};
 use std::collections::BTreeSet;
 
 use ployz_core::config::{
@@ -51,6 +53,9 @@ use crate::{Actor, Trusted, review};
 /// A Branch closes after this long without a Deployment.
 const IDLE: i64 = 7 * 24 * 60 * 60;
 
+/// Why a pull request's head didn't deploy.
+pub(crate) const NEEDS_APPROVAL: &str = "Needs approval";
+
 /// A pull request as Cloud read it from GitHub just now.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -60,10 +65,16 @@ pub struct PullRequest {
     pub title: String,
     /// Its author's login.
     pub author: String,
+    /// Its author's account, which a rename keeps; none when Cloud couldn't read it.
+    #[serde(default)]
+    pub author_id: Option<GithubUserId>,
     /// Whether its author is a bot.
     pub bot: bool,
     /// The branch it merges from.
     pub head_branch: BranchName,
+    /// The repository that branch is in: a fork's own, or none once the fork is deleted.
+    #[serde(default)]
+    pub head_repository_id: Option<RepositoryId>,
     /// That branch's head commit.
     pub head: CommitSha,
     /// The branch it merges into.
@@ -164,14 +175,68 @@ pub struct PrPlan {
     pub open: Vec<OpenPullRequest>,
 }
 
-/// A pull request with a PR Environment.
+/// A pull request with a PR Environment, or one waiting for a member to approve it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct OpenPullRequest {
     pub number: PullRequestNumber,
     /// Empty until Cloud reports its facts.
     pub title: String,
     pub author: String,
-    pub environment: EnvironmentName,
+    /// None until Cloud reports its facts.
+    pub head: Option<CommitSha>,
+    pub standing: Standing,
+    /// None until a member approves it.
+    pub environment: Option<EnvironmentName>,
+}
+
+/// Whether a pull request's head deploys. Only a member's pull request from the
+/// repository itself, or an included bot's, deploys every push: anyone else's runs
+/// code the Organization never read, with its secrets.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Standing {
+    /// Every head deploys.
+    Trusted,
+    /// Nothing deploys until a member approves its head.
+    NeedsApproval,
+    /// A member approved this head, and only it deploys.
+    Approved(CommitSha),
+}
+
+impl Standing {
+    pub(crate) fn admits(&self, head: &CommitSha) -> bool {
+        match self {
+            Self::Trusted => true,
+            Self::NeedsApproval => false,
+            Self::Approved(approved) => approved == head,
+        }
+    }
+
+    /// What `event` earns: an approval holds only while its head does.
+    fn of(event: &PullRequest, trusted: &Trusted, before: Self) -> Self {
+        let own = event.head_repository_id == Some(event.repository_id);
+        let member = event
+            .author_id
+            .zip(trusted.members.as_ref())
+            .is_some_and(|(author, members)| members.contains(&author));
+        if own && (event.bot || member) {
+            return Self::Trusted;
+        }
+        match before {
+            Self::Approved(head) if head == event.head => Self::Approved(head),
+            Self::Trusted | Self::NeedsApproval | Self::Approved(_) => Self::NeedsApproval,
+        }
+    }
+}
+
+/// Deploy a pull request's head, which needed approval: this head only.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovePullRequest {
+    pub repository_id: RepositoryId,
+    pub number: PullRequestNumber,
+    /// The head the approver saw: refused once the pull request moved on.
+    pub head: CommitSha,
 }
 
 /// A pull request's PR Environments and whether it is ready to merge.
@@ -242,11 +307,12 @@ struct Setup {
     command: String,
 }
 
-/// The repository's pull requests with a PR Environment in the Project, not being closed.
+/// The repository's pull requests with a PR Environment in the Project, not being
+/// closed, then those the plan would make one for once a member approves them.
 fn open_in(
     tx: &mut dyn Tx,
     who: &Actor,
-    project: &crate::id::ProjectId,
+    (project, plan): (&crate::id::ProjectId, &Stored),
     repository_id: RepositoryId,
 ) -> Result<Vec<OpenPullRequest>, RpcError> {
     let rows = tx.query(
@@ -261,14 +327,94 @@ fn open_in(
         let number: PullRequestNumber = row.number(0, "pull request")?;
         let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
         let facts = facts(tx, who, repository_id, number)?;
+        let standing = standing(tx, who, repository_id, number)?;
         open.push(OpenPullRequest {
             number,
             title: facts.as_ref().map(|f| f.title.clone()).unwrap_or_default(),
-            author: facts.map(|f| f.author).unwrap_or_default(),
-            environment,
+            author: facts.as_ref().map(|f| f.author.clone()).unwrap_or_default(),
+            head: facts.map(|f| f.head),
+            standing,
+            environment: Some(environment),
         });
     }
+    if !plan.enabled || plan.start_from.is_none() {
+        return Ok(open);
+    }
+    let rows = tx.query(
+        "SELECT number, facts, standing FROM config_pull_request \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND merged IS NULL ORDER BY number",
+        &[who.organization.as_str().into(), repository_id.into()],
+    )?;
+    for row in rows {
+        let number: PullRequestNumber = row.number(0, "pull request")?;
+        let facts: PullRequest = row.json(1, "pull request")?;
+        let standing = stored_standing(&row)?;
+        let waiting = facts.open
+            && !(facts.bot && !plan.include_bots)
+            && !standing.admits(&facts.head)
+            && !open.iter().any(|listed| listed.number == number);
+        if waiting {
+            open.push(OpenPullRequest {
+                number,
+                title: facts.title,
+                author: facts.author,
+                head: Some(facts.head),
+                standing,
+                environment: None,
+            });
+        }
+    }
     Ok(open)
+}
+
+/// What the Store decided of a pull request; one it never saw needs approval.
+pub(crate) fn standing(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    pr: PullRequestNumber,
+) -> Result<Standing, RpcError> {
+    let rows = tx.query(
+        "SELECT number, facts, standing FROM config_pull_request \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &[
+            who.organization.as_str().into(),
+            repository_id.into(),
+            pr.into(),
+        ],
+    )?;
+    rows.first()
+        .map_or(Ok(Standing::NeedsApproval), stored_standing)
+}
+
+/// The standing in column 2 of `row`.
+fn stored_standing(row: &crate::storage::Row) -> Result<Standing, RpcError> {
+    row.optional_text(2)?
+        .map_or(Ok(Standing::NeedsApproval), |text| {
+            serde_json::from_str(text).map_err(|_| error::corrupt("pull request standing"))
+        })
+}
+
+fn set_standing(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    pr: &PullRequestRef,
+    standing: &Standing,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_pull_request SET standing = ?4 \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &[
+            who.organization.as_str().into(),
+            pr.repository_id.into(),
+            pr.number.into(),
+            serde_json::to_string(standing)
+                .expect("a standing is JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    Ok(())
 }
 
 fn load(
@@ -399,6 +545,7 @@ pub(crate) fn pull_request(
     let organization = who.organization.as_str();
     let (repository_id, number) = (event.repository_id, event.number);
     let before = facts(tx, who, repository_id, number)?;
+    let stood = standing(tx, who, repository_id, number)?;
     let written = tx.execute(
         "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
@@ -443,6 +590,17 @@ pub(crate) fn pull_request(
     }
     let mut automated = Automated::default();
     let fresh = written != 0;
+    let reported = PullRequestRef {
+        repository_id,
+        number,
+    };
+    let standing = match fresh {
+        true => Standing::of(event, trusted, stood),
+        false => stood,
+    };
+    if fresh {
+        set_standing(tx, who, &reported, &standing)?;
+    }
     if !fresh && first_merge.is_none() {
         // Older than what the Store holds: never undo a newer fact.
         return Ok(automated);
@@ -535,17 +693,73 @@ pub(crate) fn pull_request(
             let target = crate::removal::Target::Environment(environment.clone());
             crate::removal::mark::clear_tombstone(tx, &target)?;
         }
-        open(tx, who, (event, trusted), &current, &mut automated)?;
+        let at = Opening {
+            event,
+            standing: &standing,
+            trusted,
+        };
+        open(tx, who, &at, &current, &mut automated)?;
     }
-    let reported = PullRequestRef {
-        repository_id,
-        number,
-    };
     let has_environments =
         !current.is_empty() || !landing.is_empty() || !automated.admitted.is_empty();
     if has_environments && !automated.checks.contains(&reported) {
         automated.checks.push(reported);
     }
+    Ok(automated)
+}
+
+/// A member approved the pull request's head: make its PR Environments and deploy
+/// that head, once. Approving it again only makes what an earlier one couldn't.
+pub(crate) fn approve(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    approval: &ApprovePullRequest,
+    trusted: &Trusted,
+) -> Result<Automated, RpcError> {
+    let (repository_id, number) = (approval.repository_id, approval.number);
+    let Some(event) = facts(tx, who, repository_id, number)? else {
+        return Err(error::not_found(
+            format!("No pull request #{number} in this repository"),
+            json!({}),
+        ));
+    };
+    if !event.open {
+        return Err(error::conflict("This pull request is closed", json!({})));
+    }
+    if event.head != approval.head {
+        return Err(error::conflict(
+            "This pull request has a newer commit. Approve that one.",
+            json!({ "head": event.head }),
+        ));
+    }
+    let current = current(tx, who, repository_id, number, false)?;
+    let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
+    touched.extend(start_froms(tx, who, repository_id)?);
+    scope::lock_all(tx, touched)?;
+    let pr = PullRequestRef {
+        repository_id,
+        number,
+    };
+    let before = standing(tx, who, repository_id, number)?;
+    let first = !before.admits(&event.head);
+    let standing = match first {
+        true => Standing::Approved(event.head.clone()),
+        false => before,
+    };
+    set_standing(tx, who, &pr, &standing)?;
+    let mut automated = Automated::default();
+    let at = Opening {
+        event: &event,
+        standing: &standing,
+        trusted,
+    };
+    open(tx, who, &at, &current, &mut automated)?;
+    if first {
+        for (environment, _) in &current {
+            crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
+        }
+    }
+    automated.checks.push(pr);
     Ok(automated)
 }
 
@@ -606,14 +820,26 @@ fn current(
         .collect()
 }
 
+/// A pull request's PR Environments open from its facts, as it stands.
+struct Opening<'a> {
+    event: &'a PullRequest,
+    standing: &'a Standing,
+    trusted: &'a Trusted,
+}
+
 /// Make a PR Environment in every Project whose plan is on and has none yet.
 fn open(
     tx: &mut dyn Tx,
     who: &Actor,
-    (event, trusted): (&PullRequest, &Trusted),
+    at: &Opening<'_>,
     current: &[(EnvironmentId, crate::id::ProjectId)],
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
+    let Opening {
+        event,
+        standing,
+        trusted,
+    } = *at;
     let rows = tx.query(
         "SELECT project_id, plan FROM config_pr_plan \
          WHERE organization_id = ?1 AND repository_id = ?2 ORDER BY project_id",
@@ -637,6 +863,13 @@ fn open(
         else {
             continue;
         };
+        if !standing.admits(&event.head) {
+            automated.skipped.push(Skipped {
+                environment: start.summary.id.clone(),
+                reason: NEEDS_APPROVAL.to_owned(),
+            });
+            continue;
+        }
         if trusted.runnable().is_err() {
             automated.skipped.push(Skipped {
                 environment: start.summary.id.clone(),

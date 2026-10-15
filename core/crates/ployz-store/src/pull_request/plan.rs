@@ -144,7 +144,7 @@ pub(crate) fn plans(
                 .as_ref()
                 .and_then(|start| branch::name_of(&start.working, lineage))
         };
-        let open = open_in(tx, who, &project.id, repository_id)?;
+        let open = open_in(tx, who, (&project.id, &stored), repository_id)?;
         plans.push(PrPlan {
             repository: name,
             repository_id,

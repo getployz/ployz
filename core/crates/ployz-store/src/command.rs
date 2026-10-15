@@ -413,6 +413,9 @@ commands! {
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
         agent [EnvironmentPr]
         => crate::pull_request::set_plan(tx, who, c);
+    /// Deploy a pull request's head that needed a member's approval.
+    ApprovePullRequest(crate::ApprovePullRequest) -> Automated(crate::Automated)
+        => crate::pull_request::approve(tx, who, c, trusted);
     /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched)
         agent [ServiceAdd, VolumeAdd, ConfigWrite, ConfigRename, ConfigRemove, DiscardInput]
