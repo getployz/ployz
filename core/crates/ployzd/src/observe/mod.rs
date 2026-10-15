@@ -4,8 +4,8 @@
 //! The Observe Store only observes this Machine: it never places, moves, restarts
 //! or removes a container, and no Deploy waits on it.
 
-pub mod cleanup;
 mod bots;
+pub mod cleanup;
 mod client;
 pub mod frame;
 mod harvest;
@@ -14,6 +14,7 @@ mod integration_tests;
 pub mod layout;
 pub(crate) mod metrics;
 mod query;
+mod salts;
 mod serve;
 mod ship;
 pub(crate) mod unit;
@@ -25,6 +26,7 @@ use std::{
     io::Write,
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use bollard::Docker;
@@ -73,12 +75,24 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
         store.clone(),
         data_dir.to_path_buf(),
     ));
+    let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds())?);
     let crashes = ship::Outbox::open(&store)?;
+    spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
+    let pageviews = ship::PageviewOutbox::open(&store)?;
+    spawn_shipper(pageviews.clone(), salts.clone(), data_dir)?;
+    harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
+}
+
+fn spawn_shipper<S: ship::Stream>(
+    outbox: Arc<S>,
+    salts: Arc<salts::Salts>,
+    data_dir: &Path,
+) -> io::Result<()> {
     let machine_dir = data_dir.to_path_buf();
-    let shipper = ship::Shipper::new(crashes.clone(), move || ship::push_target(&machine_dir))
+    let shipper = ship::Shipper::new(outbox, salts, move || ship::push_target(&machine_dir))
         .map_err(io::Error::other)?;
     tokio::spawn(shipper.run());
-    harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
+    Ok(())
 }
 
 fn lock_store(store: &StoreRoot) -> io::Result<File> {

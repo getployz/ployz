@@ -27,6 +27,13 @@
 //!         last_seq                      the newest seq handed out
 //!         dropped                       entries lost to the cap or refused
 //!                                       by Cloud
+//!       pageviews/
+//!         <seq>.jsonl                   up to 100 pageview, bots and gap
+//!                                       rows waiting for Cloud, one per line
+//!         last_seq                      the newest seq handed out
+//!         dropped                       rows lost to the cap or refused
+//!     analytics/
+//!       salts.json                      the daily salts of the last ack
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -59,6 +66,9 @@ pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
 const OUTBOX_DIR: &str = "outbox";
 const CRASH_DIR: &str = "crash";
+const PAGEVIEWS_DIR: &str = "pageviews";
+const ANALYTICS_DIR: &str = "analytics";
+const SALTS_FILE: &str = "salts.json";
 const LOG_SUFFIX: &str = ".log";
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const HOUR_SECS: u64 = 60 * 60;
@@ -101,6 +111,16 @@ impl StoreRoot {
     #[must_use]
     pub fn crash_outbox(&self) -> PathBuf {
         self.0.join(OUTBOX_DIR).join(CRASH_DIR)
+    }
+
+    #[must_use]
+    pub fn pageviews_outbox(&self) -> PathBuf {
+        self.0.join(OUTBOX_DIR).join(PAGEVIEWS_DIR)
+    }
+
+    #[must_use]
+    pub fn salts(&self) -> PathBuf {
+        self.0.join(ANALYTICS_DIR).join(SALTS_FILE)
     }
 
     /// `<DockerRootDir>/ployz-observe`, which holds the version dirs.

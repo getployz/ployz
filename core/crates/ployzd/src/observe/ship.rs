@@ -1,3 +1,8 @@
+//! Ships outbox rows to Cloud, one signed batch at a time per stream, and
+//! keeps the salt cache current from Cloud's acks.
+
+mod pageviews;
+
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -6,6 +11,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+pub(super) use pageviews::PageviewOutbox;
 use ployz_core::{MachineId, metrics::MetricMarker};
 use reqwest::{
     RequestBuilder, StatusCode, Url,
@@ -15,28 +21,35 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
-use super::layout::{StoreRoot, create_store_dir};
+use super::{
+    layout::{StoreRoot, create_store_dir},
+    salts::Salts,
+};
 use crate::{machine::LocalMachineRecord, management::ManagementSecret};
 
 pub(super) const CAP: usize = 1000;
 const BATCH: usize = 100;
 const LAST_SEQ_FILE: &str = "last_seq";
 const DROPPED_FILE: &str = "dropped";
-const STREAM: &str = "crash";
+const CRASH: &str = "crash";
+const PAGEVIEWS: &str = "pageviews";
 const TICK: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(5 * 60);
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
 const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often a stale salt cache may ask Cloud again. An older Cloud answers
+/// without salts, so the cache stays stale and would otherwise ask every tick.
+const SALT_REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
 
 const MACHINE_FILE: &str = "machine.json";
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-push-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
 
-/// Where crash batches go and who signs them. The secret stays in memory
-/// for one ship cycle and is never logged.
+/// Where batches go and who signs them. The secret stays in memory for one
+/// ship cycle and is never logged.
 pub struct Pusher {
     url: Url,
     machine_id: MachineId,
@@ -81,12 +94,48 @@ fn signature(secret: &ManagementSecret, machine_id: &MachineId, ts: i64, body: &
     URL_SAFE_NO_PAD.encode(secret.sign(&message))
 }
 
-fn unix_seconds() -> i64 {
+pub(super) fn unix_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+/// A seq after `last`: the clock in nanos, or `last + 1` when the clock
+/// has not moved past it.
+fn next_seq(clock: u64, last: u64) -> u64 {
+    clock.max(last.saturating_add(1))
+}
+
+/// One batch read from an outbox and waiting on Cloud's answer.
+#[derive(Debug)]
+pub(super) struct Held {
+    body: Vec<u8>,
+    /// The entries or segments that settle together when Cloud answers.
+    seqs: Vec<u64>,
+}
+
+/// An outbox the shipper drains, one stream of the push wire.
+pub(super) trait Stream: Send + Sync + 'static {
+    const NAME: &'static str;
+
+    /// The oldest batch waiting for Cloud, or None when nothing waits.
+    fn next(&self) -> io::Result<Option<Held>>;
+
+    /// Deletes what Cloud took.
+    fn ack(&self, seqs: &[u64]) -> io::Result<()>;
+
+    /// Deletes what Cloud refused and counts it as dropped.
+    fn refuse(&self, seqs: &[u64]) -> io::Result<()>;
+
+    fn wake(&self) -> &Notify;
+
+    /// An empty batch whose only purpose is the salts in its ack, for the
+    /// stream Cloud already answers.
+    fn salt_refresh(&self) -> io::Result<Option<Held>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -117,45 +166,60 @@ struct Ledger {
     dropped: u64,
 }
 
+impl Ledger {
+    fn open(dir: &Path, newest: u64) -> Self {
+        Self {
+            last_seq: read_counter(&dir.join(LAST_SEQ_FILE)).max(newest),
+            dropped: read_counter(&dir.join(DROPPED_FILE)),
+        }
+    }
+
+    fn take_seq(&mut self, dir: &Path, clock: u64) -> io::Result<u64> {
+        let seq = next_seq(clock, self.last_seq);
+        write_counter(&dir.join(LAST_SEQ_FILE), seq)?;
+        self.last_seq = seq;
+        Ok(seq)
+    }
+
+    fn count_dropped(&mut self, dir: &Path, count: usize) -> io::Result<()> {
+        self.dropped = self
+            .dropped
+            .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+        write_counter(&dir.join(DROPPED_FILE), self.dropped)
+    }
+}
+
 impl Outbox {
     pub fn open(store: &StoreRoot) -> io::Result<Arc<Self>> {
         let dir = store.crash_outbox();
         create_store_dir(dir.parent().unwrap_or(&dir))?;
         create_store_dir(&dir)?;
-        let newest = seqs(&dir)?.last().copied().unwrap_or(0);
-        let ledger = Ledger {
-            last_seq: read_counter(&dir.join(LAST_SEQ_FILE)).max(newest),
-            dropped: read_counter(&dir.join(DROPPED_FILE)),
-        };
+        let newest = seqs(&dir, "")?.last().copied().unwrap_or(0);
         Ok(Arc::new(Self {
+            ledger: Mutex::new(Ledger::open(&dir, newest)),
             dir,
-            ledger: Mutex::new(ledger),
             wake: Notify::new(),
         }))
     }
 
     pub fn push(&self, marker: MetricMarker) -> io::Result<()> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        let seqs = seqs(&self.dir)?;
+        let seqs = seqs(&self.dir, "")?;
         let excess = (seqs.len() + 1).saturating_sub(CAP);
         if excess > 0 {
             for seq in seqs.iter().take(excess) {
-                remove_entry(&self.dir, *seq)?;
+                remove_entry(&self.dir, *seq, "")?;
             }
-            self.count_dropped(&mut ledger, excess)?;
+            ledger.count_dropped(&self.dir, excess)?;
             tracing::warn!(
                 dropped = excess,
                 "the crash outbox is full; dropping its oldest entries"
             );
         }
-        let seq = u64::try_from(marker.ts)
-            .unwrap_or(0)
-            .max(ledger.last_seq.saturating_add(1));
+        let seq = ledger.take_seq(&self.dir, u64::try_from(marker.ts).unwrap_or(0))?;
         let entry = Entry { seq, marker };
         let json = serde_json::to_vec(&entry).map_err(io::Error::other)?;
-        crate::filesystem::atomic_write(&self.dir.join(entry_name(seq)), &json, 0o600)?;
-        ledger.last_seq = seq;
-        write_counter(&self.dir.join(LAST_SEQ_FILE), seq)?;
+        crate::filesystem::atomic_write(&self.dir.join(entry_name(seq, "")), &json, 0o600)?;
         drop(ledger);
         self.wake.notify_one();
         Ok(())
@@ -164,11 +228,11 @@ impl Outbox {
     pub(super) fn oldest(&self, limit: usize) -> io::Result<Vec<Entry>> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         let mut entries = Vec::new();
-        for seq in seqs(&self.dir)? {
+        for seq in seqs(&self.dir, "")? {
             if entries.len() == limit {
                 break;
             }
-            let path = self.dir.join(entry_name(seq));
+            let path = self.dir.join(entry_name(seq, ""));
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -178,56 +242,91 @@ impl Outbox {
                 Ok(entry) => entries.push(entry),
                 Err(error) => {
                     tracing::warn!(path = %path.display(), %error, "dropping an unreadable crash outbox entry");
-                    remove_entry(&self.dir, seq)?;
-                    self.count_dropped(&mut ledger, 1)?;
+                    remove_entry(&self.dir, seq, "")?;
+                    ledger.count_dropped(&self.dir, 1)?;
                 }
             }
         }
         Ok(entries)
     }
 
-    fn ack(&self, entries: &[Entry]) -> io::Result<()> {
-        let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        for entry in entries {
-            remove_entry(&self.dir, entry.seq)?;
+    fn remove(&self, seqs: &[u64], refused: bool) -> io::Result<()> {
+        let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        for seq in seqs {
+            remove_entry(&self.dir, *seq, "")?;
+        }
+        if refused {
+            ledger.count_dropped(&self.dir, seqs.len())?;
         }
         Ok(())
     }
 
-    fn refuse(&self, entries: &[Entry]) -> io::Result<()> {
-        let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
-        for entry in entries {
-            remove_entry(&self.dir, entry.seq)?;
-        }
-        self.count_dropped(&mut ledger, entries.len())
+    fn ledger(&self) -> (u64, u64) {
+        let ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
+        (ledger.last_seq, ledger.dropped)
     }
 
-    fn dropped(&self) -> u64 {
-        self.ledger
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .dropped
+    fn batch(&self, seq: u64, events: &[Entry]) -> io::Result<Held> {
+        let (_, dropped) = self.ledger();
+        let batch = Batch {
+            stream: CRASH,
+            seq,
+            dropped,
+            events,
+        };
+        Ok(Held {
+            body: serde_json::to_vec(&batch).map_err(io::Error::other)?,
+            seqs: events.iter().map(|entry| entry.seq).collect(),
+        })
+    }
+}
+
+impl Stream for Outbox {
+    const NAME: &'static str = CRASH;
+
+    fn next(&self) -> io::Result<Option<Held>> {
+        let events = self.oldest(BATCH)?;
+        let Some(seq) = events.last().map(|entry| entry.seq) else {
+            return Ok(None);
+        };
+        self.batch(seq, &events).map(Some)
     }
 
-    fn count_dropped(&self, ledger: &mut Ledger, count: usize) -> io::Result<()> {
-        ledger.dropped = ledger
-            .dropped
-            .saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
-        write_counter(&self.dir.join(DROPPED_FILE), ledger.dropped)
+    fn ack(&self, seqs: &[u64]) -> io::Result<()> {
+        self.remove(seqs, false)
+    }
+
+    fn refuse(&self, seqs: &[u64]) -> io::Result<()> {
+        self.remove(seqs, true)
+    }
+
+    fn wake(&self) -> &Notify {
+        &self.wake
+    }
+
+    /// Carries the crash cursor Cloud already holds, so its `greatest()`
+    /// cursor makes the batch harmless.
+    fn salt_refresh(&self) -> io::Result<Option<Held>> {
+        let (last_seq, _) = self.ledger();
+        self.batch(last_seq, &[]).map(Some)
     }
 }
 
 const ENTRY_NAME_LEN: usize = 20;
 
-fn entry_name(seq: u64) -> String {
-    format!("{seq:0ENTRY_NAME_LEN$}")
+fn entry_name(seq: u64, suffix: &str) -> String {
+    format!("{seq:0ENTRY_NAME_LEN$}{suffix}")
 }
 
-fn seqs(dir: &Path) -> io::Result<Vec<u64>> {
+/// The seqs of the entries in `dir` named `<20 digits><suffix>`, oldest
+/// first.
+fn seqs(dir: &Path, suffix: &str) -> io::Result<Vec<u64>> {
     let mut seqs = Vec::new();
     for entry in fs::read_dir(dir)? {
         let name = entry?.file_name();
-        let Some(name) = name.to_str() else { continue };
+        let Some(name) = name.to_str().and_then(|name| name.strip_suffix(suffix)) else {
+            continue;
+        };
         if name.len() == ENTRY_NAME_LEN
             && let Ok(seq) = name.parse()
         {
@@ -238,8 +337,8 @@ fn seqs(dir: &Path) -> io::Result<Vec<u64>> {
     Ok(seqs)
 }
 
-fn remove_entry(dir: &Path, seq: u64) -> io::Result<()> {
-    match fs::remove_file(dir.join(entry_name(seq))) {
+fn remove_entry(dir: &Path, seq: u64, suffix: &str) -> io::Result<()> {
+    match fs::remove_file(dir.join(entry_name(seq, suffix))) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result,
     }
@@ -263,24 +362,29 @@ enum Shipped {
     Retry { after: Option<Duration> },
 }
 
-pub struct Shipper<T> {
-    outbox: Arc<Outbox>,
+pub struct Shipper<S, T> {
+    outbox: Arc<S>,
+    salts: Arc<Salts>,
     client: reqwest::Client,
     target: T,
     /// When the journal last heard that Cloud does not know this Machine.
     unheard_warned: Mutex<Option<Instant>>,
+    /// When a stale salt cache last asked Cloud for salts.
+    salts_asked: Mutex<Option<Instant>>,
 }
 
-impl<T: Fn() -> Option<Pusher>> Shipper<T> {
-    pub fn new(outbox: Arc<Outbox>, target: T) -> reqwest::Result<Self> {
+impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
+    pub fn new(outbox: Arc<S>, salts: Arc<Salts>, target: T) -> reqwest::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .build()?;
         Ok(Self {
             outbox,
+            salts,
             client,
             target,
             unheard_warned: Mutex::new(None),
+            salts_asked: Mutex::new(None),
         })
     }
 
@@ -292,7 +396,7 @@ impl<T: Fn() -> Option<Pusher>> Shipper<T> {
                 Shipped::Idle => {
                     backoff.reset();
                     tokio::select! {
-                        () = self.outbox.wake.notified() => {}
+                        () = self.outbox.wake().notified() => {}
                         () = tokio::time::sleep(TICK) => {}
                     }
                 }
@@ -305,90 +409,112 @@ impl<T: Fn() -> Option<Pusher>> Shipper<T> {
         let Some(pusher) = (self.target)() else {
             return Shipped::Idle;
         };
-        let events = match self.outbox.oldest(BATCH) {
-            Ok(events) => events,
+        let held = match self.outbox.next() {
+            Ok(Some(held)) => held,
+            Ok(None) if self.asks_for_salts() => match self.outbox.salt_refresh() {
+                Ok(Some(held)) => held,
+                Ok(None) => return Shipped::Idle,
+                Err(error) => {
+                    tracing::warn!(stream = S::NAME, %error, "cannot build a salt refresh");
+                    return Shipped::Retry { after: None };
+                }
+            },
+            Ok(None) => return Shipped::Idle,
             Err(error) => {
-                tracing::warn!(%error, "cannot read the crash outbox");
-                return Shipped::Retry { after: None };
-            }
-        };
-        let Some(seq) = events.last().map(|entry| entry.seq) else {
-            return Shipped::Idle;
-        };
-        let batch = Batch {
-            stream: STREAM,
-            seq,
-            dropped: self.outbox.dropped(),
-            events: &events,
-        };
-        let body = match serde_json::to_vec(&batch) {
-            Ok(body) => body,
-            Err(error) => {
-                tracing::warn!(%error, "cannot encode a crash batch");
+                tracing::warn!(stream = S::NAME, %error, "cannot read the outbox");
                 return Shipped::Retry { after: None };
             }
         };
         let request = self.client.post(pusher.url.clone());
-        let response = match authenticate(request, &pusher, unix_seconds(), body)
+        let response = match authenticate(request, &pusher, unix_seconds(), held.body)
             .send()
             .await
         {
             Ok(response) => response,
             Err(error) => {
-                tracing::debug!(%error, "cannot reach Cloud to ship crashes");
+                tracing::debug!(stream = S::NAME, %error, "cannot reach Cloud to ship a batch");
                 return Shipped::Retry { after: None };
             }
         };
         let status = response.status();
         let settled = match status {
-            status if status.is_success() => self.outbox.ack(&events),
+            StatusCode::OK => {
+                self.accept_salts(response).await;
+                self.outbox.ack(&held.seqs)
+            }
+            status if status.is_success() => self.outbox.ack(&held.seqs),
             StatusCode::BAD_REQUEST
             | StatusCode::PAYLOAD_TOO_LARGE
             | StatusCode::UNPROCESSABLE_ENTITY => {
-                tracing::warn!(%status, count = events.len(), "Cloud refused a crash batch; dropping it");
-                self.outbox.refuse(&events)
+                tracing::warn!(stream = S::NAME, %status, "Cloud refused a batch; dropping it");
+                self.outbox.refuse(&held.seqs)
             }
             status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
                 return Shipped::Retry {
                     after: retry_after(&response),
                 };
             }
+            // Cloud answers 404 for pageviews until it ingests them, so the
+            // outbox holds them up to its cap.
+            StatusCode::NOT_FOUND if S::NAME == PAGEVIEWS => {
+                tracing::debug!("Cloud does not take pageviews yet; holding them");
+                return Shipped::Retry { after: None };
+            }
             StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND => {
                 if self.warn_unheard() {
-                    tracing::warn!(%status, "Cloud does not accept this Machine's crashes; keeping them");
+                    tracing::warn!(stream = S::NAME, %status, "Cloud does not accept this Machine's batches; keeping them");
                 }
                 return Shipped::Retry { after: None };
             }
             status => {
-                tracing::debug!(%status, "Cloud did not take a crash batch; keeping it");
+                tracing::debug!(stream = S::NAME, %status, "Cloud did not take a batch; keeping it");
                 return Shipped::Retry { after: None };
             }
         };
         match settled {
             Ok(()) => Shipped::Progress,
             Err(error) => {
-                tracing::warn!(%error, "cannot delete shipped crash outbox entries");
+                tracing::warn!(stream = S::NAME, %error, "cannot delete shipped outbox entries");
                 Shipped::Retry { after: None }
             }
         }
     }
+
+    async fn accept_salts(&self, response: reqwest::Response) {
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::debug!(%error, "cannot read Cloud's ack");
+                return;
+            }
+        };
+        if let Err(error) = self.salts.accept(&body, unix_seconds()) {
+            tracing::warn!(%error, "cannot keep the salts Cloud sent");
+        }
+    }
 }
 
-impl<T> Shipper<T> {
+impl<S, T> Shipper<S, T> {
     /// Whether to warn that Cloud turned this Machine away. A Machine Cloud
     /// lost keeps retrying, so the journal hears it once every few minutes.
     fn warn_unheard(&self) -> bool {
-        let now = Instant::now();
-        let mut warned = self
-            .unheard_warned
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if warned.is_some_and(|at| now.duration_since(at) < UNHEARD_WARN_EVERY) {
-            return false;
-        }
-        *warned = Some(now);
-        true
+        once_every(&self.unheard_warned, UNHEARD_WARN_EVERY)
     }
+
+    fn asks_for_salts(&self) -> bool {
+        self.salts.stale(unix_seconds()) && once_every(&self.salts_asked, SALT_REFRESH_EVERY)
+    }
+}
+
+/// Whether `every` has passed since `last`, marking now when it has.
+fn once_every(last: &Mutex<Option<Instant>>, every: Duration) -> bool {
+    let now = Instant::now();
+    let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
+    if last.is_some_and(|at| now.duration_since(at) < every) {
+        return false;
+    }
+    *last = Some(now);
+    true
 }
 
 fn retry_after(response: &reqwest::Response) -> Option<Duration> {
@@ -425,8 +551,8 @@ impl Backoff {
     }
 }
 
-/// A u64 as a decimal string: crash seqs are nanos, past what a JS number
-/// holds exactly.
+/// A u64 as a decimal string: seqs are nanos, past what a JS number holds
+/// exactly.
 mod decimal {
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
 
@@ -450,6 +576,7 @@ mod tests {
         body::Bytes,
         extract::State,
         http::{HeaderMap, StatusCode},
+        response::IntoResponse,
         routing::post,
     };
     use ployz_core::{ContainerId, MachineId, QualifiedService, ServiceId, metrics::MarkerKind};
@@ -496,6 +623,12 @@ mod tests {
         }
     }
 
+    fn fresh_salts(store: &StoreRoot) -> Arc<Salts> {
+        let salts = Salts::open(store, 0).unwrap();
+        salts.accept(br#"{"sites":[]}"#, unix_seconds()).unwrap();
+        Arc::new(salts)
+    }
+
     fn held(outbox: &Outbox) -> Vec<u64> {
         outbox
             .oldest(CAP)
@@ -514,7 +647,7 @@ mod tests {
         outbox.push(crash(50)).unwrap();
         drop(outbox);
         let reopened = Outbox::open(&store).unwrap();
-        reopened.ack(&reopened.oldest(CAP).unwrap()).unwrap();
+        Stream::ack(&*reopened, &held(&reopened)).unwrap();
         reopened.push(crash(90)).unwrap();
         assert_eq!(
             reopened.oldest(CAP).unwrap(),
@@ -535,9 +668,9 @@ mod tests {
         let seqs = held(&outbox);
         assert_eq!(seqs.len(), CAP);
         assert_eq!(seqs.first(), Some(&3));
-        assert_eq!(outbox.dropped(), 2);
+        assert_eq!(outbox.ledger().1, 2);
         drop(outbox);
-        assert_eq!(Outbox::open(&store).unwrap().dropped(), 2);
+        assert_eq!(Outbox::open(&store).unwrap().ledger().1, 2);
     }
 
     #[test]
@@ -576,6 +709,7 @@ mod tests {
         assert!(backoff.next(None) <= BACKOFF_FLOOR);
     }
 
+    /// A status and its Retry-After, or for a 200 the ack body.
     type Reply = (StatusCode, Option<&'static str>);
 
     #[derive(Clone, Default)]
@@ -612,9 +746,13 @@ mod tests {
                 .unwrap()
                 .push(serde_json::from_slice(&body).unwrap());
             cloud.requests.lock().unwrap().push((headers, body));
-            let (status, retry_after) = cloud.replies.lock().unwrap().pop().unwrap();
-            let mut response = axum::response::IntoResponse::into_response(status);
-            if let Some(seconds) = retry_after {
+            let (status, extra) = cloud.replies.lock().unwrap().pop().unwrap();
+            if status == StatusCode::OK {
+                let json = [(CONTENT_TYPE, "application/json")];
+                return (status, json, extra.unwrap_or_default()).into_response();
+            }
+            let mut response = status.into_response();
+            if let Some(seconds) = extra {
                 response
                     .headers_mut()
                     .insert(RETRY_AFTER, seconds.parse().unwrap());
@@ -644,7 +782,10 @@ mod tests {
             (StatusCode::NO_CONTENT, None),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
 
         for _ in 0..3 {
             assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
@@ -681,7 +822,10 @@ mod tests {
             (StatusCode::UNAUTHORIZED, None),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
         let (journal, _journal) = crate::diag::test_support::capture();
 
         shipper.ship_once().await;
@@ -713,7 +857,10 @@ mod tests {
             (StatusCode::NO_CONTENT, None),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
 
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
         assert_eq!(held(&outbox), [] as [u64; 0]);
@@ -738,7 +885,10 @@ mod tests {
             (StatusCode::BAD_GATEWAY, Some("3")),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
 
         assert_eq!(
             shipper.ship_once().await,
@@ -766,7 +916,10 @@ mod tests {
             .parse()
             .unwrap();
         drop(listener);
-        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
         assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
         assert_eq!(held(&outbox), [5]);
     }
@@ -778,7 +931,10 @@ mod tests {
         outbox.push(crash(5)).unwrap();
         let data = tempfile::tempdir().unwrap();
         let data_dir = data.path().to_path_buf();
-        let shipper = Shipper::new(outbox.clone(), move || push_target(&data_dir)).unwrap();
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            push_target(&data_dir)
+        })
+        .unwrap();
         assert_eq!(shipper.ship_once().await, Shipped::Idle);
         drop(LocalMachineStore::open(data.path()).unwrap());
         assert_eq!(shipper.ship_once().await, Shipped::Idle);
@@ -832,7 +988,8 @@ mod tests {
         let outbox = Outbox::open(&store).unwrap();
         outbox.push(crash(5)).unwrap();
         let (cloud, url) = Cloud::serve(vec![(StatusCode::NO_CONTENT, None)]).await;
-        let shipper = Shipper::new(outbox, move || Some(pusher(&url))).unwrap();
+        let shipper =
+            Shipper::new(outbox, fresh_salts(&store), move || Some(pusher(&url))).unwrap();
         let before = unix_seconds();
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
 
@@ -868,7 +1025,7 @@ mod tests {
             marker: crash(i64::try_from(SEQ).unwrap()),
         }];
         let batch = Batch {
-            stream: STREAM,
+            stream: CRASH,
             seq: SEQ,
             dropped: 3,
             events: &events,
@@ -898,5 +1055,126 @@ mod tests {
                 }],
             })
         );
+    }
+
+    const ACK: &str = r#"{"sites":[{"namespace":"acme-prod","salts":[{"day":"2026-10-15","start":0,"end":9999999999,"salt":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}]}]}"#;
+
+    fn acme_covered(salts: &Salts) -> bool {
+        let acme = ployz_core::Namespace::parse("acme-prod").unwrap();
+        salts.lookup(&acme, unix_seconds(), |lookup| {
+            matches!(lookup, super::super::salts::Lookup::Covered(_))
+        })
+    }
+
+    #[tokio::test]
+    async fn a_200_ack_replaces_the_salts_and_a_204_or_an_odd_body_keeps_them() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        let (_cloud, url) = Cloud::serve(vec![
+            (StatusCode::OK, Some(ACK)),
+            (StatusCode::NO_CONTENT, None),
+            (StatusCode::OK, Some("not json")),
+        ])
+        .await;
+        let salts = Arc::new(Salts::open(&store, 0).unwrap());
+        let shipper =
+            Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
+
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert!(acme_covered(&salts));
+        for ts in [5, 6] {
+            outbox.push(crash(ts)).unwrap();
+            assert_eq!(shipper.ship_once().await, Shipped::Progress);
+            assert!(acme_covered(&salts));
+        }
+        assert!(!salts.stale(unix_seconds()));
+        assert_eq!(held(&outbox), [] as [u64; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_stale_cache_asks_with_an_empty_crash_batch_at_the_crash_cursor() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        let (cloud, url) = Cloud::serve(vec![
+            (StatusCode::NO_CONTENT, None),
+            (StatusCode::NO_CONTENT, None),
+            (StatusCode::OK, Some(ACK)),
+        ])
+        .await;
+        let salts = Arc::new(Salts::open(&store, 0).unwrap());
+        let shipper =
+            Shipper::new(outbox.clone(), salts.clone(), move || Some(pusher(&url))).unwrap();
+
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert_eq!(shipper.ship_once().await, Shipped::Idle);
+        *shipper.salts_asked.lock().unwrap() = None;
+        outbox.push(crash(5)).unwrap();
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert!(!salts.stale(unix_seconds()));
+        assert_eq!(shipper.ship_once().await, Shipped::Idle);
+
+        let bodies = cloud.bodies();
+        let empty = |seq: &str| serde_json::json!({ "stream": "crash", "seq": seq, "dropped": 0, "events": [] });
+        assert_eq!(bodies.len(), 3);
+        assert_eq!(bodies[0], empty("0"));
+        assert_eq!(bodies[1]["seq"], "5");
+        assert_eq!(bodies[2], empty("5"));
+    }
+
+    fn pageviews(store: &StoreRoot, rows: usize) -> Arc<PageviewOutbox> {
+        let outbox = PageviewOutbox::open(store).unwrap();
+        for n in 0..rows {
+            outbox
+                .push(&serde_json::json!({ "kind": "pageview", "n": n }))
+                .unwrap();
+        }
+        outbox
+    }
+
+    #[tokio::test]
+    async fn pageviews_cloud_does_not_take_yet_stay_held_without_a_warning() {
+        let (_root, store) = store();
+        let outbox = pageviews(&store, 200);
+        let (cloud, url) = Cloud::serve(vec![
+            (StatusCode::NOT_FOUND, None),
+            (StatusCode::NOT_FOUND, None),
+            (StatusCode::NO_CONTENT, None),
+        ])
+        .await;
+        let shipper = Shipper::new(outbox.clone(), fresh_salts(&store), move || {
+            Some(pusher(&url))
+        })
+        .unwrap();
+        let (journal, _journal) = crate::diag::test_support::capture();
+
+        for _ in 0..2 {
+            assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
+            assert_eq!(outbox.held_rows(), 200);
+        }
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+        assert_eq!(outbox.held_rows(), 0);
+        assert!(!journal.text().contains("WARN"), "{}", journal.text());
+
+        let bodies = cloud.bodies();
+        let last = bodies.last().unwrap();
+        assert_eq!(last["stream"], "pageviews");
+        assert_eq!(last["dropped"], 0);
+        assert_eq!(last["events"].as_array().unwrap().len(), 200);
+        assert_eq!(
+            last["events"][199],
+            serde_json::json!({ "kind": "pageview", "n": 199 })
+        );
+    }
+
+    #[tokio::test]
+    async fn the_pageviews_shipper_never_asks_for_salts() {
+        let (_root, store) = store();
+        let outbox = pageviews(&store, 0);
+        let (cloud, url) = Cloud::serve(Vec::new()).await;
+        let salts = Arc::new(Salts::open(&store, 0).unwrap());
+        let shipper = Shipper::new(outbox, salts, move || Some(pusher(&url))).unwrap();
+        assert_eq!(shipper.ship_once().await, Shipped::Idle);
+        assert!(cloud.bodies().is_empty());
     }
 }
