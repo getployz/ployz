@@ -13,6 +13,9 @@ use ployzd::network::{NetworkError, apply_firewall_rules, fence_builder};
 const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
 const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
+const LAN: &str = "192.168.77.2";
+const METADATA: &str = "169.254.169.254";
+const INTERNET: &str = "198.51.100.2";
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
@@ -381,13 +384,14 @@ fn mesh_firewall_policy() {
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
-fn build_steps_never_reach_the_host() {
+fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
     sudo(&["-n", "true"]);
     let suffix = std::process::id();
     let host = format!("p35-host-{suffix}");
     let step = format!("p35-step-{suffix}");
     let service = format!("p35-svc-{suffix}");
-    let _namespaces = Namespaces::new([&host, &step, &service]);
+    let lan = format!("p35-lan-{suffix}");
+    let _namespaces = Namespaces::new([&host, &step, &service, &lan]);
     sudo(&[
         "ip",
         "link",
@@ -406,7 +410,12 @@ fn build_steps_never_reach_the_host() {
     ]);
     sudo(&["ip", "link", "set", "host-svc", "netns", &host]);
     sudo(&["ip", "link", "set", "svc-if", "netns", &service]);
-    for namespace in [&host, &step, &service] {
+    sudo(&[
+        "ip", "link", "add", "host-lan", "type", "veth", "peer", "name", "lan-if",
+    ]);
+    sudo(&["ip", "link", "set", "host-lan", "netns", &host]);
+    sudo(&["ip", "link", "set", "lan-if", "netns", &lan]);
+    for namespace in [&host, &step, &service, &lan] {
         ns(namespace, "ip", &["link", "set", "lo", "up"]);
     }
     ns(&host, "ip", &["link", "set", "host-svc", "name", "ployz"]);
@@ -416,6 +425,26 @@ fn build_steps_never_reach_the_host() {
         &service,
         "ip",
         &["route", "add", "default", "via", "10.210.1.1"],
+    );
+    // Behind the host sit its LAN, a metadata service and the internet.
+    configure_link(&host, "host-lan", "192.168.77.1/24");
+    configure_link(&lan, "lan-if", "192.168.77.2/24");
+    for address in [METADATA, INTERNET] {
+        ns(
+            &lan,
+            "ip",
+            &["address", "add", &format!("{address}/32"), "dev", "lan-if"],
+        );
+        ns(
+            &host,
+            "ip",
+            &["route", "add", &format!("{address}/32"), "via", LAN],
+        );
+    }
+    ns(
+        &lan,
+        "ip",
+        &["route", "add", "default", "via", "192.168.77.1"],
     );
     ns(&host, "sysctl", &["-q", "-w", "net.ipv4.ip_forward=1"]);
     ns(
@@ -449,6 +478,11 @@ fn build_steps_never_reach_the_host() {
     let mut before = stream_server(&service, "10.210.1.2", 51503);
     connect(&step, "10.10.0.2", "10.210.1.2", 51503);
     assert_eq!(before.peer(), "10.10.0.2");
+    for address in [LAN, METADATA] {
+        let mut before = stream_server(&lan, address, 51503);
+        connect(&step, "10.10.0.2", address, 51503);
+        assert_eq!(before.peer(), "10.10.0.2");
+    }
 
     apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
     for address in ["10.10.0.1", "10.210.1.1"] {
@@ -457,6 +491,21 @@ fn build_steps_never_reach_the_host() {
     }
     let _server = stream_server(&service, "10.210.1.2", 51503);
     assert_connection_denied(&step, "10.10.0.2", "10.210.1.2", 51503);
+    for address in [LAN, METADATA] {
+        let _server = stream_server(&lan, address, 51503);
+        assert_connection_denied(&step, "10.10.0.2", address, 51503);
+    }
+
+    let mut resolver = datagram_server(&lan, LAN, 53);
+    send_datagram(&step, "10.10.0.2", LAN, 53);
+    assert_eq!(
+        resolver.peer_within(3).as_deref(),
+        Some("10.10.0.2"),
+        "DNS on the LAN was dropped"
+    );
+    let mut internet = stream_server(&lan, INTERNET, 51503);
+    connect(&step, "10.10.0.2", INTERNET, 51503);
+    assert_eq!(internet.peer(), "10.10.0.2");
 }
 
 #[test]
