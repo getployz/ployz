@@ -1,10 +1,12 @@
 import { Suspense, useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentSummary, DeploymentView, NodeOutcome } from "@ployz/sdk";
-import { DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
+import { ArrowLeftIcon, DatabaseIcon, GitBranchPlusIcon, LockIcon, MoreVerticalIcon, TriangleAlertIcon } from "lucide-react";
 import { ContainerLogs } from "#/components/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { Badge } from "#/components/ui/badge";
+import { buttonVariants } from "#/components/ui/button-variants";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { LogEmpty } from "#/components/log-scroll";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -24,29 +26,27 @@ import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-s
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useCopiesWait, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
 import { formatDuration } from "#/utils/relative-time";
-import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
-import { CanvasInspectorNotFound } from "./CanvasInspectorRouteStates";
-import { DEPLOYMENT_PAGE_ROUTE_TO, type deploymentPageSearchSchema } from "./deployment-page";
+import { deploymentDestination, nodeDestination, VERSIONS_ROUTE_TO, type LogStage, type RunSearch } from "./deployments/run-search";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
 /** Past this many Services the tabs become a dropdown. */
 const MAX_TABS = 6;
 const BUILT = new Set<BuildView["status"]>(["built", "reused"]);
-type LogStage = NonNullable<typeof deploymentPageSearchSchema.Type["logs"]>;
 
 /**
- * One Config Store Deployment, the CLI's or this dashboard's, as a panel over the canvas (which lights its nodes). The header
- * holds its number, status, duration and the action its status allows, over who started it, what it ships and when; why
- * it failed sits under it with the fix. Then a tab per Service, its changed Volumes beside them, and that Service's logs.
+ * One Config Store Deployment's Run, the CLI's or this dashboard's. The header goes back to the node it was opened from
+ * and holds its number, status, duration and the action its status allows, over who started it, the version it ships and
+ * when; why it failed sits under it with the fix. Then a tab per Service (its `job`), its changed Volumes beside them,
+ * and that Service's logs.
  */
-export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: string; search: typeof deploymentPageSearchSchema.Type }) {
+export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: string; search: RunSearch }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const result = useStoreView(params.organizationSlug, deploymentQuery(deploymentId));
   // With no Server, nothing can run it: the way on is adding one.
   const { noServers } = useRuntimeLens(params.organizationSlug);
   const storageSteps = useStorageSteps(params.organizationSlug);
-  if (!result.ok) return <CanvasInspectorNotFound noun="Deployment" />;
+  if (!result.ok) return <Empty variant="placeholder" className="m-4"><EmptyDescription>Deployment not found</EmptyDescription></Empty>;
   const deployment = result.value;
   const storage = storageSteps(deployment.id);
   const warnings = deployment.warnings ?? [];
@@ -55,20 +55,20 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const variableWarnings = warnings.filter((warning) => !("ingress" in warning) && !("cause" in warning));
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
-  const focused = focusedService(deployment, search.service);
+  const focused = focusedService(deployment, search.job);
   const reason = outcomeReason(deployment.outcome);
   const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
   const fixing = focused && canFixOnBranch(deployment, focused, noServers) ? focused.name : null;
   const { at, started, ended } = admission(deployment);
   const byline = deploymentByline(deployment, focused?.name);
-  const pick = (next: { service: string; logs?: LogStage }) =>
+  const pick = (next: { job: string; logs?: LogStage }) =>
     void navigate({ to: ".", search: (previous) => ({ ...previous, logs: undefined, ...next }), replace: true });
   const pickService = (id: string | null) => {
     const node = services.find((candidate) => candidate.id === id);
-    if (node) pick({ service: node.id });
+    if (node) pick({ job: node.id });
   };
   const logs = focused
-    ? <ServiceLogs key={focused.id} deployment={deployment} node={focused} picked={search.logs} onPick={(stage) => pick({ service: focused.id, logs: stage })} />
+    ? <ServiceLogs key={focused.id} deployment={deployment} node={focused} picked={search.logs} onPick={(stage) => pick({ job: focused.id, logs: stage })} />
     : null;
   const volumeMarks = volumes.map((node) => (
     <span key={node.id} className="flex shrink-0 items-center gap-1.5 text-muted-foreground [&_svg]:size-4">
@@ -79,7 +79,11 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <CanvasInspectorHeader params={params} actions={<StoreDeploymentActions deployment={deployment} storage={storage} noServers={noServers} />}>
+      <div className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
+        <Link {...nodeDestination(params.organizationSlug, params, search.origin)}
+          className={buttonVariants({ variant: "ghost", size: "icon" })} aria-label="Back to Architecture" title="Back to Architecture">
+          <ArrowLeftIcon />
+        </Link>
         <div className="flex min-w-0 flex-col">
           <span className="flex min-w-0 items-center gap-2">
             <span className="truncate font-medium">
@@ -98,10 +102,16 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
             ) : null}
           </span>
           <p className="truncate text-xs text-muted-foreground">
-            {byline}{byline && at ? " · " : null}{at ? <RelativeTime date={at} /> : null}
+            {byline}{byline ? " · " : null}
+            <Link to={VERSIONS_ROUTE_TO} params={params} search={{ revision: deployment.saved }}
+              className="underline-offset-4 hover:underline">Version #{deployment.saved}</Link>
+            {at ? <>{" · "}<RelativeTime date={at} /></> : null}
           </p>
         </div>
-      </CanvasInspectorHeader>
+        <div className="ml-auto flex shrink-0 items-center gap-3">
+          <StoreDeploymentActions deployment={deployment} storage={storage} noServers={noServers} search={search} />
+        </div>
+      </div>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
         {reason || fixing ? (
           <div className="flex flex-wrap items-center gap-2">
@@ -240,7 +250,7 @@ function ServiceLogs({ deployment, node, picked, onPick }: {
 }
 
 /** A Service's build output in the Deployment, as its Builder reported it; the change stream brings each new chunk. */
-function StoreBuildLog({ deploymentId, service }: { deploymentId: string; service: string }) {
+export function StoreBuildLog({ deploymentId, service }: { deploymentId: string; service: string }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const result = useStoreView(organizationSlug, buildLogQuery(deploymentId, service));
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
@@ -265,7 +275,9 @@ export function RedeployAction({ copiesWait, disabled, onRedeploy }: { copiesWai
  * The action a Deployment's status allows, one at a time so the header fits a phone: a queued one's Cancel waits in ⋮.
  * Whoever admitted it, CLI or dashboard: they share one queue per Environment.
  */
-function StoreDeploymentActions({ deployment, storage, noServers }: { deployment: DeploymentView; storage: string | null; noServers: boolean }) {
+function StoreDeploymentActions({ deployment, storage, noServers, search }: {
+  deployment: DeploymentView; storage: string | null; noServers: boolean; search: RunSearch;
+}) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const writer = useStoreWriter(params.organizationSlug);
@@ -280,7 +292,7 @@ function StoreDeploymentActions({ deployment, storage, noServers }: { deployment
     try {
       await writer.commit({
         command: "admit", admit: "retry", id, deployment: deployment.id }).isPersisted.promise;
-      void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: id } });
+      void navigate(deploymentDestination(params, id, { job: search.job, origin: search.origin }));
     } catch {
       // The writer toasted the Store's reason.
     } finally {

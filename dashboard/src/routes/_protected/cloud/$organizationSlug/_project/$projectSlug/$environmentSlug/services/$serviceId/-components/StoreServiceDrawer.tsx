@@ -46,6 +46,7 @@ import { ContainerLogs } from "#/components/container-logs";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
+import { originFrom } from "../../../-components/deployments/run-search";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
 import { DEFAULT_RANGE } from "#/modules/uptime/uptime-range";
 import { usePrefetchServiceUptime, useUptimeEnabled } from "#/modules/uptime/uptime.queries";
@@ -221,7 +222,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             <nav aria-label="Deployments" className="mx-auto w-full max-w-2xl">
               <ItemGroup className="gap-1">
                 <Suspense fallback={<Skeleton className="h-16 w-full" />}>
-                  <StoreDeploymentRows service={service} returnTo={service.id} />
+                  <StoreDeploymentRows service={service} origin={originFrom(params, { kind: "service", id: service.id })} />
                 </Suspense>
               </ItemGroup>
             </nav>

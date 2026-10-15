@@ -60,5 +60,5 @@ it("lists the CLI's and the dashboard's Deployments, narrowed to those that depl
   open("/cloud/acme/shop/production/deployments?service=api-id");
   const api = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
   expect(api.map((row) => row.textContent)).toEqual([expect.stringMatching(/^Deployment #2/), expect.stringMatching(/^Deployment #1/)]);
-  expect(api[1]?.getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d1?service=api-id");
+  expect(api[1]?.getAttribute("href")).toBe("/cloud/acme/shop/production/deployments/d1?job=api-id");
 });

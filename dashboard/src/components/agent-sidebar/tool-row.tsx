@@ -10,7 +10,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { TraceDescription, TraceIcon, TraceLine, TraceTitle } from "#/components/ui/trace";
 import { type DeploymentLight, deploymentStatusIcons, deploymentStatusLabel, deploysLabel } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
+import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { formatDuration } from "#/utils/relative-time";
 
 const DEPLOYMENT_STATUSES = [
@@ -133,8 +133,8 @@ export function RunCard({ organizationSlug, scope, deployment }: { organizationS
         <span className="font-medium">{deploymentStatusLabel(shown)}</span>
         {" · "}
         {live
-          ? <Link to={DEPLOYMENT_PAGE_ROUTE_TO} className="underline-offset-3 hover:underline"
-              params={{ organizationSlug, projectSlug: live.environment.project, environmentSlug: live.environment.name, deploymentId: live.id }}>{title}</Link>
+          ? <Link className="underline-offset-3 hover:underline"
+              {...deploymentDestination({ organizationSlug, projectSlug: live.environment.project, environmentSlug: live.environment.name }, live.id)}>{title}</Link>
           : title}
         {deploysLabel(shown) && <span className="text-muted-foreground"> · {deploysLabel(shown)}</span>}
       </span>
