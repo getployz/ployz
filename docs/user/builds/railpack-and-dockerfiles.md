@@ -98,8 +98,8 @@ reach the server running the build, the private network Ployz runs between your 
 services on it. Fetch what a build needs from the internet, and talk to your services after
 deploy.
 
-A build step can still reach whatever the internet can, like your services' public web addresses
-on ports 80 and 443 and your servers' public addresses. It also reaches anything on the build
+A build step can still reach your services' public web addresses on ports 80 and 443, and your
+other servers' public addresses. It also reaches anything on the build
 server's own local network, like a cloud VPC or office LAN, including your other servers there.
 Don't leave anything on those addresses open without a login.
 
