@@ -34,7 +34,12 @@ impl LocalMachine {
         let installation = self.owner.mutation_gate().try_installation()?;
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;
-        crate::installer::upgrade::request(request, data_dir, run_dir, installation)
+        let downgrade = if self.management_client.is_some() {
+            crate::installer::upgrade::Downgrade::Refused
+        } else {
+            crate::installer::upgrade::Downgrade::Allowed
+        };
+        crate::installer::upgrade::request(request, downgrade, data_dir, run_dir, installation)
             .await
             .map_err(Into::into)
     }

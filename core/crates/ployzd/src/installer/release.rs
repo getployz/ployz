@@ -17,7 +17,10 @@ use tempfile::TempDir;
 use tokio::{process::Command, time::timeout};
 
 use super::{Error, InstallPaths, daemon_archive, run_command};
-use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion};
+use ployz_core::{
+    MachineRelease, MachineUpgradeStage, MachineVersion, RELEASE_SIGNATURE_ASSET,
+    verify_release_checksums,
+};
 
 const RELEASE_REPOSITORY: &str = "https://github.com/getployz/ployz";
 const CHANNEL_URL: &str = "https://ployz.sh";
@@ -79,6 +82,15 @@ impl ReleaseSource {
                 stage: "read local release artifact",
                 source,
             }),
+        }
+    }
+
+    /// The minisign key every release from this source must be signed with.
+    fn public_key(&self) -> String {
+        match self {
+            Self::Published => ployz_core::RELEASE_PUBLIC_KEY.to_owned(),
+            #[cfg(test)]
+            Self::Local(_) => ployz_testkit::release_key::release_public_key(),
         }
     }
 }
@@ -240,6 +252,17 @@ async fn release_checksum(
     let checksums = source
         .release_file(target, "checksums.txt", "download release checksums")
         .await?;
+    let signature = source
+        .release_file(
+            target,
+            RELEASE_SIGNATURE_ASSET,
+            "download release checksums signature",
+        )
+        .await?;
+    let signature = String::from_utf8(signature)
+        .map_err(|_| Error::Verification(format!("{RELEASE_SIGNATURE_ASSET} is not UTF-8")))?;
+    verify_release_checksums(&source.public_key(), &checksums, &signature, target)
+        .map_err(|error| Error::Verification(ployz_core::error_chain::inline(&error)))?;
     checksum_for(&checksums, archive)
         .ok_or_else(|| Error::Verification(format!("checksums.txt has no hash for {archive}")))
 }

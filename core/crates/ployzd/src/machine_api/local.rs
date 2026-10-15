@@ -845,7 +845,9 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         Error::AttemptConflict(_) | Error::Busy | Error::Admission(mutation::Error::Busy) => {
             RpcErrorCode::Conflict
         }
-        Error::Resolve(_) | Error::NonstandardPaths(_) => RpcErrorCode::InvalidArgument,
+        Error::Resolve(_) | Error::NonstandardPaths(_) | Error::Downgrade { .. } => {
+            RpcErrorCode::InvalidArgument
+        }
         Error::Read(_)
         | Error::Decode(_)
         | Error::Write(_)

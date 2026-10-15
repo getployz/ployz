@@ -3,6 +3,7 @@
 pub mod fake_acme;
 pub mod fake_fleet;
 pub mod fake_machine;
+pub mod release_key;
 mod machine_admin;
 
 use std::{

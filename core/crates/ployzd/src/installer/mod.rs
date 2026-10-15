@@ -495,6 +495,8 @@ mod tests {
             "missing-tar",
             "bad-checksum",
             "corrupt",
+            "unsigned",
+            "tampered-checksums",
             "rejected-executable",
             "hung-executable",
             "busy",
@@ -688,6 +690,22 @@ mod tests {
                         && message.contains("checksum was")
                         && message.contains("expected")
             )),
+            "unsigned" => assert!(
+                matches!(
+                    result,
+                    Err(Error::Io { ref source, .. })
+                        if source.kind() == std::io::ErrorKind::NotFound
+                ),
+                "an unsigned release was accepted: {result:?}"
+            ),
+            "tampered-checksums" => assert!(
+                matches!(
+                    result,
+                    Err(Error::Verification(ref message))
+                        if message.contains("not signed by the Ployz release key")
+                ),
+                "a tampered checksums file was accepted: {result:?}"
+            ),
             "missing" | "rejected-executable" => {
                 assert!(result.is_err(), "{case} artifact was accepted");
             }
@@ -788,6 +806,23 @@ mod tests {
         }
         if case == "bad-checksum" {
             fs::write(release.join("checksums.txt"), "bad checksum\n").unwrap();
+        }
+        if case != "unsigned" {
+            let checksums = fs::read(release.join("checksums.txt")).unwrap();
+            fs::write(
+                release.join("checksums.txt.minisig"),
+                ployz_testkit::release_key::sign_release(
+                    &checksums,
+                    &MachineVersion::parse("1.2.3").unwrap(),
+                ),
+            )
+            .unwrap();
+        }
+        if case == "tampered-checksums" {
+            let path = release.join("checksums.txt");
+            let mut checksums = fs::read(&path).unwrap();
+            checksums[0] ^= 1;
+            fs::write(path, checksums).unwrap();
         }
     }
 

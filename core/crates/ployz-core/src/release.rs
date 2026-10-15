@@ -133,6 +133,59 @@ impl From<MachineRelease> for String {
     }
 }
 
+/// The release asset holding the minisign signature over `checksums.txt`.
+pub const RELEASE_SIGNATURE_ASSET: &str = "checksums.txt.minisig";
+
+/// The minisign public key that signs every published Ployz release.
+pub const RELEASE_PUBLIC_KEY: &str = include_str!("../release.pub");
+
+/// Why a release's `checksums.txt` is not trusted.
+#[derive(Debug, thiserror::Error)]
+pub enum ReleaseSignatureError {
+    #[error("the release public key is malformed")]
+    PublicKey(#[source] minisign_verify::Error),
+    #[error("{RELEASE_SIGNATURE_ASSET} is malformed")]
+    Malformed(#[source] minisign_verify::Error),
+    #[error("checksums.txt is not signed by the Ployz release key")]
+    Invalid(#[source] minisign_verify::Error),
+    #[error("{RELEASE_SIGNATURE_ASSET} signs {found:?}, not {expected:?}")]
+    WrongRelease { expected: String, found: String },
+}
+
+/// The trusted comment a release signature carries, binding it to one version.
+#[must_use]
+pub fn release_signature_comment(version: &MachineVersion) -> String {
+    format!("ployz v{version}")
+}
+
+/// Check that `signature` is the release key's signature over `checksums` for `version`.
+///
+/// # Errors
+///
+/// Returns an error unless the signature verifies under `public_key` and names `version`.
+pub fn verify_release_checksums(
+    public_key: &str,
+    checksums: &[u8],
+    signature: &str,
+    version: &MachineVersion,
+) -> Result<(), ReleaseSignatureError> {
+    let public_key =
+        minisign_verify::PublicKey::decode(public_key).map_err(ReleaseSignatureError::PublicKey)?;
+    let signature =
+        minisign_verify::Signature::decode(signature).map_err(ReleaseSignatureError::Malformed)?;
+    public_key
+        .verify(checksums, &signature, true)
+        .map_err(ReleaseSignatureError::Invalid)?;
+    let expected = release_signature_comment(version);
+    if signature.trusted_comment() != expected {
+        return Err(ReleaseSignatureError::WrongRelease {
+            expected,
+            found: signature.trusted_comment().to_owned(),
+        });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +223,62 @@ mod tests {
         assert!(version("1.2.3-beta.10") > version("1.2.3-beta.2"));
         assert!(version("1.2.3-beta.2").is_prerelease());
         assert!(!version("1.2.3").is_prerelease());
+    }
+
+    // Made by the minisign CLI (`minisign -S -l -t 'ployz v1.2.3'`) with a throwaway key.
+    const FIXTURE_PUBLIC_KEY: &str = "untrusted comment: minisign public key 4EF612BBAA6B01F2
+RWTyAWuquxL2TvYSk50JZQ30mZ2/YYwz00ggW14QxQM94i5aDywcXNR2
+";
+    const FIXTURE_CHECKSUMS: &[u8] = b"abc123  ployzd_linux_amd64.tar.gz\n";
+    const FIXTURE_SIGNATURE: &str = "untrusted comment: signature from minisign secret key
+RWTyAWuquxL2ToNJ47RLhCHv8sy7TawgNcfgIWlgimjbT3VtnS0+yU22FRKtYpk1uV9kRwpu4Qgin/hzCNiSNzHInyIPjn/njAE=
+trusted comment: ployz v1.2.3
+Hba87bYoMElhZcSMvr9IyS97pXf3Yvxg/rSb6GG+EvrTyWrk3Hdln9ZDRRhuuFPYdcpUPVLABCKlZkMaBju9AA==
+";
+
+    fn verify_fixture(
+        public_key: &str,
+        checksums: &[u8],
+        signature: &str,
+        version: &str,
+    ) -> Result<(), ReleaseSignatureError> {
+        verify_release_checksums(
+            public_key,
+            checksums,
+            signature,
+            &MachineVersion::parse(version).unwrap(),
+        )
+    }
+
+    #[test]
+    fn release_signature_from_minisign_verifies() {
+        verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, FIXTURE_SIGNATURE, "1.2.3").unwrap();
+    }
+
+    #[test]
+    fn release_signature_refuses_tampered_checksums_signature_or_version() {
+        let mut checksums = FIXTURE_CHECKSUMS.to_vec();
+        checksums[0] ^= 1;
+        assert!(matches!(
+            verify_fixture(FIXTURE_PUBLIC_KEY, &checksums, FIXTURE_SIGNATURE, "1.2.3"),
+            Err(ReleaseSignatureError::Invalid(_))
+        ));
+        let signature = FIXTURE_SIGNATURE.replace("ployz v1.2.3", "ployz v1.2.4");
+        assert!(matches!(
+            verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, &signature, "1.2.4"),
+            Err(ReleaseSignatureError::Invalid(_))
+        ));
+        assert!(matches!(
+            verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, FIXTURE_SIGNATURE, "1.2.4"),
+            Err(ReleaseSignatureError::WrongRelease { .. })
+        ));
+        assert!(matches!(
+            verify_fixture(RELEASE_PUBLIC_KEY, FIXTURE_CHECKSUMS, FIXTURE_SIGNATURE, "1.2.3"),
+            Err(ReleaseSignatureError::Invalid(_))
+        ));
+        assert!(matches!(
+            verify_fixture(FIXTURE_PUBLIC_KEY, FIXTURE_CHECKSUMS, "not a signature", "1.2.3"),
+            Err(ReleaseSignatureError::Malformed(_))
+        ));
     }
 }
