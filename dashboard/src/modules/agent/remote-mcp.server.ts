@@ -17,7 +17,7 @@ import { AppConfig } from "#/server/config.server";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": `Authorization, Content-Type, Mcp-Protocol-Version, Last-Event-ID, ${REQUEST_KEY_HEADER}, DPoP`,
+  "Access-Control-Allow-Headers": `Authorization, Content-Type, Mcp-Protocol-Version, Mcp-Method, Mcp-Name, Last-Event-ID, ${REQUEST_KEY_HEADER}, DPoP`,
   "Access-Control-Expose-Headers": `WWW-Authenticate, Mcp-Session-Id, ${REQUEST_KEY_HEADER}`,
   "Access-Control-Max-Age": "86400",
 };
