@@ -40,18 +40,18 @@ pub(super) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
     depths
 }
 
-/// One replica's recorded work, for [`service_row`].
+/// One Server's recorded work for a Service, for [`service_row`].
 pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,
     pub timing: Timing,
 }
 
-/// One row for a Service's replicas: booting while any work runs, failed once
-/// any failed and none runs, switched once all completed, and not started when
-/// the Deploy stopped before any of it ran. A Service with no recorded work is
-/// waiting. While replicas still run after one failed, the row stays active and
-/// its detail counts the failures.
+/// One row for a Service across its Servers: booting while any work runs,
+/// failed once any failed and none runs, switched once all completed, and not
+/// started when the Deploy stopped before any of it ran. A Service with no
+/// recorded work is waiting. While Servers still run after one failed, the row
+/// stays active and its detail counts the failures.
 pub(crate) fn service_row<'a>(
     service: QualifiedService,
     depth: Option<u32>,

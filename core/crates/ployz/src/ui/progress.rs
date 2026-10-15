@@ -87,16 +87,17 @@ impl Subject {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// One Service of a Deploy graph: the depth it starts at and its replicas' progress.
+/// One Service of a Deploy graph: the depth it starts at and its progress per
+/// Server. Replicas packed onto one Server count once.
 pub(crate) struct GraphService {
     pub service: QualifiedService,
     /// `None` until the Deploy is planned.
     pub depth: Option<u32>,
-    /// Replicas whose work completed.
+    /// Servers whose work completed.
     pub ready: usize,
-    /// Replicas this Deploy works on; 0 before any work is recorded.
+    /// Servers this Deploy works on; 0 before any work is recorded.
     pub total: usize,
-    /// Replicas stopping or removing an old Container.
+    /// Servers stopping or removing an old Container.
     pub draining: usize,
     pub machines: BTreeSet<MachineId>,
 }
