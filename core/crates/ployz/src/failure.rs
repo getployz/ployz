@@ -594,9 +594,9 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         ProvisionError::NotRoot | ProvisionError::SudoRequired { .. } => {
             RpcErrorCode::Unauthenticated
         }
-        ProvisionError::UnsupportedOs | ProvisionError::UnsupportedArchitecture(_) => {
-            RpcErrorCode::Unsupported
-        }
+        ProvisionError::UnsupportedOs
+        | ProvisionError::UnsupportedArchitecture(_)
+        | ProvisionError::BootstrapUnsigned(_) => RpcErrorCode::Unsupported,
         ProvisionError::SshClientMissing
         | ProvisionError::Whoami(_)
         | ProvisionError::WhoamiFailed(_)
