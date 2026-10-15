@@ -190,12 +190,10 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     } else {
         ""
     };
-    // Behind Cloudflare the peer is Cloudflare's edge, so the visitor's address comes from
-    // CF-Connecting-IP, and only when the peer is in Cloudflare's published ranges.
     let _ = write!(
         output,
-        "{{\n{debug}\tauto_https off\n\tservers {{\n\t\ttrusted_proxies static {}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n}}\n\n",
-        trace::CLOUDFLARE_RANGES.join(" ")
+        "{{\n{debug}\tauto_https off\n{}}}\n\n",
+        trace::cloudflare_client_ip_servers()
     );
     trace::write_snippets(&mut output);
     write_error_page(&mut output);

@@ -13,7 +13,6 @@ pub(crate) const TRACE_PATH: &str = "/.well-known/ployz/trace";
 
 /// Cloudflare's published edge ranges, checked 2026-10-13 against
 /// <https://www.cloudflare.com/ips-v4> and <https://www.cloudflare.com/ips-v6>.
-/// Only a peer in these ranges may set the client address or get the Cloudflare keys.
 pub(super) const CLOUDFLARE_RANGES: [&str; 22] = [
     "173.245.48.0/20",
     "103.21.244.0/22",
@@ -38,6 +37,14 @@ pub(super) const CLOUDFLARE_RANGES: [&str; 22] = [
     "2a06:98c0::/29",
     "2c0f:f248::/32",
 ];
+
+/// The `servers` global option that reads the visitor's address from a Cloudflare peer.
+pub(super) fn cloudflare_client_ip_servers() -> String {
+    format!(
+        "\tservers {{\n\t\ttrusted_proxies static {}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n",
+        CLOUDFLARE_RANGES.join(" ")
+    )
+}
 
 /// One line of the page. Keys are only ever appended, so readers can rely on the order.
 struct TraceField {
