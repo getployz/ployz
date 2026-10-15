@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { Effect } from "effect";
+import { oauthClient } from "#/modules/identity/oauth-tables";
 import { member } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { Auth } from "#/server/auth.server";
+import { Auth, type RemoteMcpAuth } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 
@@ -29,11 +30,32 @@ export const remoteAgentsEnabled = Effect.gen(function* () {
   return auth.mcp !== null;
 });
 
-export const connectChoices = Effect.fn("Connect.choices")(function* (headers: Headers) {
-  const { auth } = yield* hostedMcp;
+/**
+ * The agent asking: its registered name, if it gave one, and the host its code goes to, which it can't fake. Null when
+ * better-auth didn't sign the query, it expired, or the agent is gone.
+ */
+const askingAgent = Effect.fn("Connect.askingAgent")(function* (mcp: RemoteMcpAuth, pageQuery: string) {
+  const oauthQuery = signedOAuthQuery(pageQuery);
+  if (!(yield* mcp.signed(oauthQuery))) return null;
+  const params = new URLSearchParams(oauthQuery);
+  const redirect = URL.parse(params.get("redirect_uri") ?? "");
+  if (redirect === null) return null;
+  const database = yield* Database;
+  const [client] = yield* database.drizzle
+    .select({ name: oauthClient.name })
+    .from(oauthClient)
+    .where(and(eq(oauthClient.clientId, params.get("client_id") ?? ""), or(isNull(oauthClient.disabled), ne(oauthClient.disabled, true))))
+    .limit(1);
+  return client === undefined ? null : { name: client.name, host: redirect.host };
+});
+
+/** Who is connecting, the Organizations they may pick, and the agent the page's signed query names; null when signed out. */
+export const connectChoices = Effect.fn("Connect.choices")(function* (headers: Headers, pageQuery: string) {
+  const { auth, mcp } = yield* hostedMcp;
   const signedIn = yield* auth.getSession(headers);
   if (signedIn === null) return null;
-  return { email: signedIn.user.email, organizations: yield* memberships(signedIn.user.id) };
+  const [organizations, agent] = yield* Effect.all([memberships(signedIn.user.id), askingAgent(mcp, pageQuery)], { concurrency: 2 });
+  return { email: signedIn.user.email, organizations, agent };
 });
 
 /**

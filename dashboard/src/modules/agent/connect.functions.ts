@@ -5,12 +5,13 @@ import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { runAppEffect } from "#/server/run.server";
 import { publicErrorMiddleware, strictValidator } from "#/server/tanstack";
 
-/** Who is connecting a remote agent and the Organizations they may connect it to; null when signed out. */
-export const connectChoicesServerFn = createServerFn({ method: "GET" })
+/** Who is connecting a remote agent, the Organizations they may connect it to, and the agent asking; null when signed out. */
+export const readConnectChoicesServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware])
-  .handler(() => {
+  .validator(strictValidator(Schema.Struct({ oauthQuery: Schema.String })))
+  .handler(({ data }) => {
     const request = getRequest();
-    return runAppEffect(connectChoices(request.headers), { signal: request.signal });
+    return runAppEffect(connectChoices(request.headers, data.oauthQuery), { signal: request.signal });
   });
 
 /** Grants or refuses the authorization request the page was opened with, bound to the chosen Organization. */

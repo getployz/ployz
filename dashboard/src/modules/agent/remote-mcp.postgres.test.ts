@@ -6,7 +6,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
-import { connectAgent } from "#/modules/agent/connect.server";
+import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
 import { serveAuth, serveMcpMetadata, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
@@ -102,15 +102,23 @@ const HoldableBetterAuthDatabase = Layer.effect(
   Effect.map(BetterAuthDatabase, ({ drizzle }) => ({ drizzle: holdableDatabase(drizzle) })),
 );
 
-/** Hold the next read of `table` after `skip` earlier ones, until `release`; `reached` resolves once it's held. */
-const holdRead = (table: Table, skip = 0) => {
+/**
+ * Hold the next read of `table` after `skip` earlier ones, until `release`; `reached` resolves once it's held. Closing
+ * the scope drops the hold and releases a held read, so a failed test leaves the next one a clean database.
+ */
+const holdRead = Effect.fn(function* (table: Table, skip = 0) {
   let reached!: () => void;
   let release!: () => void;
   const ready = new Promise<void>((resolve) => { reached = resolve; });
   const wait = new Promise<void>((resolve) => { release = resolve; });
-  held = { table, skip, reached, wait };
+  const hold = { table, skip, reached, wait };
+  held = hold;
+  yield* Effect.addFinalizer(() => Effect.sync(() => {
+    if (held === hold) held = undefined;
+    release();
+  }));
   return { reached: Effect.promise(() => ready), release: Effect.sync(release) };
-};
+});
 
 /** A Cloud, hosted or self-hosted, with every route the remote endpoint answers on, run as a browser or agent would. */
 const cloudOf = Effect.fn(function* (hosted: boolean) {
@@ -196,19 +204,25 @@ const registerAgent = Effect.fn(function* (shop: Shop) {
   return Schema.decodeUnknownSync(Registered)(registered.body).client_id;
 });
 
+/** Authorize for Shop, landing on the /connect page the provider signed. */
+const authorize = Effect.fn(function* (shop: Shop, clientId: string, resource: string | null = MCP) {
+  const verifier = randomBytes(32).toString("base64url");
+  const url = new URL("/api/auth/oauth2/authorize", origin);
+  url.search = form({
+    response_type: "code", client_id: clientId, redirect_uri: REDIRECT, scope: "ployz offline_access", state: "state-1",
+    code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource,
+  }).toString();
+  const asked = yield* Effect.promise(() => shop.run(serveAuth(new Request(url, { headers: { cookie: shop.cookie } }))));
+  const toConnect = new URL(asked.headers.get("location") ?? expect.fail(`authorize answered ${asked.status} with no redirect`), origin);
+  expect(toConnect.pathname).toBe("/connect");
+  return { toConnect, verifier };
+});
+
 /** Authorize and consent on /connect for Shop, leaving the code unredeemed. */
 const issueCode = Effect.fn(function* (
   shop: Shop, clientId: string, pageQuery: (signed: string) => string = (signed) => signed, resource: string | null = MCP,
 ) {
-  const verifier = randomBytes(32).toString("base64url");
-  const authorize = new URL("/api/auth/oauth2/authorize", origin);
-  authorize.search = form({
-    response_type: "code", client_id: clientId, redirect_uri: REDIRECT, scope: "ployz offline_access", state: "state-1",
-    code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256", resource,
-  }).toString();
-  const asked = yield* Effect.promise(() => shop.run(serveAuth(new Request(authorize, { headers: { cookie: shop.cookie } }))));
-  const toConnect = new URL(asked.headers.get("location") ?? expect.fail(`authorize answered ${asked.status} with no redirect`), origin);
-  expect(toConnect.pathname).toBe("/connect");
+  const { toConnect, verifier } = yield* authorize(shop, clientId, resource);
   const decided = yield* shop.provided(connectAgent(new Headers({ cookie: shop.cookie }), {
     organizationId: ORGANIZATION, accept: true, oauthQuery: pageQuery(toConnect.search.slice(1)),
   }));
@@ -406,6 +420,19 @@ it.live("leaving Shop ends the grant, rejoining doesn't revive it, and connectin
     expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("/connect names the agent asking and the host its code returns to, and names none for a tampered link", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const { toConnect } = yield* authorize(shop, yield* registerAgent(shop));
+    const choices = (pageQuery: string) => shop.provided(connectChoices(new Headers({ cookie: shop.cookie }), pageQuery));
+    const signed = toConnect.search.slice(1);
+    expect((yield* choices(signed))?.agent).toEqual({ name: "test agent", host: "127.0.0.1:9999" });
+
+    const tampered = new URLSearchParams(signed);
+    tampered.set("redirect_uri", "https://attacker.example/callback");
+    expect((yield* choices(tampered.toString()))?.agent).toBeNull();
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("a parameter the browser adds to /connect leaves the consent standing", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
@@ -518,15 +545,16 @@ const resumedAfterReconnect = Effect.fn(function* (shop: Shop, clientId: string,
   const pending = yield* issueCode(shop, clientId);
   yield* aSecondLater;
   const request = kind === "code"
-    ? { hold: holdRead(verification, 1), send: redeem(shop, pending) }
-    : { hold: holdRead(oauthRefreshToken, 1), send: refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token")) };
+    ? { hold: yield* holdRead(verification, 1), send: redeem(shop, pending) }
+    : { hold: yield* holdRead(oauthRefreshToken, 1), send: refresh(shop, clientId, old.refresh_token ?? expect.fail("connect issued no refresh token")) };
   const inFlight = yield* Effect.forkScoped(request.send);
   yield* request.hold.reached;
 
-  expect((yield* disconnect(shop)).status).toBe(200);
-  yield* aSecondLater;
-  const renewed = yield* connectTokens(shop, clientId);
-  yield* request.hold.release;
+  const renewed = yield* Effect.gen(function* () {
+    expect((yield* disconnect(shop)).status).toBe(200);
+    yield* aSecondLater;
+    return yield* connectTokens(shop, clientId);
+  }).pipe(Effect.ensuring(request.hold.release));
   const answered = yield* Fiber.join(inFlight);
   expect((yield* raw(shop, renewed.access_token)).status).toBe(200);
   return answered;
@@ -552,17 +580,18 @@ it.live("a redemption without a resource, held and resumed after a disconnect an
     const clientId = yield* registerAgent(shop);
     const pending = yield* issueCode(shop, clientId, undefined, null);
     yield* aSecondLater;
-    const hold = holdRead(verification, 1);
+    const hold = yield* holdRead(verification, 1);
     const inFlight = yield* Effect.forkScoped(redeem(shop, pending, null));
     // A request refused before the provider reads its code never reaches the hold, and has nothing left to resume.
     const paused = yield* Effect.raceFirst(Effect.as(hold.reached, true), Effect.as(Fiber.await(inFlight), false));
     held = undefined;
     if (paused) {
-      expect((yield* disconnect(shop)).status).toBe(200);
-      yield* aSecondLater;
-      const renewed = yield* redeem(shop, yield* issueCode(shop, clientId, undefined, null));
-      expect((yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token)).status).toBe(200);
-      yield* hold.release;
+      yield* Effect.gen(function* () {
+        expect((yield* disconnect(shop)).status).toBe(200);
+        yield* aSecondLater;
+        const renewed = yield* redeem(shop, yield* issueCode(shop, clientId, undefined, null));
+        expect((yield* raw(shop, Schema.decodeUnknownSync(Issued)(renewed.body).access_token)).status).toBe(200);
+      }).pipe(Effect.ensuring(hold.release));
     }
     const answered = yield* Fiber.join(inFlight);
     const issued = Schema.decodeUnknownOption(Issued)(answered.body);

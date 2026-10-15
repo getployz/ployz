@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
+import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth } from "better-auth";
 import { createDpopReplayStore } from "better-auth/oauth2";
@@ -116,6 +117,8 @@ export interface RemoteMcpAuth {
     request: Request,
     handler: ProtectedHandler,
   ) => Effect.Effect<Response, AuthenticationUnavailable>;
+  /** Whether better-auth signed `oauthQuery` and it hasn't expired, the check consent makes before it grants. */
+  readonly signed: (oauthQuery: string) => Effect.Effect<boolean, AuthenticationUnavailable>;
   /** Accepts or denies the authorization request `oauthQuery` names, binding the grant to `choice`'s Organization. */
   readonly consent: (
     headers: Headers,
@@ -318,6 +321,10 @@ const makeAuth = Effect.gen(function* () {
           requiredScopes: [MCP_SCOPES[0]],
           dpop: { replayStore },
         }, handler)(request),
+        catch: (cause) => new AuthenticationUnavailable({ cause }),
+      }),
+      signed: (oauthQuery) => Effect.tryPromise({
+        try: () => verifyOAuthQueryParams(oauthQuery, Redacted.value(config.auth.secret)),
         catch: (cause) => new AuthenticationUnavailable({ cause }),
       }),
       consent: (headers, { oauthQuery, accept }, choice) => Effect.tryPromise({
