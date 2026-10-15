@@ -67,7 +67,7 @@ export function analyticsGate<S extends { readonly enabled: boolean }>(plan: Ana
   return site?.enabled ? { gate: "on", site } : { gate: "site-off" };
 }
 
-/** `page:eq:/pricing` in the URL, one page filter at most. */
+/** `?page=eq:/pricing` in the URL: one page filter at most. */
 export function parsePageFilter(text: string | undefined): Filter | null {
   const match = text === undefined ? null : /^(eq|neq):(\/.*)$/.exec(text);
   if (match === null) return null;
