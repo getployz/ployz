@@ -17,6 +17,7 @@ import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as DeviceRouteImport } from './routes/device'
 import { Route as HomeRouteImport } from './routes/home'
 import { Route as McpRouteImport } from './routes/mcp'
+import { Route as DotwellKnownMcpRegistryAuthRouteImport } from './routes/[.]well-known/mcp-registry-auth'
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
@@ -115,6 +116,12 @@ const McpRoute = McpRouteImport.update({
   path: '/mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DotwellKnownMcpRegistryAuthRoute =
+  DotwellKnownMcpRegistryAuthRouteImport.update({
+    id: '/.well-known/mcp-registry-auth',
+    path: '/.well-known/mcp-registry-auth',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ProtectedCloudRouteRoute = ProtectedCloudRouteRouteImport.update({
   id: '/cloud',
   path: '/cloud',
@@ -486,6 +493,7 @@ export interface FileRoutesByFullPath {
   '/home': typeof HomeRoute
   '/mcp': typeof McpRoute
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
+  '/.well-known/mcp-registry-auth': typeof DotwellKnownMcpRegistryAuthRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
@@ -549,6 +557,7 @@ export interface FileRoutesByTo {
   '/device': typeof DeviceRoute
   '/home': typeof HomeRoute
   '/mcp': typeof McpRoute
+  '/.well-known/mcp-registry-auth': typeof DotwellKnownMcpRegistryAuthRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
@@ -614,6 +623,7 @@ export interface FileRoutesById {
   '/home': typeof HomeRoute
   '/mcp': typeof McpRoute
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
+  '/.well-known/mcp-registry-auth': typeof DotwellKnownMcpRegistryAuthRoute
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
   '/api/health': typeof ApiHealthRoute
@@ -683,6 +693,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/mcp'
     | '/cloud'
+    | '/.well-known/mcp-registry-auth'
     | '/dashboard'
     | '/auth'
     | '/api/health'
@@ -746,6 +757,7 @@ export interface FileRouteTypes {
     | '/device'
     | '/home'
     | '/mcp'
+    | '/.well-known/mcp-registry-auth'
     | '/dashboard'
     | '/auth'
     | '/api/health'
@@ -810,6 +822,7 @@ export interface FileRouteTypes {
     | '/home'
     | '/mcp'
     | '/_protected/cloud'
+    | '/.well-known/mcp-registry-auth'
     | '/_protected/dashboard'
     | '/_public/auth'
     | '/api/health'
@@ -879,6 +892,7 @@ export interface RootRouteChildren {
   DeviceRoute: typeof DeviceRoute
   HomeRoute: typeof HomeRoute
   McpRoute: typeof McpRoute
+  DotwellKnownMcpRegistryAuthRoute: typeof DotwellKnownMcpRegistryAuthRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
   InviteTokenRoute: typeof InviteTokenRoute
@@ -964,6 +978,13 @@ declare module '@tanstack/react-router' {
       path: '/mcp'
       fullPath: '/mcp'
       preLoaderRoute: typeof McpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/.well-known/mcp-registry-auth': {
+      id: '/.well-known/mcp-registry-auth'
+      path: '/.well-known/mcp-registry-auth'
+      fullPath: '/.well-known/mcp-registry-auth'
+      preLoaderRoute: typeof DotwellKnownMcpRegistryAuthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud': {
@@ -1591,6 +1612,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeviceRoute: DeviceRoute,
   HomeRoute: HomeRoute,
   McpRoute: McpRoute,
+  DotwellKnownMcpRegistryAuthRoute: DotwellKnownMcpRegistryAuthRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
   InviteTokenRoute: InviteTokenRoute,

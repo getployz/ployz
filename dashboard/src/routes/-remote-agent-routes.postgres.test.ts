@@ -14,6 +14,7 @@ const PATHS = [
   "/.well-known/oauth-protected-resource/mcp",
   "/.well-known/oauth-authorization-server",
   "/.well-known/oauth-authorization-server/api/auth",
+  "/.well-known/mcp-registry-auth",
   "/connect",
 ];
 const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];

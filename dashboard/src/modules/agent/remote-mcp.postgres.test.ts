@@ -7,7 +7,7 @@ import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
 import { afterEach, expect, vi } from "vitest";
 import { connectAgent, connectChoices } from "#/modules/agent/connect.server";
-import { serveAuth, serveMcpMetadata, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
+import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -677,6 +677,15 @@ it.live("a self-hosted Cloud answers 404 on every remote agent route and method"
       ...["/api/auth/oauth2/token", "/api/auth/oauth2/register", "/api/auth/oauth2/authorize", "/api/auth/jwks"]
         .map((path) => run(serveAuth(new Request(`${origin}${path}`, { method: path === "/api/auth/oauth2/authorize" || path === "/api/auth/jwks" ? "GET" : "POST" })))),
       run(serveAuth(new Request(`${origin}/api/auth/oauth2/token`, { method: "OPTIONS" }))),
+      run(serveRegistryProof(new Request(`${origin}/.well-known/mcp-registry-auth`))),
     ].map((response) => response.then((answered) => answered.status))));
     expect(new Set(statuses)).toEqual(new Set([404]));
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("a hosted Cloud serves the MCP Registry its domain proof", () =>
+  Effect.gen(function* () {
+    const { run } = yield* cloudOf(true);
+    const response = yield* Effect.promise(() => run(serveRegistryProof(new Request(`${origin}/.well-known/mcp-registry-auth`))));
+    expect(response.status).toBe(200);
+    expect(yield* Effect.promise(() => response.text())).toMatch(/^v=MCPv1; k=ed25519; p=[A-Za-z0-9+/]{43}=$/);
   }).pipe(Effect.scoped), 30_000);
