@@ -45,6 +45,11 @@ function invalidTokenResponse() {
   );
 }
 
+function bearerToken(request: Request) {
+  const match = /^Bearer (\S+)$/u.exec(request.headers.get("authorization") ?? "");
+  return match?.[1];
+}
+
 type JoinEffect = ReturnType<typeof enrollMachine>;
 type JoinRequirements = JoinEffect extends Effect.Effect<
   unknown,
@@ -60,19 +65,17 @@ type JoinOperation<R> = (
 
 export function handleMachineEnrollmentJoin(
   request: Request,
-  token: string,
 ): Effect.Effect<Response, never, JoinRequirements>;
 export function handleMachineEnrollmentJoin<R>(
   request: Request,
-  token: string,
   enrollOperation: JoinOperation<R>,
 ): Effect.Effect<Response, never, R>;
 export function handleMachineEnrollmentJoin<R>(
   request: Request,
-  token: string,
   enrollOperation?: JoinOperation<R>,
 ) {
   return Effect.gen(function* () {
+    const token = bearerToken(request);
     if (!token) return invalidTokenResponse();
 
     const json = yield* Effect.option(
@@ -127,19 +130,17 @@ type CompleteOperation<R> = (
 
 export function handleMachineEnrollmentCallback(
   request: Request,
-  token: string,
 ): Effect.Effect<Response, never, CompleteRequirements>;
 export function handleMachineEnrollmentCallback<R>(
   request: Request,
-  token: string,
   completeOperation: CompleteOperation<R>,
 ): Effect.Effect<Response, never, R>;
 export function handleMachineEnrollmentCallback<R>(
   request: Request,
-  token: string,
   completeOperation?: CompleteOperation<R>,
 ) {
   return Effect.gen(function* () {
+    const token = bearerToken(request);
     if (!token) return invalidTokenResponse();
 
     const json = yield* Effect.option(
@@ -181,19 +182,17 @@ type RecordReportOperation<R> = (
 
 export function handleMachineSetupReport(
   request: Request,
-  token: string,
 ): Effect.Effect<Response, never, RecordReportRequirements>;
 export function handleMachineSetupReport<R>(
   request: Request,
-  token: string,
   recordOperation: RecordReportOperation<R>,
 ): Effect.Effect<Response, never, R>;
 export function handleMachineSetupReport<R>(
   request: Request,
-  token: string,
   recordOperation?: RecordReportOperation<R>,
 ) {
   return Effect.gen(function* () {
+    const token = bearerToken(request);
     if (!token) return invalidTokenResponse();
 
     const json = yield* Effect.option(

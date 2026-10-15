@@ -29,7 +29,7 @@ describe("machine enrollment command", () => {
     });
 
     expect(minted.command).toBe(
-      "curl -fsSL https://ployz.sh/ | sh && sudo ployz server add --token 'pmet_secret'",
+      " curl -fsSL https://ployz.sh/ | sh && printf '%s\\n' 'pmet_secret' | sudo ployz server add --token-stdin",
     );
     expect(minted.expiresAt).toBe("2026-08-19T00:00:00.000Z");
   });
@@ -42,7 +42,7 @@ describe("machine enrollment command", () => {
         version: "1.2.3",
       }),
     ).toBe(
-      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3 && sudo ployz server add --token 'pmet_secret' --cloud-url 'https://cloud.example'",
+      " curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3 && printf '%s\\n' 'pmet_secret' | sudo ployz server add --token-stdin --cloud-url 'https://cloud.example'",
     );
   });
 

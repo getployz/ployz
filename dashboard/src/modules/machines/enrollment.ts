@@ -163,7 +163,7 @@ export const enrollmentCallbackBodySchema = Schema.Union([
 
 export type EnrollmentCallback = typeof enrollmentCallbackBodySchema.Type;
 
-/** The phases of `server add --token`; each name is a PostHog property, so renaming one breaks analytics. */
+/** The phases of token enrollment; each name is a PostHog property, so renaming one breaks analytics. */
 const SetupStep = Schema.Literals(["install", "enroll", "storage", "join"]);
 const Seconds = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 /** `schema`, with `clean` applied on decode; encoding leaves the text as is.
@@ -207,7 +207,7 @@ const setupReportFields = {
   totalSeconds: Seconds,
 };
 
-/** What `server add --token` reports about its Server and how setup went. */
+/** What token enrollment reports about its Server and how setup went. */
 export const setupReportSchema = Schema.Union([
   Schema.Struct({ outcome: Schema.Literal("succeeded"), ...setupReportFields }),
   Schema.Struct({
@@ -329,7 +329,7 @@ export function buildMachineJoinCommand(input: {
   const hosted = new URL(input.origin).hostname === DEFAULT_CLOUD_URL_HOST;
   const install = hosted ? "sh" : `sh -s -- ${input.version}`;
   const cloudUrlFlag = hosted ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | ${install} && sudo ployz server add --token '${input.token}'${cloudUrlFlag}`;
+  return ` curl -fsSL ${INSTALLER_URL} | ${install} && printf '%s\\n' '${input.token}' | sudo ployz server add --token-stdin${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {

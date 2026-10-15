@@ -264,7 +264,7 @@ describe("organization enrollment coordinator", () => {
             { userId },
             { organizationSlug: "enroll" },
           );
-          expect(minted.command).toContain("ployz server add --token 'pmet_");
+          expect(minted.command).toMatch(/^ curl .* && printf '%s\\n' 'pmet_[^']+' \| sudo ployz server add --token-stdin/u);
 
           const outsider = "00000000-0000-4000-8000-000000000499";
           const denied = yield* readCollection({ userId: outsider }, { ...enrollment, userId: outsider }).pipe(Effect.exit);
