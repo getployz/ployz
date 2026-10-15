@@ -930,7 +930,8 @@ fn same_source(a: &ServiceSource, b: &ServiceSource) -> bool {
 /// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
 /// `services` and the teardown of `retire`, from [`deployment::retirements`]
 /// (neither: every Service), with generated domains under `cluster_domain` and
-/// each Git Service of `pins` pinned to its commit. It never removes a Volume.
+/// each Git Service of `pins` pinned to its commit. It deletes only the Volume
+/// data accepted when `saved` was saved, while the Servers still show the same.
 pub(crate) fn auto_admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -949,14 +950,19 @@ pub(crate) fn auto_admit(
         trusted,
     )?;
     let head = deployment::head(tx, environment)?;
+    let losses = consented(&head.applied, saved, &namespace, trusted)?;
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
         &head.applied,
         if services.is_empty() && retire.is_empty() {
-            deployment::Scope::All { losses: &[] }
+            deployment::Scope::All { losses: &losses }
         } else {
-            deployment::Scope::Narrow { services, retire }
+            deployment::Scope::Narrow {
+                services,
+                retire,
+                losses: &losses,
+            }
         },
         namespace,
         cluster_domain,
@@ -973,6 +979,35 @@ pub(crate) fn auto_admit(
     )?;
     build::pin(tx, &deployment, pins)?;
     Ok(summary)
+}
+
+/// The losses `saved` holds consent for that the Servers still show unchanged.
+/// Without that evidence a push keeps the data, and the next Deploy asks again.
+fn consented(
+    applied: &SavedEnvironmentIntent,
+    saved: &review::Saved,
+    namespace: &ployz_core::Namespace,
+    trusted: &Trusted,
+) -> Result<Vec<crate::VolumeLoss>, RpcError> {
+    let removed: Vec<_> = crate::removal::removed(applied, &saved.intent, namespace)?
+        .into_iter()
+        .filter(|volume| {
+            saved
+                .accepted
+                .iter()
+                .any(|loss| loss.volume.id == volume.id)
+        })
+        .collect();
+    if removed.is_empty() {
+        return Ok(Vec::new());
+    }
+    match crate::removal::held(removed, trusted.volumes.as_ref()) {
+        Ok((losses, unanswered)) if unanswered.is_empty() => Ok(losses
+            .into_iter()
+            .filter(|loss| crate::removal::covered(loss, &saved.accepted))
+            .collect()),
+        Ok(_) | Err(_) => Ok(Vec::new()),
+    }
 }
 
 /// Whether every check suite of the pushed commit completed and passed; false

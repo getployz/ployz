@@ -236,7 +236,11 @@ fn deploy(
             &namespace,
             review::Shipping::Deploy(&admit.services),
         ),
-        (admit.version.as_deref(), &admit.accept_volume_loss),
+        (
+            admit.version.as_deref(),
+            &admit.accept_volume_loss,
+            review::consent(review.saved.as_ref()),
+        ),
         trusted.volumes.as_ref(),
     )?;
     review::approve(who, id, &review, &saved_intent, &trusted.approval)?;
@@ -246,7 +250,7 @@ fn deploy(
         id,
         environment.working.clone(),
         review.saved.as_ref(),
-        admit.message.as_deref(),
+        (admit.message.as_deref(), &review::lost(losses.clone())),
     )?;
     let mut frozen = deployment::freeze(
         id,

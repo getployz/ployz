@@ -220,10 +220,15 @@ the mirror's last refresh are lost. Type your `project/environment`, like `my-ap
 click **Deploy**. If you didn't mean it, cancel, then discard the change in **Details**.
 
 **Save only** asks the same way, under **Next deploy deletes data**. Saving deletes nothing and
-starts no deploy: it saves the deletion, and your next deploy takes it along, including one a Git
-push starts.
+starts no deploy. Your confirmation is saved with the change, so the next deploy deletes that data
+without asking again. That holds for a deploy you start and for one a Git push starts.
+
+Ployz asks again only when what it would delete changed since you confirmed. That happens when
+another server starts holding that data, or someone stages a different copy change on that volume.
+A Git push can't ask, so it keeps the data instead, and so does a push when Ployz can't reach your
+servers to check. Your next deploy then asks.
 
 From the CLI, `ployz deploy` and `ployz deploy --skip-deploy` stop and print the command to run
 instead. It names each volume that loses data, like
-`ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if you mean it. If another server starts holding that data first,
-or someone stages a different copy change on that volume meanwhile, Ployz asks again.
+`ployz deploy --skip-deploy --accept-volume-loss postgres-data --expect-version …`. Run it only if
+you mean it.

@@ -405,6 +405,7 @@ fn a_narrowed_deployment_never_tears_down_a_service_saved_state_runs() {
                     Scope::Narrow {
                         services: &[],
                         retire: &[retire],
+                        losses: &[],
                     },
                     ployz_core::Namespace::parse("shop-production").unwrap(),
                     None,

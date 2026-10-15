@@ -314,6 +314,279 @@ fn discarded_mount_reversal_affects_automatic_deploy_only_after_save() {
     );
 }
 
+const DOCKER_VOLUME: &str = "shop-production_vol-00000000-0000-4000-8000-000000000005";
+
+/// The Servers answered, and Server `a` holds Volume `data`.
+fn held_on_a() -> ployz_store::VolumeObservation {
+    let name = ployz_core::DockerVolumeName::parse(DOCKER_VOLUME).unwrap();
+    ployz_store::VolumeObservation {
+        sought: vec![name.clone()],
+        held: vec![ployz_core::DockerVolumeId {
+            machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+            name,
+        }],
+        unanswered: Vec::new(),
+    }
+}
+
+/// Deploy Volume `data` on `web`, then remove it and Save, accepting its loss
+/// while Server `a` holds it.
+fn saved_volume_loss() -> (ConfigStore, Actor) {
+    saved_loss_of(false)
+}
+
+/// [`saved_volume_loss`], where `orphaned` unmounts `data` from `web` and
+/// deploys that before the removal, so no Applied Service mounts it.
+fn saved_loss_of(orphaned: bool) -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    let data = || ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    if orphaned {
+        store
+            .write(
+                &who,
+                &Command::Edit(Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Unset {
+                        path: SettingPath::parse("web.mounts.data").unwrap(),
+                    }],
+                }),
+            )
+            .unwrap();
+        backend::deploy(&store, &who, "production", 2);
+    }
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data(),
+            },
+        )
+        .unwrap();
+    let save = |version: Option<String>| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version,
+                message: None,
+                accept_volume_loss: vec![data()],
+            },
+            &Trusted {
+                volumes: Some(held_on_a()),
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = save(None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    save(Some(
+        refused.details["version"].as_str().unwrap().to_owned(),
+    ))
+    .unwrap();
+    (store, who)
+}
+
+/// What the push's Deployment deletes, as `machine:docker volume`.
+fn pushed_deletes(
+    store: &ConfigStore,
+    volumes: Option<ployz_store::VolumeObservation>,
+) -> Vec<String> {
+    deletes_of(store, &push(None, Some(H1), None), volumes)
+}
+
+/// What the Deployment `event` admits deletes, as `machine:docker volume`.
+fn deletes_of(
+    store: &ConfigStore,
+    event: &SystemEvent,
+    volumes: Option<ployz_store::VolumeObservation>,
+) -> Vec<String> {
+    let Written::Automated(automated) = store
+        .system(
+            &org(),
+            event,
+            &Trusted {
+                volumes,
+                ..Trusted::default()
+            },
+        )
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    store
+        .claim(
+            &automated.admitted[0].deployment.id,
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap()
+        .deletes
+        .iter()
+        .map(|volume| format!("{}:{}", volume.machine_id, volume.name))
+        .collect()
+}
+
+#[test]
+fn a_push_after_a_save_that_accepted_a_loss_deletes_the_data() {
+    let (store, who) = saved_volume_loss();
+    let consented = store
+        .read(&who, &ployz_store::ConsentedQuery::default())
+        .unwrap();
+    assert_eq!(texts(&consented.volumes), [DOCKER_VOLUME]);
+    assert_eq!(
+        pushed_deletes(&store, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_push_keeps_saved_loss_data_without_the_same_evidence() {
+    let (store, _) = saved_volume_loss();
+    assert!(pushed_deletes(&store, None).is_empty());
+    let (store, _) = saved_volume_loss();
+    let mut more = held_on_a();
+    more.held.push(ployz_core::DockerVolumeId {
+        machine_id: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
+        name: ployz_core::DockerVolumeName::parse(DOCKER_VOLUME).unwrap(),
+    });
+    assert!(pushed_deletes(&store, Some(more)).is_empty());
+}
+
+#[test]
+fn a_push_keeps_saved_loss_data_while_a_server_is_unanswered_or_unsought() {
+    let (store, _) = saved_volume_loss();
+    let mut unanswered = held_on_a();
+    unanswered
+        .unanswered
+        .push(ployz_core::MachineId::parse("b".repeat(32)).unwrap());
+    assert!(pushed_deletes(&store, Some(unanswered)).is_empty());
+    let (store, _) = saved_volume_loss();
+    let mut unsought = held_on_a();
+    unsought.sought.clear();
+    assert!(pushed_deletes(&store, Some(unsought)).is_empty());
+}
+
+#[test]
+fn a_push_that_leaves_out_the_service_mounting_the_volume_keeps_its_data() {
+    let (store, who) = saved_volume_loss();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    system(&store, &push(None, Some(H1), None));
+    // Consent stays for a later push that ships web.
+    let narrow = push(Some(H1), Some(H2), Some(&["api/main.rs"]));
+    assert!(deletes_of(&store, &narrow, Some(held_on_a())).is_empty());
+    assert_eq!(
+        deletes_of(&store, &push(Some(H2), Some(H3), None), Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_narrow_push_deletes_saved_loss_data_no_service_mounts() {
+    let (store, who) = saved_loss_of(true);
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    system(&store, &push(None, Some(H1), None));
+    let narrow = push(Some(H1), Some(H2), Some(&["api/main.rs"]));
+    assert_eq!(
+        deletes_of(&store, &narrow, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_merge_keeps_the_destinations_accepted_loss() {
+    let (store, who) = saved_volume_loss();
+    open_pull_request(&store, &who);
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(ployz_store::EnvironmentName::parse("pr-5").unwrap()),
+                },
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.env.SEARCH").unwrap(),
+                    value: json!("on"),
+                }],
+            }),
+        )
+        .unwrap();
+    system(&store, &pull_request(false));
+    assert_eq!(
+        pushed_deletes(&store, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+/// Turn on pull request environments from `production`, and open pull request #5.
+fn open_pull_request(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &ployz_store::SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: Some(true),
+                start_from: Some(ployz_store::EnvironmentName::parse("production").unwrap()),
+                copy: None,
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    system(store, &pull_request(true));
+}
+
+/// Pull request #5 onto `main`: open, or merged.
+fn pull_request(open: bool) -> SystemEvent {
+    SystemEvent::PullRequest(ployz_store::PullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        title: "Add search".into(),
+        author: "ada".into(),
+        bot: false,
+        head_branch: backend::git_branch("search"),
+        head: backend::sha(H2),
+        target_branch: backend::git_branch("main"),
+        commits: 1,
+        open,
+        merge_commit: (!open).then(|| backend::sha(H3)),
+        target_head: None,
+        updated: ployz_store::GithubTimestamp::parse(if open {
+            "2026-09-29T10:00:00Z"
+        } else {
+            "2026-09-29T11:00:00Z"
+        })
+        .unwrap(),
+    })
+}
+
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
 #[test]
 fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
     let (store, who) = shop();

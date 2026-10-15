@@ -1,9 +1,14 @@
 import "@tanstack/react-start/server-only";
 import { observeVolumes, type VolumeObservation } from "@ployz/sdk";
-import { Effect, Option, Schema } from "effect";
+import { Context, Effect, Option, Schema } from "effect";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
+
+/** Asks Servers which of the `sought` Docker Volumes they hold. The SDK's, unless a test provides another. */
+export const VolumeObserver = Context.Reference<{ readonly observe: typeof observeVolumes }>("ployz/VolumeObserver", {
+  defaultValue: () => ({ observe: observeVolumes }),
+});
 
 /** The fields used to gather evidence; native Store decoding still validates the original command. */
 const AdmitCommand = Schema.Struct({
@@ -44,7 +49,27 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
   const connections = Option.getOrUndefined(loaded);
   if (connections?.kind !== "ready") return undefined;
-  const observed = yield* storeTry(() => observeVolumes(connections.connections, sought)).pipe(Effect.option);
+  const { observe } = yield* VolumeObserver;
+  const observed = yield* storeTry(() => observe(connections.connections, sought)).pipe(Effect.option);
+  return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
+});
+
+/**
+ * For a Git push: which Servers hold the Volumes whose loss was accepted when they were saved. Without it, or when the
+ * Servers can't be reached, the push keeps their data and the next Deploy asks again.
+ */
+export const systemVolumeEvidence = Effect.fn("ConfigStore.systemVolumeEvidence")(function* (
+  organizationId: string,
+  read: StoreRead,
+) {
+  const consented = yield* storeTry(() => read({ query: "consented" })).pipe(Effect.option);
+  const sought = Option.getOrUndefined(consented)?.volumes;
+  if (sought === undefined || sought.length === 0) return undefined;
+  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
+  const connections = Option.getOrUndefined(loaded);
+  if (connections?.kind !== "ready") return undefined;
+  const { observe } = yield* VolumeObserver;
+  const observed = yield* storeTry(() => observe(connections.connections, sought)).pipe(Effect.option);
   return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
 });
 
