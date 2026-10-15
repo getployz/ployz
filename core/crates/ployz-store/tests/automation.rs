@@ -680,6 +680,51 @@ fn a_push_to_a_non_members_pull_request_waits_for_approval_of_its_head() {
 }
 
 #[test]
+fn an_approval_that_made_no_pr_environment_stays_listed_to_approve_again() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    assert!(
+        open_as(&store, &who, &by_stranger(H2, 1))
+            .admitted
+            .is_empty()
+    );
+    let approval = ployz_store::ApprovePullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        head: backend::sha(H2),
+    };
+    let serverless = Trusted {
+        servers: Some(0),
+        ..Trusted::default()
+    };
+    let stalled = store.write_trusted(&who, &approval, &serverless).unwrap();
+    assert!(stalled.admitted.is_empty(), "{stalled:?}");
+
+    let plans = store
+        .read(&who, &ployz_store::PrPlansQuery::default())
+        .unwrap();
+    let listed: Vec<_> = plans.plans[0]
+        .open
+        .iter()
+        .map(|open| {
+            (
+                open.number.get(),
+                open.standing.clone(),
+                open.environment.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [(5, ployz_store::Standing::Approved(backend::sha(H2)), None)]
+    );
+
+    let approved = approve(&store, &who, H2);
+    assert_eq!(approved.admitted.len(), 1, "{approved:?}");
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H2));
+}
+
+#[test]
 fn a_push_refused_before_the_author_proved_a_member_deploys_once_they_do() {
     let (store, who) = shop();
     publish(&store, &who);

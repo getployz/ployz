@@ -308,7 +308,7 @@ struct Setup {
 }
 
 /// The repository's pull requests with a PR Environment in the Project, not being
-/// closed, then those the plan would make one for once a member approves them.
+/// closed, then the others a member approves: waiting, or approved but not yet made.
 fn open_in(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -351,7 +351,7 @@ fn open_in(
         let standing = stored_standing(&row)?;
         let waiting = facts.open
             && !(facts.bot && !plan.include_bots)
-            && !standing.admits(&facts.head)
+            && standing != Standing::Trusted
             && !open.iter().any(|listed| listed.number == number);
         if waiting {
             open.push(OpenPullRequest {

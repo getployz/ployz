@@ -148,11 +148,13 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
 
 /**
  * An open pull request: its PR Environment, or, when its author isn't a member or its code comes from a fork, the
- * commit that waits for a member to approve it.
+ * commit that waits for a member to approve it, or that they approved before it could make one.
  */
 function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRequest; onApprove: (head: string) => void }) {
   const waiting = open.standing === "needs_approval";
   const head = open.head;
+  // An approval that made no PR Environment yet makes it when approved again.
+  const approvable = waiting || (!open.environment && open.standing !== "trusted");
   const content = (
     <>
       <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
@@ -171,7 +173,7 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
       <Item variant="outline" size="sm">
         {content}
         <ItemActions>
-          {waiting && head ? <Button size="sm" variant="outline" onClick={() => onApprove(head)}>Approve deploy</Button> : null}
+          {approvable && head ? <Button size="sm" variant="outline" onClick={() => onApprove(head)}>Approve deploy</Button> : null}
         </ItemActions>
       </Item>
     );

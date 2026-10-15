@@ -58,6 +58,9 @@ reads **Needs approval** again, with the new commit, and the preview keeps runni
 approved until you approve the new one. If someone pushed after you loaded the page, Approve deploy
 is refused with **This pull request has a newer commit. Approve that one.**
 
+If the approval couldn't make the preview, for example because your organization has no servers
+yet, the pull request stays under **Open now**. Fix the cause, then approve it again.
+
 Bots' pull requests from the repository itself count as a member's once **Enable bot PR
 environments** is on. A bot's pull request from a fork still needs approval.
 
