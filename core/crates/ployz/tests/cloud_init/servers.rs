@@ -11,6 +11,7 @@ use std::{
 
 use futures_util::StreamExt as _;
 use ployz_core::MachineRpcServer;
+use ployz_testkit::fake_machine::Fake;
 use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
@@ -22,7 +23,7 @@ pub async fn serve_machine(daemon: JoinDaemon) -> SocketAddr {
     let address = tcp.local_addr().unwrap();
     tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(daemon))
+            .add_service(MachineRpcServer::new(Fake(daemon)))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(tcp)),
     );
     address
@@ -46,7 +47,7 @@ pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<At
     });
     tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(daemon))
+            .add_service(MachineRpcServer::new(Fake(daemon)))
             .serve_with_incoming(incoming),
     );
     (format!("unix://{}", socket.display()), socket, connections)

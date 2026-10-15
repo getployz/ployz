@@ -21,6 +21,7 @@ use ployz_core::{
     MembershipObservation, NAMESPACE_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
     UNREGISTRY_PORT, op,
 };
+use ployz_testkit::fake_machine::Fake;
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, UnixListener};
 use tokio_stream::wrappers::{TcpListenerStream, UnixListenerStream};
@@ -1012,12 +1013,12 @@ async fn machine_discovery_uses_the_same_rpc_over_tcp_and_unix() {
     let service = DiscoveryService::new(description.clone());
     let tcp_server = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(service.clone()))
+            .add_service(MachineRpcServer::new(Fake(service.clone())))
             .serve_with_incoming(TcpListenerStream::new(tcp)),
     );
     let unix_server = tokio::spawn(
         Server::builder()
-            .add_service(MachineRpcServer::new(service))
+            .add_service(MachineRpcServer::new(Fake(service)))
             .serve_with_incoming(UnixListenerStream::new(unix)),
     );
     for connection in [

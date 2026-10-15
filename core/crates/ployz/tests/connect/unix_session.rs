@@ -1,6 +1,7 @@
 use super::support::DiscoveryService;
 use ployz::{connect::SystemConnector, context::Connection, sdk};
 use ployz_core::{MachineId, MachineRpcServer, RpcError};
+use ployz_testkit::fake_machine::Fake;
 use std::{
     io,
     path::PathBuf,
@@ -192,7 +193,7 @@ impl UnixSession {
                 connections.spawn(async move {
                     let _ = tonic::transport::Server::builder()
                         .add_service(
-                            MachineRpcServer::new(service)
+                            MachineRpcServer::new(Fake(service))
                                 .send_compressed(CompressionEncoding::Gzip),
                         )
                         .serve_with_incoming(tokio_stream::once(Ok::<_, io::Error>(stream)))
