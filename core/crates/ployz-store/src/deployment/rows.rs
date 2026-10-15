@@ -336,8 +336,7 @@ pub struct RowTracker {
 impl RowTracker {
     /// The rows of `snapshot` whose state changed since the last snapshot.
     pub fn changes(&mut self, snapshot: &[OperationRow]) -> Vec<ServerProgress> {
-        let mut grouped: BTreeMap<Key, (String, Vec<(&OperationStatus, bool)>, Option<bool>)> =
-            BTreeMap::new();
+        let mut grouped = BTreeMap::<Key, (String, Vec<_>, Option<bool>)>::new();
         self.failed.clear();
         for row in snapshot {
             let Some(service) = row.service_name() else {
@@ -447,16 +446,19 @@ fn state(
     container: bool,
     serving: bool,
 ) -> RowState {
-    let (mut failed, mut running, mut switching, mut pending, mut completed) =
-        (None, None, None, 0, 0);
-    for (status, _) in statuses {
+    let (mut failed, mut running, mut switching, mut pending, mut unstarted, mut completed) =
+        (None, None, None, 0, 0, 0);
+    for (status, starts) in statuses {
         match status {
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
             OperationStatus::Running {
                 phase: phase @ OperationPhase::WaitingForSwitch { .. },
             } => switching = switching.or(Some(phase)),
             OperationStatus::Running { phase } => running = running.or(Some(phase)),
-            OperationStatus::Pending => pending += 1,
+            OperationStatus::Pending => {
+                pending += 1;
+                unstarted += usize::from(*starts);
+            }
             OperationStatus::Completed => completed += 1,
             OperationStatus::Unexecuted => {}
         }
@@ -481,7 +483,7 @@ fn state(
     if let Some(phase) = switching {
         // A Server is ready for the switch once each of its new Containers is.
         return RowState::Running {
-            phase: if pending == 0 {
+            phase: if unstarted == 0 {
                 phase.into()
             } else {
                 RowPhase::Starting
