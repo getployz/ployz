@@ -756,6 +756,45 @@ async fn a_lost_publish_reply_with_no_read_back_ends_the_service_unconfirmed() {
 }
 
 #[tokio::test]
+async fn a_cancel_before_the_publish_is_sent_ends_the_service_old() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![stop(&machine, &old)];
+    let cancellation = CancellationToken::new();
+    let row = ServingPointer {
+        deploy: DeploymentLogId::parse("older").unwrap(),
+        containers: vec![old],
+        previous: None,
+        retiring: Vec::new(),
+        deciding: None,
+    };
+    let client = Scripted {
+        cancel_on: Some((Call::Stop(machine, old), cancellation.clone())),
+        ..Scripted::new(vec![ok(Call::Stop(machine, old))])
+    };
+    client.pointers.lock().unwrap().insert(api(), row);
+    let mut groups = scale_down_groups(&[]);
+    groups.truncate(1);
+    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Step::Serial(0)];
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups);
+
+    let outcome =
+        super::super::execute_operation_sequence(&plan, &run_id(), &client, &cancellation, None)
+            .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(outcome.services()).unwrap(),
+        serde_json::json!([{"service": "api", "result": "old"}])
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_publish_with_no_reply_keeps_its_copies_while_the_row_reads_unchanged() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];

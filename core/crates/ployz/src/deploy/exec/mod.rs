@@ -796,6 +796,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let new = started.entry(group).or_default();
                 let result = match result {
                     Ok(publication) => Ok(publication),
+                    Err(ExecutionError::Cancelled) => Err(ExecutionError::Cancelled),
                     Err(_) if publish_landed(client, &service, &pointer).await => {
                         Ok(ServingPointerPublication::Published)
                     }
@@ -825,7 +826,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             error,
                             compensation: None,
                         });
-                        schedule.apply(Event::PublishUnconfirmed(group));
+                        schedule.apply(if unread.contains(&group) {
+                            Event::PublishUnconfirmed(group)
+                        } else {
+                            Event::PublishFailed(group)
+                        });
                     }
                 }
             }

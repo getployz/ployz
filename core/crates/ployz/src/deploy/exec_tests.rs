@@ -143,6 +143,8 @@ struct Scripted {
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     cancel_on_prepare: Option<CancellationToken>,
+    /// This call cancels the Deploy once it is made.
+    cancel_on: Option<(Call, CancellationToken)>,
     runs_global: bool,
     pull_error: Option<RpcError>,
     pulled: Mutex<BTreeSet<MachineId>>,
@@ -182,6 +184,7 @@ impl Scripted {
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
+            cancel_on: None,
             runs_global: false,
             pull_error: None,
             pulled: Mutex::new(BTreeSet::new()),
@@ -338,6 +341,11 @@ impl MachineOperations for Scripted {
         };
         if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
             stall.release_on_first_start().await;
+        }
+        if let Some((at, cancel)) = &self.cancel_on
+            && *at == call
+        {
+            cancel.cancel();
         }
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let present = |container_id: &ContainerId| {
