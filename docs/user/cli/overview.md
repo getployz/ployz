@@ -111,8 +111,8 @@ Name a page instead to print it whole, as Markdown: `ployz docs services/domains
 `anchor` and `excerpt`, and a page returns its `content`. Your coding agent gets the same search
 as the `docs` tool from `ployz mcp`.
 
-A command's `--help` ends with the page that shows it: `ployz config put --help` ends with
-`Docs: ployz docs services/configs.md`.
+When a page shows a command, its `--help` ends with that page: `ployz config put --help` ends
+with `Docs: ployz docs services/configs.md`.
 
 ## Commands from Ployz Cloud
 
