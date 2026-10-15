@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type RegisterRequest } from "@ployz/sdk";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
@@ -204,27 +204,66 @@ export const resetPendingOrganizationEnrollment = Effect.fn(
   return yield* resetPendingEnrollment(authorization.organization.id);
 });
 
-const verifyEnrollmentToken = Effect.fn("MachineEnrollment.verifyToken")(
+/** A live token and the Machine identity that claimed it, if one has. */
+const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
   function* (token: string) {
     const { drizzle } = yield* Database;
-    const loaded = yield* drizzle
+    const [row] = yield* drizzle
       .select({
         organizationId: schemaMachineEnrollmentToken.organizationId,
-        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+        claimedMachineId: schemaMachineEnrollmentToken.claimedMachineId,
+        claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
       })
       .from(schemaMachineEnrollmentToken)
-      .where(
-        eq(
-          schemaMachineEnrollmentToken.tokenHash,
-          hashEnrollmentToken(token),
-        ),
-      )
+      .where(and(
+        eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
+        gt(schemaMachineEnrollmentToken.expiresAt, sql`now()`),
+      ))
       .limit(1);
-    const row = loaded[0];
-    if (!row || row.expiresAt.getTime() <= Date.now()) {
-      return yield* new Unauthorized();
+    if (!row) return yield* new Unauthorized();
+    return row;
+  },
+);
+
+/** Publication and completion belong to the one Machine that claimed the token. */
+const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
+  function* (token: string, machineId: MachineId) {
+    const row = yield* loadEnrollmentToken(token);
+    if (row.claimedMachineId === null || row.claimedPublicKey === null) return yield* new Unauthorized();
+    if (row.claimedMachineId !== machineId) {
+      return yield* new Conflict({ message: "The Machine does not own this enrollment attempt." });
     }
-    return { organizationId: row.organizationId };
+    return { organizationId: row.organizationId, claimedPublicKey: row.claimedPublicKey };
+  },
+);
+
+/**
+ * Binds the token to one Machine identity before it hands out the Pairing secret. The same identity
+ * may claim again to resume; a failed enrollment keeps the token spent.
+ */
+const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
+  function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string }) {
+    const { drizzle } = yield* Database;
+    const [claimed] = yield* drizzle.update(schemaMachineEnrollmentToken)
+      .set({
+        claimedMachineId: identity.machineId,
+        claimedPublicKey: identity.publicKey,
+        claimedAt: sql`coalesce(${schemaMachineEnrollmentToken.claimedAt}, now())`,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
+        gt(schemaMachineEnrollmentToken.expiresAt, sql`now()`),
+        or(
+          isNull(schemaMachineEnrollmentToken.claimedMachineId),
+          and(
+            eq(schemaMachineEnrollmentToken.claimedMachineId, identity.machineId),
+            eq(schemaMachineEnrollmentToken.claimedPublicKey, identity.publicKey),
+          ),
+        ),
+      ))
+      .returning({ organizationId: schemaMachineEnrollmentToken.organizationId });
+    if (!claimed) return yield* new Unauthorized();
   },
 );
 
@@ -292,7 +331,7 @@ export const reserveEnrollmentAssignment = Effect.fn(
 });
 
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
-  function* (input: { organizationId: string; publicKey: string; machineId: MachineId }) {
+  function* (input: { token: string; organizationId: string; publicKey: string; machineId: MachineId }) {
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const secret = randomSecret("ppair_");
@@ -312,6 +351,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             organizationId: schemaOrganizationPairing.organizationId,
           });
         if (claimed) {
+          yield* claimEnrollmentToken(input.token, input);
           return {
             kind: "initialize" as const,
             resumed: false,
@@ -336,9 +376,11 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
         if (current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
+          yield* claimEnrollmentToken(input.token, input);
           return { kind: "initialize" as const, resumed: true, pairing };
         }
         if (current.founderMachineId) {
+          yield* claimEnrollmentToken(input.token, input);
           return { kind: "ready" as const, pairing };
         }
         return { kind: "pending" as const, fresh: foundingClaimFresh(current) };
@@ -350,8 +392,13 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
-    const token = yield* verifyEnrollmentToken(input.token);
+    const token = yield* loadEnrollmentToken(input.token);
+    if (token.claimedMachineId !== null
+      && (token.claimedMachineId !== input.identity.machineId || token.claimedPublicKey !== input.identity.publicKey)) {
+      return yield* new Unauthorized();
+    }
     const state = yield* claimOrLoadEnrollment({
+      token: input.token,
       organizationId: token.organizationId,
       publicKey: input.identity.publicKey,
       machineId: input.identity.machineId,
@@ -411,17 +458,24 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   },
 );
 
+/** `machineId` enrolled in this attempt under the WireGuard key that claimed the token. */
 const requireEnrollmentMachine = Effect.fn("MachineEnrollment.requireMachine")(function* (
-  organizationId: string, pairing: PairingRow, secret: string, machineId: MachineId,
+  organizationId: string, pairing: PairingRow, secret: string, machineId: MachineId, claimedPublicKey: string,
 ) {
-  if (pairing.founderClaimMachineId === machineId) return;
+  const notOwned = new Conflict({ message: "The Machine does not own this enrollment attempt." });
+  if (pairing.founderClaimMachineId === machineId) {
+    if (pairing.founderPublicKey !== claimedPublicKey) return yield* notOwned;
+    return;
+  }
   const { drizzle } = yield* Database;
   const [allocation] = yield* drizzle.select().from(enrollmentAllocation).where(and(
     eq(enrollmentAllocation.organizationId, organizationId),
     eq(enrollmentAllocation.clusterKey, hashEnrollmentToken(secret)),
   ));
-  if (!pairing.founderMachineId || !allocation?.assignments.some((assignment) => assignment.machine.id === machineId)) {
-    return yield* new Conflict({ message: "The Machine does not own this enrollment attempt." });
+  const assignment = allocation?.assignments.find((saved) => saved.machine.id === machineId);
+  if (!pairing.founderMachineId || !assignment
+    || Buffer.from(assignment.machine.public_key).toString("base64") !== claimedPublicKey) {
+    return yield* notOwned;
   }
 });
 
@@ -431,12 +485,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     if (input.capability.length === 0 || input.capability.length > MANAGEMENT_CAPABILITY_LENGTH) {
       return yield* new Validation({ message: "Invalid Machine connection capability." });
     }
-    const token = yield* verifyEnrollmentToken(input.token);
+    const token = yield* requireTokenClaimedBy(input.token, input.machineId);
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const managementIdentity = managementIdentityOf(input.capability);
     const publish = (expectedIv?: string) => database.transaction(Effect.gen(function* () {
-      yield* verifyEnrollmentToken(input.token);
+      yield* requireTokenClaimedBy(input.token, input.machineId);
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)
@@ -448,7 +502,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       if (!credentialsMatch(secret, input.pairingCredential)) {
         return yield* new Conflict({ message: "The founding attempt is no longer current." });
       }
-      yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId);
+      yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId, token.claimedPublicKey);
       const scope = and(
         eq(organizationMachine.organizationId, token.organizationId),
         eq(organizationMachine.machineId, input.machineId),
@@ -461,6 +515,10 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
       if (saved?.clusterKey === clusterKey) {
         const previous = yield* decryptPairingSecret(saved.encryptedCapability);
         if (credentialsMatch(previous, input.capability)) return null;
+        // A Machine keeps its management key across rotations; a new key would hand Cloud's credential to another endpoint.
+        if (managementIdentityOf(previous) !== managementIdentity) {
+          return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again." });
+        }
         if (expectedIv === undefined) return saved.encryptedCapability.iv;
         yield* drizzle.update(organizationMachine).set({
           encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null, updatedAt: new Date(),
@@ -508,7 +566,7 @@ export const completeMachineEnrollment = Effect.fn(
       });
     }
     const machineId = parsed.value;
-    const token = yield* verifyEnrollmentToken(input.token);
+    const token = yield* requireTokenClaimedBy(input.token, machineId);
     const loaded = yield* loadPairingRow(token.organizationId);
     const row = loaded[0];
     if (!row || row.removalStartedAt !== null) {
@@ -522,7 +580,7 @@ export const completeMachineEnrollment = Effect.fn(
         message: "The founding attempt is no longer current.",
       });
     }
-    yield* requireEnrollmentMachine(token.organizationId, row, pairing.secret, machineId);
+    yield* requireEnrollmentMachine(token.organizationId, row, pairing.secret, machineId, token.claimedPublicKey);
     const { drizzle } = yield* Database;
     const [candidate] = yield* drizzle.select().from(organizationMachine).where(and(
       eq(organizationMachine.organizationId, token.organizationId),
@@ -547,7 +605,7 @@ export const completeMachineEnrollment = Effect.fn(
         if (!current || current.removalStartedAt !== null || !credentialsMatch(yield* decryptPairingSecret(current.encryptedPairingSecret), pairing.secret)) {
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
-        yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId);
+        yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId, token.claimedPublicKey);
       }));
       yield* recordJoined(input.token, machineId, { founder: false });
       return { machineId };
