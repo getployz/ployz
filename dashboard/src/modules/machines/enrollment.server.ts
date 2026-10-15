@@ -204,7 +204,7 @@ export const resetPendingOrganizationEnrollment = Effect.fn(
   return yield* resetPendingEnrollment(authorization.organization.id);
 });
 
-/** A live token and the Machine identity that claimed it, if one has. */
+/** A live token, the Machine identity that claimed it, if one has, and the Machine that joined through it. */
 const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
   function* (token: string) {
     const { drizzle } = yield* Database;
@@ -213,6 +213,7 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
         organizationId: schemaMachineEnrollmentToken.organizationId,
         claimedMachineId: schemaMachineEnrollmentToken.claimedMachineId,
         claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
+        joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
       })
       .from(schemaMachineEnrollmentToken)
       .where(and(
@@ -225,7 +226,10 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
   },
 );
 
-/** Publication and completion belong to the one Machine that claimed the token. */
+/**
+ * Completion belongs to the one Machine that claimed the token, and may repeat after the token is spent:
+ * it hands out nothing.
+ */
 const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
   function* (token: string, machineId: MachineId) {
     const row = yield* loadEnrollmentToken(token);
@@ -233,13 +237,22 @@ const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
     if (row.claimedMachineId !== machineId) {
       return yield* new Conflict({ message: "The Machine does not own this enrollment attempt." });
     }
-    return { organizationId: row.organizationId, claimedPublicKey: row.claimedPublicKey };
+    return { organizationId: row.organizationId, claimedPublicKey: row.claimedPublicKey, spent: row.joinedMachineId !== null };
+  },
+);
+
+/** Publication also belongs to the claiming Machine, but only until enrollment completes. */
+const requireUnspentClaim = Effect.fn("MachineEnrollment.requireUnspentClaim")(
+  function* (token: string, machineId: MachineId) {
+    const claim = yield* requireTokenClaimedBy(token, machineId);
+    if (claim.spent) return yield* new Unauthorized();
+    return claim;
   },
 );
 
 /**
  * Binds the token to one Machine identity before it hands out the Pairing secret. The same identity
- * may claim again to resume; a failed enrollment keeps the token spent.
+ * may claim again to resume until enrollment completes; a failed enrollment keeps the token spent.
  */
 const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
   function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string }) {
@@ -254,6 +267,7 @@ const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
       .where(and(
         eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
         gt(schemaMachineEnrollmentToken.expiresAt, sql`now()`),
+        isNull(schemaMachineEnrollmentToken.joinedMachineId),
         or(
           isNull(schemaMachineEnrollmentToken.claimedMachineId),
           and(
@@ -393,8 +407,8 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
   function* (input: { token: string; identity: EnrollmentIdentity }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
     const token = yield* loadEnrollmentToken(input.token);
-    if (token.claimedMachineId !== null
-      && (token.claimedMachineId !== input.identity.machineId || token.claimedPublicKey !== input.identity.publicKey)) {
+    if (token.joinedMachineId !== null || (token.claimedMachineId !== null
+      && (token.claimedMachineId !== input.identity.machineId || token.claimedPublicKey !== input.identity.publicKey))) {
       return yield* new Unauthorized();
     }
     const state = yield* claimOrLoadEnrollment({
@@ -485,12 +499,12 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     if (input.capability.length === 0 || input.capability.length > MANAGEMENT_CAPABILITY_LENGTH) {
       return yield* new Validation({ message: "Invalid Machine connection capability." });
     }
-    const token = yield* requireTokenClaimedBy(input.token, input.machineId);
+    const token = yield* requireUnspentClaim(input.token, input.machineId);
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const managementIdentity = managementIdentityOf(input.capability);
     const publish = (expectedIv?: string) => database.transaction(Effect.gen(function* () {
-      yield* requireTokenClaimedBy(input.token, input.machineId);
+      yield* requireUnspentClaim(input.token, input.machineId);
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)

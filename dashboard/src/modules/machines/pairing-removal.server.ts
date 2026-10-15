@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
-import { and, eq } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -135,6 +135,10 @@ export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
         eq(organizationMachine.organizationId, organizationId),
         eq(organizationMachine.clusterKey, generation),
         eq(organizationMachine.machineId, input.machineId),
+      ));
+      yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
+        eq(machineEnrollmentToken.organizationId, organizationId),
+        or(eq(machineEnrollmentToken.claimedMachineId, input.machineId), eq(machineEnrollmentToken.joinedMachineId, input.machineId)),
       ));
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } as const;
       if (input.removal === "membership") {

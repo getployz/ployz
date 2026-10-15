@@ -33,7 +33,7 @@ import {
 } from "#/modules/machines/enrollment.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import type { SetupReport } from "#/modules/machines/enrollment";
-import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { asTestDouble } from "#/lib/test-double";
 import { readCollection } from "#/collections/read.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
@@ -149,6 +149,7 @@ function enrollmentTestClient(
   return {
     inngest,
     disable: (id = organizationId) => runtime.runPromise(disableOrganizationPairing(id)),
+    dropRemoved: (input: Parameters<typeof dropRemovedServer>[0]) => runtime.runPromise(dropRemovedServer(input)),
     publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
       Effect.result(publishMachineEnrollment(input)),
     ),
@@ -583,11 +584,10 @@ describe("organization enrollment coordinator", () => {
     expect(await fake.coordinator.resetPendingEnrollment(organizationId)).toMatchObject({ failure: { _tag: "Conflict" } });
   });
 
-  it.each([false, true])("refreshes credentials after a lost acknowledgement (completed: %s)", async (completed) => {
+  it("refreshes credentials after a lost acknowledgement", async () => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
     await fake.coordinator.publish({ ...attempt, capability });
-    if (completed) await fake.coordinator.completeFounding(attempt);
     expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(0) }))
       .toMatchObject({ success: { kind: "initialize", resumed: true } });
     const before = await harness.pool.query("select cluster_key, is_dial_entry from organization_machine");
@@ -986,6 +986,53 @@ describe("organization enrollment coordinator", () => {
     }
     expect((await harness.pool.query("select * from organization_machine")).rowCount).toBe(0);
     expect(fake.connected).toEqual([]);
+  });
+
+  async function joinedServer(fake: ReturnType<typeof fakeSession>, founder: Awaited<ReturnType<typeof readyFounder>>, index: number) {
+    const token = await issueToken();
+    expect(await fake.coordinator.enroll({ token, identity: identity(index) })).toMatchObject({ success: { kind: "join" } });
+    const attempt = { token, machineId: identity(index).machineId, pairingCredential: founder.pairingCredential };
+    expect(await fake.coordinator.publish({ ...attempt, capability: keyed(index) })).toMatchObject({ success: {} });
+    return attempt;
+  }
+
+  it("spends a token for good once its Machine completes enrollment, keeping only the completion retry", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await readyFounder(fake);
+    const joiner = await joinedServer(fake, founder, 1);
+    expect(await fake.coordinator.completeFounding(joiner)).toMatchObject({ success: { machineId: joiner.machineId } });
+    const saved = await harness.pool.query("select * from organization_machine order by machine_id");
+    const assignments = fake.published.length;
+    for (const [attempt, index] of [[founder, 0], [joiner, 1]] as const) {
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(index) }))
+        .toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.publish({ ...attempt, capability: "ployz1:rotated" }))
+        .toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.completeFounding({ ...attempt, stage: "publish", capability: "ployz1:rotated" }))
+        .toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+    }
+    expect((await harness.pool.query("select * from organization_machine order by machine_id")).rows).toEqual(saved.rows);
+    expect(fake.published).toHaveLength(assignments);
+  });
+
+  it("refuses a removed Server's token for enrollment, publication and completion", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await readyFounder(fake);
+    const joiner = await joinedServer(fake, founder, 1);
+    await fake.coordinator.completeFounding(joiner);
+    const unfinished = await joinedServer(fake, founder, 2);
+    const generation = hashEnrollmentToken(founder.pairingCredential);
+    for (const [attempt, index] of [[founder, 0], [unfinished, 2]] as const) {
+      expect(await fake.coordinator.dropRemoved({ organizationId, machineId: attempt.machineId, generation, removal: "reset" }))
+        .toEqual({ kind: "others_remain" });
+      expect(await fake.coordinator.enroll({ token: attempt.token, identity: identity(index) }))
+        .toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0x77) }))
+        .toMatchObject({ failure: { _tag: "Unauthorized" } });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    }
+    expect((await harness.pool.query("select machine_id from organization_machine")).rows).toEqual([{ machine_id: joiner.machineId }]);
   });
 
   it("keeps pairing decrypt failures in the typed Effect channel", async () => {
