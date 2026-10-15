@@ -87,6 +87,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0017_pull_request_standing",
         Step::Sql(include_str!("migrations/0017_pull_request_standing.sql")),
     ),
+    (
+        "0018_deployment_timing",
+        Step::Sql(include_str!("migrations/0018_deployment_timing.sql")),
+    ),
 ];
 
 enum Step {
