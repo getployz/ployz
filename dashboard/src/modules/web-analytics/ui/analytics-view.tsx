@@ -1,11 +1,13 @@
 import { Link } from "@tanstack/react-router";
 import { ChartLineIcon, XIcon } from "lucide-react";
+import { useDeferredValue } from "react";
 import { MetricChart, useMetricCursor } from "#/components/metrics/metric-chart";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
+import { cn } from "#/lib/utils";
 import { localDay } from "../local-time";
 import type { Filter } from "../model";
 import {
@@ -30,9 +32,14 @@ type AnalyticsPageProps = {
   onSearch: (search: AnalyticsSearch) => void;
 };
 
-/** The Analytics place: the plan and the Environment's switch decide whether it reads anything. */
+/**
+ * The Analytics place: the plan and the Environment's switch decide whether it reads anything. A new range or filter
+ * keeps the figures shown, dimmed, until its own arrive.
+ */
 export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
-  const view = useAnalyticsView(scope, search.range, search.page);
+  const shownRange = useDeferredValue(search.range);
+  const shownPage = useDeferredValue(search.page);
+  const view = useAnalyticsView(scope, shownRange, shownPage);
   if (view.gate === "unpaid") return <Unpaid organizationSlug={scope.organizationSlug} />;
   if (view.gate === "self-host-off") return <SelfHostOff />;
   if (view.gate === "site-off") return <SiteOff scope={scope} />;
@@ -53,17 +60,19 @@ export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
         {filter ? <PageFilterChip filter={filter} onFilter={(page) => onSearch({ range: search.range, ...(page && { page }) })} /> : null}
         {view.clamped ? <span className="text-xs text-muted-foreground">Starts at the oldest day kept</span> : null}
       </div>
-      <OverviewCards overview={view.overview} />
-      <VisitorsChart view={view} />
-      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-        <Breakdown title="Pages" rows={view.pages} onPick={(value) => onSearch({ ...search, page: pageFilterParam({ key: "page", op: "eq", value }) })} />
-        <Breakdown title="Sources" rows={view.sources} />
-        <EntryPages rows={view.entryPages} />
-        <Breakdown title="Campaigns" rows={view.campaigns} />
-        <Breakdown title="Languages" rows={view.languages} />
-        <Breakdown title="Hosts" rows={view.hosts} />
+      <div className={cn("flex min-w-0 flex-col gap-4 transition-opacity", (shownRange !== search.range || shownPage !== search.page) && "opacity-50")}>
+        <OverviewCards overview={view.overview} />
+        <VisitorsChart view={view} />
+        <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+          <Breakdown title="Pages" rows={view.pages} onPick={(value) => onSearch({ ...search, page: pageFilterParam({ key: "page", op: "eq", value }) })} />
+          <Breakdown title="Sources" rows={view.sources} />
+          <EntryPages rows={view.entryPages} />
+          <Breakdown title="Campaigns" rows={view.campaigns} />
+          <Breakdown title="Languages" rows={view.languages} />
+          <Breakdown title="Hosts" rows={view.hosts} />
+        </div>
+        <AnalyticsGoals scope={scope} goals={view.goals} visitors={view.overview.visitors} />
       </div>
-      <AnalyticsGoals scope={scope} goals={view.goals} visitors={view.overview.visitors} />
     </div>
   );
 }
