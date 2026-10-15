@@ -92,7 +92,7 @@ fn node(node: &NodeOutcome) -> Value {
 fn progress(view: &DeploymentView) -> Value {
     let rows = || view.nodes.iter().flat_map(|node| &node.rows);
     let phase = rows().find_map(|row| match &row.state {
-        RowState::Running { phase } => Some(*phase),
+        RowState::Running { phase, .. } => Some(*phase),
         RowState::Pending
         | RowState::Completed
         | RowState::Failed { .. }

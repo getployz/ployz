@@ -99,7 +99,19 @@ pub(crate) struct GraphService {
     pub total: usize,
     /// Servers stopping or removing an old Container.
     pub draining: usize,
+    pub work: Work,
     pub machines: BTreeSet<MachineId>,
+}
+
+/// What a Service row's running work does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Work {
+    /// New Containers start.
+    Start,
+    /// Old Containers go after the new ones serve.
+    Retire,
+    /// Nothing starts; Containers only stop and go.
+    Remove,
 }
 
 impl GraphService {
@@ -121,8 +133,22 @@ impl GraphService {
 
     fn word(&self, state: &State) -> String {
         let word = match state {
+            State::Pending if self.work == Work::Remove => "waiting to remove",
             State::Pending => "waiting",
-            State::Running(_) => "booting",
+            State::Running(_) if self.work == Work::Remove => state.word(),
+            State::Running(_) if self.work == Work::Retire => "switched",
+            State::Running(phase) => match phase {
+                RowPhase::StoppingContainer => "stopping old",
+                RowPhase::RemovingContainer => "removing old",
+                RowPhase::RemovingVolume => "removing volume",
+                RowPhase::WaitingForHealth => "waiting for health",
+                RowPhase::Compensating => "rolling back",
+                RowPhase::Starting
+                | RowPhase::CreatingContainer
+                | RowPhase::StartingContainer
+                | RowPhase::WaitingForHook => "booting",
+            },
+            State::Completed if self.work == Work::Remove => "removed",
             State::Completed => "switched",
             State::NotAttempted if self.ready == 0 => "not started",
             State::NotAttempted => "stopped",
@@ -135,6 +161,8 @@ impl GraphService {
         };
         if self.total == 0 || (*state == State::NotAttempted && self.ready == 0) {
             word.to_owned()
+        } else if *state == State::Failed {
+            format!("{word} ({}/{} ready)", self.ready, self.total)
         } else {
             format!("{word} {}/{}", self.ready, self.total)
         }
@@ -209,7 +237,7 @@ impl From<&ployz_store::RowState> for State {
     fn from(state: &ployz_store::RowState) -> Self {
         match state {
             ployz_store::RowState::Pending => Self::Pending,
-            ployz_store::RowState::Running { phase } => Self::Running(*phase),
+            ployz_store::RowState::Running { phase, .. } => Self::Running(*phase),
             ployz_store::RowState::Completed => Self::Completed,
             ployz_store::RowState::Failed { .. } => Self::Failed,
             ployz_store::RowState::NotAttempted => Self::NotAttempted,
@@ -457,6 +485,10 @@ fn drive(
                 }
             }
             Ok(Message::Finish(final_frame, disposition)) => {
+                let width = match &backend {
+                    Backend::Interactive(live) => (live.size)().0,
+                    Backend::Plain => usize::MAX,
+                };
                 drop(backend);
                 let _ = finish(
                     writer,
@@ -464,6 +496,7 @@ fn drive(
                     &final_frame,
                     disposition,
                     interactive,
+                    width,
                     color,
                 );
                 let _ = writer.flush();
@@ -560,7 +593,7 @@ fn word(row: &Row) -> String {
     }
 }
 
-fn row_text(row: &Row, frame: &Frame, tick: usize) -> String {
+fn row_text(row: &Row, frame: &Frame, tick: usize, width: usize) -> String {
     let mark = match &row.subject {
         Subject::Service(graph) => graph.mark(&row.state),
         Subject::ServiceOnServer { .. }
@@ -579,31 +612,29 @@ fn row_text(row: &Row, frame: &Frame, tick: usize) -> String {
         .as_deref()
         .map(|detail| format!(" ({detail})"))
         .unwrap_or_default();
-    format!(
-        "{mark} {}  {}{detail}{elapsed}",
-        label(&row.subject, frame),
-        word(row)
-    )
+    let rest = format!("  {}{detail}{elapsed}", word(row));
+    let room = width.saturating_sub(mark.width() + 1 + rest.width()).max(1);
+    format!("{mark} {}{rest}", clip(&label(&row.subject, frame), room))
 }
 
-/// Lines for `others` in the caller's order, then every graph Service in the
-/// order the Deploy starts them: by depth under a header per depth, each with
-/// a `draining old` line while old Containers stop.
 fn body<'a>(
     frame: &'a Frame,
     others: impl IntoIterator<Item = &'a Row>,
+    shown: impl Fn(&Row) -> bool,
     tick: usize,
+    width: usize,
 ) -> Vec<(String, Tone)> {
     let mut lines: Vec<_> = others
         .into_iter()
-        .map(|row| (row_text(row, frame, tick), row.state.tone()))
+        .map(|row| (row_text(row, frame, tick, width), row.state.tone()))
         .collect();
     let mut graph: Vec<_> = frame
         .rows
         .iter()
         .filter_map(|row| match &row.subject {
-            Subject::Service(graph) => Some((graph, row)),
-            Subject::ServiceOnServer { .. }
+            Subject::Service(graph) if shown(row) => Some((graph, row)),
+            Subject::Service(_)
+            | Subject::ServiceOnServer { .. }
             | Subject::Unlocated(_)
             | Subject::Operation { .. }
             | Subject::Node { .. } => None,
@@ -619,7 +650,7 @@ fn body<'a>(
             }
         }
         lines.push((
-            format!("  {}", row_text(row, frame, tick)),
+            format!("  {}", row_text(row, frame, tick, width.saturating_sub(2))),
             row.state.tone(),
         ));
         if let Some(draining) = graph.draining_line() {
@@ -690,15 +721,32 @@ pub(crate) fn live_lines(
             || vec![clip(&frame.title, width)],
             |row| {
                 vec![paint(
-                    &clip(&row_text(row, frame, tick), width),
+                    &clip(&row_text(row, frame, tick, width), width),
                     row.state.tone(),
                     color,
                 )]
             },
         );
     }
-    let body = body(frame, rows.into_iter().filter(ungraphed), tick);
-    let overflow = body.len() + 1 > height;
+    let others: Vec<_> = rows.into_iter().filter(ungraphed).collect();
+    let mut body = body(frame, others.iter().copied(), |_| true, tick, width);
+    let mut dropped = 0;
+    if body.len() + 1 > height {
+        let settled = |row: &Row| row.state != State::Failed && !row.state.active();
+        dropped = frame
+            .rows
+            .iter()
+            .filter(|row| !ungraphed(row) && settled(row))
+            .count();
+        body = self::body(
+            frame,
+            others.iter().copied(),
+            |row| !settled(row),
+            tick,
+            width,
+        );
+    }
+    let overflow = dropped > 0 || body.len() + 1 > height;
     let available = height.saturating_sub(if overflow && height > 2 { 2 } else { 1 });
     let mut lines = vec![clip(
         &format!(
@@ -709,7 +757,7 @@ pub(crate) fn live_lines(
         ),
         width,
     )];
-    let hidden = body.len().saturating_sub(available);
+    let hidden = dropped + body.len().saturating_sub(available);
     lines.extend(
         body.into_iter()
             .take(available)
@@ -849,6 +897,7 @@ fn finish(
     frame: &Frame,
     disposition: Disposition,
     interactive: bool,
+    width: usize,
     color: bool,
 ) -> io::Result<()> {
     if matches!(disposition, Disposition::UpToDate) {
@@ -856,7 +905,14 @@ fn finish(
     }
     if interactive {
         writeln!(writer, "{}", frame.title)?;
-        for (text, tone) in body(frame, frame.rows.iter().filter(ungraphed), 0) {
+        let width = width.saturating_sub(1);
+        for (text, tone) in body(
+            frame,
+            frame.rows.iter().filter(ungraphed),
+            |_| true,
+            0,
+            width,
+        ) {
             writeln!(writer, "{}", paint(&text, tone, color))?;
         }
         for notice in notices(frame) {
@@ -905,7 +961,15 @@ fn finish(
         })
         .collect();
     if !servers.is_empty() {
-        counts.push(format!("across {} servers", servers.len()));
+        counts.push(format!(
+            "across {} {}",
+            servers.len(),
+            if servers.len() == 1 {
+                "server"
+            } else {
+                "servers"
+            }
+        ));
     }
     if !counts.is_empty() {
         let summary = counts.join(" · ");

@@ -20,19 +20,54 @@ fn spec() -> ResolvedServiceSpec {
         .unwrap()
 }
 fn operation(index: u32, machine: MachineId, status: OperationStatus) -> OperationRow {
-    OperationRow {
+    planned(
         index,
-        machine_id: machine,
-        machine_name: Some(MachineName::parse("edge").unwrap()),
-        service_name: Some(ServiceName::parse("web").unwrap()),
-        display_name: None,
-        operation: DeployOperation::RunContainer {
+        DeployOperation::RunContainer {
             machine_id: machine,
             spec: spec(),
             skip_health_monitor: false,
         },
         status,
+    )
+}
+fn planned(index: u32, operation: DeployOperation, status: OperationStatus) -> OperationRow {
+    OperationRow {
+        index,
+        machine_id: operation.machine_id(),
+        machine_name: Some(MachineName::parse("edge").unwrap()),
+        service_name: Some(ServiceName::parse("web").unwrap()),
+        display_name: None,
+        operation,
+        status,
     }
+}
+fn old(hex: char) -> ployz_core::ContainerId {
+    ployz_core::ContainerId::parse(hex.to_string().repeat(64)).unwrap()
+}
+fn replace(machine: MachineId, order: UpdateOrder) -> DeployOperation {
+    let mut spec = spec();
+    spec.update.order = order;
+    DeployOperation::ReplaceContainer(ployz_core::ReplacementOperation {
+        machine_id: machine,
+        old_container_id: old('f'),
+        spec,
+        skip_health_monitor: false,
+    })
+}
+fn remove(machine: MachineId) -> DeployOperation {
+    DeployOperation::RemoveContainer {
+        machine_id: machine,
+        container_id: old('e'),
+        purpose: ployz_core::RemoveContainerPurpose::Rollout,
+    }
+}
+fn running(phase: OperationPhase) -> OperationStatus {
+    OperationStatus::Running { phase }
+}
+fn tracked(operations: Vec<OperationRow>) -> Vec<String> {
+    let mut preview = DeployPreview::new(operations, Vec::new(), Namespace::parse("shop").unwrap());
+    preview.depths = [(ServiceName::parse("web").unwrap(), 0)].into();
+    lines(&Direct::new(&preview, "Deploying shop".into()).frame())
 }
 fn denied() -> ExecutionError {
     ExecutionError::Machine {
@@ -159,10 +194,16 @@ fn row_state(state: &str) -> RowState {
     match state {
         "pending" => RowState::Pending,
         "booting" => RowState::Running {
-            phase: RowPhase::WaitingForHealth,
+            phase: RowPhase::StartingContainer,
+            serving: false,
         },
-        "draining" => RowState::Running {
-            phase: RowPhase::StoppingContainer,
+        "health" => RowState::Running {
+            phase: RowPhase::WaitingForHealth,
+            serving: false,
+        },
+        "compensating" => RowState::Running {
+            phase: RowPhase::Compensating,
+            serving: false,
         },
         "completed" => RowState::Completed,
         "failed" => RowState::Failed {
@@ -196,6 +237,7 @@ fn graph_frame(groups: &[ServiceGroup], services: &[(&str, &[&str])]) -> Frame {
                         machine: MachineId::random(),
                         state,
                         timing: Timing::Unavailable,
+                        starts: true,
                     }),
                 )
             })
@@ -319,7 +361,7 @@ fn a_failure_leaves_every_later_service_not_started() {
             "depth 0",
             "  ✔ db  switched 1/1",
             "depth 1",
-            "  ✘ api  failed 1/2",
+            "  ✘ api  failed (1/2 ready)",
             "depth 2",
             "  ⊘ web  not started",
             "  ⊘ worker  not started",
@@ -328,24 +370,118 @@ fn a_failure_leaves_every_later_service_not_started() {
 }
 
 #[test]
-fn old_containers_draining_get_a_line_under_their_service() {
-    let frame = graph_frame(
-        &[group("db", &[]), group("app", &["db"])],
-        &[
-            ("db", &["completed", "draining"]),
-            ("app", &["completed", "draining", "draining"]),
-        ],
+fn a_start_first_switch_reads_switched_while_old_containers_drain() {
+    let (one, two) = (MachineId::random(), MachineId::random());
+    let switched = |status| {
+        vec![
+            planned(
+                0,
+                replace(one, UpdateOrder::StartFirst),
+                OperationStatus::Completed,
+            ),
+            planned(
+                1,
+                replace(two, UpdateOrder::StartFirst),
+                OperationStatus::Completed,
+            ),
+            planned(2, remove(two), status),
+        ]
+    };
+    assert_eq!(
+        tracked(switched(running(OperationPhase::RemovingContainer))),
+        ["depth 0", "  ⠋ web  switched 2/2  0.0s", "    draining old"]
     );
     assert_eq!(
-        lines(&frame),
-        [
-            "depth 0",
-            "  ◐ db  booting 1/2",
-            "    draining old",
-            "depth 1",
-            "  ◐ app  booting 1/3",
-            "    draining old (2)",
+        tracked(switched(OperationStatus::Pending)),
+        ["depth 0", "  ⠋ web  switched 2/2  0.0s", "    draining old"]
+    );
+    assert_eq!(
+        tracked(switched(OperationStatus::Completed)),
+        ["depth 0", "  ✔ web  switched 2/2"]
+    );
+}
+
+#[test]
+fn a_start_first_switch_counts_only_servers_that_start_a_container() {
+    let (one, two) = (MachineId::random(), MachineId::random());
+    assert_eq!(
+        tracked(vec![
+            operation(0, one, OperationStatus::Completed),
+            planned(1, remove(two), running(OperationPhase::StoppingContainer)),
+        ]),
+        ["depth 0", "  ⠋ web  switched 1/1  0.0s", "    draining old"]
+    );
+}
+
+#[test]
+fn removal_only_work_reads_removing_then_removed() {
+    let (one, two) = (MachineId::random(), MachineId::random());
+    let removal = |first, second| {
+        vec![
+            planned(0, remove(one), first),
+            planned(1, remove(two), second),
         ]
+    };
+    assert_eq!(
+        tracked(removal(OperationStatus::Pending, OperationStatus::Pending)),
+        ["depth 0", "  · web  waiting to remove 0/2"]
+    );
+    assert_eq!(
+        tracked(removal(
+            running(OperationPhase::StoppingContainer),
+            OperationStatus::Pending
+        )),
+        ["depth 0", "  ⠋ web  stopping 0/2  0.0s"]
+    );
+    assert_eq!(
+        tracked(removal(
+            OperationStatus::Completed,
+            running(OperationPhase::RemovingContainer)
+        )),
+        ["depth 0", "  ◐ web  removing 1/2  0.0s"]
+    );
+    assert_eq!(
+        tracked(removal(
+            OperationStatus::Completed,
+            OperationStatus::Completed
+        )),
+        ["depth 0", "  ✔ web  removed 2/2"]
+    );
+}
+
+#[test]
+fn a_stop_first_replacement_reads_stopping_old_until_its_start_runs() {
+    let machine = MachineId::random();
+    let replacement = |phase| {
+        tracked(vec![planned(
+            0,
+            replace(machine, UpdateOrder::StopFirst),
+            running(phase),
+        )])
+    };
+    assert_eq!(
+        replacement(OperationPhase::StoppingContainer),
+        ["depth 0", "  ⠋ web  stopping old 0/1  0.0s"]
+    );
+    assert_eq!(
+        replacement(OperationPhase::CreatingContainer),
+        ["depth 0", "  ⠋ web  booting 0/1  0.0s"]
+    );
+}
+
+#[test]
+fn rollback_and_health_waits_read_their_own_words_with_the_count() {
+    let groups = [group("web", &[])];
+    assert_eq!(
+        lines(&graph_frame(
+            &groups,
+            &[("web", &["completed", "compensating"])]
+        )),
+        ["depth 0", "  ◐ web  rolling back 1/2"]
+    );
+    assert_eq!(
+        lines(&graph_frame(&groups, &[("web", &["completed", "health"])])),
+        ["depth 0", "  ◐ web  waiting for health 1/2"]
     );
 }
 
@@ -361,7 +497,7 @@ fn a_failure_never_jumps_ahead_of_an_earlier_depth() {
             "depth 0",
             "  · db  waiting 0/1",
             "depth 1",
-            "  ✘ api  failed 0/1",
+            "  ✘ api  failed (0/1 ready)",
         ]
     );
 }

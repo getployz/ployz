@@ -64,7 +64,7 @@ pub use deployment::{
     Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView, DeploymentWarning,
     FailedAt, Failure, IngressAction, IngressFailure, IngressRepair, NodeOutcome, NodeStatus,
     Outcome, RowPhase, RowState, RowTracker, RunEvidence, ServerProgress, ServerRow, Unclaimed,
-    UploadBase, UploadedSource,
+    UploadBase, UploadedSource, starts_container,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,

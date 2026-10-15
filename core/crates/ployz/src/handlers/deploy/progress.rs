@@ -1,6 +1,6 @@
 //! Present the Store's recorded Deployment evidence without new Cluster reads.
 
-use crate::deploy::{Replica, service_row};
+use crate::deploy::{Replica, service_row, starts};
 use crate::failure::Failure;
 use crate::ui::{
     Hint,
@@ -44,6 +44,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             node.rows.iter().map(|row| Replica {
                 machine: row.machine_id,
                 state: &row.state,
+                starts: view
+                    .preview
+                    .as_ref()
+                    .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
                 timing: match (row.started_at, row.finished_at) {
                     (Some(start), Some(end)) => Timing::Finished(Duration::from_secs(
                         u64::try_from(end.saturating_sub(start)).unwrap_or(0),

@@ -4,7 +4,7 @@ use crate::{
     connect::Client,
     failure::Failure,
     ui::progress::{
-        Detail, Diagnostic, Frame, GraphService, LogTail, Row, Run, State, Subject, Timing,
+        Detail, Diagnostic, Frame, GraphService, LogTail, Row, Run, State, Subject, Timing, Work,
     },
 };
 use ployz_core::{
@@ -14,7 +14,7 @@ use ployz_core::{
     ServiceName, StopAttempt,
 };
 use ployz_store::tools::SecretSet;
-use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress};
+use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
@@ -40,61 +40,108 @@ pub(super) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
     depths
 }
 
-/// One Server's recorded work for a Service, for [`service_row`].
 pub(crate) struct Replica<'a> {
     pub machine: MachineId,
     pub state: &'a RowState,
+    pub starts: bool,
     pub timing: Timing,
 }
 
-/// One row for a Service across its Servers: booting while any work runs,
-/// failed once any failed and none runs, switched once all completed, and not
-/// started when the Deploy stopped before any of it ran. A Service with no
-/// recorded work is waiting. While Servers still run after one failed, the row
-/// stays active and its detail counts the failures.
+pub(crate) fn starts(
+    operations: &[OperationRow],
+    service: &ServiceName,
+    machine: MachineId,
+) -> bool {
+    operations.iter().any(|row| {
+        row.machine_id == machine
+            && row.service_name() == Some(service)
+            && starts_container(&row.operation)
+    })
+}
+
+const fn stops_or_removes(phase: RowPhase) -> bool {
+    matches!(
+        phase,
+        RowPhase::StoppingContainer | RowPhase::RemovingContainer | RowPhase::RemovingVolume
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Step {
+    Start,
+    Clear,
+    Retire,
+}
+
 pub(crate) fn service_row<'a>(
     service: QualifiedService,
     depth: Option<u32>,
     replicas: impl IntoIterator<Item = Replica<'a>>,
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
-    let draining = |state: &RowState| {
-        matches!(
-            state,
-            RowState::Running {
-                phase: RowPhase::StoppingContainer | RowPhase::RemovingContainer
-            }
-        )
+    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let work = |replica: &Replica<'_>| match replica.state {
+        RowState::Running { phase, serving } => Some((
+            if *serving || !replica.starts {
+                Step::Retire
+            } else if stops_or_removes(*phase) {
+                Step::Clear
+            } else {
+                Step::Start
+            },
+            *phase,
+        )),
+        RowState::Pending
+        | RowState::Completed
+        | RowState::Failed { .. }
+        | RowState::NotAttempted
+        | RowState::Unknown => None,
     };
     let all = |test: fn(&RowState) -> bool| replicas.iter().all(|replica| test(replica.state));
-    let phases: Vec<_> = replicas
+    let running = replicas
         .iter()
-        .filter_map(|replica| match replica.state {
-            RowState::Running { phase } => Some((draining(replica.state), *phase)),
-            RowState::Pending
-            | RowState::Completed
+        .filter_map(work)
+        .min_by_key(|(work, _)| *work);
+    let counted: Vec<_> = replicas
+        .iter()
+        .filter(|replica| removal || replica.starts)
+        .collect();
+    let ready = counted
+        .iter()
+        .filter(|replica| {
+            matches!(
+                replica.state,
+                RowState::Completed | RowState::Running { serving: true, .. }
+            )
+        })
+        .count();
+    let draining = replicas
+        .iter()
+        .filter(|replica| match replica.state {
+            RowState::Pending => !removal && !replica.starts,
+            RowState::Running { serving, .. } => !removal && (*serving || !replica.starts),
+            RowState::Completed
             | RowState::Failed { .. }
             | RowState::NotAttempted
-            | RowState::Unknown => None,
+            | RowState::Unknown => false,
         })
-        .collect();
-    let running = phases
-        .iter()
-        .find(|(draining, _)| !draining)
-        .or_else(|| phases.first());
+        .count();
+    let old_wait_for_routes = running.is_none() && ready == counted.len() && draining > 0;
     let failed = replicas
         .iter()
         .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
         .count();
     let state = if failed > 0 {
-        running.map_or(State::Failed, |(_, phase)| State::Running(*phase))
+        running.map_or(State::Failed, |(_, phase)| State::Running(phase))
     } else if replicas
         .iter()
         .any(|replica| matches!(replica.state, RowState::Unknown))
     {
         State::Unknown
     } else if let Some((_, phase)) = running {
-        State::Running(*phase)
+        State::Running(phase)
+    } else if old_wait_for_routes {
+        State::Running(RowPhase::RemovingContainer)
     } else if all(|state| matches!(state, RowState::Pending)) {
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) {
@@ -138,15 +185,16 @@ pub(crate) fn service_row<'a>(
         subject: Subject::Service(GraphService {
             service,
             depth,
-            ready: replicas
-                .iter()
-                .filter(|replica| matches!(replica.state, RowState::Completed))
-                .count(),
-            total: replicas.len(),
-            draining: replicas
-                .iter()
-                .filter(|replica| draining(replica.state))
-                .count(),
+            ready,
+            total: counted.len(),
+            draining,
+            work: if removal {
+                Work::Remove
+            } else if old_wait_for_routes || running.is_some_and(|(step, _)| step == Step::Retire) {
+                Work::Retire
+            } else {
+                Work::Start
+            },
             machines: replicas.iter().map(|replica| replica.machine).collect(),
         }),
         detail: (failed > 0 && state.active()).then(|| format!("{failed} failed")),
@@ -220,6 +268,7 @@ impl Direct {
                         .map(|(row, timing)| Replica {
                             machine: row.machine,
                             state: &row.state,
+                            starts: starts(&self.operations, service, row.machine),
                             timing: timing.clone(),
                         }),
                 )
