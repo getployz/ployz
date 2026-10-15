@@ -206,3 +206,32 @@ async fn cancelled_global_health_wait_keeps_an_adopted_container() {
     assert!(cancelled(&outcome), "{outcome:?}");
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn storage_preparation_lost_to_a_daemon_restart_is_resent() {
+    let machine = machine('1');
+    let service = provisioned_spec();
+    let plan = vec![
+        DeployOperation::PrepareVolumes {
+            machine_id: machine,
+            specs: vec![ployz_core::ServiceStorageSpec::from(&service)],
+        },
+        run(&machine, service, false),
+    ];
+    let client = Scripted::new(vec![
+        failed_unavailable(Call::Prepare(machine), "transport error"),
+        ok(Call::Prepare(machine)),
+        created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &container('a'),
+        ),
+    ]);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}

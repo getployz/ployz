@@ -429,84 +429,38 @@ impl Client {
     }
 }
 
-impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        self.inner.prepare_volumes(machine_id, specs).await
-    }
+// Each method names its restart policy. `wait` resends while the Machine is
+// restarting, so its daemon side must converge on a resend. `once` sends one
+// time and names why a resend is unsafe. A row without a policy does not parse.
+macro_rules! restart_policy {
+    ($($policy:ident $(($reason:literal))? fn $name:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {
+        impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+            $(
+                async fn $name(&self $(, $arg: $ty)*) -> $ret {
+                    restart_policy!(@send $policy $(($reason))? self $name $($arg)*)
+                }
+            )*
+        }
+    };
+    (@send wait $self:ident $name:ident $($arg:ident)*) => {
+        wait_out_restart($self.cancellation, || $self.inner.$name($(Clone::clone(&$arg)),*)).await
+    };
+    (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
+        $self.inner.$name($($arg),*).await
+    };
+}
 
-    async fn service_containers(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<Vec<ContainerObservation>, RpcError> {
-        wait_out_restart(self.cancellation, || self.inner.service_containers(service)).await
-    }
-
-    async fn ensure_container(
-        &self,
-        machine_id: &MachineId,
-        want: ContainerWant,
-    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.ensure_container(machine_id, want.clone())
-        })
-        .await
-    }
-
-    async fn inspect_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<ContainerDetails, RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.inspect_container(machine_id, container_id)
-        })
-        .await
-    }
-
-    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
-        wait_out_restart(self.cancellation, || self.inner.remove_volume(id)).await
-    }
-
-    async fn runs_global(
-        &self,
-        machine_id: &MachineId,
-        slot: &SlotKey,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<bool, RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.runs_global(machine_id, slot, spec)
-        })
-        .await
-    }
-
-    async fn ensure_image(
-        &self,
-        machine_id: &MachineId,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.ensure_image(machine_id, spec)
-        })
-        .await
-    }
-
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
-        wait_out_restart(self.cancellation, || self.inner.read_pointer(service)).await
-    }
-
-    async fn publish_pointer(
-        &self,
-        request: PublishServingPointerRequest,
-    ) -> Result<ServingPointerPublication, RpcError> {
-        self.inner.publish_pointer(request).await
-    }
+restart_policy! {
+    wait fn prepare_volumes(&self, machine_id: &MachineId, specs: &[ployz_core::ServiceStorageSpec]) -> Result<ployz_core::PreparedVolumes, RpcError>;
+    wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
+    wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
+    wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
+    wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
+    wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<(), RpcError>;
+    wait fn read_pointer(&self, service: &QualifiedService) -> Result<ServingPointerRead, RpcError>;
+    once("a compare-and-set: a resend after a lost reply reads its own write as Superseded")
+    fn publish_pointer(&self, request: PublishServingPointerRequest) -> Result<ServingPointerPublication, RpcError>;
 }
 
 async fn wait_out_restart<T, Fut>(
