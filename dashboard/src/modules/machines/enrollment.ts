@@ -291,6 +291,7 @@ export type EnrollResponse =
 
 export type MintedMachineEnrollment = {
   command: string;
+  token: string;
   expiresAt: string;
 };
 
@@ -322,14 +323,13 @@ const INSTALLER_URL = "https://ployz.sh/";
  * `version`, the release its own SDK speaks, since stable may be newer than it.
  */
 export function buildMachineJoinCommand(input: {
-  token: string;
   origin: string;
   version: string;
 }) {
   const hosted = new URL(input.origin).hostname === DEFAULT_CLOUD_URL_HOST;
   const install = hosted ? "sh" : `sh -s -- ${input.version}`;
   const cloudUrlFlag = hosted ? "" : ` --cloud-url '${input.origin}'`;
-  return ` curl -fsSL ${INSTALLER_URL} | ${install} && printf '%s\\n' '${input.token}' | sudo ployz server add --token-stdin${cloudUrlFlag}`;
+  return `curl -fsSL ${INSTALLER_URL} | ${install} && sudo ployz server add${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {
@@ -340,10 +340,10 @@ export function mintedEnrollment(input: {
 }): MintedMachineEnrollment {
   return {
     command: buildMachineJoinCommand({
-      token: input.token,
       origin: input.origin,
       version: input.version,
     }),
+    token: input.token,
     expiresAt: input.expiresAt.toISOString(),
   };
 }

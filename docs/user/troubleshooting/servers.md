@@ -11,10 +11,10 @@ on the server; `sudo journalctl -u ployz -n 200` shows Ployz's logs there.
 You'll see `sudo: command not found` or `run this command with sudo`.
 
 - **`sudo: command not found`**: you're root on a server without `sudo`. The CLI is already
-  installed, so run the part after `&&` again without `sudo`:
+  installed, so run the part after `&&` again without `sudo`, and paste the token when it asks:
 
   ```sh
-   printf '%s\n' '...' | ployz server add --token-stdin
+  ployz server add
   ```
 
 - **`run this command with sudo`**: keep the `sudo` the dashboard command includes, or run it as

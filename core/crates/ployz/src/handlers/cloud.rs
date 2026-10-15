@@ -49,7 +49,7 @@ pub(super) fn enroll(
 ///
 /// # Errors
 ///
-/// Returns the same CLI failure as `ployz server add --token-stdin`.
+/// Returns the same CLI failure as `ployz server add` given an enrollment token.
 #[doc(hidden)]
 pub fn enroll_with_installer<Install, InstallFuture>(
     root: &ArgMatches,
