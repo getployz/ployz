@@ -84,7 +84,7 @@ const insertBoth = (clickhouse: ClickHouseService, environmentId: string, record
     const { drizzle } = yield* Database;
     yield* ensurePartitions([monthOf(new Date(record.ts))]);
     const [inserted] = yield* drizzle.insert(analyticsPageview).values(pageviewValues(environmentId, [record])).returning();
-    if (inserted !== undefined) yield* clickhouse.insert("pageview", [clickHouseRow(inserted)]);
+    if (inserted !== undefined) yield* clickhouse.insert("pageview", [clickHouseRow(inserted)], `late-${inserted.ts.toISOString()}`);
   });
 
 const row = (ts: string, visitorId: string, fields: Partial<PageviewRecord> = {}): PageviewRecord => ({
@@ -150,7 +150,7 @@ it.live("ClickHouse reads and rollups skip a pageview older than its retention",
     if (expired === undefined) throw new Error("no expired row");
     // An insert drops already-expired rows, so lift the TTL to hold one the way it sits until a TTL merge removes it.
     yield* clickhouse.command("ALTER TABLE pageview REMOVE TTL");
-    yield* clickhouse.insert("pageview", [clickHouseRow({ ...expired, flags: 0 })]);
+    yield* clickhouse.insert("pageview", [clickHouseRow({ ...expired, flags: 0 })], "expired");
 
     const query = { ...site, range: { start: new Date(now.getTime() - 600 * 86_400_000), end: now }, filters: [] };
     const reads = yield* provide(everyRead(clickHouseStore, query));

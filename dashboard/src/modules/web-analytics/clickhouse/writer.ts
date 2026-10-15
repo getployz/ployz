@@ -109,6 +109,7 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
     for (const table of ["pageview", "daily", "session_hourly"]) {
       yield* clickhouse.command(`DELETE FROM ${table} WHERE environment_id = {environmentId:String}`, params);
     }
+    const attempt = crypto.randomUUID();
     let copied = 0;
     let after: Pageview | undefined;
     for (;;) {
@@ -118,7 +119,7 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
           : sql`${analyticsPageview.environmentId} = ${environmentId} and (${analyticsPageview.ts}, ${analyticsPageview.visitorId}, ${analyticsPageview.host}, ${analyticsPageview.pathname}) > (${after.ts.toISOString()}::timestamptz, ${after.visitorId.toString()}::bigint, ${after.host}, ${after.pathname})`)
         .orderBy(analyticsPageview.ts, analyticsPageview.visitorId, analyticsPageview.host, analyticsPageview.pathname)
         .limit(BACKFILL_PAGE);
-      yield* clickhouse.insert("pageview", page.map(clickHouseRow));
+      yield* clickhouse.insert("pageview", page.map(clickHouseRow), `backfill-${attempt}-${copied}`);
       copied += page.length;
       after = page[page.length - 1];
       if (page.length < BACKFILL_PAGE) break;

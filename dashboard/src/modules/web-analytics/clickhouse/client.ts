@@ -9,8 +9,12 @@ type Params = Readonly<Record<string, string | number | boolean | ReadonlyArray<
 export type ClickHouseService = {
   readonly query: <A>(query: string, params?: Params) => Effect.Effect<ReadonlyArray<A>, ClickHouseFailure>;
   readonly command: (query: string, params?: Params) => Effect.Effect<void, ClickHouseFailure>;
-  /** A retry with the same `token` is dropped by the table's deduplication window, so a replayed batch lands once. */
-  readonly insert: (table: string, rows: ReadonlyArray<object>, token?: string) => Effect.Effect<void, ClickHouseFailure>;
+  /**
+   * A retry with the same `token` is dropped by the table's deduplication window, so a replayed batch lands once.
+   * The window also drops a tokenless insert whose rows hash like an earlier block, even after a DELETE, and
+   * `insert_deduplicate = 0` does not stop it on this MergeTree, so every insert names the write it belongs to.
+   */
+  readonly insert: (table: string, rows: ReadonlyArray<object>, token: string) => Effect.Effect<void, ClickHouseFailure>;
 };
 
 export const ClickHouse = Context.Reference<ClickHouseService | null>("ployz/ClickHouse", { defaultValue: () => null });
@@ -29,7 +33,7 @@ export const makeClickHouse = (client: ClickHouseClient): ClickHouseService => (
       table,
       values: rows,
       format: "JSONEachRow",
-      clickhouse_settings: token === undefined ? undefined : { insert_deduplicate: 1, insert_deduplication_token: token },
+      clickhouse_settings: { insert_deduplicate: 1, insert_deduplication_token: token },
     })).pipe(Effect.asVoid),
 });
 
