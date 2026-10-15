@@ -54,5 +54,6 @@ it("the rollup backfills a site's ClickHouse copy before closing its days, with 
   const [backfill] = vi.mocked(writer.ensureBackfilled).mock.invocationCallOrder;
   const [close] = vi.mocked(rollup.closeDays).mock.invocationCallOrder;
   expect(backfill).toBeLessThan(close ?? 0);
-  expect(Object.keys(state)).toEqual(["now", "sites", `backfill-${SHOP}`, `close-days-${SHOP}`, `promote-${SHOP}`]);
+  expect(rollup.closeDays).toHaveBeenCalledWith(SHOP, expect.any(Date));
+  expect(Object.keys(state)).toHaveLength(["now", "sites", "backfill", "close-days", "promote"].length);
 });

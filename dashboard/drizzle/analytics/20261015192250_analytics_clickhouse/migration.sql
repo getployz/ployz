@@ -3,6 +3,7 @@ CREATE TABLE "analytics"."clickhouse_site" (
 	"rolled_up_to" date,
 	"dirty" date[] DEFAULT '{}'::date[] NOT NULL,
 	"reads" boolean DEFAULT false NOT NULL,
+	"backfilled_at" timestamp with time zone,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint

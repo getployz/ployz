@@ -138,5 +138,6 @@ export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   rolledUpTo: date("rolled_up_to", { mode: "string" }),
   dirty: date("dirty", { mode: "string" }).array().default(sql`'{}'::date[]`).notNull(),
   reads: boolean("reads").default(false).notNull(),
+  backfilledAt: timestamptz("backfilled_at"),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
 });

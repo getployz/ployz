@@ -91,16 +91,27 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
   }));
 });
 
+/**
+ * Replaces the site's ClickHouse copy with Postgres's rows. Readers are sent back to Postgres in a
+ * transaction of their own first, so no read lands on the emptied copy while the retried copy runs.
+ */
 export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const database = yield* Database;
-  const copy = database.transaction(Effect.gen(function* () {
+  const demoted = yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const queued = yield* drizzle.execute<{ id: string }>(sql`
-      select id::text as id from analytics.outbox where environment_id = ${environmentId}::text order by id for update`, "objects");
     yield* drizzle.execute(sql`
       insert into analytics.clickhouse_site (environment_id)
       select environment_id from analytics.site where environment_id = ${environmentId}::text
       on conflict do nothing`);
+    return yield* drizzle.execute(sql`
+      update analytics.clickhouse_site set reads = false, backfilled_at = null, updated_at = now()
+      where environment_id = ${environmentId}::text returning environment_id`, "objects");
+  }));
+  if (demoted.length === 0) return 0;
+  const copy = database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const queued = yield* drizzle.execute<{ id: string }>(sql`
+      select id::text as id from analytics.outbox where environment_id = ${environmentId}::text order by id for update`, "objects");
     const [site] = yield* drizzle.execute<{ environment_id: string }>(sql`
       select environment_id from analytics.clickhouse_site where environment_id = ${environmentId}::text for update`, "objects");
     if (site === undefined) return 0;
@@ -125,11 +136,20 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
       if (page.length < BACKFILL_PAGE) break;
     }
     yield* drizzle.execute(sql`
-      update analytics.clickhouse_site set rolled_up_to = null, dirty = '{}', reads = false, updated_at = now()
+      update analytics.clickhouse_site set rolled_up_to = null, dirty = '{}', reads = false, backfilled_at = now(), updated_at = now()
       where environment_id = ${environmentId}::text`);
     return copied;
   }), { isolationLevel: "repeatable read" });
   return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }));
+});
+
+/** Backfills a site whose ClickHouse copy was never backfilled, such as one that ingested before ClickHouse was configured. */
+export const ensureBackfilled = Effect.fn("WebAnalytics.ensureBackfilled")(function* (clickhouse: ClickHouseService, environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [site] = yield* drizzle.execute<{ backfilled: boolean }>(sql`
+    select backfilled_at is not null as backfilled from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+  if (site?.backfilled) return null;
+  return yield* backfillSite(clickhouse, environmentId);
 });
 
 export const forgetDeletedSites = Effect.fn("WebAnalytics.forgetDeletedSites")(function* (clickhouse: ClickHouseService) {

@@ -22,11 +22,11 @@ export const sameRows = (expected: ReadonlyArray<object>, actual: ReadonlyArray<
 
 export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const [site] = yield* drizzle.execute<{ timezone: string; rolled_up_to: string | null; dirty: string[]; reads: boolean }>(sql`
-    select s.timezone, c.rolled_up_to::text as rolled_up_to, c.dirty::text[] as dirty, c.reads
+  const [site] = yield* drizzle.execute<{ timezone: string; rolled_up_to: string | null; dirty: string[]; reads: boolean; backfilled: boolean }>(sql`
+    select s.timezone, c.rolled_up_to::text as rolled_up_to, c.dirty::text[] as dirty, c.reads, c.backfilled_at is not null as backfilled
     from analytics.clickhouse_site c join analytics.site s using (environment_id)
     where c.environment_id = ${environmentId}::text`, "objects");
-  if (site === undefined || site.reads) return false;
+  if (site === undefined || site.reads || !site.backfilled) return false;
   const now = yield* Clock.currentTimeMillis;
   const today = localDay(site.timezone, now);
   const yesterday = localDay(site.timezone, dayStart(site.timezone, today, -1));
@@ -43,7 +43,7 @@ export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (en
   }
   const flipped = yield* drizzle.execute(sql`
     update analytics.clickhouse_site set reads = true, updated_at = now()
-    where environment_id = ${environmentId}::text and rolled_up_to = ${site.rolled_up_to}::date and dirty = '{}'
+    where environment_id = ${environmentId}::text and rolled_up_to = ${site.rolled_up_to}::date and dirty = '{}' and backfilled_at is not null
     returning environment_id`, "objects");
   return flipped.length > 0;
 });

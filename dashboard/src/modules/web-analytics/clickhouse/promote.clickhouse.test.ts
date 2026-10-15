@@ -42,7 +42,7 @@ const cloud = Effect.gen(function* () {
   return { clickhouse, provide, today, now, rows };
 });
 
-const readsOf = (provide: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, never, never>) =>
+const readsOf = (provide: Effect.Success<typeof cloud>["provide"]) =>
   provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.select({ environmentId: analyticsClickhouseSite.environmentId, reads: analyticsClickhouseSite.reads })

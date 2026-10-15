@@ -7,7 +7,7 @@ import { ClickHouse, type ClickHouseService } from "./client";
 import { promoteReads } from "./promote";
 import { closeDays, rebuildDirtyDays } from "./rollup";
 import { ensureSchema } from "./schema";
-import { DRAIN_BATCHES, drainOutbox, forgetDeletedSites } from "./writer";
+import { DRAIN_BATCHES, drainOutbox, ensureBackfilled, forgetDeletedSites } from "./writer";
 
 type EffectRunner = typeof runInngestEffect;
 
@@ -36,9 +36,10 @@ const createRollup = (inngest: PloyzInngest, runEffect: EffectRunner) =>
   inngest.createFunction(
     { id: "analytics-clickhouse-rollup", retries: 3, triggers: [{ cron: "TZ=UTC */15 * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => {
-      const now = new Date();
+      const now = new Date(await step.run("now", () => new Date().toISOString()));
       const sites = await step.run("sites", () => runEffect(withClickHouse(() => rollupSites(), [])));
       await eachSite(sites, async (environmentId) => {
+        await step.run(`backfill-${environmentId}`, () => runEffect(withClickHouse((clickhouse) => ensureBackfilled(clickhouse, environmentId), null)));
         const closed = await step.run(`close-days-${environmentId}`, () => runEffect(closeDays(environmentId, now)));
         await step.run(`promote-${environmentId}`, () => runEffect(promoteReads(environmentId)));
         return closed;
