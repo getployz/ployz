@@ -30,6 +30,7 @@ export const dataSources = {
   "modules/volume-run/volume-run.queries.ts": { kind: "remote", freshness: "a Volume's last 50 runs, newest first; the change stream refetches them when a run's row changes" },
   "modules/billing/billing.queries.ts": { kind: "remote", freshness: "cached briefly; the subscription changes in Polar, not here" },
   "modules/github/github.queries.ts": { kind: "remote", freshness: "access fresh on mount because installs change in GitHub; install URL never changes; branches and file search cached briefly; build workflow readiness cached 30s, refetched on focus and polled while a workflow commit is awaited" },
+  "modules/github/github-connect.queries.ts": { kind: "remote", freshness: "linked accounts fresh on mount because connects land through a GitHub redirect; an offer never changes, so it is read once" },
   "modules/github/github.collection.ts": { kind: "remote", freshness: "user repository cache: reused for a minute, polled while a picker is open so a requested sync appears; preloaded when a picker opens" },
   "modules/machines/namespace-cleanup.queries.ts": { kind: "remote", freshness: "keyed by the Namespaces the Servers report, so a new one is checked afresh; an Environment deleted elsewhere shows within a minute" },
   "components/agent-sidebar/approvals.queries.ts": { kind: "remote", freshness: "approvals waiting on a human, and each one a chat names, polled every 2s while pending: any CLI, tab or device can ask or answer, and no change stream carries them" },

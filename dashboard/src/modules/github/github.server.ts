@@ -142,7 +142,7 @@ export const getGithubRepoAccessState = Effect.fn(
 /** Where browser links to GitHub go: github.com, or a verify lab's fake. */
 export const getGithubWeb = Effect.fn("Github.getWeb")(function* () {
   const config = yield* AppConfig;
-  return { origin: config.github.origins.web, installUrl: getGithubAppInstallUrl(config.github) };
+  return { origin: config.github.origins.web };
 });
 
 export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(

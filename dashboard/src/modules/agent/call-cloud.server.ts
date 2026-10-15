@@ -113,10 +113,10 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
   const organizationId = caller.organization.id;
   switch (query.query) {
     case "github_connection":
-      return yield* githubConnection(caller).pipe(Effect.map(({ ready, repositories, install_url }) => answer({
+      return yield* githubConnection(caller).pipe(Effect.map(({ ready, repositories, connect_url }) => answer({
         connected: ready,
         repositories: repositories.map(({ repository }) => repository),
-        connect_at: install_url,
+        connect_at: connect_url,
       })));
     case "github_branches":
       return yield* githubBranches(caller, query.repository).pipe(Effect.map(answer));

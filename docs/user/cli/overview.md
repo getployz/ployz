@@ -178,6 +178,9 @@ address, builds your app, deploys it and prints the address.
 An upload can be at most 256 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
 
+`ployz github ls` lists the GitHub accounts your organization is connected to, and the link to
+connect another. `ployz github disconnect <login>` disconnects one from this organization only.
+
 ## Make an organization token
 
 CI jobs and scripts sign in with a token instead of a browser. Set it as `PLOYZ_TOKEN`:

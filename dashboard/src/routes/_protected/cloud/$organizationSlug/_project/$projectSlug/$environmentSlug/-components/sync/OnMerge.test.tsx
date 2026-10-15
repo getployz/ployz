@@ -73,7 +73,7 @@ function open({ at = "/cloud/acme/blog/pr-146", list = onMerge(), isOpen = true 
       default: return null;
     }
   };
-  queryClient.setQueryData(githubKeys.web(), { origin: "http://127.0.0.1:4555", installUrl: "http://127.0.0.1:4555/apps/ployz/installations/new" });
+  queryClient.setQueryData(githubKeys.web(), { origin: "http://127.0.0.1:4555" });
   for (const query of [branchQuery(pr146), onMergeQuery(pr146), pullRequestQuery(pullRequest), prPlansQuery("blog")] as ConfigQuery[]) {
     queryClient.setQueryData([...storeViewPrefix("acme"), "session", "user", query], { ok: true, value: views(query) });
   }

@@ -26,7 +26,6 @@ type BoundaryResult = typeof BoundaryResult.Type;
 const decodeBoundaryResult = Schema.decodeUnknownSync(BoundaryResult);
 const GithubWebResult = Schema.Struct({
   origin: Schema.String,
-  installUrl: Schema.String,
 });
 const decodeGithubWebResult = Schema.decodeUnknownSync(GithubWebResult);
 
@@ -263,7 +262,6 @@ it(
             });
             await expect(invokeGithubWeb(true)).resolves.toEqual({
               origin: "https://github.com",
-              installUrl: "https://github.com/apps/test-app/installations/new",
             });
           } finally {
             await expect(invoke({ action: "dispose" })).resolves.toEqual({

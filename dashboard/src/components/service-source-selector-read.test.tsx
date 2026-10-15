@@ -54,7 +54,7 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
   const githubRepos = getGithubReposCollection(scope);
   const queryKey = githubReposQueryKey(scope);
   queryClient.setQueryData(githubKeys.access("acme"), { hasInstallations: true });
-  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com", installUrl: "https://github.com/apps/ployz-test/installations/new" });
+  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
   const failRead = () => queryClient.fetchQuery({ queryKey, queryFn: async () => { throw new Error("offline"); }, staleTime: 0 });
   await expect(failRead()).rejects.toThrow("offline");
   const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector organizationSlug="acme" query="" onSelectRepo={() => {}} /></CommandList></Command>);
@@ -101,7 +101,7 @@ it("offers a public URL without a GitHub installation", async () => {
   getGithubReposCollection(scope);
   queryClient.setQueryData(githubReposQueryKey(scope), []);
   queryClient.setQueryData(githubKeys.access("public-org"), { hasInstallations: false });
-  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com", installUrl: "https://github.com/apps/ployz-test/installations/new" });
+  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
   const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector organizationSlug="public-org" query="http://github.com/owner/repo.git" onSelectRepo={() => {}} /></CommandList></Command>);
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/"] }) });
   try {
