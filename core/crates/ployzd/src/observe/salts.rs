@@ -32,8 +32,8 @@ struct Site {
 }
 
 #[derive(Debug, Deserialize)]
-pub(super) struct Ack {
-    sites: Vec<Site>,
+struct Ack {
+    sites: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -71,7 +71,11 @@ impl Salts {
             Ok(bytes) => match serde_json::from_slice::<Persisted>(&bytes) {
                 Ok(persisted) => Cache {
                     fetched: Some(persisted.fetched),
-                    sites: open_sites(persisted.sites, now),
+                    sites: persisted
+                        .sites
+                        .into_iter()
+                        .map(|site| (site.namespace, site.salts))
+                        .collect(),
                 },
                 Err(error) => {
                     tracing::warn!(path = %path.display(), %error, "ignoring an unreadable salt cache");
@@ -81,20 +85,55 @@ impl Salts {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Cache::default(),
             Err(error) => return Err(error),
         };
-        Ok(Self {
+        let salts = Self {
             path,
             cache: RwLock::new(cache),
-        })
+        };
+        salts.prune(now)?;
+        Ok(salts)
     }
 
+    /// Replace the cache with the sites Cloud lists. A site that does not decode is skipped, so
+    /// the Machine stops hashing for it until Cloud sends it whole.
     pub(super) fn accept(&self, body: &[u8], now: i64) -> io::Result<()> {
         let Ok(ack) = serde_json::from_slice::<Ack>(body) else {
             return Ok(());
         };
-        let sites = open_sites(ack.sites, now);
+        let mut sites = HashMap::new();
+        for site in ack.sites {
+            match serde_json::from_value::<Site>(site) {
+                Ok(site) => {
+                    sites.insert(site.namespace, site.salts);
+                }
+                Err(error) => tracing::warn!(%error, "skipping a site whose salts do not decode"),
+            }
+        }
+        prune(&mut sites, now);
+        let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
+        let fresh = Cache {
+            fetched: Some(now),
+            sites,
+        };
+        self.persist(&fresh)?;
+        *cache = fresh;
+        Ok(())
+    }
+
+    /// Drop the salts whose day has closed, from memory and from disk, so a Machine that cannot
+    /// reach Cloud still forgets them on time.
+    pub(super) fn prune(&self, now: i64) -> io::Result<()> {
+        let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
+        if prune(&mut cache.sites, now) {
+            self.persist(&cache)?;
+        }
+        Ok(())
+    }
+
+    fn persist(&self, cache: &Cache) -> io::Result<()> {
         let persisted = Persisted {
-            fetched: now,
-            sites: sites
+            fetched: cache.fetched.unwrap_or_default(),
+            sites: cache
+                .sites
                 .iter()
                 .map(|(namespace, salts)| Site {
                     namespace: namespace.clone(),
@@ -103,13 +142,7 @@ impl Salts {
                 .collect(),
         };
         let json = serde_json::to_vec(&persisted).map_err(io::Error::other)?;
-        let mut cache = self.cache.write().unwrap_or_else(PoisonError::into_inner);
-        crate::filesystem::atomic_write(&self.path, &json, 0o600)?;
-        *cache = Cache {
-            fetched: Some(now),
-            sites,
-        };
-        Ok(())
+        crate::filesystem::atomic_write(&self.path, &json, 0o600)
     }
 
     pub(super) fn stale(&self, now: i64) -> bool {
@@ -136,14 +169,16 @@ impl Salts {
     }
 }
 
-fn open_sites(sites: Vec<Site>, now: i64) -> HashMap<Namespace, Vec<Salt>> {
-    sites
-        .into_iter()
-        .map(|site| {
-            let salts = site.salts.into_iter().filter(|salt| salt.end > now);
-            (site.namespace, salts.collect())
-        })
-        .collect()
+/// Remove closed salts, keeping every site so one with no open salt still reads as on. True when
+/// any salt went.
+fn prune(sites: &mut HashMap<Namespace, Vec<Salt>>, now: i64) -> bool {
+    let mut pruned = false;
+    for salts in sites.values_mut() {
+        let before = salts.len();
+        salts.retain(|salt| salt.end > now);
+        pruned |= salts.len() != before;
+    }
+    pruned
 }
 
 fn day<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
@@ -253,17 +288,90 @@ mod tests {
         let (_root, store) = store();
         let salts = Salts::open(&store, 0).unwrap();
         salts.accept(&ack(&[("2026-10-15", 0, 100)]), 10).unwrap();
-        for body in [
-            &b""[..],
-            b"not json",
-            br#"{"sites":[{"namespace":"acme-prod","salts":[{"day":"2026-10-15","start":0,"end":100,"salt":"c2hvcnQ"}]}]}"#,
-            br#"{"sites":[{"namespace":"Not_A_Label","salts":[]}]}"#,
-            br#"{"sites":[{"namespace":"acme-prod","salts":[{"day":"yesterday","start":0,"end":100,"salt":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}]}]}"#,
-        ] {
+        for body in [&b""[..], b"not json", br#"{"sites":{}}"#] {
             salts.accept(body, 20).unwrap();
         }
         assert_eq!(day_at(&salts, &acme(), 50), Some(Some("2026-10-15".into())));
         assert!(salts.stale(10 + 3600));
+    }
+
+    #[test]
+    fn a_site_that_does_not_decode_is_skipped_and_the_rest_are_kept() {
+        let (_root, store) = store();
+        let salts = Salts::open(&store, 0).unwrap();
+        let body = serde_json::json!({ "sites": [
+            { "namespace": "short", "salts": [{ "day": "2026-10-15", "start": 0, "end": 100, "salt": "c2hvcnQ" }] },
+            { "namespace": "Not_A_Label", "salts": [] },
+            { "namespace": "bad-day", "salts": [{ "day": "yesterday", "start": 0, "end": 100, "salt": SALT }] },
+            { "namespace": "acme-prod", "salts": [{ "day": "2026-10-15", "start": 0, "end": 100, "salt": SALT }] },
+            { "namespace": "quiet", "salts": [] },
+        ] });
+        salts
+            .accept(&serde_json::to_vec(&body).unwrap(), 10)
+            .unwrap();
+        assert_eq!(day_at(&salts, &acme(), 50), Some(Some("2026-10-15".into())));
+        for skipped in ["short", "bad-day"] {
+            assert_eq!(
+                day_at(&salts, &Namespace::parse(skipped).unwrap(), 50),
+                None
+            );
+        }
+        assert_eq!(
+            day_at(&salts, &Namespace::parse("quiet").unwrap(), 50),
+            Some(None),
+            "a site with no salts yet is on, so its views count as a gap"
+        );
+        assert!(!salts.stale(10));
+    }
+
+    #[test]
+    fn closed_salts_are_forgotten_on_the_clock_without_cloud() {
+        let (_root, store) = store();
+        let salts = Salts::open(&store, 0).unwrap();
+        salts
+            .accept(
+                &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
+                50,
+            )
+            .unwrap();
+        let on_disk = || String::from_utf8(fs::read(store.salts()).unwrap()).unwrap();
+        assert!(on_disk().contains("2026-10-14"));
+
+        salts.prune(99).unwrap();
+        assert!(on_disk().contains("2026-10-14"));
+        salts.prune(100).unwrap();
+        assert!(!on_disk().contains("2026-10-14"));
+        assert_eq!(day_at(&salts, &acme(), 50), Some(None));
+
+        salts.prune(200).unwrap();
+        assert_eq!(
+            day_at(&salts, &acme(), 150),
+            Some(None),
+            "the site stays on"
+        );
+        assert!(!on_disk().contains("2026-10-15"));
+        assert!(salts.stale(50 + 3600), "pruning is not a fetch");
+    }
+
+    #[test]
+    fn startup_forgets_salts_that_closed_while_the_daemon_was_down() {
+        let (_root, store) = store();
+        Salts::open(&store, 0)
+            .unwrap()
+            .accept(
+                &ack(&[("2026-10-14", 0, 100), ("2026-10-15", 100, 200)]),
+                50,
+            )
+            .unwrap();
+        let reopened = Salts::open(&store, 150).unwrap();
+        let on_disk = String::from_utf8(fs::read(store.salts()).unwrap()).unwrap();
+        assert!(!on_disk.contains("2026-10-14"), "{on_disk}");
+        assert!(on_disk.contains("2026-10-15"), "{on_disk}");
+        assert_eq!(
+            day_at(&reopened, &acme(), 150),
+            Some(Some("2026-10-15".into()))
+        );
+        assert!(!reopened.stale(50));
     }
 
     #[test]

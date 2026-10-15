@@ -133,6 +133,9 @@ impl<'a> Harvest<'a> {
     }
 
     fn tick(&mut self, now: Instant) {
+        if let Err(error) = self.salts.prune(super::ship::unix_seconds()) {
+            tracing::warn!(%error, "cannot forget closed salts");
+        }
         if now.duration_since(self.counted_at) >= COUNTS_EVERY {
             self.counted_at = now;
             self.flush_counts();
