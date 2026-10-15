@@ -7,7 +7,7 @@ use std::{
 use defguard_wireguard_rs::{
     Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
-use ployz_core::{MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
+use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
 use ployzd::network::{NetworkError, apply_firewall_rules};
 
 const TEST_NAME: &str = "mesh_firewall_policy";
@@ -347,6 +347,10 @@ fn mesh_firewall_policy() {
     connect(&source, "fdcc::1", "fdcc::2", MACHINE_API_PORT);
     assert_eq!(management_api.peer(), "fdcc::1");
 
+    let mut gossip = datagram_server(&target, "fdcc::2", CORROSION_GOSSIP_PORT);
+    send_datagram(&source, "fdcc::1", "fdcc::2", CORROSION_GOSSIP_PORT);
+    assert_eq!(gossip.peer(), "fdcc::1");
+
     let mut local_ingest = stream_server(&target, "fdcc::2", UNREGISTRY_PORT);
     connect(&target, "fdcc::2", "fdcc::2", UNREGISTRY_PORT);
     assert_eq!(local_ingest.peer(), "fdcc::2");
@@ -365,6 +369,94 @@ fn mesh_firewall_policy() {
 
     let _management_api = stream_server(&target, "fdcc::2", MACHINE_API_PORT);
     assert_connection_denied(&container, "fd00::2", "fdcc::2", MACHINE_API_PORT);
+
+    let mut gossip = datagram_server(&target, "fdcc::2", CORROSION_GOSSIP_PORT);
+    send_datagram(&container, "fd00::2", "fdcc::2", CORROSION_GOSSIP_PORT);
+    assert_eq!(
+        gossip.peer_within(1),
+        None,
+        "gossip arrived from outside the mesh"
+    );
+}
+
+#[test]
+#[ignore = "requires passwordless sudo and Linux network namespaces"]
+fn build_steps_never_reach_the_host() {
+    sudo(&["-n", "true"]);
+    let suffix = std::process::id();
+    let host = format!("p35-host-{suffix}");
+    let step = format!("p35-step-{suffix}");
+    let service = format!("p35-svc-{suffix}");
+    let _namespaces = Namespaces::new([&host, &step, &service]);
+    sudo(&[
+        "ip",
+        "link",
+        "add",
+        "host-build",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "step-if",
+    ]);
+    sudo(&["ip", "link", "set", "host-build", "netns", &host]);
+    sudo(&["ip", "link", "set", "step-if", "netns", &step]);
+    sudo(&[
+        "ip", "link", "add", "host-svc", "type", "veth", "peer", "name", "svc-if",
+    ]);
+    sudo(&["ip", "link", "set", "host-svc", "netns", &host]);
+    sudo(&["ip", "link", "set", "svc-if", "netns", &service]);
+    for namespace in [&host, &step, &service] {
+        ns(namespace, "ip", &["link", "set", "lo", "up"]);
+    }
+    ns(&host, "ip", &["link", "set", "host-svc", "name", "ployz"]);
+    configure_link(&host, "ployz", "10.210.1.1/24");
+    configure_link(&service, "svc-if", "10.210.1.2/24");
+    ns(
+        &service,
+        "ip",
+        &["route", "add", "default", "via", "10.210.1.1"],
+    );
+    ns(&host, "sysctl", &["-q", "-w", "net.ipv4.ip_forward=1"]);
+    ns(
+        &host,
+        "ip",
+        &["link", "set", "host-build", "name", "ployz-build0"],
+    );
+    configure_link(&host, "ployz-build0", "10.10.0.1/24");
+    configure_link(&step, "step-if", "10.10.0.2/24");
+    ns(
+        &step,
+        "ip",
+        &["route", "add", "default", "via", "10.10.0.1"],
+    );
+    ns(&host, "iptables", &["-N", "DOCKER-USER"]);
+    ns(
+        &host,
+        "iptables",
+        &["-I", "FORWARD", "1", "-j", "DOCKER-USER"],
+    );
+    // BuildKit's CNI accepts its bridge's traffic ahead of DOCKER-USER.
+    ns(
+        &host,
+        "iptables",
+        &["-I", "FORWARD", "1", "-s", "10.10.0.2/32", "-j", "ACCEPT"],
+    );
+
+    let mut before = stream_server(&host, "10.10.0.1", 51503);
+    connect(&step, "10.10.0.2", "10.10.0.1", 51503);
+    assert_eq!(before.peer(), "10.10.0.2");
+    let mut before = stream_server(&service, "10.210.1.2", 51503);
+    connect(&step, "10.10.0.2", "10.210.1.2", 51503);
+    assert_eq!(before.peer(), "10.10.0.2");
+
+    apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
+    for address in ["10.10.0.1", "10.210.1.1"] {
+        let _server = stream_server(&host, address, 51503);
+        assert_connection_denied(&step, "10.10.0.2", address, 51503);
+    }
+    let _server = stream_server(&service, "10.210.1.2", 51503);
+    assert_connection_denied(&step, "10.10.0.2", "10.210.1.2", 51503);
 }
 
 #[test]
@@ -567,6 +659,17 @@ impl Server {
         output.read_line(&mut ready).unwrap();
         assert_eq!(ready.trim(), "READY");
         Self { child, output }
+    }
+
+    fn peer_within(&mut self, seconds: u64) -> Option<String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+        while std::time::Instant::now() < deadline {
+            if self.child.try_wait().unwrap().is_some() {
+                return Some(self.peer());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        None
     }
 
     fn peer(&mut self) -> String {

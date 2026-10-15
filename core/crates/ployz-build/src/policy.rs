@@ -184,10 +184,16 @@ impl Resources {
         self.cache_bytes.unwrap_or(UNCAPPED_CACHE_BYTES)
     }
 
-    pub(crate) fn buildkit_config(&self) -> String {
+    /// Every BuildKit runs on the host network and owns its bridge, so two
+    /// that shared one would hand out the same addresses and delete the
+    /// bridge under each other.
+    pub(crate) fn buildkit_config(&self, bridge: u8) -> String {
         // BuildKit's default reservedSpace can exceed a small host budget.
         // Give its GC permission to reclaim down to zero; it owns all eviction.
-        let mut config = "[worker.oci]\ngc = true\nreservedSpace = 0\n".to_owned();
+        let mut config = format!(
+            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"{}\"\nbridgeSubnet = \"10.10.{bridge}.0/24\"\ngc = true\nreservedSpace = 0\n",
+            crate::builder::bridge_name(bridge)
+        );
         if self.cache_bytes.is_none() && self.min_free_bytes.is_none() {
             config.push_str(&format!("minFreeSpace = \"{DEFAULT_MIN_FREE_PERCENT}%\"\n"));
         }
@@ -284,14 +290,14 @@ mod tests {
         assert!(defaults.worker_arguments().is_empty());
         assert!(defaults.preparation_arguments().is_empty());
         assert_eq!(
-            defaults.buildkit_config(),
-            "[worker.oci]\ngc = true\nreservedSpace = 0\nminFreeSpace = \"20%\"\nmaxUsedSpace = 4611686018427387904\n"
+            defaults.buildkit_config(0),
+            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"ployz-build0\"\nbridgeSubnet = \"10.10.0.0/24\"\ngc = true\nreservedSpace = 0\nminFreeSpace = \"20%\"\nmaxUsedSpace = 4611686018427387904\n"
         );
         assert_eq!(
             Resources::parse(b"cache_bytes: 1073741824")
                 .unwrap()
-                .buildkit_config(),
-            "[worker.oci]\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 1073741824\n"
+                .buildkit_config(3),
+            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"ployz-build3\"\nbridgeSubnet = \"10.10.3.0/24\"\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 1073741824\n"
         );
         for invalid in [
             "cpu_cores: 0",

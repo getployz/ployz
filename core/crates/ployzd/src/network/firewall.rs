@@ -64,14 +64,53 @@ pub fn apply_firewall_rules(
             "-j",
             "ACCEPT",
         ],
-    )
+    )?;
+    for rule in build_forwarding() {
+        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
+        ensure_rule("iptables", "mangle", "FORWARD", &rule)?;
+    }
+    Ok(())
 }
 
+/// Build steps route to the internet, never into the Machine's services or
+/// across the mesh. Mangle runs before BuildKit's CNI accepts its own bridge's
+/// traffic in filter. A published port is public, so DNAT to it still passes.
+fn build_forwarding() -> Vec<Vec<String>> {
+    let bridges = format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX);
+    [
+        vec![
+            "-o",
+            DOCKER_NETWORK_NAME,
+            "-m",
+            "conntrack",
+            "!",
+            "--ctstate",
+            "DNAT",
+        ],
+        vec!["-o", WIREGUARD_INTERFACE_NAME],
+    ]
+    .into_iter()
+    .map(|output| {
+        ["-i", bridges.as_str()]
+            .into_iter()
+            .chain(output)
+            .chain(["-j", "DROP"])
+            .map(str::to_owned)
+            .collect()
+    })
+    .collect()
+}
+
+/// Build steps run on their slot's bridge and get only the internet: nothing
+/// on the host answers them, on any address.
 fn mesh_ports() -> Vec<String> {
-    [WIREGUARD_PORT, MANAGEMENT_PORT]
-        .into_iter()
-        .map(|port| format!("-p udp --dport {port} -j ACCEPT"))
-        .collect()
+    let mut rules = vec![format!("-i {}+ -j DROP", ployz_build::BUILD_BRIDGE_PREFIX)];
+    rules.extend(
+        [WIREGUARD_PORT, MANAGEMENT_PORT]
+            .into_iter()
+            .map(|port| format!("-p udp --dport {port} -j ACCEPT")),
+    );
+    rules
 }
 
 /// Accepts come first: the drops close the management ports to everything the
@@ -98,6 +137,9 @@ fn management_policy(management_address: ManagementAddress) -> Vec<String> {
     for port in [MACHINE_API_PORT, UNREGISTRY_PORT, VOLUME_SEND_PORT] {
         rules.push(format!("-d {management} -p tcp --dport {port} -j DROP"));
     }
+    rules.push(format!(
+        "-d {management} -p udp --dport {CORROSION_GOSSIP_PORT} -j DROP"
+    ));
     rules
 }
 
@@ -188,6 +230,10 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "ACCEPT",
         ],
     ));
+    for rule in build_forwarding() {
+        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
+        attempt(delete_rule("iptables", "mangle", "FORWARD", &rule));
+    }
     attempt(delete_rule(
         "iptables",
         "nat",

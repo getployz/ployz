@@ -50,6 +50,9 @@ pub const MINIMUM_DOCKER_API: (u32, u32) = (1, 53);
 pub const MINIMUM_BUILDX: (u32, u32) = (0, 18);
 /// Pinned BuildKit release. Every Ployz Build runs this version.
 pub const BUILDKIT_IMAGE: &str = "moby/buildkit:v0.26.2";
+/// Interface prefix of the bridge each build slot's steps run on. Host
+/// firewall rules match it as `ployz-build+`.
+pub const BUILD_BRIDGE_PREFIX: &str = "ployz-build";
 
 /// Longest one Build Attempt may run, from owning the builder through image
 /// verification. Waiting for another local build is queueing, not attempt time.

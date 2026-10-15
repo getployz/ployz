@@ -178,12 +178,7 @@ fn prepare_container(
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     let name = format!("{builder}-prepare");
-    let mut arguments = vec![
-        "--network".into(),
-        "host".into(),
-        "--entrypoint".into(),
-        "/bin/sh".into(),
-    ];
+    let mut arguments = vec!["--entrypoint".into(), "/bin/sh".into()];
     arguments.extend(resources.preparation_arguments());
     arguments.extend([IMAGE.into(), "/prepare.sh".into()]);
     docker.with_container(
