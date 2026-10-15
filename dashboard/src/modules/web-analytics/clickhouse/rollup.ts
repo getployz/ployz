@@ -86,11 +86,19 @@ const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: R
   return row === undefined || row.n === 0 ? null : localDay(site.timezone, row.first);
 });
 
+/** Aggregates written before a reset, such as a timezone change, describe days the site no longer has. */
+const forgetAggregates = Effect.fn("WebAnalytics.clickHouseForgetAggregates")(function* (site: RollupSite) {
+  const clickhouse = yield* requiredClickHouse;
+  const b = binder(site);
+  for (const table of ["daily", "session_hourly"]) yield* clickhouse.command(`DELETE FROM ${table} WHERE environment_id = ${b.env}`, b.params);
+});
+
 const closeNextDay = (environmentId: string, now: Date) =>
   withRollupLock(environmentId, (site) => Effect.gen(function* () {
     if (!site.enabled) return false;
     const day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
     if (day === null || dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime()) return false;
+    if (site.rolledUpTo === null) yield* forgetAggregates(site);
     yield* writeDay(site, day);
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`
