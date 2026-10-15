@@ -617,6 +617,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
         .write_trusted(
             who,
             &ployz_store::Publish {
+                id: None,
                 environment: at("production"),
                 version: None,
                 message: None,

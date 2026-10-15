@@ -201,6 +201,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
 /// `deploy --skip-deploy`: save everything staged for the next deploy.
 fn save(matches: &ArgMatches, store: &Store) -> Result<(), Error> {
     let saving = Publish {
+        id: None,
         environment: environment(matches)?,
         version: matches.get_one::<String>("expect-version").cloned(),
         message: matches.get_one::<String>("message").cloned(),

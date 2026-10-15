@@ -35,6 +35,11 @@ pub struct Publish {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
+    /// Caller-minted: this save sent again with the same ID returns the first one's
+    /// answer instead of saving what is staged by then.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub id: Option<String>,
 }
 
 /// The Saved revision Working State is now in.

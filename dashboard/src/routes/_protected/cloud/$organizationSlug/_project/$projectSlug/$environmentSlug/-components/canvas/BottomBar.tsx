@@ -162,9 +162,8 @@ export function BottomBar({
     });
   }
 
-  // Alt turns Deploy into Save only.
-  const alt = useAltHeld();
-  const savesOnly = alt && canSave;
+  // Alt turns Deploy into Save only, even with nothing left to save: an Alt-click never deploys.
+  const savesOnly = useAltHeld();
 
   // New Services and Volumes go for good with a Discard: name them and ask first.
   const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
@@ -211,8 +210,8 @@ export function BottomBar({
       {noServers ? (
         <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
       ) : <Tooltip>
-        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? false : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
-          onClick={(event) => { if (event.altKey && canSave) save(); else deploy(); }} />}>
+        <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !canSave : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
+          onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (canSave) save(); }} />}>
           {savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>

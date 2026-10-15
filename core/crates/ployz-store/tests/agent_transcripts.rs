@@ -204,11 +204,11 @@ fn deploy_with_skip_deploy_saves_everything_staged_and_queues_nothing() {
         added.turns.last().unwrap().step,
         Step::Done { .. }
     ));
-    let saving = |store: &ConfigStore| {
+    let saving = |store: &ConfigStore, key: &str| {
         record_on(
             store,
             "deploy",
-            serde_json::json!({ "skip_deploy": true }),
+            serde_json::json!({ "skip_deploy": true, "request_key": key }),
             StoreAt::Local,
         )
     };
@@ -232,7 +232,7 @@ fn deploy_with_skip_deploy_saves_everything_staged_and_queues_nothing() {
         serde_json::to_value(result).unwrap()
     };
 
-    let first = saving(&store);
+    let first = saving(&store, "save-first");
     let written = writes(&first);
     assert_eq!(written.len(), 1, "{written:?}");
     assert_eq!(
@@ -253,10 +253,27 @@ fn deploy_with_skip_deploy_saves_everything_staged_and_queues_nothing() {
         "{done}"
     );
 
-    let again = result(&saving(&store));
+    let staged = record_on(
+        &store,
+        "service_update",
+        serde_json::json!({ "service": "whoami", "set": { "env": { "LOG_LEVEL": "info" } } }),
+        StoreAt::Local,
+    );
+    assert!(matches!(
+        staged.turns.last().unwrap().step,
+        Step::Done { .. }
+    ));
+    // A lost reply's retry answers the first save again; what was staged since stays staged.
+    let replayed = result(&saving(&store, "save-first"));
     assert_eq!(
-        again.pointer("/value/saved/created"),
-        Some(&serde_json::json!(false)),
-        "{again}"
+        replayed.pointer("/value/saved"),
+        done.pointer("/value/saved"),
+        "{replayed}"
+    );
+    let next = result(&saving(&store, "save-second"));
+    assert_eq!(
+        next.pointer("/value/saved"),
+        Some(&serde_json::json!({ "revision": 2, "created": true })),
+        "{next}"
     );
 }

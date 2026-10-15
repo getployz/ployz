@@ -68,7 +68,8 @@ pub trait Tell: Serialize {
 
 /// Register every command. A row reads:
 /// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS]] => CALL;`
-/// where `keyed` lists the caller-minted IDs a create replays by, and `CALL` runs it
+/// where `keyed` lists the caller-minted IDs a create replays by (an optional one when
+/// the caller may send none), and `CALL` runs it
 /// with the names bound in the table's header.
 macro_rules! commands {
     (
@@ -145,7 +146,8 @@ macro_rules! commands {
                     let ids: Vec<&str> = {
                         let $c = self;
                         let _ = $c;
-                        vec![$($($id),*)?]
+                        let keyed: Vec<Option<&str>> = vec![$($(Option::<&str>::from($id)),*)?];
+                        keyed.into_iter().flatten().collect()
                     };
                     let run = |at: &mut Call<'_>| -> Result<$answer, RpcError> {
                         let $c = self;
@@ -239,7 +241,7 @@ commands! {
     Edit(Edit) -> Edited(Edited) => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
-        => crate::review::publish::publish(tx, who, c, trusted);
+        keyed [c.id.as_deref()] => crate::review::publish::publish(tx, who, c, trusted);
     /// Stage a guarded Restore or Undo of an immutable Saved revision.
     StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
         => crate::review::history::stage(tx, who, c);
