@@ -8,6 +8,7 @@ import {
   organizationGithubInstallation as schemaLink,
 } from "#/modules/github/tables";
 import type { GithubRepository } from "#/modules/github/github";
+import { user as schemaUser } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 
 /** What GitHub told us about an installation. Recording it grants nothing; only a link row does. */
@@ -47,6 +48,7 @@ const linkedInstallation = {
   accountType: schemaGithubInstallation.accountType,
   accountAvatarUrl: schemaGithubInstallation.accountAvatarUrl,
   connectedGithubLogin: schemaLink.connectedGithubLogin,
+  connectedByName: schemaUser.name,
   connectedAt: schemaLink.connectedAt,
 };
 
@@ -58,6 +60,7 @@ export const listGithubInstallationsForOrganization = Effect.fn(
     .select(linkedInstallation)
     .from(schemaLink)
     .innerJoin(schemaGithubInstallation, eq(schemaGithubInstallation.installationId, schemaLink.installationId))
+    .leftJoin(schemaUser, eq(schemaUser.id, schemaLink.connectedByUserId))
     .where(eq(schemaLink.organizationId, organizationId))
     .orderBy(schemaGithubInstallation.accountLogin, schemaGithubInstallation.installationId);
 });
@@ -105,6 +108,18 @@ export const getGithubInstallation = Effect.fn("Github.getInstallation")(
       accountType: schemaGithubInstallation.accountType,
     }).from(schemaGithubInstallation).where(eq(schemaGithubInstallation.installationId, installationId)).limit(1);
     return rows[0] ?? null;
+  },
+);
+
+export const listGithubInstallationsById = Effect.fn("Github.listInstallationsById")(
+  function* (installationIds: ReadonlyArray<number>) {
+    if (installationIds.length === 0) return [];
+    const database = yield* Database;
+    return yield* database.drizzle.select({
+      installationId: schemaGithubInstallation.installationId,
+      accountLogin: schemaGithubInstallation.accountLogin,
+      accountAvatarUrl: schemaGithubInstallation.accountAvatarUrl,
+    }).from(schemaGithubInstallation).where(inArray(schemaGithubInstallation.installationId, [...installationIds]));
   },
 );
 

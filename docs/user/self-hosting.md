@@ -76,13 +76,17 @@ or your GitHub organization:
 | Field | Value |
 | --- | --- |
 | Homepage URL | `https://cloud.example.com` |
+| Callback URL | `https://cloud.example.com/api/github/callback` |
+| Request user authorization (OAuth) during installation | Checked |
 | Webhook URL | `https://cloud.example.com/api/github/webhook`, with **Active** checked |
 | Webhook secret | The output of `openssl rand -hex 32`. Keep it for step 2. |
 | Repository permissions | Contents: Read-only. Checks: Read and write. Metadata: Read-only. Actions: Read and write. Pull requests: Read-only. |
+| Organization permissions | Members: Read-only. Ployz Cloud uses it to check that the person connecting a GitHub organization is one of its owners. |
 | Subscribe to events | Push, Check suite, Workflow run, Pull request |
 
-Then generate a private key on the app's page, and note its **App ID** and its slug, the name in
-its URL `github.com/apps/<slug>`.
+Then generate a private key and a client secret on the app's page, and note its **App ID**, its
+**Client ID**, and its slug, the name in its URL `github.com/apps/<slug>`. Ployz Cloud uses the
+app's client ID and secret to ask GitHub which installations the person connecting owns.
 
 ## 2. Configure
 
@@ -111,6 +115,7 @@ its URL `github.com/apps/<slug>`.
    | `POSTGRES_PASSWORD`, `BETTER_AUTH_SECRET`, `APP_ENCRYPTION_SECRET`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | The generated secrets |
    | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | The OAuth App's client ID and secret |
    | `GITHUB_APP_ID`, `GITHUB_APP_SLUG` | The GitHub App's ID and slug |
+   | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | The GitHub App's client ID and secret, not the OAuth App's |
    | `GITHUB_APP_WEBHOOK_SECRET` | The GitHub App's webhook secret |
    | `GITHUB_APP_PRIVATE_KEY` | The whole private key PEM, in quotes |
 
@@ -150,9 +155,9 @@ its URL `github.com/apps/<slug>`.
 ## 4. Sign in and add a server
 
 1. Open your address and sign in with GitHub.
-2. Install the GitHub App from the dashboard. The installation belongs to the organization you
-   connect it to, not to your GitHub account, so everyone in that organization can use its
-   repositories.
+2. Open **Settings → GitHub** and click **Connect GitHub**. GitHub asks you to install the app
+   and to authorize it. The installation belongs to the organization you connect it to, not to
+   your GitHub account, so everyone in that organization can use its repositories.
 3. [Add a server](servers/add-a-server.md). You need one even if it's the server Ployz Cloud
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.

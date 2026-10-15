@@ -18,7 +18,7 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { requestServiceAct } from "#/modules/service-act/service-act.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
-import { insertRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { admitRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
 
 export type OperationCall = {
   readonly key: string | null;
@@ -139,8 +139,10 @@ export const runVolume = (
       const gated = yield* gate(caller, call, planned.asked);
       if (!gated.ok) return refused(gated.refusal);
     }
-    return (runId: string) => insertRun(actor(caller), planned.input, planned.volume, runId)
-      .pipe(Effect.map((inserted) => inserted.ok ? { ok: true, id: inserted.run.id } as const : inserted));
+    return (runId: string) => admitRun(actor(caller), planned.input, planned.volume, runId)
+      .pipe(Effect.map((inserted) => inserted.ok
+        ? { ok: true, id: inserted.run.id } as const
+        : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
   }));
 
 export const actService = (

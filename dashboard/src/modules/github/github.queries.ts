@@ -39,6 +39,8 @@ export const githubKeys = {
       input.repositoryId,
     ] as const,
   web: () => [...githubKeys.all, "web"] as const,
+  accounts: (organizationSlug: string) => [...githubKeys.all, "accounts", organizationSlug] as const,
+  offer: (organizationSlug: string, offer: string) => [...githubKeys.all, "offer", organizationSlug, offer] as const,
 };
 
 export function githubRepoAccessQueryOptions(organizationSlug: string) {

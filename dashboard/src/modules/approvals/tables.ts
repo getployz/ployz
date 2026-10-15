@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
+import type { CredentialKind } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { APPROVAL_STATUSES, type ApprovalReview, type ApprovalStatus } from "#/modules/approvals/approvals";
@@ -16,7 +17,7 @@ export const operationApprovals = pgTable(
     /** What the approval is about: an Environment ID, `server:<machine id>`, or `namespace:<name>`. */
     subject: text("subject").notNull(),
     requestedByUserId: uuid("requested_by_user_id").references(() => user.id, { onDelete: "set null" }),
-    credentialKind: text("credential_kind").notNull().$type<"session" | "token">(),
+    credentialKind: text("credential_kind").notNull().$type<CredentialKind>(),
     credentialId: text("credential_id").notNull(),
     /** The Store command refused, such as `publish` or `admit`, or the operation, such as `drain` or `clean`. */
     command: text("command").notNull(),
@@ -36,7 +37,7 @@ export const operationApprovals = pgTable(
       .where(sql`${table.status} = 'pending'`),
     index("operation_approvals_subject_idx").on(table.organizationId, table.subject, table.status),
     check("operation_approvals_status_check", sql`${table.status} in (${sqlStringLiterals(APPROVAL_STATUSES)})`),
-    check("operation_approvals_credential_kind_check", sql`${table.credentialKind} in ('session', 'token')`),
+    check("operation_approvals_credential_kind_check", sql`${table.credentialKind} in ('session', 'token', 'oauth')`),
     check("operation_approvals_reason_check", sql`${table.reason} is null or ${table.status} = 'denied'`),
     check("operation_approvals_decided_check", sql`(${table.status} in ('approved', 'denied')) = (${table.decidedAt} is not null)`),
   ],

@@ -8,5 +8,5 @@ When changing domain behavior, terminology, or ownership boundaries:
   glossaries for work crossing the Engine–Cloud boundary.
 - Read the affected project's `DESIGN.md`.
 - Use the glossary's defined terms rather than introducing synonyms.
-- Surface conflicts with `DESIGN.md` explicitly.
+- Name in the PR body each `DESIGN.md` bet the change touches, and argue any red flag it crosses.
 - Create or amend domain documentation only when a term or decision is actually resolved.

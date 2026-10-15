@@ -851,6 +851,7 @@ pub(crate) fn record(
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
                 cause,
+                services: projection.services.clone(),
             };
             super::rows::record(tx, &stored, &progress)?;
             super::rows::settle(tx, &stored)?;

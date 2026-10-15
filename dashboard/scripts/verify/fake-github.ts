@@ -25,7 +25,14 @@ type WebhookInput = {
   ref?: string; head_sha?: string; conclusion?: string; run_id?: number;
 };
 type Run = { repository: string; status: "in_progress" | "completed"; conclusion: string | null };
-type Installation = { id: number; account: { id: number; login: string; type: "User" | "Organization" }; users: string[]; repositories: Repository[] };
+/** `users` reach the installation; on an Organization only `admins` own it, the rest collaborate on a repository. */
+type Installation = {
+  id: number;
+  account: { id: number; login: string; type: "User" | "Organization" };
+  users: string[];
+  admins?: string[];
+  repositories: Repository[];
+};
 type Fixture = {
   app: { slug: string; afterInstall: { callbackPath: string | null } };
   users: User[];
@@ -43,18 +50,19 @@ const site = {
 const repository = (id: number, name: string, extra: Partial<Repository> = {}): Repository =>
   ({ id, name, private: true, default_branch: "main", branches: ["main", "dev"], files: site, ...extra });
 const DEFAULT_FIXTURE: Fixture = {
-  app: { slug: "ployz-verify", afterInstall: { callbackPath: null } },
+  app: { slug: "ployz-verify", afterInstall: { callbackPath: "/api/github/callback" } },
   users: [
     { id: 9001, login: "ada", name: "Ada Lovelace", email: "ada@example.com" },
     { id: 9002, login: "grace", name: "Grace Hopper", email: "grace@example.com" },
     { id: 9003, login: "bob", name: "Bob Bobson", email: "bob@example.com" },
+    { id: 9004, login: "mallory", name: "Mallory Outside", email: "mallory@example.com" },
   ],
   installations: [
-    { id: 7, account: { id: 5001, login: "acme", type: "Organization" }, users: ["ada", "grace"], repositories: [
+    { id: 7, account: { id: 5001, login: "acme", type: "Organization" }, users: ["ada", "grace", "mallory"], admins: ["ada", "grace"], repositories: [
       repository(4242, "blog", { private: false }), repository(4243, "web"), repository(4244, "docs", { awaitsGrant: true }),
     ] },
     { id: 8, account: { id: 9001, login: "ada", type: "User" }, users: ["ada"], repositories: [repository(4250, "notes")] },
-    { id: 9, account: { id: 5003, login: "hopper-labs", type: "Organization" }, users: ["grace"], repositories: [repository(4260, "compiler")] },
+    { id: 9, account: { id: 5003, login: "hopper-labs", type: "Organization" }, users: ["grace"], admins: ["grace"], repositories: [repository(4260, "compiler")] },
     { id: 10, account: { id: 9003, login: "bob", type: "User" }, users: ["bob"], repositories: [repository(4270, "shop")] },
   ],
 };
@@ -418,7 +426,17 @@ export async function run() {
       if (!u) return { status: 401, json: { message: "Requires authentication" } };
       const mine = fixture.installations.filter((i) => installation(i.id) && i.users.includes(u.login));
       if (path === "/user") return { status: 200, json: { id: u.id, login: u.login, name: u.name, email: u.email, avatar_url: `${origin}/${u.login}.png`, type: "User" } };
-      if (path === "/user/installations") return { status: 200, json: { total_count: mine.length, installations: mine.map(installationJson) } };
+      if (path === "/user/installations") {
+        const perPage = Number(url.searchParams.get("per_page") ?? 30);
+        const page = Number(url.searchParams.get("page") ?? 1);
+        const slice = mine.slice((page - 1) * perPage, page * perPage);
+        return { status: 200, json: { total_count: mine.length, installations: slice.map(installationJson) } };
+      }
+      if ((m = /^\/user\/memberships\/orgs\/([^/]+)$/.exec(path))) {
+        const org = m[1] ?? "";
+        const owns = fixture.installations.some((i) => i.account.type === "Organization" && i.account.login === org && i.admins?.includes(u.login));
+        return owns ? { status: 200, json: { state: "active", role: "admin", organization: { login: org } } } : notFound;
+      }
       if ((m = /^\/user\/installations\/(\d+)\/repositories$/.exec(path))) {
         const i = mine.find((candidate) => candidate.id === Number(m?.[1]));
         if (!i) return notFound;

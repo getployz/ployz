@@ -23,6 +23,7 @@ import {
   releaseServerActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
+import { observeOrganization } from "#/modules/volume-run/volume-run.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export { PROCESS_MACHINE_REMOVE_FUNCTION_ID };
@@ -43,16 +44,21 @@ export const decodeMachineRemoveFailureEvent = Schema.decodeUnknownOption(
 );
 
 type StepTools = Pick<PloyzStepTools, "run" | "sendEvent">;
+type EffectRunner = typeof runInngestEffect;
+
+export const MACHINE_REMOVE_RETRIES = 5;
 
 export async function executeProcessMachineRemove({
   event,
   step,
   runId,
+  attempt: stepAttempt,
 }: {
   event: { data: unknown };
   step: StepTools;
   runId: string;
-}) {
+  attempt: number;
+}, runEffect: EffectRunner, observe: typeof observeOrganization) {
   const attemptId = await step.run(
     "normalize-machine-remove-attempt-id",
     () => {
@@ -68,7 +74,7 @@ export async function executeProcessMachineRemove({
   }
 
   const prepared = await step.run("claim-machine-remove", () =>
-    runInngestEffect(
+    runEffect(
       prepareMachineRemoveAttemptActivity({
         attemptId,
         inngestRunId: runId,
@@ -90,16 +96,20 @@ export async function executeProcessMachineRemove({
   const attempt = prepared.attempt;
   // Read before the removal: once the Server is gone the Cluster no longer names it or lists its copies.
   const leaving = await step.run("observe-leaving-server", () =>
-    runInngestEffect(observeLeavingServerActivity({ organizationId: attempt.organizationId, machineId: attempt.machineId })),
+    runEffect(observeLeavingServerActivity({
+      organizationId: attempt.organizationId,
+      machineId: attempt.machineId,
+      lastTry: stepAttempt >= MACHINE_REMOVE_RETRIES,
+    }, observe)),
   );
   const sent = await step.run("remove-machine", () =>
-    runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
+    runEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }))),
   );
   // The Server reset and its row is still listed. The memoized reply is the proof of the reset: Forget alone finishes,
   // retried while the Server still reads as suspect, and never sends the removal again.
   const removed = sent.kind === "left"
     ? await step.run("forget-machine", () =>
-      runInngestEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }, { resetWarning: sent.resetWarning }))),
+      runEffect(Effect.scoped(removeMachineActivity({ ...attempt, inngestRunId: runId }, { resetWarning: sent.resetWarning }))),
     )
     : sent;
 
@@ -111,7 +121,7 @@ export async function executeProcessMachineRemove({
 
   if (removed.kind === "refused") {
     await step.run("complete-refused", () =>
-      runInngestEffect(
+      runEffect(
         completeMachineRemoveAttemptActivity({
           attemptId,
           inngestRunId: runId,
@@ -125,7 +135,7 @@ export async function executeProcessMachineRemove({
 
   if (removed.kind === "missing_identities") {
     await step.run("complete-missing-identities", () =>
-      runInngestEffect(
+      runEffect(
         completeMachineRemoveAttemptActivity({
           attemptId,
           inngestRunId: runId,
@@ -140,7 +150,7 @@ export async function executeProcessMachineRemove({
     return { attemptId, status: "missing_identities" as const };
   }
   await step.run("release-volume-lanes", () =>
-    runInngestEffect(releaseLeavingLanesActivity({
+    runEffect(releaseLeavingLanesActivity({
       organizationId: attempt.organizationId,
       machineId: attempt.machineId,
       name: leaving.machine.name,
@@ -149,7 +159,7 @@ export async function executeProcessMachineRemove({
   );
   // Its own step: a retry after the reset releases again, never resets a Server that's gone.
   const release = await step.run("release-server", () =>
-    runInngestEffect(
+    runEffect(
       releaseServerActivity({
         organizationId: attempt.organizationId,
         machineId: attempt.machineId,
@@ -161,7 +171,7 @@ export async function executeProcessMachineRemove({
   );
 
   await step.run("complete-succeeded", () =>
-    runInngestEffect(
+    runEffect(
       completeMachineRemoveAttemptActivity({
         attemptId,
         inngestRunId: runId,
@@ -185,12 +195,12 @@ export async function executeProcessMachineRemoveOnFailure({
   event,
 }: {
   event: unknown;
-}) {
+}, runEffect: EffectRunner) {
   const decoded = decodeMachineRemoveFailureEvent(event);
   if (Option.isNone(decoded)) return;
   const attemptId = decoded.value.data.event.data.attemptId;
   const inngestRunId = decoded.value.data.run_id;
-  await runInngestEffect(
+  await runEffect(
     failOwnedMachineRemoveAttemptActivity({
       attemptId,
       inngestRunId,
@@ -225,22 +235,27 @@ export async function executeCancelMachineRemove({
   );
 }
 
-export const createProcessMachineRemove = (inngest: PloyzInngest) =>
+export const createProcessMachineRemove = (
+  inngest: PloyzInngest,
+  runEffect: EffectRunner = runInngestEffect,
+  observe: typeof observeOrganization = observeOrganization,
+) =>
   inngest.createFunction(
   {
     id: PROCESS_MACHINE_REMOVE_FUNCTION_ID,
-    retries: 5,
+    retries: MACHINE_REMOVE_RETRIES,
     triggers: [{ event: machineRemoveRequestedEventType }],
     concurrency: [{ key: "event.data.attemptId", limit: 1 }],
     onFailure: async ({ event }) =>
-      executeProcessMachineRemoveOnFailure({ event }),
+      executeProcessMachineRemoveOnFailure({ event }, runEffect),
   },
-  async ({ event, step, runId }) =>
+  async ({ event, step, runId, attempt }) =>
     executeProcessMachineRemove({
       event,
       step,
       runId,
-    }),
+      attempt,
+    }, runEffect, observe),
   );
 
 export const createCancelMachineRemove = (inngest: PloyzInngest) => {

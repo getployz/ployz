@@ -1,9 +1,10 @@
-import type { Client, Connection } from "@ployz/sdk";
+import type { Client, Connection, RuntimeWatchView } from "@ployz/sdk";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber } from "effect";
 import { asTestDouble } from "#/lib/test-double";
 import { MissingDataLossIdentities } from "#/modules/runtime/data-loss-confirm";
 import {
+  firstFrame,
   makePloyzLayer,
   Ployz,
   PloyzProviderError,
@@ -123,5 +124,31 @@ it.effect("cancels an in-flight SDK connection when its fiber is interrupted", (
     assert.isFalse(signal.aborted);
     yield* Fiber.interrupt(fiber);
     assert.isTrue(signal.aborted);
+  }),
+);
+
+const rpcError = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+const watching = (next: () => Promise<IteratorResult<RuntimeWatchView>>) => () => ({
+  [Symbol.asyncIterator]: () => ({ next }),
+});
+
+it.live("marks a first frame worth waiting for when none came in time or the transport dropped", () =>
+  Effect.gen(function* () {
+    const silent = yield* firstFrame(watching(() => new Promise(() => {})), 1).pipe(Effect.flip);
+    const dropped = yield* firstFrame(watching(() => Promise.reject(rpcError("unavailable", "connection reset"))), 1_000).pipe(Effect.flip);
+
+    assert.isTrue(silent.waitable);
+    assert.isTrue(dropped.waitable);
+  }),
+);
+
+it.effect("marks a first frame not worth waiting for when the Cluster answered with an error or ended the watch", () =>
+  Effect.gen(function* () {
+    const refused = yield* firstFrame(watching(() => Promise.reject(rpcError("internal", "decode failed"))), 1_000).pipe(Effect.flip);
+    const ended = yield* firstFrame(watching(() => Promise.resolve({ done: true, value: undefined })), 1_000).pipe(Effect.flip);
+
+    assert.isFalse(refused.waitable);
+    assert.isFalse(ended.waitable);
   }),
 );

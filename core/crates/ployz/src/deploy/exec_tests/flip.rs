@@ -1,9 +1,5 @@
 use super::*;
 
-fn api() -> QualifiedService {
-    QualifiedService::new(test_namespace(), ServiceName::parse("api").unwrap())
-}
-
 fn web_run(machine_id: &MachineId) -> DeployOperation {
     let mut web = spec(None, None, None);
     web.name = ServiceName::parse("web").unwrap();
@@ -160,6 +156,7 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
             containers: vec![kept, replaced],
             previous: None,
             retiring: vec![draining],
+            deciding: None,
         },
     );
     let mut groups = crate::deploy::planning::test_groups(&plan);
@@ -193,6 +190,7 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
             containers: vec![kept, new],
             previous: Some(older),
             retiring: vec![draining, replaced],
+            deciding: None,
         }
     );
     assert_eq!(
@@ -227,6 +225,7 @@ async fn a_flip_keeps_a_retiring_copy_its_plan_never_saw() {
             containers: vec![kept, replaced],
             previous: None,
             retiring: vec![pending],
+            deciding: None,
         },
     );
     let mut groups = crate::deploy::planning::test_groups(&plan);
@@ -249,6 +248,7 @@ async fn a_flip_keeps_a_retiring_copy_its_plan_never_saw() {
             containers: vec![kept, new],
             previous: Some(older),
             retiring: vec![pending, replaced],
+            deciding: None,
         }
     );
     assert!(
@@ -278,6 +278,7 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
             containers: vec![kept, removed],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
 
@@ -298,6 +299,7 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
             containers: vec![kept],
             previous: Some(older),
             retiring: vec![removed],
+            deciding: None,
         }
     );
     assert_eq!(*client.removed_after.lock().unwrap(), [(removed, 1)]);
@@ -322,6 +324,7 @@ async fn a_removal_of_a_copy_the_row_still_points_at_is_refused() {
             containers: vec![kept, removed],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
     let mut groups = scale_down_groups(&[kept]);
@@ -403,6 +406,7 @@ async fn a_rollout_removal_waits_until_every_machine_routes_the_new_pointer() {
             containers: vec![replaced],
             previous: None,
             retiring: vec![draining],
+            deciding: None,
         },
     );
 
@@ -678,12 +682,14 @@ async fn a_labelled_first_deploy_pins_what_serves_and_retires_it_behind_previous
                 containers: vec![old],
                 previous: None,
                 retiring: Vec::new(),
+                deciding: None,
             },
             ServingPointer {
                 deploy: run_id(),
                 containers: vec![new],
                 previous: Some(labelled),
                 retiring: vec![old],
+                deciding: None,
             },
         ]
     );
@@ -718,6 +724,72 @@ async fn a_lost_publish_reply_keeps_the_copies_the_row_points_at() {
             .get(&api())
             .map(|pointer| pointer.containers.clone()),
         Some(vec![new])
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_lost_publish_reply_with_no_read_back_ends_the_service_unconfirmed() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        lost_reply: true,
+        unreadable_flip: true,
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(outcome.services()).unwrap(),
+        serde_json::json!([{"service": "api", "result": "unconfirmed"}])
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_cancel_before_the_publish_is_sent_ends_the_service_old() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![stop(&machine, &old)];
+    let cancellation = CancellationToken::new();
+    let row = ServingPointer {
+        deploy: DeploymentLogId::parse("older").unwrap(),
+        containers: vec![old],
+        previous: None,
+        retiring: Vec::new(),
+        deciding: None,
+    };
+    let client = Scripted {
+        cancel_on: Some((Call::Stop(machine, old), cancellation.clone())),
+        ..Scripted::new(vec![ok(Call::Stop(machine, old))])
+    };
+    client.pointers.lock().unwrap().insert(api(), row);
+    let mut groups = scale_down_groups(&[]);
+    groups.truncate(1);
+    groups.first_mut().unwrap().steps = vec![crate::deploy::schedule::Step::Serial(0)];
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups);
+
+    let outcome =
+        super::super::execute_operation_sequence(&plan, &run_id(), &client, &cancellation, None)
+            .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(outcome.services()).unwrap(),
+        serde_json::json!([{"service": "api", "result": "old"}])
     );
     client.assert_done();
 }
@@ -766,6 +838,7 @@ async fn a_stop_first_publish_with_no_reply_keeps_the_new_copy_and_restarts_the_
             containers: vec![old],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
 
@@ -786,6 +859,7 @@ async fn a_dropped_publish_is_not_landed_by_an_earlier_row_of_the_same_deploy() 
         containers: vec![container('a')],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     let plan = vec![run(&machine, spec(None, None, None), true)];
     let client = Scripted {
@@ -848,12 +922,14 @@ async fn a_first_flip_keeps_the_replicas_the_plan_left_running() {
                 containers: vec![kept],
                 previous: None,
                 retiring: Vec::new(),
+                deciding: None,
             },
             ServingPointer {
                 deploy: run_id(),
                 containers: vec![kept, new],
                 previous: Some(pin),
                 retiring: Vec::new(),
+                deciding: None,
             },
         ]
     );
@@ -879,6 +955,7 @@ async fn a_rollback_that_keeps_a_retiring_copy_repoints_it_before_removing_the_o
             containers: vec![removed],
             previous: Some(DeploymentLogId::parse("d0").unwrap()),
             retiring: vec![kept],
+            deciding: None,
         },
     );
 
@@ -899,6 +976,7 @@ async fn a_rollback_that_keeps_a_retiring_copy_repoints_it_before_removing_the_o
             containers: vec![kept],
             previous: Some(current),
             retiring: vec![removed],
+            deciding: None,
         }
     );
     assert_eq!(*client.removed_after.lock().unwrap(), [(removed, 1)]);
@@ -924,6 +1002,7 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
             containers: vec![old],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
 
@@ -933,11 +1012,16 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
         matches!(outcome, DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
-    let pointers: Vec<_> = [client.pins(), client.publications()]
+    let (pointers, holds): (Vec<_>, Vec<_>) = [client.pins(), client.publications()]
         .concat()
         .into_iter()
-        .map(|publication| publication.pointer)
-        .collect();
+        .map(|publication| {
+            let mut pointer = publication.pointer;
+            let hold = pointer.deciding.take().map(|hold| hold.deploy);
+            (pointer, hold)
+        })
+        .unzip();
+    assert_eq!(holds, [Some(run_id()), None]);
     assert_eq!(
         pointers,
         [
@@ -946,12 +1030,14 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
                 containers: Vec::new(),
                 previous: Some(older.clone()),
                 retiring: vec![old],
+                deciding: None,
             },
             ServingPointer {
                 deploy: run_id(),
                 containers: vec![new],
                 previous: Some(older),
                 retiring: vec![old],
+                deciding: None,
             },
         ]
     );
@@ -972,6 +1058,7 @@ async fn a_stop_first_replacement_that_cannot_inspect_its_old_copy_leaves_the_ro
         containers: vec![old],
         previous: Some(DeploymentLogId::parse("d0").unwrap()),
         retiring: Vec::new(),
+        deciding: None,
     };
     client.pointers.lock().unwrap().insert(api(), row.clone());
 
@@ -1045,6 +1132,7 @@ async fn a_stop_first_retirement_in_flight_does_not_hold_up_another_services_fli
             containers: vec![old],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
 
@@ -1067,6 +1155,7 @@ async fn a_stop_first_retirement_in_flight_does_not_hold_up_another_services_fli
             containers: vec![new],
             previous: Some(older),
             retiring: vec![old],
+            deciding: None,
         })
     );
     let web = QualifiedService::new(test_namespace(), web);
@@ -1385,6 +1474,7 @@ async fn a_stop_of_a_copy_another_deploy_now_points_at_is_superseded() {
         containers: vec![old],
         previous: Some(older.clone()),
         retiring: Vec::new(),
+        deciding: None,
     };
     let client = Scripted {
         rival: Some(winner.clone()),
@@ -1397,6 +1487,7 @@ async fn a_stop_of_a_copy_another_deploy_now_points_at_is_superseded() {
             containers: vec![old],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
     let mut groups = scale_down_groups(&[]);
@@ -1428,6 +1519,7 @@ async fn a_pin_that_loses_to_another_deploy_stops_with_nothing_touched() {
         containers: vec![container('e')],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     let client = Scripted {
         observations: Some(Vec::new()),
@@ -1522,6 +1614,7 @@ async fn a_row_naming_a_gone_container_is_repinned_to_what_serves() {
         containers: vec![gone],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     let client = Scripted {
         observations: Some(Vec::new()),
@@ -1651,5 +1744,59 @@ async fn a_join_starts_once_every_dependency_it_needs_is_routed() {
         "{outcome:?}"
     );
     assert_eq!(client.publications().len(), 3);
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
+    use crate::deploy::{ServiceGroup, Step};
+
+    let machine = machine('1');
+    let operations = vec![run(&machine, spec(None, None, None), true)];
+    let groups = vec![
+        ServiceGroup {
+            service: Some(ServiceName::parse("db").unwrap()),
+            dependencies: Vec::new(),
+            steps: Vec::new(),
+            publish: false,
+            kept: vec![container('d')],
+        },
+        ServiceGroup {
+            service: Some(ServiceName::parse("api").unwrap()),
+            dependencies: vec![ServiceName::parse("db").unwrap()],
+            steps: vec![Step::Parallel(vec![0])],
+            publish: true,
+            kept: Vec::new(),
+        },
+    ];
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        operations,
+        test_namespace(),
+        groups,
+    );
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &container('a'),
+    )]);
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    let recorded = ployz_core::config::project_runtime_outcome(
+        plan.preview(),
+        serde_json::json!({ "version": 1, "outcome": outcome }),
+    );
+    assert!(recorded.is_ok(), "{recorded:?}");
     client.assert_done();
 }

@@ -6,6 +6,9 @@
 //! Servers next, `Admit::Remove` takes it off under the mark without asking again,
 //! and the sweep deletes the target once nothing of it runs. Branches come off
 //! before their Parents, and a Project's Default Environment last.
+//!
+//! A removal with nothing new to try reports stalled with its reason; nothing
+//! retries it on a timer.
 
 mod due;
 pub(crate) mod mark;

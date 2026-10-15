@@ -1,3 +1,9 @@
+//! The retire loop: stops this Machine's own Containers a Serving Pointer
+//! superseded, once every Machine not Down acked the pointer's deploy without them,
+//! or `FORCE_AFTER` after it first saw them. It re-derives everything from rows
+//! and Docker, so a restart resumes it, and it never starts, places or moves a
+//! Container.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     future::Future,
@@ -254,7 +260,9 @@ impl Candidate {
             .iter()
             .any(|(_, pointer)| pointer.containers.contains(&self.container));
         let retiring = pointers.get(&self.service).is_some_and(|pointer| {
-            pointer.deploy == self.deploy && pointer.retiring.contains(&self.container)
+            pointer.deploy == self.deploy
+                && !pointer.is_held()
+                && pointer.retiring.contains(&self.container)
         });
         retiring && !pointed
     }
@@ -302,6 +310,7 @@ impl Retirer {
             .collect();
         pointers
             .iter()
+            .filter(|(_, pointer)| !pointer.is_held())
             .flat_map(|(service, pointer)| {
                 pointer
                     .retiring
@@ -640,11 +649,11 @@ mod tests {
         future::Future,
         io,
         sync::{Arc, Mutex},
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use ployz_core::{
-        AdvertisedEndpoint, ContainerId, DeploymentLogId, Machine, MachineId, MachineName,
+        AdvertisedEndpoint, ContainerId, DeploymentLogId, Hold, Machine, MachineId, MachineName,
         MachineRuntime, MembershipEvidence, QualifiedService, ServingPointer, WireGuardPublicKey,
     };
     use tokio::{task::JoinSet, time::Instant};
@@ -702,6 +711,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d1")),
                 retiring: vec![id("a")],
+                deciding: None,
             },
         )])
     }
@@ -1032,6 +1042,7 @@ mod tests {
                 containers: vec![id("c")],
                 previous: Some(deploy("d2")),
                 retiring: vec![id("a"), id("b")],
+                deciding: None,
             },
         )]);
         let decided = decide_now(
@@ -1054,6 +1065,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: None,
                 retiring: vec![id("b")],
+                deciding: None,
             },
         )]);
         let mut retirer = Retirer::default();
@@ -1159,6 +1171,7 @@ mod tests {
                 containers: Vec::new(),
                 previous: Some(deploy("d1")),
                 retiring: vec![id("a")],
+                deciding: None,
             },
         )]);
         let acks = Acks::from([((one.id, service()), acked("d2", &[]))]);
@@ -1291,6 +1304,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d1")),
                 retiring: vec![id("a"), id("c")],
+                deciding: None,
             })
             .unwrap(),
         );
@@ -1325,6 +1339,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: None,
                 retiring: Vec::new(),
+                deciding: None,
             })
             .unwrap(),
         );
@@ -1365,6 +1380,119 @@ mod tests {
         round(&host, &store, &mut Retirer::default(), &mut stopping).await;
         while stopping.join_next().await.is_some() {}
 
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        server.abort();
+    }
+
+    fn held_until(until: SystemTime) -> ServingPointer {
+        let mut row = pointers().get(&service()).cloned().unwrap();
+        row.deciding = Some(Hold {
+            deploy: deploy("d3"),
+            until_unix_seconds: until.duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        });
+        row
+    }
+
+    async fn acked_store_holding(
+        row: &ServingPointer,
+        local: &Machine,
+    ) -> (ReplicatedStore, tokio::task::JoinHandle<()>) {
+        let db = corrosion_db();
+        insert_pointer(&db, row);
+        db.execute(
+            "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?)",
+            rusqlite::params![
+                local.id.as_str(),
+                service().to_string(),
+                "d2",
+                serde_json::to_string(&[id("b")]).unwrap()
+            ],
+        )
+        .unwrap();
+        identity_store(db).await
+    }
+
+    #[tokio::test]
+    async fn a_copy_an_undecided_deploy_stopped_is_never_retired() {
+        let local = machine("local", 1);
+        let row = held_until(SystemTime::now() + Duration::from_secs(3600));
+        let (store, server) = acked_store_holding(&row, &local).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+
+        assert_holds_a(&host);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_copy_whose_deploy_died_holding_it_is_retired_once_the_hold_lapses() {
+        let local = machine("local", 1);
+        let row = held_until(SystemTime::now() - Duration::from_secs(1));
+        let (store, server) = acked_store_holding(&row, &local).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+
+        assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
+        server.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_hold_older_than_the_cap_is_never_retired() {
+        let one = machine("one", 1);
+        let pointers = ServingPointers::from_iter([(
+            service(),
+            held_until(SystemTime::now() + Duration::from_secs(3600)),
+        )]);
+        let mut retirer = Retirer::default();
+        let required = ackers(&[&one, &machine("two", 2)]);
+        let acks = acked_away(&[&one]);
+        assert!(decide_now(&mut retirer, &pointers, &acks, &required, &[id("a")]).is_empty());
+        tokio::time::advance(FORCE_AFTER * 2).await;
+        assert!(decide_now(&mut retirer, &pointers, &acks, &required, &[id("a")]).is_empty());
+    }
+
+    async fn drain_waits_out(
+        host: &FakeHost,
+        store: &ReplicatedStore,
+        mut retirer: Retirer,
+        copy: ContainerId,
+    ) -> bool {
+        let mut stopping = JoinSet::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.local.lock().unwrap().contains(&copy) {
+                round(host, store, &mut retirer, &mut stopping).await;
+                while stopping.join_next().await.is_some() {}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    #[tokio::test]
+    async fn an_orphaned_hold_lets_a_drain_finish_across_a_daemon_restart() {
+        let local = machine("local", 1);
+        let until = SystemTime::now() + Duration::from_secs(2);
+        let row = held_until(until);
+        let (store, server) = acked_store_holding(&row, &local).await;
+        let host = FakeHost::new(&[id("a"), id("b")], ackers(&[&local]));
+        let mut stopping = JoinSet::new();
+        round(&host, &store, &mut Retirer::default(), &mut stopping).await;
+        while stopping.join_next().await.is_some() {}
+        assert_holds_a(&host);
+
+        while SystemTime::now() < until + Duration::from_secs(1) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let restarted = Retirer::default();
+        assert!(
+            drain_waits_out(&host, &store, restarted, id("a")).await,
+            "the drain still waits on the held copy"
+        );
         assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
         server.abort();
     }
@@ -1522,6 +1650,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d2")),
                 retiring: Vec::new(),
+                deciding: None,
             },
         );
         let (store, server) = identity_store(db).await;
@@ -1551,6 +1680,7 @@ mod tests {
                 containers: vec![id("b")],
                 previous: Some(deploy("d2")),
                 retiring: Vec::new(),
+                deciding: None,
             },
         );
         let (store, server) = identity_store(db).await;
@@ -1599,6 +1729,7 @@ mod tests {
                     containers: vec![id("a")],
                     previous: Some(deploy("d2")),
                     retiring,
+                    deciding: None,
                 })
                 .unwrap(),
             );
@@ -1720,6 +1851,7 @@ mod tests {
                     containers: vec![b],
                     previous: Some(deploy("d1")),
                     retiring: vec![a],
+                    deciding: None,
                 })
                 .unwrap(),
             );
@@ -1845,6 +1977,7 @@ mod tests {
                 containers: vec![machine.a],
                 previous: Some(deploy("d2")),
                 retiring: vec![machine.b],
+                deciding: None,
             })
             .unwrap(),
         );
@@ -1944,6 +2077,7 @@ mod tests {
             containers: vec![machine.a],
             previous: Some(deploy("d2")),
             retiring: vec![machine.b],
+            deciding: None,
         };
         cluster.write_serving_pointer(
             &ServingPointer::key(&service()),
@@ -2005,6 +2139,7 @@ mod tests {
                 containers: vec![machine.a],
                 previous: Some(deploy("d2")),
                 retiring,
+                deciding: None,
             })
             .unwrap(),
         );
@@ -2051,6 +2186,7 @@ mod tests {
                 containers: vec![id("c")],
                 previous: Some(deploy("d2")),
                 retiring: vec![machine.a, machine.b],
+                deciding: None,
             })
             .unwrap(),
         );

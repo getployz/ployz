@@ -35,6 +35,8 @@ pub use crate::UNREGISTRY_PORT;
 pub use docker::*;
 pub use inspect::*;
 
+/// The Machine RPC major. Every `RpcRequest` and `RpcResponse` envelope
+/// carries it, and decoding an envelope refuses another major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 
 /// When a Machine includes a catalogued capability in `describe_contract`.

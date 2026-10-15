@@ -35,11 +35,14 @@ const setHolder = (connection: Connection, label: string) =>
     return yield* client.setManagementClient(label);
   })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));
 
+/** Only `ployz` credentials hold a Server slot; a remote agent reaches Servers through Cloud. */
+type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "session" | "token" } };
+
 /**
  * The Caller's own capability on every Server of its Organization, provisioning a missing `cli-<id>` holder on
  * first use, including on Servers enrolled after login. A Server that can't be reached now is listed as unreachable.
  */
-export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: Caller) {
+export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: ServerAccessCaller) {
   const loaded = yield* loadOrganizationConnections(caller.organization.id);
   if (loaded.kind === "missing") return { connections: [], unreachable: [] };
   const database = yield* Database;

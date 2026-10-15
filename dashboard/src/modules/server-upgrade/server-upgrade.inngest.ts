@@ -1,12 +1,12 @@
 import type { MachineId, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
-import { newMachineUpgradeAttemptId } from "#/lib/ids";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import { createServerUpgradeRequestedEvent, serverUpgradeRequestedEventType } from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { upgradeFailedMail } from "#/modules/mail/templates/servers/upgrade-failed";
 import { queueOrganizationMail } from "#/modules/notifications/recipients.server";
+import { machineUpgradeAttemptId } from "#/modules/runtime/ployz.server";
 import { type FinalOutcome, type ReleaseChannel, UPGRADE_TRIGGERS } from "#/modules/server-upgrade/server-upgrade";
 import {
   closeRunUpgradeAttempts,
@@ -153,7 +153,7 @@ async function upgradeServer(
       return null;
     }
     // Minted here so every retry of a later step reuses it.
-    return { name: server.name, fromVersion: server.version, attemptId: requested ?? newMachineUpgradeAttemptId() };
+    return { name: server.name, fromVersion: server.version, attemptId: requested ?? machineUpgradeAttemptId(crypto.randomUUID()) };
   });
   if (observed === null) return { kind: "skipped", reason: "not-online" };
   const { name, fromVersion, attemptId } = observed;

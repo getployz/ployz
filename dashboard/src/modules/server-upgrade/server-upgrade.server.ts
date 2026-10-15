@@ -2,7 +2,6 @@ import "@tanstack/react-start/server-only";
 import type { MachineId, MachineUpgradeAttempt, MachineUpgradeAttemptId } from "@ployz/sdk";
 import { and, desc, eq, gte, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { Data, Effect } from "effect";
-import { machineUpgradeAttemptIdOf } from "#/lib/ids";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import type { Actor } from "#/modules/identity/actor";
 import { organization } from "#/modules/organization/tables";
@@ -13,7 +12,7 @@ import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { serverStatus, sortServers } from "#/modules/machines/server-status";
 import { requireAccess } from "#/modules/organization/access.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import { rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { machineUpgradeAttemptId, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import {
   DEFAULT_SERVER_UPGRADE_SETTINGS,
   endEvidence,
@@ -529,7 +528,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
   if (observed.value === null) return unavailable("This Server isn't online and idle, so it can't take an Upgrade now.");
   const from = observed.value.version;
   return (attempt: string) => Effect.gen(function* () {
-    const attemptId = machineUpgradeAttemptIdOf(attempt);
+    const attemptId = machineUpgradeAttemptId(attempt);
     const request = { organizationId: caller.organizationId, machineId: input.machineId, trigger: "manual", userId: caller.userId, attemptId } as const;
     yield* recordUpgradeAttempt({ request, attemptId, channel, fromVersion: from, inngestRunId: UNCLAIMED });
     yield* enqueueEvent(createCliServerUpgradeRequestedEvent(request));

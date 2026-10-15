@@ -13,7 +13,7 @@ use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
     DependencyHealthFailure, DeployEvent, DeploymentLogId, DockerVolumeId, Drain, ExecutionError,
-    FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, HookFailure,
+    FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, Hold, HookFailure,
     InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
     MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
     PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
@@ -31,7 +31,7 @@ use ployz_core::EnvironmentValues;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestartAttempt,
     StopAttempt,
-    schedule::{Action, Event, Schedule, ServiceGroup, Task, TaskKind, starts_container},
+    schedule::{Action, Event, Schedule, ServiceGroup, Step, Task, TaskKind, starts_container},
 };
 use crate::serving_publish::{AMEND_RETRIES, Applied, Protection, Rotation, succession};
 
@@ -47,6 +47,8 @@ const RESTART_POLL: Duration = Duration::from_millis(250);
 const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a dependent waits for one Machine to route its dependency's Deploy.
 const ACK_WAIT: Duration = Duration::from_secs(300);
+const HOLD_BEYOND_HEALTH: Duration = Duration::from_secs(60 * 60);
+const HOLD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[allow(clippy::large_enum_variant)]
 enum Stop {
@@ -354,6 +356,7 @@ impl Ran {
     }
 }
 
+#[derive(Clone)]
 enum OperationFailure {
     Ordinary(ExecutionError),
     Replacement {
@@ -621,11 +624,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         return untouched(&progress, &schedule, operations, index, error);
     }
 
-    let rows = Rows {
-        namespace: &plan.namespace,
-        groups: plan.groups(),
-        admitted: std::sync::Mutex::new(BTreeMap::new()),
-    };
+    let rows = Rows::new(plan, run);
     for group in 0..plan.groups().len() {
         let Some(service) = schedule.group(group).publishing_service() else {
             continue;
@@ -799,6 +798,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let new = started.entry(group).or_default();
                 let result = match result {
                     Ok(publication) => Ok(publication),
+                    Err(ExecutionError::Cancelled) => Err(ExecutionError::Cancelled),
                     Err(_) if publish_landed(client, &service, &pointer).await => {
                         Ok(ServingPointerPublication::Published)
                     }
@@ -828,7 +828,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             error,
                             compensation: None,
                         });
-                        schedule.apply(Event::PublishFailed(group));
+                        schedule.apply(if unread.contains(&group) {
+                            Event::PublishUnconfirmed(group)
+                        } else {
+                            Event::PublishFailed(group)
+                        });
                     }
                 }
             }
@@ -910,6 +914,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 started.remove(&group).unwrap_or_default()
             };
             restore_group(client, started, stopped.remove(&group).unwrap_or_default()).await;
+            rows.restore_held_copies(client, group).await;
         }
     }
 
@@ -1080,6 +1085,7 @@ async fn live_pin<C: MachineOperations>(
             .collect(),
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     if current.as_ref().is_some_and(|current| {
         current
@@ -1197,10 +1203,80 @@ async fn publish_group<C: MachineOperations>(
 struct Rows<'a> {
     namespace: &'a Namespace,
     groups: &'a [ServiceGroup],
+    operations: &'a [DeployOperation],
+    run: &'a DeploymentLogId,
     admitted: std::sync::Mutex<BTreeMap<usize, ServingPointer>>,
+    held_old_copies: std::sync::Mutex<BTreeMap<usize, Vec<ContainerId>>>,
+    hold_for: Duration,
+    stop_first: Vec<StopFirstStep<'a>>,
 }
 
-impl Rows<'_> {
+fn hold_for(operations: &[DeployOperation]) -> Duration {
+    operations
+        .iter()
+        .filter_map(DeployOperation::spec)
+        .map(ployz_core::settle_deadline)
+        .fold(HOLD_BEYOND_HEALTH, Duration::saturating_add)
+        .min(HOLD_MAX)
+}
+
+struct StopFirstStep<'a> {
+    tasks: Vec<(usize, &'a ployz_core::ReplacementOperation)>,
+    ready: tokio::sync::OnceCell<Inspected>,
+}
+
+struct Inspected {
+    old: BTreeMap<usize, Result<Option<ContainerObservation>, ExecutionError>>,
+    retired: Result<(), OperationFailure>,
+}
+
+impl<'a> Rows<'a> {
+    fn new(plan: &'a super::DeployPlan, run: &'a DeploymentLogId) -> Self {
+        let operations = plan.operations();
+        let stop_first = plan
+            .groups()
+            .iter()
+            .flat_map(|group| &group.steps)
+            .map(|step| {
+                let tasks = match step {
+                    Step::Serial(index) => vec![*index],
+                    Step::Parallel(indices) => indices.clone(),
+                };
+                tasks
+                    .into_iter()
+                    .filter_map(|index| {
+                        let DeployOperation::ReplaceContainer(replacement) =
+                            operation_at(operations, index)
+                        else {
+                            return None;
+                        };
+                        replacement
+                            .spec
+                            .update
+                            .order
+                            .stops_first()
+                            .then_some((index, replacement))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|tasks| !tasks.is_empty())
+            .map(|tasks| StopFirstStep {
+                tasks,
+                ready: tokio::sync::OnceCell::new(),
+            })
+            .collect();
+        Self {
+            namespace: &plan.namespace,
+            groups: plan.groups(),
+            operations,
+            run,
+            admitted: std::sync::Mutex::new(BTreeMap::new()),
+            held_old_copies: std::sync::Mutex::new(BTreeMap::new()),
+            hold_for: hold_for(operations),
+            stop_first,
+        }
+    }
+
     fn service_of(&self, group: usize, operation: &DeployOperation) -> Option<QualifiedService> {
         let group = self.groups.get(group)?;
         let name = match (&group.service, group.dependencies.as_slice()) {
@@ -1231,12 +1307,68 @@ impl Rows<'_> {
         }
     }
 
+    async fn inspect_and_retire_step<C: MachineOperations>(
+        &self,
+        client: &C,
+        group: usize,
+        index: usize,
+    ) -> Result<Option<ContainerObservation>, OperationFailure> {
+        let step = self
+            .stop_first
+            .iter()
+            .find(|step| step.tasks.iter().any(|(task, _)| *task == index))
+            .expect("every stop-first replacement belongs to a step");
+        let inspected = step
+            .ready
+            .get_or_init(|| async {
+                let replacements = &step.tasks;
+                let old: BTreeMap<_, _> =
+                    join_all(replacements.iter().map(|(index, replacement)| async move {
+                        let old = match client
+                            .inspect_container(
+                                &replacement.machine_id,
+                                &replacement.old_container_id,
+                            )
+                            .await
+                        {
+                            Ok(old) => Ok(Some(old.container)),
+                            Err(error) if error.code == RpcErrorCode::NotFound => Ok(None),
+                            Err(error) => {
+                                Err(machine_error(MachineAction::InspectContainer, error))
+                            }
+                        };
+                        (*index, old)
+                    }))
+                    .await
+                    .into_iter()
+                    .collect();
+                let copies: Vec<ContainerId> = replacements
+                    .iter()
+                    .filter(|(index, _)| old.get(index).is_some_and(Result::is_ok))
+                    .map(|(_, replacement)| replacement.old_container_id)
+                    .collect();
+                let operation = operation_at(self.operations, index);
+                let retired = self
+                    .retire_before_stop(client, group, operation, &copies, Some(self.run))
+                    .await;
+                Inspected { old, retired }
+            })
+            .await;
+        inspected.retired.clone()?;
+        Ok(inspected
+            .old
+            .get(&index)
+            .cloned()
+            .expect("the step inspected every task")?)
+    }
+
     async fn retire_before_stop<C: MachineOperations>(
         &self,
         client: &C,
         group: usize,
         operation: &DeployOperation,
-        copy: &ContainerId,
+        copies: &[ContainerId],
+        deciding: Option<&DeploymentLogId>,
     ) -> Result<(), OperationFailure> {
         let Some(service) = self.service_of(group, operation) else {
             return Ok(());
@@ -1248,9 +1380,10 @@ impl Rows<'_> {
             .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?
             .pointer;
         for _ in 0..=AMEND_RETRIES {
-            let row = match Protection::of(current, copy) {
-                Protection::Unnamed | Protection::Retiring(_) => return Ok(()),
-                Protection::Pointed(row) => row,
+            let Some(row) =
+                current.filter(|row| copies.iter().any(|copy| row.containers.contains(copy)))
+            else {
+                return Ok(());
             };
             if admitted
                 .as_ref()
@@ -1261,22 +1394,43 @@ impl Rows<'_> {
                     current: row,
                 });
             }
-            let Applied::Next(next) = Rotation::leaving([*copy]).apply(&row) else {
+            let leaving: Vec<ContainerId> = copies
+                .iter()
+                .filter(|copy| row.containers.contains(copy))
+                .copied()
+                .collect();
+            let Applied::Next(mut next) = Rotation::leaving(leaving.clone()).apply(&row) else {
                 return Ok(());
             };
+            if let Some(deciding) = deciding {
+                next.deciding = Some(Hold::lasting(deciding.clone(), self.hold_for));
+            }
             let publication = client
                 .publish_pointer(PublishServingPointerRequest {
                     service: service.clone(),
                     read: Some(row),
                     pointer: next.clone(),
                 })
-                .await
-                .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?;
-            match publication {
-                ServingPointerPublication::Published => {
-                    self.admitted.lock().unwrap().insert(group, next);
-                    return Ok(());
+                .await;
+            // A write with no reply may have landed, so a hold is tracked
+            // either way; releasing an unlanded hold changes nothing.
+            if matches!(publication, Ok(ServingPointerPublication::Published))
+                || publication.is_err() && deciding.is_some()
+            {
+                self.admitted.lock().unwrap().insert(group, next);
+                if deciding.is_some() {
+                    self.held_old_copies
+                        .lock()
+                        .unwrap()
+                        .entry(group)
+                        .or_default()
+                        .extend(leaving);
                 }
+            }
+            match publication
+                .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?
+            {
+                ServingPointerPublication::Published => return Ok(()),
                 ServingPointerPublication::Superseded { current: newer } => current = newer,
             }
         }
@@ -1293,6 +1447,77 @@ impl Rows<'_> {
             },
         )
         .into())
+    }
+
+    async fn restore_held_copies<C: MachineOperations>(&self, client: &C, group: usize) {
+        let Some(copies) = self.held_old_copies.lock().unwrap().remove(&group) else {
+            return;
+        };
+        let Some(admitted) = self.admitted.lock().unwrap().get(&group).cloned() else {
+            return;
+        };
+        let Some(service) = self
+            .groups
+            .get(group)
+            .and_then(|group| group.service.clone())
+        else {
+            return;
+        };
+        let service = QualifiedService::new(self.namespace.clone(), service);
+        let mut current = Some(admitted.clone());
+        for _ in 0..=AMEND_RETRIES {
+            let row = match current.take() {
+                Some(row) => row,
+                None => match client.read_pointer(&service).await {
+                    Ok(read) => match read.pointer {
+                        Some(row) => row,
+                        None => return,
+                    },
+                    Err(_) => continue,
+                },
+            };
+            if row.deploy != admitted.deploy {
+                return;
+            }
+            let mut next = row.clone();
+            next.retiring.retain(|id| !copies.contains(id));
+            for copy in &copies {
+                if row.retiring.contains(copy) && !next.containers.contains(copy) {
+                    next.containers.push(*copy);
+                }
+            }
+            if next
+                .deciding
+                .as_ref()
+                .is_some_and(|hold| hold.deploy == *self.run)
+            {
+                next.deciding = None;
+            }
+            if next.retiring.is_empty() && next.previous.as_ref() == Some(&next.deploy) {
+                next.previous = None;
+            }
+            if next == row {
+                return;
+            }
+            match client
+                .publish_pointer(PublishServingPointerRequest {
+                    service: service.clone(),
+                    read: Some(row),
+                    pointer: next.clone(),
+                })
+                .await
+            {
+                Ok(ServingPointerPublication::Published) => {
+                    self.admitted.lock().unwrap().insert(group, next);
+                    return;
+                }
+                Ok(ServingPointerPublication::Superseded { current: newer }) => {
+                    let Some(newer) = newer else { return };
+                    current = Some(newer);
+                }
+                Err(_) => {}
+            }
+        }
     }
 }
 
@@ -1373,7 +1598,7 @@ async fn execute_operation<C: MachineOperations>(
             container_id,
             ..
         } => {
-            rows.retire_before_stop(client, group, operation, container_id)
+            rows.retire_before_stop(client, group, operation, &[*container_id], None)
                 .await?;
             progress.set_running(index, OperationPhase::StoppingContainer);
             stop(client, machine_id, container_id, Drain::DEFAULT, None)
@@ -1408,18 +1633,7 @@ async fn execute_operation<C: MachineOperations>(
                 Some(replacement.old_container_id),
             );
             if replacement.spec.update.order.stops_first() {
-                let old = match client
-                    .inspect_container(&replacement.machine_id, &replacement.old_container_id)
-                    .await
-                {
-                    Ok(old) => Some(old.container),
-                    Err(error) if error.code == RpcErrorCode::NotFound => None,
-                    Err(error) => {
-                        return Err(machine_error(MachineAction::InspectContainer, error).into());
-                    }
-                };
-                rows.retire_before_stop(client, group, operation, &replacement.old_container_id)
-                    .await?;
+                let old = rows.inspect_and_retire_step(client, group, index).await?;
                 return replace_stop_first(
                     client,
                     index,

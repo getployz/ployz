@@ -1,7 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, gt } from "drizzle-orm";
-import { Effect } from "effect";
-import { member, organizationToken } from "#/modules/identity/tables";
+import { and, arrayContains, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { Effect, Schema } from "effect";
+import { Uuid } from "#/lib/schema";
+import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
+import { member, organizationToken, session } from "#/modules/identity/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -88,6 +90,60 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string)
   } satisfies Caller;
 });
 
+const GrantClaims = Schema.Struct({
+  sub: Uuid,
+  sid: Uuid,
+  org: Uuid,
+  grant: Uuid,
+  azp: Schema.optionalKey(Schema.String),
+  client_id: Schema.optionalKey(Schema.String),
+});
+export type GrantClaims = typeof GrantClaims.Type;
+
+/** The Ployz grant a verified access token carries, or None when the token wasn't issued through /connect. */
+export const grantClaimsOf = Schema.decodeUnknownOption(GrantClaims);
+
+/**
+ * A remote agent's verified access token, acting through the consent it was issued under. The consent names the
+ * Organization; the grant ends when the consent is revoked or loses the `ployz` scope, the client is disabled, the signing-in session ends, or
+ * the user leaves the Organization, which deletes the consent as disconnecting does. Rejoining doesn't revive it: the membership must
+ * predate the consent's first Allow, which better-auth stamps in whole seconds and keeps when a later Allow updates the row.
+ */
+export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: GrantClaims) {
+  const { sub, sid, org, grant, azp, client_id } = claims;
+  const clientId = azp ?? client_id;
+  if (clientId === undefined) return yield* new Unauthorized();
+  const database = yield* Database;
+  const rows = yield* database.drizzle
+    .select({ slug: organization.slug, role: member.role })
+    .from(oauthConsent)
+    .innerJoin(oauthClient, eq(oauthClient.clientId, oauthConsent.clientId))
+    .innerJoin(organization, eq(organization.id, org))
+    .innerJoin(member, and(eq(member.organizationId, org), eq(member.userId, sub)))
+    .innerJoin(session, and(eq(session.id, sid), eq(session.userId, sub)))
+    .where(and(
+      eq(oauthConsent.id, grant),
+      eq(oauthConsent.userId, sub),
+      eq(oauthConsent.clientId, clientId),
+      eq(oauthConsent.referenceId, org),
+      arrayContains(oauthConsent.scopes, ["ployz"]),
+      or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
+      gt(session.expiresAt, new Date()),
+      sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
+    ))
+    .limit(1);
+  const row = rows[0];
+  if (row === undefined) return yield* new Unauthorized();
+  return {
+    userId: sub,
+    organization: { id: org, slug: row.slug },
+    credential: { kind: "oauth", id: grant },
+    role: row.role,
+    support: null,
+    via: "agent",
+  } satisfies Caller;
+});
+
 const membership = Effect.fn("Identity.membership")(function* (userId: string, organizationId: string) {
   const database = yield* Database;
   const rows = yield* database.drizzle
@@ -99,16 +155,16 @@ const membership = Effect.fn("Identity.membership")(function* (userId: string, o
   return rows[0];
 });
 
-/** The Organizations a Caller may act in: a session's memberships, or a token's one Organization. */
+/** The Organizations a Caller may act in: a session's memberships, or a token's or grant's one Organization. */
 export const callerOrganizations = Effect.fn("Identity.callerOrganizations")(function* (caller: Caller) {
   const database = yield* Database;
   const rows = yield* database.drizzle
     .select({ id: organization.id, slug: organization.slug, name: organization.name })
     .from(member)
     .innerJoin(organization, eq(organization.id, member.organizationId))
-    .where(caller.credential.kind === "token"
-      ? and(eq(member.userId, caller.userId), eq(member.organizationId, caller.organization.id))
-      : eq(member.userId, caller.userId))
+    .where(caller.credential.kind === "session"
+      ? eq(member.userId, caller.userId)
+      : and(eq(member.userId, caller.userId), eq(member.organizationId, caller.organization.id)))
     .orderBy(organization.slug);
   return rows.map((row) => ({ ...row, current: row.id === caller.organization.id }));
 });

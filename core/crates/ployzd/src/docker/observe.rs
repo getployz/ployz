@@ -22,7 +22,8 @@ const EVENT_DEBOUNCE: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub(super) struct StrandedIngress {
-    /// Stopped on request, so never started unasked.
+    /// Stopped on request, so never started unasked. Held in daemon memory, so a
+    /// daemon restart forgets it.
     pub(super) held: BTreeSet<ContainerId>,
     /// The last one whose failure was logged. Docker names a fresh endpoint in
     /// every failure, so comparing the messages would log every scan.
@@ -252,6 +253,9 @@ impl ContainerRuntime {
         publication
             .apply_container_rows(&machine_id, &changes.deletions, &changes.upserts)
             .await?;
+        // The one Service Container the daemon starts unasked, and only while this Machine
+        // participates and accepts ingress. It starts an existing container; it never
+        // creates, replaces, moves or removes one.
         // Started after the guard drops, so a slow Docker start never stalls publication.
         // A reset that takes the guard meanwhile removes the container anyway. The record
         // is read again here, so a policy change that committed during publication holds.

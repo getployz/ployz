@@ -1,15 +1,18 @@
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Effect, Option, Schema } from "effect";
 import { getClusterDomainCollection, getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { prefetchRemote, prefetchStoreViews } from "#/collections/route-data";
+import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
+import { CONNECT_NOTICES } from "#/modules/github/github-connect";
+import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
+import { GithubSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/github-settings";
 import { BUILD_ORDER_QUERY, BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
@@ -21,35 +24,46 @@ import { MembersSettings } from "#/routes/_protected/cloud/$organizationSlug/_or
 import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/support-access-section";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
-const settingsSectionSchema = Schema.Literals(["general", "members", "builds"]);
+const settingsSectionSchema = Schema.Literals(["general", "members", "github", "builds"]);
 
 // Not `tab`: search keys share one type across routes, and the service panel's `tab` means something else.
 const settingsSearchSchema = Schema.Struct({
   section: Schema.optional(settingsSectionSchema.pipe(
     Schema.catchDecoding(() => Effect.succeed(Option.some("general" as const))),
   )),
+  connect: Schema.optional(Schema.Literals(CONNECT_NOTICES).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
+  offer: Schema.optional(Schema.String.check(Schema.isMaxLength(8192)).pipe(Schema.catchDecoding(() => Effect.succeedNone))),
 });
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
   validateSearch: Schema.toStandardSchemaV1(settingsSearchSchema),
-  loader: ({ params, context }) => Promise.all([
-    prefetchStoreViews(context, params.organizationSlug, projectsQuery(), BUILD_ORDER_QUERY),
-    prefetchRemote(context, organizationMembersQueryOptions(params.organizationSlug)),
-  ]),
+  loaderDeps: ({ search }) => ({ section: search.section, offer: search.offer }),
+  loader: ({ params, context, deps }) => prefetchRemoteWithStoreViews(context, params.organizationSlug, [projectsQuery(), BUILD_ORDER_QUERY],
+    organizationMembersQueryOptions(params.organizationSlug),
+    ...deps.section === "github" ? [organizationGithubQueryOptions(params.organizationSlug)] : [],
+    ...deps.section === "github" && deps.offer ? [githubOfferQueryOptions(params.organizationSlug, deps.offer)] : []),
   component: RouteComponent,
 });
 
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
-  const { section = "general" } = Route.useSearch();
+  const { section = "general", connect, offer } = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
   const supportAvailable = useQuery(organizationStateQueryOptions(organizationSlug)).data?.supportAvailable === true;
 
   return (
     <DashboardPage width="content">
       {/* The top bar names the page; the rail, or on phones the strip under the top bar, picks the section. */}
-      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : (
+      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : section === "github" ? (
+        <GithubSettings
+          organizationSlug={organizationSlug}
+          notice={connect}
+          offer={offer}
+          clearConnectSearch={() => void navigate({ search: { section }, replace: true })}
+        />
+      ) : (
         <div className="flex flex-col gap-6">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />

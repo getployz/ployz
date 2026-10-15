@@ -72,6 +72,8 @@ const rawFields = {
   githubAppId: Config.nonEmptyString("GITHUB_APP_ID"),
   githubAppPrivateKey: Config.schema(NonEmptySecret, "GITHUB_APP_PRIVATE_KEY"),
   githubAppSlug: Config.nonEmptyString("GITHUB_APP_SLUG"),
+  githubAppClientId: Config.nonEmptyString("GITHUB_APP_CLIENT_ID"),
+  githubAppClientSecret: Config.schema(NonEmptySecret, "GITHUB_APP_CLIENT_SECRET"),
   githubAppWebhookSecret: Config.schema(
     NonEmptySecret,
     "GITHUB_APP_WEBHOOK_SECRET",
@@ -243,6 +245,8 @@ const makeAppConfig = Effect.gen(function* () {
       appId: raw.githubAppId,
       appPrivateKey: raw.githubAppPrivateKey,
       appSlug: raw.githubAppSlug,
+      appClientId: raw.githubAppClientId,
+      appClientSecret: raw.githubAppClientSecret,
       appWebhookSecret: raw.githubAppWebhookSecret,
       origins: githubOrigins,
     },

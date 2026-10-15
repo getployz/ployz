@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { Context, Data, Effect, Layer, Result, Schema } from "effect";
+import { Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
 import type { GithubAccess, GithubDisconnected } from "#/modules/github/github-access";
 import {
   GITHUB_COMPARE_STATUSES,
@@ -60,7 +60,10 @@ export type GithubObservationOperation =
   | "fetch_pull_request"
   | "list_check_runs"
   | "create_check_run"
-  | "update_check_run";
+  | "update_check_run"
+  | "exchange_user_code"
+  | "list_user_installations"
+  | "read_user_membership";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -177,6 +180,7 @@ const installationRepositoriesSchema = Schema.Struct({
   total_count: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
 });
 export type GithubInstallationRepositoriesResponse = typeof installationRepositoriesSchema.Type;
+const userAccessTokenSchema = Schema.Struct({ access_token: nonEmptyString });
 export const GITHUB_REPOSITORIES_PAGE_SIZE = 100;
 
 export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
@@ -195,6 +199,14 @@ export type GithubAppRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   schema: S;
 };
 
+/** A read as the person who authorized the App, with the token their OAuth code exchanged for. */
+export type GithubUserRequest<S extends Schema.ConstraintDecoder<unknown>> = {
+  token: Redacted.Redacted<string>;
+  path: `/user${string}`;
+  operation: GithubObservationOperation;
+  schema: S;
+};
+
 export type GithubReadError = GithubObservationError | GithubDisconnected;
 
 export interface GithubApiService {
@@ -209,6 +221,10 @@ export interface GithubApiService {
   readonly installationRepositories: (
     input: { installationId: number; page: number },
   ) => Effect.Effect<GithubInstallationRepositoriesResponse, GithubObservationError>;
+  readonly exchangeUserCode: (code: string) => Effect.Effect<Redacted.Redacted<string>, GithubObservationError>;
+  readonly userJson: <S extends Schema.ConstraintDecoder<unknown>>(
+    input: GithubUserRequest<S>,
+  ) => Effect.Effect<S["Type"], GithubObservationError>;
 }
 
 export class GithubApi extends Context.Service<GithubApi, GithubApiService>()(
@@ -637,6 +653,31 @@ export const GithubApiLive = Layer.effect(
         catch: () => githubObservationError({ code: "request_failed", operation: "download_source", retriable: false }),
       });
     });
-    return { json, app, installationRepositories, archive };
+    const exchangeUserCode: GithubApiService["exchangeUserCode"] = Effect.fn("GithubApi.exchangeUserCode")(function* (code) {
+      const failed = (status?: number) =>
+        githubObservationError({ code: "request_failed", operation: "exchange_user_code", status, retriable: false });
+      const exchanged = yield* Effect.tryPromise({
+        try: async (signal) => {
+          const response = await fetch(`${config.github.origins.web}/login/oauth/access_token`, {
+            signal,
+            method: "POST",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({ client_id: config.github.appClientId, client_secret: Redacted.value(config.github.appClientSecret), code }),
+          });
+          if (!response.ok) throw failed(response.status);
+          const body: unknown = await response.json();
+          return body;
+        },
+        catch: (error) => error instanceof GithubObservationError ? error : failed(),
+      });
+      const { access_token: token } = yield* Schema.decodeUnknownEffect(userAccessTokenSchema)(exchanged).pipe(Effect.mapError(() => failed()));
+      return Redacted.make(token);
+    });
+    const userJson: GithubApiService["userJson"] = Effect.fn("GithubApi.userJson")(
+      function* <S extends Schema.ConstraintDecoder<unknown>>({ token, ...input }: GithubUserRequest<S>) {
+        return yield* request({ ...input, token: Redacted.value(token) });
+      },
+    );
+    return { json, app, installationRepositories, archive, exchangeUserCode, userJson };
   }),
 );

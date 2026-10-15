@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { requireAccess } from "#/modules/organization/access.server";
-import { getVolumeRun, inspectVolumeCopies, listActiveVolumeRuns } from "#/modules/volume-run/volume-run.server";
+import { getVolumeRun, inspectVolumeCopies, isVolumeOwed, listActiveVolumeRuns } from "#/modules/volume-run/volume-run.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volumeId: Schema.NonEmptyString });
@@ -16,6 +16,13 @@ export const inspectVolumeCopiesServerFn = createServerFn({ method: "GET" })
   .validator(strictValidator(VolumeCopiesInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
     Effect.flatMap(({ organization }) => inspectVolumeCopies(organization.id, data.environment, data.volumeId)),
+  )));
+
+export const isVolumeOwedServerFn = createServerFn({ method: "GET" })
+  .middleware([publicErrorMiddleware, actorMiddleware])
+  .validator(strictValidator(VolumeRef))
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+    Effect.flatMap(({ organization }) => isVolumeOwed(organization.id, data.volumeId)),
   )));
 
 export const listActiveVolumeRunsServerFn = createServerFn({ method: "GET" })

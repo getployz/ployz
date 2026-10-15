@@ -1,4 +1,9 @@
 //! Machine-local container admission and creation.
+//!
+//! Creating a Service Container or hook, or preparing its storage, rechecks
+//! placement against fresh local evidence and is refused when this Machine is
+//! ineligible or unknown. Starting, stopping and removing existing Containers stay
+//! available, and editing Machine Labels evicts nothing.
 
 use std::sync::Arc;
 

@@ -30,7 +30,7 @@ use ployz_core::config::{
 use ployz_core::{
     ConfigFileName, ConfigName, DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId,
     ExecutionError, FailedOperation, MachineId, Namespace, RpcError, ServiceAttempt, ServiceName,
-    ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
+    ServiceOutcome, ServiceRemovals, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -317,13 +317,16 @@ pub enum Outcome {
     /// Execution ran. `summary` counts operations, without inputs or provider
     /// messages; each node's Node Outcome is on the Deployment's nodes. `reason`
     /// says why it failed, naming the Service by its current name; users read it.
-    /// `cause` lists what it came from, outermost first.
+    /// `cause` lists what it came from, outermost first. `services` says where
+    /// each Service ended.
     Executed {
         summary: Value,
         #[serde(default)]
         reason: Option<String>,
         #[serde(default)]
         cause: Vec<String>,
+        #[serde(default)]
+        services: Vec<ServiceOutcome>,
     },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.

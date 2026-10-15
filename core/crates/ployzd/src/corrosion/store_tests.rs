@@ -535,6 +535,7 @@ async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
         containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     let api = QualifiedService::parse("app/api").unwrap();
     let web = QualifiedService::parse("app/web").unwrap();
@@ -592,6 +593,7 @@ async fn serving_pointer_compare_and_set_writes_only_over_the_value_read() {
         containers: vec![ContainerId::parse(container.repeat(64)).unwrap()],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     let api = QualifiedService::parse("app/api").unwrap();
     let (store, task) = identity_store(corrosion_db()).await;
