@@ -107,14 +107,10 @@ pub(super) struct Harvester {
     /// The newest Docker event seen. A reconnect resumes from it, so events
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
-    /// What Docker said so far about each Service container's current run.
     runs: HashMap<ContainerId, Run>,
-    /// Crash markers waiting for Cloud.
     crashes: Arc<Outbox>,
 }
 
-/// What Docker said about a Service container's run before it exited, so its
-/// exit can tell a crash from a stop, and its next start a restart.
 #[derive(Debug, Default)]
 struct Run {
     oom: bool,
@@ -2822,7 +2818,6 @@ mod tests {
         );
     }
 
-    /// Crashes queued for Cloud, as each exit's code and flags.
     fn crashes(host: &Host) -> Vec<MarkerKind> {
         Outbox::open(&host.store)
             .unwrap()
@@ -2917,7 +2912,6 @@ mod tests {
             2
         );
 
-        // A stop is forgotten once the container starts again.
         running
             .harvester
             .on_docker_event(event("start", next(), &[service]));

@@ -3972,6 +3972,7 @@ dependencies = [
  "chrono",
  "clap",
  "defguard_wireguard_rs",
+ "fastrand",
  "fs2",
  "futures-util",
  "hex",

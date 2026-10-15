@@ -98,8 +98,6 @@ impl StoreRoot {
         self.0.join(METRICS_DIR).join(ROLLUP_DIR)
     }
 
-    /// Crash markers waiting to be shipped to Cloud. Cleanup never reaches
-    /// here; only an ack from Cloud or the outbox's cap deletes an entry.
     #[must_use]
     pub fn crash_outbox(&self) -> PathBuf {
         self.0.join(OUTBOX_DIR).join(CRASH_DIR)

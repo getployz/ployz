@@ -1,15 +1,5 @@
-//! Ships crash markers to Cloud.
-//!
-//! The harvester pushes each crash into a durable outbox on disk, and the
-//! shipper sends the oldest entries as one batch, deleting them only once
-//! Cloud acks. Nothing here blocks the harvester on the network: a push is a
-//! small file write and a wake-up.
-
 use std::{
-    collections::hash_map::RandomState,
-    fs,
-    hash::{BuildHasher, Hasher},
-    io,
+    fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
@@ -43,8 +33,6 @@ fn authenticate(request: RequestBuilder) -> RequestBuilder {
     request
 }
 
-/// One crash waiting for Cloud: the file body on disk and an event on the
-/// wire alike.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(super) struct Entry {
     #[serde(with = "decimal")]
@@ -52,25 +40,21 @@ pub(super) struct Entry {
     pub(super) marker: MetricMarker,
 }
 
-/// The JSON body of one push.
 #[derive(Debug, Serialize)]
 struct Batch<'a> {
     stream: &'static str,
-    /// The newest seq in `events`, which Cloud keeps as its cursor.
     #[serde(with = "decimal")]
     seq: u64,
     dropped: u64,
     events: &'a [Entry],
 }
 
-/// Crash markers on disk, oldest first, at most [`CAP`] of them.
 pub struct Outbox {
     dir: PathBuf,
     ledger: Mutex<Ledger>,
     wake: Notify,
 }
 
-/// The counters persisted beside the entries.
 #[derive(Debug)]
 struct Ledger {
     last_seq: u64,
@@ -78,11 +62,6 @@ struct Ledger {
 }
 
 impl Outbox {
-    /// Opens the store's crash outbox, creating it when missing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the outbox dir cannot be created or read.
     pub fn open(store: &StoreRoot) -> io::Result<Arc<Self>> {
         let dir = store.crash_outbox();
         create_store_dir(dir.parent().unwrap_or(&dir))?;
@@ -99,12 +78,6 @@ impl Outbox {
         }))
     }
 
-    /// Writes a crash marker as the newest entry and wakes the shipper. A
-    /// full outbox loses its oldest entry to make room.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry or the counters cannot be written.
     pub fn push(&self, marker: MetricMarker) -> io::Result<()> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         let seqs = seqs(&self.dir)?;
@@ -132,8 +105,6 @@ impl Outbox {
         Ok(())
     }
 
-    /// The oldest entries, at most `limit`. An entry that cannot be parsed
-    /// is deleted and counted as dropped, so it never blocks the ones after.
     pub(super) fn oldest(&self, limit: usize) -> io::Result<Vec<Entry>> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         let mut entries = Vec::new();
@@ -159,7 +130,6 @@ impl Outbox {
         Ok(entries)
     }
 
-    /// Deletes entries Cloud took.
     fn ack(&self, entries: &[Entry]) -> io::Result<()> {
         let _ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         for entry in entries {
@@ -168,7 +138,6 @@ impl Outbox {
         Ok(())
     }
 
-    /// Deletes entries Cloud refused and counts them as dropped.
     fn refuse(&self, entries: &[Entry]) -> io::Result<()> {
         let mut ledger = self.ledger.lock().unwrap_or_else(PoisonError::into_inner);
         for entry in entries {
@@ -192,17 +161,18 @@ impl Outbox {
     }
 }
 
+const ENTRY_NAME_LEN: usize = 20;
+
 fn entry_name(seq: u64) -> String {
-    format!("{seq:020}")
+    format!("{seq:0ENTRY_NAME_LEN$}")
 }
 
-/// Entry seqs, oldest first. Temp files and counters are not entries.
 fn seqs(dir: &Path) -> io::Result<Vec<u64>> {
     let mut seqs = Vec::new();
     for entry in fs::read_dir(dir)? {
         let name = entry?.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.len() == 20
+        if name.len() == ENTRY_NAME_LEN
             && let Ok(seq) = name.parse()
         {
             seqs.push(seq);
@@ -230,18 +200,13 @@ fn write_counter(path: &Path, value: u64) -> io::Result<()> {
     crate::filesystem::atomic_write(path, value.to_string().as_bytes(), 0o600)
 }
 
-/// What one send attempt came to.
 #[derive(Debug, PartialEq)]
 enum Shipped {
-    /// Nothing waits, or there is nowhere to send it yet.
     Idle,
-    /// A batch went or was refused; more may wait.
     Progress,
-    /// Keep the batch and try again later, no sooner than Cloud asked.
     Retry { after: Option<Duration> },
 }
 
-/// Sends the outbox to Cloud, oldest first.
 pub struct Shipper<T> {
     outbox: Arc<Outbox>,
     client: reqwest::Client,
@@ -249,9 +214,6 @@ pub struct Shipper<T> {
 }
 
 impl<T: Fn() -> Option<Url>> Shipper<T> {
-    /// # Errors
-    ///
-    /// Returns an error when the HTTP client cannot be built.
     pub fn new(outbox: Arc<Outbox>, target: T) -> reqwest::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
@@ -263,7 +225,6 @@ impl<T: Fn() -> Option<Url>> Shipper<T> {
         })
     }
 
-    /// Ships until the process ends.
     pub async fn run(self) {
         let mut backoff = Backoff::default();
         loop {
@@ -340,14 +301,11 @@ impl<T: Fn() -> Option<Url>> Shipper<T> {
     }
 }
 
-/// `Retry-After` in seconds. The HTTP-date form is rare enough to ignore.
 fn retry_after(response: &reqwest::Response) -> Option<Duration> {
     let seconds = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
     seconds.trim().parse().ok().map(Duration::from_secs)
 }
 
-/// Exponential backoff with jitter, from [`BACKOFF_FLOOR`] to
-/// [`BACKOFF_CAP`].
 #[derive(Debug)]
 struct Backoff {
     ceiling: Duration,
@@ -362,9 +320,6 @@ impl Default for Backoff {
 }
 
 impl Backoff {
-    /// The wait before the next attempt: what Cloud asked for when it said,
-    /// else a random point in the upper half of the current ceiling, which
-    /// then doubles.
     fn next(&mut self, asked: Option<Duration>) -> Duration {
         let ceiling = self.ceiling;
         self.ceiling = (ceiling * 2).min(BACKOFF_CAP);
@@ -372,24 +327,12 @@ impl Backoff {
             return asked.min(BACKOFF_CAP);
         }
         let half = ceiling / 2;
-        half + half.mul_f64(jitter())
+        half + half.mul_f64(fastrand::f64())
     }
 
     fn reset(&mut self) {
         self.ceiling = BACKOFF_FLOOR;
     }
-}
-
-/// A random fraction in `[0, 1)`. Hashers std seeds randomly are enough to
-/// spread Machines apart, without a dependency.
-fn jitter() -> f64 {
-    let bits = RandomState::new().build_hasher().finish() >> 11;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "53 bits fit an f64 mantissa exactly"
-    )]
-    let fraction = bits as f64 / (1_u64 << 53) as f64;
-    fraction
 }
 
 /// A u64 as a decimal string: crash seqs are nanos, past what a JS number
@@ -516,11 +459,8 @@ mod tests {
         assert!(backoff.next(None) <= BACKOFF_FLOOR);
     }
 
-    /// A scripted answer: the status and its Retry-After header, if any.
     type Reply = (StatusCode, Option<&'static str>);
 
-    /// A Cloud that answers each push with the next scripted reply and keeps
-    /// every body it was sent.
     #[derive(Clone, Default)]
     struct Cloud {
         replies: Arc<Mutex<Vec<Reply>>>,
