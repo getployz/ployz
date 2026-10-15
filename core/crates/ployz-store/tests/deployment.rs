@@ -1264,7 +1264,7 @@ fn dependency_and_hook_failures_keep_nested_rpc_causes() {
         ),
     ] {
         let error: ExecutionError = serde_json::from_value(error).unwrap();
-        assert_eq!(ployz_store::Failure::from(&error).cause, expected);
+        assert_eq!(ployz_store::Failure::of(&error, &[]).cause, expected);
     }
 }
 

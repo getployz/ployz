@@ -1,9 +1,9 @@
 use std::{borrow::Cow, error::Error, fmt, io};
 
 use ployz_core::{
-    CodecError, ContainerSelectorError, DataLoss, MachineSelectorError, MachineUpdateError,
-    PartialResult, RpcError, RpcErrorCode, ServiceSelectorError, StreamProtocolError,
-    UnconfirmedDataLoss, ValueError,
+    CapabilityRefusal, CodecError, ContainerSelectorError, DataLoss, MachineSelectorError,
+    MachineUpdateError, PartialResult, RpcError, RpcErrorCode, ServiceSelectorError,
+    StreamProtocolError, UnconfirmedDataLoss, ValueError,
 };
 use serde_json::Value;
 
@@ -288,52 +288,13 @@ impl Failure {
     }
 }
 
-fn refusal_before_context(error: &(dyn Error + 'static)) -> Option<Refusal> {
+fn refusal_before_context(error: &(dyn Error + 'static)) -> Option<CapabilityRefusal> {
     std::iter::successors(Some(error), |&link| link.source())
         .take_while(|link| !link.is::<Message>())
         .find_map(|link| {
             let (code, details) = classify(link);
-            Refusal::new(&code, details)
+            CapabilityRefusal::new(&code, details)
         })
-}
-
-pub(crate) struct Refusal {
-    target: String,
-    capability: String,
-    details: Value,
-}
-
-impl Refusal {
-    pub(crate) fn of(error: &RpcError) -> Option<Self> {
-        Self::new(&error.code, error.details.clone())
-    }
-
-    pub(crate) fn naming(self, target: String) -> Self {
-        Self { target, ..self }
-    }
-
-    fn new(code: &RpcErrorCode, details: Value) -> Option<Self> {
-        if *code != RpcErrorCode::Unsupported {
-            return None;
-        }
-        let target = details.get("target")?.as_str()?.to_owned();
-        let capability = details.get("capability")?.as_str()?.to_owned();
-        Some(Self {
-            target,
-            capability,
-            details,
-        })
-    }
-}
-
-impl fmt::Display for Refusal {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Server {} needs a newer Ployz. It cannot serve {}.",
-            self.target, self.capability
-        )
-    }
 }
 
 fn classify(error: &(dyn Error + 'static)) -> (RpcErrorCode, Value) {

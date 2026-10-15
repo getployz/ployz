@@ -1542,6 +1542,52 @@ impl RpcError {
             cause: crate::error_chain::causes(error),
         }
     }
+
+    /// The capability this error says its target Machine lacks, if it is a refusal.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapabilityRefusal> {
+        CapabilityRefusal::new(&self.code, self.details.clone())
+    }
+}
+
+/// A Machine refused a route because its Ployz lacks the route's capability.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapabilityRefusal {
+    pub target: String,
+    pub capability: String,
+    pub details: Value,
+}
+
+impl CapabilityRefusal {
+    /// The refusal `details` name: `Unsupported`, with string `target` and `capability`.
+    #[must_use]
+    pub fn new(code: &RpcErrorCode, details: Value) -> Option<Self> {
+        if *code != RpcErrorCode::Unsupported {
+            return None;
+        }
+        let target = details.get("target")?.as_str()?.to_owned();
+        let capability = details.get("capability")?.as_str()?.to_owned();
+        Some(Self {
+            target,
+            capability,
+            details,
+        })
+    }
+
+    #[must_use]
+    pub fn naming(self, target: String) -> Self {
+        Self { target, ..self }
+    }
+}
+
+impl fmt::Display for CapabilityRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Server {} needs a newer Ployz. It cannot serve {}.",
+            self.target, self.capability
+        )
+    }
 }
 
 /// Metadata an entry Machine's router puts on a status it made because the target
