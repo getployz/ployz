@@ -218,7 +218,7 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
       .from(schemaMachineEnrollmentToken)
       .where(and(
         eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
-        gt(schemaMachineEnrollmentToken.expiresAt, sql`now()`),
+        gt(schemaMachineEnrollmentToken.expiresAt, sql`clock_timestamp()`),
       ))
       .limit(1);
     if (!row) return yield* new Unauthorized();
@@ -266,7 +266,7 @@ const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
       })
       .where(and(
         eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
-        gt(schemaMachineEnrollmentToken.expiresAt, sql`now()`),
+        gt(schemaMachineEnrollmentToken.expiresAt, sql`clock_timestamp()`),
         isNull(schemaMachineEnrollmentToken.joinedMachineId),
         or(
           isNull(schemaMachineEnrollmentToken.claimedMachineId),
@@ -460,6 +460,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         if (!current || current.removalStartedAt !== null || !credentialsMatch(yield* decryptPairingSecret(current.encryptedPairingSecret), state.pairing.secret)) {
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
+        yield* requireUnspentClaim(input.token, input.identity.machineId);
         return yield* reserveEnrollmentAssignment({
           organizationId: token.organizationId, pairing: state.pairing.secret,
           identity: request, snapshot,
@@ -504,11 +505,11 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
     const encryption = yield* SecretEncryption;
     const managementIdentity = managementIdentityOf(input.capability);
     const publish = (expectedIv?: string) => database.transaction(Effect.gen(function* () {
-      yield* requireUnspentClaim(input.token, input.machineId);
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select(organizationPairingProjection)
         .from(schemaOrganizationPairing)
         .where(eq(schemaOrganizationPairing.organizationId, token.organizationId)).for("update");
+      yield* requireUnspentClaim(input.token, input.machineId);
       if (!pairing || pairing.removalStartedAt !== null) {
         return yield* new Conflict({ message: "The Machine does not own this founding attempt." });
       }
@@ -625,7 +626,10 @@ export const completeMachineEnrollment = Effect.fn(
       return { machineId };
     }
     // Past this, `machineId` is the founder (a retried completion may have founded it already).
-    yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
+    yield* database.transaction(Effect.gen(function* () {
+      yield* commitFounder(token.organizationId, machineId, row.encryptedPairingSecret);
+      yield* requireTokenClaimedBy(input.token, machineId);
+    }));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
     yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(

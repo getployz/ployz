@@ -1035,6 +1035,31 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select machine_id from organization_machine")).rows).toEqual([{ machine_id: joiner.machineId }]);
   });
 
+  it("refuses a publication that waited on the pairing lock while its Server was removed", async () => {
+    const fake = fakeSession(harness.database);
+    const founder = await readyFounder(fake);
+    const unfinished = await joinedServer(fake, founder, 2);
+    const removal = await harness.pool.connect();
+    try {
+      await removal.query("begin");
+      await removal.query("select 1 from organization_pairing where organization_id = $1 for update", [organizationId]);
+      const publication = fake.coordinator.publish({ ...unfinished, capability: keyed(0x77) });
+      await vi.waitFor(async () => {
+        expect((await harness.pool.query("select 1 from pg_locks where not granted")).rowCount).toBeGreaterThan(0);
+      });
+      await removal.query("delete from organization_machine where machine_id = $1", [unfinished.machineId]);
+      await removal.query("update machine_enrollment_token set expires_at = clock_timestamp() where claimed_machine_id = $1", [
+        unfinished.machineId,
+      ]);
+      await removal.query("commit");
+      expect(await publication).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    } finally {
+      removal.release();
+    }
+    expect((await harness.pool.query("select 1 from organization_machine where machine_id = $1", [unfinished.machineId])).rowCount)
+      .toBe(0);
+  });
+
   it("keeps pairing decrypt failures in the typed Effect channel", async () => {
     const stale = makeSecretEncryption("stale-app-encryption-secret-1234567890");
     await harness.pool.query(
