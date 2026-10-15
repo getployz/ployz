@@ -47,8 +47,6 @@ const RESTART_POLL: Duration = Duration::from_millis(250);
 const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a dependent waits for one Machine to route its dependency's Deploy.
 const ACK_WAIT: Duration = Duration::from_secs(300);
-/// How long a hold outlives the amendment that set it beyond the plan's
-/// configured health waits, well past the end of any Deploy still running.
 const HOLD_BEYOND_HEALTH: Duration = Duration::from_secs(60 * 60);
 
 #[allow(clippy::large_enum_variant)]
@@ -1215,11 +1213,7 @@ struct Rows<'a> {
 fn hold_for(operations: &[DeployOperation]) -> Duration {
     operations
         .iter()
-        .filter_map(|operation| match operation {
-            DeployOperation::RunContainer { spec, .. } => Some(spec),
-            DeployOperation::ReplaceContainer(replacement) => Some(&replacement.spec),
-            _ => None,
-        })
+        .filter_map(DeployOperation::spec)
         .filter_map(|spec| spec.container.healthcheck.as_ref()?.deadline())
         .fold(HOLD_BEYOND_HEALTH, Duration::saturating_add)
 }

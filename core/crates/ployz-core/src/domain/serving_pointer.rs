@@ -25,9 +25,7 @@ pub struct ServingPointer {
 }
 
 /// An undecided Deploy's claim on `retiring`, honoured until a wall-clock
-/// time the Deploy chose well past its own end. A Deploy that dies before
-/// deciding leaves a row nobody releases; the hold then lapses and the copies
-/// retire as if it were never set. Clocks that disagree only move the lapse.
+/// time the Deploy chose well past its own end.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Hold {
     pub deploy: DeploymentLogId,

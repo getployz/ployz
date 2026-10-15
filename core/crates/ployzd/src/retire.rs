@@ -1449,8 +1449,24 @@ mod tests {
         assert!(decide_now(&mut retirer, &pointers, &acks, &required, &[id("a")]).is_empty());
     }
 
-    /// A drain of the Machine waits until the retiring copy is gone, as in
-    /// `ployz::drain::retirement::retire_copies`.
+    async fn drain_waits_out(
+        host: &FakeHost,
+        store: &ReplicatedStore,
+        mut retirer: Retirer,
+        copy: ContainerId,
+    ) -> bool {
+        let mut stopping = JoinSet::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while host.local.lock().unwrap().contains(&copy) {
+                round(host, store, &mut retirer, &mut stopping).await;
+                while stopping.join_next().await.is_some() {}
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     #[tokio::test]
     async fn an_orphaned_hold_lets_a_drain_finish_across_a_daemon_restart() {
         let local = machine("local", 1);
@@ -1466,17 +1482,11 @@ mod tests {
         while SystemTime::now() < until + Duration::from_secs(1) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let mut restarted = Retirer::default();
-        let drained = tokio::time::timeout(Duration::from_secs(5), async {
-            while host.local.lock().unwrap().contains(&id("a")) {
-                round(&host, &store, &mut restarted, &mut stopping).await;
-                while stopping.join_next().await.is_some() {}
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await;
-
-        assert!(drained.is_ok(), "the drain still waits on the held copy");
+        let restarted = Retirer::default();
+        assert!(
+            drain_waits_out(&host, &store, restarted, id("a")).await,
+            "the drain still waits on the held copy"
+        );
         assert_eq!(*host.retired.lock().unwrap(), vec![id("a")]);
         server.abort();
     }

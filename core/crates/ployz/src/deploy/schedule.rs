@@ -135,6 +135,10 @@ impl ServiceGroup {
         self.service.is_none() && self.dependencies.is_empty()
     }
 
+    fn changes_its_service(&self) -> bool {
+        self.publish || !self.steps.is_empty()
+    }
+
     /// The Service whose pointer this group flips, if any.
     pub(crate) fn publishing_service(&self) -> Option<&ServiceName> {
         self.publish.then_some(self.service.as_ref()).flatten()
@@ -211,14 +215,11 @@ impl Schedule {
             .collect()
     }
 
-    /// How each Service this Deploy changed ended. A Service the plan leaves
-    /// unchanged keeps its group for ordering but owns no operation, so it has
-    /// no result.
     pub(crate) fn services(&self) -> Vec<ServiceOutcome> {
         self.slots
             .iter()
             .enumerate()
-            .filter(|(_, Slot { group, .. })| group.publish || !group.steps.is_empty())
+            .filter(|(_, slot)| slot.group.changes_its_service())
             .filter_map(|(index, Slot { group, phase })| {
                 let result = match phase {
                     _ if self.unconfirmed.contains(&index) => ServiceResult::Unconfirmed,
