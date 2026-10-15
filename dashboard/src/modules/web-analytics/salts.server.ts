@@ -14,7 +14,7 @@ import {
 } from "#/modules/web-analytics/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Validation } from "#/server/public-error";
+import { NotFound, Validation } from "#/server/public-error";
 
 export type AckSalt = { readonly day: string; readonly start: number; readonly end: number; readonly salt: string };
 export type SaltAck = { readonly sites: ReadonlyArray<{ readonly namespace: string; readonly salts: ReadonlyArray<AckSalt> }> };
@@ -39,7 +39,7 @@ export function saltWindow(day: string, timezone: string) {
 const salts = (organizationId: string, environmentId: string, days: ReadonlyArray<string>) =>
   days.map((day) => ({ organizationId, environmentId, day, salt: randomBytes(32) }));
 
-/** Locks the site's rollup_state row before its site row, the order ingest and the rollup take them in. */
+/** Locks the site's rollup_state row before its site row, the order ingest and the rollup take them in, and refuses an environment that is gone. */
 export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   organizationId: string,
   environmentId: string,
@@ -56,6 +56,10 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
     yield* drizzle.select({ environmentId: analyticsRollupState.environmentId }).from(analyticsRollupState)
       .where(eq(analyticsRollupState.environmentId, environmentId))
       .for("update");
+    // Read after the lock, so an enable that waited on the environment's delete sees it gone instead of leaving rows.
+    const [environment] = yield* drizzle.execute<{ id: string }>(sql`
+      select id from config_environment where id = ${environmentId} and organization_id = ${organizationId}`, "objects");
+    if (environment === undefined) return yield* new NotFound({ message: "Environment not found." });
     const [previous] = yield* drizzle.select({ timezone: analyticsSite.timezone }).from(analyticsSite)
       .where(and(eq(analyticsSite.organizationId, organizationId), eq(analyticsSite.environmentId, environmentId)))
       .for("update");

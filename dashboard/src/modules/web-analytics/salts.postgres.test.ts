@@ -125,6 +125,26 @@ it.live("an unknown time zone is refused", () => Effect.gen(function* () {
   expect(refused._tag).toBe("Validation");
 }), 60_000);
 
+it.live("an environment that is gone, or another organization's, is refused and gets no site, salts, or rollup state", () => Effect.gen(function* () {
+  const { provide, days } = yield* setup();
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`delete from config_environment where id = ${STAGING}`);
+  }).pipe(Effect.orDie));
+  const gone = yield* provide(Effect.flip(setSiteAnalytics(ORGANIZATION, STAGING, { enabled: true })));
+  const foreign = yield* provide(Effect.flip(setSiteAnalytics("org_other", PRODUCTION, { enabled: true })));
+  expect([gone._tag, foreign._tag]).toEqual(["NotFound", "NotFound"]);
+  expect(yield* days(STAGING)).toEqual([]);
+  const rows = yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return {
+      sites: yield* drizzle.select().from(analyticsSite),
+      state: yield* drizzle.select().from(analyticsRollupState),
+    };
+  }).pipe(Effect.orDie));
+  expect(rows).toEqual({ sites: [], state: [] });
+}), 60_000);
+
 it.live("a Self-hosted Cloud without ANALYTICS_ENABLED acks no salts, even for an on site", () => Effect.gen(function* () {
   const { provide, days } = yield* setup({});
   yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true }));
