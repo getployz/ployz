@@ -5,9 +5,9 @@ import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notic
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
 import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
-import { ChevronRightIcon, InfoIcon, TriangleAlertIcon, RefreshCwIcon, Settings2Icon } from "lucide-react";
+import { ChevronRightIcon, ExternalLinkIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
@@ -18,12 +18,11 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import { githubBranchesQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
 import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
-import { toast } from "sonner";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
 
 const imageExamples = [
@@ -189,20 +188,12 @@ const githubConnectHref = (organizationSlug: string) =>
   `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
 
 function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string }) {
-  const queryClient = useQueryClient();
   const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
-  const { mutate: requestRepoSync, isPending: isRefreshing } = useMutation(
-    {
-      mutationKey: [...githubKeys.repos(), "refresh"],
-      mutationFn: () => requestGithubRepoSyncServerFn({ data: { organizationSlug } }),
-      onSuccess: async () => {
-        await queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
-      },
-      onError: (error) => {
-        toast.error(toErrorMessage(error, "Could not refresh GitHub repositories."));
-      },
-    }
-  );
+  const openGithub = () => {
+    window.open(githubConnectHref(organizationSlug), "_blank", "width=1020,height=680");
+    // Returning from GitHub resyncs, in case its webhook never arrives; focus and polling show the rows.
+    window.addEventListener("focus", () => void requestGithubRepoSyncServerFn({ data: { organizationSlug } }).catch(() => {}), { once: true });
+  };
 
   if (!accessState.hasInstallations) {
     return (
@@ -217,46 +208,24 @@ function GitRepoSelectorActions({ organizationSlug }: { organizationSlug: string
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button nativeButton={false} render={<a href={githubConnectHref(organizationSlug)} />}>
-            Connect GitHub
-          </Button>
+          <Button onClick={openGithub}>Connect GitHub</Button>
         </EmptyContent>
       </Empty>
     );
   }
 
   return (
-    <CommandGroup>
-      <CommandItem
-        value="Configure GitHub App"
-        keywords={["github", "configure", "app"]}
-        onSelect={() => {
-          window.location.assign(githubConnectHref(organizationSlug));
-        }}
-      >
-        <Settings2Icon />
-        <span>Set up GitHub</span>
-        <CommandShortcut>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isRefreshing}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              requestRepoSync();
-            }}
-          >
-            {isRefreshing ? (
-              <Spinner data-icon="inline-start" />
-            ) : (
-              <RefreshCwIcon data-icon="inline-start" />
-            )}
-            {isRefreshing ? "Refreshing" : "Refresh"}
-          </Button>
-        </CommandShortcut>
-      </CommandItem>
-    </CommandGroup>
+    <>
+      <CommandSeparator />
+      <div className="flex items-center gap-2 p-2">
+        <span className="grow text-xs text-muted-foreground">Missing a repo?</span>
+        <Button variant="outline" size="sm" onClick={openGithub}>
+          <GitHubMarkIcon data-icon="inline-start" />
+          Add from GitHub
+          <ExternalLinkIcon data-icon="inline-end" />
+        </Button>
+      </div>
+    </>
   );
 }
 
@@ -402,11 +371,11 @@ export function GitRepoSelector(props: GitRepoSelectorProps) {
         </CommandItem>
       </CommandGroup> : props.query.includes("/") ? <SelectorEmpty>Enter owner/repo or a GitHub repository URL. Choose the branch separately.</SelectorEmpty> : null}
       {connectPublic.isError ? <Alert variant="destructive"><AlertDescription>Could not read this public repository. Check its address and visibility, then try again.</AlertDescription></Alert> : null}
-      <Suspense>
-        <GitRepoSelectorActions organizationSlug={organizationSlug} />
-      </Suspense>
       <Suspense fallback={<SelectorLoading />}>
         <GitRepoSelectorResults {...props} />
+      </Suspense>
+      <Suspense>
+        <GitRepoSelectorActions organizationSlug={organizationSlug} />
       </Suspense>
     </>
   );
