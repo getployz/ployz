@@ -29,7 +29,8 @@ disposable and outside the promise.
 **Rules.** Frozen formats only gain optional fields with defaults. Nothing is
 renamed or repurposed, and readers ignore unknown fields. Replicated bodies
 never refuse unknown fields; only secret-bearing sections and
-verification-selecting modes outside them may fail closed. No version gates,
+verification-selecting modes outside them may fail closed. Authored config and
+unrelated trust boundaries stay strict. No version gates,
 no migrations: a change that cannot be additive waits for the next major.
 Machine RPC evolves by capability, never by version compare:
 
@@ -63,7 +64,7 @@ semantics stated honestly beat strong semantics enforced badly.
 **Red flags.** A fencing token, lease, leader election or quorum read, and any
 API claiming a complete Cluster view. The one allowed shape: a request names
 the copy it expects on one Machine, and carries the run number that Machine's
-own floor checks.
+own floor checks. Neither number goes in Corrosion.
 
 **Test.** Does the answer say whose observation it is and when?
 
@@ -95,8 +96,9 @@ hide failures behind "it will fix itself later."
 **Red flags.** Controllers, persisted desired state, Cluster-wide reconcilers,
 work that continues after its command returns. Machine-local loops that only
 observe, retire this Machine's superseded Containers, or extend Docker's
-restart policy to its own serving infrastructure are the accepted exceptions;
-each states its bound where it is coded.
+restart policy to its own serving infrastructure, and a `SetVolumeCopy` task
+that ends when ZFS or Docker answers, are the accepted exceptions; each states
+its bound where it is coded.
 
 **Test.** When the command returns, has everything it started either finished
 or been reported?
@@ -140,7 +142,10 @@ addresses and Containers, decided from its own Pool, Docker and records. Work
 across Machines is a sequence one operator drives. Cloud or the CLI is that
 operator, and the operator also allocates. Each Machine admits or refuses each
 step against its own facts. Two operators at once may collide, and Ployz does
-not detect, prevent or repair that.
+not detect, prevent or repair that. A late step from a dead run can at worst
+leave a Volume with no Writer, never two. A copy restored elsewhere while its
+old Machine was away may take writes until Cloud demotes the older epoch; that
+window is accepted, not prevented.
 
 **Why.** In an eventually consistent Cluster, a Machine knows only itself for
 certain. A single writer inside the Cluster needs the consensus bet 2 refuses.
@@ -152,7 +157,8 @@ One outside it is free: Cloud has Postgres, the CLI has a disk.
   narrow what it does, never authorize an effect.
 - A lease that must reach Machines the run does not touch.
 - A barrier across Machines.
-- A clock-based safety wait. A driver bounding its own patience is fine.
+- A clock-based safety wait. A driver bounding its own patience is fine, and
+  so is a drain it asks a Machine to wait before stopping its own Container.
 - A resource identity meaningful without its Machine.
 - Machinery to detect, prevent or repair operator collisions, or a single
   writer inside the Cluster.
@@ -180,7 +186,8 @@ operation whose correctness needs Cloud, a Cloud copy of the Observe Store.
 ## 8. Evidence over claims
 
 **Bet.** Report exactly what was observed, completed, failed and never
-attempted. A diagnosis names the earliest proven failure stage, or Unknown.
+attempted. A diagnosis names the earliest proven failure stage, or Unknown. A
+503 alone is not capacity evidence.
 
 **Why.** When every view is partial, a confident guess is a lie with good
 posture.
@@ -211,14 +218,16 @@ component already does.
 without a client, enforce a Machine-local safety boundary, or manage a
 Machine-local resource. Serving infrastructure (Corrosion, Internal DNS, the
 Observe Store) is daemon-owned but outlives every daemon stop, restart and
-upgrade.
+upgrade. The Ingress Proxy is the only Service Container the daemon starts
+unasked.
 
 **Why.** A client update ships instantly. A daemon change must reach every
 Machine in every Cluster.
 
 **Red flags.** Daemon policy without one of the three reasons, daemon logic a
 client could compute from observations it already has, a daemon stop path
-that stops serving, a second writer of a serving unit's spec.
+that stops serving, a second writer of a serving unit's spec, DNS answering
+before its first load.
 
 **Test.** Which of the three reasons forces this into the daemon?
 

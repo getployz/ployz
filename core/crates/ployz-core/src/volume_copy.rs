@@ -4,7 +4,7 @@
 //! A request names the copy its sender last saw here and the copy it wants. A match
 //! takes one transition, a copy already at the want succeeds, and anything else is
 //! refused; every reply reports this Machine's copy as it is now. No Machine records
-//! the run, checks a Writer's epoch, or reads another Machine's copy or floor.
+//! the run or reads another Machine's copy or floor.
 
 use std::{fmt, time::Duration};
 
