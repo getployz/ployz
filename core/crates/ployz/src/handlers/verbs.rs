@@ -671,7 +671,8 @@ pub(crate) const VOLUME_SYNC: Verb = Verb::cloud(
     volume::run::sync,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md");
+.docs("services/move-a-volume.md")
+.tool(ToolId::VolumeMirror);
 
 pub(crate) const VERBS: &[Verb] = &[
     BUILD,
@@ -1027,23 +1028,13 @@ mod tests {
     }
 
     #[test]
-    fn every_verb_tool_is_a_write_tool_of_one_verb() {
+    fn every_verb_tool_is_a_write_tool() {
         for verb in VERBS {
             let Some(tool) = verb.tool else { continue };
             assert!(
                 !tool.read_only(),
                 "`{}` names `{}`, which is read-only",
                 verb.path,
-                tool.name()
-            );
-            let verbs = VERBS
-                .iter()
-                .filter(|other| other.tool == Some(tool))
-                .map(|other| other.path);
-            assert_eq!(
-                verbs.collect::<Vec<_>>(),
-                [verb.path],
-                "`{}` is the tool of more than one verb",
                 tool.name()
             );
         }
