@@ -359,6 +359,8 @@ export const organizationMachine = pgTable(
     encryptedCapability: jsonb("encrypted_capability").notNull().$type<EncryptedSecretValue>(),
     /** The Machine's management public key, hex; the first half of its capability. Verifies its signed pushes. */
     managementIdentity: text("management_identity"),
+    /** The push URL this Machine last confirmed it holds; null until Cloud has set it since the capability was published. */
+    pushTarget: text("push_target"),
     isDialEntry: boolean("is_dial_entry").default(false).notNull(),
     createdAt,
     updatedAt,

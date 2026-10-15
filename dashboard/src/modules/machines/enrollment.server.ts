@@ -34,7 +34,7 @@ import {
 } from "#/modules/machines/enrollment";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent, createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
+import { createClusterDomainSyncRequestedEvent, createConfigFirstServerJoinedEvent, createObservePushTargetRequestedEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
@@ -463,16 +463,16 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (credentialsMatch(previous, input.capability)) return null;
         if (expectedIv === undefined) return saved.encryptedCapability.iv;
         yield* drizzle.update(organizationMachine).set({
-          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, updatedAt: new Date(),
+          encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null, updatedAt: new Date(),
         }).where(scope);
       } else {
         yield* drizzle.insert(organizationMachine).values({
           organizationId: token.organizationId, machineId: input.machineId,
-          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity,
+          clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
           isDialEntry: pairing.founderClaimMachineId === input.machineId,
         }).onConflictDoUpdate({ target: [organizationMachine.organizationId, organizationMachine.machineId],
           set: {
-            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity,
+            clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity, pushTarget: null,
             isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
           },
         });
@@ -489,6 +489,9 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         yield* publish(expectedIv);
       }));
     }
+    yield* sendInngestEvent(createObservePushTargetRequestedEvent()).pipe(
+      Effect.catch((error) => Effect.logWarning("Push target request failed; the 5-minute sweep sets it.", error)),
+    );
     return { machineId: input.machineId };
   },
 );

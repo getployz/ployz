@@ -147,6 +147,7 @@ function enrollmentTestClient(
   const runtime = ManagedRuntime.make(layer);
   disposeClients.push(() => runtime.dispose());
   return {
+    inngest,
     disable: (id = organizationId) => runtime.runPromise(disableOrganizationPairing(id)),
     publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
       Effect.result(publishMachineEnrollment(input)),
@@ -581,15 +582,20 @@ describe("organization enrollment coordinator", () => {
     expect(fake.closed()).toBe(fake.connected.length);
   });
 
-  it("keeps the management key each published capability carries", async () => {
+  it("keeps the management key each published capability carries, and asks for its push target again", async () => {
     const fake = fakeSession(harness.database);
     const attempt = await pendingFounder(fake);
     const keyed = (byte: number) => `ployz1:${Buffer.concat([Buffer.alloc(32, byte), Buffer.alloc(32, 0xee)]).toString("base64url")}`;
-    const identity = async () => (await harness.pool.query("select management_identity from organization_machine")).rows;
+    const saved = async () => (await harness.pool.query("select management_identity, push_target from organization_machine")).rows;
+    const requests = () => vi.mocked(fake.coordinator.inngest.send).mock.calls
+      .filter(([event]) => !Array.isArray(event) && "name" in event && event.name === "observe/push-target.requested").length;
     await fake.coordinator.publish({ ...attempt, capability: keyed(0xab) });
-    expect(await identity()).toEqual([{ management_identity: "ab".repeat(32) }]);
+    expect(await saved()).toEqual([{ management_identity: "ab".repeat(32), push_target: null }]);
+    expect(requests()).toBe(1);
+    await harness.pool.query("update organization_machine set push_target = 'https://cloud.example.test/api/machines/x/observe'");
     await fake.coordinator.publish({ ...attempt, capability: keyed(0xcd) });
-    expect(await identity()).toEqual([{ management_identity: "cd".repeat(32) }]);
+    expect(await saved()).toEqual([{ management_identity: "cd".repeat(32), push_target: null }]);
+    expect(requests()).toBe(2);
   });
 
   it.each(["unreachable", "identity mismatch"])("preserves saved credentials when refresh verification fails: %s", async (message) => {
