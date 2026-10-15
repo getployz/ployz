@@ -676,6 +676,34 @@ fn a_push_to_a_non_members_pull_request_waits_for_approval_of_its_head() {
     assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H3));
 }
 
+#[test]
+fn a_push_refused_before_the_author_proved_a_member_deploys_once_they_do() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let SystemEvent::PullRequest(open) = pull_request(true) else {
+        unreachable!("pull_request is a pull request")
+    };
+    let unknown = SystemEvent::PullRequest(ployz_store::PullRequest {
+        author_id: None,
+        ..open.clone()
+    });
+    assert!(open_as(&store, &who, &unknown).admitted.is_empty());
+    assert!(system(&store, &push_search(None, H2)).admitted.is_empty());
+    let approved = approve(&store, &who, H2);
+    backend::run(&store, &approved.admitted[0].deployment.id);
+
+    let early = system(&store, &push_search(Some(H2), H3));
+    assert_eq!(reasons(&early), ["Needs approval"]);
+    let member = SystemEvent::PullRequest(ployz_store::PullRequest {
+        head: backend::sha(H3),
+        updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:05:00Z").unwrap(),
+        ..open
+    });
+    let reported = system(&store, &member);
+    assert_eq!(reported.admitted.len(), 1, "{reported:?}");
+    assert_eq!(pinned(&store, &reported, "web").as_deref(), Some(H3));
+}
+
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {
     items.iter().map(ToString::to_string).collect()
 }

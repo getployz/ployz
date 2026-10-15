@@ -594,6 +594,7 @@ pub(crate) fn pull_request(
         repository_id,
         number,
     };
+    let refused = !stood.admits(&event.head);
     let standing = match fresh {
         true => Standing::of(event, trusted, stood),
         false => stood,
@@ -699,6 +700,19 @@ pub(crate) fn pull_request(
             trusted,
         };
         open(tx, who, &at, &current, &mut automated)?;
+        // A push it refused before the author proved a member never comes again.
+        if refused && standing.admits(&event.head) {
+            for (environment, _) in &current {
+                crate::automation::deploy_head(
+                    tx,
+                    who,
+                    environment,
+                    event,
+                    trusted,
+                    &mut automated,
+                )?;
+            }
+        }
     }
     let has_environments =
         !current.is_empty() || !landing.is_empty() || !automated.admitted.is_empty();
