@@ -98,6 +98,12 @@ impl ManagementSecret {
         ployz_core::ManagementIdentity::from_bytes(*self.secret_key().public().as_bytes())
     }
 
+    /// Ed25519 signature over `message` with the Management Identity's key.
+    #[must_use]
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.secret_key().sign(message).to_bytes()
+    }
+
     fn secret_key(&self) -> SecretKey {
         SecretKey::from_bytes(&self.0)
     }

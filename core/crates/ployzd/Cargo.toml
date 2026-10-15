@@ -8,6 +8,7 @@ repository.workspace = true
 [dependencies]
 async-trait = "0.1.92"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+base64 = "0.22.1"
 bollard = { version = "0.21.0", features = ["json_data_content"] }
 bytes = "1.12.1"
 chrono = { version = "0.4.41", default-features = false, features = ["clock"] }
@@ -59,7 +60,6 @@ verify-faults = []
 
 [dev-dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http2"] }
-base64 = "0.22.1"
 iroh = { version = "1.2", default-features = false, features = ["tls-ring", "test-utils"] }
 ployz = { path = "../ployz" }
 ployz-testkit.workspace = true

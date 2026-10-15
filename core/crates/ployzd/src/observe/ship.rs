@@ -2,15 +2,21 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use ployz_core::metrics::MetricMarker;
-use reqwest::{RequestBuilder, StatusCode, Url, header::RETRY_AFTER};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use ployz_core::{MachineId, metrics::MetricMarker};
+use reqwest::{
+    RequestBuilder, StatusCode, Url,
+    header::{CONTENT_TYPE, RETRY_AFTER},
+};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 
 use super::layout::{StoreRoot, create_store_dir};
+use crate::{machine::LocalMachineRecord, management::ManagementSecret};
 
 pub(super) const CAP: usize = 1000;
 const BATCH: usize = 100;
@@ -22,15 +28,63 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(5 * 60);
 
-/// Where crash batches go, read before every send. None until Cloud can
-/// authenticate a Machine's push, so the outbox only buffers.
-pub fn push_target() -> Option<Url> {
-    None
+const MACHINE_FILE: &str = "machine.json";
+const SIGNATURE_CONTEXT: &[u8] = b"ployz-push-v1\0";
+const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
+const SIGNATURE_HEADER: &str = "Ployz-Signature";
+
+/// Where crash batches go and who signs them. The secret stays in memory
+/// for one ship cycle and is never logged.
+pub struct Pusher {
+    url: Url,
+    machine_id: MachineId,
+    secret: ManagementSecret,
 }
 
-/// Adds the Machine's credentials to a push. The one place auth lands.
-fn authenticate(request: RequestBuilder) -> RequestBuilder {
+/// Read from machine.json before every send, so Cloud setting or clearing
+/// the target and a Machine reset take effect without a restart. None until
+/// Cloud sets a target, so the outbox only buffers.
+pub fn push_target(data_dir: &Path) -> Option<Pusher> {
+    let bytes = fs::read(data_dir.join(MACHINE_FILE)).ok()?;
+    let record = serde_json::from_slice::<LocalMachineRecord>(&bytes).ok()?;
+    Some(Pusher {
+        url: record.push_target()?.clone(),
+        machine_id: record.id(),
+        secret: record.management_secret().clone(),
+    })
+}
+
+/// Signs the exact body bytes with the Management Identity's key; Cloud
+/// verifies against the identity it stored at enrollment.
+fn authenticate(
+    request: RequestBuilder,
+    pusher: &Pusher,
+    ts: i64,
+    body: Vec<u8>,
+) -> RequestBuilder {
+    let signature = signature(&pusher.secret, &pusher.machine_id, ts, &body);
     request
+        .header(CONTENT_TYPE, "application/json")
+        .header(TIMESTAMP_HEADER, ts.to_string())
+        .header(SIGNATURE_HEADER, format!("v1={signature}"))
+        .body(body)
+}
+
+fn signature(secret: &ManagementSecret, machine_id: &MachineId, ts: i64, body: &[u8]) -> String {
+    let mut message = SIGNATURE_CONTEXT.to_vec();
+    message.extend_from_slice(machine_id.as_str().as_bytes());
+    message.push(0);
+    message.extend_from_slice(&ts.to_be_bytes());
+    message.extend_from_slice(&Sha256::digest(body));
+    URL_SAFE_NO_PAD.encode(secret.sign(&message))
+}
+
+fn unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -213,7 +267,7 @@ pub struct Shipper<T> {
     target: T,
 }
 
-impl<T: Fn() -> Option<Url>> Shipper<T> {
+impl<T: Fn() -> Option<Pusher>> Shipper<T> {
     pub fn new(outbox: Arc<Outbox>, target: T) -> reqwest::Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
@@ -243,7 +297,7 @@ impl<T: Fn() -> Option<Url>> Shipper<T> {
     }
 
     async fn ship_once(&self) -> Shipped {
-        let Some(target) = (self.target)() else {
+        let Some(pusher) = (self.target)() else {
             return Shipped::Idle;
         };
         let events = match self.outbox.oldest(BATCH) {
@@ -262,7 +316,15 @@ impl<T: Fn() -> Option<Url>> Shipper<T> {
             dropped: self.outbox.dropped(),
             events: &events,
         };
-        let response = match authenticate(self.client.post(target).json(&batch))
+        let body = match serde_json::to_vec(&batch) {
+            Ok(body) => body,
+            Err(error) => {
+                tracing::warn!(%error, "cannot encode a crash batch");
+                return Shipped::Retry { after: None };
+            }
+        };
+        let request = self.client.post(pusher.url.clone());
+        let response = match authenticate(request, &pusher, unix_seconds(), body)
             .send()
             .await
         {
@@ -355,11 +417,31 @@ mod decimal {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+    use axum::{
+        Router,
+        body::Bytes,
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        routing::post,
+    };
     use ployz_core::{ContainerId, MachineId, QualifiedService, ServiceId, metrics::MarkerKind};
 
     use super::*;
-    use crate::test_dir::TestDir;
+    use crate::{machine::LocalMachineStore, test_dir::TestDir};
+
+    const KAT_MACHINE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn seeded(byte: u8) -> ManagementSecret {
+        serde_json::from_value(serde_json::to_value([byte; 32]).unwrap()).unwrap()
+    }
+
+    fn pusher(url: &Url) -> Pusher {
+        Pusher {
+            url: url.clone(),
+            machine_id: MachineId::parse(KAT_MACHINE).unwrap(),
+            secret: seeded(7),
+        }
+    }
 
     fn store() -> (TestDir, StoreRoot) {
         let root = TestDir::new("ployzd-observe-ship");
@@ -465,6 +547,7 @@ mod tests {
     struct Cloud {
         replies: Arc<Mutex<Vec<Reply>>>,
         bodies: Arc<Mutex<Vec<serde_json::Value>>>,
+        requests: Arc<Mutex<Vec<(HeaderMap, Bytes)>>>,
     }
 
     impl Cloud {
@@ -472,6 +555,7 @@ mod tests {
             let cloud = Self {
                 replies: Arc::new(Mutex::new(replies.into_iter().rev().collect())),
                 bodies: Arc::default(),
+                requests: Arc::default(),
             };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -484,9 +568,15 @@ mod tests {
 
         async fn push(
             State(cloud): State<Self>,
-            Json(body): Json<serde_json::Value>,
+            headers: HeaderMap,
+            body: Bytes,
         ) -> axum::response::Response {
-            cloud.bodies.lock().unwrap().push(body);
+            cloud
+                .bodies
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(&body).unwrap());
+            cloud.requests.lock().unwrap().push((headers, body));
             let (status, retry_after) = cloud.replies.lock().unwrap().pop().unwrap();
             let mut response = axum::response::IntoResponse::into_response(status);
             if let Some(seconds) = retry_after {
@@ -499,6 +589,10 @@ mod tests {
 
         fn bodies(&self) -> Vec<serde_json::Value> {
             self.bodies.lock().unwrap().clone()
+        }
+
+        fn requests(&self) -> Vec<(HeaderMap, Bytes)> {
+            self.requests.lock().unwrap().clone()
         }
     }
 
@@ -515,7 +609,7 @@ mod tests {
             (StatusCode::NO_CONTENT, None),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(url.clone())).unwrap();
+        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
 
         for _ in 0..3 {
             assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
@@ -551,7 +645,7 @@ mod tests {
             (StatusCode::NO_CONTENT, None),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(url.clone())).unwrap();
+        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
 
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
         assert_eq!(held(&outbox), [] as [u64; 0]);
@@ -576,7 +670,7 @@ mod tests {
             (StatusCode::BAD_GATEWAY, Some("3")),
         ])
         .await;
-        let shipper = Shipper::new(outbox.clone(), move || Some(url.clone())).unwrap();
+        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
 
         assert_eq!(
             shipper.ship_once().await,
@@ -604,7 +698,7 @@ mod tests {
             .parse()
             .unwrap();
         drop(listener);
-        let shipper = Shipper::new(outbox.clone(), move || Some(url.clone())).unwrap();
+        let shipper = Shipper::new(outbox.clone(), move || Some(pusher(&url))).unwrap();
         assert_eq!(shipper.ship_once().await, Shipped::Retry { after: None });
         assert_eq!(held(&outbox), [5]);
     }
@@ -614,9 +708,88 @@ mod tests {
         let (_root, store) = store();
         let outbox = Outbox::open(&store).unwrap();
         outbox.push(crash(5)).unwrap();
-        let shipper = Shipper::new(outbox.clone(), push_target).unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let data_dir = data.path().to_path_buf();
+        let shipper = Shipper::new(outbox.clone(), move || push_target(&data_dir)).unwrap();
+        assert_eq!(shipper.ship_once().await, Shipped::Idle);
+        drop(LocalMachineStore::open(data.path()).unwrap());
         assert_eq!(shipper.ship_once().await, Shipped::Idle);
         assert_eq!(held(&outbox), [5]);
+    }
+
+    #[test]
+    fn the_target_follows_machine_json_on_every_read() {
+        let data = tempfile::tempdir().unwrap();
+        let url: Url = "https://cloud.example/api/machines/m/observe"
+            .parse()
+            .unwrap();
+        let mut machine = LocalMachineStore::open(data.path()).unwrap();
+        assert!(push_target(data.path()).is_none());
+
+        machine.set_push_target(Some(url.clone())).unwrap();
+        let pusher = push_target(data.path()).unwrap();
+        assert_eq!(pusher.url, url);
+        assert_eq!(pusher.machine_id, machine.record().id());
+        assert_eq!(
+            pusher.secret.public_key(),
+            machine.record().management_secret().public_key()
+        );
+
+        machine.set_push_target(None).unwrap();
+        assert!(push_target(data.path()).is_none());
+    }
+
+    #[test]
+    fn the_signature_matches_the_shared_known_answer_vector() {
+        let secret = seeded(7);
+        assert_eq!(
+            hex::encode(secret.public_key().as_bytes()),
+            "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+        );
+        let body = br#"{"stream":"crash","seq":"1760000000123456789","dropped":0,"events":[]}"#;
+        assert_eq!(
+            signature(
+                &secret,
+                &MachineId::parse(KAT_MACHINE).unwrap(),
+                1_760_000_000,
+                body
+            ),
+            "rOUkHmKtJRTf53MNT4z0t9gV3yOkQnJ_yriYa5G7ebHo5-VrHUa0spxdC56PowBMo9JEMEy_JXT97yIG11RPAw"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_push_is_signed_over_the_exact_bytes_cloud_receives() {
+        let (_root, store) = store();
+        let outbox = Outbox::open(&store).unwrap();
+        outbox.push(crash(5)).unwrap();
+        let (cloud, url) = Cloud::serve(vec![(StatusCode::NO_CONTENT, None)]).await;
+        let shipper = Shipper::new(outbox, move || Some(pusher(&url))).unwrap();
+        let before = unix_seconds();
+        assert_eq!(shipper.ship_once().await, Shipped::Progress);
+
+        let [(headers, body)] = <[_; 1]>::try_from(cloud.requests()).unwrap();
+        let header = |name: &str| headers.get(name).unwrap().to_str().unwrap().to_owned();
+        assert_eq!(header("content-type"), "application/json");
+        let ts: i64 = header("ployz-timestamp").parse().unwrap();
+        assert!((before..=unix_seconds()).contains(&ts));
+        let signature = header("ployz-signature");
+        let signature = URL_SAFE_NO_PAD
+            .decode(signature.strip_prefix("v1=").unwrap())
+            .unwrap();
+
+        let mut message = b"ployz-push-v1\0".to_vec();
+        message.extend_from_slice(KAT_MACHINE.as_bytes());
+        message.push(0);
+        message.extend_from_slice(&ts.to_be_bytes());
+        message.extend_from_slice(&Sha256::digest(&body));
+        let public = iroh::PublicKey::from_bytes(seeded(7).public_key().as_bytes()).unwrap();
+        let signature = iroh::Signature::from_bytes(&signature.try_into().unwrap());
+        public.verify(&message, &signature).unwrap();
+
+        message.pop();
+        message.push(b'!');
+        assert!(public.verify(&message, &signature).is_err());
     }
 
     #[test]
