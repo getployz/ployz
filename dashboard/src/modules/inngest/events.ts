@@ -95,6 +95,7 @@ export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const uptimeBackfillRequestedEvent = "uptime/backfill.requested";
+export const observeCrashReceivedEvent = "observe/crash.received";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
@@ -174,6 +175,12 @@ export type ClusterDomainSyncRequestedEventData = {
 
 /** Sync every Environment's uptime checks with its Applied State, for Services applied before checks existed. */
 export type UptimeBackfillRequestedEventData = Record<string, never>;
+
+/** A Server reported new crashes of one Service. The crash mail debounces on the pair. */
+export type ObserveCrashReceivedEventData = {
+  organizationId: string;
+  serviceId: string;
+};
 
 /** The Organization's first Server joined: its published Environments deploy to it. */
 export type ConfigFirstServerJoinedEventData = {
@@ -326,6 +333,10 @@ export const uptimeBackfillRequestedEventType = eventType(
   uptimeBackfillRequestedEvent,
   { schema: staticSchema<UptimeBackfillRequestedEventData>() },
 );
+export const observeCrashReceivedEventType = eventType(
+  observeCrashReceivedEvent,
+  { schema: staticSchema<ObserveCrashReceivedEventData>() },
+);
 export const inngestFunctionCancelledEventType = eventType(
   "inngest/function.cancelled",
   {
@@ -447,6 +458,11 @@ export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoined
 
 export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventData) {
   return { name: configSweepRequestedEvent, data } as const;
+}
+
+/** Keyed by the first crash it reports, so the outbox and Inngest send it once. */
+export function createObserveCrashReceivedEvent(data: ObserveCrashReceivedEventData, crashEventId: string) {
+  return { id: `observe-crash-${crashEventId}`, name: observeCrashReceivedEvent, data } as const;
 }
 
 export function createClusterDomainSyncRequestedEvent(
@@ -612,6 +628,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createVolumeRunRequestedEvent>
   | ReturnType<typeof createVolumeRunTakenEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createObserveCrashReceivedEvent>
   | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
