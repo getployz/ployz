@@ -5,7 +5,7 @@ import type { ToolOutcome } from "#/modules/agent/agent";
 import { AGENT, agentResume, agentStart, CATALOG, finish, GATED, untilWrite } from "#/modules/agent/agent-tools";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
-import { approvalAsks } from "#/modules/approvals/approvals";
+import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
 import { requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, runCommand } from "#/modules/commands/commands.server";
@@ -138,7 +138,7 @@ type Gated =
 
 const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, asked: ConfigCommand, approvalId: string | null) {
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
-  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : "deploy", trusted.refusal) } satisfies Gated;
+  if (!trusted.ok) return { denied: denialForAgent(asked.command === "publish" ? "save" : approvalCommand(asked) === "retry" ? "retry" : "deploy", trusted.refusal) } satisfies Gated;
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const call = { operation: "write", command } as const;

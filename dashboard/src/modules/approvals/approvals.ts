@@ -24,12 +24,14 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
 /** What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
-  return { verb: command === "publish" ? "Save" : "Deploy", name: review.diff.environment.name };
+  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : "Deploy";
+  return { verb, name: review.diff.environment.name };
 }
 
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, { effects }: ApprovalReview) {
   if (command === "publish") return "Deletes on deploy";
+  if (command === "retry") return "Redeploys";
   if (command === "stop") return "Stops service";
   if (command === "restart") return "Restarts service";
   if (effects.length === 0) return "Deploys";
@@ -39,14 +41,22 @@ export function approvalBadge(command: string, { effects }: ApprovalReview) {
   return `Destroys ${effects.length} ${effects.length === 1 ? "thing" : "things"}`;
 }
 
-/** The writes the Store reviews for destruction: Save only (the Store's publish), and a manual Deploy. Nothing else waits for a human. */
-export function asksApproval(command: ConfigCommand) {
-  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy");
+/** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
+export function approvalCommand(command: ConfigCommand) {
+  return command.command === "admit" && command.admit === "retry" ? "retry" : command.command;
 }
 
-/** Which Deploys wait for a human: every one an agent asks for, else only one that destroys something. */
+const agentShips = (via: Caller["via"], command: ConfigCommand) =>
+  via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
+
+/** The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, and an agent's retry. */
+export function asksApproval(via: Caller["via"], command: ConfigCommand) {
+  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy") || agentShips(via, command);
+}
+
+/** Which Deploys wait for a human: every Deploy or retry an agent asks for, else only a Deploy that destroys something. */
 export function approvalAsks(via: Caller["via"], command: ConfigCommand): Asks {
-  return via === "agent" && command.command === "admit" && command.admit === "deploy" ? "every_deploy" : "destroys";
+  return agentShips(via, command) ? "every_deploy" : "destroys";
 }
 
 /** `POST /api/cli/approvals/:id`: approve exactly the digest the human saw, or deny with a reason the agent gets back. */

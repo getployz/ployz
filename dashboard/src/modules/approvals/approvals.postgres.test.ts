@@ -389,6 +389,30 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
   }));
 
+it.live("a retry `ployz mcp` asks for waits on a human as a Retry; the CLI's doesn't", () =>
+  Effect.gen(function* () {
+    const { provided, cli, store } = yield* shopRemovingWeb(false);
+    const write = vi.spyOn(store, "write");
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update config_deployment set status = 'failed' where id = ${DEPLOYMENT}`);
+    }));
+    const retry = (n: number): ConfigCommand => ({
+      command: "admit", admit: "retry", id: `00000000-0000-4000-8000-0000000a53${n.toString().padStart(2, "0")}`, deployment: DEPLOYMENT,
+    });
+
+    const asked = yield* cli(retry(1), undefined, "agent");
+    expect(asked.status).toBe(409);
+    expect(asked.json.error).toMatchObject({ code: "approval_required", details: { effects: [] } });
+    const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
+    expect(yield* provided(getApproval(ORGANIZATION, id))).toMatchObject({ command: "retry", status: "pending" });
+
+    expect(yield* cli(retry(2))).toMatchObject({ status: 200 });
+    expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.asks]))
+      .toEqual([["admit", "every_deploy"], ["admit", "destroys"]]);
+  }));
+
 type Shop = Effect.Success<ReturnType<typeof shopRemovingWeb>>;
 const askedOverHttps = Effect.fn(function* ({ cli }: Shop) {
   const reply = yield* cli(publish);

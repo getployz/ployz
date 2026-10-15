@@ -41,8 +41,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // A destructive Save or Deploy, or any Deploy `ployz mcp` asks for, waits for a human; the CLI retries naming the approval.
-  const approval = call.operation === "write" && asksApproval(call.command)
+  // A destructive Save or Deploy, or any Deploy or retry `ployz mcp` asks for, waits for a human; the CLI retries naming the approval.
+  const approval = call.operation === "write" && asksApproval(caller.via, call.command)
     ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
     : { ok: true, approval: "not_required" } as const;
   if (!approval.ok) return refusal(approval.refusal);
