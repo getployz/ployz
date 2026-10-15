@@ -123,6 +123,22 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
   );
 });
 
+/**
+ * Whether the Organization may read web analytics. Ployz-hosted Cloud sells it with the paid plan; a Self-hosted Cloud
+ * has no plans and runs it when its operator sets ANALYTICS_ENABLED.
+ */
+export const analyticsPlan = Effect.fn("Billing.analyticsPlan")(function* (organizationId: string) {
+  const polar = yield* Polar;
+  if (polar.mode === "self_hosted") return (yield* AppConfig).analyticsEnabled ? "self-host-on" as const : "self-host-off" as const;
+  const database = yield* Database;
+  const [row] = yield* database.drizzle
+    .select({ activeSubscriptionId: schemaOrganizationBillingState.activeSubscriptionId })
+    .from(schemaOrganizationBillingState)
+    .where(eq(schemaOrganizationBillingState.organizationId, organizationId))
+    .limit(1);
+  return row?.activeSubscriptionId ? "paid" as const : "unpaid" as const;
+});
+
 /** Checkout and the portal come back to the Organization's billing page. */
 const billingPage = (appUrl: URL, organizationSlug: string) =>
   new URL(`/cloud/${encodeURIComponent(organizationSlug)}/~/billing`, appUrl).href;
