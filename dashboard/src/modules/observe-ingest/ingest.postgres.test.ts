@@ -145,7 +145,11 @@ const setup = Effect.fn(function* () {
     yield* setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "Australia/Sydney" });
     yield* setSiteAnalytics(ORGANIZATION, STAGING, { enabled: false });
   }).pipe(Effect.provide(services), Effect.orDie);
-  return { send, sendRaw, rows, identity, enrollElsewhere, sites };
+  const breakSalts = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`alter table analytics.site rename to site_gone`);
+  }).pipe(Effect.orDie));
+  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts };
 });
 
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
@@ -233,6 +237,16 @@ it.live("a replay below the cursor carries the same salts", () => Effect.gen(fun
   const replay = yield* send(EMPTY);
   expect(replay.status).toBe(200);
   expect(yield* Effect.promise(() => replay.json())).toEqual(yield* Effect.promise(() => first.json()));
+}), 60_000);
+
+it.live("a push Cloud kept but cannot issue salts for answers 204, which keeps the Machine's salts", () => Effect.gen(function* () {
+  const { send, rows, sites, breakSalts } = yield* setup();
+  yield* sites();
+  yield* breakSalts();
+  const answer = yield* send(push([[10, WEB]]));
+  expect(answer.status).toBe(204);
+  expect(yield* Effect.promise(() => answer.text())).toBe("");
+  expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
 }), 60_000);
 
 it.live("a pageviews push answers 404 until Cloud takes pageviews, and writes nothing", () => Effect.gen(function* () {

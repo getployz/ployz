@@ -51,7 +51,11 @@ export function handleObservePush(request: Request, machineId: string) {
     const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
     const ack = yield* Effect.result(ackSalts(pusher.success.organizationId));
-    if (Result.isFailure(ack)) return errorResponse(ack.failure);
+    if (Result.isFailure(ack)) {
+      // An empty site list would read as every site turned off, so the Machine keeps its salts instead.
+      yield* Effect.logError("Cannot issue analytics salts; acked the push without them.", { ...pusher.success, error: ack.failure });
+      return new Response(null, { status: 204, headers: noStore });
+    }
     return Response.json(ack.success, { headers: noStore });
   });
 }
