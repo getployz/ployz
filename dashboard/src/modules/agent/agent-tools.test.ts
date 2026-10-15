@@ -23,16 +23,19 @@ describe("agent tools", () => {
     expect(AGENT_TOOLS.filter((tool) => tool.destructive).map((tool) => tool.name).sort()).toEqual([
       "deploy",
       "deployment_retry",
+      "deployment_start",
       "discard",
       "environment_remove",
       "org_invite_revoke",
       "org_member_rm",
       "project_remove",
       "server_clean",
+      "server_drain",
       "server_forget",
       "server_remove",
       "volume_mirror",
       "volume_mirror_remove",
+      "volume_move",
       "volume_release",
     ]);
     expect(AGENT_TOOLS.filter((tool) => tool.readOnly && tool.destructive)).toEqual([]);

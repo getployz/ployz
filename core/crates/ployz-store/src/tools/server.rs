@@ -238,7 +238,7 @@ impl Tool for ServerDrain {
     const NAME: &'static str = "server_drain";
     const DESCRIPTION: &'static str = "Move Services off a server and place none there; the result says what stayed because its data is there.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Change;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "server": "web-2", "wait_seconds": 120 })

@@ -440,7 +440,7 @@ pub(crate) struct DeploymentStart {
 impl Tool for DeploymentStart {
     const NAME: &'static str = "deployment_start";
     const DESCRIPTION: &'static str = "Hand a queued Deployment to a runner now.";
-    const EFFECT: Effect = Effect::Change;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "deployment": 12 })

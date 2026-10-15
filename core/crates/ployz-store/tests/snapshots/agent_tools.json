@@ -1643,7 +1643,7 @@
     },
     {
       "description": "Hand a queued Deployment to a runner now. Never asks a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -2241,7 +2241,7 @@
     },
     {
       "description": "Move Services off a server and place none there; the result says what stayed because its data is there. May stop to ask a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,
@@ -2432,7 +2432,7 @@
     },
     {
       "description": "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it. May stop to ask a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,

@@ -355,7 +355,7 @@ impl Tool for VolumeMove {
     const NAME: &'static str = "volume_move";
     const DESCRIPTION: &'static str = "Put a Volume and the Service using it on server to. The Service is down only for the final copy; the old server keeps a mirror. If a move stopped, the same call continues it.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Change;
+    const EFFECT: Effect = Effect::Remove;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
 
     fn example() -> Value {
