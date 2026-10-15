@@ -177,6 +177,16 @@ it("keeps a reply's thinking folded under Thought until the member opens it", ()
   expect(screen.getByText("Two services.")).toBeDefined();
 });
 
+it("counts a cancelled call as cancelled, not as one that ran", () => {
+  const message = asTestDouble<UIMessage>()({
+    id: "m1",
+    role: "assistant",
+    parts: [{ type: "tool-call", id: "c1", name: "service_rm", arguments: "{}", state: "complete", output: { ok: false, cancelled: true } }],
+  });
+  render(<QueryClientProvider client={new QueryClient()}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
+  expect(screen.getByRole("button", { name: "Cancelled 1 command" })).toBeDefined();
+});
+
 it("folds thinking and calls under one summary, leaving the Deployment card and a refusal's colour outside", () => {
   const deployed = { written: "deployment", id: "d3", number: 3, status: "running", services: [], remove: false, started_at: null, ended_at: null };
   const message = asTestDouble<UIMessage>()({
@@ -191,7 +201,7 @@ it("folds thinking and calls under one summary, leaving the Deployment card and 
   });
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
-  const summary = screen.getByRole("button", { name: "Thought, ran 2 commands, 1 refused" });
+  const summary = screen.getByRole("button", { name: "Thought, ran 1 command, 1 refused" });
   expect(summary.querySelector("[data-status=error]")).not.toBeNull();
   expect(screen.getByText("Didn't ask. Nothing destroyed.")).toBeDefined();
   expect(screen.queryByText("No service named api.")).toBeNull();

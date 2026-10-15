@@ -312,19 +312,22 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
     const waitingOn = bound.find(({ key }) => key === part.id);
     const approvalId = waitingOn?.approvalId ?? asked[part.id];
     const outcome = toolOutcome(part, results.get(part.id));
-    const refused = Option.exists(outcome, (answer) => "refusal" in answer);
     const deniedOnCard = approvalId !== undefined
       && Option.exists(outcome, (answer) => "refusal" in answer && answer.refusal.code === "approval_denied");
     const settle = waitingOn && (() => {
       if (waitingOn.interrupt.canResolve && waitingOn.interrupt.status === "pending") waitingOn.interrupt.resolveInterrupt({});
     });
     const done = part.state === "complete" || results.has(part.id);
+    const ended = Option.match(outcome, {
+      onNone: () => done ? "ran" : "running",
+      onSome: (answer) => "refusal" in answer ? "refused" : "cancelled" in answer ? "cancelled" : "ran",
+    }) satisfies CallState;
     return [
       ...(approvalId ? [{ kind: "block", key: `a${part.id}`, node: (
         <ApprovalCard organizationSlug={organizationSlug} id={approvalId} autoFocus={waitingOn !== undefined} onSettled={settle} />
       ) } as const] : []),
       ...((!approvalId || Option.isSome(outcome)) && !deniedOnCard ? [{
-        kind: "step", key: part.id, call: { running: !done, refused },
+        kind: "step", key: part.id, call: ended,
         node: <ToolStep name={part.name} outcome={outcome} done={done} />,
         card: <ToolCard organizationSlug={organizationSlug} scope={scope} outcome={outcome} />,
       } as const] : []),
@@ -348,26 +351,28 @@ export function Turn({ organizationSlug, scope, message, asked, bound }: {
 }
 
 type Block = { kind: "block"; key: string; node: ReactNode };
-type Step = { kind: "step"; key: string; node: ReactNode; call?: { running: boolean; refused: boolean }; card?: ReactNode };
+type CallState = "running" | "ran" | "refused" | "cancelled";
+type Step = { kind: "step"; key: string; node: ReactNode; call?: CallState; card?: ReactNode };
 type Piece = Block | Step;
 type Steps = [Step, ...Step[]];
 
-/** A run of thinking and calls, folded under one summary like "Thought, ran 2 commands, 1 refused"; the cards the calls left stay outside. */
+/** A run of thinking and calls, folded under one summary like "Thought, ran 1 command, 1 refused"; the cards the calls left stay outside. */
 function StepGroup({ steps }: { steps: Steps }) {
   const calls = steps.flatMap(({ call }) => call ? [call] : []);
-  const running = calls.some((call) => call.running);
-  const refused = calls.filter((call) => call.refused).length;
+  const count = (state: CallState) => calls.filter((call) => call === state).length;
+  const ended = (["running", "ran", "refused", "cancelled"] as const).flatMap((state) => count(state) > 0 ? [[state, count(state)] as const] : []);
   const summary = [
     calls.length < steps.length && "thought",
-    calls.length > 0 && `${running ? "running" : "ran"} ${calls.length} ${calls.length === 1 ? "command" : "commands"}`,
-    refused > 0 && `${refused} refused`,
+    ...ended.map(([state, n], i) => i === 0 ? `${state} ${n} ${n === 1 ? "command" : "commands"}` : `${n} ${state}`),
   ].filter(Boolean).join(", ");
+  const refused = count("refused") > 0;
+  const running = count("running") > 0;
   return (
     <>
       <Trace>
         <TraceCollapsible>
           <TraceCollapsibleTrigger>
-            <TraceLine status={refused > 0 ? "error" : running ? "running" : undefined}>
+            <TraceLine status={refused ? "error" : running ? "running" : undefined}>
               <TraceTitle>{summary.charAt(0).toUpperCase() + summary.slice(1)}</TraceTitle>
             </TraceLine>
           </TraceCollapsibleTrigger>
