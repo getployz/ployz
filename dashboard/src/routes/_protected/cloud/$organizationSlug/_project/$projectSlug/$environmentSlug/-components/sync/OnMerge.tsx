@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { useLoaderData, useParams, useRouterState } from "@tanstack/react-router";
 import type { EnvironmentRef, MergeRow, OnMergeCheck, PullRequestRef } from "@ployz/sdk";
 import { CircleCheckIcon, CircleMinusIcon, EllipsisIcon, ExternalLinkIcon, GitMergeIcon, LockIcon } from "lucide-react";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -103,10 +104,12 @@ const text = (value: MergeRow["lands"]) => isText(value) ? value : JSON.stringif
  * remove), resets an Edit, and excludes it (it stays in the PR Environment) or includes it again. A row excluded with
  * its new node includes again by including the node.
  */
-function OnMergeRow({ row, rows, organizationSlug, store, into }: {
+function OnMergeRow({ row: read, rows, organizationSlug, store, into }: {
   row: MergeRow; rows: readonly MergeRow[]; organizationSlug: string; store: EnvironmentRef; into: string;
 }) {
   const writer = useStoreWriter(organizationSlug);
+  // What the user just did shows at once, until the Store answers.
+  const [row, hold] = useCommitHold(read);
   const [editing, setEditing] = useState(false);
   const { name } = row.name === null ? { name: row.node }
     : isFile(row) ? { name: row.name.slice("files.".length) } : settingName(row.name);
@@ -116,10 +119,10 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
   const edited = row.ride === "edited";
   const preview = store.environment ?? "";
   const node = rows.find((entry) => entry.row === row.requires && entry.ride === "excluded");
-  const exclude = (off: boolean) =>
-    void writer.commit({ command: "never_sync", environment: store, rows: [off && node ? node.row : row.row], off });
-  const land = (value?: string) =>
-    void writer.commit({ command: "set_merge_value", environment: store, into: { project: store.project, environment: into }, row: row.row, value });
+  const exclude = (off: boolean) => hold(included(row, !off),
+    writer.commit({ command: "never_sync", environment: store, rows: [off && node ? node.row : row.row], off }));
+  const land = (value?: string) => hold(landing(row, value),
+    writer.commit({ command: "set_merge_value", environment: store, into: { project: store.project, environment: into }, row: row.row, value }));
   return (
     <li className={cn("grid grid-cols-[6rem_minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-x-3 border-b px-4 py-2 last:border-b-0",
       excluded && "text-muted-foreground")}>
@@ -146,6 +149,23 @@ function OnMergeRow({ row, rows, organizationSlug, store, into }: {
         onSave={(value) => { setEditing(false); land(value); }} /> : null}
     </li>
   );
+}
+
+/** What a row lands as the PR Environment has it: a secret travels only by name, so one production lacks lands Not set. */
+const landsAsIs = (row: MergeRow): MergeRow["lands"] => isSecret(row.preview) && !isSecret(row.production) ? { secret: false } : row.preview;
+
+/**
+ * `row` excluded (it stays in the PR Environment at the merge) or riding again, as it is there. A removal's preview is
+ * null either way.
+ */
+export function included(row: MergeRow, excluded: boolean): MergeRow {
+  return excluded ? { ...row, ride: "excluded", lands: row.preview } : { ...row, ride: "rides", lands: landsAsIs(row) };
+}
+
+/** `row` landing `value` at the merge, a secret's sealed; with none, it lands as the PR Environment has it. */
+export function landing(row: MergeRow, value: string | undefined): MergeRow {
+  if (value === undefined) return { ...row, ride: "rides", lands: landsAsIs(row) };
+  return { ...row, ride: "edited", lands: isSecret(row.preview) || isSecret(row.production) ? { secret: true } : value };
 }
 
 /** What the merge does to a removed node: removes it, or holds it while production still uses it. */

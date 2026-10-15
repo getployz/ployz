@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
+import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
@@ -59,16 +61,17 @@ export function SetupCommandsField({ id, commands, services, onChange, onBlur }:
 
 /**
  * Setup Commands saved at once, never staged: while typing, the whole list; once committed (a pick, a removal, a blur),
- * only whole commands save, and only when they changed. Submitted values then show from `saved` (optimistic rows), so a
- * failed save's rollback shows too; blank rows wait below them until typed.
+ * only whole commands save, and only when they changed. The saved list then shows until its write settles; blank rows
+ * wait below it until typed.
  */
-export function useSavedSetupCommands(saved: SetupCommand[], save: (whole: SetupCommand[]) => void) {
+export function useSavedSetupCommands(saved: SetupCommand[], save: (whole: SetupCommand[]) => PersistableTransaction) {
+  const [shown, hold] = useCommitHold(saved);
   const [draft, setDraft] = useState<SetupCommand[] | null>(null);
   const [blanks, setBlanks] = useState<SetupCommand[]>([]);
-  const commands = draft ?? [...saved, ...blanks];
+  const commands = draft ?? [...shown, ...blanks];
   function commit(next: SetupCommand[]) {
     const whole = next.filter((setup) => setup.command.trim()).map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() }));
-    if (JSON.stringify(whole) !== JSON.stringify(saved)) save(whole);
+    if (JSON.stringify(whole) !== JSON.stringify(shown)) hold(whole, save(whole));
     setDraft(null);
     setBlanks(next.filter((setup) => !setup.command.trim()));
   }

@@ -1,5 +1,5 @@
 import { useMutationState, type Mutation, type MutationFilters, type QueryClient } from "@tanstack/react-query";
-import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView } from "@ployz/sdk";
+import type { BatchCommand, Change, ConfigCommand, ConfigView, DiscardTarget, EnvironmentRef, EnvironmentView, RowId } from "@ployz/sdk";
 import { Schema } from "effect";
 import { commandEnvironments } from "./store.contract";
 
@@ -17,7 +17,8 @@ export type Mark =
   | { mark: "arriving"; environment: EnvironmentRef; node: NodeKind; id: string; name: string }
   | { mark: "renamed"; environment: EnvironmentRef; node: NodeKind | "variable"; from: string; to: string }
   | { mark: "project_renamed"; from: string; to: string }
-  | { mark: "busy"; environment: EnvironmentRef; why: Busy };
+  | { mark: "busy"; environment: EnvironmentRef; why: Busy }
+  | { mark: "never_sync"; environment: EnvironmentRef; rows: readonly string[]; off: boolean };
 
 const changeMarks = (environment: EnvironmentRef, changes: readonly Change[]): Mark[] => changes.flatMap((change): Mark[] => {
   switch (change.op) {
@@ -53,6 +54,7 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "sync":
     case "take": return commandEnvironments(command).map((environment): Mark => ({ mark: "busy", environment, why: "syncing" }));
     case "batch": return command.commands.flatMap(marksOf);
+    case "never_sync": return [{ mark: "never_sync", environment: command.environment, rows: command.rows, off: command.off ?? false }];
     // A domain, a mount or a Config file carries no id the Store gave it; its row arrives with the answer.
     // A Cancel or an Undo names no Environment, so none shows it busy.
     case "cancel":
@@ -72,7 +74,6 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "create_branch":
     case "remove_proposal":
     case "copy_node":
-    case "never_sync":
     case "set_merge_value":
     case "keep_branch":
     case "set_build_order":
@@ -173,14 +174,34 @@ export function useStoreRenamePending(organizationSlug: string, environment: Env
   return renamesIn(usePendingMarks(organizationSlug), environment);
 }
 
+/** The rows pending Never syncs mark (true) or sync again (false), the newest last. */
+function neverSyncing(marks: readonly Mark[]): ReadonlyMap<string, boolean> {
+  return new Map(marks.flatMap((mark) => mark.mark === "never_sync" ? mark.rows.map((row) => [row, !mark.off] as const) : []));
+}
+
+/** This tab's pending Never syncs in `project`: a Sync from or into any of its Environments shows them. */
+export function useStoreNeverSyncs(organizationSlug: string, project: string | null): NeverSyncing[] {
+  return usePendingMarks(organizationSlug).flatMap((mark) => mark.mark === "never_sync" && mark.environment.environment !== null
+    && (mark.environment.project ?? "") === (project ?? "") ? [{ environment: mark.environment.environment, rows: mark.rows, off: mark.off }] : []);
+}
+
+/** A pending Never sync: `rows` of `environment` marked, or with `off` synced again. */
+export type NeverSyncing = { environment: string; rows: readonly string[]; off: boolean };
+
 /**
- * `view` with the literal edits of `marks` echoed: a set value on its own row.
+ * `view` with the literal edits of `marks` echoed: a set value on its own row, and a row marked Never sync or synced again.
  * Nothing derived: the review, counts, pink and dependents wait for the Store's rows in the write's answer.
  */
 export function showPending<V extends ConfigView>(view: V, marks: readonly Mark[]): V {
   if (view.view !== "environment") return view;
-  return { ...view, ...withPendingChanges(view, marks.flatMap((mark): Change[] =>
-    mark.mark === "value" ? [{ op: "set", path: mark.path, value: mark.value }] : [])) };
+  const shown = withPendingChanges(view, marks.flatMap((mark): Change[] =>
+    mark.mark === "value" ? [{ op: "set", path: mark.path, value: mark.value }] : []));
+  const marking = neverSyncing(marks);
+  if (marking.size === 0) return { ...view, ...shown };
+  const kept = (view.never_synced ?? []).filter((row) => marking.get(row) !== false);
+  // SAFETY: the dashboard names a row only by the RowId a read gave.
+  const added = [...marking].flatMap(([row, marked]) => marked && !kept.includes(row as RowId) ? [row as RowId] : []);
+  return { ...view, ...shown, never_synced: [...kept, ...added] };
 }
 
 const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));

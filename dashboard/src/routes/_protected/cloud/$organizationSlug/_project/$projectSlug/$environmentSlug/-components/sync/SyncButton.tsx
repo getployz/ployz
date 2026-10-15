@@ -12,6 +12,7 @@ import {
   DropdownMenuSeparator, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { plural } from "#/lib/plural";
 import { closesIn, syncButtonState } from "#/modules/config-store/store-sync";
 import {
@@ -98,6 +99,7 @@ function BranchSync({ params, store, branch, environments }: {
   const children = environments.filter((environment) => environment.parent === name).map((environment) => environment.name);
   const shuttable = branch.pull_request !== null;
   const synced = useSynced(params, name);
+  const [kept, holdKept] = useCommitHold(branch.kept);
 
   return (
     <>
@@ -114,10 +116,11 @@ function BranchSync({ params, store, branch, environments }: {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-auto min-w-56">
             <DropdownMenuGroup>
-              <DropdownMenuCheckboxItem checked={branch.kept}
-                onCheckedChange={(kept) => void writer.commit({ command: "keep_branch", environment: store, kept })}>
+              <DropdownMenuCheckboxItem checked={kept}
+                onCheckedChange={(to) => holdKept(to, writer.commit({ command: "keep_branch", environment: store, kept: to }))}>
                 Keep {name}
-                {branch.closes_at === null ? null : <span className="ml-auto pl-4 text-muted-foreground">{closesIn(branch.closes_at)}</span>}
+                {/* Kept, it never closes for sitting idle. */}
+                {kept || branch.closes_at === null ? null : <span className="ml-auto pl-4 text-muted-foreground">{closesIn(branch.closes_at)}</span>}
               </DropdownMenuCheckboxItem>
               {/* Off until the next push; one shut down comes back with a Deploy before that. */}
               {shuttable && removal?.status === "applied" && !removal.in_flight ? (

@@ -1,5 +1,6 @@
+import type { RowId } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { marksOf } from "./store-pending";
+import { marksOf, showPending } from "./store-pending";
 
 const environment = { project: "shop", environment: "production" };
 
@@ -51,4 +52,15 @@ it("marks a Save and both sides of a Sync as busy, a Cancel as nothing, and a Ba
 
 it("shows nothing for a command whose row only the Store can name", () => {
   expect(marksOf({ command: "add_domain", environment, service: "web", hostname: "shop.example.com", port: null })).toEqual([]);
+});
+
+it("shows a Never sync on the Environment's list at once, and a row synced again off it", () => {
+  const id = (row: string) => row as RowId;
+  const view = { view: "environment" as const, environment: { id: "env", project: "shop", name: "production", revision: 3 }, settings: [],
+    never_synced: [id("w:env.A"), id("w:env.B")] };
+  const marks = [
+    ...marksOf({ command: "never_sync", environment, rows: ["w:env.C"] }),
+    ...marksOf({ command: "never_sync", environment, rows: ["w:env.A"], off: true }),
+  ];
+  expect(showPending(view, marks).never_synced).toEqual(["w:env.B", "w:env.C"]);
 });

@@ -158,6 +158,17 @@ it("holds Keep, Closes in and Close in its menu", async () => {
   expect(items.queryByRole("menuitem", { name: /Shut down/u })).toBeNull();
 });
 
+it("ticks Keep at once, while the Store answers", async () => {
+  const app = open();
+  app.write.mockReturnValueOnce(new Promise(() => {}));
+  const items = await menu();
+  fireEvent.click(items.getByRole("menuitemcheckbox", { name: /Keep fix-api/u }));
+  const keep = await screen.findByRole("menuitemcheckbox", { name: /Keep fix-api/u });
+  await waitFor(() => expect(keep.getAttribute("aria-checked")).toBe("true"));
+  // Kept, it never closes for sitting idle.
+  expect(keep.textContent).toBe("Keep fix-api");
+});
+
 it("syncs sideways from the picker, without offering to close the Branch", async () => {
   open();
   const sync = await pick("staging");

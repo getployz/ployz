@@ -1,4 +1,5 @@
-import type { BranchView, DeploymentSummary, RowId, SyncRow } from "@ployz/sdk";
+import type { BranchView, DeploymentSummary, RowId, SyncRow, SyncView } from "@ployz/sdk";
+import type { NeverSyncing } from "./store-pending";
 import { plural } from "#/lib/plural";
 import { rowText, settingName, sourceChange } from "./store-branches";
 
@@ -93,4 +94,27 @@ const DAY = 24 * 60 * 60;
 /** "Closes in 3 days" from when the Store closes an idle Branch (seconds since the epoch); never less than a day. */
 export function closesIn(closesAt: number, now = Date.now() / 1000) {
   return `Closes in ${plural(Math.max(1, Math.ceil((closesAt - now) / DAY)), "day")}`;
+}
+
+/**
+ * `view` with `pending` Never syncs echoed: a Sync from or into a marking Environment offers its newly marked row no more,
+ * and lists it never synced; a row synced again loses that Environment's mark, and with none left waits for the Store to offer it.
+ */
+export function showNeverSyncing(view: SyncView, pending: readonly NeverSyncing[]): SyncView {
+  return pending.reduce((shown, { environment, rows: named, off }) => {
+    if (shown.from.name !== environment && shown.into.name !== environment) return shown;
+    const rows = new Set(named);
+    if (off) {
+      return { ...shown, never_synced: shown.never_synced.flatMap((entry) => {
+        const marks = entry.marks.filter((mark) => mark.environment !== environment || !rows.has(mark.row));
+        return marks.length ? [{ ...entry, marks }] : [];
+      }) };
+    }
+    const marking = shown.rows.filter((row) => rows.has(row.row));
+    return {
+      ...shown,
+      rows: shown.rows.filter((row) => !rows.has(row.row)),
+      never_synced: [...shown.never_synced, ...marking.map(({ row, node, kind, name }) => ({ row, node, kind, name, marks: [{ environment, row }] }))],
+    };
+  }, view);
 }

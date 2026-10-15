@@ -100,7 +100,7 @@ function open({ at = "/cloud/acme/blog/pr-146", list = onMerge(), isOpen = true 
     history: createMemoryHistory({ initialEntries: [at] }),
   });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
-  return { store, commands };
+  return { store, commands, write };
 }
 
 async function panel() {
@@ -166,6 +166,20 @@ it("edits what lands, and resets it", async () => {
   expect(commands()[1]).toEqual({
     command: "set_merge_value", environment: pr146, into: { project: "blog", environment: "production" }, row: "w:env.API_URL", value: undefined,
   });
+});
+
+it("shows an Exclude and an Edit at once, while the Store answers", async () => {
+  const { write } = open();
+  write.mockReturnValue(new Promise(() => {}));
+  const list = await panel();
+  await choose(list, "LOG_LEVEL", "Exclude");
+  await waitFor(() => expect(item(list, "LOG_LEVEL").textContent).toBe("webLOG_LEVELinfo→debugExcludedInclude"));
+
+  await choose(list, "API_URL", "Edit");
+  const edit = within(await screen.findByRole("dialog", { name: /API_URL/u }));
+  fireEvent.change(edit.getByLabelText("API_URL in production"), { target: { value: "http://c" } });
+  fireEvent.click(edit.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(item(list, "API_URL").textContent).toBe("webAPI_URLhttp://a→http://cEditedpr-146: http://b"));
 });
 
 it("offers only Exclude on a removed row", async () => {

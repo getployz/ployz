@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
 import { useNavigate } from "@tanstack/react-router";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -99,10 +100,10 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
+  const [defaultEnvironment, holdDefault] = useCommitHold(listing.ok ? listing.value.environments.find((row) => row.default)?.name ?? null : null);
   // Deleted while open: nothing to show while the page moves on.
   if (!listing.ok) return null;
   const { environments } = listing.value;
-  const defaultEnvironment = environments.find((row) => row.default);
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection id="project" title="Project">
@@ -116,14 +117,14 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
             <FieldLabel htmlFor="default-environment">Default environment</FieldLabel>
             <FieldDescription>Opens by default.</FieldDescription>
           </FieldContent>
-          <Select value={defaultEnvironment?.name ?? null} onValueChange={(next) => {
-            // Refetched views show it; a refusal toasts.
-            if (next && next !== defaultEnvironment?.name) {
-              writer.commit({ command: "set_default_environment", environment: { project: projectSlug, environment: next } });
+          <Select value={defaultEnvironment} onValueChange={(next) => {
+            // Shown at once; a refusal toasts and the saved one shows again.
+            if (next && next !== defaultEnvironment) {
+              holdDefault(next, writer.commit({ command: "set_default_environment", environment: { project: projectSlug, environment: next } }));
             }
           }}>
             <SelectTrigger id="default-environment" className="w-full @md/field-group:w-80">
-              <SelectValue>{defaultEnvironment?.name}</SelectValue>
+              <SelectValue>{defaultEnvironment}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
