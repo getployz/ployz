@@ -243,7 +243,14 @@ fn deploy(
         ),
         trusted.volumes.as_ref(),
     )?;
-    review::approve(who, id, &review, &saved_intent, &trusted.approval)?;
+    review::approve(
+        who,
+        id,
+        &review,
+        &saved_intent,
+        &trusted.approval,
+        trusted.asks,
+    )?;
     let (saved, _) = review::publish(
         tx,
         who,

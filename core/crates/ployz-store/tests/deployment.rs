@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use ployz_store::tools::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
 use ployz_store::{
-    Actor, Admit, Approval, ApprovalDigest, AttachConfig, Cancel, Change, Command, ConfigId,
+    Actor, Admit, Approval, ApprovalDigest, Asks, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
     DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentWarning,
     DeploymentsQuery, DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
@@ -3135,6 +3135,41 @@ fn deploy_as(
     n: u8,
     approval: Approval,
 ) -> Result<DeploymentSummary, RpcError> {
+    deploy_trusted(
+        store,
+        who,
+        n,
+        &Trusted {
+            approval,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn agent_deploys(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    approval: Approval,
+) -> Result<DeploymentSummary, RpcError> {
+    deploy_trusted(
+        store,
+        who,
+        n,
+        &Trusted {
+            approval,
+            asks: Asks::EveryDeploy,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn deploy_trusted(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
     store.write_trusted(
         who,
         &Admit::Deploy(Deploy {
@@ -3146,10 +3181,7 @@ fn deploy_as(
             accept_volume_loss: Vec::new(),
             message: None,
         }),
-        &Trusted {
-            approval,
-            ..Trusted::default()
-        },
+        trusted,
     )
 }
 
@@ -3226,6 +3258,92 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
             }),
             &Trusted {
                 approval: Approval::Required,
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn an_agent_deploy_that_destroys_nothing_waits_for_approval() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let refused = agent_deploys(&store, &who, 2, Approval::Required).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(refused.message, "A human must approve this deploy first.");
+    assert_eq!(refused.details["effects"], json!([]));
+    let version = refused.details["diff"]["version"].as_str().unwrap();
+    let approval = refused.details["approval"].as_str().unwrap();
+    assert!(approval.starts_with(&format!("{version}:")), "{approval}");
+    assert_eq!(changed(&store, &who), ["api"]);
+    agent_deploys(&store, &who, 2, approved(&refused)).unwrap();
+    assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn an_agent_approval_refuses_once_the_plan_changes() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let refused = agent_deploys(&store, &who, 2, Approval::Required).unwrap_err();
+    set_replicas(&store, &who, "api", 3);
+    let again = agent_deploys(&store, &who, 2, approved(&refused)).unwrap_err();
+    assert_eq!(again.code.as_str(), "approval_required");
+    assert_ne!(again.details["approval"], refused.details["approval"]);
+}
+
+#[test]
+fn an_agent_approval_admits_one_deploy() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let refused = agent_deploys(&store, &who, 2, Approval::Required).unwrap_err();
+    let approval = approved(&refused);
+    agent_deploys(&store, &who, 2, approval.clone()).unwrap();
+    agent_deploys(&store, &who, 2, approval.clone()).unwrap();
+    let again = agent_deploys(&store, &who, 3, approval).unwrap_err();
+    assert_eq!(again.code.as_str(), "approval_required");
+    assert_ne!(again.details["approval"], refused.details["approval"]);
+}
+
+#[test]
+fn an_agent_deploy_of_saved_state_asks() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    publish_asking(&store, &who, Approval::Required).unwrap();
+    let refused = agent_deploys(&store, &who, 2, Approval::Required).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required");
+    agent_deploys(&store, &who, 2, approved(&refused)).unwrap();
+}
+
+#[test]
+fn a_deploy_that_destroys_nothing_asks_nothing_unless_an_agent_asked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::Required).unwrap();
+}
+
+#[test]
+fn an_agent_save_that_destroys_nothing_asks_nothing() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    store
+        .write_trusted(
+            &who,
+            &Command::Publish(Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            }),
+            &Trusted {
+                approval: Approval::Required,
+                asks: Asks::EveryDeploy,
                 ..Trusted::default()
             },
         )

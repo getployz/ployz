@@ -13,7 +13,7 @@ use ts_rs::TS;
 use crate::error;
 use crate::id::{ApprovalDigest, EnvironmentId, Hostname};
 use crate::review::{Head, Review};
-use crate::{Actor, Approval};
+use crate::{Actor, Approval, Asks};
 
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
@@ -238,7 +238,9 @@ pub(crate) fn approval_digest(
 
 /// Refuse publishing `target` while it destroys something, unless no approval is
 /// required or Cloud holds a human's approval of exactly this version and set.
-/// Publishing already-Saved State asks nothing: the Publish that saved it did.
+/// Publishing already-Saved State asks nothing: the Publish that saved it did. Under
+/// [`Asks::EveryDeploy`] every Deploy asks, even one that destroys nothing or ships
+/// already-Saved State; Publish passes [`Asks::Destroys`].
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
@@ -249,6 +251,7 @@ pub(crate) fn approve(
     review: &Review,
     target: &SavedEnvironmentIntent,
     trusted: &Approval,
+    asks: Asks,
 ) -> Result<(), RpcError> {
     let diff = &review.view;
     let effects = &diff.effects;
@@ -260,20 +263,25 @@ pub(crate) fn approve(
         Approval::NotRequired => return Ok(()),
         Approval::Required | Approval::Approved(_) => {}
     }
-    if effects.is_empty() || resaves {
+    if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }
     let digest = approval_digest(who, environment, &diff.version, effects);
     if matches!(trusted, Approval::Approved(approved) if *approved == digest) {
         return Ok(());
     }
-    let asked = effects
-        .iter()
-        .map(DestructiveEffect::describe)
-        .collect::<Vec<_>>()
-        .join(", ");
+    let message = if effects.is_empty() {
+        "A human must approve this deploy first.".to_owned()
+    } else {
+        let asked = effects
+            .iter()
+            .map(DestructiveEffect::describe)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("A human must approve this first: {asked}")
+    };
     Err(error::approval_required(
-        format!("A human must approve this first: {asked}"),
+        message,
         json!({"effects": effects, "approval": digest, "diff": diff}),
     ))
 }
