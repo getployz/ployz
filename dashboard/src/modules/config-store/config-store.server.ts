@@ -1,14 +1,14 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, EnvironmentRef as StoreEnvironmentRef, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
-import { Effect, Option } from "effect";
+import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { account, member, user } from "#/modules/identity/tables";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
-import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
+import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { answerForSupport, viewForSupport } from "#/modules/support-access/support-view";
@@ -28,7 +28,7 @@ import { installationAccess } from "#/modules/github/github-access";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { writeAdmitted } from "#/modules/volume-placement/volume-placement.server";
-import type { CommittedViews, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
+import type { StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult, ViewAnswer } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -332,27 +332,31 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 /**
- * The dashboard's write: `command` as `actor`, answered with the committed `diff`, `services` and Settings views of the
- * Environment it names, so the review's rows, count, pink and values arrive with the write. A view that can't be read is left
- * out (the writer's refetch brings it); a command naming no Environment, or several (a Sync), carries none.
+ * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or
+ * writes (`shows`), read after the commit in parallel, so every view it moved arrives with the write. A query of another
+ * Environment, or past `MAX_SHOWN_VIEWS`, is dropped; the tab refetches those. A view that can't be read answers its refusal.
  */
-export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
+export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
   const access = yield* requireAccess(actor, organizationSlug, "operate");
   const { organization } = access;
   const call = { operation: "write", command } as const;
   const stored = yield* callStore(organization.id, actor.userId, call);
   const result = access.kind === "support" ? answerForSupport(call, stored, access.shows) : stored;
-  const environment = commandEnvironment(command);
-  if (!result.ok || environment === null) return result satisfies StoreWriteResult;
-  const views = yield* Effect.all({
-    diff: readStore(organization.id, { query: "diff", environment }).pipe(Effect.option),
-    services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),
-    environment: readStore(organization.id, { query: "environment", environment, path: null, all: true }).pipe(Effect.option),
-  }, { concurrency: 3 });
+  if (!result.ok) return result satisfies StoreWriteResult;
+  const keys = new Set(commandEnvironments(command).map(environmentKey));
+  const asked = shows.filter((query) => queryEnvironments(query).some((ref) => keys.has(environmentKey(ref)))).slice(0, MAX_SHOWN_VIEWS);
   const shown = <V extends ConfigView>(view: V): V => access.kind === "support" ? viewForSupport(view, access.shows) : view;
-  const committed: CommittedViews = {};
-  if (Option.isSome(views.diff)) committed.diff = shown(views.diff.value);
-  if (Option.isSome(views.services)) committed.services = shown(views.services.value);
-  if (Option.isSome(views.environment)) committed.environment = shown(views.environment.value);
-  return { ...result, views: committed } satisfies StoreWriteResult;
+  const answers = yield* Effect.forEach(asked, (query) => readStore(organization.id, query).pipe(
+    Effect.map((view): ViewAnswer => ({ query, result: { ok: true, value: shown(view) } })),
+    Effect.catchTag("StoreRefused", (error) => Effect.succeed<ViewAnswer>({ query, result: { ok: false, refusal: error.refusal } })),
+  ), { concurrency: "unbounded" });
+  return { ...result, answers } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
+
+const environmentKey = (ref: StoreEnvironmentRef) => `${ref.project ?? ""}/${ref.environment ?? ""}`;
+
+/** The Environments a query reads: its own, or a Sync's two sides. */
+function queryEnvironments(query: ConfigQuery): StoreEnvironmentRef[] {
+  if (query.query === "sync") return query.into ? [query.from, query.into] : [query.from];
+  return "environment" in query && query.environment ? [query.environment] : [];
+}

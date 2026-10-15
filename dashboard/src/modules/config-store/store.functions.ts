@@ -17,5 +17,4 @@ export const readStoreViewServerFn = createServerFn({ method: "GET" })
 export const writeStoreServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(storeWriteInput))
-  .handler(async ({ context, data }) =>
-    await runActor(context, writeStoreAsMember(context.actor, data.organizationSlug, data.command)));
+  .handler(async ({ context, data }) => await runActor(context, writeStoreAsMember(context.actor, data.organizationSlug, data.command, data.shows)));

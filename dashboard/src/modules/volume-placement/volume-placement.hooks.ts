@@ -3,7 +3,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import type { ConfigWritten, EnvironmentRef, MachineId, MachineName, VolumeListing } from "@ployz/sdk";
 import { toErrorMessage } from "#/lib/error-message";
-import { environmentKey, refetchAfterWrite } from "#/modules/config-store/store-view.queries";
+import { environmentKey, invalidateViews } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { useActiveVolumeRuns, useWatchVolumeRun, volumeMembersQueryOptions } from "#/modules/volume-run/volume-run.queries";
@@ -25,7 +25,7 @@ function useSettle(failure: string, organizationSlug: string, environment: Envir
     Promise.all(writes).then((results) => {
       for (const result of results) if (!result.ok) toast.error(result.refusal.message);
       void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
-      void refetchAfterWrite(queryClient, organizationSlug, environmentKey(environment));
+      void invalidateViews(queryClient, organizationSlug, new Set([environmentKey(environment)]));
     }, (error: Error) => toast.error(toErrorMessage(error, failure)))
       .finally(() => setPending(false));
   };

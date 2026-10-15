@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
-import type { ConfigCommand, ConfigWritten, EnvironmentView } from "@ployz/sdk";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import type { ConfigCommand, ConfigWritten, DiffView, EnvironmentView } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { afterEach, expect, it, vi } from "vitest";
@@ -11,7 +11,7 @@ import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 const ref = { project: "shop", environment: "production" };
 
@@ -78,7 +78,7 @@ it("shows an edit at once, saves edits in order against the newest revision, and
   await waitFor(() => expect(test.replicas()).toBe(5));
   // The second waits for the first: one queue per Environment.
   expect(test.write).toHaveBeenCalledTimes(1);
-  expect(test.write.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "acme", command: { command: "edit", environment: ref, expect: 2, changes: replicas(3) } } });
+  expect(test.write.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "acme", command: { command: "edit", environment: ref, expect: 2, changes: replicas(3) }, shows: [environmentSettingsQuery(ref)] } });
 
   test.store.current = view(3, 3);
   first.resolve(edited(3));
@@ -205,11 +205,41 @@ it("puts the write's committed review in the cache as it answers, before any ref
   const diff = { environment: view(3, 1).environment, version: "3:1:1", saved: 1, holds_staged: false, incoming: [], follow_hints: [], total_count: 1, changes: [] };
   const key = storeViewOptions("acme", test.scope, diffQuery(ref)).queryKey;
   test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { ...diff, total_count: 0 } });
-  test.write.mockResolvedValueOnce({ ok: true, value: { written: "published" } as never, views: { diff } } as never);
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "published" } as never, answers: [{ query: diffQuery(ref), result: { ok: true, value: { view: "diff", ...diff } } }] } as never);
   // No refetch answers: only the write's own answer can bring the count.
   vi.mocked(functions.readStoreViewServerFn).mockImplementation(() => new Promise(() => {}));
   test.writer.commit({ command: "publish", environment: ref, version: null, accept_volume_loss: [] });
   await waitFor(() => expect(test.scope.queryClient.getQueryData<{ value: { total_count: number } }>(key)?.value.total_count).toBe(1));
+});
+
+it("keeps a newer view when a write's answer or a read lands older", async () => {
+  const test = setup(view(2, 1));
+  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
+  const answer = deferred<unknown>();
+  test.write.mockImplementationOnce(() => answer.promise as never);
+  const persisted = test.writer.commit({ command: "publish", environment: ref, version: null, accept_volume_loss: [] }).isPersisted.promise;
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+
+  // A change-stream read lands revision 5 while the write's answer, read at 4, is on its way.
+  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { view: "environment", ...view(5, 7) } });
+  test.store.current = view(4, 3);
+  answer.resolve({ ok: true, value: { written: "published" }, answers: [{ query: environmentSettingsQuery(ref), result: { ok: true, value: { view: "environment", ...view(4, 3) } } }] });
+  await persisted;
+  await act(async () => { await test.scope.queryClient.refetchQueries({ queryKey: key, exact: true }); });
+  await waitFor(() => expect(test.replicas()).toBe(7));
+
+  test.store.current = view(6, 8);
+  await act(async () => { await test.scope.queryClient.refetchQueries({ queryKey: key, exact: true }); });
+  await waitFor(() => expect(test.replicas()).toBe(8));
+
+  // A Deploy ending moves a diff's version, not its revision.
+  const diffOptions = storeViewOptions("acme", test.scope, diffQuery(ref));
+  const diffKey = diffOptions.queryKey;
+  const diff = (version: string, total: number): StoreResult<{ view: "diff" } & DiffView> => ({ ok: true, value: { view: "diff", environment: view(6, 8).environment, version, saved: 2,
+    holds_staged: false, incoming: [], follow_hints: [], included: [], total_count: total, changes: [] } });
+  await test.scope.queryClient.ensureQueryData({ ...diffOptions, initialData: diff("6:2:3.1", 2) });
+  test.scope.queryClient.setQueryData<unknown>(diffKey, diff("6:2:2.9", 1));
+  expect(test.scope.queryClient.getQueryData<{ value: { total_count: number } }>(diffKey)?.value.total_count).toBe(2);
 });
 
 it("refetches only the views a changed Store table family backs", () => {

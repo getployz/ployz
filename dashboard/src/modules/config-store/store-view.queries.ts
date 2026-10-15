@@ -9,7 +9,7 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
-import { type CommittedViews, StoreChange, StoreQuery, type StoreResult, StoreView, type StoreViewOf, viewOf } from "./store.contract";
+import { MAX_SHOWN_VIEWS, StoreChange, StoreQuery, type StoreResult, StoreView, type StoreViewOf, type ViewAnswer, viewOf } from "./store.contract";
 import { renameReferences } from "#/modules/variables/variable-template";
 
 /**
@@ -93,6 +93,7 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, query] as const,
     staleTime: Infinity,
     refetchInterval: (cached) => settling(cached.state.data) ? DOMAIN_POLL_MS : false,
+    structuralSharing: keepNewer,
     queryFn,
   });
 }
@@ -162,43 +163,83 @@ function isOfEnvironment(query: Query, key: string) {
 }
 
 /**
- * After a write: refetches the views of the Environment it named (`key`; null, every view of the Organization) and
- * waits for them, so the committed state shows before the overlay goes. The views the write's answer carried are
- * already committed and aren't read again; the Organization's views follow the change stream.
+ * The views this tab shows of a write's Environments, newest read first (cap `MAX_SHOWN_VIEWS`): the write's answer
+ * carries each, read after it committed. Only views with an observer are shown; the rest are invalidated.
  */
-export async function refetchAfterWrite(queryClient: QueryClient, organizationSlug: string, key: string | null, carried: CommittedViews = {}) {
-  await queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => {
-    const config = queryOf(query);
-    if (config === null || key === null) return config !== null;
-    return isOfEnvironment(query, key) && carriedView(config, carried) === undefined;
-  } });
+export function shownQueries(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null) {
+  return viewsOf(queryClient, organizationSlug, keys)
+    .filter((query) => query.getObserversCount() > 0 && !isPaged(query))
+    .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt)
+    .flatMap((query) => queryOf(query) ?? [])
+    .slice(0, MAX_SHOWN_VIEWS);
 }
 
-/** The view a write's answer carried for a cached query of its Environment, if it carried that one. */
-function carriedView(config: ConfigQuery, views: CommittedViews) {
-  if (config.query === "diff") return views.diff;
-  if (config.query === "services") return views.services;
-  return config.query === "environment" && config.path === null && config.all ? views.environment : undefined;
+function viewsOf(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null) {
+  return queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })
+    .filter((query) => queryOf(query) !== null && (keys === null || [...keys].some((key) => isOfEnvironment(query, key))));
+}
+
+/** A paged list (Deployments) caches pages, not one view: a write's answer can't replace it, so it is reread. */
+const isPaged = (query: Query) => carriesPages(query.state.data);
+
+const carriesPages = Schema.is(Schema.Struct({ pages: Schema.Array(Schema.Unknown) }));
+
+/**
+ * A write's answers, in every cached view of the same query, through `keepNewer`: a read already in flight is
+ * cancelled first, so it can't land over them. Views of the write's Environments it didn't answer are reread.
+ */
+export async function putAnswers(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null, answers: readonly ViewAnswer[]) {
+  const answered = new Set<Query>();
+  for (const query of viewsOf(queryClient, organizationSlug, keys)) {
+    const config = queryOf(query);
+    const answer = answers.find((candidate) => JSON.stringify(candidate.query) === JSON.stringify(config));
+    if (answer === undefined) continue;
+    answered.add(query);
+    await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
+    queryClient.setQueryData(query.queryKey, answer.result);
+  }
+  await invalidateViews(queryClient, organizationSlug, keys, answered);
+}
+
+/** Rereads the views of `keys` (null, every view of the Organization), except `skip`. */
+export function invalidateViews(queryClient: QueryClient, organizationSlug: string, keys: ReadonlySet<string> | null, skip: ReadonlySet<Query> = new Set()) {
+  const leftovers = new Set(viewsOf(queryClient, organizationSlug, keys).filter((query) => !skip.has(query)));
+  return queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug), predicate: (query) => leftovers.has(query) });
+}
+
+/** The parts of a diff version (`working:saved:deployment.ended`), as numbers. */
+const versionParts = (version: string) => version.split(/[:.]/u).map(Number);
+
+function compareVersions(a: string, b: string) {
+  const left = versionParts(a);
+  const right = versionParts(b);
+  const length = Math.max(left.length, right.length);
+  for (const index of Array.from({ length }, (_, at) => at)) {
+    const delta = (left[index] ?? 0) - (right[index] ?? 0);
+    if (delta !== 0) return delta;
+  }
+  return 0;
 }
 
 /**
- * A write's committed views, in every cached view of the same kind and Environment: the review's rows, count and pink
- * arrive with the write, before any refetch. A read already in flight is cancelled first, so it can't land over them.
+ * The one revision guard: a read or a write's answer never replaces a view with an older one of the same query.
+ * Working State's revision orders most views; where it doesn't move (a Deploy ends), a diff's version does.
  */
-export async function putCommittedViews(queryClient: QueryClient, organizationSlug: string, key: string, views: CommittedViews) {
-  for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
-    const config = queryOf(query);
-    const view = config === null ? undefined : carriedView(config, views);
-    if (view === undefined || !isOfEnvironment(query, key)) continue;
-    await queryClient.cancelQueries({ queryKey: query.queryKey, exact: true });
-    queryClient.setQueryData(query.queryKey, { ok: true, value: view });
-  }
+function keepNewer<T>(old: T | undefined, next: T): T {
+  if (!carriesRevision(old) || !carriesRevision(next)) return next;
+  const before = old.value.environment.revision;
+  const after = next.value.environment.revision;
+  if (after !== before) return after > before ? next : old;
+  if (!carriesVersion(old) || !carriesVersion(next) || old.value.version === next.value.version) return next;
+  return compareVersions(next.value.version, old.value.version) >= 0 ? next : old;
 }
 
 const carriesRevision = Schema.is(Schema.Struct({
   ok: Schema.Literal(true),
   value: Schema.Struct({ environment: Schema.Struct({ revision: Schema.Number }) }),
 }));
+
+const carriesVersion = Schema.is(Schema.Struct({ value: Schema.Struct({ version: Schema.String }) }));
 
 /** The newest Working State revision any cached view of the Environment shows. */
 export function cachedRevision(queryClient: QueryClient, organizationSlug: string, key: string) {
