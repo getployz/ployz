@@ -32,6 +32,7 @@ pub use crate::volume::{
 use crate::error;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
+use crate::tools::ToolId;
 use crate::{Actor, SealingKey, Trusted};
 
 /// What a command or query runs with: one open transaction, its caller, and the
@@ -66,18 +67,37 @@ pub trait Tell: Serialize {
     fn written(written: Written) -> Result<Self::Written, RpcError>;
 }
 
+/// The agent tools that send a command, or why none does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Claim {
+    Tools(&'static [ToolId]),
+    None(&'static str),
+}
+
+macro_rules! claim {
+    ([$($tool:ident),+]) => {
+        Claim::Tools(&[$(ToolId::$tool),+])
+    };
+    (none $reason:literal) => {
+        Claim::None($reason)
+    };
+}
+
 /// Register every command. A row reads:
-/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] if SAME] => CALL;`
+/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS] if SAME]
+/// agent CLAIM => CALL;`
 /// where `keyed` lists the caller-minted IDs a create replays by (an optional one when
 /// the caller may send none), `SAME` (see [`crate::replay`]) refuses a replay its first
-/// answer no longer fits, and `CALL` runs it with the names bound in the table's header.
+/// answer no longer fits, `CLAIM` is `[Tool, ...]`, the [`ToolId`]s that send it, or
+/// `none "why"`, and `CALL` runs it with the names bound in the table's header.
 macro_rules! commands {
     (
         |$tx:ident, $who:ident, $sealing:ident, $trusted:ident, $c:ident|
         $(
             $(#[doc = $doc:literal])*
             $variant:ident($payload:ty) -> $written:ident($answer:ty) $(as $unbox:tt)?
-            $(keyed [$($id:expr),*] if $same:path)? => $call:expr;
+            $(keyed [$($id:expr),*] if $($same:ident)::+)?
+            agent $claim:tt $($reason:literal)? => $call:expr;
         )*
     ) => {
         /// One change to authored configuration, applied in one transaction.
@@ -89,6 +109,21 @@ macro_rules! commands {
         }
 
         impl Command {
+            /// Every command by the name it is sent as, and its [`Claim`].
+            pub fn claims() -> impl Iterator<Item = (String, Claim)> {
+                #[derive(Serialize)]
+                #[serde(rename_all = "snake_case")]
+                enum Name {
+                    $($variant,)*
+                }
+                [$((Name::$variant, claim!($claim $($reason)?)),)*]
+                    .into_iter()
+                    .map(|(name, claim)| match serde_json::to_value(name) {
+                        Ok(Value::String(name)) => (name, claim),
+                        _ => unreachable!("a unit variant serializes to its name"),
+                    })
+            }
+
             /// Decode a command a caller sent.
             ///
             /// # Errors
@@ -156,7 +191,7 @@ macro_rules! commands {
                             [$(Option::<&str>::from($id)),*].into_iter().flatten().collect();
                         if !ids.is_empty() {
                             let fits = |at: &mut Call<'_>, first: &$answer| {
-                                $same(&mut *at.tx, at.who, self, first)
+                                $($same)::+(&mut *at.tx, at.who, self, first)
                             };
                             return replayable(at, self, &ids, fits, run);
                         }
@@ -180,8 +215,9 @@ macro_rules! commands {
     ($($row:tt)*) => {
         compile_error!(
             "a `commands!` row reads `Variant(Payload) -> Written(Answer) [as *] \
-             [keyed [IDS] if SAME] => CALL;`: a keyed row states its replay rule \
-             with `if SAME`, a fn from `crate::replay`"
+             [keyed [IDS] if SAME] agent CLAIM => CALL;`: a keyed row states its replay \
+             rule with `if SAME`, a fn from `crate::replay`, and every row names the agent \
+             tools that send it, `agent [Tool, ...]`, or why none does, `agent none \"why\"`"
         );
     };
 }
@@ -191,152 +227,204 @@ commands! {
     /// Create a Project with its Default Environment.
     CreateProject(CreateProject) -> Project(ProjectCreated)
         keyed [c.id.as_str(), c.default_environment.as_str()] if crate::replay::any
+        agent [ProjectCreate]
         => crate::project::create_project(tx, who, c);
     /// Rename a Project; its Namespaces stay.
     RenameProject(RenameProject) -> ProjectRenamed(ProjectSummary)
+        agent [ProjectRename]
         => crate::project::rename_project(tx, who, c);
     /// Create an empty Environment.
     CreateEnvironment(CreateEnvironment) -> Environment(EnvironmentCreated)
         keyed [c.id.as_str()] if crate::replay::project
+        agent none "No tool creates an Environment."
         => crate::project::create_environment(tx, who, c);
     /// Create an image Service, or an empty one.
     CreateService(CreateService) -> Service(ServiceStaged)
         keyed [c.id.as_str()] if crate::replay::service
+        agent [ServiceAdd]
         => crate::service::create_service(tx, who, c);
     /// Create a Service that builds a GitHub repository.
     CreateGitService(crate::CreateGitService) -> Service(ServiceStaged)
         keyed [c.id.as_str()] if crate::replay::git_service
+        agent [ServiceAdd]
         => crate::git::create_git_service(tx, who, c, trusted);
     /// Rename a Service, keeping its Private DNS name.
     RenameService(RenameService) -> ServiceRenamed(ServiceStaged)
+        agent [ServiceRename]
         => crate::service::rename_service(tx, who, c);
     /// Remove a Service from Working State; a Deploy removes it.
     RemoveService(RemoveService) -> ServiceRemoved(ServiceStaged)
+        agent [ServiceRemove]
         => crate::service::remove_service(tx, who, c);
     /// Create a Volume, optionally mounted into Services.
     CreateVolume(CreateVolume) -> Volume(VolumeStaged)
         keyed [c.id.as_str()] if crate::replay::volume
+        agent [VolumeAdd]
         => crate::volume::create_volume(tx, who, c);
     /// Change a Volume's storage before its first Deployment is requested.
     SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
+        agent [VolumeUpdate]
         => crate::volume::set_storage(tx, who, c);
     /// Allow or refuse more than one writer of a Volume; applies at once.
     SetVolumeSharedWrites(SetVolumeSharedWrites) -> Volume(VolumeStaged)
+        agent [VolumeUpdate]
         => crate::volume::set_shared_writes(tx, who, c);
     /// Remove a Volume from Working State; a Deploy deletes its data.
     RemoveVolume(RemoveVolume) -> VolumeRemoved(VolumeStaged)
+        agent [VolumeRemove]
         => crate::volume::remove_volume(tx, who, c);
     /// Rename a Volume; mounts follow it.
     RenameVolume(RenameVolume) -> VolumeRenamed(VolumeStaged)
+        agent [VolumeUpdate]
         => crate::volume::rename_volume(tx, who, c);
     /// Create a Config, optionally mounted into Services.
     CreateConfig(CreateConfig) -> Config(ConfigStaged)
         keyed [c.id.as_str()] if crate::replay::config
+        agent [ConfigWrite]
         => crate::config_item::create_config(tx, who, c);
     /// Put a file into a Config, replacing one of that name.
     PutConfigFile(PutConfigFile) -> Config(ConfigStaged)
+        agent [ConfigWrite]
         => crate::config_item::put_file(tx, who, c);
     /// Remove a file from a Config.
     RemoveConfigFile(RemoveConfigFile) -> Config(ConfigStaged)
+        agent [ConfigRemove]
         => crate::config_item::remove_file(tx, who, c);
     /// Rename a Config; mounts follow it.
     RenameConfig(RenameConfig) -> ConfigRenamed(ConfigStaged)
+        agent [ConfigRename]
         => crate::config_item::rename_config(tx, who, c);
     /// Delete a Config from Working State, unmounting it everywhere.
     DeleteConfig(DeleteConfig) -> ConfigRemoved(ConfigStaged)
+        agent [ConfigRemove]
         => crate::config_item::delete_config(tx, who, c);
     /// Mount a Config into a Service at a directory.
     AttachConfig(AttachConfig) -> Config(ConfigStaged)
+        agent [ConfigWrite]
         => crate::config_item::attach_config(tx, who, c);
     /// Unmount a Config from a Service.
     DetachConfig(DetachConfig) -> Config(ConfigStaged)
+        agent none "service_update unmounts a Config with an edit."
         => crate::config_item::detach_config(tx, who, c);
     /// Set and unset Settings in one Environment.
-    Edit(Edit) -> Edited(Edited) => crate::settings::edit::edit(tx, who, sealing, c, trusted);
+    Edit(Edit) -> Edited(Edited)
+        agent [ServiceUpdate]
+        => crate::settings::edit::edit(tx, who, sealing, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
         keyed [c.id.as_deref()] if crate::replay::publish
+        agent [DeployInput]
         => crate::review::publish::publish(tx, who, c, trusted);
     /// Stage a guarded Restore or Undo of an immutable Saved revision.
     StageHistory(StageHistory) -> HistoryStaged(HistoryStaged)
+        agent [History]
         => crate::review::history::stage(tx, who, c);
     /// Return Working State, or part of it, to what is deployed.
-    Discard(Discard) -> Discarded(Discarded) => crate::review::publish::discard(tx, who, c);
+    Discard(Discard) -> Discarded(Discarded)
+        agent [DiscardInput]
+        => crate::review::publish::discard(tx, who, c);
     /// Freeze Saved State into a queued Deployment, publishing Working State first,
     /// or queue again what an ended Deployment froze.
     Admit(Admit) -> Deployment(crate::DeploymentSummary)
         keyed [c.id().as_str()] if crate::replay::admit
+        agent [DeployInput, DeploymentRetry]
         => crate::deployment::admit::admit(tx, who, c, trusted);
     /// Hand a queued Deployment to a runner now.
     Start(Start) -> Deployment(crate::DeploymentSummary)
+        agent [DeploymentStart]
         => crate::deployment::start(tx, who, &c.deployment);
     /// Cancel a queued or running Deployment.
     Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
+        agent [DeploymentCancel]
         => crate::removal::cancel(tx, who, &c.deployment);
     /// Give a Service a generated or custom public domain.
     AddDomain(crate::AddDomain) -> DomainAdded(crate::DomainAdded)
+        agent [DomainAdd, DomainUpdate]
         => crate::domain::add_domain(tx, who, c, trusted);
     /// Change the prefix of a Service's generated domain.
     SetGeneratedDomain(crate::SetGeneratedDomain) -> Domain(crate::DomainStaged)
+        agent [DomainUpdate]
         => crate::domain::set_generated_domain(tx, who, c, trusted);
     /// Take a public domain off its Service.
     RemoveDomain(crate::RemoveDomain) -> Domain(crate::DomainStaged)
+        agent [DomainRemove]
         => crate::domain::remove_domain(tx, who, c, trusted);
     /// Make a Branch of an Environment.
     CreateBranch(crate::CreateBranch) -> Branch(crate::Branched)
         keyed [c.id.as_str()] if crate::replay::branch
+        agent none "No tool works on branches."
         => crate::branch::create_branch(tx, who, c);
     /// Sync one Environment's changes into another of its Project: staged there,
     /// never deleting or deploying.
-    Sync(crate::SyncChanges) -> Synced(crate::Synced) => crate::branch::sync(tx, who, sealing, c);
+    Sync(crate::SyncChanges) -> Synced(crate::Synced)
+        agent none "No tool works on branches."
+        => crate::branch::sync(tx, who, sealing, c);
     /// Undo a Sync while what it staged is undeployed and unchanged, or forget the
     /// offer it made.
-    UndoSync(crate::UndoSync) -> Undone(crate::Undone) => crate::branch::undo(tx, who, c);
+    UndoSync(crate::UndoSync) -> Undone(crate::Undone)
+        agent none "No tool works on branches."
+        => crate::branch::undo(tx, who, c);
     /// Remove a source included in a draft: what it still owns there goes back.
     RemoveProposal(crate::RemoveProposal) -> Removed(crate::Removed)
+        agent none "No tool works on branches."
         => crate::branch::remove_proposal(tx, who, c);
     /// Stage the hints a Parent left in an Environment.
-    Take(crate::Take) -> Taken(crate::Taken) => crate::branch::take(tx, who, c);
+    Take(crate::Take) -> Taken(crate::Taken)
+        agent none "No tool works on branches."
+        => crate::branch::take(tx, who, c);
     /// Turn a Branch's Live Node into an Own Copy.
-    CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
+    CopyNode(crate::CopyNode) -> Branch(crate::Branched)
+        agent none "No tool works on branches."
+        => crate::branch::copy_node(tx, who, c);
     /// Mark rows of an Environment Never sync, or sync them again.
     NeverSync(crate::NeverSync) -> NeverSynced(crate::NeverSynced)
+        agent none "No tool works on branches."
         => crate::branch::never_sync(tx, who, c);
     /// Give a row of a PR Environment's On merge list the value it lands with.
     SetMergeValue(crate::SetMergeValue) -> OnMerge(crate::OnMerge)
+        agent none "No tool works on branches."
         => crate::pull_request::set_merge_value(tx, who, sealing, c);
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
+        agent none "No tool works on branches."
         => crate::branch::keep_branch(tx, who, c);
     /// Set the Organization's Build Order, at once.
     SetBuildOrder(crate::SetBuildOrder) -> BuildOrder(crate::BuildOrderView)
+        agent none "No tool sets the build order."
         => crate::builders::set_build_order(tx, who, c);
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment)
         -> DefaultEnvironment(crate::EnvironmentsView)
+        agent none "No tool sets the default Environment."
         => crate::teardown::set_default(tx, who, c);
     /// Set the Setup Commands a Branch of an Environment runs once it is made.
     SetBranchSetup(crate::SetBranchSetup) -> BranchSetup(crate::EnvironmentsView)
+        agent none "No tool works on branches."
         => crate::branch::set_branch_setup(tx, who, c);
     /// Remove an Environment or a Project: off the Servers, then out of the Store.
     Remove(crate::Remove) -> Removal(crate::Removal)
+        agent [EnvironmentRemove, ProjectRemove]
         => crate::removal::remove(tx, who, c, trusted);
     /// Stop removing an Environment or a Project.
     CancelRemoval(crate::CancelRemoval) -> RemovalCancelled(crate::RemovalCancelled)
+        agent none "deployment_cancel on the removal's Deployment stops it instead."
         => crate::removal::cancel_removal(tx, who, c);
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
+        agent [EnvironmentPr]
         => crate::pull_request::set_plan(tx, who, c);
     /// Writes of one Environment applied together, all or none.
-    Batch(Batch) -> Batch(Batched) => {
-        crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
-        let mut at = Call { tx, who, sealing, trusted };
-        c.commands
-            .iter()
-            .map(|command| command.apply(&c.environment, &mut at))
-            .collect::<Result<_, _>>()
-            .map(|results| Batched { results })
-    };
+    Batch(Batch) -> Batch(Batched)
+        agent [ServiceAdd, VolumeAdd, ConfigWrite, ConfigRemove, DiscardInput]
+        => {
+            crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
+            let mut at = Call { tx, who, sealing, trusted };
+            c.commands
+                .iter()
+                .map(|command| command.apply(&c.environment, &mut at))
+                .collect::<Result<_, _>>()
+                .map(|results| Batched { results })
+        };
 }
 
 /// Writes of one Environment in one transaction, in order: all apply or none do.
