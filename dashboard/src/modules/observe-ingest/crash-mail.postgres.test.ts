@@ -106,3 +106,13 @@ it.live("pruning deletes crashes older than 30 days and keeps the rest", () => E
   expect(yield* prune("2026-10-15T03:00:00Z")).toBe(1);
   expect(yield* remaining()).toEqual([2n]);
 }));
+
+it.live("pruning keeps an old crash mailed within the hour, because it holds the next mail back", () => Effect.gen(function* () {
+  const { crash, remaining, claim, prune } = yield* setup();
+  yield* crash("2026-09-14T03:00:00Z");
+  expect(yield* claim("2026-10-15T02:30:00Z")).toEqual({ kind: "mailed", count: 1 });
+
+  expect(yield* prune("2026-10-15T03:00:00Z")).toBe(0);
+  expect(yield* remaining()).toEqual([1n]);
+  expect(yield* prune("2026-10-15T03:30:00Z")).toBe(1);
+}));

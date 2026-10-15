@@ -105,7 +105,9 @@ export const pruneCrashEvents = Effect.fn("CrashMail.prune")(function* (now: Dat
   const { drizzle } = yield* Database;
   const deleted = yield* drizzle.execute<{ id: string }>(sql`
     delete from crash_event where id in (
-      select id from crash_event where occurred_at < ${now.toISOString()}::timestamptz - ${RETAIN}::interval
+      select id from crash_event
+      where occurred_at < ${now.toISOString()}::timestamptz - ${RETAIN}::interval
+        and (mailed_at is null or mailed_at <= ${new Date(now.getTime() - MAIL_GAP_MS).toISOString()}::timestamptz)
       limit ${PRUNE_BATCH_ROWS})
     returning id`, "objects");
   return deleted.length;

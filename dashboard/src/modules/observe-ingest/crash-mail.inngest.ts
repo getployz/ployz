@@ -18,6 +18,9 @@ const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
       retries: 3,
       triggers: [{ event: observeCrashReceivedEventType }],
       debounce: { key: SERVICE_KEY, period: "10s", timeout: "30s" },
+      // One run per Service. A newer crash replaces a run sleeping out the mail gap, and the replacement starts after that
+      // crash's row committed, so its claim sees it. Skip would drop a crash that lands after a run's last claim.
+      singleton: { key: SERVICE_KEY, mode: "cancel" },
       concurrency: [{ key: SERVICE_KEY, limit: 1 }],
     },
     async ({ event, step }) => {
@@ -25,10 +28,10 @@ const createMailCrashes = (inngest: PloyzInngest, runEffect: EffectRunner) =>
       const names = await step.run("server-names", () =>
         runEffect(observeServerNames(organizationId).pipe(Effect.map((map) => [...map]))));
       for (let claim = 0; claim < MAX_CLAIMS; claim += 1) {
-        const claimed = await step.run("claim", () =>
+        const claimed = await step.run(`claim-${claim}`, () =>
           runEffect(claimCrashMail(organizationId, serviceId, new Date(), new Map(names))));
         if (claimed.kind !== "wait") return claimed;
-        await step.sleepUntil("mail-gap", claimed.until);
+        await step.sleepUntil(`mail-gap-${claim}`, claimed.until);
       }
       return { kind: "none" as const };
     },
@@ -44,7 +47,7 @@ const createPruneCrashEvents = (inngest: PloyzInngest, runEffect: EffectRunner) 
     },
     async ({ step }) => {
       for (let batch = 0; batch < MAX_PRUNE_BATCHES; batch += 1) {
-        const deleted = await step.run("prune", () => runEffect(pruneCrashEvents(new Date())));
+        const deleted = await step.run(`prune-${batch}`, () => runEffect(pruneCrashEvents(new Date())));
         if (deleted < PRUNE_BATCH_ROWS) break;
       }
     },
