@@ -570,9 +570,10 @@ pub(crate) fn bridge_name(index: u8) -> String {
 }
 
 /// `ployz.service` runs with `PrivateTmp`, so `/var/tmp` would hide its claims
-/// from builders outside it. `/run/lock` is shared with every user.
+/// from builders outside it, and some distributions make `/run/lock` root-only.
+/// `/dev/shm` is shared and writable by every user.
 fn bridge_directory() -> PathBuf {
-    PathBuf::from("/run/lock/ployz-build-bridges")
+    PathBuf::from("/dev/shm/ployz-build-bridges")
 }
 
 fn bridge_error(error: std::io::Error) -> BuildError {
