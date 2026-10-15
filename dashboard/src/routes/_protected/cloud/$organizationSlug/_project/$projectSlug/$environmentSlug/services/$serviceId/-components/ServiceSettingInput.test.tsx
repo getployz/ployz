@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { settingError, type SettingSchema } from "#/modules/config-store/catalog";
 import { ServiceSettingInput } from "./ServiceSettingInput";
@@ -59,5 +59,42 @@ describe("ServiceSettingInput validation", () => {
     expect(onCommit).not.toHaveBeenCalled();
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(screen.getByRole("alert").textContent).toBe("Enter a whole number from 0 to 50.");
+  });
+});
+
+describe("ServiceSettingInput commit", () => {
+  afterEach(cleanup);
+
+  it("shows the committed text while the write runs, and the stored value again when it fails", async () => {
+    let fail = (_error: Error) => {};
+  const write = { promise: new Promise<void>((_resolve, reject) => { fail = reject; }) };
+    const field = (value: string) => (
+      <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={() => ({ isPersisted: { promise: write.promise } })} />
+    );
+    const { rerender } = render(field("1"));
+    const input = screen.getByLabelText<HTMLInputElement>("Replicas");
+    fireEvent.change(input, { target: { value: "4" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    rerender(field("1"));
+    expect(input.value).toBe("4");
+
+    await act(async () => {
+      fail(new Error("refused"));
+      await write.promise.catch(() => {});
+    });
+    expect(input.value).toBe("1");
+  });
+
+  it("follows the stored value once it moves off what it was at commit", () => {
+    const field = (value: string) => (
+      <ServiceSettingInput ariaLabel="Replicas" value={value} isChanged={false} onCommit={() => ({ isPersisted: { promise: new Promise(() => {}) } })} />
+    );
+    const { rerender } = render(field("1"));
+    const input = screen.getByLabelText<HTMLInputElement>("Replicas");
+    fireEvent.change(input, { target: { value: "4" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    rerender(field("4"));
+    rerender(field("1"));
+    expect(input.value).toBe("1");
   });
 });

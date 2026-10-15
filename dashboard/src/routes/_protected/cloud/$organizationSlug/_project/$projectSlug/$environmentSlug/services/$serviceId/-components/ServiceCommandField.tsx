@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { PlusIcon } from "lucide-react";
+import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 
@@ -10,7 +12,7 @@ import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/
  * confirming blank closes it again. A staged change shows pink, titled with what's deployed.
  */
 export function ServiceCommandField({
-  label, addLabel = label, description, placeholder, value, baselineValue, isChanged, compact = false, validate, onCommit,
+  label, addLabel = label, description, placeholder, value: stored, baselineValue, isChanged, compact = false, validate, onCommit,
 }: {
   label: string;
   /** The compact link's words; the label by default. */
@@ -24,8 +26,9 @@ export function ServiceCommandField({
   compact?: boolean;
   /** Under the hint: what the next Deploy changes here, with Undo. */
   validate: (raw: string) => string | null;
-  onCommit: (value: string | null) => void;
+  onCommit: (value: string | null) => PersistableTransaction;
 }) {
+  const [value, hold] = useCommitHold(stored);
   // The draft follows `value` until edited; null is the closed link (compact only).
   const [draft, setDraft] = useState<{ source: string | null; text: string | null; error: string | null }>({ source: value, text: value, error: null });
   const current = draft.source === value ? draft : { source: value, text: value, error: null };
@@ -37,8 +40,7 @@ export function ServiceCommandField({
     const next = text.trim() || null;
     const error = next === null ? null : validate(next);
     if (error) return setDraft({ ...current, error });
-    onCommit(next);
-    // Filed under the committed text, so the echo shows it and a refusal's rollback doesn't revive it.
+    hold(next, onCommit(next));
     setDraft({ source: next, text: next, error: null });
   }
 
