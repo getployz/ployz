@@ -47,7 +47,8 @@ describe("withDomainAdded", () => {
 describe("withGeneratedDomain", () => {
   it("renames and retargets the generated domain, its hostname under the same Cluster Domain", () => {
     expect(withGeneratedDomain([generated, custom], "web", "app", 9000)).toEqual([
-      { ...generated, prefix: "app", hostname: "app.c.ployz.dev", port: 9000 }, custom,
+      { ...generated, prefix: "app", hostname: "app.c.ployz.dev", port: 9000,
+        status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" } }, custom,
     ]);
   });
 });

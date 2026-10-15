@@ -90,10 +90,10 @@ export function withDomainAdded(domains: readonly DomainRow[], add: { service: s
     : { kind: "custom", hostname, service, port, ...staged }];
 }
 
-/** `domains` with the generated one at `from` given `prefix` and `port`: its hostname follows, under the same Cluster Domain. */
+/** `domains` with the generated one at `from` given `prefix` and `port`, staged: its hostname follows, under the same Cluster Domain. */
 export function withGeneratedDomain(domains: readonly DomainRow[], from: string, prefix: string, port: number | null): DomainRow[] {
   return domains.map((domain) => domain.kind !== "generated" || domain.prefix !== from ? domain : {
-    ...domain, prefix, port, hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
+    ...domain, ...staged, prefix, port, hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
   });
 }
 
