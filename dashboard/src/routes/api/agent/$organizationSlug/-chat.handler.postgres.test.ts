@@ -47,9 +47,9 @@ const reply = Effect.fn(function* (slug: string, headers: Readonly<Record<string
 const chat = (slug: string, headers: Readonly<Record<string, string>>, threadId: string) =>
   reply(slug, headers, threadId).pipe(Effect.map(({ status }) => status));
 
-/** `body` against a fresh Cloud whose sidebar reads `env`: the stub model unless a test says otherwise. */
-const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>, env: Record<string, string> = { PLOYZ_AGENT_STUB: "1" }) => Effect.gen(function* () {
-  const cloud = yield* storeTestCloud();
+/** `body` against a fresh Cloud whose sidebar reads `env`: the stub model unless a test says otherwise. `cloudEnv` configures the Cloud. */
+const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>, env: Record<string, string> = { PLOYZ_AGENT_STUB: "1" }, cloudEnv: Record<string, string> = {}) => Effect.gen(function* () {
+  const cloud = yield* storeTestCloud({ env: cloudEnv });
   const config = ConfigProvider.layer(ConfigProvider.fromEnv({ env }));
   return yield* body.pipe(Effect.provide(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, config)));
 });
@@ -73,6 +73,14 @@ it.live("the sidebar answers only the dashboard's own pages, never a page on ano
     expect(yield* chat(slug, { cookie: ada.cookie, origin }, "thread-ada")).toBe(200);
     expect(yield* chat(slug, sidebar(ada.cookie), "thread-ada")).toBe(200);
   })));
+
+it.live("the sidebar answers a page on another origin sign-in trusts, from a browser that sends no Sec-Fetch-Site", () =>
+  inCloud(Effect.gen(function* () {
+    const ada = yield* signUp("ada");
+    const slug = ada.caller.organization.slug;
+    expect(yield* chat(slug, { cookie: ada.cookie, origin: "https://internal-cloud.example.com" }, "thread-ada")).toBe(200);
+    expect(yield* chat(slug, { cookie: ada.cookie, origin: "https://evil.example" }, "thread-evil")).toBe(403);
+  }), undefined, { BETTER_AUTH_TRUSTED_ORIGINS: "https://internal-cloud.example.com" }));
 
 it.live("an Organization Token cannot drive the sidebar, even in its own Organization", () =>
   inCloud(Effect.gen(function* () {

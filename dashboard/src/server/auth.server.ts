@@ -105,6 +105,8 @@ export interface AuthService {
     Actor,
     Unauthorized | AuthenticationUnavailable | Schema.SchemaError
   >;
+  /** Whether sign-in trusts `origin`: the app's own, `BETTER_AUTH_TRUSTED_ORIGINS`, and localhost outside production. */
+  readonly isTrustedOrigin: (origin: string) => Effect.Effect<boolean, AuthenticationUnavailable>;
   /** The remote MCP endpoint's authorization, on a hosted Cloud only. */
   readonly mcp: RemoteMcpAuth | null;
 }
@@ -368,6 +370,10 @@ const makeAuth = Effect.gen(function* () {
       return yield* Schema.decodeUnknownEffect(Actor)({
         userId: authSession.user.id,
       }, { onExcessProperty: "error" });
+    }),
+    isTrustedOrigin: (origin) => Effect.tryPromise({
+      try: async () => (await instance.$context).isTrustedOrigin(origin),
+      catch: (cause) => new AuthenticationUnavailable({ cause }),
     }),
     mcp,
   } satisfies AuthService;
