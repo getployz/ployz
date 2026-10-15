@@ -3,9 +3,11 @@
 //! Caddy writes one JSON line per request on a published site to a tmpfs
 //! file. Each HTML pageview becomes a row with a visitor hashed under the
 //! site's daily salt; the client address and user agent go no further than
-//! that hash. Bots and requests no salt covers become counts.
+//! that hash. Bots and human requests no salt covers become counts; a bot no
+//! salt covers is dropped.
 
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap},
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -83,7 +85,7 @@ enum Count {
     Bots {
         namespace: Namespace,
         day: String,
-        reason: &'static str,
+        reason: Cow<'static, str>,
     },
     Gap {
         namespace: Namespace,
@@ -123,29 +125,29 @@ impl<'a> Harvest<'a> {
                 Lookup::Gap => Some(None),
                 Lookup::Covered(salt) => Some(Some((salt.day.clone(), salt.salt))),
             });
-        let (day, salt) = match salt {
-            None => return,
-            Some(None) => {
-                *self.counts.entry(Count::Gap { namespace }).or_default() += 1;
-                return;
-            }
-            Some(Some(covered)) => covered,
+        let Some(covered) = salt else {
+            return;
         };
         let headers = &line.request.headers;
         let user_agent = first(headers.user_agent.as_ref()).unwrap_or_default();
-        if let Some(reason) = bots::reason(user_agent) {
-            let count = Count::Bots {
+        let count = match (bots::reason(user_agent), covered) {
+            (None, Some((day, salt))) => {
+                let row = line.pageview(ts, &day, &namespace, &salt, user_agent);
+                if let Err(error) = self.outbox.push(&Row::Pageview(row)) {
+                    tracing::warn!(%error, "cannot hold a pageview");
+                }
+                return;
+            }
+            (None, None) => Count::Gap { namespace },
+            (Some(reason), Some((day, _))) => Count::Bots {
                 namespace,
                 day,
                 reason,
-            };
-            *self.counts.entry(count).or_default() += 1;
-            return;
-        }
-        let row = line.pageview(ts, &day, &namespace, &salt, user_agent);
-        if let Err(error) = self.outbox.push(&Row::Pageview(row)) {
-            tracing::warn!(%error, "cannot hold a pageview");
-        }
+            },
+            // A bots row is keyed by the salt's day, so a bot in a gap has none.
+            (Some(_), None) => return,
+        };
+        *self.counts.entry(count).or_default() += 1;
     }
 
     /// Writes a due outbox segment and, every minute, the counts since the

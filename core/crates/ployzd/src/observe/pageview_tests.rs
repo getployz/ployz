@@ -333,13 +333,12 @@ fn bots_and_gaps_become_counts_and_an_off_site_leaves_no_trace() {
     harvest.tick(Instant::now() + COUNTS_EVERY);
     let mut rows = lab.outbox.rows();
     rows.sort_by_key(Value::to_string);
-    let googlebot = bots::reason("Googlebot/2.1").unwrap();
     assert_eq!(
         rows,
         [
             json!({ "kind": "bots", "namespace": "acme-prod", "day": "2026-10-15", "reason": "empty_ua", "count": 1 }),
-            json!({ "kind": "bots", "namespace": "acme-prod", "day": "2026-10-15", "reason": googlebot, "count": 2 }),
-            json!({ "kind": "gap", "namespace": "acme-prod", "day": null, "count": 2 }),
+            json!({ "kind": "gap", "namespace": "acme-prod", "day": null, "count": 1 }),
+            json!({ "kind": "bots", "namespace": "acme-prod", "day": "2026-10-15", "reason": "googleb", "count": 2 }),
         ]
     );
     harvest.tick(Instant::now() + COUNTS_EVERY * 2);

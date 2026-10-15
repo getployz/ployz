@@ -1,9 +1,12 @@
 //! Tells bot user agents from browsers with isbot's pattern list, vendored by
 //! `core/scripts/vendor-isbot.sh`.
 
-use std::sync::LazyLock;
+use std::{
+    borrow::Cow,
+    sync::{LazyLock, OnceLock},
+};
 
-use regex::{RegexSet, RegexSetBuilder};
+use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 
 const MAX_REASON_BYTES: usize = 64;
 
@@ -13,14 +16,42 @@ static PATTERNS: LazyLock<Vec<&'static str>> =
 static SET: LazyLock<RegexSet> =
     LazyLock::new(|| build(&PATTERNS).expect("vendor-isbot.sh validated every pattern"));
 
+/// Each pattern on its own, compiled the first time it wins a match.
+static REGEXES: LazyLock<Vec<OnceLock<Regex>>> =
+    LazyLock::new(|| PATTERNS.iter().map(|_| OnceLock::new()).collect());
+
 /// Why a user agent counts as a bot, or `None` for a browser: `empty_ua`, or
-/// the first matching isbot pattern cut to 64 bytes.
-pub(super) fn reason(user_agent: &str) -> Option<&'static str> {
+/// a label from what the first matching isbot pattern matched.
+pub(super) fn reason(user_agent: &str) -> Option<Cow<'static, str>> {
     if user_agent.trim().is_empty() {
-        return Some("empty_ua");
+        return Some(Cow::Borrowed("empty_ua"));
     }
-    let pattern = PATTERNS.get(SET.matches(user_agent).iter().next()?)?;
-    pattern.get(..pattern.floor_char_boundary(MAX_REASON_BYTES))
+    let index = SET.matches(user_agent).iter().next()?;
+    let pattern = PATTERNS.get(index)?;
+    let regex = REGEXES.get(index)?.get_or_init(|| {
+        RegexBuilder::new(pattern)
+            .case_insensitive(true)
+            .build()
+            .expect("vendor-isbot.sh validated every pattern")
+    });
+    let matched = regex.find(user_agent)?.as_str();
+    Some(Cow::Owned(label(matched)))
+}
+
+/// The matched text lowercased, trimmed to alphanumerics at both ends and cut
+/// to 64 bytes. A match with no alphanumerics is `unlabeled`.
+fn label(matched: &str) -> String {
+    let lower = matched.to_lowercase();
+    let trimmed = lower.trim_matches(|c: char| !c.is_alphanumeric());
+    let cut = trimmed
+        .get(..trimmed.floor_char_boundary(MAX_REASON_BYTES))
+        .unwrap_or_default()
+        .trim_end_matches(|c: char| !c.is_alphanumeric());
+    if cut.is_empty() {
+        "unlabeled".to_owned()
+    } else {
+        cut.to_owned()
+    }
 }
 
 fn patterns(text: &str) -> impl Iterator<Item = &str> {
@@ -122,29 +153,39 @@ mod tests {
 
     #[test]
     fn empty_user_agent_is_a_bot() {
-        assert_eq!(reason(""), Some("empty_ua"));
-        assert_eq!(reason(" \t "), Some("empty_ua"));
+        assert_eq!(reason(""), Some("empty_ua".into()));
+        assert_eq!(reason(" \t "), Some("empty_ua".into()));
     }
 
     #[test]
-    fn reports_the_first_matching_pattern() {
+    fn labels_a_bot_by_what_its_pattern_matched() {
+        let labels: Vec<_> = [
+            "Googlebot/2.1 (+http://www.google.com/bot.html)",
+            "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+            "curl/8.5.0",
+            "python-requests/2.32.3",
+            "Mozilla/5.0 (compatible; Daum/4.1; +http://cs.daum.net/faq/15/4118.html)",
+        ]
+        .into_iter()
+        .map(|ua| reason(ua).unwrap())
+        .collect();
         assert_eq!(
-            reason("Mozilla/5.0 (compatible; Daum/4.1; +http://cs.daum.net/faq/15/4118.html)"),
-            Some(" daum[ /]"),
-        );
-        assert_eq!(
-            reason("curl/8.5.0"),
-            Some(r"^[\w \.\-\(?:\):%]+(?:/v?\d+(?:\.\d+)?(?:\.\d{1,10})*?)?(?:,|$)")
+            labels,
+            [
+                "googleb",
+                "gbot",
+                "curl/8.5.0",
+                "python-requests/2.32.3",
+                "daum"
+            ]
         );
     }
 
     #[test]
-    fn cuts_long_patterns_to_64_bytes() {
-        let reason = reason("Googlebot/2.1 (+http://www.google.com/bot.html)").unwrap();
-        assert_eq!(
-            reason,
-            "(?:^|[^/]|(?:^|[^le])/|(?:^|[^e])l/|(?:^|[^n])el/|(?:^|[^n])nel/"
-        );
-        assert_eq!(reason.len(), MAX_REASON_BYTES);
+    fn a_label_is_trimmed_lowercase_and_at_most_64_bytes() {
+        assert_eq!(label(" /DaumBot-/ "), "daumbot");
+        assert_eq!(label("/:"), "unlabeled");
+        let long = format!("{}é{}", "a".repeat(63), "b".repeat(10));
+        assert_eq!(label(&long), "a".repeat(63));
     }
 }
