@@ -1,6 +1,3 @@
-//! Tells bot user agents from browsers with isbot's pattern list, vendored by
-//! `core/scripts/vendor-isbot.sh`.
-
 use std::{
     borrow::Cow,
     sync::{LazyLock, OnceLock},
@@ -16,12 +13,9 @@ static PATTERNS: LazyLock<Vec<&'static str>> =
 static SET: LazyLock<RegexSet> =
     LazyLock::new(|| build(&PATTERNS).expect("vendor-isbot.sh validated every pattern"));
 
-/// Each pattern on its own, compiled the first time it wins a match.
 static REGEXES: LazyLock<Vec<OnceLock<Regex>>> =
     LazyLock::new(|| PATTERNS.iter().map(|_| OnceLock::new()).collect());
 
-/// Why a user agent counts as a bot, or `None` for a browser: `empty_ua`, or
-/// a label from what the first matching isbot pattern matched.
 pub(super) fn reason(user_agent: &str) -> Option<Cow<'static, str>> {
     if user_agent.trim().is_empty() {
         return Some(Cow::Borrowed("empty_ua"));
@@ -42,10 +36,6 @@ pub(super) fn reason(user_agent: &str) -> Option<Cow<'static, str>> {
     )))
 }
 
-/// The user agent's token around its first token byte in `start..end`,
-/// lowercased, trimmed to alphanumerics at both ends and cut to 64 bytes. A
-/// token runs over `[A-Za-z0-9._-]`, so `/` stops it before a version. A match
-/// with no token byte is `unlabeled`.
 fn label(user_agent: &str, start: usize, end: usize) -> String {
     let bytes = user_agent.as_bytes();
     let is_token = |byte: &u8| byte.is_ascii_alphanumeric() || b"._-".contains(byte);
@@ -96,7 +86,6 @@ fn build(patterns: &[&str]) -> Result<RegexSet, regex::Error> {
 mod tests {
     use super::*;
 
-    /// Run by `vendor-isbot.sh` against its candidate list through `PLOYZ_BOTS_PATTERNS`.
     #[test]
     fn patterns_compile() {
         let text = match std::env::var("PLOYZ_BOTS_PATTERNS") {

@@ -27,7 +27,6 @@ use crate::{
 };
 
 const CERTS_DIR: &str = "certs";
-/// The access log Caddy writes for the pageview harvester, under the ingress runtime dir.
 pub(crate) const ACCESS_LOG: &str = "pageviews/access.log";
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);

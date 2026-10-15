@@ -1,6 +1,3 @@
-//! Ships outbox rows to Cloud, one signed batch at a time per stream, and
-//! keeps the salt cache current from Cloud's acks.
-
 mod pageviews;
 
 use std::{
@@ -41,8 +38,6 @@ const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
 const BACKOFF_CAP: Duration = Duration::from_secs(5 * 60);
 const RETRY_AFTER_CAP: Duration = Duration::from_secs(60 * 60);
 const UNHEARD_WARN_EVERY: Duration = Duration::from_secs(5 * 60);
-/// How often a stale salt cache may ask Cloud again. An older Cloud answers
-/// without salts, so the cache stays stale and would otherwise ask every tick.
 const SALT_REFRESH_EVERY: Duration = Duration::from_secs(5 * 60);
 
 const MACHINE_FILE: &str = "machine.json";
@@ -50,8 +45,6 @@ const SIGNATURE_CONTEXT: &[u8] = b"ployz-push-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
 
-/// Where batches go and who signs them. The secret stays in memory for one
-/// ship cycle and is never logged.
 pub struct Pusher {
     url: Url,
     machine_id: MachineId,
@@ -104,37 +97,27 @@ pub(super) fn unix_seconds() -> i64 {
         })
 }
 
-/// A seq after `last`: the clock in nanos, or `last + 1` when the clock
-/// has not moved past it.
 fn next_seq(clock: u64, last: u64) -> u64 {
     clock.max(last.saturating_add(1))
 }
 
-/// One batch read from an outbox and waiting on Cloud's answer.
 #[derive(Debug)]
 pub(super) struct Held {
     body: Vec<u8>,
-    /// The entries or segments that settle together when Cloud answers.
     seqs: Vec<u64>,
 }
 
-/// An outbox the shipper drains, one stream of the push wire.
 pub(super) trait Stream: Send + Sync + 'static {
     const NAME: &'static str;
 
-    /// The oldest batch waiting for Cloud, or None when nothing waits.
     fn next(&self) -> io::Result<Option<Held>>;
 
-    /// Deletes what Cloud took.
     fn ack(&self, seqs: &[u64]) -> io::Result<()>;
 
-    /// Deletes what Cloud refused and counts it as dropped.
     fn refuse(&self, seqs: &[u64]) -> io::Result<()>;
 
     fn wake(&self) -> &Notify;
 
-    /// An empty batch whose only purpose is the salts in its ack, for the
-    /// stream Cloud already answers.
     fn salt_refresh(&self) -> io::Result<Option<Held>> {
         Ok(None)
     }
@@ -306,8 +289,6 @@ impl Stream for Outbox {
         &self.wake
     }
 
-    /// Carries the crash cursor Cloud already holds, so its `greatest()`
-    /// cursor makes the batch harmless.
     fn salt_refresh(&self) -> io::Result<Option<Held>> {
         let (last_seq, _) = self.ledger();
         self.batch(last_seq, &[]).map(Some)
@@ -320,8 +301,6 @@ fn entry_name(seq: u64, suffix: &str) -> String {
     format!("{seq:0ENTRY_NAME_LEN$}{suffix}")
 }
 
-/// The seqs of the entries in `dir` named `<20 digits><suffix>`, oldest
-/// first.
 fn seqs(dir: &Path, suffix: &str) -> io::Result<Vec<u64>> {
     let mut seqs = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -371,7 +350,6 @@ pub struct Shipper<S, T> {
     target: T,
     /// When the journal last heard that Cloud does not know this Machine.
     unheard_warned: Mutex<Option<Instant>>,
-    /// When a stale salt cache last asked Cloud for salts.
     salts_asked: Mutex<Option<Instant>>,
 }
 
@@ -456,8 +434,6 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
                     after: retry_after(&response),
                 };
             }
-            // Cloud answers 404 for pageviews until it ingests them, so the
-            // outbox holds them up to its cap.
             StatusCode::NOT_FOUND if S::NAME == PAGEVIEWS => {
                 tracing::debug!("Cloud does not take pageviews yet; holding them");
                 return Shipped::Retry { after: None };
@@ -508,7 +484,6 @@ impl<S, T> Shipper<S, T> {
     }
 }
 
-/// Whether `every` has passed since `last`, marking now when it has.
 fn once_every(last: &Mutex<Option<Instant>>, every: Duration) -> bool {
     let now = Instant::now();
     let mut last = last.lock().unwrap_or_else(PoisonError::into_inner);
@@ -711,7 +686,6 @@ mod tests {
         assert!(backoff.next(None) <= BACKOFF_FLOOR);
     }
 
-    /// A status and its Retry-After, or for a 200 the ack body.
     type Reply = (StatusCode, Option<&'static str>);
 
     #[derive(Clone, Default)]

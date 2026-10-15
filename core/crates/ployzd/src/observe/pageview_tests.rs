@@ -13,7 +13,6 @@ use crate::{
 const SALT: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const IP: &str = "203.0.113.77";
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36";
-/// 2026-10-15 00:00 in UTC+11.
 const DAY_START: i64 = 1_792_026_000;
 
 struct Lab {
@@ -24,8 +23,6 @@ struct Lab {
 }
 
 impl Lab {
-    /// A store whose cache turns `acme-prod` on with `windows` of
-    /// `(day, start, end)`.
     fn new(windows: &[(&str, i64, i64)]) -> Self {
         let root = TestDir::new("ployzd-observe-pageview");
         fs::create_dir_all(&root.0).unwrap();
@@ -65,7 +62,6 @@ impl Lab {
     }
 }
 
-/// An access log line as Caddy writes it for a browser loading a page.
 fn request(uri: &str) -> Value {
     json!({
         "level": "info",
@@ -270,8 +266,6 @@ fn missing_headers_flag_the_row_instead_of_dropping_it() {
 
 #[test]
 fn a_request_takes_the_salt_whose_window_holds_it_across_a_dst_change() {
-    // A 23-hour day as daylight saving starts, then a 25-hour one as if it
-    // ended the next night.
     let short = DAY_START;
     let long = short + 23 * 3600;
     let after = long + 25 * 3600;

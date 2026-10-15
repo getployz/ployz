@@ -28,10 +28,7 @@ mod trace;
 
 pub const CONFIG_FILE: &str = "Caddyfile";
 const CONTAINER_CERTS_DIR: &str = "/config/caddy/certs";
-/// The ingress runtime dir as the Caddy container mounts it.
 const CONTAINER_RUNTIME_DIR: &str = "/run/ingress";
-/// Request fields that name the visitor. Caddy's stderr lands in Docker's log files and the
-/// Log Store, so no line it writes there carries them.
 const VISITOR_FIELDS: [&str; 8] = [
     "remote_ip",
     "client_ip",
@@ -333,7 +330,6 @@ fn route_summary(projection: &IngressProjection) -> String {
     summary
 }
 
-/// A `format filter` block, at `indent`, that deletes every visitor field.
 fn visitor_filter(indent: &str) -> String {
     let mut filter = format!("{indent}format filter {{\n");
     for field in VISITOR_FIELDS {
@@ -343,9 +339,6 @@ fn visitor_filter(indent: &str) -> String {
     filter
 }
 
-/// `ployz_log` is a site's stderr access log. `ployz_pageviews <namespace>` also writes the
-/// site's full requests to the file the pageview harvester tails, which lives on the runtime
-/// tmpfs and rolls at 10MiB, keeping one old file.
 fn write_log_snippets(output: &mut String) {
     let _ = write!(
         output,

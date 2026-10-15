@@ -133,7 +133,6 @@ const setup = Effect.fn(function* () {
       events: (yield* drizzle.select().from(operationOutbox)).map(({ name, data }) => ({ name, data })),
     };
   }).pipe(Effect.orDie));
-  /** Project `shop` with Environments production (`shop-prod`, on) and staging (`shop-staging`, off). */
   const sites = () => Effect.gen(function* () {
     const store = yield* cloudStore;
     yield* Effect.promise(() => store.write(ORGANIZATION, { command: "create_project", id: "00000000-0000-4000-8000-00000000f202", name: "shop", default_environment: PRODUCTION }));

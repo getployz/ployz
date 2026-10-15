@@ -1,11 +1,3 @@
-//! Pageviews harvested from the ingress access log.
-//!
-//! Caddy writes one JSON line per request on a published site to a tmpfs
-//! file. Each HTML pageview becomes a row with a visitor hashed under the
-//! site's daily salt; the client address and user agent go no further than
-//! that hash. Bots and human requests no salt covers become counts; a bot no
-//! salt covers is dropped.
-
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
@@ -31,7 +23,6 @@ use super::{
 const POLL: Duration = Duration::from_millis(200);
 const COUNTS_EVERY: Duration = Duration::from_secs(60);
 const READ_CHUNK: usize = 64 * 1024;
-/// A longer line is not one Caddy wrote; it is skipped.
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_PATH: usize = 1024;
 const MAX_QUERY_VALUE: usize = 256;
@@ -54,7 +45,6 @@ static PERSONAL: LazyLock<RegexSet> = LazyLock::new(|| {
     .expect("the personal-value patterns compile")
 });
 
-/// Tails the access log at `path` forever, pushing rows into `outbox`.
 pub(super) fn tail(path: &Path, salts: &Salts, outbox: &PageviewOutbox) {
     let mut tail = Tail::new(path.to_path_buf());
     let mut harvest = Harvest::new(salts, outbox);
@@ -72,7 +62,6 @@ pub(super) fn tail(path: &Path, salts: &Salts, outbox: &PageviewOutbox) {
     }
 }
 
-/// Turns access log lines into outbox rows.
 struct Harvest<'a> {
     salts: &'a Salts,
     outbox: &'a PageviewOutbox,
@@ -144,14 +133,11 @@ impl<'a> Harvest<'a> {
                 day,
                 reason,
             },
-            // A bots row is keyed by the salt's day, so a bot in a gap has none.
             (Some(_), None) => return,
         };
         *self.counts.entry(count).or_default() += 1;
     }
 
-    /// Writes a due outbox segment and, every minute, the counts since the
-    /// last ones.
     fn tick(&mut self, now: Instant) {
         if now.duration_since(self.counted_at) >= COUNTS_EVERY {
             self.counted_at = now;
@@ -219,7 +205,6 @@ struct Pageview<'a> {
     flags: Vec<&'static str>,
 }
 
-/// The fields of a Caddy access log line the harvest reads.
 #[derive(Deserialize)]
 struct Line {
     ts: f64,
@@ -270,7 +255,6 @@ struct ResponseHeaders {
 }
 
 impl Line {
-    /// A GET answered 2xx with HTML that is not a prefetch.
     fn is_pageview(&self) -> bool {
         let headers = &self.request.headers;
         let prefetch = [&headers.sec_purpose, &headers.purpose]
@@ -355,7 +339,6 @@ fn first(values: Option<&Vec<String>>) -> Option<&str> {
     values?.first().map(String::as_str)
 }
 
-/// The request host without its port.
 fn bare_host(host: &str) -> &str {
     if let Some(bracketed) = host.strip_prefix('[') {
         return bracketed
@@ -369,7 +352,6 @@ fn bare_host(host: &str) -> &str {
     }
 }
 
-/// The allowlisted query values, scrubbed, and whether a click id rode along.
 fn allowed_query(query: &str) -> (BTreeMap<&'static str, String>, bool) {
     let mut kept = BTreeMap::new();
     let mut click_id = false;
@@ -395,7 +377,6 @@ fn scrub(value: &str) -> String {
         .to_owned()
 }
 
-/// The primary subtag of the first language, lowercased.
 fn primary_language(accept_language: &str) -> Option<String> {
     let first = accept_language.split(',').next()?.split(';').next()?;
     let primary = first.trim().split('-').next()?;
@@ -418,7 +399,6 @@ fn visitor(salt: &[u8], namespace: &Namespace, client_ip: &str, user_agent: &str
 struct Tail {
     path: PathBuf,
     file: Option<(File, u64)>,
-    /// Whether a file was opened before, so a new one is read from its start.
     opened: bool,
     position: u64,
     partial: Vec<u8>,
@@ -439,9 +419,6 @@ impl Tail {
         }
     }
 
-    /// Reads what was appended since the last poll, calling `on_line` for
-    /// each whole line, and returns the bytes read. The first file is read
-    /// from its end so a restart does not count old requests again.
     fn poll(&mut self, mut on_line: impl FnMut(&[u8])) -> io::Result<usize> {
         if self.file.is_none() && !self.open()? {
             return Ok(0);
@@ -530,8 +507,6 @@ impl Tail {
     }
 }
 
-/// Spawns the thread that harvests pageviews from the access log under
-/// `run_dir`.
 pub(super) fn spawn(
     run_dir: &Path,
     salts: Arc<Salts>,

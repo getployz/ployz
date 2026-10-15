@@ -1,10 +1,3 @@
-//! The daily salts Cloud hands out in every push ack, which turn a client
-//! address and user agent into a visitor id without either reaching disk.
-//!
-//! The Machine never knows a site's timezone: each salt carries the window
-//! of its site-local day in Unix seconds, and a request takes the salt whose
-//! window holds it.
-
 use std::{
     collections::HashMap,
     fs, io,
@@ -19,12 +12,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use super::layout::{StoreRoot, create_store_dir};
 
-/// How old the cache may get before the shipper asks Cloud for fresh salts.
 pub(super) const FRESH_FOR: Duration = Duration::from_secs(60 * 60);
 const SALT_BYTES: usize = 32;
 
-/// One site-local day's salt and the Unix-second window `[start, end)` it
-/// covers.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(super) struct Salt {
     #[serde(deserialize_with = "day")]
@@ -41,7 +31,6 @@ struct Site {
     salts: Vec<Salt>,
 }
 
-/// The JSON body of a push ack.
 #[derive(Debug, Deserialize)]
 pub(super) struct Ack {
     sites: Vec<Site>,
@@ -53,25 +42,19 @@ struct Persisted {
     sites: Vec<Site>,
 }
 
-/// What the cache knows about a request at one instant.
 #[derive(Debug, PartialEq)]
 pub(super) enum Lookup<'a> {
-    /// Cloud did not list the site, so analytics is off for it.
     Off,
-    /// The site is on but no salt covers the instant.
     Gap,
     Covered(&'a Salt),
 }
 
 #[derive(Debug, Default)]
 struct Cache {
-    /// Unix seconds of the ack this cache came from.
     fetched: Option<i64>,
     sites: HashMap<Namespace, Vec<Salt>>,
 }
 
-/// The salt cache, replaced whole by every decodable ack and kept 0600 at
-/// `<store>/v1/analytics/salts.json` across restarts.
 #[derive(Debug)]
 pub(super) struct Salts {
     path: PathBuf,
@@ -79,8 +62,6 @@ pub(super) struct Salts {
 }
 
 impl Salts {
-    /// Loads the cache, dropping salts closed by `now`. A missing or
-    /// unreadable file is an empty cache that needs a refresh.
     pub(super) fn open(store: &StoreRoot, now: i64) -> io::Result<Self> {
         let path = store.salts();
         if let Some(parent) = path.parent() {
@@ -106,9 +87,6 @@ impl Salts {
         })
     }
 
-    /// Replaces the cache with a decodable ack body and persists it. Any
-    /// other body leaves the cache as it was, so an older Cloud that answers
-    /// without salts keeps the Machine on its last ones.
     pub(super) fn accept(&self, body: &[u8], now: i64) -> io::Result<()> {
         let Ok(ack) = serde_json::from_slice::<Ack>(body) else {
             return Ok(());
@@ -134,7 +112,6 @@ impl Salts {
         Ok(())
     }
 
-    /// Whether the cache is missing or older than [`FRESH_FOR`].
     pub(super) fn stale(&self, now: i64) -> bool {
         let fresh_for = i64::try_from(FRESH_FOR.as_secs()).unwrap_or(i64::MAX);
         self.cache
@@ -144,7 +121,6 @@ impl Salts {
             .is_none_or(|fetched| now.saturating_sub(fetched) >= fresh_for)
     }
 
-    /// Runs `with` on what the cache knows of `namespace` at Unix second `at`.
     pub(super) fn lookup<R>(
         &self,
         namespace: &Namespace,

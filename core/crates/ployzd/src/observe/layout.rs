@@ -27,13 +27,6 @@
 //!         last_seq                      the newest seq handed out
 //!         dropped                       entries lost to the cap or refused
 //!                                       by Cloud
-//!       pageviews/
-//!         <seq>.jsonl                   up to 100 pageview, bots and gap
-//!                                       rows waiting for Cloud, one per line
-//!         last_seq                      the newest seq handed out
-//!         dropped                       rows lost to the cap or refused
-//!     analytics/
-//!       salts.json                      the daily salts of the last ack
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the

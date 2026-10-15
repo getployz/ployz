@@ -9,7 +9,6 @@ import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { Validation } from "#/server/public-error";
 
-/** One salt as the ack carries it: its site-local day and that day's `[start, end)` in unix seconds. */
 export type AckSalt = { readonly day: string; readonly start: number; readonly end: number; readonly salt: string };
 export type SaltAck = { readonly sites: ReadonlyArray<{ readonly namespace: string; readonly salts: ReadonlyArray<AckSalt> }> };
 
@@ -22,13 +21,11 @@ function isTimeZone(timezone: string) {
   }
 }
 
-/** The site-local calendar day `offset` days from the one containing `now`, as "YYYY-MM-DD". */
 export function siteDay(timezone: string, now: number, offset = 0) {
   const local = new TZDate(now, timezone);
   return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate() + offset)).toISOString().slice(0, 10);
 }
 
-/** The unix seconds of the two site-local midnights bounding `day`: 86 400 apart, or 82 800 / 90 000 across DST. */
 export function saltWindow(day: string, timezone: string) {
   const utc = new Date(`${day}T00:00:00Z`);
   const midnight = (offset: number) =>
@@ -39,10 +36,6 @@ export function saltWindow(day: string, timezone: string) {
 const salts = (organizationId: string, environmentId: string, days: ReadonlyArray<string>) =>
   days.map((day) => ({ organizationId, environmentId, day, salt: randomBytes(32) }));
 
-/**
- * Lane 7's switch. Turning a site on issues its site-local today, today+1 and today+2; turning it off deletes nothing,
- * the ack just omits it. `timezone` (IANA) defaults to the site's current one, UTC for a new site.
- */
 export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   organizationId: string,
   environmentId: string,
@@ -68,7 +61,6 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   }));
 });
 
-/** Lane 8's hold: deletes the site's salt for its site-local today, so the ack carries no window for today until one is issued again. */
 export const withholdToday = Effect.fn("WebAnalytics.withholdToday")(function* (organizationId: string, environmentId: string) {
   const now = yield* Clock.currentTimeMillis;
   const { drizzle } = yield* Database;
@@ -81,7 +73,6 @@ export const withholdToday = Effect.fn("WebAnalytics.withholdToday")(function* (
   ));
 });
 
-/** Each Environment id of the Organization, with the Namespace a Machine keys its site by. */
 const namespacesByEnvironment = Effect.fn("WebAnalytics.namespaces")(function* (organizationId: string) {
   const owned = yield* owners(organizationId);
   const byEnvironment = new Map<string, string>();
@@ -95,11 +86,6 @@ const namespacesByEnvironment = Effect.fn("WebAnalytics.namespaces")(function* (
   return byEnvironment;
 });
 
-/**
- * The ack for an accepted push: ensures today+1 and today+2 for every on site of the Organization (never today), then
- * returns each on site's salts from its site-local yesterday on. Sites that are off, or whose Environment has no
- * Namespace, are absent.
- */
 export const ackSalts = Effect.fn("WebAnalytics.ack")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const sites = yield* drizzle.select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone })

@@ -1,6 +1,3 @@
-//! The `pageviews` outbox: rows buffered in memory, then written as segment
-//! files of many rows so 500 pageviews a second cost a few writes, not 500.
-
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -20,7 +17,6 @@ use super::{
 const SEGMENT_SUFFIX: &str = ".jsonl";
 const SEGMENT_ROWS: usize = 100;
 const SEGMENT_AGE: Duration = Duration::from_secs(1);
-/// Rows the outbox holds before dropping its oldest segments.
 pub(in crate::observe) const ROW_CAP: usize = 50_000;
 
 pub(in crate::observe) struct PageviewOutbox {
@@ -31,7 +27,6 @@ pub(in crate::observe) struct PageviewOutbox {
 
 struct State {
     ledger: Ledger,
-    /// Rows in each segment file on disk, by seq.
     segments: BTreeMap<u64, usize>,
     rows: usize,
     buffer: Buffer,
@@ -73,7 +68,6 @@ impl PageviewOutbox {
         }))
     }
 
-    /// Buffers one row, writing a segment once 100 rows wait.
     pub(in crate::observe) fn push(&self, row: &impl Serialize) -> io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         serde_json::to_writer(&mut state.buffer.lines, row).map_err(io::Error::other)?;
@@ -86,7 +80,6 @@ impl PageviewOutbox {
         Ok(())
     }
 
-    /// Writes the buffered rows once the oldest has waited a second.
     pub(in crate::observe) fn tick(&self) -> io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state
@@ -148,7 +141,6 @@ impl PageviewOutbox {
         Ok(())
     }
 
-    /// Writes the buffer and returns every held row, oldest first.
     #[cfg(test)]
     pub(in crate::observe) fn rows(&self) -> Vec<serde_json::Value> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -177,8 +169,6 @@ impl PageviewOutbox {
 impl Stream for PageviewOutbox {
     const NAME: &'static str = PAGEVIEWS;
 
-    /// The oldest whole segments holding at most [`CAP`] rows, as one batch
-    /// whose seq is its last segment's.
     fn next(&self) -> io::Result<Option<Held>> {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut taken = Vec::new();

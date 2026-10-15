@@ -30,11 +30,6 @@ async function readCappedBody(request: Request) {
   return Buffer.concat(chunks);
 }
 
-/**
- * Takes a Machine's signed push of one observe stream. 200 acknowledges it, a replay or an empty batch too, with the
- * Organization's analytics salts as the body. 401 and 404 keep it buffered on the Machine; 413 and 422 tell the Machine
- * to drop the batch.
- */
 export function handleObservePush(request: Request, machineId: string) {
   return Effect.gen(function* () {
     const credentials = yield* Effect.result(observePushCredentials(machineId, request.headers));
