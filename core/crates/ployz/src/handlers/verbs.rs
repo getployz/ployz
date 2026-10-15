@@ -427,7 +427,8 @@ pub(crate) const PROJECT_RENAME: Verb = Verb::cloud(
 );
 pub(crate) const PROJECT_RM: Verb =
     Verb::cloud("project rm", Always, project::rm_command, project::rm).docs("cli/overview.md");
-pub(crate) const PS: Verb = Verb::cloud("ps", Never, operator::ps_command, service::processes);
+pub(crate) const PS: Verb = Verb::cloud("ps", Never, operator::ps_command, service::processes)
+    .docs("troubleshooting/deployments.md");
 pub(crate) const SCHEMA: Verb =
     Verb::cloud("schema", Never, catalog::schema_command, catalog::schema).docs("cli/overview.md");
 pub(crate) const SERVER_ADD: Verb = Verb::cloud(
