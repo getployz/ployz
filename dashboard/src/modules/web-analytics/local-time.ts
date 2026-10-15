@@ -36,7 +36,10 @@ export function retentionFloor(timezone: string, now: number, months: number) {
 
 /** Raw and aggregated rows strictly before this instant are outside every site's retention window. */
 export function retentionCutoff(now: number) {
-  const floor = retentionFloor("UTC", now, LONGEST_RETENTION_MONTHS);
+  // A site's local date is never earlier than the UTC date a day back, and month
+  // arithmetic is monotonic in that date, so the UTC floor of that day bounds
+  // every site's floor. The extra day covers zones up to UTC+14.
+  const floor = retentionFloor("UTC", now - 24 * HOUR_MS, LONGEST_RETENTION_MONTHS);
   return new Date(floor.getTime() - 24 * HOUR_MS);
 }
 

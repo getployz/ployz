@@ -187,16 +187,16 @@ it.live("retention drops only partitions wholly before the cutoff and trims ever
         .values(pageviewValues(site.environmentId, [row("2025-08-20T10:00:00Z"), row("2025-09-20T10:00:00Z"), row("2026-10-01T10:00:00Z")]));
       yield* drizzle.execute(sql`
         insert into analytics.daily (environment_id, day, dim, value, pageviews, visitors, visits, bounces, total_duration)
-        select ${site.environmentId}::text, d::date, '', '', 1, 1, 1, 0, 0 from unnest(array['2025-08-15', '2025-09-13', '2025-09-14', '2026-10-01']) d`);
+        select ${site.environmentId}::text, d::date, '', '', 1, 1, 1, 0, 0 from unnest(array['2025-08-15', '2025-09-12', '2025-09-13', '2026-10-01']) d`);
       yield* drizzle.execute(sql`
         insert into analytics.session_hourly (environment_id, hour, pageviews, visitors, visits, bounces, total_duration)
-        select ${site.environmentId}::text, h::timestamptz, 1, 1, 1, 0, 0 from unnest(array['2025-09-13T23:00:00Z', '2025-09-14T00:00:00Z']) h`);
+        select ${site.environmentId}::text, h::timestamptz, 1, 1, 1, 0, 0 from unnest(array['2025-09-12T23:00:00Z', '2025-09-13T00:00:00Z']) h`);
     }));
 
     expect(yield* provide(retention(new Date("2026-10-15T10:30:00Z")))).toEqual(["pageview_202508"]);
     expect(yield* provide(partitions())).toEqual(["pageview_202509", "pageview_202610", "pageview_202611", "pageview_202612"]);
     expect(yield* provide(pageviewCount(site.environmentId))).toBe(2);
-    expect(yield* provide(aggregates(site.environmentId))).toEqual({ days: ["2025-09-14", "2026-10-01"], hours: ["2025-09-14T00:00:00Z"] });
+    expect(yield* provide(aggregates(site.environmentId))).toEqual({ days: ["2025-09-13", "2026-10-01"], hours: ["2025-09-13T00:00:00Z"] });
 
     expect(yield* provide(retention(new Date("2026-11-01T03:20:00Z")))).toEqual([]);
     expect(yield* provide(partitions())).toContain("pageview_202509");
