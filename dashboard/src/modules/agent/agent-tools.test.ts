@@ -19,12 +19,10 @@ describe("agent tools", () => {
     expect(GATED).not.toContain("environment_show");
   });
 
-  it("marks destructive exactly the tools that remove something, and never a read", () => {
+  it("marks destructive exactly the tools that delete something when they run, and never a read", () => {
     expect(AGENT_TOOLS.filter((tool) => tool.destructive).map((tool) => tool.name).sort()).toEqual([
-      "config_remove",
       "deploy",
       "discard",
-      "domain_remove",
       "environment_remove",
       "org_invite_revoke",
       "org_member_rm",
@@ -32,9 +30,7 @@ describe("agent tools", () => {
       "server_clean",
       "server_forget",
       "server_remove",
-      "service_remove",
       "volume_mirror_remove",
-      "volume_remove",
     ]);
     expect(AGENT_TOOLS.filter((tool) => tool.readOnly && tool.destructive)).toEqual([]);
   });

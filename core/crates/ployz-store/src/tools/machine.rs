@@ -100,7 +100,7 @@ impl From<Refusal> for Stop {
 pub(crate) enum Effect {
     Read,
     Change,
-    /// Removes or deletes something, now or at the deploy it ships.
+    /// Removes or deletes something when it runs; a staged removal is a Change.
     Remove,
 }
 

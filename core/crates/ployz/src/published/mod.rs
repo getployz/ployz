@@ -452,10 +452,13 @@ impl PublishedCommand {
             examples: entry.examples,
             effect: match entry.kind {
                 wire::Kind::Read => Effect::Read,
-                wire::Kind::Write => Effect::Write {
-                    ask: entry.gate == wire::Gate::Ask,
-                    removes: entry.removes,
-                },
+                wire::Kind::Write => {
+                    let ask = entry.gate == wire::Gate::Ask;
+                    Effect::Write {
+                        ask,
+                        removes: entry.removes.unwrap_or(ask),
+                    }
+                }
             },
             agents: entry.agents,
             typed: entry.typed.map(|typed| match typed {
@@ -581,6 +584,24 @@ mod tests {
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn an_entry_without_removes_takes_it_from_the_gate() {
+        let mut manifest = manifest();
+        for entry in &mut manifest.commands {
+            entry.removes = None;
+        }
+        let published = Published::from_wire(manifest);
+        assert!(published.commands.iter().any(|command| command.removes()));
+        for command in &published.commands {
+            assert_eq!(
+                command.removes(),
+                matches!(command.effect, Effect::Write { ask: true, .. }),
+                "{}",
+                command.name
+            );
+        }
     }
 
     #[test]

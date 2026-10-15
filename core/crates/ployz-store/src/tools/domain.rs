@@ -318,7 +318,7 @@ pub(crate) struct DomainRemove {
 impl Tool for DomainRemove {
     const NAME: &'static str = "domain_remove";
     const DESCRIPTION: &'static str = "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next deploy.";
-    const EFFECT: Effect = Effect::Remove;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "domain": "app.example.com" })

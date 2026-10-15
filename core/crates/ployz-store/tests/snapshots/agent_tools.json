@@ -826,7 +826,7 @@
     },
     {
       "description": "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve. Never asks a human to approve.",
-      "destructive": true,
+      "destructive": false,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1010,7 +1010,7 @@
     },
     {
       "description": "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next deploy. Never asks a human to approve.",
-      "destructive": true,
+      "destructive": false,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1164,7 +1164,7 @@
     },
     {
       "description": "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next deploy, which asks a human to approve. Never asks a human to approve.",
-      "destructive": true,
+      "destructive": false,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
@@ -1316,7 +1316,7 @@
     },
     {
       "description": "Remove one file from a Config, or the whole Config and its mounts. Staged. Never asks a human to approve.",
-      "destructive": true,
+      "destructive": false,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,

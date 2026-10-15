@@ -22,8 +22,9 @@ pub(super) struct Entry {
     pub(super) examples: Vec<String>,
     pub(super) kind: Kind,
     pub(super) gate: Gate,
+    /// Absent from a Cloud that predates it; the gate stands in.
     #[serde(default)]
-    pub(super) removes: bool,
+    pub(super) removes: Option<bool>,
     pub(super) agents: bool,
     #[serde(default)]
     pub(super) typed: Option<Typed>,

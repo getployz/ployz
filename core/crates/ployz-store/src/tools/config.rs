@@ -233,7 +233,7 @@ impl Tool for ConfigRemove {
     const NAME: &'static str = "config_remove";
     const DESCRIPTION: &'static str =
         "Remove one file from a Config, or the whole Config and its mounts. Staged.";
-    const EFFECT: Effect = Effect::Remove;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "config": "nginx", "file": "nginx.conf" })

@@ -479,7 +479,7 @@ pub(crate) struct ServiceRemove {
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
     const DESCRIPTION: &'static str = "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve.";
-    const EFFECT: Effect = Effect::Remove;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "service": "web" })
