@@ -1,5 +1,5 @@
 import type { DeploymentView, GitSource } from "@ployz/sdk";
-import { outcomeReason } from "#/modules/config-store/store-deployments";
+import { buildNodeId, outcomeReason } from "#/modules/config-store/store-deployments";
 import type { MailContent, MailFact } from "#/modules/mail/layout";
 
 export type DeployFailedMail = {
@@ -28,9 +28,8 @@ export function deployFailedMail({ origin, organization, deployment, sources }: 
   const source = sources.find((found) => serviceOf(found) === failedBuild?.service) ?? (sources.length === 1 ? sources[0] : undefined);
   const commit = source?.commit?.slice(0, 7);
   const segment = (value: string) => encodeURIComponent(value);
-  const failedNode = deployment.nodes.find((node) => node.type === "service" && node.name === failedBuild?.service);
-  const logs = failedBuild ? `build${failedNode ? `&service=${segment(failedNode.id)}` : ""}` : "deploy";
-  const url = `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}?logs=${logs}`;
+  const job = failedBuild ? `?job=${segment(buildNodeId(failedBuild.service))}` : "";
+  const url = `${origin}/cloud/${segment(organization.slug)}/${segment(project)}/${segment(environment)}/deployments/${segment(deployment.id)}${job}`;
   const facts: MailFact[] = [];
   if (source) facts.push({ label: "Repository", value: source.repository, mono: true });
   if (source?.branch) facts.push({ label: "Branch", value: source.branch, mono: true });

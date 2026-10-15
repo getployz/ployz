@@ -2,8 +2,8 @@ import type { DeploymentView, DiffView, JsonValue, Outcome, RowId, ServiceListin
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs, outcomeReason,
-  nodeLight, nodeOutcomeLabel, reviewGroups, shownValue, uploadLabel,
+  canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
+  nodeLight, reviewGroups, shownValue, uploadLabel,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -165,11 +165,8 @@ it("says who started a Deployment and what it ships: the Service's commit, else 
   expect(deploymentByline(deployment({}), undefined)).toBe("");
 });
 
-it("opens on the picked Service, else the failed one, else one it didn't apply, and offers a fix only for what ran and failed", () => {
+it("offers a fix only for what ran and failed", () => {
   const nodes = [node("web", "deployed"), node("api", "not_attempted"), node("worker", "failed")];
-  expect(focusedService(deployment({ nodes }), "id-web")?.name).toBe("web");
-  expect(focusedService(deployment({ nodes }), undefined)?.name).toBe("worker");
-  expect(focusedService(deployment({ nodes: nodes.slice(0, 2) }), undefined)?.name).toBe("api");
   expect(canFixOnBranch(deployment({ nodes }), node("worker", "failed"), false)).toBe(true);
   expect(canFixOnBranch(deployment({ nodes }), node("web", "deployed"), false)).toBe(false);
   // With no Server the way on is adding one; with nothing run, giving it a source.
@@ -186,14 +183,6 @@ it("says why a Service has no deploy logs: the Deployment never ran, or its turn
   expect(missingDeployLogs(deployment({ started_at: null, outcome: { type: "forgotten" } }), node("web", "unknown"))).toBe("Nothing ran on a server");
 });
 
-
-it("words a node's outcome as the glossary does once it has one, and a pending one as its Deployment reads", () => {
-  expect(nodeOutcomeLabel("pending", { status: "queued", in_flight: true })).toBe("Queued");
-  expect(nodeOutcomeLabel("pending", { status: "running", in_flight: true })).toBe("Deploying");
-  expect(nodeOutcomeLabel("pending", { status: "cancelled", in_flight: false })).toBe("Not attempted");
-  expect(nodeOutcomeLabel("unchanged", { status: "applied", in_flight: false })).toBe("Unchanged");
-  expect(nodeOutcomeLabel("not_attempted", { status: "failed", in_flight: false })).toBe("Not attempted");
-});
 
 it("words a Deployment that takes its Environment off the Servers as the Branch panel does, and ships nothing", () => {
   expect(deploymentStatusLabel({ status: "running", remove: true, outcome: null })).toBe("Coming off the servers");

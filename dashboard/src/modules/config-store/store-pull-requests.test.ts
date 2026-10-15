@@ -80,14 +80,14 @@ describe("storePrCheckRun", () => {
     expect(run).toMatchObject({ conclusion: "neutral", title: "1 config change; 1 config change · TOKEN not set" });
   });
 
-  it("links a merged pull request to its Destination's History once its PR Environment is gone", () => {
+  it("links a merged pull request to its Destination's Versions once its PR Environment is gone", () => {
     const stuck: OnMergeCheck = {
       conclusion: "neutral", title: "Didn't land in production", summary: "- production: why",
       merged_into: { project: "shop", environment: "production" },
     };
     const run = storePrCheckRun([{ slug: "acme", view: { ...view(stuck), environments: [] } }], "https://ployz.test/");
-    expect(run?.detailsUrl).toBe("https://ployz.test/cloud/acme/shop/production/history");
-    expect(run?.summary).toContain("[View in Ployz](https://ployz.test/cloud/acme/shop/production/history)");
+    expect(run?.detailsUrl).toBe("https://ployz.test/cloud/acme/shop/production/deployments/versions");
+    expect(run?.summary).toContain("[View in Ployz](https://ployz.test/cloud/acme/shop/production/deployments/versions)");
   });
 
   it("keeps a long summary within GitHub's limit, whole lines then how many more, still linking Ployz", () => {

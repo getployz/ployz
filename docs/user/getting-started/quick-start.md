@@ -70,8 +70,8 @@ When the server joins, **Deploy** appears in the bottom bar, next to **Apply 2 c
 service and its address.
 
 1. Click **Deploy**. The deployment page opens.
-2. Ployz builds the app, then starts it on your server. Click **Build** or **Deploy** to follow
-   the logs.
+2. Ployz builds the app, then starts it on your server. Click the build or the service to follow
+   its logs.
 3. Wait for **Deployed**. The first build takes a minute or two.
 
 ![Deployment #1 building express-hello-world, with Build and Deploy logs](../images/deployment-page-build.png)

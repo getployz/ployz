@@ -10,7 +10,7 @@ import type { DeploymentSummary } from "@ployz/sdk";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { asTestDouble } from "#/lib/test-double";
 import { AgentDock } from "#/components/agent-sidebar/agent-dock";
-import { BottomBar, BottomBarSlot, HistoryStages } from "./BottomBar";
+import { BottomBar, BottomBarSlot } from "./BottomBar";
 
 const [running, queued] = ["aaaa1111-uuid", "aaaa2222-uuid"];
 const deployment = (id: string, status: DeploymentSummary["status"], number: number) =>
@@ -54,29 +54,25 @@ function open(url: string, groups: ChangeGroup[] = [], totalChanges = 0, canSave
     settle = setLists;
     const [dock, setDock] = useState<HTMLElement | null>(null);
     const [agent, setAgent] = useState(false);
-    const [stages, setStages] = useState(0);
     return (
       <AgentDock.Provider value={dock}>
       <BottomBarSlot.Provider value={slot}>
-      <HistoryStages.Provider value={{ count: stages, staged: () => setStages(stages + 1) }}>
         <button type="button" onClick={() => setAgent(!agent)}>Agent</button>
-        <button type="button" onClick={() => setStages(stages + 1)}>Stage from History</button>
         {agent ? <aside aria-label="Agent"><div ref={setDock} /></aside> : null}
         <section aria-label="Canvas"><div ref={setSlot} /></section>
         <BottomBar groups={groups} totalChanges={totalChanges} canSave={canSave} onDeploy={onDeploy} onSave={onSave}
           onDiscardAll={onDiscardAll} onDiscardNode={() => {}} onDiscardRow={() => {}} active={lists.active} ended={lists.ended} storage={storage} notes={{}} notSet={notSet}
           proposals={{ included: [] }} />
         <Outlet />
-      </HistoryStages.Provider>
       </BottomBarSlot.Provider>
       </AgentDock.Provider>
     );
   } });
   const index = createRoute({ getParentRoute: () => canvas, path: "/", component: () => null });
-  const page = createRoute({ getParentRoute: () => canvas, path: "deployments/$deploymentId", component: () => <p>Deployment Page</p> });
+  const page = createRoute({ getParentRoute: () => environment, path: "deployments/$deploymentId", component: () => <p>Run</p> });
   const router = createRouter({
     routeTree: root.addChildren([protectedRoute.addChildren([organization.addChildren([projectGroup.addChildren([
-      environment.addChildren([canvas.addChildren([index, page])])])])])]),
+      environment.addChildren([canvas.addChildren([index]), page])])])])]),
     history: createMemoryHistory({ initialEntries: [url] }),
   });
   render(<RouterProvider router={router} />);
@@ -164,16 +160,15 @@ it("keeps staged changes over a running Deployment, with Deploy next", async () 
   expect(staged.queryByRole("link", { name: "Logs" })).toBeNull();
 });
 
-it("otherwise shows the running Deployment, and the queued one while the running one's page is open", async () => {
+it("otherwise shows the running Deployment, whose Logs open its Run", async () => {
   active = [deployment(queued, "queued", 2), deployment(running, "running", 1)];
   const router = open(canvasUrl);
   const shown = await bar();
   expect(shown.getByText("Deploying · Deployment #1")).toBeTruthy();
   expect(shown.getByText("Deploys every service")).toBeTruthy();
   fireEvent.click(shown.getByRole("link", { name: "Logs" }));
-  await screen.findByText("Deployment Page");
+  await screen.findByText("Run");
   expect(router.state.location.href).toBe(`${canvasUrl}/deployments/${running}`);
-  expect((await bar()).getByText("Queued · Deployment #2")).toBeTruthy();
 });
 
 it("words a Deploy's storage step while it moves a Volume before its Services", async () => {
@@ -243,38 +238,7 @@ it("shows the newest Deployment Failed on a fresh mount, until dismissed, and ke
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 
-it("shows how a Deployment ended when this tab opened its page before it was listed, as Deploy does", async () => {
-  const router = open(`${canvasUrl}/deployments/${running}`);
-  await screen.findByText("Deployment Page");
-  act(() => settle({ active: [], ended: [deployment(running, "failed", 1)] }));
-  await act(async () => router.history.push(canvasUrl));
-  expect((await bar()).getByText("Failed · Deployment #1")).toBeTruthy();
-});
-
-it("shows nothing after closing the page of a Deployment that had already ended", async () => {
-  ended = [deployment(running, "applied", 1)];
-  const router = open(`${canvasUrl}/deployments/${running}`);
-  await screen.findByText("Deployment Page");
-  await act(async () => router.history.push(canvasUrl));
-  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
-});
-
-it("watches no Deployment whose page opened before the ended ones loaded", async () => {
-  ended = undefined;
-  const router = open(`${canvasUrl}/deployments/${running}`);
-  await screen.findByText("Deployment Page");
-  act(() => settle({ active: [], ended: [deployment(running, "applied", 1)] }));
-  await act(async () => router.history.push(canvasUrl));
-  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
-});
-
-it("hides while nothing is staged or running, and while the only Deployment's page is open", async () => {
-  active = [deployment(running, "running", 1)];
-  open(`${canvasUrl}/deployments/${running}`);
-  await screen.findByText("Deployment Page");
-  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
-  cleanup();
-  active = [];
+it("hides while nothing is staged or running", async () => {
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
@@ -313,16 +277,6 @@ it("keeps a Change message edited while the Save is in flight", async () => {
   fireEvent.change(box(), { target: { value: "The next change" } });
   await act(async () => { saved(true); });
   expect(box()).toHaveProperty("value", "The next change");
-});
-
-it("clears the Change message once History stages other changes", async () => {
-  open(canvasUrl, [replicas], 1, true);
-  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
-  fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Raise api replicas" } });
-  fireEvent.click(screen.getByRole("button", { name: "Close" }));
-  fireEvent.click(screen.getByRole("button", { name: "Stage from History" }));
-  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
-  expect(screen.getByRole("textbox", { name: "Change message" })).toHaveProperty("value", "");
 });
 
 it("docks in the open agent and returns to the canvas when it closes, keeping the Change message", async () => {

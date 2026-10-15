@@ -7,6 +7,7 @@ import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
+  approvalCommand,
   approvalSubject,
   type OperationVerb,
 } from "#/modules/approvals/approvals";
@@ -219,7 +220,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       organizationId,
       subject: diff.environment.id,
       ...requester(caller),
-      command: command.command,
+      command: approvalCommand(command),
       review: { effects, diff },
       digest,
     }).onConflictDoUpdate({

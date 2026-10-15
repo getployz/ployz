@@ -473,7 +473,7 @@ fn grant_read(
                 <ployz_core::op::InspectBuildGrant as ployz_core::Rpc>::PATH,
                 &ployz_core::MachineTarget::from(machine),
             );
-            match crate::failure::Refusal::of(&error) {
+            match error.refusal() {
                 Some(refusal) => GrantRead::Refused(refusal.to_string()),
                 None => GrantRead::Unreachable,
             }

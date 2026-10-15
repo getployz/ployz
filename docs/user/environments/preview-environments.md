@@ -122,7 +122,7 @@ release**: its changes stay in the preview.
 
 When the pull request merges, production gets one saved change, **Merged #142 · 3 changes**, and
 the merge commit's push deploys it with the code. To take it back, click **Undo** beside it in
-production's **History**.
+production's **Versions**.
 
 The merge deploys every service it changed: one whose own settings changed, one that mounts a
 changed config, and one that reads a changed variable. It does so even for a service with
@@ -131,7 +131,7 @@ built. An edit you staged in production but didn't save stays staged.
 
 A removal deploys too: the service's containers stop and go away, and its volumes stay on the
 Machine with their data. The merge opens no approval, because it never deletes volume data.
-**Undo** in production's **History** brings the service or config back whole, settings and
+**Undo** in production's **Versions** brings the service or config back whole, settings and
 secrets included, and the next deploy starts it on the same volumes. If another service took its
 name since, Undo is refused with **api exists. Rename it first.**
 

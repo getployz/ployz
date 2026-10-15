@@ -15,12 +15,8 @@ export function CanvasInspectorOverlay({
 }: {
   children: ReactNode;
   canvas: ReactNode;
-  /**
-   * `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear.
-   * `returnTo`: the service whose panel opened this one; closing goes back to its Deployments tab.
-   * `picking`: the canvas is where you pick (New branch), so it stays clickable and the panel narrows.
-   */
-  selection: { key: string; nodeId: string; lit?: boolean; returnTo?: string | null; picking?: boolean } | null;
+  /** `picking`: the canvas is where you pick (New branch), so it stays clickable and the panel narrows. */
+  selection: { key: string; nodeId: string; picking?: boolean } | null;
 }) {
   const navigate = useNavigate();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -56,9 +52,8 @@ export function CanvasInspectorOverlay({
     }
   }, [selectionKey, selection?.nodeId]);
 
-  const returnTo = selection?.returnTo ?? null;
   function closeInspector() {
-    void navigate(inspectorExit(params, returnTo));
+    void navigate(inspectorExit(params));
   }
 
   return (
@@ -73,7 +68,6 @@ export function CanvasInspectorOverlay({
       {selection ? <>
         {!selection.picking && <button
           className="canvas-inspector-shade"
-          data-clear={selection.lit || undefined}
           type="button"
           tabIndex={-1}
           aria-label="Close inspector and return to Canvas"
@@ -97,7 +91,6 @@ export function CanvasInspectorOverlay({
         >
           <InspectorPresentation value={{
             takeover,
-            returnTo,
             toggleFullscreen: () => setPreference({ key: selectionKey, full: !preference.full }),
           }}>
             <Suspense fallback={<CanvasInspectorPending />}>{children}</Suspense>

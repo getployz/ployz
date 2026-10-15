@@ -36,7 +36,7 @@ import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeade
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
+import { deploymentDestination } from "../../../-components/deployments/run-search";
 import { ConfigFilePermissionsDialog } from "./ConfigFilePermissionsDialog";
 import { useConfigFileEditor } from "./config-file-editor-loader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -338,7 +338,7 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
   const writer = useStoreWriter(state.organizationSlug);
   const navigate = useNavigate();
   const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
-    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)));
   const { config } = state;
   const removing = config.change === "delete";
   const mounts = config.mounts.length;

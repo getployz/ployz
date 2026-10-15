@@ -58,9 +58,9 @@ ployz deploy
 
 ## Saved history
 
-Open **History** at the top of the canvas to see this environment's saved versions. Each version
-is titled from what it changed unless it was saved with a message, and lists its changes one per
-row, folding past three. The version's **⋮** menu:
+Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
+Each version is titled from what it changed unless it was saved with a message, and lists its
+changes one per row, folding past three. The version's **⋮** menu:
 
 - **Undo these N changes** reverses that version's changed fields and keeps the versions saved
   after it. The first recorded version has no earlier version to undo.
@@ -110,12 +110,14 @@ While a deployment runs, the bottom bar shows it. Once it ends, the bar shows **
 few seconds, or **Failed** until you dismiss it, with **Logs** to open its page. **Failed** stays
 after a reload and in other tabs, as long as the failed deployment is the newest one.
 
-**Deployments** in the sidebar lists every deployment, newest first. A deployment's page shows
-its status, who started it and the commit it ships, and if it failed, the reason in red under the
-header. Each service it included has a tab with its **Build** and **Deploy**
-[logs](../observe/logs.md).
+**Runs**, under **Deployments** in the sidebar, lists every deployment, newest first. A
+deployment's page shows its status, who started it and, if it failed, the reason in red under the
+header. Below that is one card for each build, service, volume and config it touched, laid out left
+to right in the order they deploy. Click a card to see each server's progress and its
+[logs](../observe/logs.md). A build's card shows the build output, and a service's card shows what
+its new containers printed. A failed deployment opens on the card that failed.
 
-![A deployment's page showing its Deploy logs](../images/deployment-page-deploy.png)
+![A failed deployment: its cards, with the failed service's servers and logs](../images/deployment-run.png)
 
 | Status | What it means |
 | --- | --- |

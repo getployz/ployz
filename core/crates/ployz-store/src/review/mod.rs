@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub(crate) use approval::approve;
 pub use approval::{DestructiveEffect, DestructiveKind};
+pub(crate) use approval::{approve, approve_retry};
 
 use crate::Actor;
 use crate::error;
@@ -391,9 +391,14 @@ pub(crate) fn service_rows(
 }
 
 /// What the destructive review gates.
+#[derive(Clone, Copy)]
 pub(crate) enum Shipping<'a> {
-    /// Deploying these Services of Working State; none deploys all of it.
-    Deploy(&'a [ployz_core::ServiceName]),
+    /// Deploying these Services of Working State, none deploying all of it, with
+    /// the new upload the Deploy brings, if any.
+    Deploy {
+        services: &'a [ployz_core::ServiceName],
+        upload: Option<&'a ployz_core::UploadDigest>,
+    },
     /// Publishing Working State without deploying it.
     Publish,
 }
@@ -422,7 +427,7 @@ pub(crate) fn destructive(
     // new, so it can record or renew the consent the next Deploy reads.
     let reviews = match shipping {
         Shipping::Publish => true,
-        Shipping::Deploy(services) => {
+        Shipping::Deploy { services, .. } => {
             services.is_empty()
                 || review
                     .saved

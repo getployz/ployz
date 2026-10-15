@@ -31,7 +31,7 @@ import { useStorePendingName, useStorePendingNodes } from "#/modules/config-stor
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
+import { deploymentDestination } from "../../../-components/deployments/run-search";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
 type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
@@ -197,7 +197,7 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
   const placements = useStagedPlacements(state.organizationSlug, state.environment, environmentId, volumes);
   // Its data goes with the Deploy that removes it, which asks first; that Deploy opens its page.
   const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
-    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }), placements.loss);
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
   const { volume } = state;
   const removing = volume.change === "delete";
   const mounts = volume.mounts.length;

@@ -3,10 +3,6 @@ import { liveNodeId } from "./canvas/nodes";
 
 const ENVIRONMENT_SERVICE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
-const DEPLOYMENT_PAGE_ROUTE_ID =
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId";
-const DEPLOYMENT_LIST_ROUTE_ID =
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/";
 const NEW_BRANCH_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/new-branch";
 const LIVE_NODE_ROUTE_ID =
@@ -23,13 +19,6 @@ export type CanvasInspectorSelection = {
   selectedLiveLineageId: string | null;
   /** Id of whichever node's inspector is open, regardless of node type. */
   selectedNodeId: string | null;
-  /** The attempt whose Deployment Page is open over the canvas; it opens no node's inspector. */
-  deploymentId: string | null;
-  /** The service whose Deployments tab opened that Deployment Page, if one did. */
-  deploymentReturnTo: string | null;
-  /** The Environment's deployment list is open over the canvas. */
-  deploymentList: boolean;
-  history: boolean;
   /** The New branch panel is open over the Parent's canvas, opened on `focus` (a lineage) if anything. */
   newBranch: { focus: string | null } | null;
   /** A repository's PR Environments plan page is open over its start-from Environment's canvas. */
@@ -51,18 +40,6 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
   });
   const resourceMatch = useMatch({
     from: ENVIRONMENT_RESOURCE_ROUTE_ID,
-    shouldThrow: false,
-  });
-  const deploymentMatch = useMatch({
-    from: DEPLOYMENT_PAGE_ROUTE_ID,
-    shouldThrow: false,
-  });
-  const deploymentListMatch = useMatch({
-    from: DEPLOYMENT_LIST_ROUTE_ID,
-    shouldThrow: false,
-  });
-  const historyMatch = useMatch({
-    from: "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/history",
     shouldThrow: false,
   });
   const newBranchMatch = useMatch({
@@ -87,10 +64,6 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     selectedResourceId,
     selectedLiveLineageId,
     selectedNodeId,
-    deploymentId: deploymentMatch?.params.deploymentId ?? null,
-    deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
-    deploymentList: deploymentListMatch != null,
-    history: historyMatch != null,
     newBranch: newBranchMatch ? { focus: newBranchMatch.search.focus ?? null } : null,
     prPlan: prPlanMatch ? { repositoryId: Number(prPlanMatch.params.repositoryId) } : null,
     isInspectorOpen: selectedNodeId != null,

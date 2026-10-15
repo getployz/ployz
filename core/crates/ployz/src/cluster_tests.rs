@@ -39,10 +39,13 @@ fn an_unanswered_call_names_the_machine_in_its_deepest_line() {
         format!("Machine {machine} did not answer: deadline has elapsed")
     );
     assert!(error.cause.is_empty(), "{:?}", error.cause);
-    let row = ployz_store::Failure::from(&crate::deploy::ExecutionError::Machine {
-        action: ployz_core::MachineAction::CreateContainer,
-        error,
-    });
+    let row = ployz_store::Failure::of(
+        &crate::deploy::ExecutionError::Machine {
+            action: ployz_core::MachineAction::CreateContainer,
+            error,
+        },
+        &[],
+    );
     assert_eq!(
         row.cause.last(),
         Some(&format!(

@@ -5,7 +5,6 @@ import type { VolumeListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
-import { useNodeLighting } from "../deployment-page";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -19,8 +18,7 @@ import { CopyHang } from "./MirrorNode";
 /** A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. */
 export function StoreVolumeCard({ volume, selected, className }: { volume: VolumeListing; selected: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const light = useNodeLighting(volume.id);
-  const surface = stagedSurface(light, volume.change);
+  const surface = stagedSurface(volume.change);
   const { name, leaving } = usePendingNode("volume", volume.name);
   return (
     <Link
@@ -33,12 +31,12 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
       className={cn("rounded-xl", className)}
     >
       <Card size="node" state={surface}
-        className={cn("h-full justify-between", (light === null || leaving) && "opacity-40")} data-selected={selected} data-leaving={leaving || undefined}>
+        className={cn("h-full justify-between", leaving && "opacity-40")} data-selected={selected} data-leaving={leaving || undefined}>
         <CardHeader>
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
             <CardTitle className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{name}</CardTitle>
-            <DeployChip light={light} chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
+            <DeployChip chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
           </div>
         </CardHeader>
         <CardContent><StatusLine status={NO_MOUNTS_CONFIGURED} issues={null} /></CardContent>

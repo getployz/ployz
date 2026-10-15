@@ -9,8 +9,8 @@ import {
   useStore,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import { HistoryIcon, PlusIcon } from "lucide-react";
+import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
+import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { prefersReducedMotion } from "#/lib/motion";
 import { BottomBar } from "./BottomBar";
@@ -21,9 +21,8 @@ import { CanvasNodeList } from "./CanvasServiceList";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { fitViewport, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
-import { canvasNodeOf, shownNodeIds } from "./nodes";
+import { canvasNodeOf } from "./nodes";
 import { LitVolumeProvider } from "./VolumeTray";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
@@ -34,7 +33,7 @@ import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { type ChangeGroup, reviewGroups } from "#/modules/config-store/store-deployments";
 import { mergeRestoreGroups } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements, useStorageSteps } from "#/modules/volume-placement/volume-placement.hooks";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
+import { deploymentDestination } from "../deployments/run-search";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { useEnvironmentRenaming } from "../StoreRenameLock";
 import { CanvasFinder } from "./CanvasFinder";
@@ -48,7 +47,6 @@ import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import {
-  ENVIRONMENT_HISTORY_ROUTE_TO,
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "../environment-route-paths";
@@ -90,15 +88,12 @@ export function CanvasFlow({
   const focusNode = canvasNodes.find((node) => node.id === focusNodeId);
   const focusPositionKey = focusNode ? `${focusNode.position.x}:${focusNode.position.y}` : null;
   const picking = usePickingView();
-  const deploymentFocus = useDeploymentFocus();
   const { getViewportCenter } = useCanvasNavigation(
     focusNodeId,
     focusPositionKey,
     flowReady,
-    deploymentFocus
-      ? { key: deploymentFocus.key, nodeIds: shownNodeIds(canvasNodes, deploymentFocus.nodeIds) }
-      // Picking a Branch brings the whole canvas into view beside the panel.
-      : picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null,
+    // Picking a Branch brings the whole canvas into view beside the panel.
+    picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null,
   );
   useKeyboardFocusModality();
   useRefitOnWidthChange(flowReady && !focusNode);
@@ -163,7 +158,6 @@ export function CanvasFlow({
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
         <Suspense fallback={null}><OnMergeButton /></Suspense>
-        <Button nativeButton={false} className="pointer-events-auto" variant="outline" render={<Link to={ENVIRONMENT_HISTORY_ROUTE_TO} params={params} />}><HistoryIcon />History</Button>
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
         <Button
@@ -246,7 +240,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const { diff } = store;
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
-    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }), placements.loss);
+    (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
   const latest = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
   const { noServers } = use(RuntimeLensContext);
   const storage = useStorageSteps(params.organizationSlug);

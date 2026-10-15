@@ -21,7 +21,7 @@ it("names the push, the Service and the Environment, and links the failed build'
     preview: "8a7ed6e on feature/login didn't deploy.",
     title: "web failed to deploy to pr 7",
     paragraphs: ["GitHub started this deploy from feature/login. The logs show what went wrong."],
-    action: { label: "View logs", url: "https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201?logs=build" },
+    action: { label: "View logs", url: "https://ployz.dev/cloud/shop%20co/shop/pr%207/deployments/dep%201?job=build%3Aweb" },
   });
   expect(failed.facts).toEqual([
     { label: "Repository", value: "acme/web", mono: true },
@@ -32,10 +32,10 @@ it("names the push, the Service and the Environment, and links the failed build'
   ]);
 });
 
-it("gives the run's reason over a build's, links deploy logs when no build failed, and says when Ployz lost track", () => {
+it("gives the run's reason over a build's, opens the run when no build failed, and says when Ployz lost track", () => {
   const ran = mail({ outcome: { type: "executed", summary: null, reason: "web did not start", cause: ["exit 137"], services: [] } });
   expect(ran.facts?.at(-1)).toEqual({ label: "Error", value: "web did not start: exit 137" });
-  expect(ran.action?.url).toMatch(/\?logs=deploy$/);
+  expect(ran.action?.url).toMatch(/\/deployments\/dep%201$/);
   expect(mail({ status: "unknown" }).facts?.at(-1)?.value).toBe("Ployz lost track of it partway through, so some of it may be live.");
   expect(mail({}).facts?.at(-1)?.value).toBe("It stopped before it said why.");
 });
@@ -46,7 +46,7 @@ it("describes the Service whose build failed and opens its build log", () => {
     nodes: [serviceNode("svc web", "web"), serviceNode("svc api", "api")],
   }, [source("web"), source("api", "acme/api")]);
   expect(failed.facts?.[0]).toEqual({ label: "Repository", value: "acme/api", mono: true });
-  expect(failed.action?.url).toMatch(/\?logs=build&service=svc%20api$/);
+  expect(failed.action?.url).toMatch(/\?job=build%3Aapi$/);
 });
 
 it("names Services as authored, not by their Private DNS names", () => {

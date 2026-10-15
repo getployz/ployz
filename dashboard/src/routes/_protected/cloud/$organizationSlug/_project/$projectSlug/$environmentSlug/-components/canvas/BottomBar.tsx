@@ -16,9 +16,8 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
-import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
+import { deploymentDestination } from "../deployments/run-search";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import type { Busy } from "#/modules/config-store/store-pending";
 import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
@@ -28,9 +27,6 @@ import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_or
  * The canvas owns the change state, so it portals the bar here, or into the open agent's dock.
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
-
-/** History stages counted by the scene: a stage replaces the changes, so the Change message typed for them goes. */
-export const HistoryStages = createContext<{ count: number; staged: () => void }>({ count: 0, staged: () => {} });
 
 const DEPLOYED_SHOWS_MS = 6_000;
 /** Far more Deployments than one bar shows, so the oldest ids it forgets are long ended. */
@@ -110,12 +106,8 @@ export function BottomBar({
   const slot = useContext(BottomBarSlot);
   const dock = useContext(AgentDock);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
-  const stages = useContext(HistoryStages).count;
-  const [typed, setTyped] = useState({ message: "", stages });
-  const message = typed.stages === stages ? typed.message : "";
-  const setMessage = (message: string) => setTyped({ message, stages });
+  const [message, setMessage] = useState("");
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
@@ -124,9 +116,8 @@ export function BottomBar({
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canSave;
   const deployable = runtimeChanges > 0 && !noServers;
-  const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
-  // Seen in flight here, or its page opened before it was listed (as Deploy does): how a Deployment ends shows only
-  // when this bar watched it run. A failure shows from any tab, so a reload keeps it.
+  const shown = hasChanges ? undefined : active[0];
+  // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
   const watched = useRef(new Set<string>());
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const dismissedKey = `bottom-bar-dismissed:${params.organizationSlug}/${params.projectSlug}/${params.environmentSlug}`;
@@ -134,12 +125,11 @@ export function BottomBar({
   useEffect(() => {
     const seen = watched.current;
     for (const deployment of active) seen.add(deployment.id);
-    if (viewedId !== null && ended !== undefined && !ended.some((deployment) => deployment.id === viewedId)) seen.add(viewedId);
     for (const id of seen) if (seen.size > WATCHED_LIMIT) seen.delete(id);
-  }, [active, ended, viewedId]);
+  }, [active]);
   const latest = active.length > 0 ? undefined : ended?.[0];
   const showsLatest = latest !== undefined && (latest.status === "failed" ? latest.id !== dismissedFailure : watched.current.has(latest.id));
-  const outcome = shown || !showsLatest || dismissed.has(latest.id) || latest.id === viewedId ? undefined : latest;
+  const outcome = shown || !showsLatest || dismissed.has(latest.id) ? undefined : latest;
   const dismiss = (deployment: DeploymentSummary) => {
     setDismissed((ids) => new Set([...ids, deployment.id]));
     if (deployment.status !== "failed") return;
@@ -163,7 +153,7 @@ export function BottomBar({
   function save() {
     void onSave(message).then((saved) => {
       if (!saved) return;
-      setTyped((now) => now.message === message && now.stages === stages ? { message: "", stages } : now);
+      setMessage((now) => now === message ? "" : now);
       toast.success("Saved, not deployed");
     });
   }
@@ -294,7 +284,7 @@ function AttemptState({ deployment, storage, onDismiss }: { deployment: Deployme
   return (
     <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
       title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={detail}>
-      <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} className={buttonVariants({ variant: "outline" })}>
+      <Link {...deploymentDestination(params, deployment.id)} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>
       {onDismiss ? (

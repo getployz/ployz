@@ -59,7 +59,24 @@ describe("dashboard navigation model", () => {
     expect(sections({ scope: "project" })?.find((item) => item.current)?.label).toBe("Project");
     expect(sections({}, "logs")?.some((item) => item.current)).toBe(false);
     expect(createDashboardNavigation(environment, { section: "logs" }).places
-      .filter((place) => place.sections.length).map((place) => place.label)).toEqual(["Settings"]);
+      .filter((place) => place.sections.length).map((place) => place.label)).toEqual(["Deployments", "Settings"]);
+  });
+
+  it("lists Deployments' Runs and Versions, open by the route", () => {
+    const environmentRoute = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
+    const open = (routeId: Parameters<typeof getDashboardSectionFromRouteId>[0]) =>
+      createDashboardNavigation(environment, { section: getDashboardSectionFromRouteId(routeId), routeId }).places
+        .find((place) => place.label === "Deployments");
+
+    const runs = open(`${environmentRoute}/deployments/`);
+    expect(runs?.current).toBe(true);
+    expect(runs?.sections.map(({ label, to, current }) => ({ label, to, current }))).toEqual([
+      { label: "Runs", to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments", current: true },
+      { label: "Versions", to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/versions", current: false },
+    ]);
+    expect(open(`${environmentRoute}/deployments/$deploymentId`)?.sections.find((item) => item.current)?.label).toBe("Runs");
+    expect(open(`${environmentRoute}/deployments/versions`)?.sections.find((item) => item.current)?.label).toBe("Versions");
+    expect(open(`${environmentRoute}/logs`)?.sections.some((item) => item.current)).toBe(false);
   });
 
   it("makes Billing a section of Organization, only when billing is configured", () => {
@@ -105,8 +122,9 @@ describe("dashboard navigation model", () => {
     const environmentRoute = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/logs`)).toBe("logs");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/settings`)).toBe("settings");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/`)).toBe("deployments");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/$deploymentId`)).toBe("deployments");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments/`)).toBe("deployments");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments/$deploymentId`)).toBe("deployments");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments/versions`)).toBe("deployments");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/`)).toBe("architecture");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/services/$serviceId`)).toBe("architecture");
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/")).toBe("projects");

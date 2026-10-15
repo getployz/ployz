@@ -78,17 +78,19 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
         <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
-        <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
-          {effects.map((effect) => {
-            const line = destroyedLine(effect, approval.command);
-            return (
-              <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
-                <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
-                <span>{line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}</span>
-              </li>
-            );
-          })}
-        </ul>
+        {effects.length > 0 && (
+          <ul aria-label="Destroys" className="flex flex-col gap-1 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs">
+            {effects.map((effect) => {
+              const line = destroyedLine(effect, approval.command);
+              return (
+                <li key={`${effect.kind}:${effect.path}`} className="flex gap-2">
+                  <XIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-destructive" />
+                  <span>{line.verb}{line.name !== null && <> <b>{line.name}</b></>}{line.after}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
         {others.length > 0 && (
           <Collapsible>
             <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">

@@ -134,9 +134,13 @@ export function getDashboardSectionLabel(section: DashboardSection) {
     : organizationDestinations[section].label;
 }
 
-/** The open section of a page with sections: Settings' `scope`, Organization's `section`, or Billing. */
-function openSection(section: DashboardSection, search: DashboardSectionSearch) {
+const versionsRouteId: RegisteredRouteId = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/versions";
+
+/** The open section of a page with sections: Settings' `scope`, Organization's `section`, Billing, or Deployments' route. */
+function openSection(section: DashboardSection, search: DashboardSectionSearch, routeId: RegisteredRouteId | undefined) {
   switch (section) {
+    case "deployments":
+      return routeId === versionsRouteId ? "versions" : "runs";
     case "settings":
       return search.scope ?? "environment";
     case "organization-settings":
@@ -155,6 +159,13 @@ function placeSections(
   open: ReturnType<typeof openSection>,
   billingEnabled: boolean,
 ) {
+  if (scope.kind === "environment" && place === "deployments") {
+    const params = { organizationSlug: scope.organizationSlug, projectSlug: scope.projectSlug, environmentSlug: scope.environmentSlug };
+    return [
+      { label: "Runs", current: open === "runs", ...linkOptions({ to: environmentPlaces.deployments.path, params, search: {} }) },
+      { label: "Versions", current: open === "versions", ...linkOptions({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/versions", params, search: {} }) },
+    ];
+  }
   if (scope.kind === "environment" && place === "settings") {
     const params = { organizationSlug: scope.organizationSlug, projectSlug: scope.projectSlug, environmentSlug: scope.environmentSlug };
     const to = environmentPlaces.settings.path;
@@ -185,13 +196,14 @@ function placeSections(
  */
 export function createDashboardNavigation(
   scope: DashboardScope,
-  { section, search = {}, billingEnabled = false }: {
+  { section, search = {}, billingEnabled = false, routeId }: {
     section: DashboardSection;
     search?: DashboardSectionSearch;
     billingEnabled?: boolean;
+    routeId?: RegisteredRouteId;
   },
 ) {
-  const open = openSection(section, search);
+  const open = openSection(section, search, routeId);
   // Billing is a section of Organization, so Organization is the current place there.
   const currentPlace = section === "billing" ? "organization-settings" : section;
   const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
@@ -219,8 +231,9 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_org/~/account", "account"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/$serverId", "servers"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/", "deployments"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId", "deployments"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/", "deployments"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/$deploymentId", "deployments"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/versions", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings", "settings"],
   // Opened from Settings → Project, over the canvas.
@@ -234,5 +247,5 @@ export function getDashboardSectionFromRouteId(
   return (routeId && sectionByRouteId.get(routeId)) || "architecture";
 }
 
-/** The canvas's layout: Architecture and every panel over the canvas, Deployments among them, render inside it. */
+/** The canvas's layout: Architecture and every panel over the canvas render inside it. */
 export const canvasRouteId: RegisteredRouteId = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas";

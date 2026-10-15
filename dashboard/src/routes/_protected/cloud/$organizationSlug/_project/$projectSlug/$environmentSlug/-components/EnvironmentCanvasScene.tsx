@@ -23,9 +23,8 @@ import { SERVICE_NODE_SIZE } from "./canvas/constants";
 import { findPlacement } from "../-utils/node-placement";
 import { useStorePendingNodes } from "#/modules/config-store/store-pending";
 import type { CanvasResourceNode, PendingNode } from "./canvas/types";
-import { BottomBarSlot, HistoryStages } from "./canvas/BottomBar";
+import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
-import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { useCanvasCopies } from "./canvas/useCanvasCopies";
 import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
@@ -171,35 +170,25 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, history, newBranch, prPlan } = useCanvasInspectorSelection();
-  const lighting = useOpenDeployment();
+  const { selectedNodeId, selectedServiceId, newBranch, prPlan } = useCanvasInspectorSelection();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
-  const [historyStages, setHistoryStages] = useState(0);
-  const stages = { count: historyStages, staged: () => setHistoryStages((count) => count + 1) };
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
-    <HistoryStages.Provider value={stages}>
     <StorePickingProvider newBranch={newBranch}>
     <StorePrPickingProvider prPlan={prPlan}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
-      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
-        : history ? { key: `${canvasKey}/history`, nodeId: "history" }
-        : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
-        : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
+      } : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
         : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan", picking: true } : null}
       canvas={<>
-        {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
-        <DeploymentLightingProvider value={lighting}>
-          <Suspense fallback={<PendingCanvas />}>
-            <RuntimeLensProvider organizationSlug={organizationSlug}>
-              <CanvasWithData key={canvasKey} />
-            </RuntimeLensProvider>
-          </Suspense>
-        </DeploymentLightingProvider>
+        <Suspense fallback={<PendingCanvas />}>
+          <RuntimeLensProvider organizationSlug={organizationSlug}>
+            <CanvasWithData key={canvasKey} />
+          </RuntimeLensProvider>
+        </Suspense>
         <div ref={setBottomBarSlot} className="contents" />
       </>}
     >
@@ -207,7 +196,6 @@ export function EnvironmentCanvasScene() {
     </CanvasInspectorOverlay>
     </StorePrPickingProvider>
     </StorePickingProvider>
-    </HistoryStages.Provider>
     </BottomBarSlot.Provider>
   );
 }

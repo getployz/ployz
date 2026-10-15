@@ -107,6 +107,11 @@ How you answer depends on where the command runs:
 
 - `ployz deploy` and `ployz deploy --skip-deploy` ask only when the change removes something that's running.
   Rolling out a new image or changing variables never asks.
+- Every deploy or redeploy an agent asks for asks, even one that destroys nothing. That covers the
+  [Ployz agent](agent-sidebar.md), `ployz mcp` and an agent you
+  [connected to Ployz Cloud](connect-an-agent.md). An agent's save still asks only when it removes
+  something, and one approval covers one deploy or redeploy. Redeploying from the CLI or the
+  dashboard never asks.
 - Removing a server Ployz Cloud manages with `ployz server rm` always asks. `ployz server drain`
   asks when a global service would run on no other server, and `ployz server clean` asks when it
   would stop a service or delete volume data. `ployz server upgrade` never asks.

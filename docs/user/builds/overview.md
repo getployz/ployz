@@ -28,14 +28,14 @@ running. Images that did build are reused when you deploy again.
 
 1. Open the deployment. **Deploy** opens it for you; later, find it in the service's
    **Deployments** tab, or click **Logs** in the bottom bar while it runs.
-2. Pick the service's tab, then **Build**.
+2. Click the service's build card.
 
 ![A deployment's Build log: GitHub skipped the build, so it runs on a server](../images/deployment-page-build.png)
 
 The first lines say where the build runs, like `Building on web-1`, or
 `Building on GitHub Actions:` with a link to the run on GitHub. A step that fails ends with a
-line that starts `ERROR`. A failed build stays on **Build**, with the error at the top of the
-page.
+line that starts `ERROR`. A failed deployment opens on the build that failed, with the error at
+the top of the page.
 
 ## When a build waits
 

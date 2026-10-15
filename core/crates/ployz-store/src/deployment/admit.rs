@@ -18,7 +18,7 @@ use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::{Actor, Trusted};
+use crate::{Actor, Approval, Asks, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
 /// the removal of an Environment from the Servers.
@@ -143,9 +143,20 @@ pub(crate) fn admit(
 ) -> Result<DeploymentSummary, RpcError> {
     match admit {
         // The retry deletes exactly the Docker Volumes its source's review accepted,
-        // which the copied target nodes carry: nothing new, so no new review.
+        // which the copied target nodes carry: nothing new, so no new destructive
+        // review. Only an agent's retry asks a human.
         Admit::Retry(retry) => {
+            let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
+            if let Some(review) = asked {
+                review::approve_retry(
+                    who,
+                    &retried.environment_id,
+                    &review,
+                    &retry.deployment,
+                    trusted,
+                )?;
+            }
             if retried.remove
                 && let Some(outcome) =
                     deployment::forgettable(tx, &retried.environment_id, trusted)?
@@ -159,6 +170,23 @@ pub(crate) fn admit(
         Admit::ShutDown(shut_down) => crate::removal::shut_down(tx, who, shut_down, trusted),
         Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
     }
+}
+
+/// The review a retry of `source` asks a human to approve, taken before the retry
+/// queues: none unless every Deploy asks.
+fn retry_review(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    source: &DeploymentId,
+    trusted: &Trusted,
+) -> Result<Option<review::Review>, RpcError> {
+    if trusted.asks == Asks::Destroys || trusted.approval == Approval::NotRequired {
+        return Ok(None);
+    }
+    let id = deployment::owned(tx, who, source)?.summary.environment_id;
+    scope::lock_all(tx, [id.clone()])?;
+    let environment = scope::load_by_id(tx, &id)?;
+    review::review(tx, &environment).map(Some)
 }
 
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run
@@ -228,14 +256,14 @@ fn deploy(
         (cluster_domain, &namespace),
         trusted,
     )?;
+    let shipping = review::Shipping::Deploy {
+        services: &admit.services,
+        upload: admit.upload.as_ref().map(|upload| &upload.digest),
+    };
     let losses = review::destructive(
         who,
         &review,
-        (
-            &saved_intent,
-            &namespace,
-            review::Shipping::Deploy(&admit.services),
-        ),
+        (&saved_intent, &namespace, shipping),
         (
             admit.version.as_deref(),
             &admit.accept_volume_loss,
@@ -243,7 +271,7 @@ fn deploy(
         ),
         trusted.volumes.as_ref(),
     )?;
-    review::approve(who, id, &review, &saved_intent, &trusted.approval)?;
+    review::approve(who, id, &review, (&saved_intent, shipping), trusted)?;
     let (saved, _) = review::publish(
         tx,
         who,

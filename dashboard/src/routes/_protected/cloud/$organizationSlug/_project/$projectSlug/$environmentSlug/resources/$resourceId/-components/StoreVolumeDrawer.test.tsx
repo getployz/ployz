@@ -62,7 +62,7 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
   const resource = createRoute({
     getParentRoute: () => canvas, path: "resources/$resourceId", validateSearch: Schema.toStandardSchemaV1(volumeSearchSchema),
     component: () => (
-      <InspectorPresentation value={{ takeover: false, toggleFullscreen() {}, returnTo: null }}>
+      <InspectorPresentation value={{ takeover: false, toggleFullscreen() {} }}>
         <StoreVolumeDrawer params={{ organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production", resourceId: "vol" }} copy={copy} />
       </InspectorPresentation>
     ),

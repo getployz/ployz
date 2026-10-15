@@ -99,7 +99,7 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
     {lack && loaded.length > 0 ? <p className="text-muted-foreground">{lack.note} {lack.link}</p> : null}
     {missingServers.length ? <Alert role="alert">
       <AlertTitle>{missingServers.length === 1 ? "A server’s logs are missing" : `${missingServers.length} servers’ logs are missing`}</AlertTitle>
-      <AlertDescription><ul>{missingServers.map(server => <li key={server.machineId}><span className="font-medium">{server.machineName}</span>: {server.message}</li>)}</ul></AlertDescription>
+      <AlertDescription><ul className="max-h-24 overflow-y-auto">{missingServers.map(server => <li key={server.machineId}><span className="font-medium">{server.machineName}</span>: {server.message}</li>)}</ul></AlertDescription>
     </Alert> : null}
     <div className="flex min-h-0 flex-1 flex-col">
       <LogHeader time={LOG_TIME_COLUMN.container}>Message</LogHeader>
