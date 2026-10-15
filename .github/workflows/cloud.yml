@@ -60,6 +60,8 @@ jobs:
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
+        with:
+          package-cache: ${{ inputs.release-tag == '' }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.sdk.outputs.name }}
@@ -183,6 +185,8 @@ jobs:
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
+        with:
+          package-cache: ${{ inputs.release-tag == '' }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.sdk.outputs.name }}
