@@ -390,7 +390,7 @@ impl Client {
                     ProstCodec::<OpaquePayload, OpaquePayload>::default(),
                 )
                 .await
-                .map_err(|status| refused(status, path, target))?
+                .map_err(|status| status_error(status, path, target))?
                 .into_inner()
                 .decode_response()?)
         })
@@ -490,7 +490,7 @@ impl Client {
                 ProstCodec::<OpaquePayload, OpaquePayload>::default(),
             )
             .await
-            .map_err(|status| refused(status, T::PATH, target))?
+            .map_err(|status| status_error(status, T::PATH, target))?
             .into_inner()
             .decode_response()?;
         if let RpcResponseBody::Error(error) = &response.body {
@@ -1148,9 +1148,7 @@ pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcErr
     }
 }
 
-/// Only a gRPC status can mean an old daemon lacks the route. An error body
-/// is the daemon's own answer, so it keeps the daemon's sentence.
-fn refused(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
+fn status_error(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
     let error = TransportError::from(status);
     ConnectError::Rpc(match target {
         Some(target) => error.name_refusal(path, target),

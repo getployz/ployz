@@ -26,7 +26,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::{Client, TARGET_RPC_TIMEOUT, stop_rpc_timeout};
+use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT, TransportError, stop_rpc_timeout};
 use ployz_core::EnvironmentValues;
 
 use super::{
@@ -1910,7 +1910,7 @@ async fn discard_attempt<C: MachineOperations>(
         Ok(result) => result.map(|_| ()),
         Err(_) => Err(crate::cluster::answered_by(
             machine_id,
-            crate::connect::ConnectError::Rpc(crate::connect::TransportError::budget_expired(
+            ConnectError::Rpc(TransportError::budget_expired(
                 "target Machine RPC timed out",
             )),
         )),

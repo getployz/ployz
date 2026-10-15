@@ -6,13 +6,12 @@ use ployz_core::{
 };
 use tonic::{Request, Response, Status};
 
-/// The first RPC of this kind that a Machine leaves unanswered.
 #[derive(Clone, Copy, PartialEq)]
 enum Silent {
     Ingest,
     PeerPull,
     RegistryPull,
-    Containers,
+    NeverSettles,
 }
 
 fn holder(hex: char) -> Machine {
@@ -56,16 +55,14 @@ fn images(image: &str, held: bool) -> MachineImages {
     }
 }
 
-/// Destination Machine `1` and peer Machine `2`, which holds `image`. `silent`
-/// fails as a powered-off Machine does; `Containers` never answers at all.
-async fn cluster(
+async fn destination_and_holder(
     image: &'static str,
     silent: Silent,
 ) -> (
     Client,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 ) {
-    let lost = || Status::unavailable("deadline has elapsed");
+    let powered_off = || Status::unavailable("deadline has elapsed");
     crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| async move {
         let target = rpc
             .metadata()
@@ -91,7 +88,9 @@ async fn cluster(
             RpcRequestBody::ListImages(_) => {
                 RpcResponse::from(images(image, target == Some(machine('2'))))
             }
-            RpcRequestBody::EnsureImageIngest(_) if silent == Silent::Ingest => return Err(lost()),
+            RpcRequestBody::EnsureImageIngest(_) if silent == Silent::Ingest => {
+                return Err(powered_off());
+            }
             RpcRequestBody::EnsureImageIngest(_) => RpcResponse::from(ImageIngestOpened {
                 destination: ImageIngestDestination {
                     management_address: holder('2').management_address(),
@@ -99,11 +98,13 @@ async fn cluster(
                 },
             }),
             RpcRequestBody::PullImageFromMachine(_) if silent == Silent::PeerPull => {
-                return Err(lost());
+                return Err(powered_off());
             }
-            RpcRequestBody::PullImage(_) if silent == Silent::RegistryPull => return Err(lost()),
+            RpcRequestBody::PullImage(_) if silent == Silent::RegistryPull => {
+                return Err(powered_off());
+            }
             RpcRequestBody::ListContainers(_) | RpcRequestBody::EnsureContainer(_)
-                if silent == Silent::Containers =>
+                if silent == Silent::NeverSettles =>
             {
                 return std::future::pending().await;
             }
@@ -121,7 +122,7 @@ fn silence(machine_id: MachineId, transport: &str) -> String {
 #[tokio::test(start_paused = true)]
 async fn a_peer_that_cannot_open_ingest_is_named() {
     let image = "alpine:3.23.3";
-    let (client, server) = cluster(image, Silent::Ingest).await;
+    let (client, server) = destination_and_holder(image, Silent::Ingest).await;
 
     let error = crate::image::ensure_cluster_image(
         &client,
@@ -140,7 +141,7 @@ async fn a_peer_that_cannot_open_ingest_is_named() {
 #[tokio::test(start_paused = true)]
 async fn a_destination_silent_during_a_peer_pull_is_named() {
     let image = "alpine:3.23.3";
-    let (client, server) = cluster(image, Silent::PeerPull).await;
+    let (client, server) = destination_and_holder(image, Silent::PeerPull).await;
 
     let error = crate::image::ensure_cluster_image(
         &client,
@@ -158,7 +159,7 @@ async fn a_destination_silent_during_a_peer_pull_is_named() {
 
 #[tokio::test(start_paused = true)]
 async fn a_destination_silent_during_its_registry_pull_is_named() {
-    let (client, server) = cluster("alpine:3.23.3", Silent::RegistryPull).await;
+    let (client, server) = destination_and_holder("alpine:3.23.3", Silent::RegistryPull).await;
     let mut service = spec(None, None, None);
     service.container.pull_policy = ployz_core::PullPolicy::Always;
 
@@ -173,7 +174,7 @@ async fn a_destination_silent_during_its_registry_pull_is_named() {
 
 #[tokio::test(start_paused = true)]
 async fn a_machine_that_never_settles_a_container_is_named() {
-    let (client, server) = cluster("alpine:3.23.3", Silent::Containers).await;
+    let (client, server) = destination_and_holder("alpine:3.23.3", Silent::NeverSettles).await;
 
     let error = MachineOperations::ensure_container(
         &client,
@@ -195,7 +196,7 @@ async fn a_machine_that_never_settles_a_container_is_named() {
 
 #[tokio::test(start_paused = true)]
 async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
-    let (client, server) = cluster("alpine:3.23.3", Silent::Containers).await;
+    let (client, server) = destination_and_holder("alpine:3.23.3", Silent::NeverSettles).await;
     let mut global = spec(None, None, None);
     global.mode = ServiceMode::Global;
 
