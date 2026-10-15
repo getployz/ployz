@@ -30,7 +30,6 @@ async fn cloud_init_join_participates() {
     let daemon = JoinDaemon::new(registration.clone()).lose_lifecycle_reply();
     let machine_addr = serve_machine(daemon.clone()).await;
 
-    // The pasted line's shape: the token arrives on stdin, never in argv.
     let mut child = harness::cli()
         .args([
             "--connect",
