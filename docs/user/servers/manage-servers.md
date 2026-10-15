@@ -206,8 +206,10 @@ Naming the other channel fails with `channel_mismatch`. To pick an exact version
 add `--context` and upgrade from your computer instead. Ployz Cloud never moves a server to an
 older release than it runs, so a downgrade also needs `--context`.
 
-Every Ployz release is signed. A server checks the signature before it installs a release, and
-refuses one that isn't signed by Ployz or that claims a different version.
+Ployz releases are signed, starting with the first release after 0.3.0-beta.2. A server checks
+the signature before it installs a release, and refuses one that isn't signed by Ployz or that
+claims a different version. Releases up to 0.3.0-beta.2 are unsigned, so a server can't install
+them, even by exact version with `--context`.
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
 running and private DNS keeps answering (with the exceptions in
