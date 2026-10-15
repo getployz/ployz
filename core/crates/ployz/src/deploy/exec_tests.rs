@@ -6,7 +6,7 @@ use std::{
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
     HealthFailure, HealthObservation, LastHealthCheck, MembershipObservation, Namespace,
-    RpcErrorCode, ServiceName,
+    RpcErrorCode, ServiceName, ServiceResult, UpdateOrder,
 };
 
 use crate::deploy::{DeployOutcome, FailedOperation};
@@ -41,6 +41,21 @@ async fn execute_with<C: MachineOperations>(
         None,
     )
     .await
+}
+
+/// Where each named Service ended, in plan order.
+fn ended(results: &[(&str, ServiceResult)]) -> Vec<ServiceOutcome> {
+    results
+        .iter()
+        .map(|(name, result)| ServiceOutcome {
+            service: ServiceName::parse(*name).unwrap(),
+            result: *result,
+        })
+        .collect()
+}
+
+fn api() -> QualifiedService {
+    QualifiedService::new(test_namespace(), ServiceName::parse("api").unwrap())
 }
 
 fn run_id() -> DeploymentLogId {
@@ -128,6 +143,8 @@ struct Scripted {
     answers: Mutex<Vec<AnswerWhen>>,
     deploys: Mutex<Vec<Option<ployz_core::DeploymentLogId>>>,
     cancel_on_prepare: Option<CancellationToken>,
+    /// This call cancels the Deploy once it is made.
+    cancel_on: Option<(Call, CancellationToken)>,
     runs_global: bool,
     pull_error: Option<RpcError>,
     pulled: Mutex<BTreeSet<MachineId>>,
@@ -138,8 +155,15 @@ struct Scripted {
     superseded: Option<ServiceName>,
     /// The row lands but the reply never arrives.
     lost_reply: bool,
+    unreadable_flip: bool,
     /// The write fails in transit and never lands.
     dropped_publish: bool,
+    /// A write that holds copies lands but its reply never arrives.
+    lost_hold_reply: bool,
+    /// This many writes that release a held copy fail in transit.
+    dropped_releases: Mutex<usize>,
+    /// Another Deploy holds the row's copies as soon as this run holds them.
+    hold_taken_by: Option<ployz_core::DeploymentLogId>,
     /// No Machine routes a pin.
     unrouted_pin: bool,
     /// No Machine routes a row naming one of these Containers.
@@ -162,6 +186,7 @@ impl Scripted {
             answers: Mutex::new(Vec::new()),
             deploys: Mutex::new(Vec::new()),
             cancel_on_prepare: None,
+            cancel_on: None,
             runs_global: false,
             pull_error: None,
             pulled: Mutex::new(BTreeSet::new()),
@@ -169,7 +194,11 @@ impl Scripted {
             unrouted_machine: None,
             superseded: None,
             lost_reply: false,
+            unreadable_flip: false,
             dropped_publish: false,
+            lost_hold_reply: false,
+            dropped_releases: Mutex::new(0),
+            hold_taken_by: None,
             unrouted_pin: false,
             dead: Vec::new(),
             rival: None,
@@ -316,6 +345,11 @@ impl MachineOperations for Scripted {
         if let (Call::Run(..), Some(stall)) = (&call, &self.amendment_stall) {
             stall.release_on_first_start().await;
         }
+        if let Some((at, cancel)) = &self.cancel_on
+            && *at == call
+        {
+            cancel.cancel();
+        }
         let healthy = settled.then_some(HealthVerdict::Healthy);
         let present = |container_id: &ContainerId| {
             ContainerNow::Present(observation(machine_id, container_id, running()))
@@ -418,6 +452,9 @@ impl MachineOperations for Scripted {
         service: &QualifiedService,
     ) -> Result<ServingPointerRead, RpcError> {
         let pointer = self.pointers.lock().unwrap().get(service).cloned();
+        if self.unreadable_flip && pointer.as_ref().is_some_and(|row| row.deploy == run_id()) {
+            return Err(error("read timed out"));
+        }
         // Lagging ingress routes every row up to this run's, never this run's.
         let ours = pointer
             .as_ref()
@@ -464,6 +501,15 @@ impl MachineOperations for Scripted {
         if flip && self.dropped_publish {
             return Err(error("connection reset"));
         }
+        let releases = request.read.as_ref().is_some_and(ServingPointer::is_held)
+            && !request.pointer.is_held();
+        if !flip && releases {
+            let mut dropped = self.dropped_releases.lock().unwrap();
+            if *dropped > 0 {
+                *dropped -= 1;
+                return Err(error("connection reset"));
+            }
+        }
         let mut pointers = self.pointers.lock().unwrap();
         if let Some(rival) = self.rival.clone().filter(|_| !flip) {
             pointers.insert(request.service.clone(), rival);
@@ -474,7 +520,17 @@ impl MachineOperations for Scripted {
         {
             return Ok(ServingPointerPublication::Superseded { current });
         }
-        pointers.insert(request.service, request.pointer);
+        let holds = !flip && request.pointer.is_held();
+        let mut pointer = request.pointer;
+        if let (true, Some(rival), Some(hold)) =
+            (holds, &self.hold_taken_by, pointer.deciding.as_mut())
+        {
+            hold.deploy = rival.clone();
+        }
+        pointers.insert(request.service, pointer);
+        if holds && self.lost_hold_reply {
+            return Err(error("reply lost"));
+        }
         if flip && self.lost_reply {
             return Err(error("reply lost"));
         }
@@ -791,6 +847,7 @@ async fn storage_preparation_failure_leaves_all_application_operations_unexecute
         completed,
         unexecuted,
         failed,
+        ..
     } = outcome
     else {
         panic!("preparation must fail")
@@ -878,6 +935,7 @@ async fn application_failure_and_cancellation_retain_prepared_storage() {
             completed,
             failed,
             unexecuted,
+            ..
         } = execute_with(&operations, &client, &cancellation).await
         else {
             panic!("expected interruption")

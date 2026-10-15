@@ -501,6 +501,7 @@ async fn pointer_change_reloads_caddy_with_pointed_upstreams() {
         containers: vec![pointed.container_id],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     };
     state.write_pointer(&key, serde_json::to_string(&pointer).unwrap());
     let caddy = wait_for_caddyfile(&caddyfile, "10.210.1.2:80").await;
@@ -860,6 +861,7 @@ fn pointer(deploy: &str, container: &ContainerObservation) -> String {
         containers: vec![container.container_id],
         previous: None,
         retiring: Vec::new(),
+        deciding: None,
     })
     .unwrap()
 }

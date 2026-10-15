@@ -90,6 +90,7 @@ async fn dispatches_the_complete_algebra() {
             containers: vec![old, removed],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     );
 
@@ -99,6 +100,7 @@ async fn dispatches_the_complete_algebra() {
         outcome,
         DeployOutcome::Success {
             completed: operations,
+            services: ended(&[("api", ServiceResult::New)]),
         }
     );
     let pins = client.pins();
@@ -112,6 +114,7 @@ async fn dispatches_the_complete_algebra() {
             containers: vec![removed],
             previous: Some(older.clone()),
             retiring: vec![old],
+            deciding: None,
         }
     );
     let publications = client.publications();
@@ -125,6 +128,7 @@ async fn dispatches_the_complete_algebra() {
             containers: vec![new_run, replacement, nested],
             previous: Some(older),
             retiring: vec![old, removed],
+            deciding: None,
         }
     );
     client.assert_done();
@@ -164,6 +168,7 @@ async fn volume_ensure_failure_is_the_container_operation_failure() {
                 },
             },
             unexecuted,
+            ..
         } if completed.is_empty()
             && failed == operation
             && error.message == "Volume Ensure failed after creating data"
@@ -207,6 +212,7 @@ async fn a_failure_at_each_position_keeps_the_exact_prefix_and_suffix() {
             completed,
             failed,
             unexecuted,
+            ..
         } = &outcome
         else {
             panic!("expected failure at {failed_index}");

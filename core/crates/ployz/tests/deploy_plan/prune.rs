@@ -169,6 +169,17 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
         other => panic!("expected db, web, then prune, got {other:?}"),
     }
     assert_eq!(plan.volumes_to_create.len(), 1);
+    let planned = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+    let Some(tail) = planned.groups().last() else {
+        panic!("expected a removal group");
+    };
+    assert_eq!(tail.service, None);
+    assert_eq!(
+        tail.dependencies
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [&db.name, &web.name].into_iter().collect()
+    );
 }
 
 #[test]

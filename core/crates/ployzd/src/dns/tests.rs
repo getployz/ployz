@@ -606,6 +606,7 @@ fn pointed_set_wins_over_a_newer_unpointed_container() {
             containers: vec![pointed.container_id],
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         },
     )]);
 

@@ -658,59 +658,110 @@ fn each_service_is_one_group_with_its_hook_inside_and_edges_from_depends_on() {
     );
 }
 
-#[test]
-fn a_stop_first_service_keeps_its_serial_walk_and_flips_after_it() {
-    use ployz::deploy::{ServiceGroup, Step};
-    use ployz_core::DeployIntent;
-
-    let mut current = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(1).unwrap(),
-    });
+/// Plan `requested` over Machines 1 and 2, each running one old replica.
+fn replace_on_two_machines(
+    mut requested: RequestedServiceSpec,
+    order: UpdateOrder,
+) -> (Vec<DeployOperation>, Vec<ployz::deploy::ServiceGroup>) {
+    let mut current = requested.clone();
     current.container.image = "ghcr.io/getployz/api:old".into();
     let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "first")],
-        containers: vec![container('b', '1', &current, &service_id('a'))],
-        capacity: capacity([('1', 1)]),
+        machines: vec![machine('1', "first"), machine('2', "second")],
+        containers: vec![
+            container('b', '1', &current, &service_id('a')),
+            container('c', '2', &current, &service_id('a')),
+        ],
+        capacity: capacity([('1', 4), ('2', 4)]),
         ..Default::default()
     };
-    let groups = |order| {
-        let mut requested = requested(ServiceMode::Replicated {
-            replicas: NonZeroU32::new(1).unwrap(),
-        });
-        requested.update.order = Some(order);
-        let intent = DeployIntent::apply_all(
-            Namespace::parse("app").unwrap(),
-            [&requested],
-            PlanOptions::default(),
-        );
-        let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
-        assert!(matches!(
-            operations(&plan).as_slice(),
-            [DeployOperation::ReplaceContainer(..)]
-        ));
-        plan.groups().to_vec()
-    };
+    requested.update.order = Some(order);
+    let intent = ployz_core::DeployIntent::apply_all(
+        Namespace::parse("app").unwrap(),
+        [&requested],
+        PlanOptions::default(),
+    );
+    let plan = ployz::deploy::plan_deploy(&intent, &snapshot).unwrap();
+    (operations(&plan), plan.groups().to_vec())
+}
 
-    assert_eq!(
-        groups(UpdateOrder::StopFirst),
-        [ServiceGroup {
-            service: Some(ServiceName::parse("api").unwrap()),
-            dependencies: Vec::new(),
-            steps: vec![Step::Serial(0)],
-            publish: true,
-            kept: Vec::new(),
-        }]
-    );
-    assert_eq!(
-        groups(UpdateOrder::StartFirst),
-        [ServiceGroup {
-            service: Some(ServiceName::parse("api").unwrap()),
-            dependencies: Vec::new(),
-            steps: vec![Step::Parallel(vec![0])],
-            publish: true,
-            kept: Vec::new(),
-        }]
-    );
+/// The order each replacement runs with and the Machines of each step.
+fn replacement_walk(
+    operations: &[DeployOperation],
+    groups: &[ployz::deploy::ServiceGroup],
+) -> (Vec<UpdateOrder>, Vec<Vec<MachineId>>) {
+    use ployz::deploy::Step;
+
+    let orders = operations
+        .iter()
+        .map(|operation| {
+            let DeployOperation::ReplaceContainer(replaced) = operation else {
+                panic!("expected only replacements: {operation:?}");
+            };
+            replaced.spec.update.order
+        })
+        .collect();
+    let [group] = groups else {
+        panic!("expected one Service group: {groups:?}");
+    };
+    assert!(group.publish, "every replacement order publishes");
+    let steps = group
+        .steps
+        .iter()
+        .map(|step| match step {
+            Step::Parallel(indices) => indices
+                .iter()
+                .map(|index| operations.get(*index).unwrap().machine_id())
+                .collect(),
+            Step::Serial(index) => panic!("replacement {index} ran serially"),
+        })
+        .collect();
+    (orders, steps)
+}
+
+#[test]
+fn stop_first_takes_every_replica_in_one_step_and_rolling_one_machine_per_step() {
+    let (one, two) = (machine_id('1'), machine_id('2'));
+    let replicated = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(2).unwrap(),
+    });
+    for (order, steps) in [
+        (UpdateOrder::StartFirst, vec![vec![one, two]]),
+        (UpdateOrder::StopFirst, vec![vec![one, two]]),
+        (UpdateOrder::Rolling, vec![vec![one], vec![two]]),
+    ] {
+        let (operations, groups) = replace_on_two_machines(replicated.clone(), order);
+        assert_eq!(
+            replacement_walk(&operations, &groups),
+            (vec![order; 2], steps),
+            "{order:?}"
+        );
+    }
+}
+
+#[test]
+fn a_host_port_forces_stop_first_but_keeps_a_chosen_rolling() {
+    let (one, two) = (machine_id('1'), machine_id('2'));
+    let mut global = requested(ServiceMode::Global);
+    global.ports.push(host_port(8080));
+    for (order, ran, steps) in [
+        (
+            UpdateOrder::StartFirst,
+            UpdateOrder::StopFirst,
+            vec![vec![one, two]],
+        ),
+        (
+            UpdateOrder::Rolling,
+            UpdateOrder::Rolling,
+            vec![vec![one], vec![two]],
+        ),
+    ] {
+        let (operations, groups) = replace_on_two_machines(global.clone(), order);
+        assert_eq!(
+            replacement_walk(&operations, &groups),
+            (vec![ran; 2], steps),
+            "{order:?}"
+        );
+    }
 }
 
 #[test]

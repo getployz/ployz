@@ -1059,6 +1059,11 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("    cause: {cause}"));
         }
     }
+    if let Some(ployz_store::Outcome::Executed { services, .. }) = &view.deployment.outcome {
+        for line in service_outcome_lines(services) {
+            crate::ui::stream(format_args!("{line}"));
+        }
+    }
     if super::teardown::left_on_old_servers(&view.deployment) {
         crate::ui::stream(format_args!(
             "  Left on old servers: no Server was left to take it off, so whatever ran there still runs"
@@ -1084,10 +1089,47 @@ pub(super) fn say_view(view: &DeploymentView) {
     }
 }
 
+fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String> {
+    services
+        .iter()
+        .map(|ployz_core::ServiceOutcome { service, result }| {
+            let words = match result {
+                ployz_core::ServiceResult::New => "serves its new copies",
+                ployz_core::ServiceResult::Old => "still serves its old copies",
+                ployz_core::ServiceResult::NotStarted => "not started",
+                ployz_core::ServiceResult::Unconfirmed => {
+                    "may serve its new copies: the switch was not confirmed"
+                }
+            };
+            format!("  {service}: {words}")
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ships_all;
+    use super::{service_outcome_lines, ships_all};
     use ployz_core::ServiceName;
+
+    #[test]
+    fn each_service_reads_where_it_ended() {
+        let services: Vec<ployz_core::ServiceOutcome> = serde_json::from_value(serde_json::json!([
+            {"service": "web", "result": "new"},
+            {"service": "api", "result": "old"},
+            {"service": "db", "result": "not_started"},
+            {"service": "worker", "result": "unconfirmed"},
+        ]))
+        .unwrap();
+        assert_eq!(
+            service_outcome_lines(&services),
+            [
+                "  web: serves its new copies",
+                "  api: still serves its old copies",
+                "  db: not started",
+                "  worker: may serve its new copies: the switch was not confirmed",
+            ]
+        );
+    }
 
     #[test]
     fn a_newer_deployment_carries_a_superseded_one_only_when_it_ships_its_services() {

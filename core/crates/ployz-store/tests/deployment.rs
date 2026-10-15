@@ -1009,6 +1009,44 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     );
 }
 
+#[test]
+fn an_executed_deployment_reads_where_each_service_ended() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let ended = json!([
+        {"service": "web", "result": "new"},
+        {"service": "api", "result": "old"},
+    ]);
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Executed {
+                progress: Vec::new(),
+                outcome: Box::new(outcome(json!({
+                    "type": "failed", "completed": [operation("web")],
+                    "failed": {"type": "operation", "operation": operation("api"),
+                        "error": {"type": "cancelled"}},
+                    "unexecuted": [], "services": ended
+                }))),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&view).unwrap()["outcome"]["services"],
+        ended
+    );
+}
+
 fn progress(rows: &[(&str, &str, Value)]) -> Vec<OperationRow> {
     serde_json::from_value(Value::Array(
         rows.iter()

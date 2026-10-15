@@ -52,6 +52,7 @@ pub(crate) async fn apply_requested(
         ui::note("Everything is up to date.");
         return Ok(DeployOutcome::Success {
             completed: Vec::new(),
+            services: Vec::new(),
         });
     }
     for warning in &preview.warnings {
@@ -89,7 +90,7 @@ pub(crate) async fn apply_requested(
         },
     );
     match outcome {
-        DeployOutcome::Success { ref completed } => {
+        DeployOutcome::Success { ref completed, .. } => {
             ui::note_inline(format_args!("{}", render::endpoints_footer(completed)));
             if signal.is_cancelled() {
                 Err(Failure::cancelled().into())

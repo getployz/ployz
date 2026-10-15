@@ -168,12 +168,14 @@ fn a_taken_over_run_reports_what_it_completed_and_leaves_the_stopped_operation_u
             error: ExecutionError::Cancelled,
         },
         unexecuted: vec![operation('c')],
+        services: Vec::new(),
     };
     assert_eq!(
         interrupted(outcome),
         DeployOutcome::Interrupted {
             completed: vec![operation('a')],
             unexecuted: vec![operation('b'), operation('c')],
+            services: Vec::new(),
         }
     );
 }

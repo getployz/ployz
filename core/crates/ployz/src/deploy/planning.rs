@@ -193,11 +193,6 @@ pub(super) fn test_groups(operations: &[DeployOperation]) -> Vec<ServiceGroup> {
     groups
 }
 
-/// Consecutive start-first starts run together; everything else runs one at
-/// a time, and a stop-first replacement keeps the copy-by-copy walk. A Service
-/// whose Containers change flips its pointer; its rollout removals then follow
-/// in a second group, so a failed Service still has every old copy and a
-/// removed one serves until the pointer drops it.
 fn service_group(
     operations: &[DeployOperation],
     service: Option<ServiceName>,
@@ -217,24 +212,49 @@ fn service_group(
     let publish = service.is_some()
         && indexed()
             .any(|(_, operation)| starts_container(operation) || rollout_removal(operation));
+    let rolling = indexed().any(|(_, operation)| {
+        operation
+            .spec()
+            .is_some_and(|spec| spec.update.order == UpdateOrder::Rolling)
+    });
     let mut steps: Vec<Step> = Vec::new();
+    let mut starts: Vec<usize> = Vec::new();
+    let flush = |steps: &mut Vec<Step>, starts: &mut Vec<usize>| {
+        if !rolling {
+            if !starts.is_empty() {
+                steps.push(Step::Parallel(std::mem::take(starts)));
+            }
+            return;
+        }
+        let mut machines: Vec<(MachineId, Vec<usize>)> = Vec::new();
+        for index in starts.drain(..) {
+            let machine = operations
+                .get(index)
+                .expect("group ranges index this plan's operations")
+                .machine_id();
+            match machines.iter_mut().find(|(owner, _)| *owner == machine) {
+                Some((_, indices)) => indices.push(index),
+                None => machines.push((machine, vec![index])),
+            }
+        }
+        steps.extend(
+            machines
+                .into_iter()
+                .map(|(_, indices)| Step::Parallel(indices)),
+        );
+    };
     let mut removals = Vec::new();
     for (index, operation) in indexed() {
         if publish && rollout_removal(operation) {
             removals.push(Step::Serial(index));
-            continue;
-        }
-        let stop_first = matches!(
-            operation,
-            DeployOperation::ReplaceContainer(replacement)
-                if replacement.spec.update.order == UpdateOrder::StopFirst
-        );
-        match (starts_container(operation) && !stop_first, steps.last_mut()) {
-            (true, Some(Step::Parallel(indices))) => indices.push(index),
-            (true, _) => steps.push(Step::Parallel(vec![index])),
-            (false, _) => steps.push(Step::Serial(index)),
+        } else if starts_container(operation) {
+            starts.push(index);
+        } else {
+            flush(&mut steps, &mut starts);
+            steps.push(Step::Serial(index));
         }
     }
+    flush(&mut steps, &mut starts);
     let mut groups = vec![ServiceGroup {
         service: service.clone(),
         dependencies,

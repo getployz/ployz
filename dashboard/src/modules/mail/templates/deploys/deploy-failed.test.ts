@@ -33,7 +33,7 @@ it("names the push, the Service and the Environment, and links the failed build'
 });
 
 it("gives the run's reason over a build's, links deploy logs when no build failed, and says when Ployz lost track", () => {
-  const ran = mail({ outcome: { type: "executed", summary: null, reason: "web did not start", cause: ["exit 137"] } });
+  const ran = mail({ outcome: { type: "executed", summary: null, reason: "web did not start", cause: ["exit 137"], services: [] } });
   expect(ran.facts?.at(-1)).toEqual({ label: "Error", value: "web did not start: exit 137" });
   expect(ran.action?.url).toMatch(/\?logs=deploy$/);
   expect(mail({ status: "unknown" }).facts?.at(-1)?.value).toBe("Ployz lost track of it partway through, so some of it may be live.");

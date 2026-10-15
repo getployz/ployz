@@ -162,9 +162,7 @@ impl HostSockets {
             return true;
         }
         let released = existing
-            .filter(|container| {
-                determine_update_order(Some(container), requested) == UpdateOrder::StopFirst
-            })
+            .filter(|container| determine_update_order(Some(container), requested).stops_first())
             .map(|container| container.as_observation().container_id);
         // ponytail: linear claim scan; index by Machine/socket if large Deploys make this costly.
         !self.claims.iter().any(|(owner_machine, owner, ports)| {
@@ -831,14 +829,13 @@ fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(runtime, ContainerRuntimeObservation::Running { .. })
 }
 
+/// A host port the current Container holds forces stop-first over any order but
+/// `rolling`; a stateful Volume picks stop-first only when no order is given.
 fn determine_update_order(
     current: Option<&ServiceContainer>,
     requested: &RequestedServiceSpec,
 ) -> UpdateOrder {
-    if let Some(order) = requested.update.order {
-        return order;
-    }
-    if current.is_some_and(|current| {
+    let holds_host_port = current.is_some_and(|current| {
         current
             .as_observation()
             .resolved_spec
@@ -850,20 +847,24 @@ fn determine_update_order(
                     .iter()
                     .any(|new| host_ports_conflict(old, new))
             })
-    }) {
-        return UpdateOrder::StopFirst;
+    });
+    match requested.update.order {
+        Some(order) if order.stops_first() => order,
+        _ if holds_host_port => UpdateOrder::StopFirst,
+        Some(order) => order,
+        None if requested.volume_graph().mounted_volumes().any(|volume| {
+            matches!(
+                volume.source.kind(),
+                ployz_core::RawVolumeSource::External { .. }
+                    | ployz_core::RawVolumeSource::Ordinary { .. }
+                    | ployz_core::RawVolumeSource::Provisioned { .. }
+            )
+        }) =>
+        {
+            UpdateOrder::StopFirst
+        }
+        None => UpdateOrder::StartFirst,
     }
-    if requested.volume_graph().mounted_volumes().any(|volume| {
-        matches!(
-            volume.source.kind(),
-            ployz_core::RawVolumeSource::External { .. }
-                | ployz_core::RawVolumeSource::Ordinary { .. }
-                | ployz_core::RawVolumeSource::Provisioned { .. }
-        )
-    }) {
-        return UpdateOrder::StopFirst;
-    }
-    UpdateOrder::StartFirst
 }
 
 fn host_ports_conflict(left: &PortPublication, right: &PortPublication) -> bool {

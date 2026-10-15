@@ -1,6 +1,6 @@
 //! Current SDK outcome admission and per-Service completion evidence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -9,6 +9,7 @@ use ts_rs::TS;
 use super::ConfigError;
 use crate::{
     DeployOperation, DeployOutcome, DeployPreview, ExecutionError, FailedOperation, ServiceName,
+    ServiceOutcome,
 };
 
 #[derive(Deserialize, Serialize)]
@@ -71,6 +72,8 @@ pub struct RuntimeOutcomeProjection {
     /// Services with planned operations an earlier failure stopped before any ran.
     /// Ordered by name.
     pub unattempted_services: Vec<ServiceName>,
+    /// Where each Service group ended, as the runner reported it.
+    pub services: Vec<ServiceOutcome>,
 }
 
 fn invalid() -> ConfigError {
@@ -151,7 +154,8 @@ pub fn redacted_runtime_preview(mut preview: DeployPreview) -> DeployPreview {
 ///
 /// # Errors
 /// Rejects unsupported versions, malformed evidence, missing Service identities,
-/// and outcomes whose operations do not match the preview.
+/// outcomes whose operations do not match the preview, and per-Service
+/// outcomes naming a Service outside the plan or one Service twice.
 pub fn project_runtime_outcome(
     preview: &DeployPreview,
     value: Value,
@@ -160,8 +164,9 @@ pub fn project_runtime_outcome(
     if evidence.version != 1 {
         return Err(invalid());
     }
+    let ended = evidence.outcome.services().to_vec();
     let (summary, completed, failed, pending) = match evidence.outcome {
-        DeployOutcome::Success { completed } => (
+        DeployOutcome::Success { completed, .. } => (
             RuntimeOutcomeSummary::Success {
                 completed: completed.len(),
             },
@@ -173,6 +178,7 @@ pub fn project_runtime_outcome(
             completed,
             failed,
             unexecuted,
+            ..
         } => {
             let (operation, error) = match failed {
                 FailedOperation::Operation { operation, error } => (operation, error),
@@ -211,6 +217,7 @@ pub fn project_runtime_outcome(
         DeployOutcome::Interrupted {
             completed,
             unexecuted,
+            ..
         } => (
             RuntimeOutcomeSummary::Failed {
                 completed: completed.len(),
@@ -273,6 +280,13 @@ pub fn project_runtime_outcome(
             None => return Err(invalid()),
         }
     }
+    let mut seen = BTreeSet::new();
+    if !ended
+        .iter()
+        .all(|ended| services.contains_key(&ended.service) && seen.insert(&ended.service))
+    {
+        return Err(invalid());
+    }
     let named = |wanted: Progress| {
         services
             .iter()
@@ -285,6 +299,7 @@ pub fn project_runtime_outcome(
         confirmed_services: named(Progress::Completed),
         failed_services: named(Progress::Failed),
         unattempted_services: named(Progress::Unattempted),
+        services: ended,
     })
 }
 

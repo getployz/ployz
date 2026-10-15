@@ -240,7 +240,9 @@ impl Rotation {
     /// Machine that cannot see every pointed copy yet keeps routing the retiring ones.
     pub(crate) fn apply(&self, current: &ServingPointer) -> Applied {
         let mut next = current.clone();
-        next.retiring.retain(|id| !self.pruning.contains(id));
+        if !current.is_held() {
+            next.retiring.retain(|id| !self.pruning.contains(id));
+        }
         for join in &self.joining {
             if next.containers.contains(&join.copy) {
                 continue;
@@ -294,6 +296,7 @@ pub(crate) fn succession(
             containers,
             previous: None,
             retiring: Vec::new(),
+            deciding: None,
         };
     };
     let dropped = admitted
@@ -311,6 +314,7 @@ pub(crate) fn succession(
         containers,
         previous: Some(admitted.deploy.clone()),
         retiring: next.retiring,
+        deciding: None,
     }
 }
 

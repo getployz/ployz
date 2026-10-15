@@ -725,14 +725,19 @@ impl Run {
 /// everything else, including the operation the abort stopped, was not executed.
 fn interrupted(outcome: DeployOutcome<ExecutionError>) -> DeployOutcome<ExecutionError> {
     match outcome {
-        DeployOutcome::Success { completed } => DeployOutcome::Interrupted {
+        DeployOutcome::Success {
+            completed,
+            services,
+        } => DeployOutcome::Interrupted {
             completed,
             unexecuted: Vec::new(),
+            services,
         },
         DeployOutcome::Failed {
             completed,
             failed,
             mut unexecuted,
+            services,
         } => {
             let stopped = match failed {
                 FailedOperation::Operation { operation, .. } => operation,
@@ -744,19 +749,23 @@ fn interrupted(outcome: DeployOutcome<ExecutionError>) -> DeployOutcome<Executio
             DeployOutcome::Interrupted {
                 completed,
                 unexecuted,
+                services,
             }
         }
         DeployOutcome::Superseded {
             completed,
             unexecuted,
+            services,
             ..
         }
         | DeployOutcome::Interrupted {
             completed,
             unexecuted,
+            services,
         } => DeployOutcome::Interrupted {
             completed,
             unexecuted,
+            services,
         },
     }
 }
