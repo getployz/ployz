@@ -988,6 +988,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_hold_forget_voided_never_touches_a_later_hold() {
+        let (_runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        let holds = super::super::observe::Holds::default();
+
+        let voided = holds.hold(container_id);
+        holds.forget(&container_id);
+        let later = holds.hold(container_id);
+        voided.keep();
+        drop(later);
+        assert!(
+            !holds.contains(&container_id),
+            "a voided keep must not hold"
+        );
+
+        let voided = holds.hold(container_id);
+        holds.forget(&container_id);
+        let later = holds.hold(container_id);
+        drop(voided);
+        assert!(holds.contains(&container_id), "a voided drop must not lift");
+        later.keep();
+        assert!(holds.contains(&container_id), "the later stop is kept");
+    }
+
+    #[tokio::test]
     async fn a_container_stays_withdrawn_until_its_last_withdrawal_drops() {
         let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
         for first_released_first in [true, false] {

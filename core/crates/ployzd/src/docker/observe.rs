@@ -40,17 +40,26 @@ pub(super) struct Holds(Arc<std::sync::Mutex<HoldTable>>);
 #[derive(Default)]
 struct HoldTable {
     stopped: BTreeSet<ContainerId>,
-    /// Stops still deciding whether to proceed, counted so one refusal keeps the
-    /// others' holds.
-    deciding: BTreeMap<ContainerId, usize>,
+    /// Stops still deciding whether to proceed, one ticket each, so a hold that
+    /// `forget` voided can never lift or keep a later stop's hold.
+    deciding: BTreeMap<ContainerId, BTreeSet<u64>>,
+    next_ticket: u64,
 }
 
 impl Holds {
     pub(super) fn hold(&self, container_id: ContainerId) -> Held {
-        *self.table().deciding.entry(container_id).or_default() += 1;
+        let mut table = self.table();
+        let ticket = table.next_ticket;
+        table.next_ticket += 1;
+        table
+            .deciding
+            .entry(container_id)
+            .or_default()
+            .insert(ticket);
         Held {
             holds: self.clone(),
             container_id,
+            ticket,
         }
     }
 
@@ -63,7 +72,6 @@ impl Holds {
         self.table().stopped.remove(container_id);
     }
 
-    /// Also voids stops still deciding, so a removed Container is never kept.
     pub(super) fn forget(&self, container_id: &ContainerId) {
         let mut table = self.table();
         table.stopped.remove(container_id);
@@ -80,12 +88,17 @@ impl Holds {
 pub(super) struct Held {
     holds: Holds,
     container_id: ContainerId,
+    ticket: u64,
 }
 
 impl Held {
     pub(super) fn keep(self) {
         let mut table = self.holds.table();
-        if table.deciding.contains_key(&self.container_id) {
+        if table
+            .deciding
+            .get(&self.container_id)
+            .is_some_and(|tickets| tickets.contains(&self.ticket))
+        {
             table.stopped.insert(self.container_id);
         }
     }
@@ -94,11 +107,11 @@ impl Held {
 impl Drop for Held {
     fn drop(&mut self) {
         let mut table = self.holds.table();
-        let Some(deciding) = table.deciding.get_mut(&self.container_id) else {
+        let Some(tickets) = table.deciding.get_mut(&self.container_id) else {
             return;
         };
-        *deciding -= 1;
-        if *deciding == 0 {
+        tickets.remove(&self.ticket);
+        if tickets.is_empty() {
             table.deciding.remove(&self.container_id);
         }
     }
