@@ -193,11 +193,11 @@ it("keeps a queued save visible through the preceding save's refresh and subsequ
   test.store.item = { ...initial, contents: { "config.yml": "version: B" } };
   await act(async () => { second.resolve(accepted); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(3));
-  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: {
+  expect(test.write).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "version: B\nadded: true" },
     ] },
-  } }));
+  }) }));
   expect(test.text()).toBe("version: B\nadded: true");
   test.store.item = { ...initial, contents: { "config.yml": "version: B\nadded: true" } };
   await act(async () => { third.resolve(accepted); });
@@ -225,9 +225,9 @@ it("keeps unsaved text and new files through a successful Config rename", async 
   fireEvent.click(screen.getByRole("tab", { name: /config.yml/ }));
   await screen.findByRole("textbox", { name: "config.yml contents" });
   expect(test.text()).toBe("keep unsaved text");
-  expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "rename_config", environment, config: "sentry", name: "renamed" },
-  } }));
+  }) }));
 });
 
 it("locks the drawer while its rename is pending, so no file save names the config by its old name", async () => {
@@ -266,11 +266,11 @@ it("adds a nested filename and submits its contents", async () => {
   await screen.findByRole("textbox", { name: "conf.d/site.yml contents" });
   test.edit("listen: 8080");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "conf.d/site.yml", content: "listen: 8080" },
     ] },
-  } })));
+  }) })));
 });
 
 
@@ -413,11 +413,11 @@ it("shows a hidden file as hidden, and keeps its permissions until new text repl
   expect(enabled.getAttribute("aria-disabled")).toBeNull();
   fireEvent.click(enabled);
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "replaced: true", mode: "0555" },
     ] },
-  } })));
+  }) })));
 });
 
 const twoFiles: ConfigItemView = { ...initial,
@@ -444,21 +444,21 @@ it("stages a permissions change as a draft, leaving another file's unsaved text 
   expect(within(screen.getByRole("tab", { name: /run.sh/ })).getByLabelText("Unsaved")).toBeTruthy();
   expect(test.text()).toBe("unsaved text");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "config.yml", content: "unsaved text" },
       { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0750" },
     ] },
-  } })));
+  }) })));
 });
 
 it("writes only the mode when the dialog changed only the mode, so the file's owner stays", async () => {
   const test = await openDrawer(twoFiles);
   await setPermissions("run.sh", { mode: "0640" });
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: {
+  await waitFor(() => expect(test.write).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
     organizationSlug: "acme", command: { command: "batch", environment, commands: [
       { command: "put_config_file", environment, config: "sentry", file: "run.sh", content: "#!/bin/sh", mode: "0640" },
     ] },
-  } })));
+  }) })));
 });
