@@ -2,6 +2,7 @@ import { type Answer, type Write, agentStart } from "@ployz/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { COMMANDS } from "#/modules/commands/registry.server";
+import { AGENT_TOOLS } from "./agent-runner.server";
 import { CATALOG, GATED, finish, untilWrite } from "./agent-tools";
 
 const place = { project: "shop", environment: "production", store: { at: "cloud", organization: "org" } } as const;
@@ -16,6 +17,36 @@ describe("agent tools", () => {
     expect(GATED).toContain("deploy");
     expect(GATED).not.toContain("publish");
     expect(GATED).not.toContain("environment_show");
+  });
+
+  it("marks destructive exactly the tools that delete something when they run, and never a read", () => {
+    expect(AGENT_TOOLS.filter((tool) => tool.destructive).map((tool) => tool.name).sort()).toEqual([
+      "deploy",
+      "deployment_retry",
+      "deployment_start",
+      "discard",
+      "environment_remove",
+      "org_invite_revoke",
+      "org_member_rm",
+      "project_remove",
+      "server_clean",
+      "server_drain",
+      "server_forget",
+      "server_remove",
+      "volume_mirror",
+      "volume_mirror_remove",
+      "volume_move",
+      "volume_release",
+    ]);
+    expect(AGENT_TOOLS.filter((tool) => tool.readOnly && tool.destructive)).toEqual([]);
+  });
+
+  it("never names another tool in a description", () => {
+    const names = AGENT_TOOLS.map((tool) => tool.name).filter((name) => name.includes("_"));
+    const offences = AGENT_TOOLS.flatMap((tool) =>
+      names.filter((name) => name !== tool.name && new RegExp(`\\b${name}\\b`).test(tool.description)).map((name) => `${tool.name} names ${name}`),
+    );
+    expect(offences).toEqual([]);
   });
 
   it("stops at a skipped Deploy's save, in the place it was given", async () => {

@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::release::place;
 use super::step::{Gate, RequestKey};
@@ -192,7 +192,7 @@ impl Tool for DeploymentList {
     const NAME: &'static str = "deployment_list";
     const DESCRIPTION: &'static str =
         "An Environment's Deployments, newest first, with each one's status.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "environment": "staging", "limit": 10 })
@@ -249,7 +249,7 @@ pub(crate) struct DeploymentShow {
 impl Tool for DeploymentShow {
     const NAME: &'static str = "deployment_show";
     const DESCRIPTION: &'static str = "One Deployment, the latest unless you name its number: status, each Service's outcome, the step and server that failed, and a short log excerpt with secrets replaced by their names. Can wait for it to end.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "deployment": 12, "wait_seconds": 120 })
@@ -305,7 +305,7 @@ impl Tool for DeploymentCancel {
     const NAME: &'static str = "deployment_cancel";
     const DESCRIPTION: &'static str =
         "Cancel a queued or running Deployment. What already changed on servers stays.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "deployment": 12 })
@@ -353,7 +353,7 @@ impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
     const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Every retry waits for a human to approve.";
     const GATE: Gate = Gate::Store;
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "deployment": 12, "request_key": "r8Tq2wLm5XcV" })
@@ -441,7 +441,7 @@ pub(crate) struct DeploymentStart {
 impl Tool for DeploymentStart {
     const NAME: &'static str = "deployment_start";
     const DESCRIPTION: &'static str = "Hand a queued Deployment to a runner now.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "deployment": 12 })

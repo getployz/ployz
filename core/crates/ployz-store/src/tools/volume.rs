@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at, stale, written};
+use super::machine::{Cx, Effect, Stop, Tool, at, stale, written};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -72,7 +72,7 @@ pub(crate) struct VolumeAdd {
     #[serde(default)]
     #[schemars(pattern("^/"))]
     path: Option<String>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -88,7 +88,7 @@ pub(crate) struct VolumeAdd {
 impl Tool for VolumeAdd {
     const NAME: &'static str = "volume_add";
     const DESCRIPTION: &'static str = "Create a Volume, persistent storage, and mount it into a Service at a path. Staged until the next Deploy.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "name": "data", "size": "10GiB", "service": "db", "path": "/var/lib/postgresql/data" })
@@ -154,7 +154,7 @@ pub(crate) struct VolumeUpdate {
     /// true lets more than one container write it. Applies at once.
     #[serde(default)]
     shared_writes: Option<bool>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -170,7 +170,7 @@ pub(crate) struct VolumeUpdate {
 impl Tool for VolumeUpdate {
     const NAME: &'static str = "volume_update";
     const DESCRIPTION: &'static str = "Change one thing about a Volume per call: its size, its name, or whether several containers may write it.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "volume": "data", "shared_writes": true })
@@ -228,7 +228,7 @@ impl Tool for VolumeUpdate {
 pub(crate) struct VolumeRemove {
     #[schemars(with = "String", pattern(NODE_NAME))]
     volume: VolumeName,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -244,7 +244,7 @@ pub(crate) struct VolumeRemove {
 impl Tool for VolumeRemove {
     const NAME: &'static str = "volume_remove";
     const DESCRIPTION: &'static str = "Remove a Volume and unmount it everywhere. Staged: a deployed Volume's data is deleted at the next deploy, which asks a human to approve.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "volume": "data" })

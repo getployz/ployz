@@ -46,3 +46,76 @@ fn the_catalog_fits_the_cap() {
         "the catalog is {bytes} B, over {CAP_BYTES} B"
     );
 }
+
+const IMPERATIVES: &[&str] = &[
+    "do not",
+    "don't",
+    "never follow",
+    "follow it",
+    "call it",
+    "use it",
+    "alongside",
+    "first.",
+    "before changing",
+    "ask the member",
+    "instructions",
+    "when the member asked",
+    "omit unless",
+    "deploy next",
+    "repeat the same",
+    "only from a refusal",
+];
+
+fn descriptions<'a>(schema: &'a Value, found: &mut Vec<&'a str>) {
+    match schema {
+        Value::Object(fields) => {
+            if let Some(Value::String(text)) = fields.get("description") {
+                found.push(text);
+            }
+            fields.values().for_each(|value| descriptions(value, found));
+        }
+        Value::Array(items) => items.iter().for_each(|item| descriptions(item, found)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn names_whole_word(text: &str, name: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + name.len()..].chars().next();
+        !before.is_some_and(word) && !after.is_some_and(word)
+    })
+}
+
+// Single-word names (docs, review, discard, history, deploy) are the domain's own nouns, as in "the next deploy".
+#[test]
+fn descriptions_say_what_a_tool_does_and_never_route_to_another() {
+    let tools = catalog();
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|tool| tool.name)
+        .filter(|name| name.contains('_'))
+        .collect();
+    let mut offences = Vec::new();
+    for tool in &tools {
+        let mut texts = vec![tool.description.as_str()];
+        descriptions(&tool.input_schema, &mut texts);
+        descriptions(&tool.output_schema, &mut texts);
+        for text in texts {
+            let lower = text.to_lowercase();
+            for other in names.iter().filter(|name| **name != tool.name) {
+                if names_whole_word(text, other) {
+                    offences.push(format!("{}: names {other}: {text}", tool.name));
+                }
+            }
+            for phrase in IMPERATIVES
+                .iter()
+                .filter(|phrase| names_whole_word(&lower, phrase))
+            {
+                offences.push(format!("{}: says {phrase:?}: {text}", tool.name));
+            }
+        }
+    }
+    assert!(offences.is_empty(), "{}", offences.join("\n"));
+}

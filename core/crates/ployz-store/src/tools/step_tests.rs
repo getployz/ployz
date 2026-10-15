@@ -61,9 +61,12 @@ fn accepted_loss_needs_volumes_and_the_version() {
 }
 
 #[test]
-fn only_a_gated_tool_says_to_call_it_alone() {
-    assert!(!Gate::Never.sentence().contains("alone"));
-    assert!(Gate::Store.sentence().contains("call it alone"));
+fn only_a_gated_tool_says_it_may_ask_a_human() {
+    assert_eq!(Gate::Never.sentence(), "Never asks a human to approve.");
+    assert_eq!(
+        Gate::Store.sentence(),
+        "May stop to ask a human to approve."
+    );
     assert_eq!(Gate::Store.sentence(), Gate::Cloud.sentence());
 }
 

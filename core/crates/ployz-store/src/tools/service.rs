@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 
 use super::domain::row;
 use super::environment::{REPOSITORY, source};
-use super::machine::{Cx, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal, Writes, from_store, not_setting, not_setting_sentence};
 use super::schema;
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
@@ -36,8 +36,8 @@ pub(crate) struct ServiceInspect {
 
 impl Tool for ServiceInspect {
     const NAME: &'static str = "service_inspect";
-    const DESCRIPTION: &'static str = "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged. Use it before changing a Service.";
-    const READ_ONLY: bool = true;
+    const DESCRIPTION: &'static str = "Everything about one Service: Settings with values and defaults, variables, mounts, Configs, domains with status, and what is Staged.";
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "service": "web" })
@@ -110,7 +110,7 @@ pub(crate) struct ServiceAdd {
     #[serde(default)]
     #[schemars(with = "Option<String>", length(min = 1))]
     branch: Option<BranchName>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -125,8 +125,8 @@ pub(crate) struct ServiceAdd {
 
 impl Tool for ServiceAdd {
     const NAME: &'static str = "service_add";
-    const DESCRIPTION: &'static str = "Create a Service. Give image to run a container image, or repository to build a GitHub repository. Staged: it runs after the next Deploy. Add domains with domain_add and Settings with service_update.";
-    const READ_ONLY: bool = false;
+    const DESCRIPTION: &'static str = "Create a Service. Give image to run a container image, or repository to build a GitHub repository. Staged: it runs after the next Deploy.";
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "name": "whoami", "image": "traefik/whoami" })
@@ -207,7 +207,7 @@ pub(crate) struct ServiceUpdate {
     /// With rename_env, also switch the variables that reference a renamed one to its new name.
     #[serde(default)]
     update_references: bool,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -227,7 +227,7 @@ fn set_schema(_: &mut SchemaGenerator) -> Schema {
         object.remove("title");
         object.insert(
             "description".into(),
-            "A Service's Settings, in the shape service_inspect returns as values.".into(),
+            "A Service's Settings, in the shape a Service's inspected values take.".into(),
         );
         if let Some(Value::Object(properties)) = object.get_mut("properties") {
             properties.remove("registryCredential");
@@ -284,8 +284,8 @@ fn rename_schema(_: &mut SchemaGenerator) -> Schema {
 
 impl Tool for ServiceUpdate {
     const NAME: &'static str = "service_update";
-    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings: use domain_add, domain_update, domain_remove. Most changes are Staged: Review lists them, Discard undoes them, so do not ask the member to confirm. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and Discard does not undo them; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal.";
-    const READ_ONLY: bool = false;
+    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal.";
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "service": "web", "set": { "env": { "LOG_LEVEL": "info" } }, "unset": ["env.OLD_FLAG"] })
@@ -418,7 +418,7 @@ pub(crate) struct ServiceRename {
     /// New name.
     #[schemars(with = "String", pattern(NODE_NAME))]
     to: ServiceName,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -435,7 +435,7 @@ impl Tool for ServiceRename {
     const NAME: &'static str = "service_rename";
     const DESCRIPTION: &'static str =
         "Rename a Service. Private DNS names and references to it follow. Staged.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "service": "web", "to": "frontend" })
@@ -463,7 +463,7 @@ impl Tool for ServiceRename {
 pub(crate) struct ServiceRemove {
     #[schemars(with = "String", pattern(NODE_NAME))]
     service: ServiceName,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -478,8 +478,8 @@ pub(crate) struct ServiceRemove {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
-    const DESCRIPTION: &'static str = "Remove a Service. Staged: Review lists it and Discard undoes it; the next deploy asks a human to approve.";
-    const READ_ONLY: bool = false;
+    const DESCRIPTION: &'static str = "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve.";
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "service": "web" })

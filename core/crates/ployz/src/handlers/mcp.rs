@@ -636,7 +636,7 @@ fn tool(def: tools::ToolDef) -> Tool {
     let mut tool = Tool::new(def.name, def.description, Arc::new(input)).annotate(
         ToolAnnotations::new()
             .read_only(def.read_only)
-            .destructive(def.gate != Gate::Never),
+            .destructive(def.destructive),
     );
     tool.output_schema = Some(Arc::new(object(def.output_schema)));
     tool
@@ -655,7 +655,7 @@ fn published_tool(command: &PublishedCommand) -> Tool {
         .annotate(
             ToolAnnotations::new()
                 .read_only(command.effect == Effect::Read)
-                .destructive(command.asks()),
+                .destructive(command.removes()),
         );
     tool.output_schema = Some(Arc::new(object(command.output.clone())));
     tool

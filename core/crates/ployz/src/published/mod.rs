@@ -54,7 +54,11 @@ pub(crate) struct PublishedCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Effect {
     Read,
-    Write { ask: bool },
+    /// `removes`: it removes or revokes something, so hosts mark it destructive.
+    Write {
+        ask: bool,
+        removes: bool,
+    },
 }
 
 /// A name the user types before the command runs.
@@ -426,7 +430,11 @@ impl PublishedCommand {
     }
 
     pub(crate) fn asks(&self) -> bool {
-        self.effect == Effect::Write { ask: true }
+        matches!(self.effect, Effect::Write { ask: true, .. })
+    }
+
+    pub(crate) fn removes(&self) -> bool {
+        matches!(self.effect, Effect::Write { removes: true, .. })
     }
 
     fn from_wire(entry: wire::Entry) -> Option<Self> {
@@ -444,9 +452,13 @@ impl PublishedCommand {
             examples: entry.examples,
             effect: match entry.kind {
                 wire::Kind::Read => Effect::Read,
-                wire::Kind::Write => Effect::Write {
-                    ask: entry.gate == wire::Gate::Ask,
-                },
+                wire::Kind::Write => {
+                    let ask = entry.gate == wire::Gate::Ask;
+                    Effect::Write {
+                        ask,
+                        removes: entry.removes.unwrap_or(ask),
+                    }
+                }
             },
             agents: entry.agents,
             typed: entry.typed.map(|typed| match typed {
@@ -572,6 +584,24 @@ mod tests {
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn an_entry_without_removes_takes_it_from_the_gate() {
+        let mut manifest = manifest();
+        for entry in &mut manifest.commands {
+            entry.removes = None;
+        }
+        let published = Published::from_wire(manifest);
+        assert!(published.commands.iter().any(|command| command.removes()));
+        for command in &published.commands {
+            assert_eq!(
+                command.removes(),
+                matches!(command.effect, Effect::Write { ask: true, .. }),
+                "{}",
+                command.name
+            );
+        }
     }
 
     #[test]

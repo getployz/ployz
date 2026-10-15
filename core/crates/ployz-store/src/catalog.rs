@@ -119,7 +119,7 @@ pub(crate) fn service(named: Option<&ServiceName>) -> Value {
         "mounts".to_owned(),
         json!({
             "title": "Mounts",
-            "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create the Volume first. Unset detaches it: the Volume and its data stay.",
+            "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. The Volume must exist. Unset detaches it: the Volume and its data stay.",
             "type": "object",
             "patternProperties": { NODE_NAME: mount() },
             "additionalProperties": false,
@@ -133,7 +133,7 @@ pub(crate) fn service(named: Option<&ServiceName>) -> Value {
         "configs".to_owned(),
         json!({
             "title": "Config mounts",
-            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. Add the Config first. Unset unmounts it: the Config and its files stay.",
+            "description": "Where the Service mounts each Config, by Config name, each at SERVICE.configs.CONFIG. The Config must exist. Unset unmounts it: the Config and its files stay.",
             "type": "object",
             "patternProperties": { NODE_NAME: config_mount() },
             "additionalProperties": false,

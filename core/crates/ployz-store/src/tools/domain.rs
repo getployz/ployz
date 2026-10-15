@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at, stale};
+use super::machine::{Cx, Effect, Stop, Tool, at, stale};
 use super::refusal::Refusal;
 use crate::catalog::NODE_NAME;
 use crate::{
@@ -114,7 +114,7 @@ pub(crate) struct DomainAdd {
     #[serde(default)]
     #[schemars(range(min = 1, max = 65535))]
     port: Option<u16>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -130,7 +130,7 @@ pub(crate) struct DomainAdd {
 impl Tool for DomainAdd {
     const NAME: &'static str = "domain_add";
     const DESCRIPTION: &'static str = "Give a Service a public domain: a generated one under the cluster domain, or a hostname the member owns. Staged until the next Deploy. A custom hostname comes back with the DNS records the member must create.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "service": "web", "hostname": "app.example.com" })
@@ -188,7 +188,7 @@ impl Tool for DomainCheck {
     const NAME: &'static str = "domain_check";
     const DESCRIPTION: &'static str =
         "Check a domain now: its status, why, and DNS records still to create.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "domain": "app.example.com" })
@@ -222,7 +222,7 @@ pub(crate) struct DomainUpdate {
     #[serde(default)]
     #[schemars(range(min = 1, max = 65535))]
     port: Option<u16>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -239,7 +239,7 @@ impl Tool for DomainUpdate {
     const NAME: &'static str = "domain_update";
     const DESCRIPTION: &'static str =
         "Change a generated domain's prefix, or the port any domain reaches. Staged.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "domain": "whoami-2", "prefix": "whoami" })
@@ -302,7 +302,7 @@ pub(crate) struct DomainRemove {
     /// The domain, by hostname or a generated domain's prefix.
     #[schemars(length(min = 1), example = &"app.example.com")]
     domain: String,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -318,7 +318,7 @@ pub(crate) struct DomainRemove {
 impl Tool for DomainRemove {
     const NAME: &'static str = "domain_remove";
     const DESCRIPTION: &'static str = "Take a public domain off its Service. Staged: a domain already serving asks a human to approve at the next deploy.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
         json!({ "domain": "app.example.com" })

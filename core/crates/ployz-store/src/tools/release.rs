@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::machine::{Cx, Stop, Tool, at, written};
+use super::machine::{Cx, Effect, Stop, Tool, at, written};
 use super::refusal::{Call, Refusal};
 use super::step::{AcceptedLoss, Gate, RequestKey};
 use crate::catalog::NODE_NAME;
@@ -55,7 +55,7 @@ pub(crate) struct Review {
 impl Tool for Review {
     const NAME: &'static str = "review";
     const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines, with the version deploy takes and what a human must approve.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "environment": "staging" })
@@ -177,7 +177,7 @@ pub(crate) struct DiscardInput {
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(NODE_NAME))]
     config: Option<ConfigName>,
-    /// Write only if the place is still at this revision. Omit unless you just read it.
+    /// Writes only if the place is still at this revision.
     #[serde(default)]
     expect_revision: Option<u64>,
     /// Project name.
@@ -194,7 +194,7 @@ impl Tool for DiscardInput {
     const NAME: &'static str = "discard";
     const DESCRIPTION: &'static str =
         "Return every Staged change, or one Service's, Volume's or Config's, to what is deployed.";
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "service": "web" })
@@ -262,14 +262,14 @@ pub(crate) struct DeployInput {
     #[serde(default)]
     #[schemars(length(max = 200))]
     message: Option<String>,
-    /// Only if review still shows this version. Required with accept_volume_loss.
+    /// The reviewed version; refused if what is staged changed since. Required with accept_volume_loss.
     #[serde(default)]
     version: Option<String>,
-    /// Volumes whose data this may delete. Only when the member asked for exactly that loss.
+    /// Volumes whose data this may delete.
     #[serde(default)]
     #[schemars(with = "Vec<String>", inner(pattern(NODE_NAME)))]
     accept_volume_loss: Vec<VolumeName>,
-    /// Any id you choose. Repeat the same call with the same key after a lost reply and you get the same result back, not a second one.
+    /// Any id you choose. A call that repeats a key gets the first call's result, not a second deploy.
     #[serde(default)]
     #[schemars(with = "Option<String>", pattern(REQUEST_KEY))]
     request_key: Option<RequestKey>,
@@ -288,9 +288,9 @@ pub(crate) struct DeployInput {
 
 impl Tool for DeployInput {
     const NAME: &'static str = "deploy";
-    const DESCRIPTION: &'static str = "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns: follow it with deployment_show. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
+    const DESCRIPTION: &'static str = "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns without waiting for it to finish. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
     const GATE: Gate = Gate::Store;
-    const READ_ONLY: bool = false;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "services": ["web"], "message": "Raise web's log level", "request_key": "h4Rv9sNb6YeD" })

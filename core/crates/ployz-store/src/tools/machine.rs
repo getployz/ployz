@@ -95,12 +95,21 @@ impl From<Refusal> for Stop {
     }
 }
 
+/// What a tool does to what it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Effect {
+    Read,
+    Change,
+    /// Removes or deletes something when it runs; a staged removal is a Change.
+    Remove,
+}
+
 /// One tool: its input type, how it describes itself, and its plan.
 pub(crate) trait Tool: DeserializeOwned + JsonSchema {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
     const GATE: Gate = Gate::Never;
-    const READ_ONLY: bool;
+    const EFFECT: Effect;
     /// The Store read a local call is pointed to when this tool needs Cloud.
     const LOCAL_NEXT: Option<&'static str> = None;
 
@@ -119,6 +128,7 @@ pub struct ToolDef {
     pub input_schema: Value,
     pub output_schema: Value,
     pub read_only: bool,
+    pub destructive: bool,
     pub gate: Gate,
 }
 
@@ -508,7 +518,8 @@ fn def<T: Tool>() -> ToolDef {
         description: format!("{} {}", T::DESCRIPTION, T::GATE.sentence()),
         input_schema: schema::input::<T>(),
         output_schema: json!({ "type": "object" }),
-        read_only: T::READ_ONLY,
+        read_only: T::EFFECT == Effect::Read,
+        destructive: T::EFFECT == Effect::Remove,
         gate: T::GATE,
     }
 }

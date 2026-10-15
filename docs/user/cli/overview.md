@@ -76,10 +76,12 @@ Some things are not tools. Run these yourself in a terminal:
 - Branches and tokens.
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
 
-Tools that can remove something are marked destructive: `deploy`,
-`environment_remove`, `project_remove`, the server commands that drain, clean or remove a
-server, and the Volume commands that move, mirror, release or restore a copy. When one of them needs your
-approval (see
+Tools that can delete something when they run are marked destructive: `deploy`,
+`deployment_retry`, `deployment_start`, `discard`, `environment_remove`, `project_remove`, the
+server commands that drain, clean, forget or remove a server, the Volume commands that move, mirror
+or release a copy or remove a mirror, and removing an organization member or invite. Staging a
+removal, such as `service_remove`, deletes nothing until the next deploy, so it isn't marked. When
+one of them needs your approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
 the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
 Project, an Environment or a Server also asks you to type its name. Approve and the call goes

@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use super::act::{resolve, servers};
 use super::cloud::{MetricEvent, MetricsAnswer, ServersAnswer};
-use super::machine::{Cx, Stop, Tool, at, store};
+use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::step::{
     Ask, CloudQuery, MetricsQuery, MetricsSince, MetricsSubject, ServerName, Timestamp,
@@ -96,7 +96,7 @@ pub(crate) struct ServiceMetrics {
 impl Tool for ServiceMetrics {
     const NAME: &'static str = "service_metrics";
     const DESCRIPTION: &'static str = "A Service's CPU, memory, network and disk (now, avg, peak) and its OOM kills, exits and restarts. Default: the last hour.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
     const LOCAL_NEXT: Option<&'static str> = Some("deployment_show");
 
     fn example() -> Value {
@@ -225,7 +225,7 @@ pub(crate) struct ServerMetrics {
 impl Tool for ServerMetrics {
     const NAME: &'static str = "server_metrics";
     const DESCRIPTION: &'static str = "A server's CPU, memory, network and disk (now, avg, peak) and its containers' OOM kills, exits and restarts. Default: the last hour.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "server": "web-1", "since_minutes": 180 })

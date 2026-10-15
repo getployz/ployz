@@ -580,8 +580,7 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
             .unwrap_or_else(|| panic!("{} is listed", def.name));
         assert_eq!(tool["annotations"]["readOnlyHint"], def.read_only, "{tool}");
         assert_eq!(
-            tool["annotations"]["destructiveHint"],
-            def.gate != Gate::Never,
+            tool["annotations"]["destructiveHint"], def.destructive,
             "{tool}"
         );
         assert_eq!(tool["outputSchema"], def.output_schema, "{tool}");
@@ -1754,7 +1753,7 @@ mod published {
             );
             assert_eq!(
                 tool["annotations"]["destructiveHint"],
-                entry["gate"] == "ask",
+                entry["removes"] == true,
                 "{tool}"
             );
         }

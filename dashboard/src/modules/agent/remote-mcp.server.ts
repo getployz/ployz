@@ -87,7 +87,7 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
     server.registerTool(tool.name, {
       description: tool.description,
       inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool)),
-      annotations: { readOnlyHint: tool.readOnly, destructiveHint: !tool.readOnly },
+      annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive },
     }, async (args) => {
       const { approval, ...input } = args;
       const sentKey = asString(input["request_key"]);

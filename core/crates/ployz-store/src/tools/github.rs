@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::environment::{GithubAnswer, REPOSITORY};
-use super::machine::{Cx, Stop, Tool};
+use super::machine::{Cx, Effect, Stop, Tool};
 use super::refusal::{Call, Refusal};
 use super::step::{Ask, CloudQuery};
 use crate::RepositoryName;
@@ -38,7 +38,7 @@ impl Tool for GithubLs {
     const NAME: &'static str = "github_ls";
     const DESCRIPTION: &'static str =
         "List a connected GitHub repository's files at a path, or read one file (at most 64 KB).";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({ "repository": "acme/api", "path": "src" })
@@ -173,7 +173,7 @@ pub(crate) struct GithubConnect {}
 impl Tool for GithubConnect {
     const NAME: &'static str = "github_connect";
     const DESCRIPTION: &'static str = "Whether GitHub is connected, which repositories Ployz can read, and the page that connects more.";
-    const READ_ONLY: bool = true;
+    const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
         json!({})
