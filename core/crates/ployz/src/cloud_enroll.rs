@@ -114,7 +114,7 @@ pub(crate) struct CloudPairing {
     pub(crate) secret: PairingCredential,
 }
 
-/// Identity POSTed to `POST /api/enroll/<token>`.
+/// Identity POSTed to `POST /api/enroll`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnrollIdentity {
@@ -228,22 +228,23 @@ enum EnrollWire {
     },
 }
 
-/// Enroll URL: host without a scheme is HTTPS.
+/// Enroll URL: host without a scheme is HTTPS. The token travels only as a bearer header,
+/// so it never reaches a URL that proxies and access logs record.
 #[must_use]
-pub(crate) fn enroll_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
-    format!("{}/api/enroll/{}", cloud_origin(cloud_url), token.as_str())
+pub(crate) fn enroll_url(cloud_url: &str) -> String {
+    format!("{}/api/enroll", cloud_origin(cloud_url))
 }
 
-/// Final enrollment completion: `POST /api/enroll/<token>/callback`.
+/// Final enrollment completion: `POST /api/enroll/callback`.
 #[must_use]
-pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
-    format!("{}/callback", enroll_url(cloud_url, token))
+pub(crate) fn callback_url(cloud_url: &str) -> String {
+    format!("{}/callback", enroll_url(cloud_url))
 }
 
-/// Best-effort setup report: `POST /api/enroll/<token>/report`.
+/// Best-effort setup report: `POST /api/enroll/report`.
 #[must_use]
-pub(crate) fn report_url(cloud_url: &str, token: &CloudEnrollToken) -> String {
-    format!("{}/report", enroll_url(cloud_url, token))
+pub(crate) fn report_url(cloud_url: &str) -> String {
+    format!("{}/report", enroll_url(cloud_url))
 }
 
 /// `https://` + a bare host, or the URL as given; no trailing slash.
@@ -276,7 +277,11 @@ struct EnrollCallback<'a> {
 /// # Errors
 ///
 /// HTTP status, unexpected JSON, or a non-transport HTTP failure.
-pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
+pub(crate) async fn enroll(
+    url: &str,
+    token: &CloudEnrollToken,
+    identity: &EnrollIdentity,
+) -> Result<Outcome, Error> {
     let http = http_client()?;
     let mut announced_wait = false;
     let deadline = tokio::time::Instant::now() + FOUNDER_WAIT;
@@ -286,7 +291,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
             &format!("Cloud enrollment at {}", diagnostic_origin(url)),
             crate::setup_retry::WAIT,
             |error| matches!(error, Error::Connect(_)),
-            async |_| post_json(&http, url, identity).await,
+            async |_| post_json(&http, url, token, identity).await,
         )
         .await
         .map_err(|error| retry_error("enrollment", error))?;
@@ -326,24 +331,27 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
 /// HTTP failure.
 pub(crate) async fn callback(
     url: &str,
+    token: &CloudEnrollToken,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
 ) -> Result<(), Error> {
-    post_callback(url, machine_id, pairing_credential, None).await
+    post_callback(url, token, machine_id, pairing_credential, None).await
 }
 
 /// Publish a candidate against the authenticated enrollment attempt before completion.
 pub(crate) async fn publish(
     url: &str,
+    token: &CloudEnrollToken,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
     capability: &ManagementCapability,
 ) -> Result<(), Error> {
-    post_callback(url, machine_id, pairing_credential, Some(capability)).await
+    post_callback(url, token, machine_id, pairing_credential, Some(capability)).await
 }
 
 async fn post_callback(
     url: &str,
+    token: &CloudEnrollToken,
     machine_id: MachineId,
     pairing_credential: &PairingCredential,
     capability: Option<&ManagementCapability>,
@@ -366,7 +374,7 @@ async fn post_callback(
         crate::setup_retry::WAIT,
         Error::is_transport,
         async |_| {
-            post_json(&http, url, &body)
+            post_json(&http, url, token, &body)
                 .await
                 .map(|_| ())
                 .map_err(|error| {
@@ -438,10 +446,12 @@ fn classify_http(error: reqwest::Error) -> Error {
 async fn post_json(
     http: &reqwest::Client,
     url: &str,
+    token: &CloudEnrollToken,
     body: &impl Serialize,
 ) -> Result<Vec<u8>, Error> {
     let sent = http
         .post(url)
+        .bearer_auth(token.as_str())
         .json(body)
         .send()
         .await
@@ -550,17 +560,18 @@ mod tests {
 
     #[test]
     fn host_without_scheme_is_https_under_ployz_dev() {
+        assert_eq!(enroll_url("ployz.dev"), "https://ployz.dev/api/enroll");
         assert_eq!(
-            enroll_url("ployz.dev", &token()),
-            "https://ployz.dev/api/enroll/pmet_test"
+            enroll_url("http://127.0.0.1:9"),
+            "http://127.0.0.1:9/api/enroll"
         );
         assert_eq!(
-            enroll_url("http://127.0.0.1:9", &token()),
-            "http://127.0.0.1:9/api/enroll/pmet_test"
+            callback_url("ployz.dev"),
+            "https://ployz.dev/api/enroll/callback"
         );
         assert_eq!(
-            callback_url("ployz.dev", &token()),
-            "https://ployz.dev/api/enroll/pmet_test/callback"
+            report_url("ployz.dev"),
+            "https://ployz.dev/api/enroll/report"
         );
     }
 
@@ -747,6 +758,36 @@ mod tests {
         let _ = tokio::io::AsyncReadExt::read(stream, &mut buf).await;
     }
 
+    #[tokio::test]
+    async fn token_travels_as_a_bearer_and_never_in_the_url() {
+        let (listener, origin) = listen().await;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0; 8192];
+            let read = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                .await
+                .unwrap();
+            let response = http_response(200, "OK", &join_body());
+            tokio::io::AsyncWriteExt::write_all(&mut stream, &response)
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&buf[..read]).into_owned()
+        });
+        let url = enroll_url(&origin);
+        enroll(&url, &token(), &identity()).await.unwrap();
+        let request = server.await.unwrap();
+        let request_line = request.lines().next().unwrap();
+        assert_eq!(request_line, "POST /api/enroll HTTP/1.1");
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer pmet_test"))
+        );
+        for url in [url, callback_url(&origin), report_url(&origin)] {
+            assert!(!url.contains(token().as_str()), "{url}");
+        }
+    }
+
     #[test]
     fn cloud_destination_omits_credentials_and_token_path() {
         assert_eq!(
@@ -769,7 +810,9 @@ mod tests {
             .read_timeout(Duration::from_millis(100))
             .build()
             .unwrap();
-        let timeout = post_json(&http, &hang, &identity()).await.unwrap_err();
+        let timeout = post_json(&http, &hang, &token(), &identity())
+            .await
+            .unwrap_err();
         assert_eq!(
             timeout.to_string(),
             "Enrollment timed out waiting for Cloud."
@@ -779,7 +822,9 @@ mod tests {
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let refused = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        let connect = post_json(&http, &refused, &identity()).await.unwrap_err();
+        let connect = post_json(&http, &refused, &token(), &identity())
+            .await
+            .unwrap_err();
         assert_eq!(connect.to_string(), "Could not connect to Cloud.");
         assert_ne!(timeout.to_string(), connect.to_string());
         let connect = crate::ui::chain_text(&connect);
@@ -806,10 +851,11 @@ mod tests {
                         .is_err()
                 );
             });
-            let error = tokio::time::timeout(Duration::from_secs(25), enroll(&url, &identity()))
-                .await
-                .expect("lost response must return without retrying")
-                .unwrap_err();
+            let error =
+                tokio::time::timeout(Duration::from_secs(25), enroll(&url, &token(), &identity()))
+                    .await
+                    .expect("lost response must return without retrying")
+                    .unwrap_err();
             let rendered = crate::ui::chain_text(&error);
             assert!(rendered.contains("uncertain"), "{rendered}");
             assert!(error.to_string().contains("without --reset"), "{error}");
@@ -842,6 +888,7 @@ mod tests {
                 if stage == "publish" {
                     publish(
                         &url,
+                        &token(),
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
                         &ManagementCapability::new(
@@ -854,6 +901,7 @@ mod tests {
                 } else {
                     callback(
                         &url,
+                        &token(),
                         MachineId::random(),
                         &PairingCredential::parse("pairing-secret").unwrap(),
                     )
@@ -891,12 +939,19 @@ mod tests {
             let credential = PairingCredential::parse(pairing).unwrap();
             let (result, operation) = if publishing {
                 (
-                    publish(&url, MachineId::random(), &credential, &capability).await,
+                    publish(
+                        &url,
+                        &token(),
+                        MachineId::random(),
+                        &credential,
+                        &capability,
+                    )
+                    .await,
                     "candidate publication",
                 )
             } else {
                 (
-                    callback(&url, MachineId::random(), &credential).await,
+                    callback(&url, &token(), MachineId::random(), &credential).await,
                     "enrollment completion",
                 )
             };
@@ -929,7 +984,7 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let error = enroll(&url, &identity()).await.unwrap_err();
+        let error = enroll(&url, &token(), &identity()).await.unwrap_err();
         assert!(
             matches!(error, Error::Status { status: 503, .. }),
             "{error}"

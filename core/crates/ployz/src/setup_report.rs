@@ -1,6 +1,6 @@
 //! Best-effort setup report for `ployz server add --token`: the Server profile and step times.
 //!
-//! One POST to `<cloud>/api/enroll/<token>/report` once setup succeeds or fails. It never
+//! One POST to `<cloud>/api/enroll/report` once setup succeeds or fails. It never
 //! changes what the user sees: one attempt, a short timeout, every error swallowed.
 //! `DO_NOT_TRACK` turns it off. Its profile never carries hostnames, IPs, the Server name,
 //! labels, Machine ids or secrets. On failure, `error` is the message the user saw; Cloud
@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ployz_core::{MachineToken, StorageChoice};
+use ployz_core::{CloudEnrollToken, MachineToken, StorageChoice};
 use serde::Serialize;
 
 const TIMEOUT: Duration = Duration::from_secs(2);
@@ -186,6 +186,7 @@ impl SetupReport {
     pub(crate) async fn send<E: std::error::Error + 'static>(
         mut self,
         url: &str,
+        token: &CloudEnrollToken,
         error: Option<&E>,
     ) {
         if do_not_track() {
@@ -212,7 +213,12 @@ impl SetupReport {
         let Ok(http) = reqwest::Client::builder().timeout(TIMEOUT).build() else {
             return;
         };
-        let _ = http.post(url).json(&body).send().await;
+        let _ = http
+            .post(url)
+            .bearer_auth(token.as_str())
+            .json(&body)
+            .send()
+            .await;
     }
 }
 

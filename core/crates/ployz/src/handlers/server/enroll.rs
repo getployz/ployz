@@ -2,9 +2,11 @@
 //!
 //! The first Server founds the Cluster. Signed in, the CLI asks Cloud for an enrollment token,
 //! then installs over SSH (`DESTINATION`), enrolls the host it runs on, or prints one line to
-//! paste on the Server (`--command`). The pasted line runs `server add --token` on the Server.
+//! paste on the Server (`--command`). The pasted line pipes the token to `server add --token-stdin`.
 //! A hidden `--standalone` founds or joins a Cluster without Cloud, for tests.
 
+use std::io::BufRead;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{ArgMatches, Command};
@@ -29,8 +31,14 @@ pub(crate) fn command(command: Command) -> Command {
     )
     .arg(positional("destination", false))
     .arg(
-        value("token", None)
-            .help("Enrollment token from Cloud; the pasted command passes it")
+        switch("token-stdin", None)
+            .help("Read the enrollment token from Cloud as one line on stdin; the pasted command pipes it")
+            .conflicts_with_all(["token-file", "command", "wait", "standalone"]),
+    )
+    .arg(
+        value("token-file", None)
+            .value_parser(clap::value_parser!(PathBuf))
+            .help(format!("Read the enrollment token from a file; {} also passes it", env::ENROLL_TOKEN))
             .conflicts_with_all(["command", "wait", "standalone"]),
     )
     .arg(
@@ -47,7 +55,7 @@ pub(crate) fn command(command: Command) -> Command {
     .arg(
         value("cloud-url", None)
             .env(env::CLOUD_URL)
-            .help("Cloud that issued --token [default: ployz.dev]"),
+            .help("Cloud that issued the enrollment token [default: ployz.dev]"),
     )
     .arg(
         value("network", None)
@@ -73,11 +81,11 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("standalone") {
         return standalone(root);
     }
-    if let Some(token) = matches.get_one::<String>("token") {
+    if let Some(token) = enroll_token(matches)? {
         let cloud = matches
             .get_one::<String>("cloud-url")
             .map_or(DEFAULT_CLOUD, String::as_str);
-        return super::super::cloud::enroll(root, CloudEnrollToken::parse(token.clone())?, cloud);
+        return super::super::cloud::enroll(root, token, cloud);
     }
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
@@ -104,6 +112,58 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         CloudEnrollToken::parse(minted.token)?,
         acting.credential.cloud(),
     )
+}
+
+/// The enrollment token from its one source: `--token-stdin`, `--token-file` or
+/// `PLOYZ_ENROLL_TOKEN`. None of them is argv, so the token stays out of `ps`.
+pub(in crate::handlers) fn enroll_token(
+    matches: &ArgMatches,
+) -> Result<Option<CloudEnrollToken>, Error> {
+    let from_env = std::env::var(env::ENROLL_TOKEN)
+        .ok()
+        .filter(|token| !token.is_empty());
+    let from_stdin = matches.get_flag("token-stdin");
+    let from_file = matches.get_one::<PathBuf>("token-file");
+    if let Some(from_env) = from_env {
+        if from_stdin || from_file.is_some() {
+            return Err(Error::usage(format!(
+                "{} is set; pass the enrollment token once, without --token-stdin or --token-file",
+                env::ENROLL_TOKEN
+            )));
+        }
+        if matches.get_flag("command")
+            || matches.get_flag("standalone")
+            || matches.get_one::<String>("wait").is_some()
+        {
+            return Err(Error::usage(format!(
+                "{} enrolls with a token; unset it to use --command, --wait or --standalone",
+                env::ENROLL_TOKEN
+            )));
+        }
+        return Ok(Some(CloudEnrollToken::parse(from_env.trim())?));
+    }
+    let raw = if from_stdin {
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .map_err(|error| {
+                Error::usage(format!(
+                    "Could not read the enrollment token from stdin: {error}"
+                ))
+            })?;
+        line
+    } else if let Some(path) = from_file {
+        std::fs::read_to_string(path).map_err(|error| {
+            Error::usage(format!(
+                "Could not read the enrollment token from {}: {error}",
+                path.display()
+            ))
+        })?
+    } else {
+        return Ok(None);
+    };
+    Ok(Some(CloudEnrollToken::parse(raw.trim())?))
 }
 
 /// What a Cloud enrollment acts with, and the Organization it enrolls into.
@@ -168,7 +228,8 @@ async fn paste(
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
-/// enrollment, keeping an explicit `--storage` choice.
+/// enrollment, keeping an explicit `--storage` choice. The leading space keeps it out of
+/// shell history, and `printf` is a builtin, so the token never reaches any argv.
 fn pasted_command(token: &str, cloud: &str, storage: Option<StorageChoice>) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
@@ -177,7 +238,7 @@ fn pasted_command(token: &str, cloud: &str, storage: Option<StorageChoice>) -> S
     };
     let storage_flag = storage.map_or(String::new(), |storage| format!(" --storage {storage}"));
     format!(
-        "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add --token '{token}'{cloud_flag}{storage_flag}",
+        " curl -fsSL {INSTALLER_URL} | sh -s -- {} && printf '%s\\n' '{token}' | sudo ployz server add --token-stdin{cloud_flag}{storage_flag}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -249,16 +310,16 @@ mod tests {
         assert_eq!(
             pasted_command("pmet_x", "https://ployz.dev", None),
             format!(
-                "curl -fsSL https://ployz.sh/ | sh -s -- {version} && sudo ployz server add --token 'pmet_x'"
+                " curl -fsSL https://ployz.sh/ | sh -s -- {version} && printf '%s\\n' 'pmet_x' | sudo ployz server add --token-stdin"
             )
         );
         assert!(
             pasted_command("pmet_x", "http://localhost:3000", None)
-                .ends_with("--token 'pmet_x' --cloud-url 'http://localhost:3000'")
+                .ends_with("--token-stdin --cloud-url 'http://localhost:3000'")
         );
         assert!(
             pasted_command("pmet_x", "https://ployz.dev", Some(StorageChoice::None))
-                .ends_with("--token 'pmet_x' --storage none")
+                .ends_with("--token-stdin --storage none")
         );
     }
 }

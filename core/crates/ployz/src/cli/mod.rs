@@ -14,6 +14,8 @@ pub mod env {
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
     pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
+    /// The enrollment token for `server add`, kept out of argv.
+    pub const ENROLL_TOKEN: &str = "PLOYZ_ENROLL_TOKEN";
     pub const TOKEN: &str = "PLOYZ_TOKEN";
     /// The Environment authoring commands address, as `--env`.
     pub const ENVIRONMENT: &str = "PLOYZ_ENV";
