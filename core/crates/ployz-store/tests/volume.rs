@@ -837,8 +837,6 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     assert!(published.created);
 }
 
-/// Deploy `data`, then remove it and Save, accepting its loss while `holders`
-/// hold its data.
 /// Save Working State, accepting losses as [`admit`] does.
 fn save(
     store: &ConfigStore,
