@@ -43,8 +43,13 @@ const attachChangeLog = Effect.gen(function* () {
       create or replace trigger uptime_check_forget_services after delete on config_applied
       referencing old table as old_rows for each statement execute function uptime_check_forget_services()
     `);
-    yield* drizzle.execute(sql`
-      create or replace trigger analytics_forget_environments after delete on config_environment
+    // Created only when missing: a create on config_environment locks it until the open's transaction ends.
+    const [analyticsTrigger] = yield* drizzle.execute<{ exists: boolean }>(sql`
+      select exists (select from pg_trigger
+        where tgrelid = 'config_environment'::regclass and tgname = 'analytics_forget_environments') as exists
+    `, "objects");
+    if (analyticsTrigger?.exists !== true) yield* drizzle.execute(sql`
+      create trigger analytics_forget_environments after delete on config_environment
       referencing old table as old_rows for each statement execute function analytics.forget_environments()
     `);
   }));
