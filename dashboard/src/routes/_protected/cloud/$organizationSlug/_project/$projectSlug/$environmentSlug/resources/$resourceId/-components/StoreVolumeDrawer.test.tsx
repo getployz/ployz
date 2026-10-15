@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
+import type { ReactNode } from "react";
 import { Schema } from "effect";
 import type { ConfigQuery, ConfigView, ConfigWritten, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { afterEach, expect, it, vi } from "vitest";
@@ -11,6 +12,8 @@ import * as mounts from "#/modules/config-store/StoreVolumeMounts";
 import * as functions from "#/modules/config-store/store.functions";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { StoreRenameLock } from "../../../-components/StoreRenameLock";
 import { InspectorPresentation } from "../../../-components/CanvasInspectorHeader";
 import * as changes from "../../../-components/canvas/useStoreChangeActions";
 import * as copies from "./StoreVolumeCopies";
@@ -22,11 +25,11 @@ const env = { id: "env", ...environment, name: "production", revision: 1 };
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null) {
+async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: MachineId | null = null, { realMounts = false } = {}) {
   vi.stubGlobal("scrollTo", () => {});
   vi.spyOn(changes, "useStoreChangeActions").mockReturnValue(asTestDouble<ReturnType<typeof changes.useStoreChangeActions>>()({ dialog: null }));
   vi.spyOn(copies, "useVolumeCopies").mockReturnValue(asTestDouble<ReturnType<typeof copies.useVolumeCopies>>()({ copies: null }));
-  vi.spyOn(mounts, "StoreVolumeMounts").mockImplementation(() => <></>);
+  if (!realMounts) vi.spyOn(mounts, "StoreVolumeMounts").mockImplementation(() => <></>);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const scope = { queryClient, sessionId: "s", userId: "u" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
@@ -55,7 +58,7 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
   const organization = createRoute({ getParentRoute: () => protectedRoute, path: "cloud/$organizationSlug", component: Outlet });
   const project = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
   const environmentRoute = createRoute({ getParentRoute: () => project, path: "$projectSlug/$environmentSlug", loader: () => ({ store: environment }), component: Outlet });
-  const canvas = createRoute({ getParentRoute: () => environmentRoute, id: "_canvas", component: Outlet });
+  const canvas = createRoute({ getParentRoute: () => environmentRoute, id: "_canvas", component: () => <StoreRenameLock><Outlet /></StoreRenameLock> });
   const resource = createRoute({
     getParentRoute: () => canvas, path: "resources/$resourceId", validateSearch: Schema.toStandardSchemaV1(volumeSearchSchema),
     component: () => (
@@ -69,6 +72,7 @@ async function openDrawer(url: string, volume: Partial<VolumeListing>, copy: Mac
   ])])]), history: createMemoryHistory({ initialEntries: [url] }) });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByRole("tab", { name: "Copies" });
+  return queryClient;
 }
 
 it("opens a mirror on the Copies tab, even from a URL that had Settings open", async () => {
@@ -89,4 +93,18 @@ it("locks the drawer while its rename is pending, so no edit names the volume by
   await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); });
   await waitFor(() => expect(screen.getByRole("tab", { name: "Settings" }).closest("[inert]")).toBeNull());
   expect(screen.getByTitle("Edit volume name").closest("[inert]")).toBeNull();
+});
+
+it("locks a Volume's mounts while a Service they name is renaming, so Unmount never names it by its old name", async () => {
+  const queryClient = await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings",
+    { mounts: [asTestDouble<VolumeListing["mounts"][number]>()({ service: "web", path: "/data", change: null })] }, null, { realMounts: true });
+  let answer!: (result: StoreResult<ConfigWritten>) => void;
+  vi.spyOn(functions, "writeStoreServerFn").mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const writer = renderHook(() => useStoreWriter("acme"), { wrapper }).result.current;
+  const renamed = writer.commit({ command: "rename_service", environment, service: "web", name: "site" }).isPersisted.promise;
+  const actions = () => screen.getByRole("button", { name: "Actions for web mount", hidden: true });
+  await waitFor(() => expect(actions().closest("[inert]")).not.toBeNull());
+  await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); await renamed; });
+  await waitFor(() => expect(actions().closest("[inert]")).toBeNull());
 });
