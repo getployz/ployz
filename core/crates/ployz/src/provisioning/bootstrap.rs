@@ -363,7 +363,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_signature_reads_as_absent_and_other_failures_stay_errors() {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
         let url = serve_status("404 Not Found").await;
         let absent = download_if_present(&client, &url, "signature")
