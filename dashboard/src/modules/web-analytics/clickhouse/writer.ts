@@ -92,9 +92,9 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
   }));
 });
 
-export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (clickhouse: ClickHouseService, environmentId: string) {
+const demoteReads = Effect.fn("WebAnalytics.demoteReads")(function* (environmentId: string) {
   const database = yield* Database;
-  const demoted = yield* database.transaction(Effect.gen(function* () {
+  return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`
       insert into analytics.clickhouse_site (environment_id)
@@ -104,6 +104,11 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
       update analytics.clickhouse_site set reads = false, backfilled_at = null, updated_at = now()
       where environment_id = ${environmentId}::text returning environment_id`, "objects");
   }));
+});
+
+export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (clickhouse: ClickHouseService, environmentId: string) {
+  const database = yield* Database;
+  const demoted = yield* demoteReads(environmentId);
   if (demoted.length === 0) return 0;
   const copy = database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;

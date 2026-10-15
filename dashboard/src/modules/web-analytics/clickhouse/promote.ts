@@ -16,7 +16,7 @@ const PARITY_READS = [
 const canonical = (rows: ReadonlyArray<object>) =>
   rows.map((row) => JSON.stringify(Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b))))).sort().join("\n");
 
-export const sameRows = (expected: ReadonlyArray<object>, actual: ReadonlyArray<object>) => canonical(expected) === canonical(actual);
+export const sameRowSet = (expected: ReadonlyArray<object>, actual: ReadonlyArray<object>) => canonical(expected) === canonical(actual);
 
 export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
@@ -37,7 +37,7 @@ export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (en
   };
   for (const [expected, actual] of PARITY_READS) {
     const [left, right] = yield* Effect.all([expected(query), actual(query)]);
-    if (!sameRows(left, right)) return false;
+    if (!sameRowSet(left, right)) return false;
   }
   const flipped = yield* drizzle.execute(sql`
     update analytics.clickhouse_site set reads = true, updated_at = now()

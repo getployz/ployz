@@ -35,7 +35,7 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
-const publishedGeneration = Effect.fn("WebAnalytics.clickHousePublishedGeneration")(function* (site: RollupSite, day: string) {
+const newestGeneration = Effect.fn("WebAnalytics.clickHouseNewestGeneration")(function* (site: RollupSite, day: string) {
   const clickhouse = yield* requiredClickHouse;
   const b = binder(site);
   const scope = `environment_id = ${b.env} AND day = toDate(${b.text(day)})`;
@@ -56,7 +56,7 @@ const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: R
   const ctes = (b: Binder) => `WITH ${visitCtes(b, query, { start, end })},
     sessions AS (SELECT * FROM visits WHERE ts >= ${b.at(start)} AND ts < ${b.at(end)})`;
   const scope = (b: Binder) => `environment_id = ${b.env} AND day = toDate(${b.text(day)})`;
-  const generation = (yield* publishedGeneration(site, day)) + 1;
+  const generation = (yield* newestGeneration(site, day)) + 1;
   yield* statement((b) => `
     INSERT INTO session_hourly (environment_id, day, generation, hour, pageviews, visitors, visits, bounces, total_duration)
     ${ctes(b)}
