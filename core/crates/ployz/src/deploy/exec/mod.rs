@@ -2137,38 +2137,24 @@ async fn replace_stop_first<C: MachineOperations>(
             started: Some(new_container),
             stopped_old: old_stopped,
         }),
-        Err(error) => {
-            let new_container = if let ExecutionError::Health { container_id, .. } = &error {
-                Some(*container_id)
-            } else {
-                None
-            };
-            Err(compensate(
-                client,
-                index,
-                progress,
-                operation,
-                old_stopped,
-                new_container,
-                error,
-            )
-            .await)
-        }
+        Err(error) => Err(compensate(client, index, progress, operation, old_stopped, error).await),
     }
 }
 
-// A failure after the old container stopped restores it; otherwise only a health
-// failure is compensated, by removing the new container.
 async fn compensate<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &Progress,
     operation: &ReplacementOperation,
     old_stopped: bool,
-    new_container: Option<ContainerId>,
     error: ExecutionError,
 ) -> OperationFailure {
-    if !old_stopped && !matches!(&error, ExecutionError::Health { .. }) {
+    let new_container = if let ExecutionError::Health { container_id, .. } = &error {
+        Some(*container_id)
+    } else {
+        None
+    };
+    if !old_stopped && new_container.is_none() {
         return error.into();
     }
     progress.set_running(index, OperationPhase::Compensating);
@@ -2178,16 +2164,14 @@ async fn compensate<C: MachineOperations>(
         )),
         None => None,
     };
-    let compensation = match (old_stopped, stop_new_container) {
-        (true, stop_new_container) => ReplacementCompensation::OldStopped {
+    let compensation = match stop_new_container {
+        Some(stop_new_container) if !old_stopped => {
+            ReplacementCompensation::OldUntouched { stop_new_container }
+        }
+        stop_new_container => ReplacementCompensation::OldStopped {
             stop_new_container,
             restart_old_container: restore_old_container(client, operation).await,
         },
-        (false, Some(stop_new_container)) => {
-            ReplacementCompensation::OldUntouched { stop_new_container }
-        }
-        // A health failure always follows a started container.
-        (false, None) => return error.into(),
     };
     OperationFailure::Replacement {
         error,
