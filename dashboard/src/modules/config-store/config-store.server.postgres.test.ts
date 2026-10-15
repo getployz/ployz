@@ -11,7 +11,7 @@ import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { callStoreAsMember } from "#/modules/config-store/config-store.server";
+import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import * as ids from "#/test/ids";
 import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
@@ -693,6 +693,16 @@ it.live(
         const deploying = yield* request("read", alice, { query: "domains", environment: here, service: null });
         const hostname = deploying.json.domains?.[1]?.hostname ?? "";
         assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/);
+
+        const caller = yield* resolveCaller(signedIn(alice));
+        const listQuery: ConfigQuery = { query: "domains", environment: here, service: null };
+        const edited = yield* writeStoreAsMember(caller, caller.organization.slug, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
+        }, [listQuery]);
+        const carried = edited.ok ? edited.answers?.[0]?.result : undefined;
+        const answered = carried?.ok && carried.value.view === "domains" ? carried.value.domains : [];
+        assert.deepStrictEqual(answered.map((domain) => domain.hostname), ["app.example.com", hostname],
+          "a write carries the domains view as the view's own read shows it, generated hostname included");
 
         // A check asks for a Cluster Domain sync before it reads the domain afresh.
         sent.length = 0;

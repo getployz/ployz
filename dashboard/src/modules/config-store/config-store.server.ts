@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Approval, ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, EnvironmentRef as StoreEnvironmentRef, PullRequestRef, SystemEvent } from "@ployz/sdk";
+import type { Approval, ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, DeploymentSummary, EnvironmentRef as StoreEnvironmentRef, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
@@ -10,8 +10,8 @@ import { account, member, user } from "#/modules/identity/tables";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
-import { requireAccess } from "#/modules/organization/access.server";
-import { answerForSupport, viewForSupport } from "#/modules/support-access/support-view";
+import { type Access, requireAccess } from "#/modules/organization/access.server";
+import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createConfigDeploymentAdmittedEvent,
@@ -327,29 +327,27 @@ export const callStore = <C extends StoreCall>(
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
   const access = yield* requireAccess(actor, organizationSlug, "operate");
-  const result = yield* callStore(access.organization.id, actor.userId, call);
-  return access.kind === "support" ? answerForSupport(call, result, access.shows) : result;
+  return yield* callStoreWith(access, actor, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
+
+const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
+  Effect.map(callStore(access.organization.id, actor.userId, call), (result) =>
+    access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or
- * writes (`shows`), read after the commit in parallel, so every view it moved arrives with the write. A query of another
- * Environment, or past `MAX_SHOWN_VIEWS`, is dropped; the tab refetches those. A view that can't be read answers its refusal.
+ * writes (`shows`), each read after the commit exactly as the tab's own read of it, so every view it moved arrives with
+ * the write. A query of another Environment, or past `MAX_SHOWN_VIEWS`, is dropped; the tab refetches those.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
   const access = yield* requireAccess(actor, organizationSlug, "operate");
-  const { organization } = access;
-  const call = { operation: "write", command } as const;
-  const stored = yield* callStore(organization.id, actor.userId, call);
-  const result = access.kind === "support" ? answerForSupport(call, stored, access.shows) : stored;
+  const result = yield* callStoreWith(access, actor, { operation: "write", command });
   if (!result.ok) return result satisfies StoreWriteResult;
   const keys = new Set(commandEnvironments(command).map(environmentKey));
   const asked = shows.filter((query) => queryEnvironments(query).some((ref) => keys.has(environmentKey(ref)))).slice(0, MAX_SHOWN_VIEWS);
-  const shown = <V extends ConfigView>(view: V): V => access.kind === "support" ? viewForSupport(view, access.shows) : view;
-  const answers = yield* Effect.forEach(asked, (query) => readStore(organization.id, query).pipe(
-    Effect.map((view): ViewAnswer => ({ query, result: { ok: true, value: shown(view) } })),
-    Effect.catchTag("StoreRefused", (error) => Effect.succeed<ViewAnswer>({ query, result: { ok: false, refusal: error.refusal } })),
-  ), { concurrency: "unbounded" });
+  const answers = yield* Effect.forEach(asked, (query) =>
+    Effect.map(callStoreWith(access, actor, { operation: "read", query }), (answer): ViewAnswer => ({ query, result: answer })),
+  { concurrency: "unbounded" });
   return { ...result, answers } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
 
