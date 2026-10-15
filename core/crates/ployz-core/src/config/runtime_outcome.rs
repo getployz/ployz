@@ -1,6 +1,6 @@
 //! Current SDK outcome admission and per-Service completion evidence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -154,7 +154,8 @@ pub fn redacted_runtime_preview(mut preview: DeployPreview) -> DeployPreview {
 ///
 /// # Errors
 /// Rejects unsupported versions, malformed evidence, missing Service identities,
-/// and outcomes whose operations do not match the preview.
+/// outcomes whose operations do not match the preview, and per-Service
+/// outcomes naming a Service outside the plan or one Service twice.
 pub fn project_runtime_outcome(
     preview: &DeployPreview,
     value: Value,
@@ -278,6 +279,13 @@ pub fn project_runtime_outcome(
             ) => {}
             None => return Err(invalid()),
         }
+    }
+    let mut seen = BTreeSet::new();
+    if !ended
+        .iter()
+        .all(|ended| services.contains_key(&ended.service) && seen.insert(&ended.service))
+    {
+        return Err(invalid());
     }
     let named = |wanted: Progress| {
         services

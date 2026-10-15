@@ -1430,7 +1430,7 @@ impl<'a> Rows<'a> {
         let Some(copies) = self.held_old_copies.lock().unwrap().remove(&group) else {
             return;
         };
-        let Some(row) = self.admitted.lock().unwrap().get(&group).cloned() else {
+        let Some(admitted) = self.admitted.lock().unwrap().get(&group).cloned() else {
             return;
         };
         let Some(service) = self
@@ -1440,26 +1440,54 @@ impl<'a> Rows<'a> {
         else {
             return;
         };
-        let mut next = row.clone();
-        next.retiring.retain(|id| !copies.contains(id));
-        for copy in copies {
-            if row.retiring.contains(&copy) && !next.containers.contains(&copy) {
-                next.containers.push(copy);
+        let service = QualifiedService::new(self.namespace.clone(), service);
+        let mut current = Some(admitted.clone());
+        for _ in 0..=AMEND_RETRIES {
+            let row = match current.take() {
+                Some(row) => row,
+                None => match client.read_pointer(&service).await {
+                    Ok(read) => match read.pointer {
+                        Some(row) => row,
+                        None => return,
+                    },
+                    Err(_) => continue,
+                },
+            };
+            if row.deploy != admitted.deploy {
+                return;
             }
-        }
-        next.deciding = None;
-        if next.retiring.is_empty() && next.previous.as_ref() == Some(&next.deploy) {
-            next.previous = None;
-        }
-        let published = client
-            .publish_pointer(PublishServingPointerRequest {
-                service: QualifiedService::new(self.namespace.clone(), service),
-                read: Some(row),
-                pointer: next.clone(),
-            })
-            .await;
-        if matches!(published, Ok(ServingPointerPublication::Published)) {
-            self.admitted.lock().unwrap().insert(group, next);
+            let mut next = row.clone();
+            next.retiring.retain(|id| !copies.contains(id));
+            for copy in &copies {
+                if row.retiring.contains(copy) && !next.containers.contains(copy) {
+                    next.containers.push(*copy);
+                }
+            }
+            next.deciding = None;
+            if next.retiring.is_empty() && next.previous.as_ref() == Some(&next.deploy) {
+                next.previous = None;
+            }
+            if next == row {
+                return;
+            }
+            match client
+                .publish_pointer(PublishServingPointerRequest {
+                    service: service.clone(),
+                    read: Some(row),
+                    pointer: next.clone(),
+                })
+                .await
+            {
+                Ok(ServingPointerPublication::Published) => {
+                    self.admitted.lock().unwrap().insert(group, next);
+                    return;
+                }
+                Ok(ServingPointerPublication::Superseded { current: newer }) => {
+                    let Some(newer) = newer else { return };
+                    current = Some(newer);
+                }
+                Err(_) => {}
+            }
         }
     }
 }

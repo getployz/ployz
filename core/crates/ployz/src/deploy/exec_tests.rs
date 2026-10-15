@@ -156,6 +156,8 @@ struct Scripted {
     unreadable_flip: bool,
     /// The write fails in transit and never lands.
     dropped_publish: bool,
+    /// This many writes that release a held copy fail in transit.
+    dropped_releases: Mutex<usize>,
     /// No Machine routes a pin.
     unrouted_pin: bool,
     /// No Machine routes a row naming one of these Containers.
@@ -187,6 +189,7 @@ impl Scripted {
             lost_reply: false,
             unreadable_flip: false,
             dropped_publish: false,
+            dropped_releases: Mutex::new(0),
             unrouted_pin: false,
             dead: Vec::new(),
             rival: None,
@@ -483,6 +486,15 @@ impl MachineOperations for Scripted {
         }
         if flip && self.dropped_publish {
             return Err(error("connection reset"));
+        }
+        let releases = request.read.as_ref().is_some_and(ServingPointer::is_held)
+            && !request.pointer.is_held();
+        if !flip && releases {
+            let mut dropped = self.dropped_releases.lock().unwrap();
+            if *dropped > 0 {
+                *dropped -= 1;
+                return Err(error("connection reset"));
+            }
         }
         let mut pointers = self.pointers.lock().unwrap();
         if let Some(rival) = self.rival.clone().filter(|_| !flip) {

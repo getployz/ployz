@@ -557,6 +557,42 @@ async fn a_stop_first_or_rolling_failure_restores_every_old_copy_and_removes_eve
 }
 
 #[tokio::test]
+async fn a_dropped_release_of_a_held_copy_is_retried() {
+    let first = machine('1');
+    let old = container('a');
+    let plan = vec![swap(&first, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, old), running()),
+        ok(Call::Stop(first, old)),
+        failed(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            "start failed",
+        ),
+        ok(Call::DiscardSlot(first, ContainerKind::ServiceContainer)),
+        ok(Call::Restart(first, old)),
+    ]);
+    *client.dropped_releases.lock().unwrap() = 1;
+    let row = ServingPointer {
+        deploy: DeploymentLogId::parse("older").unwrap(),
+        containers: vec![old],
+        previous: None,
+        retiring: Vec::new(),
+        deciding: None,
+    };
+    client.pointers.lock().unwrap().insert(api(), row.clone());
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+    assert_eq!(
+        client.pointers.lock().unwrap().get(&api()),
+        Some(&row),
+        "the restarted copy serves again and no hold is left behind"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_stop_first_step_retires_every_old_copy_in_one_amendment() {
     let machines = [machine('1'), machine('2'), machine('3')];
     let olds = [container('a'), container('b'), container('c')];
