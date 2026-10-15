@@ -337,7 +337,7 @@ const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or
  * writes (`shows`), each read after the commit exactly as the tab's own read of it, so every view it moved arrives with
- * the write. A query of another Environment, or past `MAX_SHOWN_VIEWS`, is dropped; the tab refetches those.
+ * the write. A query of another Environment, past `MAX_SHOWN_VIEWS`, or whose reread fails, is dropped; the tab refetches those.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
   const access = yield* requireAccess(actor, organizationSlug, "operate");
@@ -345,11 +345,20 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
   if (!result.ok) return result satisfies StoreWriteResult;
   const keys = new Set(commandEnvironments(command).map(environmentKey));
   const asked = shows.filter((query) => queryEnvironments(query).some((ref) => keys.has(environmentKey(ref)))).slice(0, MAX_SHOWN_VIEWS);
+  // The write committed, so a reread that fails (a database read its evidence needs) only drops that view's answer.
   const answers = yield* Effect.forEach(asked, (query) =>
-    Effect.map(callStoreWith(access, actor, { operation: "read", query }), (answer): ViewAnswer => ({ query, result: answer })),
-  { concurrency: "unbounded" });
-  return { ...result, answers } satisfies StoreWriteResult;
+    callStoreWith(access, actor, { operation: "read", query }).pipe(
+      Effect.map((answer): ViewAnswer[] => [{ query, result: answer }]),
+      Effect.catchCause((cause) => Effect.logWarning("A view reread after a committed write failed; the tab refetches it.", cause).pipe(
+        Effect.as<ViewAnswer[]>([]),
+      )),
+    ),
+  { concurrency: SHOWN_VIEW_READS });
+  return { ...result, answers: answers.flat() } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
+
+/** How many shown views one write rereads at once. */
+const SHOWN_VIEW_READS = 4;
 
 const environmentKey = (ref: StoreEnvironmentRef) => `${ref.project ?? ""}/${ref.environment ?? ""}`;
 
