@@ -25,9 +25,14 @@ describe("resolveRange", () => {
     expect(resolveRange(customRange("2026-10-02", "2026-10-02"), "UTC", NOW).interval).toBe("hour");
   });
 
+  it("reads the default range for a custom range that starts after now", () => {
+    expect(resolveRange(customRange("2030-01-01", "2030-01-02"), "UTC", NOW)).toEqual(resolveRange("30d", "UTC", NOW));
+  });
+
   it("refuses a spec it cannot read", () => {
     expect(isRangeSpec("7d")).toBe(true);
     expect(isRangeSpec(customRange("2026-10-02", "2026-10-01"))).toBe(false);
+    expect(isRangeSpec(customRange("2026-02-30", "2026-03-01"))).toBe(false);
     expect(isRangeSpec("2026-10-01")).toBe(false);
     expect(isRangeSpec("90d")).toBe(false);
   });

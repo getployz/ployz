@@ -12,13 +12,15 @@ export const PRESET_RANGES = [
 export const DEFAULT_RANGE: RangeSpec = "30d";
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** A calendar day: `2026-02-30` matches the shape but rolls over to March. */
+const isDay = (day: string) => DAY.test(day) && localDay("UTC", dayStart("UTC", day)) === day;
 
 export const customRange = (from: string, to: string): RangeSpec => `${from}..${to}`;
 
 /** The custom range's first and last day, or null for a preset or a malformed spec. */
 export function customDays(spec: RangeSpec) {
   const [from, to, ...rest] = spec.split("..");
-  if (from === undefined || to === undefined || rest.length > 0 || !DAY.test(from) || !DAY.test(to) || from > to) return null;
+  if (from === undefined || to === undefined || rest.length > 0 || !isDay(from) || !isDay(to) || from > to) return null;
   return { from, to };
 }
 
@@ -36,9 +38,9 @@ export function resolveRange(spec: RangeSpec, timezone: string, now: number): Re
   const custom = customDays(spec);
   if (custom !== null) {
     const start = dayStart(timezone, custom.from);
+    if (start >= end) return resolveRange(DEFAULT_RANGE, timezone, now);
     const last = dayStart(timezone, custom.to, 1);
-    const range = { start: start < end ? start : new Date(end.getTime() - HOUR_MS), end: last < end ? last : end };
-    return { range, interval: custom.from === custom.to ? "hour" : "day" };
+    return { range: { start, end: last < end ? last : end }, interval: custom.from === custom.to ? "hour" : "day" };
   }
   const days = spec === "today" ? 1 : spec === "7d" ? 7 : 30;
   return { range: { start: dayStart(timezone, addDays(timezone, today, 1 - days)), end }, interval: days === 1 ? "hour" : "day" };
@@ -104,7 +106,7 @@ export type ReadAnalyticsViewInput = typeof ReadAnalyticsViewInput.Type;
 export const TurnOnAnalyticsInput = Schema.Struct({ ...EnvironmentScope, timezone: Schema.NonEmptyString });
 export type TurnOnAnalyticsInput = typeof TurnOnAnalyticsInput.Type;
 
-export const CreateGoalInput = Schema.Struct({ ...EnvironmentScope, name: Schema.NonEmptyString, pathPattern: Schema.NonEmptyString });
+export const CreateGoalInput = Schema.Struct({ ...EnvironmentScope, name: Schema.NonEmptyString.check(Schema.isMaxLength(80)), pathPattern: Schema.NonEmptyString });
 export type CreateGoalInput = typeof CreateGoalInput.Type;
 
 export const DeleteGoalInput = Schema.Struct({ ...EnvironmentScope, id: Schema.NonEmptyString });

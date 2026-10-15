@@ -58,7 +58,7 @@ export function useCreateGoal(scope: AnalyticsScope) {
     mutationFn: (goal: { name: string; pathPattern: string }) => createGoalServerFn({ data: { ...scope, ...goal } }),
     onMutate: (goal) => goals.apply((current) => [
       ...current,
-      { id: `pending:${goal.pathPattern}`, name: goal.name, pathPattern: goal.pathPattern, visitors: 0, conversions: 0 },
+      { id: `pending:${crypto.randomUUID()}`, name: goal.name, pathPattern: goal.pathPattern, visitors: 0, conversions: 0 },
     ]),
     onError: (error, _goal, context) => {
       goals.restore(context?.previous);

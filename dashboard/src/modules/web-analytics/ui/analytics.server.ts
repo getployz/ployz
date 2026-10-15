@@ -113,8 +113,10 @@ export const turnOnAnalytics = Effect.fn("WebAnalyticsView.turnOn")(function* (
 
 const requireSite = Effect.fn("WebAnalyticsView.requireSite")(function* (actor: Actor, organizationSlug: string, environmentId: string) {
   const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const plan = yield* analyticsPlan(organization.id);
+  if (plan === "unpaid" || plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is not available on this plan." });
   const site = yield* siteRow(organization.id, environmentId);
-  if (site === undefined) return yield* new NotFound({ message: "Analytics is not on for this Environment." });
+  if (site === undefined || !site.enabled) return yield* new NotFound({ message: "Analytics is not on for this Environment." });
 });
 
 export const createGoal = Effect.fn("WebAnalyticsView.createGoal")(function* (

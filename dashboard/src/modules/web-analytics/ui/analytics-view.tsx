@@ -36,7 +36,15 @@ export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
   if (view.gate === "unpaid") return <Unpaid organizationSlug={scope.organizationSlug} />;
   if (view.gate === "self-host-off") return <SelfHostOff />;
   if (view.gate === "site-off") return <SiteOff scope={scope} />;
-  if (view.gate !== "on" || view.empty) return <NoVisitsYet />;
+  if (view.gate !== "on") return <NoVisitsYet />;
+  if (view.empty) {
+    return (
+      <div className="flex min-w-0 flex-col gap-4">
+        <NoVisitsYet />
+        <AnalyticsGoals scope={scope} goals={view.goals} visitors={0} />
+      </div>
+    );
+  }
   const filter = parsePageFilter(search.page);
   return (
     <div className="flex min-w-0 flex-col gap-4">
