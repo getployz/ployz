@@ -13,6 +13,8 @@ import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { ENTRY_LOOKBACK_SECONDS, localDays, retentionCutoff, SESSION_GAP_SECONDS } from "#/modules/web-analytics/local-time";
 import type { Site } from "#/modules/web-analytics/model";
+import { ClickHouse } from "#/modules/web-analytics/clickhouse/client";
+import { enqueueForClickHouse } from "#/modules/web-analytics/clickhouse/writer";
 import { ensurePartitions, monthOf } from "#/modules/web-analytics/postgres/partitions";
 import { namespacesByEnvironment, siteDay } from "#/modules/web-analytics/salts.server";
 import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState, analyticsSite } from "#/modules/web-analytics/tables";
@@ -237,7 +239,8 @@ export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function*
     const inserted = yield* drizzle.insert(analyticsPageview)
       .values(admitted.map(({ site, row: { kind: _kind, namespace: _namespace, ...row } }) => ({ ...row, environmentId: site.environmentId })))
       .onConflictDoNothing()
-      .returning({ environmentId: analyticsPageview.environmentId, ts: analyticsPageview.ts });
+      .returning();
+    if ((yield* ClickHouse) !== null) yield* enqueueForClickHouse(inserted);
     const dirty = new Map<string, Set<string>>();
     for (const row of inserted) {
       const timezone = timezones.get(row.environmentId);

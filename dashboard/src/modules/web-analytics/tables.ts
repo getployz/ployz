@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, bytea, date, pgSchema, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, bytea, date, jsonb, pgSchema, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
@@ -123,5 +123,22 @@ export const analyticsRollupState = analytics.table("rollup_state", {
   environmentId: text("environment_id").primaryKey(),
   rolledUpTo: date("rolled_up_to", { mode: "string" }),
   dirty: date("dirty", { mode: "string" }).array().default(sql`'{}'::date[]`).notNull(),
+  updatedAt: timestamptz("updated_at").defaultNow().notNull(),
+});
+
+/** Pageview batches ingest admitted, held until the ClickHouse writer copies them; written only when ClickHouse is configured. */
+export const analyticsOutbox = analytics.table("outbox", {
+  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  environmentId: text("environment_id").notNull(),
+  rows: jsonb("rows").notNull(),
+  createdAt: timestamptz("created_at").defaultNow().notNull(),
+});
+
+/** The ClickHouse copy of a site: its rollup progress, and whether reads come from it. */
+export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
+  environmentId: text("environment_id").primaryKey(),
+  rolledUpTo: date("rolled_up_to", { mode: "string" }),
+  dirty: date("dirty", { mode: "string" }).array().default(sql`'{}'::date[]`).notNull(),
+  reads: boolean("reads").default(false).notNull(),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
 });

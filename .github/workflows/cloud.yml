@@ -193,7 +193,9 @@ jobs:
           run-id: ${{ needs.sdk.outputs.run-id }}
           github-token: ${{ github.token }}
           path: core/crates/ployz-sdk
-      - name: Unit and PostgreSQL tests
+      # The ClickHouse tests start their own server through the Docker CLI; pulling first keeps the pull out of the test timing.
+      - run: docker pull --quiet clickhouse/clickhouse-server:26.9
+      - name: Unit, PostgreSQL and ClickHouse tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
         run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml

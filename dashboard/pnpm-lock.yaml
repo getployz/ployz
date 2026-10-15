@@ -26,6 +26,9 @@ importers:
       '@better-auth/oauth-provider':
         specifier: 1.7.7
         version: 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.7(@opentelemetry/api@1.9.1)(@tanstack/react-start@1.168.60(crossws@0.4.7(srvx@0.11.18))(esbuild@0.28.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(rolldown@1.2.9)(vite@8.2.2(@types/node@26.0.1)(esbuild@0.28.0)(jiti@2.7.0)(terser@5.48.0)(tsx@4.21.0)(yaml@2.8.3))(webpack@5.105.0(esbuild@0.28.0)))(drizzle-kit@1.0.0-rc.4)(drizzle-orm@1.0.0-rc.5-169397b(@effect/sql-pg@4.0.0-rc.112(effect@4.0.0-rc.112))(@opentelemetry/api@1.9.1)(@types/mssql@9.1.10)(@types/pg@8.20.0)(effect@4.0.0-rc.112)(mssql@11.0.1)(pg@8.20.0)(zod@4.6.5))(mongodb@7.1.0)(pg@8.20.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(solid-js@1.9.15)(vitest@4.1.11))(better-call@1.4.0(zod@4.6.5))
+      '@clickhouse/client':
+        specifier: 1.24.1
+        version: 1.24.1
       '@codemirror/autocomplete':
         specifier: ^6.20.3
         version: 6.20.3
@@ -729,6 +732,10 @@ packages:
 
   '@bufbuild/protobuf@2.11.0':
     resolution: {integrity: sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ==}
+
+  '@clickhouse/client@1.24.1':
+    resolution: {integrity: sha512-1kjKJ4uuD4J9JlRU4CpwEGfecstvtoGreBorhh7CxgB7r7PL54DCLD6gajKZhLCri84XlyD3CUxEm6rYkKC+dA==}
+    engines: {node: '>=20'}
 
   '@codemirror/autocomplete@6.20.3':
     resolution: {integrity: sha512-tlosUqb+3BbxCxZdu4tKeRghPFC+QM7q4X5YhKV2eCmPG+1r2F3f4AaSz5sCrFqUtX4Jh20VFTKecl16MgiV9g==}
@@ -8633,6 +8640,8 @@ snapshots:
 
   '@bufbuild/protobuf@2.11.0': {}
 
+  '@clickhouse/client@1.24.1': {}
+
   '@codemirror/autocomplete@6.20.3':
     dependencies:
       '@codemirror/language': 6.12.4
@@ -9232,7 +9241,7 @@ snapshots:
       cors: 2.8.6
       cross-spawn: 7.0.6
       eventsource: 3.0.7
-      eventsource-parser: 3.0.6
+      eventsource-parser: 3.1.1
       express: 5.2.1
       express-rate-limit: 8.3.1(express@5.2.1)
       hono: 4.13.10
@@ -9254,7 +9263,7 @@ snapshots:
       cors: 2.8.6
       cross-spawn: 7.0.6
       eventsource: 3.0.7
-      eventsource-parser: 3.0.6
+      eventsource-parser: 3.1.1
       express: 5.2.1
       express-rate-limit: 8.3.1(express@5.2.1)
       hono: 4.13.10
