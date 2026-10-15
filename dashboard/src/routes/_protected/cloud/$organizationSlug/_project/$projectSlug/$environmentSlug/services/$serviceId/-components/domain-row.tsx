@@ -38,25 +38,41 @@ export function DomainRowShell({
   icon,
   children,
   changed,
+  pending = false,
   actions,
 }: {
   icon: ReactNode;
   children: ReactNode;
   changed?: boolean;
+  /** A write names this domain; the row waits for the Store's answer. */
+  pending?: boolean;
   actions: ReactNode;
 }) {
   return (
     <div
+      aria-busy={pending}
       className={cn(
         // Flat like the rows around it; only a staged change takes a surface, the pink trail.
         "flex items-center gap-3 rounded-lg border border-transparent py-1",
-        changed && "border-changed-border bg-changed-soft px-3 py-2"
+        changed && "border-changed-border bg-changed-soft px-3 py-2",
+        pending && "opacity-60"
       )}
     >
       <span className="text-muted-foreground">{icon}</span>
       <div className="min-w-0 flex-1">{children}</div>
-      <div className="flex items-center gap-1">{actions}</div>
+      <div className="flex items-center gap-1">
+        {pending ? <PendingLabel /> : actions}
+      </div>
     </div>
+  );
+}
+
+export function PendingLabel({ children = "Saving…" }: { children?: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1 text-muted-foreground text-xs">
+      <Spinner />
+      {children}
+    </span>
   );
 }
 
@@ -114,6 +130,7 @@ export function PublicDomainRow({
   view,
   dnsRecords = [],
   changed,
+  pending,
   onEdit,
   onDelete,
 }: {
@@ -127,6 +144,7 @@ export function PublicDomainRow({
   /** The records that point the domain here; only custom domains have them. */
   dnsRecords?: DnsRecord[];
   changed: boolean;
+  pending?: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -136,6 +154,7 @@ export function PublicDomainRow({
     <div className="flex flex-col gap-2">
       <DomainRowShell
         changed={changed}
+        pending={pending}
         icon={view.icon}
         actions={
           <>

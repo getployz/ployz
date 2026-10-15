@@ -7,6 +7,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { MoreVerticalIcon, XIcon } from "lucide-react";
 import { AgentDock } from "#/components/agent-sidebar/agent-dock";
 import { Button } from "#/components/ui/button";
+import { Spinner } from "#/components/ui/spinner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
@@ -45,8 +46,6 @@ type BottomBarProps = {
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
-  /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
-  admitting?: boolean;
   /** Save only: saves without deploying; resolves true once saved. */
   onSave: (message: string) => Promise<boolean>;
   onDiscardAll: () => void;
@@ -98,7 +97,6 @@ export function BottomBar({
   notes,
   proposals,
   noServers = false,
-  admitting = false,
   notSet = 0,
   busy = null,
   discarding,
@@ -116,7 +114,9 @@ export function BottomBar({
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canSave;
   // One Save at a time: a second sends the same version and comes back stale.
-  const saveable = canSave && busy !== "saving";
+  const saveable = canSave && busy !== "saving" && busy !== "deploying";
+  // A double click admits one Deploy: Deploy waits until the Store answers.
+  const admitting = busy === "saving" || busy === "deploying";
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
@@ -210,7 +210,8 @@ export function BottomBar({
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>
-          {savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
+          {busy === "saving" || busy === "deploying" ? <Spinner data-icon="inline-start" /> : null}
+          {busy === "saving" ? "Saving…" : busy === "deploying" ? "Deploying…" : savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>}
@@ -219,7 +220,9 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem disabled={!saveable} onClick={save}>Save only</DropdownMenuItem>
+          <DropdownMenuItem disabled={!saveable} onClick={save}>
+            {busy === "saving" ? <><Spinner />Saving…</> : "Save only"}
+          </DropdownMenuItem>
           <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
@@ -239,7 +242,7 @@ export function BottomBar({
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
     environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave: saveable,
-    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting, busy, discarding,
+    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,

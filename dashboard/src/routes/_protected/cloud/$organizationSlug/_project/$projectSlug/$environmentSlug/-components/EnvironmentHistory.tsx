@@ -10,9 +10,11 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
+import { Spinner } from "#/components/ui/spinner";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { type ChangeGroup, changeGroups } from "#/modules/config-store/store-deployments";
+import { useStoreBusy } from "#/modules/config-store/store-pending";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { diffQuery, requireView, storeViewOptions, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -29,7 +31,7 @@ const SHOWN_CHANGES = 3;
 type HistoryReview =
   | { kind: "closed" }
   | { kind: "loading" }
-  | { kind: "preview"; preview: HistoryPreview; saving: boolean; error?: string }
+  | { kind: "preview"; preview: HistoryPreview; error?: string }
   | { kind: "failed"; message: string };
 
 /** One change a save made, by the Store path its row undo names. */
@@ -103,9 +105,10 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
   const request = useRef(0);
   const [review, setReview] = useState<HistoryReview>({ kind: "closed" });
   const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(new Set());
+  const restoring = useStoreBusy(params.organizationSlug, store) === "restoring";
 
   async function stage(preview: HistoryPreview, acceptOverwrite: boolean) {
-    setReview({ kind: "preview", preview, saving: true });
+    setReview({ kind: "preview", preview });
     try {
       const written = await writer.commit({ command: "stage_history", environment: store, revision: preview.revision,
         action: preview.action, change: preview.change, version: preview.version, accept_overwrite: acceptOverwrite },
@@ -117,7 +120,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
       }
       setReview({ kind: "closed" });
     } catch (error) {
-      setReview({ kind: "preview", preview, saving: false,
+      setReview({ kind: "preview", preview,
         error: error instanceof StoreRefused ? error.message : "Could not stage this version. Try again." });
     }
   }
@@ -132,7 +135,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
       });
       if (requested !== request.current) return;
       const preview = requireView(result);
-      if (preview.overwritten.length) setReview({ kind: "preview", preview, saving: false });
+      if (preview.overwritten.length) setReview({ kind: "preview", preview });
       else await stage(preview, false);
     } catch (error) {
       if (requested !== request.current) return;
@@ -145,7 +148,9 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
   return (
     <DashboardPage width="content">
       <div className="flex flex-col gap-3">
-        {review.kind === "loading" || (review.kind === "preview" && review.saving && !review.preview.overwritten.length) ? <p role="status" className="text-sm text-muted-foreground">Reviewing version...</p> : null}
+        {restoring && !(review.kind === "preview" && review.preview.overwritten.length) ? (
+          <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Spinner />Restoring…</p>
+        ) : review.kind === "loading" ? <p role="status" className="text-sm text-muted-foreground">Reviewing version...</p> : null}
         {review.kind === "failed" ? <p role="alert">{review.message}</p> : null}
         {review.kind === "preview" && review.error && !review.preview.overwritten.length ? <p role="alert">{review.error}</p> : null}
         {!history.revisions.length ? <Empty variant="placeholder"><EmptyDescription>No saved versions yet</EmptyDescription></Empty> : null}
@@ -176,7 +181,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
                   </div>
                   {changes.length || !current ? (
                     <DropdownMenu>
-                      <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label={`Actions for version ${revision.revision}`} />}>
+                      <DropdownMenuTrigger disabled={restoring} render={<Button size="icon-sm" variant="ghost" aria-label={`Actions for version ${revision.revision}`} />}>
                         <MoreVerticalIcon />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-auto">
@@ -257,7 +262,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
         ) : null}
       </div>
       {review.kind === "preview" && review.preview.overwritten.length > 0 ? (
-        <Dialog open onOpenChange={(open) => { if (!open && !review.saving) close(); }}>
+        <Dialog open onOpenChange={(open) => { if (!open && !restoring) close(); }}>
           <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Overwrite draft changes?</DialogTitle>
@@ -267,9 +272,11 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
             {review.preview.version !== diff.version ? <p role="alert">The canvas changed. Cancel and review this version again.</p> : null}
             {review.error ? <p role="alert">{review.error}</p> : null}
             <DialogFooter>
-              <Button variant="outline" disabled={review.saving} onClick={close}>Cancel</Button>
-              <Button disabled={review.saving || review.preview.version !== diff.version}
-                onClick={() => void stage(review.preview, true)}>{review.saving ? "Staging..." : undoing ? "Undo" : "Roll back"}</Button>
+              <Button variant="outline" disabled={restoring} onClick={close}>Cancel</Button>
+              <Button disabled={restoring || review.preview.version !== diff.version}
+                onClick={() => void stage(review.preview, true)}>
+                {restoring ? <><Spinner data-icon="inline-start" />Restoring…</> : undoing ? "Undo" : "Roll back"}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

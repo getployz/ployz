@@ -9,7 +9,10 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { diffQuery, environmentSettingsQuery, environmentsQuery, refetchStoreViews, storeViewOptions, useStoreView } from "./store-view.queries";
-import { useStoreRenamePending, withPendingChanges } from "./store-pending";
+import {
+  useStoreBusy, useStoreCancelling, useStoreMergeRowsPending, useStorePendingDomains, useStorePrPlanPending, useStoreRenamePending,
+  withPendingChanges,
+} from "./store-pending";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -419,4 +422,45 @@ it("leaves a Deploy's confirmation_required to a caller that handles it, and toa
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
   await expect(writer.commit(deploy).isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required" });
   expect(error).toHaveBeenCalledWith("This Deploy permanently deletes the data of pg-data");
+});
+
+const into = { project: "shop", environment: "staging" };
+type Mark = ReturnType<typeof useStoreBusy> | ReturnType<typeof useStorePrPlanPending> | ReturnType<typeof useStorePendingDomains> | boolean;
+const marked: { name: string; command: ConfigCommand; shown: () => Mark; idle: Mark; busy: Mark }[] = [
+  { name: "Save", command: { command: "publish", environment: ref, version: null }, shown: () => useStoreBusy("acme", ref), idle: null, busy: "saving" },
+  { name: "Deploy", command: { command: "admit", admit: "deploy", id: "dep_1", environment: ref }, shown: () => useStoreBusy("acme", ref), idle: null, busy: "deploying" },
+  { name: "Sync", command: { command: "sync", from: ref, into, version: "4:2:1.0" }, shown: () => useStoreBusy("acme", into), idle: null, busy: "syncing" },
+  { name: "Restore", command: { command: "stage_history", environment: ref, revision: 2, action: "restore", version: "4:2:1.0" },
+    shown: () => useStoreBusy("acme", ref), idle: null, busy: "restoring" },
+  { name: "Cancel", command: { command: "cancel", deployment: "dep_1" }, shown: () => useStoreCancelling("acme", "dep_1"), idle: false, busy: true },
+  { name: "domain", command: { command: "add_domain", environment: ref, service: "web", hostname: "shop.example.com", port: null },
+    shown: () => useStorePendingDomains("acme", ref, "web"), idle: [], busy: ["shop.example.com"] },
+  { name: "On merge value", command: { command: "set_merge_value", environment: ref, into, row: "w:env.A", value: "b" },
+    shown: () => [...useStoreMergeRowsPending("acme", ref)], idle: [], busy: ["w:env.A"] },
+  { name: "PR plan", command: { command: "set_pr_plan", project: "shop", repository: "acme/web", enabled: false, start_from: null, copy: null,
+    setup: null, remove_on_close: null, include_bots: null }, shown: () => useStorePrPlanPending("acme", "shop", "acme/web"), idle: {}, busy: { enabled: false } },
+];
+
+it.each(marked)("marks a $name until the Store answers it, and clears the mark when the Store refuses it", async ({ command, shown, idle, busy }) => {
+  const test = setup(view(2, 1));
+  vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
+  const mark = renderHook(shown, { wrapper });
+  expect(mark.result.current).toEqual(idle);
+
+  const answer = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => answer.promise);
+  const saved = test.writer.commit(command).isPersisted.promise;
+  await waitFor(() => expect(mark.result.current).toEqual(busy));
+  answer.resolve(edited(3));
+  await saved;
+  await waitFor(() => expect(mark.result.current).toEqual(idle));
+
+  const refusal = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => refusal.promise);
+  const refused = test.writer.commit(command).isPersisted.promise;
+  await waitFor(() => expect(mark.result.current).toEqual(busy));
+  refusal.resolve({ ok: false, refusal: { code: "invalid", message: "No", details: {} } });
+  await expect(refused).rejects.toMatchObject({ code: "invalid" });
+  await waitFor(() => expect(mark.result.current).toEqual(idle));
 });

@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { afterEach, assert, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { storeViewPrefix, syncQuery } from "#/modules/config-store/store-view.queries";
 import { SyncDialog } from "./SyncDialog";
 
@@ -155,6 +156,22 @@ it("sends one Sync id for a retry of the same picks, and a new one once the pick
   expect(ids[1]).toBe(ids[0]);
   expect(ids[2]).toMatch(/^[0-9a-f-]{36}$/u);
   expect(ids[2]).not.toBe(ids[0]);
+});
+
+it("reads Syncing and takes no second click while the Store answers, then offers the Sync again once it refuses", async () => {
+  const { write } = open();
+  let refuse!: (result: StoreWriteResult) => void;
+  write.mockReturnValueOnce(new Promise<StoreWriteResult>((resolve) => { refuse = resolve; }));
+  const sync = await dialog();
+  fireEvent.click(sync.getByRole("button", { name: "Sync 5 changes" }));
+  const syncing = await sync.findByRole("button", { name: /Syncing…/u });
+  expect(syncing.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(syncing);
+  expect(write).toHaveBeenCalledTimes(1);
+
+  refuse({ ok: false, refusal: { code: "invalid", message: "No", details: {} } });
+  await vi.waitFor(() => expect(sync.getByRole("button", { name: "Sync 5 changes" }).hasAttribute("disabled")).toBe(false));
+  expect(sync.queryByRole("button", { name: /Syncing…/u })).toBeNull();
 });
 
 it("drops a flip once its change moves under the review, and says so", async () => {

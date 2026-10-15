@@ -3,11 +3,10 @@ import { PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
 import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
 import { PLATFORM_HTTP_PORT } from "#/modules/variables/managed-service-exports";
-import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
-import { useStorePendingNodes } from "#/modules/config-store/store-pending";
+import { useStorePendingDomains, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import type { StoreService } from "./StoreServiceDrawer";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
@@ -17,7 +16,7 @@ import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CustomDomainDialog, type CustomDomain } from "./CustomDomainDialog";
-import { DomainRowShell, DomainTitle, PublicDomainRow, storeStatusView } from "./domain-row";
+import { DomainRowShell, DomainTitle, PendingLabel, PublicDomainRow, storeStatusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";
 
 type Editor =
@@ -69,34 +68,6 @@ function removedDomains(changes: Map<string, ServiceSettingChange>, domains: rea
   });
 }
 
-/** Staged, as the Store words it: live after the next Deploy. */
-const staged = { status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" } } as const;
-
-/**
- * `domains` with one added: a custom one by its host, a generated one by `prefix`, else the Service's Private DNS.
- * One it already has keeps its place, and a port retargets it; without a prefix, a generated one it has stays.
- */
-export function withDomainAdded(domains: readonly DomainRow[], add: { service: string; privateDns: string; hostname: string | null; prefix: string | null; port: number | null }): DomainRow[] {
-  const { service, hostname, prefix, port } = add;
-  const existing = domains.find((domain) => domain.service === service && (hostname !== null
-    ? domain.kind === "custom" && domain.hostname === hostname
-    : domain.kind === "generated" && (prefix === null || domain.prefix === prefix)));
-  if (existing) {
-    return port === null && existing.kind === "generated" ? [...domains]
-      : domains.map((domain) => domain === existing ? { ...domain, ...staged, port } : domain);
-  }
-  return [...domains, hostname === null
-    ? { kind: "generated", prefix: prefix ?? add.privateDns, hostname: null, service, port, ...staged }
-    : { kind: "custom", hostname, service, port, ...staged }];
-}
-
-/** `domains` with the generated one at `from` given `prefix` and `port`, staged: its hostname follows, under the same Cluster Domain. */
-export function withGeneratedDomain(domains: readonly DomainRow[], from: string, prefix: string, port: number | null): DomainRow[] {
-  return domains.map((domain) => domain.kind !== "generated" || domain.prefix !== from ? domain : {
-    ...domain, ...staged, prefix, port, hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
-  });
-}
-
 /** The default port a domain routes to, when one routes to PORT and the user set none; else null. */
 export function defaultPortHint(port: JsonValue | undefined, domains: readonly Pick<DomainRow, "port">[]) {
   return settingText(port) === "" && domains.some((domain) => domain.port === null) ? PLATFORM_HTTP_PORT : null;
@@ -115,10 +86,14 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   const { organizationSlug, environment, service, changes } = state;
   const privateDns = settingText(state.rows.get("privateDns")?.value) || service.private_dns;
   const all = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains;
-  // An added, retargeted or removed domain shows at once, until the Store answers.
-  const [held, holdDomains] = useCommitHold(all.filter((domain) => domain.service === service.name));
   const leaving = useStorePendingNodes(organizationSlug, environment).leaving.domain;
-  const domains = held.filter((domain) => !leaving.has(nameOf(domain)) && !(domain.hostname !== null && leaving.has(domain.hostname)));
+  const domains = all.filter((domain) => domain.service === service.name
+    && !leaving.has(nameOf(domain)) && !(domain.hostname !== null && leaving.has(domain.hostname)));
+  const pendingNames = useStorePendingDomains(organizationSlug, environment, service.name);
+  const names = (domain: DomainRow) => [nameOf(domain), domain.hostname];
+  const isPending = (domain: DomainRow) => names(domain).some((name) => name !== null && pendingNames.includes(name));
+  // A write the listed rows don't name is a domain still being added; it shows its literal name until the Store answers.
+  const adding = pendingNames.filter((name) => name === null || !domains.some((domain) => names(domain).includes(name)));
   const writer = useStoreWriter(organizationSlug);
   const [editor, setEditor] = useState<Editor>(null);
   const [editingPrivateDns, setEditingPrivateDns] = useState(false);
@@ -134,11 +109,8 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   const allPrefixes = prefixesOf(all);
   const clusterDomain = all.flatMap((domain) =>
     domain.kind === "generated" && domain.hostname ? [domain.hostname.slice(domain.prefix.length + 1)] : [])[0] ?? null;
-  const add = (hostname: string | null, port: number | null, prefix: string | null = null) => {
-    const write = writer.commit({ command: "add_domain", environment, service: service.name, hostname, prefix, port });
-    holdDomains(withDomainAdded(held, { service: service.name, privateDns, hostname, prefix, port }), write);
-    return write;
-  };
+  const add = (hostname: string | null, port: number | null, prefix: string | null = null) =>
+    writer.commit({ command: "add_domain", environment, service: service.name, hostname, prefix, port });
   const remove = (domain: string) => writer.commit({ command: "remove_domain", environment, domain });
 
   const removed = removedDomains(changes, domains);
@@ -154,7 +126,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
       </Button>
     </div>
   );
-  const none = domains.length === 0 && removed.length === 0;
+  const none = domains.length === 0 && removed.length === 0 && adding.length === 0;
   // A domain without its own port routes to PORT, which Ployz sets when the user doesn't. Whether the app listens
   // there is unknown, so this is a hint, never a failure.
   const defaultPort = defaultPortHint(state.rows.get("env.PORT")?.value, domains);
@@ -225,6 +197,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
                 view={storeStatusView(domain)}
                 dnsRecords={domain.action?.type === "dns" ? domain.action.records : []}
                 changed={domainChanged(changes, domain)}
+                pending={isPending(domain)}
                 onEdit={() => domain.kind === "custom"
                   ? setEditor({ kind: "custom", hostname: domain.hostname })
                   : setEditor({ kind: "generated", prefix: domain.prefix })}
@@ -232,6 +205,13 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
               />
             );
           })}
+          {adding.map((name, index) => (
+            <DomainRowShell key={`adding:${name ?? index}`} icon={<ZapIcon className="opacity-50" />} pending actions={null}>
+              {name === null
+                ? <PendingLabel>Adding…</PendingLabel>
+                : <div className="truncate font-mono text-sm text-muted-foreground">{name}</div>}
+            </DomainRowShell>
+          ))}
         </div>
       )}
       {defaultPort ? (
@@ -262,9 +242,9 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
             onSubmit={({ prefix, targetPort }) => {
               // One command: the subdomain, and the port (null follows the container's PORT).
               const next = prefix.trim().toLowerCase();
-              holdDomains(withGeneratedDomain(held, generated.prefix, next, targetPort), writer.commit({
+              void writer.commit({
                 command: "set_generated_domain", environment, service: service.name, domain: generated.prefix, prefix: next, port: targetPort,
-              }));
+              });
             }}
           />
         ) : null}

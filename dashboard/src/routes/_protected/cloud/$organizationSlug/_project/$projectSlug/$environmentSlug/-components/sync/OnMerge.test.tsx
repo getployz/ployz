@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
+import type { StoreWriteResult } from "#/modules/config-store/store.contract";
 import { onMergeQuery, prPlansQuery, pullRequestQuery } from "#/modules/config-store/store-pull-requests";
 import { branchQuery, storeViewPrefix } from "#/modules/config-store/store-view.queries";
 import { githubKeys } from "#/modules/github/github.queries";
@@ -168,18 +169,47 @@ it("edits what lands, and resets it", async () => {
   });
 });
 
-it("shows an Exclude and an Edit at once, while the Store answers", async () => {
-  const { write } = open();
-  write.mockReturnValue(new Promise(() => {}));
+function deferred() {
+  let resolve!: (result: StoreWriteResult) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<StoreWriteResult>((settle, fail) => { resolve = settle; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+it("dims a row while the Store answers its Exclude, and shows the answer once it does", async () => {
+  const { store, write } = open();
+  const answer = deferred();
+  write.mockReturnValueOnce(answer.promise);
   const list = await panel();
   await choose(list, "LOG_LEVEL", "Exclude");
-  await waitFor(() => expect(item(list, "LOG_LEVEL").textContent).toBe("webLOG_LEVELinfo→debugExcludedInclude"));
+  await waitFor(() => expect(item(list, "LOG_LEVEL").getAttribute("aria-busy")).toBe("true"));
+  expect(within(item(list, "LOG_LEVEL")).getByText("Saving…")).toBeTruthy();
+  expect(list.getByRole("button", { name: "More for LOG_LEVEL" }).hasAttribute("disabled")).toBe(true);
+  expect(item(list, "API_URL").getAttribute("aria-busy")).toBe("false");
 
+  store.onMerge = onMerge(rows.map((entry) => entry.name === "env.LOG_LEVEL" ? { ...entry, ride: "excluded" } : entry));
+  answer.resolve({ ok: true, value: { written: "on_merge", ...store.onMerge } });
+  await waitFor(() => expect(item(list, "LOG_LEVEL").getAttribute("aria-busy")).toBe("false"));
+  expect(within(item(list, "LOG_LEVEL")).getByText("Excluded")).toBeTruthy();
+  expect(within(item(list, "LOG_LEVEL")).queryByText("Saving…")).toBeNull();
+});
+
+it("dims a row while the Store answers its Edit, and frees it when the write fails", async () => {
+  const { write } = open();
+  const answer = deferred();
+  write.mockReturnValueOnce(answer.promise);
+  const list = await panel();
   await choose(list, "API_URL", "Edit");
   const edit = within(await screen.findByRole("dialog", { name: /API_URL/u }));
   fireEvent.change(edit.getByLabelText("API_URL in production"), { target: { value: "http://c" } });
   fireEvent.click(edit.getByRole("button", { name: "Save" }));
-  await waitFor(() => expect(item(list, "API_URL").textContent).toBe("webAPI_URLhttp://a→http://cEditedpr-146: http://b"));
+  await waitFor(() => expect(within(item(list, "API_URL")).getByText("Saving…")).toBeTruthy());
+  expect(list.getByRole("button", { name: "More for API_URL" }).hasAttribute("disabled")).toBe(true);
+
+  answer.reject(new Error("down"));
+  await waitFor(() => expect(within(item(list, "API_URL")).queryByText("Saving…")).toBeNull());
+  expect(item(list, "API_URL").textContent).toBe("webAPI_URLhttp://a→http://b");
+  expect(list.getByRole("button", { name: "More for API_URL" }).hasAttribute("disabled")).toBe(false);
 });
 
 it("offers only Exclude on a removed row", async () => {
@@ -226,7 +256,7 @@ it("includes a row excluded with its new Service by including the Service", asyn
   expect(commands()[0]).toEqual({ command: "never_sync", environment: pr146, rows: ["w:worker"], off: true });
 });
 
-it("shows the Service and its row included at once when the row's Include includes the Service", async () => {
+it("dims the Service and its row while the row's Include includes the Service", async () => {
   const worker = { node: "worker", kind: "service", requires: "w:worker" as RowId } as const;
   const { write } = open({
     list: onMerge([
@@ -239,7 +269,10 @@ it("shows the Service and its row included at once when the row's Include includ
   const list = await panel();
   expect(list.getAllByText("Excluded")).toHaveLength(2);
   fireEvent.click(within(item(list, "QUEUE")).getByRole("button", { name: "Include" }));
-  await waitFor(() => expect(list.queryAllByText("Excluded")).toHaveLength(0));
+  await waitFor(() => expect(list.getAllByText("Saving…")).toHaveLength(2));
+  expect(list.getAllByRole("listitem").filter((entry) => entry.getAttribute("aria-busy") === "true")
+    .map((entry) => entry.textContent)).toEqual(["workerworkerNew→{}ExcludedSaving…", "workerQUEUENew→jobsExcludedSaving…"]);
+  expect(list.queryByRole("button", { name: "Include" })).toBeNull();
 });
 
 it("excludes a row, greyed, and includes it again", async () => {

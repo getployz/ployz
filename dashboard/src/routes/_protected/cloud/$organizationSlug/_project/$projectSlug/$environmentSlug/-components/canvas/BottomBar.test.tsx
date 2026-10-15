@@ -132,14 +132,23 @@ it("offers no second Save while one is unanswered", async () => {
   busy = "saving";
   open(canvasUrl, [replicas], 1, true);
   const staged = await bar();
-  act(() => { fireEvent.keyDown(window, { key: "Alt", altKey: true }); });
-  expect(staged.getByRole("button", { name: /^Save only/ })).toHaveProperty("disabled", true);
-  act(() => { fireEvent.keyUp(window, { key: "Alt", altKey: false }); });
+  expect(staged.getByRole("button", { name: /Saving…/ })).toHaveProperty("disabled", true);
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
-  expect((await screen.findByRole("menuitem", { name: "Save only" })).getAttribute("aria-disabled")).toBe("true");
+  expect((await screen.findByRole("menuitem", { name: /Saving…/ })).getAttribute("aria-disabled")).toBe("true");
   fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
   fireEvent.click(staged.getByRole("button", { name: "Details" }));
+  expect(screen.getByRole("button", { name: /Saving…/ })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: /^Deploy changes/ })).toHaveProperty("disabled", true);
+});
+
+it("offers no Save or second Deploy while a Deploy is unanswered", async () => {
+  busy = "deploying";
+  open(canvasUrl, [replicas], 1, true);
+  const staged = await bar();
+  expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
+  fireEvent.click(staged.getByRole("button", { name: "Details" }));
   expect(screen.getByRole("button", { name: "Save only" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
 });
 
 it("never deploys from Alt+click, even once everything is saved and the changes still wait to deploy", async () => {
