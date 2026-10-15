@@ -69,21 +69,17 @@ export function rowLight(row: ServerRow): NodeLight {
   }
 }
 
-/** When a row's work started: its first running state, else what the row says. A row never attempted never started. */
-function rowStart(row: ServerRow): number | null {
-  return row.history?.find((transition) => transition.state === "running")?.at ?? row.started_at;
-}
-
 export function rowTiming(rows: ServerRow[]): RunTiming | undefined {
-  const starts = rows.map(rowStart);
-  if (!starts.length || starts.some((start) => start === null)) return undefined;
-  const started = Math.min(...starts.map((start) => start ?? 0));
+  if (!rows.length || rows.some((row) => row.started_at === null)) return undefined;
+  const started = Math.min(...rows.map((row) => row.started_at ?? 0));
   const finished = rows.every((row) => row.finished_at !== null) ? Math.max(...rows.map((row) => row.finished_at ?? 0)) : null;
   return { started, finished };
 }
 
-function buildTiming(build: BuildView): RunTiming | undefined {
-  return build.started_at === null ? undefined : { started: build.started_at, finished: build.finished_at };
+/** An unfinished build runs only while its Deployment does; one left unfinished by an ended Deployment shows no time. */
+function buildTiming(build: BuildView, inFlight: boolean): RunTiming | undefined {
+  if (build.started_at === null || (build.finished_at === null && !inFlight)) return undefined;
+  return { started: build.started_at, finished: build.finished_at };
 }
 
 const buildOutcome = {
@@ -122,7 +118,7 @@ export function makeRunGraph(deployment: DeploymentView): RunGraph {
   const runtime = (name: string) => deployment.runtime_names[name] ?? name;
   const unplaced: RunNode[] = [
     ...deployment.builds.map((build): RunNode => ({
-      type: "build", id: buildNodeId(build.service), name: build.service, build, column: 0, row: 0, timing: buildTiming(build),
+      type: "build", id: buildNodeId(build.service), name: build.service, build, column: 0, row: 0, timing: buildTiming(build, deployment.in_flight),
       light: nodeLight(buildOutcome[build.status], deployment),
     })),
     ...deployment.nodes.map((node): RunNode => ({
