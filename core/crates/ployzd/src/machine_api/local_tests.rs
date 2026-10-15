@@ -2,6 +2,7 @@
 
 use super::{MachineService, store_error};
 use crate::machine::{LocalMachineStore, RecordOwner, StoreError};
+use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, ForgetRequest,
     MachineId, MachineRelease, MachineRpc, MachineUpgradeAttemptId, Namespace,
@@ -1973,10 +1974,7 @@ mod set_volume_copy {
         let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
         assert_eq!(containers.len(), 1, "{:?}", containers.keys());
         let container = containers.values().next().unwrap();
-        assert_eq!(
-            container.pointer("/Config/Labels/ployz.creation.key"),
-            Some(&json!("move-1"))
-        );
+        assert_eq!(container["Config"]["Labels"][CREATION_KEY], json!("move-1"));
         assert_eq!(container["State"]["Status"], json!("running"));
         drop(containers);
         let creates = fake
@@ -2262,10 +2260,7 @@ mod ensure_container {
             ContainerRuntimeObservation::Running { .. }
         ));
         assert_eq!(
-            observed
-                .labels
-                .get("ployz.creation.key")
-                .map(String::as_str),
+            observed.labels.get(CREATION_KEY).map(String::as_str),
             Some("k1")
         );
         let seen = requests(&fake);

@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId, PortPublication,
     RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
@@ -395,7 +396,7 @@ fn reusable_global(
     let observation = container.as_observation();
     !options.force_recreate
         && !super::super::is_active_runtime(&observation.runtime)
-        && observation.labels.contains_key("ployz.creation.key")
+        && observation.labels.contains_key(CREATION_KEY)
         && observation.resolved_spec
             == resolve(
                 requested,

@@ -1,4 +1,5 @@
 use super::*;
+use ployz_core::labels::CREATION_KEY;
 
 #[tokio::test]
 async fn dispatches_the_complete_algebra() {
@@ -746,7 +747,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                             captured.lock().unwrap().push(key.clone());
                             if let Some(existing) = remote
                                 .iter_mut()
-                                .find(|c| c.labels.get("ployz.creation.key") == Some(&key))
+                                .find(|c| c.labels.get(CREATION_KEY) == Some(&key))
                             {
                                 assert_eq!(existing.resolved_spec, new.resolved_spec);
                                 existing
@@ -770,7 +771,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                                     .try_update(|parts| {
                                         parts.resolved_spec = new.resolved_spec;
                                         parts.created_at_unix_nanos = 1;
-                                        parts.labels.insert("ployz.creation.key".into(), key);
+                                        parts.labels.insert(CREATION_KEY.into(), key);
                                     })
                                     .unwrap();
                                 remote.push(candidate);

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use super::support::*;
 use ployz::deploy::{SlotAction, SlotRepair, plan_ingress_repairs, preview_deploy};
+use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     ConfiguredHealthcheck, ContainerRuntimeObservation, DependencyCondition, DeployWarning,
     HealthObservation, HealthcheckCommand, HealthcheckSpec, MachineFailure, PreDeployHook,
@@ -383,9 +384,7 @@ fn ingress_container(
         .try_update(|parts| {
             parts.namespace = Namespace::system();
             parts.runtime = runtime;
-            parts
-                .labels
-                .insert("ployz.creation.key".into(), hex.to_string());
+            parts.labels.insert(CREATION_KEY.into(), hex.to_string());
         })
         .unwrap();
     observed
@@ -579,7 +578,7 @@ fn a_stopped_replacement_starts_as_it_is_whatever_its_creation_key() {
     replacement
         .try_update(|parts| {
             parts.labels.insert(
-                "ployz.creation.key".into(),
+                CREATION_KEY.into(),
                 format!(
                     "global:{}:shape:replace:{}",
                     service_id('a'),
