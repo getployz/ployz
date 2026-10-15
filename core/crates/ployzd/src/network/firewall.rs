@@ -67,23 +67,38 @@ pub fn apply_firewall_rules(
     )?;
     for rule in build_forwarding() {
         let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
-        ensure_rule("iptables", "filter", "DOCKER-USER", &rule)?;
+        ensure_rule("iptables", "mangle", "FORWARD", &rule)?;
     }
     Ok(())
 }
 
 /// Build steps route to the internet, never into the Machine's services or
-/// across the mesh.
+/// across the mesh. Mangle runs before BuildKit's CNI accepts its own bridge's
+/// traffic in filter. A published port is public, so DNAT to it still passes.
 fn build_forwarding() -> Vec<Vec<String>> {
     let bridges = format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX);
-    [DOCKER_NETWORK_NAME, WIREGUARD_INTERFACE_NAME]
-        .into_iter()
-        .map(|output| {
-            ["-i", &bridges, "-o", output, "-j", "DROP"]
-                .map(str::to_owned)
-                .to_vec()
-        })
-        .collect()
+    [
+        vec![
+            "-o",
+            DOCKER_NETWORK_NAME,
+            "-m",
+            "conntrack",
+            "!",
+            "--ctstate",
+            "DNAT",
+        ],
+        vec!["-o", WIREGUARD_INTERFACE_NAME],
+    ]
+    .into_iter()
+    .map(|output| {
+        ["-i", bridges.as_str()]
+            .into_iter()
+            .chain(output)
+            .chain(["-j", "DROP"])
+            .map(str::to_owned)
+            .collect()
+    })
+    .collect()
 }
 
 /// Build steps run on their slot's bridge and get only the internet: nothing
@@ -217,7 +232,7 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     ));
     for rule in build_forwarding() {
         let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
-        attempt(delete_rule("iptables", "filter", "DOCKER-USER", &rule));
+        attempt(delete_rule("iptables", "mangle", "FORWARD", &rule));
     }
     attempt(delete_rule(
         "iptables",

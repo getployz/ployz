@@ -436,6 +436,12 @@ fn build_steps_never_reach_the_host() {
         "iptables",
         &["-I", "FORWARD", "1", "-j", "DOCKER-USER"],
     );
+    // BuildKit's CNI accepts its bridge's traffic ahead of DOCKER-USER.
+    ns(
+        &host,
+        "iptables",
+        &["-I", "FORWARD", "1", "-s", "10.10.0.2/32", "-j", "ACCEPT"],
+    );
 
     let mut before = stream_server(&host, "10.10.0.1", 51503);
     connect(&step, "10.10.0.2", "10.10.0.1", 51503);
