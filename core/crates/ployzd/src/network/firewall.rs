@@ -677,13 +677,12 @@ mod tests {
             "--exact",
             TEARDOWN_TEST,
         ]);
-        let left: Vec<String> = ["iptables", "ip6tables"]
+        let left: Vec<_> = ["iptables", "ip6tables"]
             .into_iter()
             .map(|program| {
-                let rules = sudo(&[
+                sudo(&[
                     "ip", "netns", "exec", &namespace, program, "-t", "mangle", "-S",
-                ]);
-                String::from_utf8_lossy(&rules.stdout).into_owned()
+                ])
             })
             .collect();
         sudo(&["ip", "netns", "del", &namespace]);
@@ -692,7 +691,13 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&child.stdout)
         );
-        for rules in left {
+        for listing in left {
+            assert!(
+                listing.status.success(),
+                "{}",
+                String::from_utf8_lossy(&listing.stderr)
+            );
+            let rules = String::from_utf8_lossy(&listing.stdout);
             assert!(
                 rules.lines().all(|line| line.starts_with("-P ")),
                 "a rule survived teardown:\n{rules}"
