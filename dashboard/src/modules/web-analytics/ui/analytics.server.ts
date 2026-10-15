@@ -38,8 +38,8 @@ const siteRow = Effect.fn("WebAnalyticsView.site")(function* (organizationId: st
 /** An Environment's analytics for one range: nothing past the plan gate is read unless the gate is open. */
 export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (actor: Actor, input: ReadAnalyticsViewInput) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const plan = yield* analyticsPlan(organization.id);
-  const open = analyticsGate(plan, plan === "unpaid" || plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
+  const plan = yield* analyticsPlan();
+  const open = analyticsGate(plan, plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
   if (open.gate !== "on") return { gate: open.gate } as const;
   const { site } = open;
 
@@ -116,8 +116,8 @@ export const turnOnAnalytics = Effect.fn("WebAnalyticsView.turnOn")(function* (
   input: TurnOnAnalyticsInput,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "manage");
-  const plan = yield* analyticsPlan(organization.id);
-  if (plan === "unpaid" || plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is not available on this plan." });
+  const plan = yield* analyticsPlan();
+  if (plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is off on this Cloud." });
   const site = yield* siteRow(organization.id, input.environmentId);
   // A zone chosen once stays: changing it re-rolls every day the site has counted.
   yield* setSiteAnalytics(organization.id, input.environmentId, { enabled: true, ...(site === undefined && { timezone: input.timezone }) });
@@ -125,8 +125,8 @@ export const turnOnAnalytics = Effect.fn("WebAnalyticsView.turnOn")(function* (
 
 const requireSite = Effect.fn("WebAnalyticsView.requireSite")(function* (actor: Actor, organizationSlug: string, environmentId: string) {
   const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
-  const plan = yield* analyticsPlan(organization.id);
-  if (plan === "unpaid" || plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is not available on this plan." });
+  const plan = yield* analyticsPlan();
+  if (plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is off on this Cloud." });
   const site = yield* siteRow(organization.id, environmentId);
   if (site === undefined || !site.enabled) return yield* new NotFound({ message: "Analytics is not on for this Environment." });
 });

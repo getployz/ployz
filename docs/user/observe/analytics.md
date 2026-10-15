@@ -6,7 +6,7 @@ description: Count visitors, pages, sources and goals for each Environment, with
 Ployz counts the pages your Environment's domains serve, on the servers that serve them. There is
 no script to add and no cookie banner to show: a visit is a browser asking for an HTML page.
 
-Analytics comes with the paid plan on Ployz Cloud. A self-hosted Cloud runs it once its operator sets
+Every Ployz Cloud Organization has analytics. A self-hosted Cloud runs it once its operator sets
 `ANALYTICS_ENABLED=true` and restarts it.
 
 ## Turn it on

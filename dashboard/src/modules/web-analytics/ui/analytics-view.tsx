@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { ChartLineIcon, XIcon } from "lucide-react";
 import { type ReactNode, Suspense, useDeferredValue } from "react";
 import { MetricChart, useMetricCursor } from "#/components/metrics/metric-chart";
@@ -42,10 +41,8 @@ export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
   const shownRange = useDeferredValue(search.range);
   const shownPage = useDeferredValue(search.page);
   const view = useQuery(analyticsViewQueryOptions(scope, shownRange, shownPage)).data;
-  if (view?.gate === "unpaid") return <Unpaid organizationSlug={scope.organizationSlug} />;
   if (view?.gate === "self-host-off") return <SelfHostOff />;
   if (view?.gate === "site-off") return <SiteOff scope={scope} />;
-  if (view !== undefined && view.gate !== "on") return <NoVisitsYet />;
   if (view?.empty) {
     return (
       <div className="flex min-w-0 flex-col gap-4">
@@ -286,15 +283,6 @@ function Gate({ title, children, action }: { title: string; children?: ReactNode
       </EmptyHeader>
       {action ? <EmptyContent>{action}</EmptyContent> : null}
     </Empty>
-  );
-}
-
-function Unpaid({ organizationSlug }: { organizationSlug: string }) {
-  return (
-    <Gate title="Analytics comes with Pro"
-      action={<Button render={<Link to="/cloud/$organizationSlug/~/billing" params={{ organizationSlug }} />}>Upgrade</Button>}>
-      Count visitors, pages and sources for every Environment, without cookies.
-    </Gate>
   );
 }
 

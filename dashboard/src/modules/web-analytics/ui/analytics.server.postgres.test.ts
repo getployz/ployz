@@ -18,7 +18,7 @@ const PRODUCTION = "00000000-0000-4000-8000-00000000f503";
 const KEPT_GOAL = "00000000-0000-4000-8000-00000000f504";
 const scope = { organizationSlug: "acme", environmentId: PRODUCTION };
 
-const unpaid: PolarService = {
+const hosted: PolarService = {
   mode: "hosted",
   productId: "pro",
   listActiveSubscriptions: () => Effect.die("not used"),
@@ -50,7 +50,6 @@ const setup = Effect.fn(function* (plan: { polar?: PolarService; analyticsEnable
 });
 
 const refusals = [
-  { name: "an unpaid Cloud plan", plan: { polar: unpaid, analyticsEnabled: true }, siteEnabled: true, refusal: "Forbidden" },
   { name: "a self-hosted Cloud with analytics off", plan: { analyticsEnabled: false }, siteEnabled: true, refusal: "Forbidden" },
   { name: "an Environment with analytics off", plan: { analyticsEnabled: true }, siteEnabled: false, refusal: "NotFound" },
 ] as const;
@@ -70,6 +69,12 @@ it.live("goal writes go through where the plan and the Environment have analytic
   yield* provide(createGoal(actor, { ...scope, name: "Signup", pathPattern: "/signup*" }));
   yield* provide(deleteGoal(actor, { ...scope, id: KEPT_GOAL }));
   expect(yield* goals()).toEqual(["/signup*"]);
+}).pipe(Effect.scoped));
+
+it.live("every hosted Cloud Organization writes goals, with no subscription and ANALYTICS_ENABLED unset", () => Effect.gen(function* () {
+  const { provide, goals, actor } = yield* setup({ polar: hosted, analyticsEnabled: false }, true);
+  yield* provide(createGoal(actor, { ...scope, name: "Signup", pathPattern: "/signup*" }));
+  expect(yield* goals()).toEqual(["/kept", "/signup*"]);
 }).pipe(Effect.scoped));
 
 it.live("a site whose every visit was lost says which days, not that it has no visits, and keeps its goals", () => Effect.gen(function* () {
