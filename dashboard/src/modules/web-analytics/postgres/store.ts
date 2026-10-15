@@ -295,25 +295,29 @@ export const entryPages = Effect.fn("WebAnalytics.entryPages")(function* (query:
 
 type GoalDbRow = { goal_id: string; name: string; visitors: string; conversions: string };
 
-/** One scan of the range: its pageviews fold to visitor-day-path counts, and only their distinct paths meet the goal patterns. */
+/**
+ * Only the range's distinct paths meet the goal patterns, then the matched pageviews fold per goal, day and visitor.
+ * Unfiltered, the range is scanned twice, which beats spilling a million rows to a CTE; a filtered range is sessionized once.
+ */
 export const goalConversions = Effect.fn("WebAnalytics.goalConversions")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<GoalDbRow>(sql`
-    with views as materialized (
-      select pathname, ${localDate(query.timezone)} as day, visitor_id, count(*)::bigint as pageviews
-      ${rowsIn(query, query.range)}
-      group by 1, 2, 3
+    with range_rows as ${query.filters.length === 0 ? sql`not materialized` : sql`materialized`} (
+      select pathname, ts, visitor_id ${rowsIn(query, query.range)}
     ), goals as (
       select id, name, replace(replace(replace(replace(path_pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), '*', '%') as pattern
       from analytics.goal where environment_id = ${query.environmentId}::text
     ), matched as (
       select goals.id as goal_id, paths.pathname
-      from goals join (select distinct pathname from views) paths on paths.pathname like goals.pattern escape '\\'
+      from goals join (select distinct pathname from range_rows) paths on paths.pathname like goals.pattern escape '\\'
+    ), hits as (
+      select matched.goal_id, ${localDate(query.timezone)} as day, visitor_id, count(*)::bigint as pageviews
+      from matched join range_rows using (pathname)
+      group by 1, 2, 3
+    ), per_goal as (
+      select goal_id, count(*)::bigint as visitors, sum(pageviews)::bigint as conversions from hits group by 1
     )
-    select goals.id as goal_id, goals.name, count(distinct (hits.day, hits.visitor_id)) filter (where hits.goal_id is not null)::bigint as visitors,
-      coalesce(sum(hits.pageviews), 0)::bigint as conversions
-    from goals
-    left join (select matched.goal_id, views.* from matched join views using (pathname)) hits on hits.goal_id = goals.id
-    group by goals.id, goals.name`, "objects");
+    select goals.id as goal_id, goals.name, coalesce(per_goal.visitors, 0)::bigint as visitors, coalesce(per_goal.conversions, 0)::bigint as conversions
+    from goals left join per_goal on per_goal.goal_id = goals.id`, "objects");
   return rows.map((row): GoalRow => ({ goalId: row.goal_id, name: row.name, visitors: Number(row.visitors), conversions: Number(row.conversions) }));
 });
