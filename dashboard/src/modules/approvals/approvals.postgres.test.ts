@@ -74,7 +74,7 @@ const shopRemovingWeb = Effect.fn(function* () {
       .where(sql`${operationApprovals.status} = 'pending'`);
     return rows.map((row) => row.id);
   }));
-  const { secret } = yield* provided(createOrganizationToken(caller, { name: "agent", expiresInDays: 1 }));
+  const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } }, { name: "agent", expiresInDays: 1 }));
   const cli = (command: ConfigCommand, approval?: string) => provided(Effect.gen(function* () {
     const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${secret}` });
     if (approval !== undefined) headers.set("x-ployz-approval", approval);

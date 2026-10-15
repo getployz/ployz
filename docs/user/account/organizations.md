@@ -126,7 +126,8 @@ organization's name, so it needs a terminal.
 
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop one that's
 trying to get around it: anything that holds your login or token can approve its own request.
-Keep tokens you give an agent short-lived, and keep
+Keep tokens you give an agent short-lived: a token can't make or revoke tokens, so revoking it
+cuts the agent off. Keep
 [backups](../services/databases.md#back-up-a-database) of data you can't lose.
 
 ## Billing

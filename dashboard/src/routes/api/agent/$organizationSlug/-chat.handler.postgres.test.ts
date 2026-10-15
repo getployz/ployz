@@ -24,9 +24,12 @@ const signUp = Effect.fn(function* (name: string) {
   }));
   expect(response.status).toBe(200);
   const cookie = response.headers.get("set-cookie")?.split(";", 1)[0] ?? expect.fail("no session cookie");
-  const caller = yield* resolveCaller(new Headers({ cookie }));
+  const caller = yield* resolveCaller(new Headers({ authorization: `Bearer ${response.headers.get("set-auth-token")}` }));
   return { cookie, caller };
 });
+
+/** The headers the browser sends with the sidebar's own requests. */
+const sidebar = (cookie: string) => ({ cookie, "sec-fetch-site": "same-origin" });
 
 /** What the sidebar posts for one turn, and the status and stream it gets back. */
 const reply = Effect.fn(function* (slug: string, headers: Readonly<Record<string, string>>, threadId: string, forwardedProps: { readonly page?: PageContext } = {}) {
@@ -54,24 +57,38 @@ const inCloud = <A, E, R>(body: Effect.Effect<A, E, R>, env: Record<string, stri
 it.live("the sidebar answers a signed-in member in their active Organization", () =>
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
-    expect(yield* chat(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-ada")).toBe(200);
+    expect(yield* chat(ada.caller.organization.slug, sidebar(ada.cookie), "thread-ada")).toBe(200);
+  })));
+
+it.live("the sidebar answers only the dashboard's own pages, never a page on another site holding the cookie", () =>
+  inCloud(Effect.gen(function* () {
+    const ada = yield* signUp("ada");
+    const slug = ada.caller.organization.slug;
+    expect(yield* chat(slug, { cookie: ada.cookie, "sec-fetch-site": "cross-site" }, "thread-evil")).toBe(403);
+    expect(yield* chat(slug, { cookie: ada.cookie, "sec-fetch-site": "same-site" }, "thread-evil")).toBe(403);
+    expect(yield* chat(slug, { cookie: ada.cookie, origin: "https://evil.example" }, "thread-evil")).toBe(403);
+    expect(yield* chat(slug, { cookie: ada.cookie }, "thread-evil")).toBe(403);
+    const persistence = yield* agentPersistence({ organizationId: ada.caller.organization.id, userId: ada.caller.userId });
+    expect(yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-evil"))).toEqual([]);
+    expect(yield* chat(slug, { cookie: ada.cookie, origin }, "thread-ada")).toBe(200);
+    expect(yield* chat(slug, sidebar(ada.cookie), "thread-ada")).toBe(200);
   })));
 
 it.live("an Organization Token cannot drive the sidebar, even in its own Organization", () =>
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
     const token = yield* createOrganizationToken(ada.caller, { name: "ci", expiresInDays: 1 });
-    expect(yield* chat(ada.caller.organization.slug, { authorization: `Bearer ${token.secret}` }, "thread-ci")).toBe(401);
+    expect(yield* chat(ada.caller.organization.slug, { authorization: `Bearer ${token.secret}`, "sec-fetch-site": "same-origin" }, "thread-ci")).toBe(401);
   })));
 
 it.live("a member's sidebar answers in whichever of their Organizations the URL names", () =>
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
     const bo = yield* signUp("bo");
-    expect(yield* chat(bo.caller.organization.slug, { cookie: ada.cookie }, "thread-ada")).toBe(404);
+    expect(yield* chat(bo.caller.organization.slug, sidebar(ada.cookie), "thread-ada")).toBe(404);
     const { drizzle } = yield* Database;
     yield* drizzle.insert(member).values({ userId: ada.caller.userId, organizationId: bo.caller.organization.id });
-    expect(yield* chat(bo.caller.organization.slug, { cookie: ada.cookie }, "thread-ada")).toBe(200);
+    expect(yield* chat(bo.caller.organization.slug, sidebar(ada.cookie), "thread-ada")).toBe(200);
   })));
 
 it.live("a member cannot post into another member's thread, and that thread stays as it was", () =>
@@ -80,17 +97,17 @@ it.live("a member cannot post into another member's thread, and that thread stay
     const bo = yield* signUp("bo");
     const { drizzle } = yield* Database;
     yield* drizzle.insert(member).values({ userId: ada.caller.userId, organizationId: bo.caller.organization.id });
-    expect(yield* chat(bo.caller.organization.slug, { cookie: bo.cookie }, "thread-bo")).toBe(200);
+    expect(yield* chat(bo.caller.organization.slug, sidebar(bo.cookie), "thread-bo")).toBe(200);
     const persistence = yield* agentPersistence({ organizationId: bo.caller.organization.id, userId: bo.caller.userId });
     const before = yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-bo"));
-    expect(yield* chat(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-bo")).toBe(403);
+    expect(yield* chat(ada.caller.organization.slug, sidebar(ada.cookie), "thread-bo")).toBe(403);
     expect(yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-bo"))).toEqual(before);
   })));
 
 it.live("a Cloud without an Anthropic key answers that the agent isn't set up", () =>
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
-    const answered = yield* reply(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-ada");
+    const answered = yield* reply(ada.caller.organization.slug, sidebar(ada.cookie), "thread-ada");
     expect(answered.status).toBe(200);
     expect(answered.body).toContain("The Ployz agent is not set up on this Cloud yet: it needs an Anthropic API key.");
   }), {}));
@@ -99,7 +116,7 @@ it.live("the page the sidebar forwards opens the member's stored message", () =>
   inCloud(Effect.gen(function* () {
     const ada = yield* signUp("ada");
     const page = { page: "architecture", project: "web", environment: "production", service: "api" };
-    expect((yield* reply(ada.caller.organization.slug, { cookie: ada.cookie }, "thread-ada", { page })).status).toBe(200);
+    expect((yield* reply(ada.caller.organization.slug, sidebar(ada.cookie), "thread-ada", { page })).status).toBe(200);
     const persistence = yield* agentPersistence({ organizationId: ada.caller.organization.id, userId: ada.caller.userId });
     const [asked] = yield* Effect.promise(() => persistence.stores.messages.loadThread("thread-ada"));
     expect(asked?.content).toEqual([
