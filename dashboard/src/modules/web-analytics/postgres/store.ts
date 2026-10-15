@@ -48,13 +48,18 @@ const filterClause = (filters: ReadonlyArray<Filter>, table?: string) =>
     sql``,
   );
 
+const HEAD_DIMS = sql.raw(SESSION_DIMS.map((dim) => `first_value(${dim}) over visit as ${dim}`).join(", "));
+
 /**
  * Sessionizes every pageview in the range's window, filtered or not, and keeps as `visits` the sessions the filters
  * select: session dim filters test the first pageview, page filters need at least one pageview of the session to pass.
  * The window reaches a session gap before the range for exact session starts, and a day past it for whole sessions.
+ * Each pageview takes its visit's first values and counts from window functions, never a join: the planner has no row
+ * estimates for a CTE, and with a filter it picked nested loops that went quadratic.
  */
 export const visitCtes = (query: StoreQuery, range: Range) => {
   const picks = pageFilters(query);
+  const selected = sql`${filterClause(sessionFilters(query))}${picks.length > 0 ? sql` and picked > 0` : sql``}`;
   return sql`
   window_rows as (
     select ts, visitor_id, host, pathname, source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, language
@@ -68,19 +73,18 @@ export const visitCtes = (query: StoreQuery, range: Range) => {
   ), numbered as (
     select *, sum(is_new) over (partition by visitor_id order by ts, pathname, host rows unbounded preceding) as sn
     from marked
-  ), spans as (
-    select visitor_id, sn, max(ts) as ended, count(*)::bigint as pageviews,
-      count(*) filter (where true${filterClause(picks)})::bigint as picked
-    from numbered group by visitor_id, sn
+  ), attributed as (
+    select ts, visitor_id, pathname, is_new, ${HEAD_DIMS}, max(ts) over visit as ended, count(*) over visit as pageviews,
+      count(*) filter (where true${filterClause(picks)}) over visit as picked
+    from numbered
+    window visit as (partition by visitor_id, sn order by ts, pathname, host rows between unbounded preceding and unbounded following)
   ), visits as (
-    select head.*, spans.ended, spans.pageviews, floor(extract(epoch from (spans.ended - head.ts)))::bigint as duration
-    from numbered head join spans using (visitor_id, sn)
-    where head.is_new = 1${filterClause(sessionFilters(query), "head")}${picks.length > 0 ? sql` and spans.picked > 0` : sql``}
+    select *, floor(extract(epoch from (ended - ts)))::bigint as duration
+    from attributed where is_new = 1${selected}
   ), visit_rows as (
-    select pv.ts, pv.visitor_id, pv.pathname, visit.host, visit.source, visit.utm_source, visit.utm_medium,
-      visit.utm_campaign, visit.utm_term, visit.utm_content, visit.language
-    from numbered pv join visits visit using (visitor_id, sn)
-    where pv.ts >= ${instant(range.start)} and pv.ts < ${instant(range.end)}${filterClause(picks, "pv")}
+    select ts, visitor_id, pathname, ${sql.raw(SESSION_DIMS.join(", "))}
+    from attributed
+    where ts >= ${instant(range.start)} and ts < ${instant(range.end)}${selected}${filterClause(picks)}
   )`;
 };
 
