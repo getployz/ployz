@@ -215,6 +215,7 @@ jobs:
           merge-multiple: true
           path: core/dist
       - run: softwareupdate --install-rosetta --agree-to-license
+      - run: brew install minisign
       - run: scripts/verify-release.sh macos
 
   pack:
@@ -263,5 +264,5 @@ jobs:
           pattern: release-linux-*
           merge-multiple: true
           path: core
-      - run: sudo apt-get update && sudo apt-get install -y file qemu-user
+      - run: sudo apt-get update && sudo apt-get install -y file minisign qemu-user
       - run: scripts/verify-release.sh linux

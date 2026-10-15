@@ -5,7 +5,23 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install"
+mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install" "$TMP/keys"
+
+# install.sh pins the key in crates/ployz-core/release.pub.
+grep -Fqx "PLOYZ_RELEASE_PUBLIC_KEY=\${PLOYZ_RELEASE_PUBLIC_KEY:-$(sed -n 2p "$ROOT/crates/ployz-core/release.pub")}" "$ROOT/install.sh"
+
+# A throwaway key stands in for the release key.
+minisign -G -W -p "$TMP/keys/test.pub" -s "$TMP/keys/test.key" >/dev/null
+minisign -G -W -p "$TMP/keys/other.pub" -s "$TMP/keys/other.key" >/dev/null
+PLOYZ_RELEASE_PUBLIC_KEY=$(sed -n 2p "$TMP/keys/test.pub")
+export PLOYZ_RELEASE_PUBLIC_KEY
+
+sign_release() {
+    local version=$1 key=${2:-$TMP/keys/test.key}
+    rm -f "$TMP/release/checksums.txt.minisig"
+    minisign -S -l -s "$key" -m "$TMP/release/checksums.txt" -x "$TMP/release/checksums.txt.minisig" \
+        -t "ployz v$version" < /dev/null >/dev/null
+}
 
 pack_release() {
     local version=$1
@@ -16,6 +32,7 @@ pack_release() {
         tar -czf "$TMP/release/$archive" -C "$TMP" ployz
     done
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+    sign_release "$version"
 }
 pack_release 1.2.3
 printf 'v1.2.3\n' > "$TMP/release/stable"
@@ -100,6 +117,7 @@ for defect in missing wrong-version; do
         tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
     fi
     (cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+    sign_release 1.2.3
     if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
         sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
@@ -118,4 +136,49 @@ if PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/relea
 fi
 [ "$("$TMP/install/ployz")" = installed ]
 
-echo "CLI installer verifies the checksum and binary before installing"
+install_fails() {
+    local message=$1 path=${2:-$TMP/bin:$PATH}
+    if PATH="$path" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" INSTALL_BIN_DIR="$TMP/install" \
+        PLOYZ_GITHUB_URL=https://example.invalid /bin/sh "$ROOT/install.sh" 1.2.3 > "$TMP/error" 2>&1; then
+        echo "installed despite: $message" >&2
+        exit 1
+    fi
+    grep -Fq "$message" "$TMP/error" || { cat "$TMP/error" >&2; exit 1; }
+    [ "$("$TMP/install/ployz" --version)" = 8.8.8-beta.1 ]
+}
+
+# The signature over checksums.txt is checked before any archive is trusted.
+pack_release 1.2.3
+rm "$TMP/release/checksums.txt.minisig"
+install_fails 'Failed to download checksums.txt.minisig'
+sign_release 1.2.3 "$TMP/keys/other.key"
+install_fails 'Release signature verification failed'
+sign_release 9.9.9
+install_fails 'Release signature verification failed'
+sign_release 1.2.3
+# A rehashed archive: checksums.txt agrees with it, but the signature does not.
+printf '#!/bin/sh\necho 1.2.3\n' > "$TMP/ployz"
+tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
+(cd "$TMP/release" && sha256sum ./*.tar.gz | sed 's|  \./|  |' > checksums.txt)
+install_fails 'Release signature verification failed'
+pack_release 1.2.3
+printf 'X' | dd of="$TMP/release/checksums.txt" bs=1 seek=0 conv=notrunc 2>/dev/null
+install_fails 'Release signature verification failed'
+
+# Without OpenSSL 3, minisign checks the signature; with neither, install.sh refuses.
+mkdir -p "$TMP/no-openssl3" "$TMP/no-verifier"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/no-openssl3/openssl"
+chmod 0755 "$TMP/no-openssl3/openssl"
+pack_release 1.2.3
+printf 'X' | dd of="$TMP/release/checksums.txt" bs=1 seek=0 conv=notrunc 2>/dev/null
+install_fails 'Release signature verification failed' "$TMP/no-openssl3:$TMP/bin:$PATH"
+for tool in cat cmp cp dd grep gzip head install mktemp rm sed sha256sum tar tr wc; do
+    ln -s "$(command -v "$tool")" "$TMP/no-verifier/$tool"
+done
+install_fails 'Cannot verify the release signature: install OpenSSL 3 or minisign' "$TMP/bin:$TMP/no-verifier"
+pack_release 1.2.3
+PATH="$TMP/no-openssl3:$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" \
+    INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid sh "$ROOT/install.sh" 1.2.3
+[ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
+
+echo "CLI installer verifies the signature, checksum and binary before installing"
