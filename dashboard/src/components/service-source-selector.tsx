@@ -272,15 +272,6 @@ export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: 
   );
 }
 
-function groupByAccount<R extends { full_name: string }>(repos: ReadonlyArray<R>) {
-  const groups = new Map<string, R[]>();
-  for (const repo of repos) {
-    const account = repo.full_name.split("/")[0] ?? repo.full_name;
-    groups.set(account, [...(groups.get(account) ?? []), repo]);
-  }
-  return [...groups];
-}
-
 function GitRepoSelectorResults({
   organizationSlug,
   query,
@@ -347,9 +338,8 @@ function GitRepoSelectorResults({
       ) : selectorState === "no-results" ? (
         <SelectorEmpty>No repositories match your search</SelectorEmpty>
       ) : (
-        groupByAccount(repos).map(([account, accountRepos]) => (
-        <CommandGroup key={account} heading={account}>
-          {accountRepos.map((repo) => (
+        <CommandGroup>
+          {repos.map((repo) => (
             <CommandItem
               key={repo.id}
               value={repo.full_name}
@@ -372,7 +362,6 @@ function GitRepoSelectorResults({
             </CommandItem>
           ))}
         </CommandGroup>
-        ))
       )}
 
       {!normalizedQuery && repoCount > INITIAL_GITHUB_REPO_LIMIT ? (
