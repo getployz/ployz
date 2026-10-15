@@ -532,7 +532,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         if (credentialsMatch(previous, input.capability)) return null;
         // A Machine keeps its management key across rotations; a new key would hand Cloud's credential to another endpoint.
         if (managementIdentityOf(previous) !== managementIdentity) {
-          return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again." });
+          return yield* new Conflict({ message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true });
         }
         if (expectedIv === undefined) return saved.encryptedCapability.iv;
         yield* drizzle.update(organizationMachine).set({

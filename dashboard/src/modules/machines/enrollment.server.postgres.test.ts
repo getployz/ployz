@@ -624,8 +624,9 @@ describe("organization enrollment coordinator", () => {
     await fake.coordinator.publish({ ...attempt, capability: keyed(0xab) });
     const before = await harness.pool.query("select * from organization_machine");
     const connections = fake.connected.length;
-    expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xcd) }))
-      .toMatchObject({ failure: { _tag: "Conflict" } });
+    expect(await fake.coordinator.publish({ ...attempt, capability: keyed(0xcd) })).toMatchObject({
+      failure: { _tag: "Conflict", message: "The Machine's management identity changed. Remove the Server and enroll it again.", userFacing: true },
+    });
     expect((await harness.pool.query("select * from organization_machine")).rows).toEqual(before.rows);
     expect(enrollmentSettings.encryption.decrypt(before.rows[0].encrypted_capability)).toBe(keyed(0xab));
     expect(fake.connected).toHaveLength(connections);
