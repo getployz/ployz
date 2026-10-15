@@ -14,10 +14,6 @@ export type Answered = { readonly range: Range; readonly clamped: boolean };
 const storeQuery = (q: Query, range: Range): store.StoreQuery =>
   ({ environmentId: q.site.environmentId, timezone: q.site.timezone, range, filters: q.filters });
 
-/**
- * Rejects a range that is not two site-local hour starts in order, then pulls its start up to the retention floor.
- * A range wholly before the floor collapses to an empty range at the floor and still answers, with zeros.
- */
 const resolve = Effect.fn("WebAnalytics.resolve")(function* (q: Query) {
   const { timezone } = q.site;
   for (const [field, bound] of [["start", q.range.start], ["end", q.range.end]] as const) {

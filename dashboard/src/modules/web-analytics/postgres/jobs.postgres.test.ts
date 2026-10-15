@@ -34,10 +34,6 @@ const wholeOverview = (fixture: Fixture) => {
 
 type Bucket = Serialized<ReturnType<typeof compute.timeseries>>[number];
 
-/**
- * What a query answers while `late` rows sit in closed days nobody has rebuilt: a filtered query reads raw and sees them;
- * an unfiltered hour timeseries reads pageviews raw but sessions from `session_hourly`; everything else reads the rollup.
- */
 const expectedWhileDirty = (spec: QuerySpec, site: FixtureSite, rows: ReadonlyArray<PageviewRecord>, late: ReadonlyArray<PageviewRecord>, goals: ReadonlyArray<GoalRecord>) => {
   const rolled = serialized(expectedOf(spec, site.timezone, rows, goals));
   if (late.length === 0) return rolled;

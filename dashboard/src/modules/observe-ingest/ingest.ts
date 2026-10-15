@@ -119,7 +119,6 @@ export const decodePageviewPush = Schema.decodeUnknownOption(PageviewPush);
 
 const FLAG_BITS = { no_accept_language: 1, no_sec_fetch: 2, click_id: 4 } as const;
 
-/** A visitor's id in Cloud: the first 8 bytes of the Machine's 32-byte hash, as a signed bigint. P4 must derive it the same way. */
 export function visitorId(visitor: string) {
   return BigInt.asIntN(64, BigInt(`0x${visitor.slice(0, 16)}`));
 }

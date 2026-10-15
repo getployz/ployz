@@ -127,11 +127,11 @@ export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pushe
 
 const DAY_MS = 86_400_000;
 const SESSION_GAP_SECONDS = 1800;
+const NO_BATCH_YET = -1n;
 
 type Site = { readonly environmentId: string; readonly timezone: string };
 
-/** Site-local days whose rollups a pageview at `ts` changes: its own, and yesterday when its session may have begun there. */
-function touchedDays(timezone: string, ts: Date) {
+function rollupDaysChangedBy(timezone: string, ts: Date) {
   const day = siteDay(timezone, ts.getTime());
   const sinceMidnight = ts.getTime() / 1000 - saltWindow(day, timezone).start;
   return sinceMidnight < SESSION_GAP_SECONDS ? [day, siteDay(timezone, ts.getTime(), -1)] : [day];
@@ -186,17 +186,15 @@ export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function*
       eq(observeIngestCursor.machineId, pusher.machineId),
       eq(observeIngestCursor.stream, "pageviews"),
     );
-    // -1 stands for "no batch yet" so the first batch reads as new; inserting first makes concurrent pushes queue on the row lock.
     yield* drizzle.insert(observeIngestCursor)
-      .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "pageviews", seq: -1n })
+      .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "pageviews", seq: NO_BATCH_YET })
       .onConflictDoNothing();
     const [cursor] = yield* drizzle.select({ seq: observeIngestCursor.seq }).from(observeIngestCursor).where(cursorKey).for("update");
     yield* drizzle.update(observeIngestCursor)
       .set({ seq: sql`greatest(${observeIngestCursor.seq}, ${push.seq.toString()}::bigint)`, updatedAt: new Date(now) })
       .where(cursorKey);
 
-    // Counts are deltas, so a replayed batch would add them twice; pageview rows dedupe on their key instead.
-    if (push.seq > (cursor?.seq ?? -1n)) {
+    if (push.seq > (cursor?.seq ?? NO_BATCH_YET)) {
       if (bots.size > 0) {
         yield* drizzle.insert(analyticsBotDaily).values([...bots.values()]).onConflictDoUpdate({
           target: [analyticsBotDaily.environmentId, analyticsBotDaily.day, analyticsBotDaily.reason],
@@ -221,11 +219,10 @@ export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function*
     for (const row of inserted) {
       const timezone = timezones.get(row.environmentId) ?? "UTC";
       const days = dirty.get(row.environmentId) ?? new Set<string>();
-      for (const day of touchedDays(timezone, row.ts)) days.add(day);
+      for (const day of rollupDaysChangedBy(timezone, row.ts)) days.add(day);
       dirty.set(row.environmentId, days);
     }
     for (const [environmentId, days] of dirty) {
-      // Days after rolled_up_to are not rolled up yet, so the rollup job closes them from raw rows anyway.
       yield* drizzle.update(analyticsRollupState)
         .set({
           dirty: sql`coalesce((select array_agg(distinct d order by d) from unnest(${analyticsRollupState.dirty} || ${`{${[...days].join(",")}}`}::date[]) d where d <= ${analyticsRollupState.rolledUpTo}), '{}'::date[])`,

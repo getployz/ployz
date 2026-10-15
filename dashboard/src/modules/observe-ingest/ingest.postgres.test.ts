@@ -92,7 +92,6 @@ it("the known-answer vector verifies, and not once its timestamp or body changes
 const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANALYTICS_ENABLED: "true" }) {
   const inngest = new Inngest({ id: "observe-ingest-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-  // Every test gets a fresh database, so partitions an earlier test created are gone.
   forgetPartitions();
   const services = yield* Layer.build(yield* storeTestCloud({ inngest, env }));
   const provide = <A, E>(effect: Effect.Effect<A, E, Database>) => effect.pipe(Effect.provide(services));
@@ -442,7 +441,6 @@ const bots = (count: number, fields: Partial<WireBots> = {}): WireBots =>
 const pageviews = (seq: number, events: ReadonlyArray<object>, dropped = 0) =>
   JSON.stringify({ stream: "pageviews", seq: String(seq), dropped, events });
 
-/** The pageview row Cloud stores for `pageview(ts)` with no other fields. */
 const plainRow = (ts: number) => ({
   environmentId: PRODUCTION, ts: new Date(ts), visitorId: -6076574518398440533n, host: "shop.example.com", pathname: "/", source: "",
   referrerHost: null, utmSource: null, utmMedium: null, utmCampaign: null, utmTerm: null, utmContent: null, ref: null, language: "en", flags: 0,

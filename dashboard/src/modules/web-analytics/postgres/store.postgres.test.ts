@@ -30,7 +30,6 @@ const wholeQuery = (fixture: Fixture): StoreQuery => {
   return { environmentId: fixture.site.environmentId, timezone: fixture.site.timezone, range: rangeOf(spec), filters: [] };
 };
 
-/** The site-local days the rollup must have closed at the fixture's `now`: its first day through the last one that ended a session gap ago. */
 const CLOSED = {
   utc: { first: "2026-10-08", last: "2026-10-14" },
   sydney: { first: "2026-10-02", last: "2026-10-05" },

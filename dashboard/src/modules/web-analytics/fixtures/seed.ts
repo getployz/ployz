@@ -6,7 +6,6 @@ import { ensurePartitions, monthOf } from "../postgres/partitions";
 import type { Fixture, FixtureSite } from "./fixture";
 import type { GoalRecord, PageviewRecord } from "./reference";
 
-/** `analytics.site` has no foreign keys, so a fixture site needs no Organization behind it. */
 export const FIXTURE_ORGANIZATION = "00000000-0000-4000-8000-00000000a000";
 
 export const loadFixture = (name: "utc" | "sydney"): Fixture =>
@@ -16,7 +15,6 @@ export const loadFixture = (name: "utc" | "sydney"): Fixture =>
 export const pageviewValues = (environmentId: string, rows: ReadonlyArray<PageviewRecord>) =>
   rows.map((row) => ({ ...row, environmentId, ts: new Date(row.ts), visitorId: BigInt(row.visitorId) }));
 
-/** Puts a site, its goals and its raw pageviews in place the way ingest would have left them, without the rollup. */
 export const seedSite = Effect.fn("WebAnalytics.seedSite")(function* (
   site: FixtureSite,
   rows: ReadonlyArray<PageviewRecord>,

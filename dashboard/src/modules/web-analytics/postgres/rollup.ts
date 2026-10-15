@@ -8,17 +8,12 @@ import { instant, localHour, sessionsIn, type StoreQuery } from "./store";
 
 export type RollupSite = { readonly environmentId: string; readonly timezone: string };
 
-/** Closing more than a month of days in one run keeps a site that was enabled long ago from holding the lock for hours. */
-const MAX_DAYS_PER_RUN = 31;
+const MAX_DAYS_PER_LOCK_HOLD = 31;
 const PARTITION_MONTHS_AHEAD = 2;
 
 const siteQuery = (site: RollupSite, start: Date, end: Date): StoreQuery =>
   ({ environmentId: site.environmentId, timezone: site.timezone, range: { start, end }, filters: [] });
 
-/**
- * Runs `program` inside a transaction holding the site's `rollup_state` row, so the cron rollup, the dirty rebuild and
- * a manual rebuild never write the same day at once.
- */
 const withRollupLock = <A, E, R>(environmentId: string, program: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const database = yield* Database;
@@ -41,12 +36,6 @@ const SESSION_DIMS = sql.raw(`('', ''), ('host', host), ('source', source), ('ut
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)`);
 
-/**
- * Recomputes one site-local day of `daily` and `session_hourly` from raw pageviews. Must run under the rollup lock.
- * `entry_page` visitors count sessions' visitors; every other dim counts pageview visitors. Dims a session has no value
- * for (page) and dims a pageview has no value for (entry_page) fall back to zero through the full join. One statement
- * so the day is sessionized once for both tables.
- */
 const writeDay = Effect.fn("WebAnalytics.writeDay")(function* (site: RollupSite, day: string) {
   const { drizzle } = yield* Database;
   const start = dayStart(site.timezone, day);
@@ -96,7 +85,6 @@ const writeDay = Effect.fn("WebAnalytics.writeDay")(function* (site: RollupSite,
     from pv full join ss using (dim, value)`);
 });
 
-/** Rebuilds one closed day in place, as after a late pageview landed in it. Does not move `rolled_up_to`. */
 export const rebuildDay = Effect.fn("WebAnalytics.rebuildDay")(function* (site: RollupSite, day: string) {
   yield* withRollupLock(site.environmentId, Effect.gen(function* () {
     yield* writeDay(site, day);
@@ -135,7 +123,6 @@ const enabledSites = Effect.fn("WebAnalytics.enabledSites")(function* () {
   }));
 });
 
-/** The local day of the site's oldest pageview, or null when it has none yet. */
 const firstDay = Effect.fn("WebAnalytics.firstDay")(function* (site: RollupSite) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<{ ts: string | null }>(sql`
@@ -144,15 +131,11 @@ const firstDay = Effect.fn("WebAnalytics.firstDay")(function* (site: RollupSite)
   return ts == null ? null : localDay(site.timezone, new Date(ts));
 });
 
-/**
- * Closes every site-local day that ended at least one session gap before `now`, oldest first, so a session that straddles
- * midnight has finished arriving before its day is written. Returns how many days were closed.
- */
 export const rollupClosedDays = Effect.fn("WebAnalytics.rollupClosedDays")(function* (now: Date) {
   let closed = 0;
   for (const site of yield* enabledSites()) {
     let day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
-    for (let n = 0; day !== null && n < MAX_DAYS_PER_RUN; n++) {
+    for (let n = 0; day !== null && n < MAX_DAYS_PER_LOCK_HOLD; n++) {
       if (dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime()) break;
       yield* closeDay(site, day);
       closed++;
@@ -162,7 +145,6 @@ export const rollupClosedDays = Effect.fn("WebAnalytics.rollupClosedDays")(funct
   return closed;
 });
 
-/** Rebuilds every day ingest marked dirty with a late pageview. Returns how many days were rebuilt. */
 export const rebuildDirtyDays = Effect.fn("WebAnalytics.rebuildDirtyDays")(function* () {
   let rebuilt = 0;
   for (const site of yield* enabledSites()) {
@@ -176,10 +158,6 @@ export const rebuildDirtyDays = Effect.fn("WebAnalytics.rebuildDirtyDays")(funct
 
 const PARTITION_PATTERN = /^pageview_(\d{4})(\d{2})$/;
 
-/**
- * Creates the next months' partitions, drops partitions whose whole month is past the longest retention, and trims
- * each site's rollups to its own floor. Returns the dropped partitions.
- */
 export const applyRetention = Effect.fn("WebAnalytics.applyRetention")(function* (now: Date) {
   const { drizzle } = yield* Database;
   const months = [monthOf(now)];

@@ -4,7 +4,6 @@ import type { Filter, FilterKey, GoalRow, Interval, Range, SessionDim, ValueRow 
 import * as store from "../postgres/store";
 import { type GoalRecord, type PageviewRecord, Reference } from "./reference";
 
-/** One question asked of a site, in the shape the adapter asks it. Range bounds are ISO instants on local hour starts. */
 export type QuerySpec = { readonly name: string; readonly range: readonly [string, string]; readonly filters: ReadonlyArray<Filter> } & (
   | { readonly kind: "overview" }
   | { readonly kind: "timeseries"; readonly interval: Interval }
@@ -14,7 +13,6 @@ export type QuerySpec = { readonly name: string; readonly range: readonly [strin
   | { readonly kind: "goalConversions" }
 );
 
-/** A result as JSON keeps it: every `Date` is its ISO string. */
 export type Serialized<T> = T extends Date ? string : T extends object ? { readonly [K in keyof T]: Serialized<T[K]> } : T;
 
 export type Answer =
@@ -27,7 +25,6 @@ export type Answer =
 
 export type FixtureSite = { readonly environmentId: string; readonly timezone: string };
 
-/** A site's rows and goals, the instant "now" the rollup runs at, and every query with the answer the reference gives. */
 export type Fixture = {
   readonly now: string;
   readonly site: FixtureSite;
@@ -38,7 +35,6 @@ export type Fixture = {
 
 export const rangeOf = (spec: QuerySpec): Range => ({ start: new Date(spec.range[0]), end: new Date(spec.range[1]) });
 
-/** What the reference says the store must answer, through the same compute step the adapter applies. */
 export function expectedOf(spec: QuerySpec, timezone: string, rows: ReadonlyArray<PageviewRecord>, goals: ReadonlyArray<GoalRecord>): Answer {
   const range = rangeOf(spec);
   const reference = new Reference(timezone, rows, range, spec.filters);
@@ -58,7 +54,6 @@ export function expectedOf(spec: QuerySpec, timezone: string, rows: ReadonlyArra
   }
 }
 
-/** The store's answer to `spec`, through the same compute step the adapter applies. */
 export const storeAnswer = Effect.fn("WebAnalytics.fixtureAnswer")(function* (spec: QuerySpec, site: FixtureSite) {
   const range = rangeOf(spec);
   const query: store.StoreQuery = { environmentId: site.environmentId, timezone: site.timezone, range, filters: spec.filters };
@@ -83,5 +78,4 @@ export const storeAnswer = Effect.fn("WebAnalytics.fixtureAnswer")(function* (sp
   }
 });
 
-/** A result as the fixture file keeps it, so a store answer and a stored expectation compare alike. */
 export const serialized = <A>(answer: A): Serialized<A> => JSON.parse(JSON.stringify(answer));

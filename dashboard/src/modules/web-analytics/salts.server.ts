@@ -66,7 +66,6 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
       })
       .returning({ timezone: analyticsSite.timezone });
     if (previous !== undefined && site !== undefined && previous.timezone !== site.timezone) {
-      // Rollups hold site-local days, so a new timezone invalidates every one of them; the rollup job rebuilds from raw.
       yield* drizzle.delete(analyticsDaily).where(eq(analyticsDaily.environmentId, environmentId));
       yield* drizzle.delete(analyticsSessionHourly).where(eq(analyticsSessionHourly.environmentId, environmentId));
       yield* drizzle.update(analyticsRollupState)

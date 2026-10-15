@@ -2,17 +2,16 @@ import { dayStart, hourBuckets, localDays } from "./local-time";
 import type { BucketRow, EntryRow, GoalRow, Interval, Range, SessionRow, Totals, ValueRow } from "./model";
 import { ZERO_TOTALS } from "./model";
 
-export type Overview = Totals & { readonly bounceRate: number; readonly avgDuration: number };
-export type Bucket = BucketRow & { readonly bounceRate: number; readonly avgDuration: number };
-export type SessionResult = SessionRow & { readonly bounceRate: number; readonly avgDuration: number };
-export type EntryResult = EntryRow & { readonly bounceRate: number; readonly avgDuration: number };
+export type Overview = Totals & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
+export type Bucket = BucketRow & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
+export type SessionResult = SessionRow & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
+export type EntryResult = EntryRow & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
 
-/** Bounce rate in percent to one decimal; average session length in whole seconds. Both 0 without visits. */
 export function rates(row: { readonly visits: number; readonly bounces: number; readonly totalDuration: number }) {
-  if (row.visits === 0) return { bounceRate: 0, avgDuration: 0 };
+  if (row.visits === 0) return { bounceRatePercent: 0, avgDurationSeconds: 0 };
   return {
-    bounceRate: Math.round((row.bounces / row.visits) * 1000) / 10,
-    avgDuration: Math.round(row.totalDuration / row.visits),
+    bounceRatePercent: Math.round((row.bounces / row.visits) * 1000) / 10,
+    avgDurationSeconds: Math.round(row.totalDuration / row.visits),
   };
 }
 
@@ -33,7 +32,6 @@ export const overview = (rows: ReadonlyArray<Totals>): Overview => {
   return { ...totals, ...rates(totals) };
 };
 
-/** Sum grouped rows that share a value, as when a rollup part and a raw part both hold the same page. */
 export function mergeValues<Row extends { readonly value: string }>(rows: ReadonlyArray<Row>, add: (a: Row, b: Row) => Row) {
   const byValue = new Map<string, Row>();
   for (const row of rows) {
@@ -66,7 +64,6 @@ export const entryPages = (rows: ReadonlyArray<EntryRow>, limit: number): EntryR
 export const goalConversions = (rows: ReadonlyArray<GoalRow>): GoalRow[] =>
   [...rows].sort((a, b) => b.visitors - a.visitors || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
-/** One bucket per site-local hour or day in the range, zero where nothing happened. A DST day has 23 or 25 hours. */
 export function timeseries(rows: ReadonlyArray<BucketRow>, range: Range, timezone: string, interval: Interval): Bucket[] {
   const starts = interval === "hour"
     ? hourBuckets(range.start, range.end)

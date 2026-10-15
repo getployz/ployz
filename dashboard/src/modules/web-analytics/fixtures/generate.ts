@@ -1,6 +1,3 @@
-// Writes the golden fixtures the store tests replay: a UTC site and an Australia/Sydney site whose days span the
-// 2026-10-04 clock change, each with every query the adapter can ask and the answer the reference gives. Seeded, so a
-// run changes a file only when the generator or the reference changes. From dashboard/: pnpm analytics:fixtures
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dayEnd, dayStart, isHourStart, localDays } from "../local-time";
@@ -37,7 +34,6 @@ const CAMPAIGNS: readonly [Campaign, ...Campaign[]] = [
   { ...NONE, utmSource: "partner", utmMedium: "referral", utmCampaign: "spring", utmTerm: "cheap" },
   { ...NONE, ref: "hn" },
 ];
-/** Gaps between a session's pageviews, in ms. 1800 s keeps the session, 1801 s starts the next one. */
 const GAPS = [0, 1_500, 5_000, 30_000, 59_999, 120_000, 600_000, 1_200_000, 1_800_000, 1_801_000] as const;
 
 type Visitor = { readonly id: string; readonly host: string; readonly language: string | null };
@@ -70,7 +66,6 @@ function session(rng: Rng, who: Visitor, start: number, pageviews: number, out: 
 
 type SiteProfile = { readonly site: FixtureSite; readonly firstDay: string; readonly now: string; readonly visitors: number; readonly seed: number };
 
-/** Two rows at one instant sort by pathname, then by host; the store and the reference must break those ties alike. */
 function ties(who: Visitor, at: number, out: PageviewRecord[]) {
   out.push(row(at, who, "/pricing", "google", NONE), row(at, who, "/about", "google", NONE));
   out.push(row(at + 60_000, who, "/docs", "google", NONE, HOSTS[0]), row(at + 60_000, who, "/docs", "google", NONE, HOSTS[1]));
@@ -184,7 +179,6 @@ const utc = fixture(
   },
 );
 
-/** Sydney leaves AEST for AEDT at 02:00 on 2026-10-04, so that local day is 23 hours and starts at 14:00Z. */
 const sydney = fixture(
   { site: { environmentId: "00000000-0000-4000-8000-00000000a002", timezone: "Australia/Sydney" }, firstDay: "2026-10-02", now: "2026-10-06T05:30:00.000Z", visitors: 30, seed: 20261002 },
   {

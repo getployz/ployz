@@ -270,7 +270,6 @@ const makeAppConfig = Effect.gen(function* () {
     marketingOrigin: raw.marketingOrigin,
     // Unset (Self-hosted Cloud): no uptime checker runs, so the dashboard shows no uptime.
     uptimeEnabled: raw.uptimeEnabled,
-    // Unset (Self-hosted Cloud): Machines get no salts and Cloud stores no pageviews. Ployz-hosted Cloud always has it.
     analyticsEnabled: polar.mode !== "self_hosted" || raw.analyticsEnabled,
     encryptionSecret: raw.encryptionSecret,
     // Ployz support exists only on Ployz-hosted Cloud: a Self-hosted Cloud never has staff, whatever the variable says.

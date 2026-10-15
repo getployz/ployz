@@ -30,8 +30,6 @@ export const analyticsSalt = analytics.table(
 );
 
 // Partitioned by month on ts in the migration; drizzle-kit cannot declare partitions.
-// The key is the row itself: a batch Cloud stored but never acked comes back merged with newer
-// segments under a higher seq, so the cursor alone cannot stop a double count.
 export const analyticsPageview = analytics.table(
   "pageview",
   {

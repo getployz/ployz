@@ -32,20 +32,20 @@ describe("limit", () => {
 
   it("sums every session field of a split value", () => {
     const rows = [session("google", 2, 1, 30), session("direct", 1, 0, 5), session("google", 3, 2, 70)];
-    expect(sessions(rows, 1)).toEqual([{ value: "google", visits: 5, bounces: 3, totalDuration: 100, bounceRate: 60, avgDuration: 20 }]);
+    expect(sessions(rows, 1)).toEqual([{ value: "google", visits: 5, bounces: 3, totalDuration: 100, bounceRatePercent: 60, avgDurationSeconds: 20 }]);
   });
 });
 
 describe("rounding", () => {
   it("bounce rate is a percentage to one decimal and average duration a whole second", () => {
-    expect(rates({ visits: 3, bounces: 1, totalDuration: 100 })).toEqual({ bounceRate: 33.3, avgDuration: 33 });
-    expect(rates({ visits: 3, bounces: 2, totalDuration: 101 })).toEqual({ bounceRate: 66.7, avgDuration: 34 });
-    expect(rates({ visits: 8, bounces: 1, totalDuration: 7 })).toEqual({ bounceRate: 12.5, avgDuration: 1 });
+    expect(rates({ visits: 3, bounces: 1, totalDuration: 100 })).toEqual({ bounceRatePercent: 33.3, avgDurationSeconds: 33 });
+    expect(rates({ visits: 3, bounces: 2, totalDuration: 101 })).toEqual({ bounceRatePercent: 66.7, avgDurationSeconds: 34 });
+    expect(rates({ visits: 8, bounces: 1, totalDuration: 7 })).toEqual({ bounceRatePercent: 12.5, avgDurationSeconds: 1 });
   });
 
   it("no visits means zero rates, not NaN", () => {
-    expect(rates({ visits: 0, bounces: 0, totalDuration: 0 })).toEqual({ bounceRate: 0, avgDuration: 0 });
-    expect(overview([])).toEqual({ pageviews: 0, visitors: 0, visits: 0, bounces: 0, totalDuration: 0, bounceRate: 0, avgDuration: 0 });
+    expect(rates({ visits: 0, bounces: 0, totalDuration: 0 })).toEqual({ bounceRatePercent: 0, avgDurationSeconds: 0 });
+    expect(overview([])).toEqual({ pageviews: 0, visitors: 0, visits: 0, bounces: 0, totalDuration: 0, bounceRatePercent: 0, avgDurationSeconds: 0 });
   });
 });
 
@@ -74,6 +74,6 @@ describe("timeseries", () => {
       "hour",
     );
     expect(first).toMatchObject({ pageviews: 3, visitors: 2, visits: 2 });
-    expect(second).toMatchObject({ pageviews: 0, visits: 0, bounceRate: 0 });
+    expect(second).toMatchObject({ pageviews: 0, visits: 0, bounceRatePercent: 0 });
   });
 });
