@@ -34,7 +34,9 @@ change services, configs, volumes and domains, publish and deploy, follow and re
 deployments, and work on your servers and volumes. Tell it which project and environment to
 work in.
 
-If a reply gets lost, the agent can send the same call again without running it twice.
+If a reply gets lost, the agent can resend a write without running it twice, as long as it sends
+the same `request_key` (or `x-ployz-request-key` header) both times. A call without one is a new
+run each time, and Ployz tells agents this when they connect.
 
 ## Approve a removal
 
