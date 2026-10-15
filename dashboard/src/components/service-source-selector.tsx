@@ -7,7 +7,7 @@ import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picke
 import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
 import { ChevronRightIcon, ExternalLinkIcon, InfoIcon, TriangleAlertIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
@@ -18,7 +18,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import { githubBranchesQueryOptions, githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubKeys, githubRepoAccessQueryOptions } from "#/modules/github/github.queries";
 import { getGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -187,20 +187,30 @@ function SelectorCommandDialog({
 const githubConnectHref = (organizationSlug: string) =>
   `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
 
-function openGithub(organizationSlug: string) {
+let onReturnFromGithub: (() => void) | undefined;
+
+function openGithub(queryClient: QueryClient, organizationSlug: string) {
   const href = githubConnectHref(organizationSlug);
   if (!window.open(href, "_blank", "width=1020,height=680")) {
     window.location.assign(href);
     return;
   }
-  // Returning from GitHub resyncs, in case its webhook never arrives; focus and polling show the rows.
-  // A failed resync waits for the next return to the tab.
-  const resync = () => void requestGithubRepoSyncServerFn({ data: { organizationSlug } })
-    .catch(() => window.addEventListener("focus", resync, { once: true }));
-  window.addEventListener("focus", resync, { once: true });
+  // Returning from the popup fires focus but not visibilitychange, so recheck access here, and
+  // resync in case GitHub's webhook never arrives. A failed resync waits for the next return.
+  if (onReturnFromGithub) window.removeEventListener("focus", onReturnFromGithub);
+  const onReturn = () => {
+    void queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
+    requestGithubRepoSyncServerFn({ data: { organizationSlug } }).then(
+      () => { if (onReturnFromGithub === onReturn) onReturnFromGithub = undefined; },
+      () => { if (onReturnFromGithub === onReturn) window.addEventListener("focus", onReturn, { once: true }); },
+    );
+  };
+  onReturnFromGithub = onReturn;
+  window.addEventListener("focus", onReturn, { once: true });
 }
 
 function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string }) {
+  const queryClient = useQueryClient();
   const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
   if (!accessState.hasInstallations) {
     return (
@@ -215,7 +225,7 @@ function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <Button onClick={() => openGithub(organizationSlug)}>Connect GitHub</Button>
+          <Button onClick={() => openGithub(queryClient, organizationSlug)}>Connect GitHub</Button>
         </EmptyContent>
       </Empty>
     );
@@ -225,6 +235,7 @@ function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string
 
 /** Pinned below the CommandList so it stays visible while the repositories scroll. */
 export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: string }) {
+  const queryClient = useQueryClient();
   const { data: accessState } = useSuspenseQuery(githubRepoAccessQueryOptions(organizationSlug));
   if (!accessState.hasInstallations) return null;
   return (
@@ -235,7 +246,7 @@ export function GitRepoSelectorFooter({ organizationSlug }: { organizationSlug: 
           <ItemDescription>Missing a repo?</ItemDescription>
         </ItemContent>
         <ItemActions>
-          <Button variant="outline" size="sm" onClick={() => openGithub(organizationSlug)}>
+          <Button variant="outline" size="sm" onClick={() => openGithub(queryClient, organizationSlug)}>
             <GitHubMarkIcon data-icon="inline-start" />
             Add from GitHub
             <ExternalLinkIcon data-icon="inline-end" />
