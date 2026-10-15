@@ -140,7 +140,8 @@ def mentioning(text, paths, rev=None):
     if not text:
         return []
     where = [text, rev] if rev else ["--untracked", text]
-    found = subprocess.run(["git", "grep", "-l", "-F", *where, "--", *paths], cwd=CORE, capture_output=True)
+    found = subprocess.run(["git", "-c", "grep.fullName=false", "grep", "-l", "-F", *where, "--", *paths],
+                           cwd=CORE, capture_output=True)
     if found.returncode > 1:
         raise subprocess.CalledProcessError(found.returncode, found.args, found.stdout, found.stderr)
     return [line.removeprefix(f"{rev}:") if rev else line for line in found.stdout.decode().splitlines()]
