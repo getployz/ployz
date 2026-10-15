@@ -156,6 +156,47 @@ it.live("an approval the plan moved past is superseded, and a denial answers the
     });
   }));
 
+it.live("only a person in Cloud, or the prompt of the `ployz` that asked, approves an agent's request; anyone may deny it", () =>
+  Effect.gen(function* () {
+    const { provided, refusal, caller } = yield* shopRemovingWeb();
+    const ask = (requester: Caller) => provided(Effect.gen(function* () {
+      return asked(yield* requestApproval(requester, publish, yield* refusal)).approval_id;
+    }));
+    const approve = (decider: Parameters<typeof decideApproval>[0], id: string) => provided(Effect.gen(function* () {
+      const digest = (yield* getApproval(ORGANIZATION, id)).digest;
+      return yield* decideApproval(decider, id, { approve: { digest } });
+    }));
+    const refused = {
+      ok: false,
+      refusal: { code: "forbidden", message: "An agent can't approve this. A person approves it in the Ployz Cloud sidebar." },
+    };
+    const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2" } };
+    const mcp: Caller = { ...caller, via: "agent" };
+    const grant: Caller = { ...caller, credential: { kind: "oauth", id: "grant-1" }, via: "agent" };
+    const sidebar: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "agent" };
+
+    const fromMcp = yield* ask(mcp);
+    expect(yield* approve(mcp, fromMcp)).toMatchObject(refused);
+    expect(yield* approve(otherToken, fromMcp)).toMatchObject(refused);
+    // `ployz mcp` posts its host's form answer with the credential that asked.
+    expect(yield* approve(caller, fromMcp)).toMatchObject({ ok: true, approval: { status: "approved" } });
+
+    const fromGrant = yield* ask(grant);
+    expect(yield* approve(grant, fromGrant)).toMatchObject(refused);
+    expect(yield* approve(caller, fromGrant)).toMatchObject(refused);
+    expect(yield* provided(decideApproval(grant, fromGrant, { reject: {} }))).toMatchObject({ ok: true, approval: { status: "denied" } });
+
+    const fromSidebar = yield* ask(sidebar);
+    expect(yield* approve(sidebar, fromSidebar)).toMatchObject(refused);
+    expect(yield* approve(caller, fromSidebar)).toMatchObject(refused);
+    expect(yield* approve({ ...caller, via: "dashboard" }, fromSidebar)).toMatchObject({ ok: true, approval: { status: "approved" } });
+
+    // A person's own `ployz` request still approves from any of their CLI credentials, as the TTY prompt does.
+    const fromCli = yield* ask(caller);
+    expect(yield* approve(mcp, fromCli)).toMatchObject(refused);
+    expect(yield* approve(otherToken, fromCli)).toMatchObject({ ok: true, approval: { status: "approved" } });
+  }));
+
 it.live("a delayed refusal for an older plan leaves the current plan's approval pending", () =>
   Effect.gen(function* () {
     const { provided, write, refusal, caller } = yield* shopRemovingWeb();

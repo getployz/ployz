@@ -24,7 +24,7 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
   const auth = yield* Auth;
   const presented = new Headers(headers);
   presented.delete("cookie");
-  const session = yield* auth.getSession(presented);
+  const session = yield* auth.getSession(presented, { bearer: true });
   if (session === null) return yield* new Unauthorized();
   const organizationId = session.session.activeOrganizationId;
   const bound = organizationId == null

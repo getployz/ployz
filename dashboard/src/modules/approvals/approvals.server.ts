@@ -207,6 +207,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       requestedByUserId: caller.userId,
       credentialKind: caller.credential.kind,
       credentialId: caller.credential.id,
+      via: caller.via,
       command: command.command,
       review: { effects, diff },
       digest,
@@ -245,6 +246,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
       requestedByUserId: caller.userId,
       credentialKind: caller.credential.kind,
       credentialId: caller.credential.id,
+      via: caller.via,
       command: asked.verb,
       review: { effects: asked.effects, operation: { ...operation, preview: asked.preview } },
       digest,
@@ -300,13 +302,30 @@ export const pendingApprovals = <R = never>(organizationId: string, operationDig
 
 type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
 
+/** Who decides: a person in the dashboard, or a Caller through the credential it signed in with. */
+export type Decider = Actor & { readonly organization: { readonly id: string } } & (
+  | { readonly via: "dashboard" }
+  | Pick<Caller, "via" | "credential">
+);
+
+/**
+ * An agent never approves. What an agent asked waits on a person in the dashboard, or on the `ployz mcp` that asked,
+ * which shows its human the form and answers through the credential it asked with.
+ */
+const mayApprove = (decider: Decider, row: ApprovalRow) => {
+  if (decider.via === "dashboard") return true;
+  if (decider.via === "agent" || !("credential" in decider)) return false;
+  if (row.via !== "agent") return true;
+  return row.credentialKind !== "oauth" && decider.credential.kind === row.credentialKind && decider.credential.id === row.credentialId;
+};
+
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
  * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
- * may decide; the row records who.
+ * may deny; who may approve is `mayApprove`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
-  caller: Actor & { readonly organization: { readonly id: string } },
+  caller: Decider,
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
@@ -324,6 +343,10 @@ export const decideApproval = <R = never>(
       : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
   };
   const row = yield* freshen(found, operationDigest);
+  if ("approve" in decision && !mayApprove(caller, row)) {
+    const message = "An agent can't approve this. A person approves it in the Ployz Cloud sidebar.";
+    return { ok: false, refusal: { code: "forbidden", message, details: { approval: approvalView(row) } } } satisfies Decided;
+  }
   if (row.status !== "pending") return settled(row);
   if ("approve" in decision && decision.approve.digest !== row.digest) {
     return conflict("That digest isn't the one this approval asks about; review it again.", row);

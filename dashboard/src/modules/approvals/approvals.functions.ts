@@ -36,7 +36,7 @@ export const decideApprovalServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, decision: ApprovalDecision })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "operate");
-    return yield* decideApproval(access, data.id, data.decision, freshOperationDigest).pipe(
+    return yield* decideApproval({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest).pipe(
       Effect.map((decided) => decided.ok
         ? { ok: true as const, approval: shownTo(access)(decided.approval) }
         : { ok: false as const, message: decided.refusal.message }),

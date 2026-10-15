@@ -89,8 +89,13 @@ export interface AuthService {
   readonly handler: (
     request: Request,
   ) => Effect.Effect<Response, AuthenticationUnavailable>;
+  /**
+   * The browser's session cookie; with `bearer`, a `ployz login` session token in `Authorization` too. Only a `ployz`
+   * API request passes `bearer`, so a session token never signs in as the dashboard.
+   */
   readonly getSession: (
     headers: Headers,
+    accepts?: { readonly bearer: true },
   ) => Effect.Effect<
     AuthSession | null,
     AuthenticationUnavailable | Schema.SchemaError
@@ -341,9 +346,11 @@ const makeAuth = Effect.gen(function* () {
     }
     : null;
 
-  const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
+  const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers, accepts?: { readonly bearer: true }) {
+    const signedIn = new Headers(headers);
+    if (accepts?.bearer !== true) signedIn.delete("authorization");
     const authSession = yield* Effect.tryPromise({
-      try: () => instance.api.getSession({ headers }),
+      try: () => instance.api.getSession({ headers: signedIn }),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
     });
     if (authSession === null) return null;

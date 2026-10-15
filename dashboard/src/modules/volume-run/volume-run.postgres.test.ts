@@ -2812,7 +2812,7 @@ describe("volume runs", () => {
         if (asked.ok || asked.refusal.code !== "approval_required") throw new Error(`expected an ask, got ${JSON.stringify(asked)}`);
         // SAFETY: an approval_required refusal carries the digest and id of the approval it recorded.
         const { approval, approval_id } = asked.refusal.details as { approval: string; approval_id: string };
-        await runEffect(decideApproval(caller, approval_id, { approve: { digest: approval } }));
+        await runEffect(decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }));
         return release(approval_id);
       };
       const admittedId = (admitted: Awaited<ReturnType<typeof release>>) => {

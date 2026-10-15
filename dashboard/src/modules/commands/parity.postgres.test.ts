@@ -255,6 +255,23 @@ it.live("answers approvals only through ployz, records who decided, and keeps th
     ]);
   }));
 
+it.live("refuses a ployz approve of a request an agent asked for, and still lets it deny one", () =>
+  Effect.gen(function* () {
+    const { route, rows, approvals, provided } = yield* parity();
+    const [data, logs] = approvals;
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(operationApprovals).set({ via: "agent", credentialKind: "oauth", credentialId: "grant-1" })
+        .where(eq(operationApprovals.organizationId, ORGANIZATION));
+    }));
+    expect(yield* route("org_approval_approve", { id: data ?? "" })).toEqual({
+      status: 403,
+      body: { error: { code: "forbidden", message: "An agent can't approve this. A person approves it in the Ployz Cloud sidebar.", details: expect.anything() } },
+    });
+    expect(yield* route("org_approval_deny", { id: logs ?? "" })).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied" } } });
+    expect((yield* rows).decided.map(({ status }) => status)).toEqual(["pending", "denied"]);
+  }));
+
 it.live("shows a Service's 500s and open incident by name over a short range or a long one, so an agent diagnosing it hears what the check got back", () =>
   Effect.gen(function* () {
     const { route } = yield* parity();

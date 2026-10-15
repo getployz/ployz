@@ -207,6 +207,14 @@ it.live(
         assert.isString(session.json?.session?.activeOrganizationId);
         assert.isString(session.json?.session?.activeOrganizationSlug);
 
+        // The device's token signs `ployz` in, never the dashboard, even sent with the dashboard's Origin.
+        const auth = yield* Auth;
+        const asDashboard = new Headers({ authorization: `Bearer ${token}`, origin });
+        assert.isNull(yield* auth.getSession(asDashboard));
+        const posing = yield* Effect.exit(auth.resolveActor(asDashboard));
+        assert.isTrue(posing._tag === "Failure" && Cause.squash(posing.cause) instanceof Unauthorized);
+        assert.strictEqual((yield* auth.getSession(asDashboard, { bearer: true }))?.user.email, "owner@example.test");
+
         // The code is spent; logout ends the device's session.
         assert.strictEqual((yield* device.poll()).json?.error, "invalid_grant");
         const signedOut = yield* call("/sign-out", { bearer: token, body: {} });
