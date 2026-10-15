@@ -425,6 +425,9 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "RETURN",
         ],
     ));
+    for rule in LOOSE_BUILD_FORWARDING {
+        attempt(delete_rule("iptables", "mangle", "FORWARD", rule));
+    }
     for program in ["iptables", "ip6tables"] {
         attempt(remove_chain(
             program,
@@ -631,5 +634,69 @@ mod tests {
                 chains: vec!["PLOYZ-BUILD0".into(), "PLOYZ-BUILD12".into()],
             }
         );
+    }
+
+    const TEARDOWN_TEST: &str =
+        "network::firewall::tests::teardown_removes_the_chain_and_loose_rules_from_earlier_daemons";
+
+    /// Re-runs itself inside a fresh network namespace, which holds an earlier
+    /// daemon's loose rules alongside this daemon's chain.
+    #[test]
+    #[ignore = "needs root and ip netns"]
+    fn teardown_removes_the_chain_and_loose_rules_from_earlier_daemons() {
+        if std::env::var_os("PLOYZ_TEARDOWN_CHILD").is_some() {
+            for rule in LOOSE_BUILD_FORWARDING {
+                ensure_rule("iptables", "mangle", "FORWARD", rule).unwrap();
+            }
+            restore(
+                "iptables",
+                &build_forward_document("iptables", &ipv4_build_forwarding()).unwrap(),
+            )
+            .unwrap();
+            restore(
+                "ip6tables",
+                &build_forward_document("ip6tables", &ipv6_build_forwarding()).unwrap(),
+            )
+            .unwrap();
+            remove_firewall_rules("10.210.1.0/24".parse().unwrap()).unwrap();
+            return;
+        }
+        let namespace = format!("ployz-teardown-{}", std::process::id());
+        let sudo = |args: &[&str]| Command::new("sudo").arg("-n").args(args).output().unwrap();
+        assert!(sudo(&["ip", "netns", "add", &namespace]).status.success());
+        let exe = std::env::current_exe().unwrap();
+        let child = sudo(&[
+            "ip",
+            "netns",
+            "exec",
+            &namespace,
+            "env",
+            "PLOYZ_TEARDOWN_CHILD=1",
+            exe.to_str().unwrap(),
+            "--ignored",
+            "--exact",
+            TEARDOWN_TEST,
+        ]);
+        let left: Vec<String> = ["iptables", "ip6tables"]
+            .into_iter()
+            .map(|program| {
+                let rules = sudo(&[
+                    "ip", "netns", "exec", &namespace, program, "-t", "mangle", "-S",
+                ]);
+                String::from_utf8_lossy(&rules.stdout).into_owned()
+            })
+            .collect();
+        sudo(&["ip", "netns", "del", &namespace]);
+        assert!(
+            child.status.success(),
+            "{}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+        for rules in left {
+            assert!(
+                rules.lines().all(|line| line.starts_with("-P ")),
+                "a rule survived teardown:\n{rules}"
+            );
+        }
     }
 }
