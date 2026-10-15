@@ -198,6 +198,9 @@ const deploymentStatusLabels = {
  */
 export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "cancelled";
 
+/** A build's node on its Run page, as `?job=` names it; links into a Run use it to open the build. */
+export const buildNodeId = (service: string) => `build:${service}`;
+
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
