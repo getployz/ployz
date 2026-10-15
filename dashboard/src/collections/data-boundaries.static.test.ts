@@ -32,6 +32,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeTray.tsx": "a Volume run under way",
   "components/ui/spinner.tsx": "the primitive",
   "components/agent-sidebar/agent-panel.tsx": "the agent starting its reply",
+  "components/agent-sidebar/tool-row.tsx": "a command the agent is running",
   "components/ui/sonner.tsx": "promise toasts for writes",
   "components/confirm-dialog.tsx": "confirm in flight",
   "components/deletion-dialog.tsx": "deletion in flight",
