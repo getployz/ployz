@@ -151,6 +151,15 @@ it("offers no Save or second Deploy while a Deploy is unanswered", async () => {
   expect(screen.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
 });
 
+it("shows a Deploy as pending even behind an older unanswered Discard", async () => {
+  busy = new Set(["discarding", "deploying"]);
+  open(canvasUrl, [replicas], 1, true);
+  const staged = await bar();
+  expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
+  await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
+  expect((await screen.findByRole("menuitem", { name: "Discard all changes" })).getAttribute("aria-disabled")).toBe("true");
+});
+
 it("never deploys from Alt+click, even once everything is saved and the changes still wait to deploy", async () => {
   open(canvasUrl, [replicas], 1, false);
   const staged = await bar();

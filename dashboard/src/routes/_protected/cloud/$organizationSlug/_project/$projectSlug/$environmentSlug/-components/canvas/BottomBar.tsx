@@ -223,7 +223,7 @@ export function BottomBar({
           <DropdownMenuItem disabled={!saveable} onClick={save}>
             {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
-          <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
+          <DropdownMenuItem variant="destructive" disabled={busy.has("discarding") || !groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
         </DropdownMenuContent>
