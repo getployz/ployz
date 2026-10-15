@@ -16,9 +16,9 @@ use ployz_core::{
     FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure, HealthVerdict, Hold, HookFailure,
     InspectContainerRequest, ListContainersRequest, MachineAction, MachineId, MachineTarget,
     MembershipObservation, Namespace, NewContainer, OperationPhase, PublishServingPointerRequest,
-    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
-    RunTarget, ServiceOutcome, ServingPointer, ServingPointerPublication, ServingPointerRead,
-    SlotKey, StopOptions, op,
+    PullPolicy, QualifiedService, RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError,
+    RpcErrorCode, RunTarget, ServiceOutcome, ServingPointer, ServingPointerPublication,
+    ServingPointerRead, SlotKey, StopOptions, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -508,10 +508,6 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
     }
 }
 
-fn is_unavailable(error: &RpcError) -> bool {
-    error.code == RpcErrorCode::Unavailable
-}
-
 async fn wait_out_restart<T, Fut>(
     cancellation: &CancellationToken,
     mut op: impl FnMut() -> Fut,
@@ -524,7 +520,7 @@ where
         match op().await {
             Ok(value) => return Ok(value),
             Err(error)
-                if is_unavailable(&error)
+                if error.code.retry() != Retry::Never
                     && Instant::now() < deadline
                     && !cancellation.is_cancelled() =>
             {

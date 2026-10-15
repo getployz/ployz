@@ -8,26 +8,38 @@ use tokio::io::AsyncWriteExt;
 #[test]
 fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
     use std::os::unix::process::ExitStatusExt;
-    for (detail, retry) in [
-        ("Connection timed out", true),
-        ("Connection refused", true),
-        ("Permission denied (publickey)", false),
-        ("Host key verification failed", false),
+    for (detail, retry, aggregate) in [
+        ("Connection timed out", Retry::Now, Retry::AfterRestart),
+        ("Connection refused", Retry::Now, Retry::AfterRestart),
+        ("Permission denied (publickey)", Retry::Never, Retry::Never),
+        ("Host key verification failed", Retry::Never, Retry::Never),
+        (
+            "user@jump: Permission denied (publickey).\nConnection closed by UNKNOWN port 65535",
+            Retry::Never,
+            Retry::Never,
+        ),
     ] {
         let ssh_error = ConnectError::SshProbe {
             target: "host".to_owned(),
             status: std::process::ExitStatus::from_raw(255 << 8),
+            failure: SshFailure::of(detail),
             detail: detail.to_owned(),
         };
-        assert_eq!(ssh_error.is_setup_retryable(), retry);
+        assert_eq!(ssh_error.retry(), retry);
         let error = ConnectError::AllFailed {
             selection: ConnectionSource::Direct,
             attempts: 1,
-            setup_retryable: retry,
+            retry: aggregate,
             last: Some(Box::new(ssh_error)),
         };
-        assert_eq!(error.is_setup_retryable(), retry);
-        assert!(crate::ui::chain_text(&error).contains(detail));
+        assert_eq!(error.retry(), aggregate);
+        let text = crate::ui::chain_text(&error);
+        assert!(detail.lines().all(|line| text.contains(line)), "{text}");
+        assert_eq!(
+            text.contains("ssh-add"),
+            detail.contains("Permission denied"),
+            "{detail}"
+        );
     }
 }
 
@@ -51,7 +63,7 @@ async fn setup_retry_preserves_transient_failures_in_either_connection_order() {
                 Err(error) => error,
                 Ok(_) => panic!("script must reject every connection"),
             };
-        assert_eq!(error.is_setup_retryable(), retryable, "{error}");
+        assert_eq!(error.retry() != Retry::Never, retryable, "{error}");
         if !retryable {
             assert!(
                 crate::ui::chain_text(&error).contains("unlock your key with ssh-add"),
@@ -150,7 +162,11 @@ fn transport_predicates_follow_the_grpc_code() {
 
     for (code, retryable, unavailable, not_found, rpc) in cases {
         let error = TransportError::from(tonic::Status::new(code, "x"));
-        assert_eq!(error.is_retryable(), retryable, "{code:?}");
+        assert_eq!(
+            error.to_rpc_error().code.retry() == Retry::Now,
+            retryable,
+            "{code:?}"
+        );
         assert_eq!(error.is_unavailable(), unavailable, "{code:?}");
         assert_eq!(error.is_not_found(), not_found, "{code:?}");
         assert_eq!(error.to_rpc_error().code, rpc, "{code:?}");
@@ -219,16 +235,62 @@ fn setup_retry_waits_for_an_answer_but_not_past_one() {
     let dropped = io::Error::new(io::ErrorKind::BrokenPipe, "connection closed");
     for (status, retry) in [
         // The client made this status: the daemon never answered.
-        (tonic::Status::from_error(Box::new(dropped)), true),
+        (
+            tonic::Status::from_error(Box::new(dropped)),
+            Retry::AfterRestart,
+        ),
         // The daemon answered with this status.
         (
             tonic::Status::unknown("upgrade record is unreadable"),
-            false,
+            Retry::Never,
         ),
     ] {
         let error = ConnectError::from(status);
-        assert_eq!(error.is_setup_retryable(), retry, "{error}");
-        assert!(!error.is_retryable(), "{error}");
+        assert_eq!(error.retry(), retry, "{error}");
+    }
+}
+
+#[test]
+fn each_connect_failure_names_one_retry_class() {
+    let remote = |code| {
+        ConnectError::Remote(RpcError {
+            code,
+            message: "x".into(),
+            details: serde_json::Value::Null,
+            cause: Vec::new(),
+        })
+    };
+    for (error, retry) in [
+        (
+            ConnectError::Io(io::ErrorKind::ConnectionRefused.into()),
+            Retry::Now,
+        ),
+        (
+            ConnectError::Io(io::Error::from_raw_os_error(11)),
+            Retry::Now,
+        ),
+        (
+            ConnectError::Io(io::ErrorKind::PermissionDenied.into()),
+            Retry::Never,
+        ),
+        (
+            ConnectError::from(tonic::Status::unavailable("x")),
+            Retry::Now,
+        ),
+        (
+            ConnectError::from(tonic::Status::cancelled("x")),
+            Retry::AfterRestart,
+        ),
+        (
+            ConnectError::from(tonic::Status::not_found("x")),
+            Retry::Never,
+        ),
+        (ConnectError::EntryNotReady, Retry::AfterRestart),
+        (remote(RpcErrorCode::Unavailable), Retry::Never),
+        (ConnectError::ClientRefused, Retry::Never),
+        (ConnectError::SshClientMissing, Retry::Never),
+    ] {
+        assert_eq!(error.retry(), retry, "{error}");
     }
 }
 
@@ -237,7 +299,7 @@ fn deadline_exceeded_is_retryable_not_unreachable() {
     let error = ConnectError::Rpc(TransportError::from(tonic::Status::deadline_exceeded(
         "timed out",
     )));
-    assert!(error.is_retryable());
+    assert_eq!(error.retry(), Retry::Now);
     assert!(!error.is_unreachable());
 }
 
@@ -500,8 +562,7 @@ async fn local_socket_that_accepts_but_never_serves_fails_as_starting() {
         crate::ui::chain_text(&error).contains("may still be starting"),
         "{error}"
     );
-    assert!(!error.is_retryable(), "{error}");
-    assert!(error.is_setup_retryable(), "{error}");
+    assert_eq!(error.retry(), Retry::AfterRestart, "{error}");
 }
 
 #[test]
