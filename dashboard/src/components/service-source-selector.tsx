@@ -187,10 +187,11 @@ function SelectorCommandDialog({
 const githubConnectHref = (organizationSlug: string) =>
   `/api/github/connect?${new URLSearchParams({ organization: organizationSlug }).toString()}`;
 
-/** Cross-origin reads throw while the popup is on GitHub. */
+/** Cross-origin reads throw while the popup is on GitHub; before the first redirect it is about:blank. */
 function returnedToPloyz(popup: Window) {
   try {
-    return popup.location.origin === window.location.origin && !popup.location.pathname.startsWith("/api/github/");
+    const { protocol, origin, pathname } = popup.location;
+    return protocol !== "about:" && origin === window.location.origin && !pathname.startsWith("/api/github/");
   } catch {
     return false;
   }
