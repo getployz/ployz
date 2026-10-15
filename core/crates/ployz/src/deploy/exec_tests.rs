@@ -156,6 +156,8 @@ struct Scripted {
     unreadable_flip: bool,
     /// The write fails in transit and never lands.
     dropped_publish: bool,
+    /// A write that holds copies lands but its reply never arrives.
+    lost_hold_reply: bool,
     /// This many writes that release a held copy fail in transit.
     dropped_releases: Mutex<usize>,
     /// No Machine routes a pin.
@@ -189,6 +191,7 @@ impl Scripted {
             lost_reply: false,
             unreadable_flip: false,
             dropped_publish: false,
+            lost_hold_reply: false,
             dropped_releases: Mutex::new(0),
             unrouted_pin: false,
             dead: Vec::new(),
@@ -506,7 +509,11 @@ impl MachineOperations for Scripted {
         {
             return Ok(ServingPointerPublication::Superseded { current });
         }
+        let holds = !flip && request.pointer.is_held();
         pointers.insert(request.service, request.pointer);
+        if holds && self.lost_hold_reply {
+            return Err(error("reply lost"));
+        }
         if flip && self.lost_reply {
             return Err(error("reply lost"));
         }

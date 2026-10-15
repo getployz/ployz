@@ -593,6 +593,35 @@ async fn a_dropped_release_of_a_held_copy_is_retried() {
 }
 
 #[tokio::test]
+async fn a_hold_whose_reply_is_lost_is_released() {
+    let first = machine('1');
+    let old = container('a');
+    let plan = vec![swap(&first, &old, UpdateOrder::StopFirst)];
+    let client = Scripted {
+        lost_hold_reply: true,
+        ..Scripted::new(vec![observed(Call::Inspect(first, old), running())])
+    };
+    let row = ServingPointer {
+        deploy: DeploymentLogId::parse("older").unwrap(),
+        containers: vec![old],
+        previous: Some(DeploymentLogId::parse("oldest").unwrap()),
+        retiring: Vec::new(),
+        deciding: None,
+    };
+    client.pointers.lock().unwrap().insert(api(), row.clone());
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+    assert_eq!(
+        client.pointers.lock().unwrap().get(&api()),
+        Some(&row),
+        "the untouched copy serves again and no hold is left behind"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_stop_first_step_retires_every_old_copy_in_one_amendment() {
     let machines = [machine('1'), machine('2'), machine('3')];
     let olds = [container('a'), container('b'), container('c')];

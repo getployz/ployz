@@ -1393,21 +1393,26 @@ impl<'a> Rows<'a> {
                     read: Some(row),
                     pointer: next.clone(),
                 })
-                .await
-                .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?;
-            match publication {
-                ServingPointerPublication::Published => {
-                    self.admitted.lock().unwrap().insert(group, next);
-                    if deciding.is_some() {
-                        self.held_old_copies
-                            .lock()
-                            .unwrap()
-                            .entry(group)
-                            .or_default()
-                            .extend(leaving);
-                    }
-                    return Ok(());
+                .await;
+            // A write with no reply may have landed, so a hold is tracked
+            // either way; releasing an unlanded hold changes nothing.
+            if matches!(publication, Ok(ServingPointerPublication::Published))
+                || publication.is_err() && deciding.is_some()
+            {
+                self.admitted.lock().unwrap().insert(group, next);
+                if deciding.is_some() {
+                    self.held_old_copies
+                        .lock()
+                        .unwrap()
+                        .entry(group)
+                        .or_default()
+                        .extend(leaving);
                 }
+            }
+            match publication
+                .map_err(|error| machine_error(MachineAction::PublishServingPointer, error))?
+            {
+                ServingPointerPublication::Published => return Ok(()),
                 ServingPointerPublication::Superseded { current: newer } => current = newer,
             }
         }
