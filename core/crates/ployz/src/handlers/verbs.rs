@@ -262,9 +262,10 @@ pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
     deploy::start,
 );
 pub(crate) const DIFF: Verb =
-    Verb::cloud("diff", Never, review::diff_command, review::diff).docs("services/domains.md");
+    Verb::cloud("diff", Never, review::diff_command, review::diff).docs("services/settings.md");
 pub(crate) const DISCARD: Verb =
-    Verb::cloud("discard", Never, review::discard_command, review::discard);
+    Verb::cloud("discard", Never, review::discard_command, review::discard)
+        .docs("services/settings.md");
 pub(crate) const DOCS: Verb =
     Verb::local("docs", Never, docs::command, docs::run).docs("cli/overview.md");
 pub(crate) const DOMAIN_ADD: Verb =
@@ -902,8 +903,16 @@ mod tests {
     fn names(content: &str, path: &str) -> bool {
         let call = format!("ployz {path}");
         content.match_indices(&call).any(|(at, _)| {
-            !content[at + call.len()..]
-                .starts_with(|next: char| next.is_ascii_alphanumeric() || next == '-')
+            let rest = &content[at + call.len()..];
+            let word = rest.strip_prefix(' ').map_or("", |rest| {
+                rest.split(|next: char| !(next.is_ascii_alphanumeric() || next == '-'))
+                    .next()
+                    .unwrap_or("")
+            });
+            !rest.starts_with(|next: char| next.is_ascii_alphanumeric() || next == '-')
+                && !VERBS
+                    .iter()
+                    .any(|verb| verb.path == format!("{path} {word}"))
         })
     }
 

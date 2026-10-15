@@ -10,6 +10,7 @@ From the CLI, `ployz get web` prints each setting with its value and default, th
 service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. `ployz get
 web.domains` prints only the domains; change them with the `ployz domain` commands, not
 `ployz set`. `ployz explain web` lists every setting a service takes, with its default.
+`ployz diff` shows what you staged, and `ployz discard` undoes it.
 
 ## Source
 
