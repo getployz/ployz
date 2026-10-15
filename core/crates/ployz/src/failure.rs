@@ -1161,7 +1161,7 @@ mod tests {
         let failure = Failure::from(ConnectError::AllFailed {
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
-            setup_retryable: true,
+            retry: ployz_core::Retry::AfterRestart,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
                 io::ErrorKind::ConnectionRefused,
             )))),

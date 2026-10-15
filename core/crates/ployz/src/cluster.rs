@@ -290,7 +290,7 @@ impl Client {
                 Err(error) => error,
             };
             let error = crate::connect::keep_target_reply(&mut reply, error);
-            if !error.is_retryable() {
+            if error.retry() != ployz_core::Retry::Now {
                 return Err(error);
             }
             let Some(delay) = delays.next() else {

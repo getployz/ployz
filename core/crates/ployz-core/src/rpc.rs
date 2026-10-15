@@ -1465,6 +1465,36 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     ConfirmationRequired => "confirmation_required",
 });
 
+/// How a client may repeat a call that failed. Clients decide this; it never
+/// crosses the wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Retry {
+    /// Transient: repeat soon, within the call's own budget.
+    Now,
+    /// The daemon did not serve the call: repeat only where the caller waits
+    /// out a restart.
+    AfterRestart,
+    Never,
+}
+
+impl RpcErrorCode {
+    #[must_use]
+    pub fn retry(&self) -> Retry {
+        match self {
+            Self::Unavailable => Retry::Now,
+            Self::InvalidArgument
+            | Self::NotFound
+            | Self::Ambiguous
+            | Self::Unsupported
+            | Self::Conflict
+            | Self::Internal
+            | Self::Unauthenticated
+            | Self::ConfirmationRequired
+            | Self::Unknown(_) => Retry::Never,
+        }
+    }
+}
+
 impl fmt::Display for RpcErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_str().escape_debug().fmt(f)

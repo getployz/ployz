@@ -19,7 +19,7 @@ use std::{
 
 use hyper_util::rt::TokioIo;
 use ployz_core::{
-    CodecError, FramingError, MachineId, MachineTarget, RoutingMetadataError, RpcError,
+    CodecError, FramingError, MachineId, MachineTarget, Retry, RoutingMetadataError, RpcError,
     RpcErrorCode, apply_one_target,
 };
 use serde_json::{Value, json};
@@ -241,13 +241,11 @@ async fn connect_ssh(
         .await
         .map_err(ConnectError::from_ssh_spawn)?;
     if !output.status.success() {
-        let mut detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        if detail.contains("Permission denied") {
-            detail.push_str("; SSH authentication is noninteractive: unlock your key with ssh-add or configure credentials that do not require a prompt");
-        }
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(ConnectError::SshProbe {
             target: destination.target().to_owned(),
             status: output.status,
+            failure: SshFailure::of(&detail),
             detail,
         });
     }
@@ -515,7 +513,7 @@ pub async fn connect_selected_with(
     connector: Arc<dyn Connector>,
 ) -> Result<Client, ConnectError> {
     let mut last_error = None;
-    let mut setup_retryable = false;
+    let mut retry = Retry::Never;
     for (index, connection) in selected.connections.iter().enumerate() {
         match connect_one(connection, &selected.source, &connector).await {
             Ok(client) => return Ok(client),
@@ -530,7 +528,9 @@ pub async fn connect_selected_with(
                 return Err(error);
             }
             Err(error) => {
-                setup_retryable |= error.is_setup_retryable();
+                if error.retry() != Retry::Never {
+                    retry = Retry::AfterRestart;
+                }
                 last_error = Some(error);
             }
         }
@@ -538,7 +538,7 @@ pub async fn connect_selected_with(
     Err(ConnectError::AllFailed {
         selection: selected.source,
         attempts: selected.connections.len(),
-        setup_retryable,
+        retry,
         last: last_error.map(Box::new),
     })
 }
@@ -666,10 +666,11 @@ pub enum ConnectError {
     ClientCleared,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing,
-    #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}")]
+    #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}{}", failure.hint())]
     SshProbe {
         target: String,
         status: std::process::ExitStatus,
+        failure: SshFailure,
         detail: String,
     },
     #[error("Machine RPC routing metadata is invalid.")]
@@ -692,7 +693,8 @@ pub enum ConnectError {
     AllFailed {
         selection: ConnectionSource,
         attempts: usize,
-        setup_retryable: bool,
+        /// [`Retry::AfterRestart`] when any connection may still come up.
+        retry: Retry,
         #[source]
         last: Option<Box<ConnectError>>,
     },
@@ -723,17 +725,25 @@ impl ConnectError {
         }
     }
 
-    pub(crate) fn is_retryable(&self) -> bool {
+    pub(crate) fn retry(&self) -> Retry {
         match self {
-            Self::Attempt(_)
-            | Self::Exhausted(_)
-            | Self::Io(_)
-            | Self::Dial(_)
+            Self::Attempt(_) | Self::Exhausted(_) | Self::Dial(_) | Self::Join(_) => Retry::Now,
+            Self::Io(error) if transient_io(error) => Retry::Now,
+            Self::SshProbe {
+                failure: SshFailure::Network,
+                ..
+            } => Retry::Now,
+            Self::Rpc(error) => match rpc_error_code(error.code).retry() {
+                // A restarting daemon drops the connection without answering.
+                Retry::Never if error.unanswered => Retry::AfterRestart,
+                retry @ (Retry::Now | Retry::AfterRestart | Retry::Never) => retry,
+            },
+            // A socket-activated daemon accepts before it serves.
+            Self::EntryNotReady => Retry::AfterRestart,
+            Self::AllFailed { retry, .. } => *retry,
+            Self::Io(_)
             | Self::SshProbe { .. }
-            | Self::Join(_) => true,
-            Self::Rpc(error) => error.is_retryable(),
-            Self::Remote(_)
-            | Self::EntryNotReady
+            | Self::Remote(_)
             | Self::IdentityMismatch { .. }
             | Self::ClientRefused
             | Self::ClientCleared
@@ -746,58 +756,16 @@ impl ConnectError {
             | Self::Connection(_)
             | Self::Context(_)
             | Self::Path { .. }
-            | Self::AllFailed { .. }
             | Self::Codec(_)
             | Self::Framing(_)
-            | Self::Value(_) => false,
+            | Self::Value(_) => Retry::Never,
         }
     }
 
     /// Repeatable reads retry until the daemon answers; an answer is final.
     /// They must not spend a minute retrying missing credentials or keys.
-    #[expect(
-        clippy::wildcard_enum_match_arm,
-        reason = "setup overrides SSH, IO, RPC and aggregate errors; other variants use the exhaustive transport classifier"
-    )]
     pub(crate) fn is_setup_retryable(&self) -> bool {
-        match self {
-            Self::AllFailed {
-                setup_retryable, ..
-            } => *setup_retryable,
-            // A socket-activated daemon accepts before it serves; setup waits it out.
-            Self::EntryNotReady => true,
-            // A restarting daemon drops the connection without answering.
-            Self::Rpc(error) => error.is_retryable() || error.unanswered,
-            Self::SshProbe { detail, .. } => [
-                "Connection timed out",
-                "Operation timed out",
-                "Connection refused",
-                "No route to host",
-                "Network is unreachable",
-                "Connection reset",
-                "Connection closed",
-                "Temporary failure in name resolution",
-            ]
-            .iter()
-            .any(|message| detail.contains(message)),
-            Self::Io(error) => {
-                crate::setup_retry::temporary_dns(error)
-                    || matches!(
-                        error.kind(),
-                        io::ErrorKind::ConnectionRefused
-                            | io::ErrorKind::ConnectionReset
-                            | io::ErrorKind::ConnectionAborted
-                            | io::ErrorKind::BrokenPipe
-                            | io::ErrorKind::NotFound
-                            | io::ErrorKind::TimedOut
-                            | io::ErrorKind::NotConnected
-                            | io::ErrorKind::UnexpectedEof
-                            | io::ErrorKind::NetworkUnreachable
-                            | io::ErrorKind::HostUnreachable
-                    )
-            }
-            _ => self.is_retryable(),
-        }
+        self.retry() != Retry::Never
     }
 
     pub(crate) fn is_unreachable(&self) -> bool {
@@ -902,14 +870,6 @@ impl TransportError {
     }
 
     #[must_use]
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self.code,
-            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
-        )
-    }
-
-    #[must_use]
     pub fn is_unavailable(&self) -> bool {
         self.code == tonic::Code::Unavailable
     }
@@ -964,6 +924,63 @@ impl From<tonic::Status> for TransportError {
                     || json!({ "grpc_details": String::from_utf8_lossy(status.details()) }),
                 )
             },
+        }
+    }
+}
+
+fn transient_io(error: &io::Error) -> bool {
+    crate::setup_retry::temporary_dns(error)
+        || matches!(
+            error.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotFound
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::NotConnected
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::NetworkUnreachable
+                | io::ErrorKind::HostUnreachable
+        )
+}
+
+/// What an SSH probe's stderr says went wrong. Exit status 255 covers every
+/// ssh failure, so its text is the only channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshFailure {
+    Network,
+    Auth,
+    Other,
+}
+
+impl SshFailure {
+    fn of(detail: &str) -> Self {
+        const NETWORK: [&str; 8] = [
+            "Connection timed out",
+            "Operation timed out",
+            "Connection refused",
+            "No route to host",
+            "Network is unreachable",
+            "Connection reset",
+            "Connection closed",
+            "Temporary failure in name resolution",
+        ];
+        if NETWORK.iter().any(|message| detail.contains(message)) {
+            Self::Network
+        } else if detail.contains("Permission denied") {
+            Self::Auth
+        } else {
+            Self::Other
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            Self::Auth => {
+                "; SSH authentication is noninteractive: unlock your key with ssh-add or configure credentials that do not require a prompt"
+            }
+            Self::Network | Self::Other => "",
         }
     }
 }
