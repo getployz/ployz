@@ -5,6 +5,23 @@ use crate::{BuildError, Request};
 use serde_norway::Value;
 use std::{fs, net::IpAddr};
 
+/// Loopback ports BuildKit must reach for this request's image contexts.
+pub(crate) fn loopback_ports(request: &Request<'_>) -> Vec<u16> {
+    request
+        .image_contexts
+        .values()
+        .map(|image| &image.source)
+        .filter(|source| {
+            source
+                .management_address
+                .0
+                .to_ipv4_mapped()
+                .is_some_and(|address| address.is_loopback())
+        })
+        .map(|source| source.port)
+        .collect()
+}
+
 pub(crate) fn prepare(request: &Request<'_>) -> Result<(), BuildError> {
     if request.image_contexts.is_empty() {
         return Ok(());

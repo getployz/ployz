@@ -8,7 +8,7 @@ use defguard_wireguard_rs::{
     Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
 use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
-use ployzd::network::{NetworkError, apply_firewall_rules};
+use ployzd::network::{NetworkError, apply_firewall_rules, fence_builder};
 
 const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
@@ -457,6 +457,151 @@ fn build_steps_never_reach_the_host() {
     }
     let _server = stream_server(&service, "10.210.1.2", 51503);
     assert_connection_denied(&step, "10.10.0.2", "10.210.1.2", 51503);
+}
+
+#[test]
+#[ignore = "requires passwordless sudo, cgroup v2 and Linux network namespaces"]
+fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
+    const CHILD: &str = "PLOYZ_FENCE_CGROUP";
+    if let Ok(cgroup) = env::var(CHILD) {
+        fence_builder(&ployz_build::Fence {
+            slot: 0,
+            cgroup: ployz_build::CgroupPath::new(&cgroup).unwrap(),
+            image_ports: vec![51505],
+        })
+        .unwrap();
+        return;
+    }
+
+    sudo(&["-n", "true"]);
+    let suffix = std::process::id();
+    let host = format!("p35-fhost-{suffix}");
+    let peer = format!("p35-fpeer-{suffix}");
+    let _namespaces = Namespaces::new([&host, &peer]);
+    let cgroup = Cgroup::new(&format!("/p35-fence-{suffix}"));
+    sudo(&[
+        "ip", "link", "add", "fence-wg", "type", "veth", "peer", "name", "fpeer-wg",
+    ]);
+    sudo(&["ip", "link", "set", "fence-wg", "netns", &host]);
+    sudo(&["ip", "link", "set", "fpeer-wg", "netns", &peer]);
+    ns(
+        &host,
+        "ip",
+        &["link", "set", "fence-wg", "name", "ployz-wg"],
+    );
+    for (namespace, interface, address) in [
+        (&host, "ployz-wg", "fdcc::1/64"),
+        (&peer, "fpeer-wg", "fdcc::2/64"),
+    ] {
+        ns(namespace, "ip", &["link", "set", "lo", "up"]);
+        ns(
+            namespace,
+            "ip",
+            &["-6", "address", "add", address, "dev", interface, "nodad"],
+        );
+        ns(namespace, "ip", &["link", "set", interface, "up"]);
+    }
+    ns(
+        &host,
+        "ip",
+        &["address", "add", "127.0.0.53/8", "dev", "lo"],
+    );
+
+    let status = Command::new("sudo")
+        .args(["-n", "ip", "netns", "exec", &host, "env"])
+        .arg(format!("{CHILD}={}", cgroup.0))
+        .arg(env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "fence child failed in {host}");
+
+    let mut image_server = stream_server(&peer, "fdcc::2", UNREGISTRY_PORT);
+    cgroup.connect(&host, "fdcc::1", "fdcc::2", UNREGISTRY_PORT);
+    assert_eq!(image_server.peer(), "fdcc::1");
+    let mut image_context = stream_server(&host, "127.0.0.1", 51505);
+    cgroup.connect(&host, "127.0.0.1", "127.0.0.1", 51505);
+    assert_eq!(image_context.peer(), "127.0.0.1");
+    let mut resolver = stream_server(&host, "127.0.0.53", 53);
+    cgroup.connect(&host, "127.0.0.1", "127.0.0.53", 53);
+    assert_eq!(resolver.peer(), "127.0.0.1");
+
+    for (namespace, address, port) in [
+        (&host, "127.0.0.1", 51504),
+        (&host, "fdcc::1", MACHINE_API_PORT),
+        (&peer, "fdcc::2", MACHINE_API_PORT),
+    ] {
+        let source = if address.contains(':') {
+            "fdcc::1"
+        } else {
+            "127.0.0.1"
+        };
+        let mut server = stream_server(namespace, address, port);
+        assert!(
+            !cgroup.connects(&host, source, address, port),
+            "the fenced worker reached {address}:{port}"
+        );
+        connect(&host, source, address, port);
+        assert_eq!(
+            server.peer(),
+            source,
+            "the fence caught a process outside it"
+        );
+    }
+}
+
+/// A cgroup v2 directory standing in for the BuildKit container's.
+struct Cgroup(String);
+
+impl Cgroup {
+    fn new(path: &str) -> Self {
+        sudo(&["mkdir", &format!("/sys/fs/cgroup{path}")]);
+        Self(path.to_owned())
+    }
+
+    /// Joins the cgroup before entering the namespace: `ip netns exec`
+    /// remounts /sys, which hides the cgroup tree.
+    fn connects(&self, namespace: &str, source: &str, target: &str, port: u16) -> bool {
+        Command::new("sudo")
+            .args([
+                "-n",
+                "sh",
+                "-c",
+                "echo $$ > \"/sys/fs/cgroup$1/cgroup.procs\" && shift && exec ip netns exec \"$@\"",
+                "sh",
+                &self.0,
+                namespace,
+                "python3",
+                "-c",
+                "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(socket.AF_INET6 if ':' in a else socket.AF_INET); s.bind((a,0)); s.settimeout(1); s.connect((b,int(p)))",
+                source,
+                target,
+            ])
+            .arg(port.to_string())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    fn connect(&self, namespace: &str, source: &str, target: &str, port: u16) {
+        assert!(
+            self.connects(namespace, source, target, port),
+            "the fenced worker could not reach {target}:{port}"
+        );
+    }
+}
+
+impl Drop for Cgroup {
+    fn drop(&mut self) {
+        let _ = Command::new("sudo")
+            .args(["-n", "rmdir", &format!("/sys/fs/cgroup{}", self.0)])
+            .status();
+    }
 }
 
 #[test]

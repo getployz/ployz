@@ -83,7 +83,8 @@ impl Admission {
                 }
                 return Err(error);
             }
-            let builder = crate::builder::Builder::acquire(&docker, self.lock, &self.resources)?;
+            let builder =
+                crate::builder::Builder::acquire(&docker, self.lock, &self.resources, None)?;
             let result = builder
                 .native_platform(targets, &self.resources)
                 .map(|_| ());

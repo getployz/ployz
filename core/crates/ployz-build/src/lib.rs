@@ -12,6 +12,8 @@
 
 mod builder;
 mod execution;
+mod fence;
+pub use fence::{CgroupPath, Fence, FenceInstaller};
 mod image_contexts;
 mod index;
 mod policy;
@@ -402,7 +404,10 @@ fn execute_produce(
             }
             error
         })?;
-    let builder = Builder::acquire(&docker, admission.lock, &admission.resources)
+    let fence = admission
+        .fence
+        .map(|install| (install, image_contexts::loopback_ports(request)));
+    let builder = Builder::acquire(&docker, admission.lock, &admission.resources, fence)
         .map_err(|error| error.at(Stage::Preparation))?;
     let mut preparation = None;
     let result = (|| {

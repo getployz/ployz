@@ -17,7 +17,7 @@ mod linux;
 
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
-pub use firewall::apply_firewall_rules;
+pub use firewall::{apply_firewall_rules, fence_builder};
 pub use linux::NetworkPlane;
 
 pub const DOCKER_NETWORK_NAME: &str = "ployz";

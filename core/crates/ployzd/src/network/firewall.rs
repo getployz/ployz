@@ -13,6 +13,9 @@ use super::{
 };
 
 const INPUT_CHAIN: &str = "PLOYZ-INPUT";
+/// One chain per build slot, hooked into OUTPUT, so slots never rewrite each
+/// other's fence.
+const BUILD_CHAIN: &str = "PLOYZ-BUILD";
 
 /// Apply the Machine's ingress and forwarding policy, including the private
 /// Machine API, Direct Image Transfer and Volume send endpoints on `management_address`.
@@ -72,9 +75,9 @@ pub fn apply_firewall_rules(
     Ok(())
 }
 
-/// Build steps route to the internet, never into the Machine's services or
-/// across the mesh. Mangle runs before BuildKit's CNI accepts its own bridge's
-/// traffic in filter. A published port is public, so DNAT to it still passes.
+/// Build steps route to the internet, never into the Machine's services, across
+/// the mesh, or to a cloud metadata service. Mangle runs before BuildKit's CNI
+/// accepts its own bridge's traffic in filter. A published port is public, so DNAT to it still passes.
 fn build_forwarding() -> Vec<Vec<String>> {
     let bridges = format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX);
     [
@@ -88,6 +91,7 @@ fn build_forwarding() -> Vec<Vec<String>> {
             "DNAT",
         ],
         vec!["-o", WIREGUARD_INTERFACE_NAME],
+        vec!["-d", LINK_LOCAL],
     ]
     .into_iter()
     .map(|output| {
@@ -99,6 +103,91 @@ fn build_forwarding() -> Vec<Vec<String>> {
             .collect()
     })
     .collect()
+}
+
+const LINK_LOCAL: &str = "169.254.0.0/16";
+/// The host resolver BuildKit reads from its resolv.conf, on loopback.
+const HOST_DNS_PORT: u16 = 53;
+
+/// Fence one build slot's BuildKit worker. BuildKit runs on the host network,
+/// so a Dockerfile `ADD` of a URL would otherwise reach everything the host
+/// reaches. Fenced, it gets the internet, DNS, its own image contexts and the
+/// mesh image servers, and nothing else on the host or the mesh.
+///
+/// Each family's chain and its OUTPUT hook land in one restore transaction.
+/// The hook goes first in OUTPUT, ahead of any loopback accept.
+///
+/// # Errors
+///
+/// Returns why the fence could not be installed. The Build must not solve.
+pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
+    let chain = format!("{BUILD_CHAIN}{}", fence.slot);
+    for (program, rules) in [
+        ("iptables", ipv4_fence(fence)),
+        ("ip6tables", ipv6_fence(fence)),
+    ] {
+        chain_document(program, &chain, "OUTPUT", &rules)
+            .and_then(|document| restore(program, &document))
+            .map_err(|error| ployz_core::error_chain::inline(&error))?;
+    }
+    Ok(())
+}
+
+/// Loopback DNS passes, then `drops` fall on the worker's sockets alone. The
+/// cgroup sits on each drop, not on a leading RETURN: a SYN-ACK or reset the
+/// kernel sends without a full socket never matches a cgroup, so a negated
+/// match would fence every host listener's replies.
+fn fenced(
+    fence: &ployz_build::Fence,
+    loopback: &str,
+    allowed: Vec<String>,
+    drops: &[String],
+) -> Vec<String> {
+    let mut rules: Vec<String> = ["udp", "tcp"]
+        .iter()
+        .map(|protocol| format!("-d {loopback} -p {protocol} --dport {HOST_DNS_PORT} -j RETURN"))
+        .collect();
+    rules.extend(allowed.into_iter().map(|rule| format!("{rule} -j RETURN")));
+    let cgroup = fence.cgroup.as_str();
+    rules.push(format!(
+        "-m cgroup --path {cgroup} -m addrtype --dst-type LOCAL -j DROP"
+    ));
+    rules.extend(
+        drops
+            .iter()
+            .map(|rule| format!("-m cgroup --path {cgroup} {rule} -j DROP")),
+    );
+    rules
+}
+
+fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
+    let allowed = fence
+        .image_ports
+        .iter()
+        .map(|port| format!("-d 127.0.0.1/32 -p tcp --dport {port}"))
+        .collect();
+    let mut drops: Vec<String> = [
+        &format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX),
+        DOCKER_NETWORK_NAME,
+        WIREGUARD_INTERFACE_NAME,
+        "docker0",
+    ]
+    .iter()
+    .map(|output| format!("-o {output}"))
+    .collect();
+    for destination in [
+        super::default_cluster_network().to_string(),
+        LINK_LOCAL.into(),
+    ] {
+        drops.push(format!("-d {destination}"));
+    }
+    fenced(fence, "127.0.0.0/8", allowed, &drops)
+}
+
+fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
+    let allowed = vec![format!("-d fdcc::/16 -p tcp --dport {UNREGISTRY_PORT}")];
+    let drops = ["-d fdcc::/16".to_owned(), "-d fe80::/10".to_owned()];
+    fenced(fence, "::1/128", allowed, &drops)
 }
 
 /// Build steps run on their slot's bridge and get only the internet: nothing
@@ -143,18 +232,27 @@ fn management_policy(management_address: ManagementAddress) -> Vec<String> {
     rules
 }
 
+fn filter_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
+    chain_document(program, INPUT_CHAIN, "INPUT", rules)
+}
+
 /// Declaring the chain in a `--noflush` restore replaces its rules in the same
 /// commit that fills it again.
-fn filter_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
-    let mut document = format!("*filter\n:{INPUT_CHAIN} - [0:0]\n");
+fn chain_document(
+    program: &str,
+    chain: &str,
+    hook: &str,
+    rules: &[String],
+) -> Result<String, NetworkError> {
+    let mut document = format!("*filter\n:{chain} - [0:0]\n");
     for rule in rules {
-        document.push_str(&format!("-A {INPUT_CHAIN} {rule}\n"));
+        document.push_str(&format!("-A {chain} {rule}\n"));
     }
     document.push_str(&move_to_top(
         program,
         "filter",
-        "INPUT",
-        &format!("-j {INPUT_CHAIN}"),
+        hook,
+        &format!("-j {chain}"),
     )?);
     document.push_str("COMMIT\n");
     Ok(document)
@@ -258,12 +356,54 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             attempt(checked_command(program, &["-t", "filter", "-F", INPUT_CHAIN]).map(|_| ()));
             attempt(checked_command(program, &["-t", "filter", "-X", INPUT_CHAIN]).map(|_| ()));
         }
+        attempt(remove_build_fences(program));
     }
     if failures.is_empty() {
         Ok(())
     } else {
         Err(NetworkError::Io(std::io::Error::other(failures.join("; "))))
     }
+}
+
+/// Every slot's fence, whichever slots this Machine ever ran.
+fn remove_build_fences(program: &str) -> Result<(), NetworkError> {
+    let listing = checked_command(program, &["-t", "filter", "-S"])?;
+    let listing = String::from_utf8_lossy(&listing.stdout);
+    let hooks = build_fence_hooks(&listing);
+    for chain in &hooks.hooked {
+        delete_rule(program, "filter", "OUTPUT", &["-j", chain])?;
+    }
+    for chain in &hooks.chains {
+        checked_command(program, &["-t", "filter", "-F", chain])?;
+        checked_command(program, &["-t", "filter", "-X", chain])?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct BuildFenceHooks {
+    hooked: Vec<String>,
+    chains: Vec<String>,
+}
+
+fn build_fence_hooks(listing: &str) -> BuildFenceHooks {
+    let slot_chain = |name: &str| {
+        name.strip_prefix(BUILD_CHAIN)
+            .is_some_and(|slot| !slot.is_empty() && slot.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let mut hooks = BuildFenceHooks::default();
+    for line in listing.lines() {
+        if let Some(chain) = line.strip_prefix("-A OUTPUT -j ")
+            && slot_chain(chain)
+        {
+            hooks.hooked.push(chain.to_owned());
+        } else if let Some(chain) = line.strip_prefix("-N ")
+            && slot_chain(chain)
+        {
+            hooks.chains.push(chain.to_owned());
+        }
+    }
+    hooks
 }
 
 fn ensure_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result<(), NetworkError> {
@@ -293,4 +433,74 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
         .args(args)
         .output()
         .is_ok_and(|output| output.status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fence(image_ports: Vec<u16>) -> ployz_build::Fence {
+        ployz_build::Fence {
+            slot: 2,
+            cgroup: ployz_build::CgroupPath::new("/system.slice/docker-abc.scope").unwrap(),
+            image_ports,
+        }
+    }
+
+    #[test]
+    fn the_worker_reaches_dns_and_its_image_contexts_but_nothing_else_on_the_host() {
+        assert_eq!(
+            ipv4_fence(&fence(vec![41_234])),
+            [
+                "-d 127.0.0.0/8 -p udp --dport 53 -j RETURN",
+                "-d 127.0.0.0/8 -p tcp --dport 53 -j RETURN",
+                "-d 127.0.0.1/32 -p tcp --dport 41234 -j RETURN",
+                "-m cgroup --path /system.slice/docker-abc.scope -m addrtype --dst-type LOCAL -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -o ployz-build+ -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -o ployz -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -o ployz-wg -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -o docker0 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 10.210.0.0/16 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d 169.254.0.0/16 -j DROP",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_worker_reaches_only_the_image_servers_across_the_mesh() {
+        assert_eq!(
+            ipv6_fence(&fence(vec![41_234])),
+            [
+                "-d ::1/128 -p udp --dport 53 -j RETURN",
+                "-d ::1/128 -p tcp --dport 53 -j RETURN",
+                "-d fdcc::/16 -p tcp --dport 7572 -j RETURN",
+                "-m cgroup --path /system.slice/docker-abc.scope -m addrtype --dst-type LOCAL -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d fdcc::/16 -j DROP",
+                "-m cgroup --path /system.slice/docker-abc.scope -d fe80::/10 -j DROP",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_steps_never_reach_a_cloud_metadata_service() {
+        assert!(
+            build_forwarding().contains(
+                &["-i", "ployz-build+", "-d", "169.254.0.0/16", "-j", "DROP"]
+                    .map(str::to_owned)
+                    .to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn teardown_finds_every_slots_fence_and_nothing_else() {
+        let listing = "-P OUTPUT ACCEPT\n-N PLOYZ-BUILD0\n-N PLOYZ-BUILD12\n-N PLOYZ-BUILDX\n-N PLOYZ-INPUT\n-A OUTPUT -j PLOYZ-BUILD12\n-A OUTPUT -j PLOYZ-BUILD0\n-A OUTPUT -j ufw-before-output\n-A INPUT -j PLOYZ-INPUT\n";
+        assert_eq!(
+            build_fence_hooks(listing),
+            BuildFenceHooks {
+                hooked: vec!["PLOYZ-BUILD12".into(), "PLOYZ-BUILD0".into()],
+                chains: vec!["PLOYZ-BUILD0".into(), "PLOYZ-BUILD12".into()],
+            }
+        );
+    }
 }
