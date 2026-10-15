@@ -154,8 +154,12 @@ it.live("a push keeps every event the Machine shipped, advances the cursor, and 
 
 it.live("a replayed seq answers 204 and writes nothing", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
-  expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(204);
+  const body = push([[10, WEB], [12, WEB]]);
+  expect((yield* send(body)).status).toBe(204);
   const before = yield* rows();
+  expect(before.crashes.map(({ seq }) => seq)).toEqual([10n, 12n]);
+  expect(before.events).toHaveLength(1);
+  expect((yield* send(body)).status).toBe(204);
   expect(yield* rows()).toEqual(before);
 }), 60_000);
 

@@ -58,7 +58,7 @@ export const claimCrashMail = Effect.fn("CrashMail.claim")(function* (
       from crash_event
       where organization_id = ${organizationId} and service_id = ${serviceId} and mailed_at is null
       order by received_at, id
-      for update skip locked`, "objects");
+      for update`, "objects");
     const [first] = unmailed;
     if (first === undefined) return { kind: "none" } satisfies CrashClaim;
     const last = unmailed.reduce((latest, row) => row.occurredMs >= latest.occurredMs ? row : latest, first);

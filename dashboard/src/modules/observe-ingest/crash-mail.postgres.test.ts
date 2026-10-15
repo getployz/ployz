@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { asc, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect, Fiber, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -60,8 +60,18 @@ const setup = Effect.fn(function* () {
   const mails = () => send.mock.calls.flatMap(([event]) => (Array.isArray(event) ? event : [event]))
     .map((event) => ({ id: event.id, data: event.data as MailSendRequestedEventData }));
   const claim = (now: string) => provide(claimCrashMail(ORGANIZATION, WEB, new Date(now), NAMES));
+  // A cancelled run's claim that holds the rows, then rolls back and is never retried.
+  const failingClaim = provide(Effect.gen(function* () {
+    const database = yield* Database;
+    yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`select id from crash_event for update`);
+      yield* Effect.sleep("500 millis");
+      return yield* Effect.fail("rolled back");
+    }));
+  }).pipe(Effect.ignore));
   const prune = (now: string) => provide(pruneCrashEvents(new Date(now)));
-  return { crash, unmailed, remaining, mails, claim, prune };
+  return { crash, unmailed, remaining, mails, claim, failingClaim, prune };
 });
 
 it.live("five crashes queue one mail that counts them, naming the service, its Server and the last exit", () => Effect.gen(function* () {
@@ -96,6 +106,18 @@ it.live("a crash within the hour after a mail waits for the hour to pass, then m
   expect(yield* claim("2026-10-15T04:02:00Z")).toEqual({ kind: "mailed", count: 1 });
   expect(mails().map((mail) => mail.data.subject)).toEqual(["web crashed in shop / production", "web crashed in shop / production"]);
   expect(yield* claim("2026-10-15T04:03:00Z")).toEqual({ kind: "none" });
+}));
+
+it.live("a claim that waits on a cancelled run's rolled-back claim still mails its crashes", () => Effect.gen(function* () {
+  const { crash, unmailed, mails, claim, failingClaim } = yield* setup();
+  yield* crash("2026-10-15T03:01:00Z");
+  const cancelled = yield* Effect.forkChild(failingClaim);
+  yield* Effect.sleep("100 millis");
+
+  expect(yield* claim("2026-10-15T03:02:00Z")).toEqual({ kind: "mailed", count: 1 });
+  yield* Fiber.join(cancelled);
+  expect(yield* unmailed()).toEqual([]);
+  expect(mails()).toHaveLength(1);
 }));
 
 it.live("pruning deletes crashes older than 30 days and keeps the rest", () => Effect.gen(function* () {
