@@ -960,6 +960,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stop_deciding_when_its_container_is_forgotten_keeps_no_hold() {
+        let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
+        let (asked, was_asked) = tokio::sync::oneshot::channel();
+        let (decide, decided) = tokio::sync::oneshot::channel::<()>();
+        let stopping = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .stop_if(&container_id, None, None, async move {
+                        let _ = asked.send(());
+                        let _ = decided.await;
+                        Ok::<_, Error>(true)
+                    })
+                    .await
+            }
+        });
+        was_asked.await.unwrap();
+
+        runtime.forget(&container_id).await;
+        decide.send(()).unwrap();
+        let _ = stopping.await.unwrap();
+        assert!(
+            !runtime.stranded().await.held.contains(&container_id),
+            "a forgotten container must not stay held"
+        );
+    }
+
+    #[tokio::test]
     async fn a_container_stays_withdrawn_until_its_last_withdrawal_drops() {
         let (runtime, _fake, container_id) = stranded(PORT_TAKEN).await;
         for first_released_first in [true, false] {

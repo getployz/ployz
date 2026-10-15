@@ -63,6 +63,13 @@ impl Holds {
         self.table().stopped.remove(container_id);
     }
 
+    /// Also voids stops still deciding, so a removed Container is never kept.
+    pub(super) fn forget(&self, container_id: &ContainerId) {
+        let mut table = self.table();
+        table.stopped.remove(container_id);
+        table.deciding.remove(container_id);
+    }
+
     fn table(&self) -> std::sync::MutexGuard<'_, HoldTable> {
         self.0.lock().expect("stranded holds are never poisoned")
     }
@@ -77,7 +84,10 @@ pub(super) struct Held {
 
 impl Held {
     pub(super) fn keep(self) {
-        self.holds.table().stopped.insert(self.container_id);
+        let mut table = self.holds.table();
+        if table.deciding.contains_key(&self.container_id) {
+            table.stopped.insert(self.container_id);
+        }
     }
 }
 
