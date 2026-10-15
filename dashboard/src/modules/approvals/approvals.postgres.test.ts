@@ -27,7 +27,7 @@ import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
-import { acmeWeb, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a501";
 const OTHER = "00000000-0000-4000-8000-00000000a502";
@@ -37,6 +37,10 @@ const SERVICE = "00000000-0000-4000-8000-00000000a505";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000a506";
 const UNKNOWN_APPROVAL = "00000000-0000-4000-8000-00000000a5ff";
 const here = { project: null, environment: null };
+const deploy = (n: number): ConfigCommand => ({
+  command: "admit", admit: "deploy", id: `00000000-0000-4000-8000-0000000a52${n.toString().padStart(2, "0")}`,
+  environment: here, services: [], version: null, accept_volume_loss: [],
+});
 const publish: ConfigCommand = { command: "publish", environment: here, version: null, accept_volume_loss: [] };
 const addService = (n: number): ConfigCommand => ({
   command: "create_service", id: `00000000-0000-4000-8000-0000000a51${n.toString().padStart(2, "0")}`, environment: here, name: `cache${n}`, image: "redis:7",
@@ -46,7 +50,7 @@ const addService = (n: number): ConfigCommand => ({
  * Shop with `web` deployed (its Applied State written as a finished Deployment would), then removed in the Working
  * State. `refusal` is what the Store answers the CLI's Publish with while a human must approve removing `web`.
  */
-const shopRemovingWeb = Effect.fn(function* () {
+const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
   const cloud = yield* storeTestCloud();
   const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
@@ -63,7 +67,7 @@ const shopRemovingWeb = Effect.fn(function* () {
       select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
       from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
   }));
-  yield* write({ command: "remove_service", environment: here, service: "web" });
+  if (removeWeb) yield* write({ command: "remove_service", environment: here, service: "web" });
   const withApproval = (approval: Approval) => ({ ...acmeWeb(), approval });
   const refusal = Effect.flip(storeTry(() => store.write(ORGANIZATION, publish, withApproval("required"))))
     .pipe(Effect.map((refused) => refused.refusal));
@@ -362,6 +366,27 @@ it.live("`ployz mcp`'s Publish asks as an agent, so another of the person's toke
 
     const fromCli = yield* askedBy();
     expect(yield* approve(fromCli.id, fromCli.digest)).toMatchObject({ ok: true, approval: { status: "approved" } });
+  }));
+
+it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destroys nothing; the CLI's doesn't", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, store } = yield* shopRemovingWeb(false);
+    const write = vi.spyOn(store, "write");
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    expect(yield* cli(deploy(1))).toMatchObject({ status: 200 });
+    expect(yield* cli(addService(1), undefined, "agent")).toMatchObject({ status: 200 });
+
+    const asked = yield* cli(deploy(2), undefined, "agent");
+    expect(asked.status).toBe(409);
+    expect(asked.json.error).toMatchObject({ code: "approval_required", details: { effects: [] } });
+    expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.asks]))
+      .toEqual([["admit", "destroys"], ["create_service", "destroys"], ["admit", "every_deploy"]]);
+
+    const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
+    const digest = asked.json.error?.details?.approval ?? expect.fail("no digest");
+    const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
+    expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
+    expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
   }));
 
 type Shop = Effect.Success<ReturnType<typeof shopRemovingWeb>>;

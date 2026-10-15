@@ -1,5 +1,6 @@
-import type { ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, JsonValue } from "@ployz/sdk";
+import type { Asks, ConfigCommand, DestructiveEffect, DestructiveKind, DiffView, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
+import type { Caller } from "#/modules/identity/actor";
 
 export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
@@ -26,12 +27,13 @@ export function approvalSubject(command: string, review: ApprovalReview) {
   return { verb: command === "publish" ? "Save" : "Deploy", name: review.diff.environment.name };
 }
 
-/** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. */
+/** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
 export function approvalBadge(command: string, { effects }: ApprovalReview) {
   if (command === "publish") return "Deletes on deploy";
   if (command === "stop") return "Stops service";
   if (command === "restart") return "Restarts service";
-  if (effects.length > 0 && effects.every((effect) => effect.kind === "deletes_volume")) {
+  if (effects.length === 0) return "Deploys";
+  if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
   }
   return `Destroys ${effects.length} ${effects.length === 1 ? "thing" : "things"}`;
@@ -40,6 +42,11 @@ export function approvalBadge(command: string, { effects }: ApprovalReview) {
 /** The writes the Store reviews for destruction: Save only (the Store's publish), and a manual Deploy. Nothing else waits for a human. */
 export function asksApproval(command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy");
+}
+
+/** Which Deploys wait for a human: every one an agent asks for, else only one that destroys something. */
+export function approvalAsks(via: Caller["via"], command: ConfigCommand): Asks {
+  return via === "agent" && command.command === "admit" && command.admit === "deploy" ? "every_deploy" : "destroys";
 }
 
 /** `POST /api/cli/approvals/:id`: approve exactly the digest the human saw, or deny with a reason the agent gets back. */
