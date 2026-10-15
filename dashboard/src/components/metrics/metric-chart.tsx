@@ -101,6 +101,7 @@ export function MetricChart({
   const tick = new Intl.DateTimeFormat("en-US", to - from <= 86_400_000
     ? { hour: "numeric", minute: "2-digit", timeZone }
     : { month: "short", day: "numeric", timeZone });
+  const legend = series.filter((line, index) => series.findIndex((other) => other.label === line.label) === index);
   const rows: Row[] = times.map((at, index) => ({ at: new Date(at), values: series.map((line) => line.values[index] ?? null) }));
   const focusRows = rows.filter((row) => focusAt.includes(row.at.getTime()));
   const present = series.flatMap((line) => line.values.flatMap((point) => point === null ? [] : [point]));
@@ -225,9 +226,9 @@ export function MetricChart({
           ))}
         </div>
       </div>
-      {series.length > 1 ? (
+      {legend.length > 1 ? (
         <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {series.map((line) => (
+          {legend.map((line) => (
             <span key={line.label} className="flex items-center gap-1.5">
               <span aria-hidden className="inline-block w-3 border-t-2" style={{ borderColor: line.color, borderStyle: line.dashed ? "dashed" : "solid" }} />
               {line.label}

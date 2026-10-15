@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "#/components/ui/popover
 import { localDay } from "../local-time";
 import { customDays, customRange, PRESET_RANGES, type RangeSpec } from "./analytics-model";
 
-type RangePickerProps = { range: RangeSpec; timezone: string; onRange: (range: RangeSpec) => void };
+type RangePickerProps = { range: RangeSpec; timezone: string | undefined; onRange: (range: RangeSpec) => void };
 
 function rangeLabel(range: RangeSpec) {
   const preset = PRESET_RANGES.find((candidate) => candidate.spec === range);
@@ -26,19 +26,19 @@ export function RangePicker({ range, timezone, onRange }: RangePickerProps) {
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger render={<Button variant="outline" size="sm" />}>
+      <PopoverTrigger render={<Button variant="outline" size="sm" disabled={timezone === undefined} />}>
         <CalendarIcon data-icon="inline-start" />
         {rangeLabel(range)}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72">
-        <RangeForm range={range} timezone={timezone} onRange={pick} />
+        {timezone === undefined ? null : <RangeForm range={range} timezone={timezone} onRange={pick} />}
       </PopoverContent>
     </Popover>
   );
 }
 
 /** Mounts with each opening, so the days start at the range shown. */
-function RangeForm({ range, timezone, onRange }: RangePickerProps) {
+function RangeForm({ range, timezone, onRange }: RangePickerProps & { timezone: string }) {
   const today = localDay(timezone, Date.now());
   const shown = customDays(range) ?? { from: today, to: today };
   const [from, setFrom] = useState(shown.from);
