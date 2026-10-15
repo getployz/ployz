@@ -6,8 +6,7 @@ import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { ingestPageviewPush } from "#/modules/observe-ingest/ingest.server";
 import type { PageviewInput } from "#/modules/observe-ingest/ingest";
-import * as compute from "#/modules/web-analytics/compute";
-import { expectedOf, type Fixture, type FixtureSite, type QuerySpec, type Serialized, serialized, storeAnswer } from "#/modules/web-analytics/fixtures/fixture";
+import { expectedOf, type Fixture, type FixtureSite, type QuerySpec, serialized, storeAnswer } from "#/modules/web-analytics/fixtures/fixture";
 import { loadFixture, pageviewValues, seedSite } from "#/modules/web-analytics/fixtures/seed";
 import type { GoalRecord, PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
 import { localDay } from "#/modules/web-analytics/local-time";
@@ -32,19 +31,11 @@ const wholeOverview = (fixture: Fixture) => {
   return whole;
 };
 
-type Bucket = Serialized<ReturnType<typeof compute.timeseries>>[number];
-
 const expectedWhileDirty = (spec: QuerySpec, site: FixtureSite, rows: ReadonlyArray<PageviewRecord>, late: ReadonlyArray<PageviewRecord>, goals: ReadonlyArray<GoalRecord>) => {
   const rolled = serialized(expectedOf(spec, site.timezone, rows, goals));
   if (late.length === 0) return rolled;
   const raw = serialized(expectedOf(spec, site.timezone, [...rows, ...late], goals));
-  if (spec.filters.length > 0) return raw;
-  if (spec.kind !== "timeseries" || spec.interval !== "hour") return rolled;
-  return (rolled as Bucket[]).map((bucket, i) => {
-    const seen = (raw as Bucket[])[i];
-    if (seen === undefined) throw new Error(`raw hour timeseries has no bucket ${i}`);
-    return { ...bucket, pageviews: seen.pageviews, visitors: seen.visitors };
-  });
+  return spec.filters.length > 0 ? raw : rolled;
 };
 
 const everyAnswerMatches = (site: FixtureSite, fixture: Fixture, rows: ReadonlyArray<PageviewRecord>, goals: ReadonlyArray<GoalRecord>, when: string, late: ReadonlyArray<PageviewRecord> = []) =>
@@ -198,8 +189,8 @@ it.live("retention drops only partitions wholly before the cutoff and trims ever
         insert into analytics.daily (environment_id, day, dim, value, pageviews, visitors, visits, bounces, total_duration)
         select ${site.environmentId}::text, d::date, '', '', 1, 1, 1, 0, 0 from unnest(array['2025-08-15', '2025-09-13', '2025-09-14', '2026-10-01']) d`);
       yield* drizzle.execute(sql`
-        insert into analytics.session_hourly (environment_id, hour, visits, bounces, total_duration)
-        select ${site.environmentId}::text, h::timestamptz, 1, 0, 0 from unnest(array['2025-09-13T23:00:00Z', '2025-09-14T00:00:00Z']) h`);
+        insert into analytics.session_hourly (environment_id, hour, pageviews, visitors, visits, bounces, total_duration)
+        select ${site.environmentId}::text, h::timestamptz, 1, 1, 1, 0, 0 from unnest(array['2025-09-13T23:00:00Z', '2025-09-14T00:00:00Z']) h`);
     }));
 
     expect(yield* provide(retention(new Date("2026-10-15T10:30:00Z")))).toEqual(["pageview_202508"]);

@@ -77,6 +77,8 @@ export const analyticsSessionHourly = analytics.table(
   {
     environmentId: text("environment_id").notNull(),
     hour: timestamptz("hour").notNull(),
+    pageviews: bigint("pageviews", { mode: "number" }).notNull(),
+    visitors: bigint("visitors", { mode: "number" }).notNull(),
     visits: bigint("visits", { mode: "number" }).notNull(),
     bounces: bigint("bounces", { mode: "number" }).notNull(),
     totalDuration: bigint("total_duration", { mode: "number" }).notNull(),

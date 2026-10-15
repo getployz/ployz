@@ -4,7 +4,8 @@ import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { type Fixture, rangeOf, serialized, storeAnswer } from "#/modules/web-analytics/fixtures/fixture";
 import { FIXTURE_ORGANIZATION, loadFixture, seedSite } from "#/modules/web-analytics/fixtures/seed";
-import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
+import { type PageviewRecord, Reference } from "#/modules/web-analytics/fixtures/reference";
+import type { BucketRow } from "#/modules/web-analytics/model";
 import { dayEnd, dayStart, hourBuckets } from "#/modules/web-analytics/local-time";
 import { analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
@@ -98,20 +99,25 @@ it.live("a source filter keeps a visit whole, its direct pages included, raw and
   }), 60_000);
 
 for (const day of ["2026-10-04", "2026-04-05"]) {
-  it.live(`Lord Howe ${day}: the hour buckets are the hours the store groups by, raw and rolled`, () =>
+  it.live(`Lord Howe ${day}: the hour series matches the reference over the shifted hours, raw and rolled`, () =>
     Effect.gen(function* () {
       const provide = yield* setup();
       const site = { environmentId: "00000000-0000-4000-8000-00000000a0f2", timezone: "Australia/Lord_Howe" };
       const range = { start: dayStart(site.timezone, day), end: dayEnd(site.timezone, day) };
       const rows: PageviewRecord[] = [];
       for (let at = range.start.getTime(); at < range.end.getTime(); at += 15 * 60_000) rows.push(row(new Date(at).toISOString(), String(at)));
+      for (let at = range.start.getTime() + 60_000; at < range.end.getTime(); at += 7 * 60_000) {
+        rows.push(row(new Date(at).toISOString(), "7", { pathname: `/docs/${at % 3}` }));
+      }
       yield* provide(seedSite(site, rows));
       const query: StoreQuery = { ...site, range, filters: [] };
+      const byBucket = (series: ReadonlyArray<BucketRow>) => [...series].sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
+      const expected = byBucket(new Reference(site.timezone, rows, range, []).hourlyTotals());
       const buckets = hourBuckets(site.timezone, range.start, range.end).map((bucket) => bucket.getTime());
-      const keys = (rows: ReadonlyArray<{ bucket: Date }>) => rows.map((row) => row.bucket.getTime()).sort((a, b) => a - b);
-      expect(keys(yield* provide(hourlyTotals(query)))).toEqual(buckets);
+      expect(expected.map((bucket) => bucket.bucket.getTime())).toEqual(buckets);
+      expect(byBucket(yield* provide(hourlyTotals(query)))).toEqual(expected);
       expect(yield* provide(closeDays(site.environmentId, new Date(range.end.getTime() + 86_400_000)))).toBeGreaterThan(0);
-      expect(keys(yield* provide(hourlyTotals(query)))).toEqual(buckets);
+      expect(byBucket(yield* provide(hourlyTotals(query)))).toEqual(expected);
     }), 60_000);
 }
 

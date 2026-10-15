@@ -59,11 +59,18 @@ const writeDay = Effect.fn("WebAnalytics.writeDay")(function* (site: RollupSite,
     sessions as materialized (select * from visits where ts >= ${instant(start)} and ts < ${instant(end)}),
     day_rows as materialized (select * from visit_rows),
     hourly as (
-      insert into analytics.session_hourly (environment_id, hour, visits, bounces, total_duration)
-      select ${site.environmentId}::text, ${localHour(site.timezone)} as hour, count(*)::bigint,
-        count(*) filter (where pageviews = 1)::bigint, coalesce(sum(duration), 0)::bigint
-      from sessions
-      group by 2
+      insert into analytics.session_hourly (environment_id, hour, pageviews, visitors, visits, bounces, total_duration)
+      select ${site.environmentId}::text, hour, coalesce(pv.pageviews, 0), coalesce(pv.visitors, 0),
+        coalesce(ss.visits, 0), coalesce(ss.bounces, 0), coalesce(ss.total_duration, 0)
+      from (
+        select ${localHour(site.timezone)} as hour, count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors
+        from day_rows group by 1
+      ) pv
+      full join (
+        select ${localHour(site.timezone)} as hour, count(*)::bigint as visits, count(*) filter (where pageviews = 1)::bigint as bounces,
+          coalesce(sum(duration), 0)::bigint as total_duration
+        from sessions group by 1
+      ) ss using (hour)
     ), pv as (
       select dim, value, sum(pageviews)::bigint as pageviews, count(*)::bigint as visitors
       from (

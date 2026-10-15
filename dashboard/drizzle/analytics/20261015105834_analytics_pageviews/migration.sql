@@ -63,6 +63,8 @@ CREATE TABLE "analytics"."rollup_state" (
 CREATE TABLE "analytics"."session_hourly" (
 	"environment_id" text,
 	"hour" timestamp with time zone,
+	"pageviews" bigint NOT NULL,
+	"visitors" bigint NOT NULL,
 	"visits" bigint NOT NULL,
 	"bounces" bigint NOT NULL,
 	"total_duration" bigint NOT NULL,

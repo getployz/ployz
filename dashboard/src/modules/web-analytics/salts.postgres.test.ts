@@ -162,7 +162,7 @@ it.live("a new time zone drops the site's rollups and starts its rollup state ov
     const { drizzle } = yield* Database;
     for (const environmentId of [PRODUCTION, STAGING]) {
       yield* drizzle.insert(analyticsDaily).values({ environmentId, day: "2026-10-01", dim: "page", value: "/", ...totals });
-      yield* drizzle.insert(analyticsSessionHourly).values({ environmentId, hour: new Date("2026-10-01T00:00:00Z"), ...session });
+      yield* drizzle.insert(analyticsSessionHourly).values({ environmentId, hour: new Date("2026-10-01T00:00:00Z"), pageviews: 3, visitors: 1, ...session });
     }
     yield* drizzle.update(analyticsRollupState).set({ rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] });
   }).pipe(Effect.orDie));
@@ -216,7 +216,7 @@ it.live("deleting an environment deletes its analytics and keeps every other env
     const { drizzle } = yield* Database;
     for (const environmentId of [PRODUCTION, STAGING]) {
       yield* drizzle.insert(analyticsDaily).values({ environmentId, day: "2026-10-01", dim: "", value: "", pageviews: 1, visitors: 1, visits: 1, bounces: 1, totalDuration: 0 });
-      yield* drizzle.insert(analyticsSessionHourly).values({ environmentId, hour: new Date("2026-10-01T00:00:00Z"), visits: 1, bounces: 1, totalDuration: 0 });
+      yield* drizzle.insert(analyticsSessionHourly).values({ environmentId, hour: new Date("2026-10-01T00:00:00Z"), pageviews: 1, visitors: 1, visits: 1, bounces: 1, totalDuration: 0 });
       yield* drizzle.insert(analyticsBotDaily).values({ environmentId, day: "2026-10-01", reason: "ua", count: 1 });
       yield* drizzle.insert(analyticsGapDaily).values({ environmentId, day: "2026-10-01", count: 1 });
       yield* drizzle.insert(analyticsGoal).values({ environmentId, name: "Signup", pathPattern: "/signup" });

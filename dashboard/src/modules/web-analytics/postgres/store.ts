@@ -190,23 +190,25 @@ export const hourlyTotals = Effect.fn("WebAnalytics.hourlyTotals")(function* (qu
   const { timezone, range } = query;
   const closedUntil = query.filters.length > 0 ? null : yield* rolledUpTo(query.environmentId);
   const rolledEnd = closedUntil === null ? range.start : new Date(Math.min(Math.max(dayEnd(timezone, closedUntil).getTime(), range.start.getTime()), range.end.getTime()));
-  const parts: SQL[] = [sql`
-    select ${epochMs(localHour(timezone))} as bucket,
-      count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors,
-      0::bigint as visits, 0::bigint as bounces, 0::bigint as total_duration
-    ${rowsIn(query, range)} group by 1`];
+  const parts: SQL[] = [];
   if (rolledEnd > range.start) {
     parts.push(sql`
-      select ${epochMs(sql`hour`)} as bucket, 0::bigint as pageviews, 0::bigint as visitors, visits, bounces, total_duration
+      select ${epochMs(sql`hour`)} as bucket, pageviews, visitors, visits, bounces, total_duration
       from analytics.session_hourly
       where environment_id = ${query.environmentId}::text and hour >= ${instant(range.start)} and hour < ${instant(rolledEnd)}`);
   }
   if (rolledEnd < range.end) {
+    const edge = { start: rolledEnd, end: range.end };
+    parts.push(sql`
+      select ${epochMs(localHour(timezone))} as bucket,
+        count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors,
+        0::bigint as visits, 0::bigint as bounces, 0::bigint as total_duration
+      ${rowsIn(query, edge)} group by 1`);
     parts.push(sql`
       select ${epochMs(localHour(timezone))} as bucket,
         0::bigint as pageviews, 0::bigint as visitors, count(*)::bigint as visits,
         count(*) filter (where pageviews = 1)::bigint as bounces, coalesce(sum(duration), 0)::bigint as total_duration
-      from (${sessionsIn(query, { start: rolledEnd, end: range.end })}) sessions group by 1`);
+      from (${sessionsIn(query, edge)}) sessions group by 1`);
   }
   const rows = yield* drizzle.execute<TotalsRow>(unionTotals(parts), "objects");
   return rows.map(toBucketRow);
