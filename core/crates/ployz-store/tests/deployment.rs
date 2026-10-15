@@ -1580,7 +1580,8 @@ fn mounted_resource_rows_keep_distinct_machines_and_failed_mounting_services() {
         ));
         assert!(volume.iter().any(|row| row.state
             == RowState::Running {
-                phase: RowPhase::WaitingForHealth
+                phase: RowPhase::WaitingForHealth,
+                serving: false,
             }));
         assert!(volume.iter().all(|row| row.started_at.is_some()));
         assert_eq!(
@@ -1705,7 +1706,8 @@ fn a_lost_runners_unfinished_rows_read_unknown() {
         (
             "beta".to_owned(),
             RowState::Running {
-                phase: RowPhase::WaitingForHealth
+                phase: RowPhase::WaitingForHealth,
+                serving: false,
             }
         )
     );

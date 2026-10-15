@@ -98,7 +98,7 @@ fn completion_at_deadline_wins_over_stale_heartbeat() {
         vec![(30_000, Message::Finish(done, Disposition::Settled))],
     );
     assert!(!text.contains("still waiting:"), "{text}");
-    assert!(text.contains("1 updated · across 1 servers"), "{text}");
+    assert!(text.contains("1 updated · across 1 server"), "{text}");
 }
 
 #[test]
@@ -275,7 +275,7 @@ fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
         "{visible}"
     );
     assert!(
-        visible.ends_with("1 updated · across 1 servers"),
+        visible.ends_with("1 updated · across 1 server"),
         "{visible}"
     );
     assert!(!visible.contains("starting"), "{visible}");
@@ -421,7 +421,7 @@ fn producer_does_not_wait_for_slow_sink_and_finish_joins_after_all_transitions()
     progress.finish(next, Disposition::Settled);
     let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert_eq!(text.matches("alpha:").count(), 6, "{text}");
-    assert!(text.ends_with("1 updated · across 1 servers\n"));
+    assert!(text.ends_with("1 updated · across 1 server\n"));
 }
 
 #[test]
@@ -573,4 +573,130 @@ impl TermLike for EchoRoom {
     fn flush(&self) -> io::Result<()> {
         self.0.flush()
     }
+}
+
+fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState) -> Row {
+    crate::deploy::service_row(
+        QualifiedService::parse(format!("shop/{name}")).unwrap(),
+        Some(depth),
+        (0..servers).map(|_| crate::deploy::Replica {
+            machine: MachineId::random(),
+            state,
+            timing: Timing::Finished(Duration::from_secs(5)),
+            starts: true,
+        }),
+    )
+}
+
+#[test]
+fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
+    let failed = ployz_store::RowState::Failed {
+        reason: "health check failed".into(),
+        cause: Vec::new(),
+        step: None,
+        log: None,
+    };
+    let mut rows: Vec<_> = (0..12)
+        .map(|i| service(&format!("svc{i}"), 0, 1, &ployz_store::RowState::Completed))
+        .collect();
+    rows.push(service("api", 1, 1, &ployz_store::RowState::Pending));
+    rows.push(service("web", 2, 1, &failed));
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows,
+        notices: Vec::new(),
+    };
+    let lines = live_lines(&frame, 0, 80, 8, false);
+    assert_eq!(
+        lines.get(1..).unwrap(),
+        [
+            "depth 1",
+            "  · api  waiting 0/1  5.0s",
+            "depth 2",
+            "  ✘ web  failed (0/1 ready)  5.0s",
+            "  … 12 more rows",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
+    let failed = ployz_store::RowState::Failed {
+        reason: "health check failed".into(),
+        cause: Vec::new(),
+        step: None,
+        log: None,
+    };
+    let mut rows: Vec<_> = (0..12)
+        .map(|n| Row {
+            subject: Subject::ServiceOnServer {
+                service: QualifiedService::system_ingress(),
+                machine: MachineId::random(),
+                server: format!("edge{n}"),
+            },
+            state: State::Completed,
+            detail: None,
+            timing: Timing::Unavailable,
+        })
+        .collect();
+    rows.push(service("web", 2, 1, &failed));
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows,
+        notices: Vec::new(),
+    };
+    let lines = live_lines(&frame, 0, 80, 8, false);
+    assert_eq!(
+        lines.get(1..).unwrap(),
+        [
+            "depth 2",
+            "  ✘ web  failed (0/1 ready)  5.0s",
+            "✔ ingress on edge0  completed",
+            "✔ ingress on edge1  completed",
+            "✔ ingress on edge2  completed",
+            "  … 9 more rows",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_retained_row_fits_the_terminal_with_its_count_whole() {
+    let name = format!("a{}", "b".repeat(60));
+    let terminal = InMemoryTerm::new(20, 80);
+    let initial = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![service(&name, 0, 10, &ployz_store::RowState::Completed)],
+        notices: Vec::new(),
+    };
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        || (80, 20),
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([(
+                Duration::from_millis(250),
+                Message::Finish(initial.clone(), Disposition::Settled),
+            )]),
+        },
+        initial,
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let visible = terminal.contents();
+    let row = visible
+        .lines()
+        .find(|line| line.contains("switched"))
+        .unwrap_or_else(|| panic!("{visible}"));
+    assert!(row.ends_with("switched 10/10  5.0s"), "{visible}");
+    assert!(row.contains('…'), "{visible}");
+    assert!(row.width() < 80, "{visible}");
 }
