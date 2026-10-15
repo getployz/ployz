@@ -33,7 +33,7 @@ describe("run graph", () => {
     });
     const graph = makeRunGraph(view);
     expect(graph.nodes.map(({ type, id, name, light, column }) => ({ type, id, name, light, column }))).toEqual([
-      { type: "build", id: "build:api", name: "api", light: "deploying", column: 0 },
+      { type: "build", id: "build:api", name: "api", light: "deploying", column: 2 },
       { type: "service", id: "api-id", name: "api", light: "deploying", column: 3 },
       { type: "volume", id: "v", name: "data", light: "deployed", column: 0 },
       { type: "config", id: "c", name: "app", light: "deployed", column: 0 },
@@ -111,23 +111,25 @@ describe("run graph", () => {
       { id: "api-id->web-id", source: "api-id", target: "web-id", animated: true },
     ]);
     expect(makeRunGraph({ ...chain, builds: [], preview: null }).edges).toEqual([]);
+    const waiting = { ...chain, nodes: [service("web", []), ...chain.nodes.slice(1)] };
+    expect(makeRunGraph(waiting).edges.filter((edge) => edge.animated)).toEqual([]);
   });
 
-  it("keeps Volumes and Configs beside the builds, unlinked, since nothing says which Service mounts them", () => {
+  it("keeps Volumes and Configs in the first column, unlinked, since nothing says which Service mounts them", () => {
     const graph = makeRunGraph(chain);
-    expect(graph.nodes.find((node) => node.id === "v")).toMatchObject({ column: 0, row: 1 });
+    expect(graph.nodes.find((node) => node.id === "v")).toMatchObject({ column: 0, row: 0 });
     expect(graph.edges.some((edge) => edge.source === "v" || edge.target === "v")).toBe(false);
   });
 
-  it("orders column 0 by kind then name, and later columns by the rows linking into them", () => {
+  it("puts each build just before its Service and orders each column by the rows linking into it", () => {
     const rows = makeRunGraph(chain).nodes.map(({ id, column, row }) => ({ id, column, row }));
     expect(rows).toEqual([
-      { id: "build:web", column: 0, row: 0 },
-      { id: "build:api", column: 0, row: -1 },
+      { id: "build:web", column: 2, row: 0.5 },
+      { id: "build:api", column: 1, row: -0.5 },
       { id: "web-id", column: 3, row: 0 },
-      { id: "v", column: 0, row: 1 },
-      { id: "api-id", column: 2, row: 0 },
-      { id: "postgres-id", column: 1, row: 0 },
+      { id: "v", column: 0, row: 0 },
+      { id: "api-id", column: 2, row: -0.5 },
+      { id: "postgres-id", column: 1, row: 0.5 },
     ]);
     const node = (id: string, column: number, rank = 0) => ({ id, name: id, column, rank });
     const ordered = orderRows(
@@ -158,5 +160,12 @@ describe("run graph", () => {
     expect(makeRunGraph(deployment({ nodes: [stopping] })).nodes[0]?.light).toBe("deploying");
     expect(makeRunGraph(deployment({ status: "applied", in_flight: false, nodes: [stopping] })).nodes[0]?.light).toBe("deployed");
     expect(makeRunGraph(deployment({ nodes: [service("api", [completed()], "deployed")] })).nodes[0]?.light).toBe("deployed");
+  });
+
+  it("keeps a deployed Volume deployed while another Service mounting it still runs", () => {
+    const volume: NodeOutcome = { type: "volume", id: "v", name: "data", outcome: "deployed", rows: [completed(), running("starting")] };
+    const graph = makeRunGraph(deployment({ nodes: [volume] }));
+    expect(graph.nodes[0]?.light).toBe("deployed");
+    expect(graph.done).toBe(1);
   });
 });

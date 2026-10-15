@@ -89,19 +89,19 @@ const buildOutcome = {
 type Placeable = { id: string; name: string; column: number; rank: number };
 
 /**
- * Each node's row so linked cards line up. Column 0 goes by `rank`, then name. Every later column goes by the mean row
- * of the nodes linking into it, unlinked nodes last, ties by name.
+ * Each node's row so linked cards line up. A column goes by the mean row of the nodes linking into it, unlinked nodes
+ * last by `rank`, ties by name.
  */
 export function orderRows(nodes: Placeable[], edges: Pick<RunEdge, "source" | "target">[]): Map<string, number> {
   const rows = new Map<string, number>();
   const key = (node: Placeable) => {
-    if (node.column === 0) return node.rank;
     const linked = edges.filter((edge) => edge.target === node.id).flatMap((edge) => rows.get(edge.source) ?? []);
     return linked.length ? linked.reduce((sum, row) => sum + row, 0) / linked.length : Infinity;
   };
-  for (const column of [...new Set(nodes.map((node) => node.column))].sort((a, b) => a - b)) {
+  const compare = (a: number | string, b: number | string) => (a < b ? -1 : a > b ? 1 : 0);
+  for (const column of [...new Set(nodes.map((node) => node.column))].sort(compare)) {
     const keyed = nodes.filter((node) => node.column === column).map((node) => ({ node, key: key(node) }));
-    keyed.sort((a, b) => (a.key === b.key ? a.node.name.localeCompare(b.node.name) : a.key < b.key ? -1 : 1));
+    keyed.sort((a, b) => compare(a.key, b.key) || compare(a.node.rank, b.node.rank) || compare(a.node.name, b.node.name));
     keyed.forEach(({ node }, index) => rows.set(node.id, index - (keyed.length - 1) / 2));
   }
   return rows;
@@ -110,34 +110,44 @@ export function orderRows(nodes: Placeable[], edges: Pick<RunEdge, "source" | "t
 const columnRanks = { build: 0, volume: 1, config: 2, service: 3 } satisfies Record<RunNode["type"], number>;
 
 /**
- * A Deployment's builds in the first column, then its nodes: a Service at its preview depth after the builds, a Volume or
- * Config beside the builds, since nothing says which Service mounts it. Edges run from each build to its Service and
- * along the preview's dependencies. A Service reads as running while any of its rows runs, old copies stopping included.
+ * A Deployment's Services at their preview depth, each build in the column just before its Service, and Volumes and
+ * Configs in the first column, since nothing says which Service mounts them. Edges run from each build to its Service
+ * and along the preview's dependencies. A deployed Service reads as running while any of its rows runs, old copies
+ * stopping included, and an edge animates while its Service runs.
  */
 export function makeRunGraph(deployment: DeploymentView): RunGraph {
   const runtime = (name: string) => deployment.runtime_names[name] ?? name;
+  const runs = (node: NodeOutcome) =>
+    node.type === "service" && deployment.in_flight && node.rows.some((row) => row.state === "running");
+  const outcomes = deployment.nodes.map((node): OutcomeRunNode => ({
+    type: node.type, id: node.id, name: node.name, node, row: 0, timing: rowTiming(node.rows),
+    light: runs(node) && node.outcome === "deployed" ? "deploying" : nodeLight(node.outcome, deployment),
+    column: node.type === "service" ? (deployment.preview?.depths[runtime(node.name)] ?? 0) + 1 : 0,
+  }));
+  const services = new Map(outcomes.filter((node) => node.type === "service").map((node) => [runtime(node.name), node]));
   const unplaced: RunNode[] = [
     ...deployment.builds.map((build): RunNode => ({
-      type: "build", id: buildNodeId(build.service), name: build.service, build, column: 0, row: 0, timing: buildTiming(build, deployment.in_flight),
-      light: nodeLight(buildOutcome[build.status], deployment),
+      type: "build", id: buildNodeId(build.service), name: build.service, build, row: 0,
+      column: (services.get(runtime(build.service))?.column ?? 1) - 1,
+      timing: buildTiming(build, deployment.in_flight), light: nodeLight(buildOutcome[build.status], deployment),
     })),
-    ...deployment.nodes.map((node): RunNode => ({
-      type: node.type, id: node.id, name: node.name, node, row: 0, timing: rowTiming(node.rows),
-      light: deployment.in_flight && node.rows.some((row) => row.state === "running") ? "deploying" : nodeLight(node.outcome, deployment),
-      column: node.type === "service" ? (deployment.preview?.depths[runtime(node.name)] ?? 0) + 1 : 0,
-    })),
+    ...outcomes,
   ];
-  const services = new Map(deployment.nodes.filter((node) => node.type === "service").map((node) => [runtime(node.name), node.id]));
   const links = [
     ...deployment.builds.map((build) => [buildNodeId(build.service), services.get(runtime(build.service))] as const),
-    ...(deployment.preview?.dependencies ?? []).map(([dependency, dependent]) => [services.get(dependency), services.get(dependent)] as const),
+    ...(deployment.preview?.dependencies ?? []).map(([dependency, dependent]) => [services.get(dependency)?.id, services.get(dependent)] as const),
   ];
-  const lights = new Map(unplaced.map((node) => [node.id, node.light]));
   const edges = new Map<string, RunEdge>();
   for (const [source, target] of links) {
-    if (source && target) edges.set(`${source}->${target}`, { id: `${source}->${target}`, source, target, animated: lights.get(target) === "deploying" });
+    if (source && target) {
+      const id = `${source}->${target.id}`;
+      edges.set(id, { id, source, target: target.id, animated: runs(target.node) });
+    }
   }
-  const rows = orderRows(unplaced.map((node) => ({ ...node, rank: columnRanks[node.type] })), [...edges.values()]);
+  const rows = orderRows(
+    unplaced.map(({ id, name, column, type }) => ({ id, name, column, rank: columnRanks[type] })),
+    [...edges.values()],
+  );
   const nodes = unplaced.map((node) => ({ ...node, row: rows.get(node.id) ?? 0 }));
   return { nodes, edges: [...edges.values()], done: nodes.filter((node) => node.light === "deployed").length };
 }
