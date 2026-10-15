@@ -215,3 +215,23 @@ it.live("retention drops only partitions wholly before the cutoff and trims ever
     expect(yield* provide(partitions())).toContain("pageview_202509");
     expect(yield* provide(pageviewCount(site.environmentId))).toBe(2);
   }), 60_000);
+
+it.live("a Kiritimati site 431 days behind, across empty days and dropped and missing partitions, closes 31 days a run until its last ended day", () =>
+  Effect.gen(function* () {
+    const provide = yield* setup();
+    const site: FixtureSite = { environmentId: "00000000-0000-4000-8000-00000000a0f1", timezone: "Pacific/Kiritimati" };
+    const row = (ts: string) => ({ ts, visitorId: "1", host: "kir.example", pathname: "/", source: "direct", referrerHost: null, utmSource: null, utmMedium: null, utmCampaign: null, utmTerm: null, utmContent: null, ref: null, language: null });
+    yield* provide(seedSite(site, [row("2025-08-10T12:00:00Z"), row("2025-09-14T22:00:00Z"), row("2025-09-20T00:00:00Z"), row("2026-10-10T00:00:00Z")]));
+    const now = new Date("2026-10-15T13:20:00Z");
+    const progress: Array<string | null> = [];
+    for (let run = 0; run < 16; run++) {
+      yield* provide(closeDays(site.environmentId, now));
+      yield* provide(retention(now));
+      progress.push((yield* provide(rollupState(site.environmentId)))?.rolled_up_to ?? null);
+    }
+    // The first local day is 2025-08-11, so the first run stops at 2025-09-10. Each later run adds 31 days. Local 2026-10-15
+    // ended at 10:00Z, so the 14th run closes it and later runs hold there.
+    expect(progress).toEqual(["2025-09-10", "2025-10-11", "2025-11-11", "2025-12-12", "2026-01-12", "2026-02-12", "2026-03-15",
+      "2026-04-15", "2026-05-16", "2026-06-16", "2026-07-17", "2026-08-17", "2026-09-17", "2026-10-15", "2026-10-15", "2026-10-15"]);
+    expect(new Set((yield* provide(aggregates(site.environmentId))).days.filter((day) => day >= "2026-10-01"))).toEqual(new Set(["2026-10-10"]));
+  }), 120_000);
