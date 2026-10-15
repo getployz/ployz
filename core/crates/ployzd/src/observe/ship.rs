@@ -320,12 +320,7 @@ impl<T: Fn() -> Option<Url>> Shipper<T> {
                 tracing::warn!(%status, count = events.len(), "Cloud refused a crash batch; dropping it");
                 self.outbox.refuse(&events)
             }
-            StatusCode::TOO_MANY_REQUESTS => {
-                return Shipped::Retry {
-                    after: retry_after(&response),
-                };
-            }
-            status if status.is_server_error() => {
+            status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
                 return Shipped::Retry {
                     after: retry_after(&response),
                 };
@@ -415,10 +410,7 @@ mod decimal {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::SocketAddr,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
     use ployz_core::{ContainerId, MachineId, QualifiedService, ServiceId, metrics::MarkerKind};
@@ -542,7 +534,7 @@ mod tests {
                 bodies: Arc::default(),
             };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address: SocketAddr = listener.local_addr().unwrap();
+            let address = listener.local_addr().unwrap();
             let app = Router::new()
                 .route("/push", post(Self::push))
                 .with_state(cloud.clone());
@@ -701,7 +693,6 @@ mod tests {
             events: &events,
         };
         let json = serde_json::to_string(&batch).unwrap();
-        println!("{json}");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&json).unwrap(),
             serde_json::json!({
