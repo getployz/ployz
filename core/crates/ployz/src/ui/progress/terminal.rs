@@ -17,7 +17,7 @@ pub(super) fn draw_target() -> ProgressDrawTarget {
         return ProgressDrawTarget::hidden();
     }
     let height = AtomicU16::new(term.size().0);
-    ProgressDrawTarget::term_like_with_hz(Box::new(DrawTerm { term, height }), 20)
+    ProgressDrawTarget::term_like_with_hz(Box::new(EchoRoom(DrawTerm { term, height })), 20)
 }
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ impl TermLike for DrawTerm {
     fn width(&self) -> u16 {
         let (height, width) = self.term.size();
         self.height.store(height, Ordering::Relaxed);
-        width.saturating_sub(ECHO_ROOM)
+        width
     }
 
     fn height(&self) -> u16 {
@@ -68,5 +68,51 @@ impl TermLike for DrawTerm {
 
     fn flush(&self) -> io::Result<()> {
         self.term.flush()
+    }
+}
+
+/// Keeps [`ECHO_ROOM`] free right of the live block.
+#[derive(Debug)]
+pub(super) struct EchoRoom<T>(pub(super) T);
+
+impl<T: TermLike> TermLike for EchoRoom<T> {
+    fn width(&self) -> u16 {
+        self.0.width().saturating_sub(ECHO_ROOM)
+    }
+
+    fn height(&self) -> u16 {
+        self.0.height()
+    }
+
+    fn move_cursor_up(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_up(n)
+    }
+
+    fn move_cursor_down(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_down(n)
+    }
+
+    fn move_cursor_right(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_right(n)
+    }
+
+    fn move_cursor_left(&self, n: usize) -> io::Result<()> {
+        self.0.move_cursor_left(n)
+    }
+
+    fn write_line(&self, value: &str) -> io::Result<()> {
+        self.0.write_line(value)
+    }
+
+    fn write_str(&self, value: &str) -> io::Result<()> {
+        self.0.write_str(value)
+    }
+
+    fn clear_line(&self) -> io::Result<()> {
+        self.0.clear_line()
+    }
+
+    fn flush(&self) -> io::Result<()> {
+        self.0.flush()
     }
 }
