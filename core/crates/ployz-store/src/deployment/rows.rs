@@ -131,6 +131,7 @@ pub enum RowPhase {
     StartingContainer,
     WaitingForHealth,
     WaitingForHook,
+    WaitingForSwitch,
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
@@ -147,7 +148,7 @@ impl RowPhase {
             Self::StoppingContainer => Some(FailedAt::Stop),
             Self::RemovingContainer => Some(FailedAt::Remove),
             Self::RemovingVolume => Some(FailedAt::Volume),
-            Self::Starting | Self::Compensating => None,
+            Self::Starting | Self::WaitingForSwitch | Self::Compensating => None,
         }
     }
 }
@@ -160,6 +161,7 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::StartingContainer => Self::StartingContainer,
             OperationPhase::WaitingForHealth { .. } => Self::WaitingForHealth,
             OperationPhase::WaitingForHook { .. } => Self::WaitingForHook,
+            OperationPhase::WaitingForSwitch { .. } => Self::WaitingForSwitch,
             OperationPhase::StoppingContainer => Self::StoppingContainer,
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
@@ -334,8 +336,7 @@ pub struct RowTracker {
 impl RowTracker {
     /// The rows of `snapshot` whose state changed since the last snapshot.
     pub fn changes(&mut self, snapshot: &[OperationRow]) -> Vec<ServerProgress> {
-        let mut grouped: BTreeMap<Key, (String, Vec<&OperationStatus>, Option<bool>)> =
-            BTreeMap::new();
+        let mut grouped = BTreeMap::<Key, (String, Vec<_>, Option<bool>)>::new();
         self.failed.clear();
         for row in snapshot {
             let Some(service) = row.service_name() else {
@@ -357,7 +358,7 @@ impl RowTracker {
             let (_, statuses, serving) = grouped
                 .entry(key)
                 .or_insert_with(|| (server, Vec::new(), None));
-            statuses.push(&row.status);
+            statuses.push((&row.status, starts_container(&row.operation)));
             if starts_container(&row.operation) {
                 let done = matches!(row.status, OperationStatus::Completed);
                 *serving = Some(serving.unwrap_or(true) && done);
@@ -403,7 +404,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
     match &row.status {
         OperationStatus::Running { phase } => match phase {
             OperationPhase::WaitingForHealth { container_id, .. }
-            | OperationPhase::WaitingForHook { container_id, .. } => Some(*container_id),
+            | OperationPhase::WaitingForHook { container_id, .. }
+            | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
             OperationPhase::StoppingContainer | OperationPhase::RemovingContainer => {
                 row.operation.container_id()
             }
@@ -439,17 +441,24 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
 
 /// A failed row's `log` waits as unanswered until the runner reads its Container's tail.
 fn state(
-    statuses: &[&OperationStatus],
+    statuses: &[(&OperationStatus, bool)],
     last: Option<&RowState>,
     container: bool,
     serving: bool,
 ) -> RowState {
-    let (mut failed, mut running, mut pending, mut completed) = (None, None, 0, 0);
-    for status in statuses {
+    let (mut failed, mut running, mut switching, mut pending, mut unstarted, mut completed) =
+        (None, None, None, 0, 0, 0);
+    for (status, starts) in statuses {
         match status {
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
+            OperationStatus::Running {
+                phase: phase @ OperationPhase::WaitingForSwitch { .. },
+            } => switching = switching.or(Some(phase)),
             OperationStatus::Running { phase } => running = running.or(Some(phase)),
-            OperationStatus::Pending => pending += 1,
+            OperationStatus::Pending => {
+                pending += 1;
+                unstarted += usize::from(*starts);
+            }
             OperationStatus::Completed => completed += 1,
             OperationStatus::Unexecuted => {}
         }
@@ -468,6 +477,17 @@ fn state(
     if let Some(phase) = running {
         return RowState::Running {
             phase: phase.into(),
+            serving,
+        };
+    }
+    if let Some(phase) = switching {
+        // A Server is ready for the switch once each of its new Containers is.
+        return RowState::Running {
+            phase: if unstarted == 0 {
+                phase.into()
+            } else {
+                RowPhase::Starting
+            },
             serving,
         };
     }
@@ -657,9 +677,55 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure};
+    use ployz_core::{
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, OperationPhase,
+        OperationStatus,
+    };
 
-    use super::Failure;
+    use super::{Failure, RowPhase, RowState};
+
+    fn server(statuses: &[OperationStatus]) -> RowState {
+        let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
+        super::state(&statuses, None, true, false)
+    }
+
+    #[test]
+    fn a_server_waits_for_the_switch_only_once_each_new_container_is_ready() {
+        let switch = OperationStatus::Running {
+            phase: OperationPhase::WaitingForSwitch {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+            },
+        };
+        let creating = OperationStatus::Running {
+            phase: OperationPhase::CreatingContainer,
+        };
+        let running = |phase| RowState::Running {
+            phase,
+            serving: false,
+        };
+        assert_eq!(
+            server(&[switch.clone(), creating]),
+            running(RowPhase::CreatingContainer)
+        );
+        assert_eq!(
+            server(&[switch.clone(), OperationStatus::Pending]),
+            running(RowPhase::Starting)
+        );
+        assert_eq!(
+            server(&[switch.clone(), switch.clone()]),
+            running(RowPhase::WaitingForSwitch)
+        );
+        assert_eq!(
+            super::state(
+                &[(&switch, true), (&OperationStatus::Pending, false)],
+                None,
+                true,
+                false
+            ),
+            running(RowPhase::WaitingForSwitch),
+            "the old copy's removal waits for the switch, not the Server"
+        );
+    }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {
         Failure::from(&ExecutionError::Health {

@@ -12,7 +12,7 @@ use ployz_core::{
     ManagementClientLabel, SetManagementClientRequest, StorageChoice, TokenRequest, op,
 };
 
-use super::{Error, config_path, leaf_matches, required, runtime};
+use super::{Error, config_path, leaf_matches, runtime};
 use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
@@ -42,14 +42,14 @@ pub(super) fn enroll(
     })
 }
 
-/// Run `server add --token` enrollment, installing this CLI's daemon version with `install`.
+/// Run token enrollment, installing this CLI's daemon version with `install`.
 ///
 /// `install` receives `none` for software-only synchronization and `zfs` for
 /// storage preparation; tests substitute it to avoid provisioning a real daemon.
 ///
 /// # Errors
 ///
-/// Returns the same CLI failure as `ployz server add --token`.
+/// Returns the same CLI failure as `ployz server add` given an enrollment token.
 #[doc(hidden)]
 pub fn enroll_with_installer<Install, InstallFuture>(
     root: &ArgMatches,
@@ -60,7 +60,11 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
-    let token = CloudEnrollToken::parse(required(matches, "token")?)?;
+    let token = super::server::enroll_token(matches)?.ok_or_else(|| {
+        Error::usage(
+            "Pass the enrollment token with --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN",
+        )
+    })?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .map_or("ployz.dev", String::as_str);
@@ -87,7 +91,8 @@ where
         let setup = enroll_steps(root, &token, cloud_url, install, &mut report).await;
         report
             .send(
-                &cloud_enroll::report_url(cloud_url, &token),
+                &cloud_enroll::report_url(cloud_url),
+                &token,
                 setup.as_ref().err(),
             )
             .await;
@@ -113,7 +118,7 @@ where
         report.read_host();
     }
     let initial_policy = super::server::enrollment_policy(matches)?;
-    let url = cloud_enroll::enroll_url(cloud_url, token);
+    let url = cloud_enroll::enroll_url(cloud_url);
     let requested_name = matches
         .get_one::<String>("name")
         .map(MachineName::parse)
@@ -139,6 +144,7 @@ where
         requested_storage,
         &initial_policy,
         &url,
+        token,
     )
     .await?;
     report.sizes_from(&machine_token);
@@ -152,7 +158,8 @@ where
                 details,
                 *join,
                 &initial_policy,
-                &cloud_enroll::callback_url(cloud_url, token),
+                &cloud_enroll::callback_url(cloud_url),
+                token,
                 install,
                 report,
             )
@@ -199,6 +206,7 @@ async fn enroll_current_identity(
     requested_storage: StorageChoice,
     initial_policy: &ployz_core::InitialMachinePolicy,
     url: &str,
+    token: &CloudEnrollToken,
 ) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
     let (details, machine_token) = crate::handlers::server::inspect_token(
         client,
@@ -215,7 +223,7 @@ async fn enroll_current_identity(
         requested_storage,
         initial_policy.clone(),
     );
-    let outcome = cloud_enroll::enroll(url, &identity).await?;
+    let outcome = cloud_enroll::enroll(url, token, &identity).await?;
     Ok((details, machine_token, name, outcome))
 }
 
@@ -230,6 +238,7 @@ async fn enroll_join<Install, InstallFuture>(
     join: Join,
     initial_policy: &ployz_core::InitialMachinePolicy,
     callback_url: &str,
+    token: &CloudEnrollToken,
     install: &Install,
     report: &mut SetupReport,
 ) -> Setup
@@ -287,8 +296,15 @@ where
     let catch_up = crate::global_catch_up::follow_globals(&mut ready, &assigned).await;
     // Cloud may use the replacement after publication, revoking this key.
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
-    cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
-    cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
+    cloud_enroll::publish(
+        callback_url,
+        token,
+        assigned.id,
+        &pairing.secret,
+        &capability,
+    )
+    .await?;
+    cloud_enroll::callback(callback_url, token, assigned.id, &pairing.secret).await?;
     ui::stream(format_args!("Joined Server {}.", assigned.name));
     // The join is committed; a catch-up failure makes it partial.
     Ok(ui::emit_committed(
@@ -423,14 +439,16 @@ where
     let capability = set_cloud_management_client(matches, &mut ready).await
         .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
     cloud_enroll::publish(
-        &cloud_enroll::callback_url(cloud_url, token),
+        &cloud_enroll::callback_url(cloud_url),
+        token,
         machine.id,
         &pairing.secret,
         &capability,
     )
     .await?;
     cloud_enroll::callback(
-        &cloud_enroll::callback_url(cloud_url, token),
+        &cloud_enroll::callback_url(cloud_url),
+        token,
         machine.id,
         &pairing.secret,
     )

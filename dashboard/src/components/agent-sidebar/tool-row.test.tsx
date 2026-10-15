@@ -8,7 +8,7 @@ import { afterEach, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { deploymentQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import type { StoreResult } from "#/modules/config-store/store.contract";
-import { toolOutcome, ToolRow } from "./tool-row";
+import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
 afterEach(() => { cleanup(); });
 
@@ -28,7 +28,7 @@ async function show(row: (client: QueryClient) => ReactNode, seed?: (client: Que
 
 it("draws a Deployment the agent started in the Deployment Page's words, and links it once the Store has it", async () => {
   const outcome = toolOutcome(call("deploy", { ok: true, value: deployed, nothing_destroyed: true }), undefined);
-  const row = () => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={outcome} done />;
+  const row = () => <ToolCard organizationSlug="acme" scope={scope} outcome={outcome} />;
   await show(row);
   expect(screen.getByText("Deploying")).toBeTruthy();
   expect(screen.queryByRole("link")).toBeNull();
@@ -50,26 +50,26 @@ it("draws a Deployment the agent started in the Deployment Page's words, and lin
 
 it("reads the result part's JSON after a reload, and says nothing about destruction the gate did not rule out", async () => {
   const outcome = toolOutcome(call("deploy", undefined), { type: "tool-result", toolCallId: "c1", content: JSON.stringify({ ok: true, value: deployed }), state: "complete" });
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={outcome} done />);
+  await show(() => <ToolCard organizationSlug="acme" scope={scope} outcome={outcome} />);
   expect(screen.getByText("Deploying")).toBeTruthy();
   expect(screen.queryByText("Didn't ask. Nothing destroyed.")).toBeNull();
 });
 
 it("gives a denial's reason, and a refusal's message", async () => {
   const denied = toolOutcome(call("deploy", { ok: false, refusal: { code: "approval_denied", message: "denied", details: { approval: { reason: "keep the data" } } } }), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="deploy" outcome={denied} done />);
+  await show(() => <ToolStep name="deploy" outcome={denied} done />);
   expect(screen.getByText("Denied: keep the data")).toBeTruthy();
   cleanup();
 
-  const refused = toolOutcome(call("service_rm", { ok: false, refusal: { code: "not_found", message: "No service named api." } }), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="service_rm" outcome={refused} done />);
+  const refused = toolOutcome(call("service_rm", { ok: false, refusal: { code: "not_found", message: "No service named api.", details: null } }), undefined);
+  await show(() => <ToolStep name="service_rm" outcome={refused} done />);
   expect(screen.getByText("No service named api.")).toBeTruthy();
 });
 
 it("draws a Cloud run the agent started by its state and name", async () => {
   const run = { at: "shop/production", run: "restart web", state: "done", reason: null, servers: [], kept: [], unanswered: [], next: { tool: "service_status", input: { service: "web" } } };
   const outcome = toolOutcome(call("service_restart", { ok: true, value: run }), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="service_restart" outcome={outcome} done />);
+  await show(() => <ToolCard organizationSlug="acme" scope={scope} outcome={outcome} />);
   expect(screen.getByText("Done")).toBeTruthy();
   expect(screen.getByText("restart web")).toBeTruthy();
   expect(screen.getByText("shop/production")).toBeTruthy();
@@ -77,6 +77,6 @@ it("draws a Cloud run the agent started by its state and name", async () => {
 
 it("names any other call by its command", async () => {
   const outcome = toolOutcome(call("project_ls", [{ name: "shop" }]), undefined);
-  await show(() => <ToolRow organizationSlug="acme" scope={scope} name="project_ls" outcome={outcome} done />);
+  await show(() => <ToolStep name="project_ls" outcome={outcome} done />);
   expect(screen.getByText("ployz project ls")).toBeTruthy();
 });

@@ -339,10 +339,13 @@ async fn active_build_refuses_upgrade_but_not_machine_mutations() {
 
     let error = fixture
         .local
-        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
-            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
-            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
-        })
+        .request_upgrade(
+            ployz_core::RequestMachineUpgradeRequest {
+                attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+                release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+            },
+            false,
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -507,10 +510,13 @@ async fn retained_build_images_do_not_block_same_machine_mutation() {
 
     let error = fixture
         .local
-        .request_upgrade(ployz_core::RequestMachineUpgradeRequest {
-            attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
-            release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
-        })
+        .request_upgrade(
+            ployz_core::RequestMachineUpgradeRequest {
+                attempt_id: ployz_core::MachineUpgradeAttemptId::random(),
+                release: ployz_core::MachineRelease::parse("1.2.3").unwrap(),
+            },
+            false,
+        )
         .await
         .unwrap_err();
     assert!(matches!(
@@ -570,7 +576,7 @@ if [ -f "$root/oversized-error" ] && [ "$1 $2" = 'info --format' ]; then
 fi
 case "$1 $2" in
   'context show') echo default ;;
-  'info --format') printf '%s\n' '{{"OSType":"linux","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
+  'info --format') printf '%s\n' '{{"OSType":"linux","CgroupVersion":"2","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create') exit 0 ;;

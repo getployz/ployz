@@ -117,8 +117,10 @@ pub(crate) fn pull(store: &ConfigStore, who: &Actor, target: &str, updated: &str
         number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
+        author_id: Some(backend::ada()),
         bot: false,
         head_branch: backend::git_branch("search"),
+        head_repository_id: Some(backend::repo_id(11)),
         head: backend::sha(HEAD),
         target_branch: backend::git_branch(target),
         commits: 1,
@@ -128,7 +130,7 @@ pub(crate) fn pull(store: &ConfigStore, who: &Actor, target: &str, updated: &str
         updated: ployz_store::GithubTimestamp::parse(updated).unwrap(),
     });
     store
-        .system(&who.organization, &event, &Trusted::default())
+        .system(&who.organization, &event, &backend::members())
         .unwrap();
 }
 
@@ -241,7 +243,7 @@ pub(crate) const LATER: &str = "4444444444444444444444444444444444444444";
 
 pub(crate) fn system(store: &ConfigStore, who: &Actor, event: &SystemEvent) -> Automated {
     let Written::Automated(automated) = store
-        .system(&who.organization, event, &Trusted::default())
+        .system(&who.organization, event, &backend::members())
         .unwrap()
     else {
         panic!("a system event writes Automated")
@@ -268,8 +270,10 @@ pub(crate) fn merged_within(
         number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
+        author_id: Some(backend::ada()),
         bot: false,
         head_branch: backend::git_branch("search"),
+        head_repository_id: Some(backend::repo_id(11)),
         head: backend::sha(HEAD),
         target_branch: backend::git_branch("main"),
         commits: 1,

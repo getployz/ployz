@@ -34,7 +34,8 @@ export function pullRequestEvent(
 ): SystemEvent {
   return {
     event: "pull_request", repository_id: repositoryId, number, title: live.title,
-    author: live.author.login, bot: live.author.isBot, head_branch: live.headBranch, head: live.headSha,
+    author: live.author.login, author_id: live.author.id, bot: live.author.isBot,
+    head_repository_id: live.headRepositoryId, head_branch: live.headBranch, head: live.headSha,
     target_branch: live.targetBranch, commits: live.commits, open: live.open, merge_commit: live.mergeCommitSha,
     target_head: targetHead, updated: githubTimestamp(live.updatedAt),
   };

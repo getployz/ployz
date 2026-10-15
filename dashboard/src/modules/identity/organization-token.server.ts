@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import type { Caller } from "#/modules/identity/actor";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
-import { NotFound } from "#/server/public-error";
+import { NotFound, Validation } from "#/server/public-error";
 
 /** Marks a bearer as an Organization Token rather than a session token. */
 export const ORGANIZATION_TOKEN_PREFIX = "ployz_";
@@ -18,11 +18,21 @@ export function hashOrganizationTokenSecret(secret: string) {
   return createHash("sha256").update(secret).digest("hex");
 }
 
+/**
+ * Only a signed-in person manages credentials. A token that could mint tokens would outlive its own revocation
+ * through the ones it made, and one that could revoke would let a leaked secret lock its Organization out of CI.
+ */
+const requireSignedIn = (caller: Caller) =>
+  caller.credential.kind === "session"
+    ? Effect.void
+    : Effect.fail(new Validation({ message: "Only a signed-in person can make or revoke tokens; run `ployz login`.", userFacing: true }));
+
 /** Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. */
 export const createOrganizationToken = Effect.fn("OrganizationToken.create")(function* (
   caller: Caller,
   input: { readonly name: string; readonly expiresInDays: number },
 ) {
+  yield* requireSignedIn(caller);
   const database = yield* Database;
   const secret = `${ORGANIZATION_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
   const [created] = yield* database.drizzle
@@ -94,6 +104,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
 
 /** Revokes a token the Caller can reach or one of the Caller's signed-in devices, at once. */
 export const revokeCredential = Effect.fn("OrganizationToken.revoke")(function* (caller: Caller, id: string) {
+  yield* requireSignedIn(caller);
   const database = yield* Database;
   const token = yield* database.drizzle
     .delete(organizationToken)

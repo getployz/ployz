@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import type { Approval, ConfigCommand, GithubBuild, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigView, ConfigWritten, DeploymentSummary, PullRequestRef, SystemEvent } from "@ployz/sdk";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
-import { user } from "#/modules/identity/tables";
+import { account, member, user } from "#/modules/identity/tables";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
@@ -189,6 +189,15 @@ export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (o
   return loaded.kind === "ready" ? loaded.connections : [];
 });
 
+/** The GitHub user ids of the Organization's members who signed in with GitHub: whose pull requests deploy on their own. */
+const githubMembers = Effect.fn("ConfigStore.githubMembers")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ accountId: account.accountId }).from(member)
+    .innerJoin(account, and(eq(account.userId, member.userId), eq(account.providerId, "github")))
+    .where(eq(member.organizationId, organizationId));
+  return rows.map((row) => Number(row.accountId)).filter((id) => Number.isSafeInteger(id) && id > 0);
+});
+
 /** Which events can admit a Deployment, and so need to know which Servers hold the data a Save accepted losing. */
 const deploys = {
   branch_head: true, check_suite: true, pull_request: true, sweep: false, cluster_forgotten: false,
@@ -205,8 +214,9 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
   const volumes = deploys[event.event]
     ? yield* systemVolumeEvidence(organizationId, (query) => store.read(organizationId, query))
     : undefined;
-  const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes"> = { servers, domains };
+  const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes" | "members"> = { servers, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
+  if (event.event === "pull_request") trusted.members = yield* githubMembers(organizationId);
   return yield* storeTry(() => store.system(organizationId, event, trusted));
 });
 
@@ -230,7 +240,8 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
   // An admission carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
-  const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "remove");
+  const admits = call.operation === "write" && (call.command.command === "admit" || call.command.command === "remove"
+    || call.command.command === "approve_pull_request");
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
@@ -247,8 +258,10 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }
-  // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked, as do a removal's first ones.
-  if (command.command === "admit" || command.command === "start" || command.command === "remove") {
+  // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked, as do a removal's first ones
+  // and an approved pull request's.
+  if (command.command === "admit" || command.command === "start" || command.command === "remove"
+    || command.command === "approve_pull_request") {
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A removal that applied at admission (nothing on a Server) is deleted by the next sweep, and admits what is due

@@ -246,29 +246,16 @@ pub(crate) fn settle(
         .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
     crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
     let settled = runtime.block_on(async {
-        loop {
-            tokio::select! {
-                () = interrupted.cancelled() => {
-                    return Err(StoreCallError::Stopped(
-                        Failure::coded(
-                            RpcErrorCode::Internal,
-                            "Stopped waiting; the approval stays pending in Ployz Cloud.",
-                        )
-                        .interrupted()
-                        .hint(crate::ui::Hint::Retry(retry)),
-                    ));
-                }
-                read = status(credential, &asked.id) => {
-                    let status = read?;
-                    if status != Status::Pending {
-                        return Ok(status);
-                    }
-                }
-            }
-            tokio::select! {
-                () = interrupted.cancelled() => {}
-                () = tokio::time::sleep(POLL) => {}
-            }
+        tokio::select! {
+            () = interrupted.cancelled() => Err(StoreCallError::Stopped(
+                Failure::coded(
+                    RpcErrorCode::Internal,
+                    "Stopped waiting; the approval stays pending in Ployz Cloud.",
+                )
+                .interrupted()
+                .hint(crate::ui::Hint::Retry(retry)),
+            )),
+            settled = decided(credential, &asked.id) => settled,
         }
     });
     crate::ui::note(match &settled {
@@ -313,6 +300,17 @@ pub(crate) enum Status {
     Approved,
     Denied,
     Superseded,
+}
+
+/// Wait for a human to answer the approval `id` in Ployz Cloud: its status once no longer pending.
+pub(crate) async fn decided(credential: &Credential, id: &str) -> Result<Status, StoreCallError> {
+    loop {
+        let status = status(credential, id).await?;
+        if status != Status::Pending {
+            return Ok(status);
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 async fn status(credential: &Credential, id: &str) -> Result<Status, StoreCallError> {

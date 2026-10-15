@@ -95,6 +95,62 @@ async fn a_failed_start_removes_every_new_container_of_its_service_and_writes_no
 }
 
 #[tokio::test]
+async fn each_ready_start_waits_for_the_switch_before_it_completes() {
+    let first = machine('1');
+    let second = machine('2');
+    let (one, two) = (container('a'), container('b'));
+    let plan = vec![
+        run(&first, spec(None, None, None), true),
+        run(&second, spec(None, None, None), true),
+    ];
+    let client = Scripted::new(vec![
+        created(Call::Run(first, ContainerKind::ServiceContainer), &one),
+        created(Call::Run(second, ContainerKind::ServiceContainer), &two),
+    ]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut frames = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            frames.push(rows.into_iter().map(|row| row.status).collect::<Vec<_>>());
+        }
+    }
+    let switch = frames
+        .iter()
+        .position(|statuses| statuses.contains(&ployz_core::OperationStatus::Completed))
+        .unwrap();
+    let waiting = |container_id| ployz_core::OperationStatus::Running {
+        phase: ployz_core::OperationPhase::WaitingForSwitch { container_id },
+    };
+    assert_eq!(
+        frames.get(switch - 1).map(Vec::as_slice),
+        Some([waiting(one), waiting(two)].as_slice()),
+        "{frames:?}"
+    );
+    assert_eq!(
+        frames.last().unwrap(),
+        &[
+            ployz_core::OperationStatus::Completed,
+            ployz_core::OperationStatus::Completed
+        ]
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_lost_publish_reports_superseded_and_removes_the_unpointed_copies() {
     let machine = machine('1');
     let plan = vec![run(&machine, spec(None, None, None), true)];

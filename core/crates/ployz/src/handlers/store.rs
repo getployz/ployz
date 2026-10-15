@@ -74,6 +74,7 @@ impl Backend {
             Self::Cloud(runtime, credential) => {
                 let view: View = runtime.block_on(cloud_account::config_store(
                     credential,
+                    cloud_account::Via::Cli,
                     "read",
                     &query.to_query(),
                     None,
@@ -96,6 +97,7 @@ impl Backend {
             Self::Cloud(runtime, credential) => {
                 let written: Written = runtime.block_on(cloud_account::config_store(
                     credential,
+                    cloud_account::Via::Cli,
                     "write",
                     &command.to_command(),
                     approval,

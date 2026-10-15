@@ -163,18 +163,52 @@ it("offers a new chat instead of a retry when the chat grew too long for the mod
   expect(onChat.mock.lastCall?.[0]).not.toBe("thread-acme");
 });
 
-it("keeps a reply's thinking folded under Thinking until the member opens it", () => {
+it("keeps a reply's thinking folded under Thought until the member opens it", () => {
   const message = asTestDouble<UIMessage>()({
     id: "m1",
     role: "assistant",
     parts: [{ type: "thinking", content: "The thread names two services." }, { type: "thinking", content: " " }, { type: "text", content: "Two services." }],
   });
   render(<QueryClientProvider client={new QueryClient()}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
-  expect(screen.getAllByRole("button", { name: "Thinking" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Thought" })).toHaveLength(1);
   expect(screen.queryByText("The thread names two services.")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Thinking" }));
+  fireEvent.click(screen.getByRole("button", { name: "Thought" }));
   expect(screen.getByText("The thread names two services.")).toBeDefined();
   expect(screen.getByText("Two services.")).toBeDefined();
+});
+
+it("counts a cancelled call as cancelled, not as one that ran", () => {
+  const message = asTestDouble<UIMessage>()({
+    id: "m1",
+    role: "assistant",
+    parts: [{ type: "tool-call", id: "c1", name: "service_rm", arguments: "{}", state: "complete", output: { ok: false, cancelled: true } }],
+  });
+  render(<QueryClientProvider client={new QueryClient()}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
+  expect(screen.getByRole("button", { name: "Cancelled 1 command" })).toBeDefined();
+});
+
+it("folds thinking and calls under one summary, leaving the Deployment card and a refusal's colour outside", () => {
+  const deployed = { written: "deployment", id: "d3", number: 3, status: "running", services: [], remove: false, started_at: null, ended_at: null };
+  const message = asTestDouble<UIMessage>()({
+    id: "m1",
+    role: "assistant",
+    parts: [
+      { type: "thinking", content: "Deploy, then clean up." },
+      { type: "tool-call", id: "c1", name: "deploy", arguments: "{}", state: "complete", output: { ok: true, value: deployed, nothing_destroyed: true } },
+      { type: "tool-call", id: "c2", name: "service_rm", arguments: "{}", state: "complete", output: { ok: false, refusal: { code: "not_found", message: "No service named api.", details: null } } },
+      { type: "text", content: "Deployed; api was already gone." },
+    ],
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  render(<QueryClientProvider client={client}><Turn organizationSlug="acme" scope={scope} message={message} asked={{}} bound={[]} /></QueryClientProvider>);
+  const summary = screen.getByRole("button", { name: "Thought, ran 1 command, 1 refused" });
+  expect(summary.querySelector("[data-status=error]")).not.toBeNull();
+  expect(screen.getByText("Didn't ask. Nothing destroyed.")).toBeDefined();
+  expect(screen.queryByText("No service named api.")).toBeNull();
+  fireEvent.click(summary);
+  expect(screen.getByText("ployz deploy")).toBeDefined();
+  expect(screen.getByText("No service named api.")).toBeDefined();
+  expect(screen.getByText("Deploy, then clean up.")).toBeDefined();
 });
 
 /** Opens the panel and sends a message whose reply streams only what `send` pushes. */
@@ -203,16 +237,16 @@ const ask = async (text: string) => {
   });
 };
 
-it("shows the Thinking marker until the reply's first thinking arrives", async () => {
+it("shows Thinking… until the reply's first thinking arrives", async () => {
   const stream = await ask("count services");
   await stream({ type: "RUN_STARTED", runId: "r1" }, { type: "REASONING_START", messageId: "t1" }, { type: "REASONING_MESSAGE_START", messageId: "t1", role: "reasoning" });
   expect(screen.getByRole("status").textContent).toBe("Thinking…");
   await stream({ type: "REASONING_MESSAGE_CONTENT", messageId: "t1", delta: "Two services, probably." });
-  expect(screen.getByRole("button", { name: "Thinking" })).toBeDefined();
+  expect(screen.getByRole("button", { name: "Thought" })).toBeDefined();
   expect(screen.queryByRole("status")).toBeNull();
 });
 
-it("keeps the Thinking marker through a reply that has started but has no words yet", async () => {
+it("keeps Thinking… through a reply that has started but has no words yet", async () => {
   const stream = await ask("count services");
   await stream({ type: "RUN_STARTED", runId: "r1" }, { type: "TEXT_MESSAGE_START", messageId: "a1", role: "assistant" },
     { type: "TEXT_MESSAGE_CONTENT", messageId: "a1", delta: "\n\n" });

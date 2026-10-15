@@ -56,6 +56,8 @@ While you have no server, the bottom bar shows **Add a server** where **Deploy**
 3. Click **Copy** next to the command under **Run this as root**. It works for 24 hours.
 4. Connect to your server with `ssh root@203.0.113.10` (your server's IP), paste the command and
    press Enter.
+5. When it asks for the enrollment token, copy the token under **Paste the token when asked** and
+   paste it.
 
 ![The Add a server dialog with its command](../images/add-server-dialog.png)
 

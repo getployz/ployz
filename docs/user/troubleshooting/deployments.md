@@ -11,10 +11,11 @@ name first. That service's tab has its **Build** and **Deploy** logs. See
 
 `ployz deploy` and `ployz up` show progress on stderr. On a terminal, the live block
 shows one row per Service, grouped under the depth at which it starts. The count on a
-row is Servers, not replicas. A booting Service reads `booting 0/N` until all its new
-Containers switch together, then `switched N/N`. A row whose new Containers already
-serve shows a `draining old` line while the deploy removes Containers it no longer
-needs, which waits until every Server routes to the new ones. Old copies that a
+row is Servers, not replicas. A booting Service counts each Server whose new
+Containers are ready, so it can read `booting 1/3` while the others boot. Once every
+Server is ready it reads `switching N/N` until they switch together, then
+`switched N/N`. A row whose new Containers already serve shows a `draining old` line
+while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy only removes reads
 `waiting to remove`, then `stopping` and `removing`, then `removed`. The block ends

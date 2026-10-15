@@ -21,6 +21,9 @@ pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
     name: String,
     lock: Option<Lock>,
+    // Released only after Drop removes the container that uses the bridge.
+    bridge: Option<Bridge>,
+    fence: Option<(crate::FenceInstaller, Vec<u16>)>,
 }
 
 impl<'a> Builder<'a> {
@@ -36,18 +39,26 @@ impl<'a> Builder<'a> {
         docker: &'a Docker<'a>,
         lock: Lock,
         resources: &crate::policy::Resources,
+        fence: Option<(crate::FenceInstaller, Vec<u16>)>,
     ) -> Result<Self, BuildError> {
         let name = lock.name();
         let mut builder = Self {
             docker,
             name,
             lock: Some(lock),
+            bridge: None,
+            fence,
         };
         // Mark before any Docker mutation so a killed daemon cannot silently
         // reuse state whose termination was never observed.
         builder.lock.as_mut().expect("owned lock").quarantine()?;
         let result = remove(&docker.releasing(), &builder.name)
-            .and_then(|()| create(docker, &builder.name, resources));
+            .and_then(|()| Bridge::claim(&bridge_directory(), NETWORK_INTERFACES))
+            .and_then(|bridge| {
+                let index = bridge.index;
+                builder.bridge = Some(bridge);
+                create(docker, &builder.name, index, resources)
+            });
         if let Err(error) = result {
             return builder.finish(Err(error));
         }
@@ -103,12 +114,22 @@ impl<'a> Builder<'a> {
                 "the build host must run Linux containers".into(),
             ));
         }
+        if info
+            .get("CgroupVersion")
+            .and_then(serde_json::Value::as_str)
+            != Some("2")
+        {
+            return Err(BuildError::Prerequisite(
+                "Ployz Builds require cgroup v2 on the build host".into(),
+            ));
+        }
         let native = format!("linux/{architecture}");
         self.docker.run(
             "start the BuildKit worker",
             &["buildx", "inspect", &self.name, "--bootstrap"],
             Streams::Captured,
         )?;
+        self.fence()?;
         let workers = self.docker.run(
             "inspect BuildKit platforms",
             &["buildx", "ls", "--format", "{{json .}}"],
@@ -161,6 +182,8 @@ impl<'a> Builder<'a> {
         arguments: &[String],
         started: impl FnOnce(),
     ) -> Result<(), BuildError> {
+        // A restarted worker is a new cgroup the old fence no longer matches.
+        self.fence()?;
         let mut borrowed = arguments.iter().map(String::as_str).collect::<Vec<_>>();
         let Some(progress) = self.docker.progress else {
             return self
@@ -193,6 +216,37 @@ impl<'a> Builder<'a> {
             .expect("parsing never panics while holding the parser")
             .finish(progress);
         result.map(|_| ())
+    }
+
+    /// Fence the running worker's own traffic, or refuse to solve.
+    fn fence(&self) -> Result<(), BuildError> {
+        let Some((install, image_ports)) = &self.fence else {
+            return Ok(());
+        };
+        let refuse = |reason: String| {
+            BuildError::Prerequisite(format!("fence the BuildKit worker: {reason}"))
+        };
+        let container = format!("buildx_buildkit_{}0", self.name);
+        let state = self.docker.run(
+            "inspect the BuildKit worker",
+            &["inspect", "--format", "{{.Id}} {{.State.Pid}}", &container],
+            Streams::Captured,
+        )?;
+        let (id, pid) = state
+            .trim()
+            .split_once(' ')
+            .filter(|(_, pid)| pid.parse::<u32>().is_ok_and(|pid| pid > 0))
+            .ok_or_else(|| refuse(format!("{container} is not running")))?;
+        let cgroups = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .map_err(|error| refuse(format!("read its cgroup: {error}")))?;
+        let cgroup = crate::fence::container_cgroup(&cgroups, id)
+            .ok_or_else(|| refuse(format!("no cgroup names container {id}")))?;
+        install(&crate::Fence {
+            slot: self.lock.as_ref().expect("owned lock").slot,
+            cgroup,
+            image_ports: image_ports.clone(),
+        })
+        .map_err(refuse)
     }
 
     /// Confirm teardown before releasing retained state; failure preserves its
@@ -254,12 +308,13 @@ impl Drop for Builder<'_> {
 fn create(
     docker: &Docker<'_>,
     name: &str,
+    bridge: u8,
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     // Always supply a config, so ambient Buildx configuration cannot replace
     // execution-host policy.
-    let config = docker.working_dir.join("buildkitd.toml");
-    fs::write(&config, resources.buildkit_config()).map_err(|error| {
+    let config = docker.working_dir.join(format!("{name}.buildkitd.toml"));
+    fs::write(&config, resources.buildkit_config(bridge)).map_err(|error| {
         BuildError::Prerequisite(format!("write BuildKit host configuration: {error}"))
     })?;
     let mut arguments = vec![
@@ -271,8 +326,14 @@ fn create(
         "docker-container".into(),
         "--driver-opt".into(),
         format!("image={BUILDKIT_IMAGE}"),
+        // BuildKit itself stays on the host to pull mesh image contexts and push
+        // to the local registry; build steps run in the worker's bridge network.
         "--driver-opt".into(),
         "network=host".into(),
+        // A restarted worker sits in a new cgroup the fence no longer matches.
+        // A worker that dies stays dead, so its Build fails instead.
+        "--driver-opt".into(),
+        "restart-policy=no".into(),
         "--buildkitd-config".into(),
         config.to_string_lossy().into_owned(),
     ];
@@ -476,6 +537,99 @@ impl Drop for LockedFile {
     }
 }
 
+const NETWORK_INTERFACES: &str = "/sys/class/net";
+
+/// A host-wide claim on one build bridge and its subnet.
+///
+/// Every builder runs BuildKit on the host network, whichever Unix user and
+/// slot it belongs to, so bridges are claimed across all of them. A bridge
+/// that still exists belongs to a BuildKit that may outlive its claim, such as
+/// one orphaned by a killed daemon, and is skipped.
+struct Bridge {
+    _file: fs::File,
+    index: u8,
+}
+
+impl Bridge {
+    fn claim(directory: &std::path::Path, interfaces: &str) -> Result<Self, BuildError> {
+        use rustix::fs::{FlockOperation, flock};
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let shared = fs::Permissions::from_mode(0o1777);
+        match fs::DirBuilder::new().mode(0o1777).create(directory) {
+            Ok(()) => fs::set_permissions(directory, shared).map_err(bridge_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(bridge_error(error)),
+        }
+        if !fs::symlink_metadata(directory)
+            .map_err(bridge_error)?
+            .is_dir()
+        {
+            return Err(BuildError::Prerequisite(format!(
+                "{} must be a directory",
+                directory.display()
+            )));
+        }
+        let mut unusable = None;
+        for index in 0..=u8::MAX {
+            let file = match fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o666)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .open(directory.join(format!("{index}.lock")))
+            {
+                Ok(file) => file,
+                // Another user's private claim file, or anything else at the
+                // path, takes that index out of use rather than every build.
+                Err(error) => {
+                    unusable = Some(error);
+                    continue;
+                }
+            };
+            let metadata = file.metadata().map_err(bridge_error)?;
+            if metadata.uid() == rustix::process::getuid().as_raw()
+                && metadata.mode() & 0o666 != 0o666
+            {
+                file.set_permissions(fs::Permissions::from_mode(0o666))
+                    .map_err(bridge_error)?;
+            }
+            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                Ok(()) => {}
+                Err(rustix::io::Errno::WOULDBLOCK) => continue,
+                Err(error) => return Err(bridge_error(error.into())),
+            }
+            if std::path::Path::new(interfaces)
+                .join(bridge_name(index))
+                .exists()
+            {
+                continue;
+            }
+            return Ok(Self { _file: file, index });
+        }
+        Err(match unusable {
+            Some(error) => bridge_error(error),
+            None => BuildError::Prerequisite("every build bridge on this host is in use".into()),
+        })
+    }
+}
+
+pub(crate) fn bridge_name(index: u8) -> String {
+    format!("{}{index}", crate::BUILD_BRIDGE_PREFIX)
+}
+
+/// `ployz.service` runs with `PrivateTmp`, so `/var/tmp` would hide its claims
+/// from builders outside it, and some distributions make `/run/lock` root-only.
+/// `/dev/shm` is shared and writable by every user.
+fn bridge_directory() -> PathBuf {
+    PathBuf::from("/dev/shm/ployz-build-bridges")
+}
+
+fn bridge_error(error: std::io::Error) -> BuildError {
+    BuildError::Prerequisite(format!("claim a build bridge: {error}"))
+}
+
 /// Slot 0 keeps the historical builder name; others are numbered after it.
 fn slot_name(slot: usize) -> String {
     match slot {
@@ -508,6 +662,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bridge_claims_never_share_a_bridge() {
+        let root = std::env::temp_dir().join(format!("ployz-bridges-{}", uuid::Uuid::new_v4()));
+        let interfaces = root.join("net");
+        fs::create_dir_all(interfaces.join(bridge_name(1))).unwrap();
+        let claims = root.join("claims");
+        fs::create_dir_all(claims.join("3.lock")).unwrap();
+
+        let first = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
+        let second = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
+        let third = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
+        assert_eq!(
+            (first.index, second.index, third.index),
+            (0, 2, 4),
+            "a held claim, a live bridge and an unusable claim file are all skipped"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bridge_claims_report_why_no_claim_file_opens() {
+        let root = std::env::temp_dir().join(format!("ployz-bridges-{}", uuid::Uuid::new_v4()));
+        let claims = root.join("claims");
+        for index in 0..=u8::MAX {
+            fs::create_dir_all(claims.join(format!("{index}.lock"))).unwrap();
+        }
+
+        let Err(error) = Bridge::claim(&claims, root.join("net").to_str().unwrap()) else {
+            panic!("no claim file can be opened");
+        };
+        assert!(
+            error.to_string().contains("Is a directory"),
+            "the open failure is reported, not exhaustion: {error}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn dockerfile_platforms_follow_the_running_workers_capabilities() {
         let directory =
             std::env::temp_dir().join(format!("ployz-platform-{}", uuid::Uuid::new_v4()));
@@ -521,7 +712,7 @@ mod tests {
             &format!(
                 r#"#!/bin/sh
 case "$1 $2" in
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/386","linux/arm/v7","linux/ppc64le"]}}]}}' ;;
 esac
 "#,
@@ -542,6 +733,7 @@ esac
             &docker,
             Lock::try_acquire_in(&directory).unwrap(),
             &resources,
+            None,
         )
         .unwrap();
         for platform in ["linux/386", "linux/arm/v7", "linux/ppc64le", "linux/s390x"] {
@@ -586,7 +778,8 @@ esac
             };
             let lock = Lock::try_acquire_in(&directory).unwrap();
             let mut builder =
-                Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
+                Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None)
+                    .unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
             builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile(
                 fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap(),
@@ -670,7 +863,7 @@ esac
 
         let lock = Lock::acquire_in(&directory, &crate::Cancellation::default()).unwrap();
         let builder =
-            Builder::acquire(&docker, lock, &crate::policy::Resources::default()).unwrap();
+            Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None).unwrap();
         let name = builder_name();
         let acquired = fs::read_to_string(directory.join("calls")).unwrap();
         // A container left by an earlier attempt is stale, so it is replaced.
@@ -679,8 +872,8 @@ esac
             [
                 format!("buildx rm --keep-state {name}"),
                 format!(
-                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --buildkitd-config {}",
-                    directory.join("buildkitd.toml").display()
+                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --buildkitd-config {}",
+                    directory.join(format!("{name}.buildkitd.toml")).display()
                 ),
             ]
         );

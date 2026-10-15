@@ -21,6 +21,14 @@ use crate::cloud_login::{
 /// slow), so the client's 15s default would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Who a Cloud call speaks for. `ployz mcp` speaks for an agent, and Cloud lets only a
+/// person, or the prompt that asked, approve what an agent asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Via {
+    Cli,
+    Agent,
+}
+
 /// What a Cloud call acts with.
 pub(crate) enum Credential {
     /// This device's approved sign-in; its Organization can be switched.
@@ -344,18 +352,21 @@ impl From<LoginError> for StoreCallError {
 /// [`LoginError::Unsupported`].
 pub(crate) async fn config_store<T: DeserializeOwned>(
     credential: &Credential,
+    via: Via,
     operation: &str,
     body: &impl Serialize,
     approval: Option<&str>,
 ) -> Result<T, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
     let url = format!("{}/api/config/{operation}", credential.cloud());
-    let response = send_approved(credential, Method::POST, &url, &body, approval, None).await?;
+    let response =
+        send_approved(credential, via, Method::POST, &url, &body, approval, None).await?;
     store_answer(credential, response).await
 }
 
 async fn send_approved(
     credential: &Credential,
+    via: Via,
     method: Method,
     url: &str,
     body: &serde_json::Value,
@@ -363,6 +374,9 @@ async fn send_approved(
     request_key: Option<&str>,
 ) -> Result<reqwest::Response, LoginError> {
     let mut request = request(credential, method, url, Some(body))?.timeout(OPERATION_TIMEOUT);
+    if via == Via::Agent {
+        request = request.header("x-ployz-via", "agent");
+    }
     if let Some(approval) = approval {
         request = request.header("x-ployz-approval", approval);
     }
@@ -425,15 +439,24 @@ pub(crate) async fn keyed_answer<T: DeserializeOwned>(
     approval: Option<&str>,
     request_key: Option<&str>,
 ) -> Result<T, StoreCallError> {
-    keyed_reply(credential, method, path, body, approval, request_key)
-        .await
-        .0
+    keyed_reply(
+        credential,
+        Via::Cli,
+        method,
+        path,
+        body,
+        approval,
+        request_key,
+    )
+    .await
+    .0
 }
 
 /// [`keyed_answer`] with the manifest revision the reply named, for a caller that
 /// holds its own copy of the published commands rather than reading [`revision_seen`].
 pub(crate) async fn keyed_reply<T: DeserializeOwned>(
     credential: &Credential,
+    via: Via,
     method: Method,
     path: &str,
     body: &serde_json::Value,
@@ -441,11 +464,11 @@ pub(crate) async fn keyed_reply<T: DeserializeOwned>(
     request_key: Option<&str>,
 ) -> (Result<T, StoreCallError>, Option<String>) {
     let url = format!("{}/api/cli/{path}", credential.cloud());
-    let response = match send_approved(credential, method, &url, body, approval, request_key).await
-    {
-        Ok(response) => response,
-        Err(error) => return (Err(error.into()), None),
-    };
+    let response =
+        match send_approved(credential, via, method, &url, body, approval, request_key).await {
+            Ok(response) => response,
+            Err(error) => return (Err(error.into()), None),
+        };
     let revision = revision_of(response.headers());
     (store_answer(credential, response).await, revision)
 }

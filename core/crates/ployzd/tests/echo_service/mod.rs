@@ -24,7 +24,16 @@ impl Service<http::Request<Body>> for EchoService {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        let cloud_routed = request
+            .headers()
+            .get(ployz_core::CLOUD_ROUTED_HEADER)
+            .cloned();
         let mut response = http::Response::new(request.into_body());
+        if let Some(cloud_routed) = cloud_routed {
+            response
+                .headers_mut()
+                .insert(ployz_core::CLOUD_ROUTED_HEADER, cloud_routed);
+        }
         response.headers_mut().insert(
             "content-type",
             http::HeaderValue::from_static("application/grpc"),

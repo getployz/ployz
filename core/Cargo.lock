@@ -1239,6 +1239,7 @@ checksum = "25f104b501bf2364e78d0d3974cbc774f738f5865306ed128e1e0d7499c0ad96"
 dependencies = [
  "console",
  "shell-words",
+ "zeroize",
 ]
 
 [[package]]
@@ -2867,6 +2868,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "minisign-verify"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "871285dc19d8d0ebe0eef3d0e99a205f2a71363b122632cbbfa4a6c370a960ce"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3799,7 +3806,7 @@ dependencies = [
 
 [[package]]
 name = "ployz"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3854,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-build"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -3873,7 +3880,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config-wasm"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "ployz-core",
  "serde_json",
@@ -3882,10 +3889,11 @@ dependencies = [
 
 [[package]]
 name = "ployz-core"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "ipnet",
+ "minisign-verify",
  "oci-spec",
  "prost",
  "semver",
@@ -3903,7 +3911,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "napi",
  "napi-build",
@@ -3920,7 +3928,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-store"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -3944,10 +3952,11 @@ dependencies = [
 
 [[package]]
 name = "ployz-testkit"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "ed25519-dalek",
  "ployz",
  "ployz-core",
  "rcgen",
@@ -3966,7 +3975,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.3.0-beta.2"
+version = "0.3.0-beta.3"
 dependencies = [
  "async-trait",
  "axum",

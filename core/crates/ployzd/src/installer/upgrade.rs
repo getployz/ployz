@@ -8,7 +8,7 @@ use std::{
 
 use ployz_core::{
     MachineRelease, MachineUpgradeAttempt, MachineUpgradeAttemptId, MachineUpgradeOutcome,
-    MachineUpgradeStage, RequestMachineUpgradeRequest,
+    MachineUpgradeStage, MachineVersion, RequestMachineUpgradeRequest,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -47,6 +47,14 @@ pub enum Error {
     /// Global activation was requested from a daemon using unsupported Machine paths.
     #[error("{0}")]
     NonstandardPaths(String),
+    /// Ployz Cloud asked for a release older than the installed one.
+    #[error(
+        "Ployz Cloud cannot downgrade this Machine from {installed} to {target}; to downgrade, run `ployz server upgrade {target}` with `--context` from your computer"
+    )]
+    Downgrade {
+        installed: MachineVersion,
+        target: MachineVersion,
+    },
     /// The requested release could not be parsed or resolved.
     #[error("could not resolve the Machine release")]
     Resolve(#[source] InstallError),
@@ -108,17 +116,46 @@ pub(crate) async fn latest(
     settle(stored, data_dir, run_dir).await.map(Some)
 }
 
+/// Whether an upgrade request may install a release older than the installed one.
+///
+/// An older release can carry fixed vulnerabilities, so only a direct connection
+/// (local socket or SSH) may downgrade; Ployz Cloud is refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Downgrade {
+    Allowed,
+    Refused,
+}
+
+impl Downgrade {
+    fn admit(
+        self,
+        installed: Option<&MachineVersion>,
+        target: &MachineVersion,
+    ) -> Result<(), Error> {
+        match installed {
+            Some(installed) if self == Self::Refused && target < installed => {
+                Err(Error::Downgrade {
+                    installed: installed.clone(),
+                    target: target.clone(),
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// Own acceptance and worker launch independently of the requesting client's lifetime.
 /// Dropping the returned future only stops waiting; the task retains exclusive admission.
 pub(crate) fn request(
     request: RequestMachineUpgradeRequest,
+    downgrade: Downgrade,
     data_dir: PathBuf,
     run_dir: PathBuf,
     guard: mutation::InstallationGuard,
 ) -> impl Future<Output = Result<MachineUpgradeAttempt, Error>> {
     let task = tokio::spawn(async move {
         let _guard = guard;
-        request_locked(request, &data_dir, &run_dir).await
+        request_locked(request, downgrade, &data_dir, &run_dir).await
     });
     async move {
         task.await.map_err(|error| {
@@ -132,6 +169,7 @@ pub(crate) fn request(
 
 async fn request_locked(
     request: RequestMachineUpgradeRequest,
+    downgrade: Downgrade,
     data_dir: &Path,
     run_dir: &Path,
 ) -> Result<MachineUpgradeAttempt, Error> {
@@ -164,6 +202,7 @@ async fn request_locked(
     )
     .await
     .map_err(Error::Resolve)?;
+    downgrade.admit(installed.as_ref(), &target)?;
     let mut stored = StoredAttempt {
         requested: request.release,
         attempt: MachineUpgradeAttempt {

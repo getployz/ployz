@@ -91,6 +91,23 @@ HTTPS with a token in the URL.
 
 A token can't get a Dockerfile `FROM` a private image: use a public base image.
 
+### What a build can reach
+
+Build steps reach the internet over IPv4, so package registries and Git hosts work. They can't
+reach the server running the build, the private network Ployz runs between your servers, or your
+services on it. Fetch what a build needs from the internet, and talk to your services after
+deploy.
+
+A build step can still reach your services' public web addresses on ports 80 and 443, and your
+other servers' public addresses. It also reaches anything on the build
+server's own local network, like a cloud VPC or office LAN, including your other servers there.
+Don't leave anything on those addresses open without a login.
+
+A Dockerfile `ADD` of a URL or Git repository follows the same rule. It reaches the internet,
+and nothing on the server running the build or your servers' private network, except the image
+servers Ployz uses to share build images between your servers. If Ployz can't put that limit in
+place, the build fails instead of running without it.
+
 ## When your servers mix x86 and ARM
 
 - **With Railpack**, there's nothing to do: Ployz builds the service for both.

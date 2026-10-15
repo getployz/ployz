@@ -110,6 +110,9 @@ pub struct HostPolicy {
     /// Waiting budget; execution starts a separate clock after admission. `None`
     /// waits until admission, cancellation, or disconnect: capacity bounds the queue.
     pub queue_timeout: Option<Duration>,
+    /// Fences BuildKit's own traffic before every solve. `None` leaves it
+    /// unfenced, as on a developer's own computer.
+    pub fence: Option<crate::FenceInstaller>,
 }
 impl Default for HostPolicy {
     fn default() -> Self {
@@ -122,6 +125,7 @@ impl Default for HostPolicy {
             active_timeout: EXECUTION_TIMEOUT,
             queue_capacity: 100,
             queue_timeout: None,
+            fence: None,
         }
     }
 }
@@ -186,6 +190,7 @@ pub struct Admission {
     pub(crate) deadline: Deadline,
     pub(crate) cancellation: Cancellation,
     pub(crate) resources: crate::policy::Resources,
+    pub(crate) fence: Option<crate::FenceInstaller>,
 }
 impl Admission {
     /// Attempt abandoned-resource teardown once after daemon restart. Never
@@ -245,6 +250,7 @@ impl Admission {
             lock: Lock::try_acquire_slot(&policy.state_directory, slot)?,
             deadline: Deadline::starting_now(policy.active_timeout),
             cancellation: Cancellation::default(),
+            fence: policy.fence,
         })
     }
     pub(crate) fn wait(cancellation: &Cancellation) -> Result<Self, BuildError> {
@@ -255,6 +261,7 @@ impl Admission {
             lock,
             deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
             cancellation: cancellation.clone(),
+            fence: None,
         })
     }
     /// A shared handle to this attempt's [`Cancellation`]; cancelling it makes [`Self::check`]

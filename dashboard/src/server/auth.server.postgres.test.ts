@@ -5,7 +5,8 @@ import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { verification } from "#/modules/identity/tables";
+import { session as sessionTable, verification } from "#/modules/identity/tables";
+import { eq } from "drizzle-orm";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -133,7 +134,12 @@ const call = Effect.fn(function* (path: string, { cookie, bearer, body }: Call =
   const response = yield* auth.handler(new Request(`${origin}/api/auth${path}`, init));
   const text = yield* Effect.promise(() => response.text());
   const json = decodeAuthReply(text);
-  return { status: response.status, json, cookie: response.headers.get("set-cookie")?.split(";", 1)[0] };
+  return {
+    status: response.status,
+    json,
+    cookie: response.headers.get("set-cookie")?.split(";", 1)[0],
+    authToken: response.headers.get("set-auth-token"),
+  };
 });
 
 const signUp = Effect.fn(function* (name: string) {
@@ -206,6 +212,25 @@ it.live(
         assert.strictEqual(session.json?.user?.email, "owner@example.test");
         assert.isString(session.json?.session?.activeOrganizationId);
         assert.isString(session.json?.session?.activeOrganizationSlug);
+
+        // The device's token signs `ployz` in, never the dashboard, even sent with the dashboard's Origin.
+        const auth = yield* Auth;
+        const asDashboard = new Headers({ authorization: `Bearer ${token}`, origin });
+        assert.isNull(yield* auth.getSession(asDashboard));
+        const posing = yield* Effect.exit(auth.resolveActor(asDashboard));
+        assert.isTrue(posing._tag === "Failure" && Cause.squash(posing.cause) instanceof Unauthorized);
+        assert.strictEqual((yield* auth.getSession(asDashboard, { bearer: true }))?.user.email, "owner@example.test");
+
+        // Nor does any answer to it hand back a session cookie the browser could sign the dashboard in with.
+        const slug = session.json?.session?.activeOrganizationSlug ?? assert.fail("no active Organization");
+        const moved = yield* call("/organization/set-active", { bearer: token, body: { organizationSlug: slug } });
+        assert.strictEqual(moved.status, 200);
+        assert.deepStrictEqual([moved.cookie, moved.authToken], [undefined, null]);
+        const { drizzle } = yield* Database;
+        yield* drizzle.update(sessionTable).set({ expiresAt: new Date(Date.now() + 60_000) }).where(eq(sessionTable.token, token));
+        const refreshed = yield* call("/get-session", { bearer: token });
+        assert.strictEqual(refreshed.json?.user?.email, "owner@example.test");
+        assert.deepStrictEqual([refreshed.cookie, refreshed.authToken], [undefined, null]);
 
         // The code is spent; logout ends the device's session.
         assert.strictEqual((yield* device.poll()).json?.error, "invalid_grant");

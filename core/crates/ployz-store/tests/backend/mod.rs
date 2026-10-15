@@ -60,6 +60,19 @@ pub fn acme_repositories() -> ployz_store::Trusted {
     }
 }
 
+/// The GitHub user `ada`, an org member in [`members`].
+pub fn ada() -> ployz_store::GithubUserId {
+    ployz_store::GithubUserId::parse(7).unwrap()
+}
+
+/// Cloud's evidence that `ada` is the org's one member.
+pub fn members() -> ployz_store::Trusted {
+    ployz_store::Trusted {
+        members: Some(vec![ada()]),
+        ..ployz_store::Trusted::default()
+    }
+}
+
 /// A full Git commit.
 pub fn sha(commit: &str) -> ployz_store::CommitSha {
     ployz_store::CommitSha::parse(commit).unwrap()

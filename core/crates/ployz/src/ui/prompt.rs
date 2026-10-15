@@ -4,7 +4,7 @@
 
 use std::io::{self, IsTerminal as _};
 
-use dialoguer::{Confirm, Input, Select, console::Term};
+use dialoguer::{Confirm, Input, Password, Select, console::Term};
 
 use super::{Mode, mode};
 use crate::failure::Failure;
@@ -82,6 +82,24 @@ pub(crate) fn select<T: ToString>(
     .ok_or_else(|| decline(declined))
 }
 
+/// Ask for a secret without echoing it. Ctrl-C declines.
+pub(crate) fn secret(
+    question: &str,
+    refusal: impl FnOnce() -> Failure,
+    declined: &str,
+) -> Result<String, Failure> {
+    if !can_prompt() {
+        return Err(refusal());
+    }
+    ask(|| {
+        Password::new()
+            .with_prompt(question)
+            .interact_on(&Term::stderr())
+            .map(Some)
+    })?
+    .ok_or_else(|| decline(declined))
+}
+
 /// Ctrl-C reaches the prompt as `Interrupted`: that is a no, and the cursor a
 /// select hid comes back.
 fn ask<T>(prompt: impl FnOnce() -> dialoguer::Result<Option<T>>) -> Result<Option<T>, Failure> {
@@ -124,5 +142,6 @@ mod tests {
         refused(confirm_name("blog", refusal, "Cancelled."));
         refused(confirm("Reset?", refusal, "Cancelled."));
         refused(select("Pick", &["a", "b"], 0, refusal, "Cancelled.").map(drop));
+        refused(secret("Token", refusal, "Cancelled.").map(drop));
     }
 }

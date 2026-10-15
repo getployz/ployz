@@ -75,7 +75,7 @@ class Keys(unittest.TestCase):
         channel = tomllib.loads((artifacts.CORE / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
         repository = artifacts.CORE.parent
         pins = [("Dockerfile", r"FROM rust:([\d.]+)-"),
-                (".github/actions/setup-rust/action.yml", r"dtolnay/rust-toolchain@([\d.]+)"),
+                (".github/actions/setup-rust/action.yml", r"toolchain: ([\d.]+)"),
                 (".github/workflows/ci.yml", r"dtolnay/rust-toolchain@([\d.]+)"),
                 (".github/workflows/release-contracts.yml", r"RUST_VERSION: ([\d.]+)"),
                 ("core/Cargo.toml", r'rust-version = "([\d.]+)"')]

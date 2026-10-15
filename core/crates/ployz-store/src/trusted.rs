@@ -7,7 +7,7 @@ use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
 use crate::git::AuthorizedRepository;
-use crate::id::ApprovalDigest;
+use crate::id::{ApprovalDigest, GithubUserId};
 
 /// What Cloud checked for one write. Empty unless Cloud supplies it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -30,6 +30,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub servers: Option<u32>,
+    /// The GitHub accounts of the Organization's members, as Cloud linked them: a pull
+    /// request deploys without approval only when one of them wrote it. None when Cloud
+    /// didn't look, which trusts no one.
+    #[serde(default)]
+    #[ts(optional)]
+    pub members: Option<Vec<GithubUserId>>,
     /// Whether a human must approve a publication that destroys something, and what they
     /// approved.
     #[serde(default)]

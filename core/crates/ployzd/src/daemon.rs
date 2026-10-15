@@ -154,8 +154,11 @@ impl Daemon {
             crate::installer::upgrade::reconcile(&config.data_dir, &run_dir)
                 .await
                 .map_err(io::Error::other)?;
-            let build_policy = ployz_build::HostPolicy::from_environment()
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+            let build_policy = ployz_build::HostPolicy {
+                fence: Some(crate::network::fence_builder),
+                ..ployz_build::HostPolicy::from_environment()
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+            };
             Self::start_with_build_policy(config, socket, build_policy, run_dir).await
         }
         .await;

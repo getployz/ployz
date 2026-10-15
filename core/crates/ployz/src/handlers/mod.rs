@@ -774,30 +774,39 @@ mod tests {
     fn server_add_takes_a_token_or_prints_a_command() {
         assert!(command().try_get_matches_from(["ployz", "cloud"]).is_ok());
         let parsed = command()
-            .try_get_matches_from(["ployz", "server", "add", "--token", "pmet_test"])
+            .try_get_matches_from(["ployz", "server", "add", "--token-stdin"])
             .unwrap();
         let add = leaf_matches(&parsed);
-        assert_eq!(
-            add.get_one::<String>("token").map(String::as_str),
-            Some("pmet_test")
-        );
+        assert!(add.get_flag("token-stdin"));
         assert_eq!(
             add.get_one::<ipnet::Ipv4Net>("network").copied(),
             Some("10.210.0.0/16".parse().unwrap())
         );
         for conflicting in [
-            ["ployz", "server", "add", "--token", "pmet_x", "--command"].as_slice(),
-            ["ployz", "server", "add", "--command", "root@host"].as_slice(),
-            ["ployz", "server", "add", "--wait", "id", "root@host"].as_slice(),
+            ["ployz", "server", "add", "--token", "pmet_x"].as_slice(),
+            ["ployz", "server", "add", "--token-stdin", "--command"].as_slice(),
             [
                 "ployz",
                 "server",
                 "add",
-                "--standalone",
-                "--token",
-                "pmet_x",
+                "--token-file",
+                "t",
+                "--wait",
+                "id",
             ]
             .as_slice(),
+            [
+                "ployz",
+                "server",
+                "add",
+                "--token-stdin",
+                "--token-file",
+                "t",
+            ]
+            .as_slice(),
+            ["ployz", "server", "add", "--command", "root@host"].as_slice(),
+            ["ployz", "server", "add", "--wait", "id", "root@host"].as_slice(),
+            ["ployz", "server", "add", "--standalone", "--token-stdin"].as_slice(),
             ["ployz", "server", "add", "--network", "not-a-cidr"].as_slice(),
         ] {
             assert!(
@@ -811,8 +820,8 @@ mod tests {
                 "server",
                 "add",
                 "root@host",
-                "--token",
-                "pmet_x",
+                "--token-file",
+                "token",
                 "--name",
                 "edge",
                 "--network",
@@ -849,6 +858,8 @@ mod tests {
         if crate::provisioning::process_is_root() {
             return;
         }
+        let token = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(token.path(), "pmet_test\n").unwrap();
         let mut command = command();
         let matches = command
             .clone()
@@ -856,8 +867,8 @@ mod tests {
                 "ployz",
                 "server",
                 "add",
-                "--token",
-                "pmet_test",
+                "--token-file",
+                token.path().to_str().unwrap(),
                 "--cloud-url",
                 "http://127.0.0.1:9",
             ])
@@ -901,8 +912,7 @@ mod tests {
                 "ployz",
                 "server",
                 "add",
-                "--token",
-                "pmet_test",
+                "--token-stdin",
                 "--ingress-backend",
                 "caddy",
             ]

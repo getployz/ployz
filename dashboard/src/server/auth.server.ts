@@ -3,7 +3,8 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
-import { betterAuth } from "better-auth";
+import { betterAuth, type BetterAuthPlugin } from "better-auth";
+import { createAuthMiddleware } from "better-auth/api";
 import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
@@ -89,8 +90,13 @@ export interface AuthService {
   readonly handler: (
     request: Request,
   ) => Effect.Effect<Response, AuthenticationUnavailable>;
+  /**
+   * The browser's session cookie; with `bearer`, a `ployz login` session token in `Authorization` too. Only a `ployz`
+   * API request passes `bearer`, so a session token never signs in as the dashboard.
+   */
   readonly getSession: (
     headers: Headers,
+    accepts?: { readonly bearer: true },
   ) => Effect.Effect<
     AuthSession | null,
     AuthenticationUnavailable | Schema.SchemaError
@@ -105,6 +111,8 @@ export interface AuthService {
     Actor,
     Unauthorized | AuthenticationUnavailable | Schema.SchemaError
   >;
+  /** Whether sign-in trusts `origin`: the app's own, `BETTER_AUTH_TRUSTED_ORIGINS`, and localhost outside production. */
+  readonly isTrustedOrigin: (origin: string) => Effect.Effect<boolean, AuthenticationUnavailable>;
   /** The remote MCP endpoint's authorization, on a hosted Cloud only. */
   readonly mcp: RemoteMcpAuth | null;
 }
@@ -154,6 +162,25 @@ const AuthSchema = {
 /** The `ployz` CLI's device-authorization client id. */
 export const CLI_CLIENT_ID = "ployz-cli";
 
+const BEARER = /^bearer /i;
+
+/**
+ * A `ployz` session token signs in only `ployz`, so nothing answering it sets the session cookie, or `bearer`'s copy of
+ * it in `set-auth-token`, that would sign a browser into the dashboard. Runs before `bearer` and the cookie plugin.
+ */
+const bearerSetsNoCookie = {
+  id: "bearer-sets-no-cookie",
+  hooks: {
+    after: [{
+      matcher: (context) =>
+        BEARER.test(context.request?.headers.get("authorization") ?? context.headers?.get("authorization") ?? ""),
+      handler: createAuthMiddleware(async (context) => {
+        context.context.responseHeaders?.delete("set-cookie");
+      }),
+    }],
+  },
+} satisfies BetterAuthPlugin;
+
 // better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
 // so another signed-in user can neither approve nor deny it.
 const cliSignInPlugins = [
@@ -161,6 +188,7 @@ const cliSignInPlugins = [
     verificationUri: "/device",
     validateClient: (clientId) => clientId === CLI_CLIENT_ID,
   }),
+  bearerSetsNoCookie,
   bearer(),
 ];
 
@@ -339,9 +367,11 @@ const makeAuth = Effect.gen(function* () {
     }
     : null;
 
-  const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
+  const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers, accepts?: { readonly bearer: true }) {
+    const signedIn = new Headers(headers);
+    if (accepts?.bearer !== true) signedIn.delete("authorization");
     const authSession = yield* Effect.tryPromise({
-      try: () => instance.api.getSession({ headers }),
+      try: () => instance.api.getSession({ headers: signedIn }),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
     });
     if (authSession === null) return null;
@@ -368,6 +398,10 @@ const makeAuth = Effect.gen(function* () {
       return yield* Schema.decodeUnknownEffect(Actor)({
         userId: authSession.user.id,
       }, { onExcessProperty: "error" });
+    }),
+    isTrustedOrigin: (origin) => Effect.tryPromise({
+      try: async () => (await instance.$context).isTrustedOrigin(origin),
+      catch: (cause) => new AuthenticationUnavailable({ cause }),
     }),
     mcp,
   } satisfies AuthService;

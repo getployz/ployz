@@ -777,12 +777,13 @@ describe("fetchInstallationPullRequest", () => {
   it("reads a deleted author as GitHub's ghost, not a bot", async () => {
     mockFetchSequence(installationTokenResponse(), jsonResponse({
       number: 7, state: "closed", title: "Old change", user: null,
-      head: { ref: "feature", sha: "c".repeat(40) }, base: { ref: "main" },
+      head: { ref: "feature", sha: "c".repeat(40), repo: null }, base: { ref: "main" },
       merged: false, merge_commit_sha: null, commits: 1,
     }));
 
     const result = await Effect.runPromise(fetchInstallationPullRequest(access(4_901), 9_301, 7).pipe(Effect.provide(GithubTestLive)));
 
-    expect(result.author).toEqual({ login: "ghost", isBot: false });
+    expect(result.author).toEqual({ id: null, login: "ghost", isBot: false });
+    expect(result.headRepositoryId).toBeNull();
   });
 });

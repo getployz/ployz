@@ -459,6 +459,10 @@ fn deploy(
             environment: environment.clone(),
             reason: crate::trusted::NO_SERVERS.to_owned(),
         }),
+        Ok(Some(Deploy::NeedsApproval)) => automated.skipped.push(Skipped {
+            environment: environment.clone(),
+            reason: crate::pull_request::NEEDS_APPROVAL.to_owned(),
+        }),
         Ok(None) => {}
         // One Environment that can't deploy never holds back the others.
         Err(error) if skippable(&error) => {
@@ -470,6 +474,32 @@ fn deploy(
         Err(error) => return Err(error),
     }
     Ok(())
+}
+
+/// Deploy pull request `event`'s head into its PR Environment `environment`, as a
+/// push of it would.
+pub(crate) fn deploy_head(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentId,
+    event: &crate::PullRequest,
+    trusted: &Trusted,
+    automated: &mut Automated,
+) -> Result<(), RpcError> {
+    let push = Push {
+        repository_id: event.repository_id,
+        branch: &event.head_branch,
+        head: &event.head,
+    };
+    deploy(
+        tx,
+        who,
+        environment,
+        &push,
+        Select::Changed(None),
+        trusted,
+        automated,
+    )
 }
 
 /// Deploy what a merge at `commit` into `branch` changed and removed in
@@ -621,6 +651,8 @@ enum Deploy {
     Waiting,
     /// It would deploy, but no Server could run it.
     NoServers,
+    /// It would deploy a pull request's head no member approved.
+    NeedsApproval,
 }
 
 fn admit(
@@ -688,6 +720,14 @@ fn admit(
         false => deployment::retirements(tx, id, &saved.intent, &landed.removals)?,
     };
     let idle = selected.is_empty() && retire.is_empty();
+    if !idle && !crate::pull_request::admits(tx, id, push.repository_id, push.head)? {
+        tx.execute(
+            "DELETE FROM config_waiting_deploy \
+             WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
+            &key,
+        )?;
+        return Ok(Some(Deploy::NeedsApproval));
+    }
     if idle || trusted.runnable().is_err() {
         tx.execute(
             "DELETE FROM config_waiting_deploy \

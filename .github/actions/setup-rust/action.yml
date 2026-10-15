@@ -7,13 +7,18 @@ inputs:
   components:
     description: Extra Rust components
     default: ''
+  remote-cache:
+    description: Restore the shared compiler and download caches; release builds pass false
+    default: 'true'
 runs:
   using: composite
   steps:
-    - uses: dtolnay/rust-toolchain@1.97.1
+    - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
       with:
+        toolchain: 1.97.1
         components: ${{ inputs.components }}
-    - uses: actions/cache@v4
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      if: inputs.remote-cache == 'true'
       with:
         path: |
           ~/.cargo/registry
@@ -22,7 +27,7 @@ runs:
         restore-keys: cargo-downloads-
     # Main pushes are the only cache writers, so a missing write path empties the cache silently.
     - name: Require compiler cache writes on main
-      if: github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: inputs.remote-cache == 'true' && github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
       shell: bash
       run: |
         if [ "$KACHE_S3_WRITES" != true ]; then
@@ -30,6 +35,7 @@ runs:
           exit 1
         fi
     - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+      if: inputs.remote-cache == 'true'
       with:
         version: 0.18.0
         s3-bucket: ${{ env.KACHE_S3_BUCKET }}

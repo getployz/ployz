@@ -183,7 +183,7 @@ fn cancellation_between_pushes_leaves_later_targets_unattempted() {
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake') echo invoked >> pushes ;;
 esac
@@ -257,7 +257,7 @@ fn each_loaded_image_builds_in_its_own_sequential_bake_run() {
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     while [ $# -gt 0 ]; do
@@ -506,7 +506,7 @@ fn executing_a_build_does_not_change_process_signal_handlers() {
                 r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
 esac
 "#,
@@ -631,7 +631,7 @@ fn cross_platform_image_context_reaches_buildkit() {
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
-  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"arm64","OSType":"linux"}}' ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"arm64","OSType":"linux","CgroupVersion":"2"}}' ;;
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/arm64"]}}]}}' ;;
   'buildx bake') printf '%s\n' "$@" > bake-arguments ;;
 esac
@@ -695,6 +695,59 @@ exit 0
             .unwrap()
             .contains("docker-image://127.0.0.1:5000/example.test/base@sha256:")
     );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_cgroup_v1_host_is_refused_before_anything_builds() {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let directory = std::env::temp_dir().join(format!("ployz-cgroup-{}", uuid::Uuid::new_v4()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        r#"#!/bin/sh
+case "$1 $2" in
+  'context show') echo default ;;
+  'info --format') echo '{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"1"}' ;;
+  'buildx bake') touch baked ;;
+esac
+exit 0
+"#,
+    );
+    std::fs::write(
+        directory.join("compose.yaml"),
+        "services: {app: {build: .}}\n",
+    )
+    .unwrap();
+    let environment = BTreeMap::new();
+    let targets = [target("app", None)];
+    let request = Request {
+        image_contexts: &BTreeMap::new(),
+        compose_file: Path::new("compose.yaml"),
+        working_dir: &directory,
+        environment: &environment,
+        docker: Some(&program),
+        targets: &targets,
+        railpack: &[],
+        build_args: &[],
+        output: Output::Validate,
+        no_cache: false,
+        pull: false,
+    };
+    let admission = Admission::try_acquire_with(&HostPolicy {
+        state_directory: directory.clone(),
+        configuration_file: directory.join("build.yaml"),
+        ..Default::default()
+    })
+    .unwrap();
+    let error = execute_admitted(&request, admission, &|_| {}).unwrap_err();
+    assert!(error.to_string().contains("cgroup v2"), "{error}");
+    assert!(!directory.join("baked").exists());
     std::fs::remove_dir_all(directory).unwrap();
 }
 

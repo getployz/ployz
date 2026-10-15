@@ -200,14 +200,15 @@ type Reply = typeof Reply.Type;
 /** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
 const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
-type As = { readonly cookie?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
+/** `session` is a signed-in login's session token, which the CLI sends as a bearer token. */
+type As = { readonly session?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
 
 type CliBody = JsonObject;
 
 const cli = Effect.fn(function* (method: string, path: string, as: As, body?: CliBody) {
   const headers = new Headers();
-  if (as.cookie !== undefined) headers.set("cookie", as.cookie);
-  if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
+  const bearer = as.session ?? as.bearer;
+  if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
   if (as.approval !== undefined) headers.set("x-ployz-approval", as.approval);
   if (as.key !== undefined) headers.set("x-ployz-request-key", as.key);
   const init: RequestInit = { method, headers };
@@ -235,10 +236,23 @@ const signUp = Effect.fn(function* (name: string) {
     body: JSON.stringify({ email: `${name}@example.test`, name, password: "correct-horse-battery-staple" }),
   }));
   assert.strictEqual(response.status, 200);
+  const session = response.headers.get("set-auth-token") ?? assert.fail("no session token");
   const cookie = response.headers.get("set-cookie")?.split(";", 1)[0] ?? assert.fail("no session cookie");
-  const orgs = yield* cli("GET", "organizations", { cookie });
+  const orgs = yield* cli("GET", "organizations", { session });
   const organization = orgs.json.organizations?.[0] ?? assert.fail("no personal Organization");
-  return { cookie, organization };
+  return { session, cookie, organization };
+});
+
+/** Signs `name` back in from the CLI, as a new device. */
+const signIn = Effect.fn(function* (name: string) {
+  const auth = yield* Auth;
+  const response = yield* auth.handler(new Request(`${origin}/api/auth/sign-in/email`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": "ployz-cli/0.0.0" },
+    body: JSON.stringify({ email: `${name}@example.test`, password: "correct-horse-battery-staple" }),
+  }));
+  assert.strictEqual(response.status, 200);
+  return { session: response.headers.get("set-auth-token") ?? assert.fail("no session token") };
 });
 
 it.live(
@@ -296,6 +310,42 @@ it.live(
         assert.deepStrictEqual(removed.json.removed, { id: second.id, kind: "token" });
         assert.strictEqual((yield* cli("GET", "tokens", { bearer: second.secret })).status, 401);
         assert.strictEqual((yield* cli("DELETE", `tokens/${second.id}`, alice)).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an Organization Token can't make or revoke tokens, so none outlives the token that made it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
+        const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0] ?? assert.fail("no device");
+        const asToken = { bearer: token.secret };
+
+        assert.strictEqual((yield* cli("POST", "tokens", asToken, { name: "child", expires_in_days: 365 })).status, 422);
+        assert.lengthOf(yield* database.drizzle.select().from(organizationToken), 1);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 422);
+        assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
+        assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
+
+        // A cookie, which any page can make the browser send, signs no CLI request in.
+        const forged = new Request(`${origin}/api/cli/tokens`, {
+          method: "POST",
+          headers: { cookie: alice.cookie, origin: "https://evil.example", "sec-fetch-site": "cross-site" },
+          body: JSON.stringify({ name: "forged", expires_in_days: 365 }),
+        });
+        const refused = yield* handleCliRequest(forged).pipe(
+          Effect.map((response) => response instanceof Response ? response.status : 200),
+          Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
+        );
+        assert.strictEqual(refused, 401);
+        assert.lengthOf(yield* database.drizzle.select().from(organizationToken), 1);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -485,14 +535,16 @@ it.live(
         assert.deepStrictEqual((yield* cli("GET", "tokens", ci2)).json.revoking,
           [{ id: device, kind: "device", unconfirmed: [later] }]);
 
-        // Rerunning `token rm` retries once the Server is back.
+        // Rerunning `token rm`, signed back in, retries once the Server is back.
         laterServer.online = true;
-        const retried = (yield* cli("DELETE", `tokens/${device}`, ci2)).json;
+        const back = yield* signIn("alice");
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 422);
+        const retried = (yield* cli("DELETE", `tokens/${device}`, back)).json;
         assert.deepStrictEqual(retried.removed, { id: device, kind: "device" });
         assert.deepStrictEqual(retried.servers, { confirmed: [later], unconfirmed: [] });
         assert.isFalse(laterServer.slots.has(serverAccessLabel(device)));
         assert.deepStrictEqual((yield* cli("GET", "tokens", ci2)).json.revoking, []);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 404);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, back)).status, 404);
 
         // Expiry is caught by the sweep.
         yield* cli("POST", "server-access", ci2);
@@ -720,8 +772,8 @@ it.live(
         const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
         const enroll = (as: As, body: Readonly<Record<string, string | boolean>>) => {
           const headers = new Headers();
-          if (as.cookie !== undefined) headers.set("cookie", as.cookie);
-          if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
+          const bearer = as.session ?? as.bearer;
+          if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
           const request = new Request(`${origin}/api/cli/servers/enroll`, { method: "POST", headers, body: JSON.stringify(body) });
           return handleOrganizationCliRequest(request, MintMachineEnrollmentInput, mintCliMachineEnrollment).pipe(
             Effect.map((response) => response.status),
@@ -750,7 +802,7 @@ it.live(
         // Asked about Environment `production` of a Project the Store has no more: its plan moved on.
         const [row] = yield* drizzle.insert(operationApprovals).values({
           organizationId: alice.organization.id, subject: "00000000-0000-4000-8000-000000001301",
-          credentialKind: "session", credentialId: "device", command: "publish", digest: "7:abc",
+          via: "cli", credentialKind: "session", credentialId: "device", command: "publish", digest: "7:abc",
           review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
             effects: [], diff: { version: "7", environment: { id: "00000000-0000-4000-8000-000000001301", project: "gone", name: "production" } },
           }),

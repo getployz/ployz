@@ -8,7 +8,10 @@ use ployz_core::{
 };
 use thiserror::Error;
 
-use crate::connect::{Client, rpc_error};
+use crate::{
+    cluster::answered_by,
+    connect::{Client, rpc_error},
+};
 
 mod built;
 mod cleanup;
@@ -189,7 +192,7 @@ pub(crate) async fn ensure_cluster_image(
             Some(&MachineTarget::from(peer)),
         )
         .await
-        .map_err(rpc_error)?;
+        .map_err(|error| answered_by(peer, error))?;
     listing_client
         .call::<op::PullImageFromMachine>(
             PullImageFromMachineRequest {
@@ -203,7 +206,7 @@ pub(crate) async fn ensure_cluster_image(
         )
         .await
         .map(|_| ())
-        .map_err(rpc_error)
+        .map_err(|error| answered_by(dest, error))
 }
 
 /// Make `image` present on `dest` as `policy` asks before a Deploy changes any
@@ -235,7 +238,7 @@ pub(crate) async fn pull_cluster_image(
         )
         .await
         .map(|_| ())
-        .map_err(rpc_error)
+        .map_err(|error| answered_by(dest, error))
 }
 
 /// Copy the image a Container runs, by its local image ID, from `source` to `dest`,

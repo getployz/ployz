@@ -56,7 +56,7 @@ const parity = Effect.fn(function* () {
   const approvals = yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.insert(operationApprovals).values(["volume:data", "volume:logs"].map((subject) => ({
-      organizationId: ORGANIZATION, subject, credentialKind: "session" as const, credentialId: "device", command: "release", digest: `release:${subject}`,
+      organizationId: ORGANIZATION, subject, via: "cli" as const, credentialKind: "session" as const, credentialId: "device", command: "release", digest: `release:${subject}`,
       review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
         effects: [{ kind: "deletes_volume", name: subject.slice("volume:".length) }],
         operation: { verb: "release", name: subject.slice("volume:".length), preview: null },
@@ -253,6 +253,23 @@ it.live("answers approvals only through ployz, records who decided, and keeps th
       { id: data, status: "approved", reason: null, by: userId },
       { id: logs, status: "denied", reason: "not during the demo", by: userId },
     ]);
+  }));
+
+it.live("refuses a ployz approve of a request an agent asked for, and still lets it deny one", () =>
+  Effect.gen(function* () {
+    const { route, rows, approvals, provided } = yield* parity();
+    const [data, logs] = approvals;
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.update(operationApprovals).set({ via: "agent", credentialKind: "oauth", credentialId: "grant-1" })
+        .where(eq(operationApprovals.organizationId, ORGANIZATION));
+    }));
+    expect(yield* route("org_approval_approve", { id: data ?? "" })).toEqual({
+      status: 403,
+      body: { error: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this.", details: expect.anything() } },
+    });
+    expect(yield* route("org_approval_deny", { id: logs ?? "" })).toMatchObject({ status: 200, body: { output: { id: logs, status: "denied" } } });
+    expect((yield* rows).decided.map(({ status }) => status)).toEqual(["pending", "denied"]);
   }));
 
 it.live("shows a Service's 500s and open incident by name over a short range or a long one, so an agent diagnosing it hears what the check got back", () =>

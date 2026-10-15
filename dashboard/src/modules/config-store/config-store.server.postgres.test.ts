@@ -96,10 +96,9 @@ type Reply = typeof Reply.Type;
 /** Checks the fields the tests read and keeps the rest, so whole-reply assertions still see every field. */
 const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
-/** One CLI request; `json` is the Store's result, or its refusal under `error`. */
-const request = Effect.fn(function* (path: string, cookie: string | undefined, body: Body | undefined, method = "POST") {
-  const headers = new Headers({ "content-type": "application/json" });
-  if (cookie !== undefined) headers.set("cookie", cookie);
+/** One request carrying `headers`; `json` is the Store's result, or its refusal under `error`. */
+const send = Effect.fn(function* (path: string, headers: Headers, body: Body | undefined, method = "POST") {
+  headers.set("content-type", "application/json");
   const init: RequestInit = { method, headers };
   if (method === "POST") init.body = JSON.stringify(body);
   const exit = yield* Effect.exit(handleConfigRequest(new Request(`${origin}/api/config/${path}`, init)));
@@ -111,7 +110,12 @@ const request = Effect.fn(function* (path: string, cookie: string | undefined, b
   return { status: exit.value.status, json: decodeReply(text) };
 });
 
-const signUp = Effect.fn(function* (name: string) {
+/** One CLI request, signed in as `session` unless it's undefined. */
+const request = (path: string, session: string | undefined, body: Body | undefined, method = "POST") =>
+  send(path, session === undefined ? new Headers() : signedIn(session), body, method);
+
+/** A new account's session, as the CLI's bearer token and as the browser's cookie. */
+const signUpBoth = Effect.fn(function* (name: string) {
   const auth = yield* Auth;
   const response = yield* auth.handler(new Request(`${origin}/api/auth/sign-up/email`, {
     method: "POST",
@@ -119,8 +123,16 @@ const signUp = Effect.fn(function* (name: string) {
     body: JSON.stringify({ email: `${name}@example.test`, name, password: "correct-horse-battery-staple" }),
   }));
   assert.strictEqual(response.status, 200);
-  return response.headers.get("set-cookie")?.split(";", 1)[0] ?? assert.fail("no session cookie");
+  return {
+    session: response.headers.get("set-auth-token") ?? assert.fail("no session token"),
+    cookie: response.headers.get("set-cookie")?.split(";", 1)[0] ?? assert.fail("no session cookie"),
+  };
 });
+
+const signUp = (name: string) => signUpBoth(name).pipe(Effect.map(({ session }) => session));
+
+/** How the signed-in CLI presents `session`. */
+const signedIn = (session: string) => new Headers({ authorization: `Bearer ${session}` });
 
 /** What the CLI sends, plus one command the Store never takes over HTTPS. */
 type Body = ConfigQuery | ConfigCommand | { readonly command: "claim"; readonly deployment: string }
@@ -191,13 +203,30 @@ it.live(
 );
 
 it.live(
+  "a browser's cookie signs no config request in, so a page on another site can't write through it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUpBoth("alice");
+        const forged = new Headers({ cookie: alice.cookie, "sec-fetch-site": "cross-site", origin: "https://evil.example" });
+        assert.strictEqual((yield* send("write", forged, shop)).status, 401);
+        assert.strictEqual((yield* request("read", alice.session, get(null))).status, 404);
+        assert.strictEqual((yield* send("write", new Headers({ cookie: alice.cookie, "sec-fetch-site": "same-origin" }), shop)).status, 401);
+        assert.strictEqual((yield* request("write", alice.session, shop)).status, 200);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "the dashboard reaches the Store as a member of the Organization it names, refusals intact",
   () =>
     Effect.gen(function* () {
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
-        const alice = yield* resolveCaller(new Headers({ cookie: yield* signUp("alice") }));
-        const bob = yield* resolveCaller(new Headers({ cookie: yield* signUp("bob") }));
+        const alice = yield* resolveCaller(signedIn(yield* signUp("alice")));
+        const bob = yield* resolveCaller(signedIn(yield* signUp("bob")));
         const slug = alice.organization.slug;
 
         assert.isTrue((yield* callStoreAsMember(alice, slug, write(shop))).ok);
@@ -278,7 +307,7 @@ it.live(
       const layer = yield* cloudLayer({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        yield* enrollStoreServer((yield* resolveCaller(new Headers({ cookie: alice }))).organization.id);
+        yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
@@ -323,7 +352,7 @@ it.live(
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        const organizationId = (yield* resolveCaller(new Headers({ cookie: alice }))).organization.id;
+        const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
         yield* enrollStoreServer(organizationId);
         yield* request("write", alice, shop);
         const VOLUME = "00000000-0000-4000-8000-000000000004";
@@ -353,7 +382,7 @@ it.live(
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        const organizationId = (yield* resolveCaller(new Headers({ cookie: alice }))).organization.id;
+        const organizationId = (yield* resolveCaller(signedIn(alice))).organization.id;
         yield* enrollStoreServer(organizationId);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
@@ -379,7 +408,7 @@ it.live(
           cancel: () => Effect.void,
           open: () => Effect.succeed({ status: "connected" as const, connected }),
         };
-        const userId = (yield* resolveCaller(new Headers({ cookie: alice }))).userId;
+        const userId = (yield* resolveCaller(signedIn(alice))).userId;
         let runs = 0;
         const removeServer = (server: MachineId, noReset: boolean) => Effect.gen(function* () {
           const removal = { organizationId, machineId: server, confirmDataLoss: [], noReset };
@@ -447,7 +476,7 @@ it.live(
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        const caller = yield* resolveCaller(new Headers({ cookie: alice }));
+        const caller = yield* resolveCaller(signedIn(alice));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
         const machineId = ids.machineId("0");
@@ -507,7 +536,7 @@ it.live(
       const layer = yield* cloudLayer();
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        const caller = yield* resolveCaller(new Headers({ cookie: alice }));
+        const caller = yield* resolveCaller(signedIn(alice));
         const organizationId = caller.organization.id;
         yield* enrollStoreServer(organizationId);
         const machineId = ids.machineId("0");
@@ -639,7 +668,7 @@ it.live(
       const layer = yield* cloudLayer({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        yield* enrollStoreServer((yield* resolveCaller(new Headers({ cookie: alice }))).organization.id);
+        yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const custom: ConfigCommand = { command: "add_domain", environment: here, service: "web", hostname: "app.example.com", port: null };
@@ -685,9 +714,11 @@ const sourceArchive = Effect.promise(async () => {
   return Buffer.concat(chunks);
 });
 
-const upload = Effect.fn(function* (deploymentId: string, cookie: string, body: Buffer) {
+const upload = Effect.fn(function* (deploymentId: string, session: string, body: Buffer) {
+  const headers = signedIn(session);
+  headers.set("content-type", "application/gzip");
   const response = yield* handleConfigRequest(new Request(`${origin}/api/config/upload/${deploymentId}`, {
-    method: "POST", headers: { cookie, "content-type": "application/gzip" }, body: new Blob([new Uint8Array(body)]),
+    method: "POST", headers, body: new Blob([new Uint8Array(body)]),
   }));
   return { status: response.status, json: decodeReply(yield* Effect.promise(() => response.text())) };
 });
@@ -701,7 +732,7 @@ it.live(
       const layer = yield* cloudLayer({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
-        yield* enrollStoreServer((yield* resolveCaller(new Headers({ cookie: alice }))).organization.id);
+        yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
         const bob = yield* signUp("bob");
         yield* request("write", alice, shop);
         yield* request("write", alice, {
@@ -716,7 +747,7 @@ it.live(
         assert.strictEqual(again.status, 409);
         assert.strictEqual(again.json.error?.code, "conflict");
         assert.strictEqual((yield* upload(first, bob, archive)).status, 409);
-        const { id: organizationId } = (yield* resolveCaller(new Headers({ cookie: alice }))).organization;
+        const { id: organizationId } = (yield* resolveCaller(signedIn(alice))).organization;
         const store = yield* cloudStore;
         const tooBig = yield* receiveUpload(store, organizationId, "00000000-0000-4000-8000-000000000203",
           new Blob([archive]).stream(), archive.length - 1);

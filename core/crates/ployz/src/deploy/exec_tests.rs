@@ -576,6 +576,8 @@ mod moving;
 mod replacement;
 #[path = "exec_tests/restart.rs"]
 mod restart;
+#[path = "exec_tests/silent.rs"]
+mod silent;
 
 fn run(
     machine_id: &MachineId,

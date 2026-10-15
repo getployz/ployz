@@ -83,6 +83,12 @@ pub enum ProvisionError {
     /// A bootstrap checksum or version did not match the current CLI release.
     #[error("bootstrap verification: {0}")]
     BootstrapVerification(String),
+    /// The bootstrap release publishes no signature.
+    #[error("Release {0} is not signed, and Ployz installs only signed releases.")]
+    BootstrapUnsigned(ployz_core::MachineVersion),
+    /// The bootstrap release is not signed by the Ployz release key.
+    #[error("bootstrap verification")]
+    BootstrapSignature(#[source] ployz_core::ReleaseSignatureError),
     /// A published bootstrap release could not be downloaded.
     #[error("Could not {stage}.")]
     BootstrapDownload {

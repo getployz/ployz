@@ -143,6 +143,7 @@ impl GraphService {
                 RowPhase::RemovingVolume => "removing volume",
                 RowPhase::WaitingForHealth => "waiting for health",
                 RowPhase::Compensating => "rolling back",
+                RowPhase::WaitingForSwitch => "switching",
                 RowPhase::Starting
                 | RowPhase::CreatingContainer
                 | RowPhase::StartingContainer
@@ -207,6 +208,7 @@ impl State {
                 RowPhase::StartingContainer => "starting",
                 RowPhase::WaitingForHealth => "waiting for health",
                 RowPhase::WaitingForHook => "waiting for hook",
+                RowPhase::WaitingForSwitch => "switching",
                 RowPhase::StoppingContainer => "stopping",
                 RowPhase::RemovingContainer => "removing",
                 RowPhase::RemovingVolume => "removing volume",

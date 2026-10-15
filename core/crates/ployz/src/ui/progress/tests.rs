@@ -527,7 +527,7 @@ fn ctrl_c_echo_after_a_full_width_frame_leaves_no_stale_caption() {
     let terminal = InMemoryTerm::new(20, 90);
     let backend = Backend::new(
         Mode::Interactive,
-        ProgressDrawTarget::term_like(Box::new(EchoRoom(terminal.clone()))),
+        ProgressDrawTarget::term_like(Box::new(terminal::EchoRoom::new(terminal.clone()))),
         room,
     );
     let mut wide = frame(State::Running(RowPhase::Starting));
@@ -539,40 +539,38 @@ fn ctrl_c_echo_after_a_full_width_frame_leaves_no_stale_caption() {
     assert!(!visible.contains("Deploying shop"), "{visible:?}");
 }
 
-/// Reports the narrowed width the stderr draw target gives indicatif.
-#[derive(Debug)]
-struct EchoRoom(InMemoryTerm);
-impl TermLike for EchoRoom {
-    fn width(&self) -> u16 {
-        self.0.width() - terminal::ECHO_ROOM
-    }
-    fn height(&self) -> u16 {
-        self.0.height()
-    }
-    fn move_cursor_up(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_up(n)
-    }
-    fn move_cursor_down(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_down(n)
-    }
-    fn move_cursor_right(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_right(n)
-    }
-    fn move_cursor_left(&self, n: usize) -> io::Result<()> {
-        self.0.move_cursor_left(n)
-    }
-    fn write_line(&self, value: &str) -> io::Result<()> {
-        self.0.write_line(value)
-    }
-    fn write_str(&self, value: &str) -> io::Result<()> {
-        self.0.write_str(value)
-    }
-    fn clear_line(&self) -> io::Result<()> {
-        self.0.clear_line()
-    }
-    fn flush(&self) -> io::Result<()> {
-        self.0.flush()
-    }
+/// indicatif writes no newline between rows, so each row must fill the line to wrap.
+#[test]
+fn live_rows_each_keep_their_own_line_on_an_80_column_terminal() {
+    let terminal = InMemoryTerm::new(20, 80);
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal::EchoRoom::new(terminal.clone()))),
+        || (80, 20),
+    );
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![
+            service("api", 0, 1, &ployz_store::RowState::Completed),
+            service("web", 1, 2, &ployz_store::RowState::Pending),
+        ],
+        notices: Vec::new(),
+    };
+    backend.draw(&frame, 0, false);
+    let visible = terminal.contents();
+    let rows: Vec<_> = visible.lines().map(str::trim_end).collect();
+    assert_eq!(
+        rows,
+        [
+            "Deploying shop  1/2",
+            "depth 0",
+            "  ✔ api  switched 1/1  5.0s",
+            "depth 1",
+            "  · web  waiting 0/2  5.0s",
+        ],
+        "{visible:?}"
+    );
 }
 
 fn service(name: &str, depth: u32, servers: usize, state: &ployz_store::RowState) -> Row {

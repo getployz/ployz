@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, HookContainer, HostBind, MachineId, PortPublication,
-    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId,
-    ServiceMode, ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
+    ContainerId, HookContainer, HostBind, MachineId, PortPublication, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, SpecChange, UpdateOrder, compare_specs,
 };
 
 use super::capacity::{CapacityBudget, EndpointDemand, EndpointOperation};
@@ -320,7 +320,10 @@ pub(super) fn plan_global(
         }
 
         if let Some(container) = on_machine(current, machine_id)
-            .find(|container| super::super::is_active_runtime(&container.as_observation().runtime))
+            .filter(|container| {
+                super::super::is_active_runtime(&container.as_observation().runtime)
+            })
+            .min_by_key(|container| !container.as_observation().runtime.may_serve())
         {
             let observation = container.as_observation();
             let demand =
@@ -575,7 +578,12 @@ fn select_replicated(
             .push(container);
     }
     for containers in by_machine.values_mut() {
-        containers.sort_by_key(|container| is_up_to_date(container, requested, options));
+        containers.sort_by_key(|container| {
+            (
+                is_up_to_date(container, requested, options),
+                container.as_observation().runtime.may_serve(),
+            )
+        });
     }
     let existing = machines
         .iter()
@@ -743,7 +751,7 @@ pub(super) fn is_up_to_date(
 ) -> bool {
     let observation = container.as_observation();
     !options.force_recreate
-        && is_running(&observation.runtime)
+        && observation.runtime.may_serve()
         && compare_specs(&observation.resolved_spec, requested) == SpecChange::UpToDate
 }
 
@@ -824,10 +832,6 @@ fn replicated_operation(
         Some(_) => EndpointOperation::Replace,
         None => EndpointOperation::Create,
     }
-}
-
-fn is_running(runtime: &ContainerRuntimeObservation) -> bool {
-    matches!(runtime, ContainerRuntimeObservation::Running { .. })
 }
 
 /// A host port the current Container holds forces stop-first over any order but

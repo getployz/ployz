@@ -116,6 +116,11 @@ export function AddServerDialog({
                 </p>
               )}
             </Step>
+            <Step number={3} title="Paste the token when asked">
+              {mintMutation.data ? (
+                <CopyBlock value={mintMutation.data.token} />
+              ) : null}
+            </Step>
           </ol>
           <div className="border-t pt-3 text-sm text-muted-foreground">
             {withoutZfs ? (

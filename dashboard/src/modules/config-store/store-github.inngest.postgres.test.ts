@@ -117,7 +117,7 @@ it.live(
             ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
             : path.endsWith("/pulls/5")
               ? {
-                number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: H2 },
+                number: 5, title: "Add search", user: { id: 7, login: "ada", type: "User" }, head: { ref: "search", sha: H2, repo: { id: 42 } },
                 base: { ref: "main" }, merged: state.merged, merge_commit_sha: state.merged ? MERGE : null, commits: 1,
                 state: state.merged ? "closed" : "open", updated_at: state.merged ? "2026-09-29T11:00:00Z" : "2026-09-29T10:00:00Z",
               }
@@ -145,8 +145,8 @@ it.live(
       expect((yield* run(H1)).admitted).toHaveLength(1);
       // Pull request 5 opens, and its PR Environment saves a change for production.
       yield* storeSystem(ORGANIZATION, {
-        event: "pull_request", repository_id: 42, number: 5, title: "Add search", author: "ada", bot: false,
-        head_branch: "search", head: H2, target_branch: "main", commits: 1, open: true, merge_commit: null,
+        event: "pull_request", repository_id: 42, number: 5, title: "Add search", author: "ada", author_id: 7, bot: false,
+        head_repository_id: 42, head_branch: "search", head: H2, target_branch: "main", commits: 1, open: true, merge_commit: null,
         target_head: null, updated: "2026-09-29T10:00:00Z",
       }).pipe(Effect.provide(services));
       const preview = { project: null, environment: "pr-5" };

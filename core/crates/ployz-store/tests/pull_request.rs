@@ -8,12 +8,12 @@
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, AdmitRemoval, AuthorizedRepository, Automated, BranchHead, CancelRemoval, Change,
-    CreateBranch, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId,
-    DeploymentStatus, DueQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
+    Actor, Admit, AdmitRemoval, ApprovePullRequest, AuthorizedRepository, Automated, BranchHead,
+    CancelRemoval, Change, CreateBranch, CreateGitService, CreateProject, CreateService, Deploy,
+    DeploymentId, DeploymentStatus, DueQuery, Edit, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest,
     PullRequestQuery, RunEvidence, RunnerId, ServiceLineageId, SetPrPlan, SettingPath,
-    SetupCommand, ShutDown, Sweep, SystemEvent, Trusted, Written,
+    SetupCommand, ShutDown, Standing, Sweep, SystemEvent, Trusted, Written,
 };
 use serde_json::json;
 
@@ -121,8 +121,10 @@ fn facts(open: bool, updated: &str) -> PullRequest {
         number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
+        author_id: Some(backend::ada()),
         bot: false,
         head_branch: backend::git_branch("search"),
+        head_repository_id: Some(backend::repo_id(11)),
         head: backend::sha(HEAD),
         target_branch: backend::git_branch("main"),
         commits: 1,
@@ -135,7 +137,7 @@ fn facts(open: bool, updated: &str) -> PullRequest {
 
 fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
     let Written::Automated(automated) = store
-        .system(&who.organization, &event, &Trusted::default())
+        .system(&who.organization, &event, &backend::members())
         .unwrap()
     else {
         panic!("a system event writes Automated")
@@ -352,8 +354,11 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert_eq!(plans.plans[0].repository_id.get(), 11);
     assert_eq!(open.len(), 1);
     assert_eq!(
-        (open[0].number.get(), open[0].environment.to_string()),
-        (5, "pr-5".into())
+        (
+            open[0].number.get(),
+            open[0].environment.as_ref().map(ToString::to_string)
+        ),
+        (5, Some("pr-5".into()))
     );
     let services = store
         .read(
@@ -430,6 +435,310 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert_eq!(
         view.check.map(|check| check.title),
         Some("1 config change".to_owned())
+    );
+}
+
+const NEXT: &str = "2222222222222222222222222222222222222222";
+
+/// Pull request #5 at `head`, from a fork by someone outside the org.
+fn outsider(head: &str, updated: &str) -> PullRequest {
+    PullRequest {
+        author: "mallory".into(),
+        author_id: Some(ployz_store::GithubUserId::parse(99).unwrap()),
+        head_repository_id: Some(backend::repo_id(99)),
+        head: backend::sha(head),
+        ..facts(true, updated)
+    }
+}
+
+fn approve(
+    store: &ConfigStore,
+    who: &Actor,
+    head: &str,
+) -> Result<Automated, ployz_core::RpcError> {
+    let approval = ApprovePullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        head: backend::sha(head),
+    };
+    store.write(who, &approval)
+}
+
+/// Each open pull request as the plan lists it: its head, standing, and PR Environment.
+fn standings(
+    store: &ConfigStore,
+    who: &Actor,
+) -> Vec<(u64, Option<String>, Standing, Option<String>)> {
+    store.read(who, &PrPlansQuery::default()).unwrap().plans[0]
+        .open
+        .iter()
+        .map(|open| {
+            (
+                open.number.get(),
+                open.head.as_ref().map(ToString::to_string),
+                open.standing.clone(),
+                open.environment.as_ref().map(ToString::to_string),
+            )
+        })
+        .collect()
+}
+
+/// Production's `web` holds a sealed secret and its `worker` a registry credential, which
+/// a PR Environment would copy.
+fn with_secrets(store: &ConfigStore, who: &Actor) {
+    set(
+        store,
+        who,
+        "production",
+        "web.env.TOKEN",
+        json!({ "secret": "s3cret" }),
+    );
+    image_service(store, who, "production", 9, "worker");
+    set(
+        store,
+        who,
+        "production",
+        "worker.registryCredential",
+        json!({ "username": "bot", "secret": "pull-token" }),
+    );
+}
+
+fn web_values(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, ployz_core::RpcError> {
+    store
+        .read(
+            who,
+            &ployz_store::ServiceQuery {
+                environment: at(environment),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .map(|service| service.values)
+}
+
+#[test]
+fn a_fork_pull_request_from_a_non_member_gets_nothing_until_approved() {
+    let (store, who) = shop();
+    with_secrets(&store, &who);
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, outsider(HEAD, "2026-09-29T10:00:00Z"));
+    assert!(opened.admitted.is_empty(), "{opened:?}");
+    assert_eq!(
+        opened
+            .skipped
+            .iter()
+            .map(|skip| skip.reason.as_str())
+            .collect::<Vec<_>>(),
+        ["Needs approval"]
+    );
+    assert_eq!(listed(&store, &who), ["production"]);
+    assert_eq!(
+        web_values(&store, &who, "pr-5").unwrap_err().code,
+        RpcErrorCode::NotFound,
+        "no PR Environment holds a copy of the secret or credential"
+    );
+    assert_eq!(
+        standings(&store, &who),
+        [(5, Some(HEAD.into()), Standing::NeedsApproval, None)]
+    );
+    // A replay of the same facts stays waiting.
+    let again = pull(&store, &who, outsider(HEAD, "2026-09-29T10:00:01Z"));
+    assert!(again.admitted.is_empty() && listed(&store, &who) == ["production"]);
+}
+
+#[test]
+fn an_approval_deploys_exactly_the_approved_head_pinned() {
+    let (store, who) = shop();
+    with_secrets(&store, &who);
+    plan(&store, &who, on());
+    pull(&store, &who, outsider(HEAD, "2026-09-29T10:00:00Z"));
+
+    let approved = approve(&store, &who, HEAD).unwrap();
+    assert_eq!(approved.admitted.len(), 1, "{approved:?}");
+    let sources = store.sources(&approved.admitted[0].deployment.id).unwrap();
+    assert!(!sources.is_empty());
+    assert!(
+        sources
+            .iter()
+            .all(|source| source.commit == Some(backend::sha(HEAD))),
+        "{sources:?}"
+    );
+    assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
+    let web = web_values(&store, &who, "pr-5").unwrap();
+    assert_eq!(web["env"]["TOKEN"], json!({ "secret": true }));
+    assert_eq!(
+        standings(&store, &who),
+        [(
+            5,
+            Some(HEAD.into()),
+            Standing::Approved(backend::sha(HEAD)),
+            Some("pr-5".into())
+        )]
+    );
+    // Approving it again deploys nothing more.
+    assert!(approve(&store, &who, HEAD).unwrap().admitted.is_empty());
+}
+
+#[test]
+fn a_new_head_after_approval_needs_its_own() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    pull(&store, &who, outsider(HEAD, "2026-09-29T10:00:00Z"));
+    let approved = approve(&store, &who, HEAD).unwrap();
+    run(&store, &approved.admitted[0].deployment.id, &["web", "api"]);
+
+    let moved = pull(&store, &who, outsider(NEXT, "2026-09-29T10:05:00Z"));
+    assert!(moved.admitted.is_empty(), "{moved:?}");
+    assert_eq!(
+        standings(&store, &who),
+        [(
+            5,
+            Some(NEXT.into()),
+            Standing::NeedsApproval,
+            Some("pr-5".into())
+        )]
+    );
+    let pushed = observe(
+        &store,
+        &who,
+        SystemEvent::BranchHead(BranchHead {
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search"),
+            base: None,
+            head: Some(backend::sha(NEXT)),
+            changed: None,
+        }),
+    );
+    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+
+    let stale = approve(&store, &who, HEAD).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        stale.message,
+        "This pull request has a newer commit. Approve that one."
+    );
+    let approved = approve(&store, &who, NEXT).unwrap();
+    assert_eq!(approved.admitted.len(), 1, "{approved:?}");
+    assert!(
+        store
+            .sources(&approved.admitted[0].deployment.id)
+            .unwrap()
+            .iter()
+            .all(|source| source.commit == Some(backend::sha(NEXT)))
+    );
+}
+
+#[test]
+fn a_members_pull_request_from_the_repository_deploys_without_approval() {
+    let (store, who) = shop();
+    plan(&store, &who, on());
+    let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
+    assert_eq!(opened.admitted.len(), 1, "{opened:?}");
+    assert_eq!(
+        standings(&store, &who),
+        [(5, Some(HEAD.into()), Standing::Trusted, Some("pr-5".into()))]
+    );
+    run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
+    pull(
+        &store,
+        &who,
+        PullRequest {
+            head: backend::sha(NEXT),
+            ..facts(true, "2026-09-29T10:05:00Z")
+        },
+    );
+    let pushed = observe(
+        &store,
+        &who,
+        SystemEvent::BranchHead(BranchHead {
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search"),
+            base: None,
+            head: Some(backend::sha(NEXT)),
+            changed: None,
+        }),
+    );
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+}
+
+#[test]
+fn missing_evidence_needs_approval() {
+    let (store, who) = shop();
+    plan(
+        &store,
+        &who,
+        SetPrPlan {
+            include_bots: Some(true),
+            ..on()
+        },
+    );
+    let numbered = |n, updated| PullRequest {
+        number: backend::pr_number(n),
+        head_branch: backend::git_branch(&format!("change-{n}")),
+        ..facts(true, updated)
+    };
+    let opened = |event: PullRequest, trusted: &Trusted| {
+        let Written::Automated(automated) = store
+            .system(&who.organization, &SystemEvent::PullRequest(event), trusted)
+            .unwrap()
+        else {
+            panic!("a system event writes Automated")
+        };
+        automated.admitted.len()
+    };
+    let members = backend::members();
+    // No author account, no head repository, or no member list: none is a member's.
+    let anonymous = PullRequest {
+        author_id: None,
+        ..numbered(1, "2026-09-29T10:00:01Z")
+    };
+    assert_eq!(opened(anonymous, &members), 0);
+    let headless = PullRequest {
+        head_repository_id: None,
+        ..numbered(2, "2026-09-29T10:00:02Z")
+    };
+    assert_eq!(opened(headless, &members), 0);
+    assert_eq!(
+        opened(numbered(3, "2026-09-29T10:00:03Z"), &Trusted::default()),
+        0
+    );
+    // An included bot deploys from the repository, never from a fork.
+    let bot = |n, head_repository_id, updated| PullRequest {
+        author_id: None,
+        bot: true,
+        head_repository_id,
+        ..numbered(n, updated)
+    };
+    assert_eq!(
+        opened(
+            bot(4, Some(backend::repo_id(11)), "2026-09-29T10:00:04Z"),
+            &members
+        ),
+        1
+    );
+    assert_eq!(
+        opened(
+            bot(6, Some(backend::repo_id(99)), "2026-09-29T10:00:06Z"),
+            &members
+        ),
+        0
+    );
+    let waiting: Vec<(u64, Standing)> = standings(&store, &who)
+        .into_iter()
+        .map(|(number, _, standing, _)| (number, standing))
+        .collect();
+    assert_eq!(
+        waiting,
+        [
+            (4, Standing::Trusted),
+            (1, Standing::NeedsApproval),
+            (2, Standing::NeedsApproval),
+            (3, Standing::NeedsApproval),
+            (6, Standing::NeedsApproval),
+        ]
     );
 }
 
