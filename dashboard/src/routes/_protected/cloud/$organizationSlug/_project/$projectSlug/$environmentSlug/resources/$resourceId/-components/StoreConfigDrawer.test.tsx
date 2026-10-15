@@ -172,6 +172,21 @@ it("keeps a file restored during a refused save unsaved", async () => {
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Save" }).disabled).toBe(false);
 });
 
+it("hides a removed file while its removal is pending, and brings it back when the Store refuses", async () => {
+  const test = await openDrawer({ ...initial,
+    files: [...initial.files, { name: "extra.yml", bytes: 5, mode: "0444", uid: 0, gid: 0, references: [] }],
+    contents: { ...initial.contents, "extra.yml": "extra" } });
+  const pending = deferred();
+  test.write.mockImplementationOnce(() => pending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "extra.yml options" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Remove file" }));
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(screen.queryByRole("tab", { name: /extra.yml/ })).toBeNull();
+  await act(async () => { pending.resolve(refused); });
+  await screen.findByText("Unknown Config reference");
+  expect(screen.getByRole("tab", { name: /extra.yml/ })).toBeTruthy();
+});
+
 it("restores refused text and lets the user retry it", async () => {
   const test = await openDrawer();
   test.write.mockResolvedValueOnce(refused);

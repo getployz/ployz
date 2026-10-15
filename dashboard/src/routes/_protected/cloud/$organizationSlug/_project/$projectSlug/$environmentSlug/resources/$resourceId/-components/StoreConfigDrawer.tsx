@@ -28,6 +28,7 @@ import { storeReferenceTargets } from "#/modules/config-store/store-variables";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useStorePendingName } from "#/modules/config-store/store-pending";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
@@ -99,7 +100,9 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
   const [failedSaves, setFailedSaves] = useState<ReadonlySet<string>>(new Set());
   const [pendingSaves, setPendingSaves] = useState<ReadonlySet<ReadonlyMap<string, FileDraft>>>(new Set());
   const submittedFiles = useRef(new Map<string, ReadonlyMap<string, FileDraft>>());
-  const stored = item.files.map((file) => file.name);
+  // A removed file stays gone until its write lands.
+  const [removed, holdRemoved] = useCommitHold<ReadonlySet<string>>(new Set());
+  const stored = item.files.map((file) => file.name).filter((name) => !removed.has(name));
   const fileNames = [...stored, ...[...drafts.keys()].filter((name) => !stored.includes(name))];
   const [selected, setSelected] = useState<string | null>(fileNames[0] ?? null);
   const current = selected !== null && fileNames.includes(selected) ? selected : fileNames[0] ?? null;
@@ -152,12 +155,13 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     submittedFiles.current.set(file, submitted);
     setDrafts((current) => new Map([...current].filter(([name]) => name !== file)));
     if (!stored.includes(file)) return;
-    writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS)
-      .isPersisted.promise.catch((error) => {
-        if (submittedFiles.current.get(file) !== submitted) return;
-        setDrafts((current) => new Map([...submitted, ...current]));
-        setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
-      });
+    const write = writer.commit({ command: "remove_config_file", environment: state.environment, config: state.config.name, file }, SHOWN_REFUSALS);
+    holdRemoved(new Set([...removed, file]), write);
+    write.isPersisted.promise.catch((error) => {
+      if (submittedFiles.current.get(file) !== submitted) return;
+      setDrafts((current) => new Map([...submitted, ...current]));
+      setSaveError(error instanceof StoreRefused ? error.message : "Couldn't remove the file.");
+    });
   }
 
   return (
