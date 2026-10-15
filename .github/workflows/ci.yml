@@ -47,6 +47,8 @@ jobs:
         name: Select checks from the complete change
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || '' }}
+          # cargo metadata --no-deps needs no compiler, so skip installing the pinned toolchain.
+          RUSTUP_TOOLCHAIN: stable
         run: python3 scripts/ci.py select "$BASE_SHA" "$GITHUB_SHA"
 
   contracts:

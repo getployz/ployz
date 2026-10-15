@@ -25,6 +25,7 @@ class CiTest(unittest.TestCase):
             (["core/crates/ployzd/src/main.rs"], {"contracts", "rust-lint", "rust-tests"}),
             (["core/crates/ployz-core/src/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud", "sdk-types"}),
             (["core/crates/ployz-core/tests/rpc.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli"}),
+            (["core/crates/ployz-store/src/lib.rs"], {"contracts", "rust-lint", "rust-tests", "macos-cli", "cloud", "sdk-types"}),
             (["dashboard/uptime/src/main.rs"], {"contracts", "uptime"}),
             (["dashboard/uptime/Cargo.lock"], {"contracts", "uptime"}),
             (["dashboard/uptime/Dockerfile"], {"contracts", "uptime"}),
@@ -36,7 +37,7 @@ class CiTest(unittest.TestCase):
         for paths, expected in cases:
             with self.subTest(paths=paths):
                 self.assertEqual(ci["select"](paths), expected)
-        for path in [".github/workflows/ci.yml", "core/crates/new-config", "unknown.config"]:
+        for path in [".github/workflows/ci.yml", "core/crates/new-config", "core/crates/not-a-member/src/lib.rs", "unknown.config"]:
             with self.subTest(path=path):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"] - {"release-contracts"})
         for path in ["core/Cargo.lock", "core/Cargo.toml", "core/crates/ployzd/Cargo.toml", "core/.cargo/config.toml", ".github/workflows/release.yml", ".github/workflows/release-contracts.yml"]:
@@ -44,6 +45,12 @@ class CiTest(unittest.TestCase):
                 self.assertEqual(ci["select"]([path]), ci["JOBS"])
         self.assertIn("release-contracts", ci["select"]([".github/workflows/ci.yml", "core/.goreleaser.yaml"]))
         self.assertIn("cloud", ci["select"](["core/crates/ployz-sdk/tests/config-contract.mjs"]))
+
+    def test_shipped_crates_follow_the_sdk_and_wasm_dependency_graph(self):
+        self.assertEqual(
+            ci["shipped_crates"](),
+            {"ployz-sdk", "ployz-config-wasm", "ployz", "ployz-core", "ployz-store", "ployz-build"},
+        )
 
     def test_agent_tool_changes_run_the_tool_tests(self):
         # Cloud's `pnpm test` drives the sidebar's tools against the Store; rust-tests drives them through `ployz mcp`.
