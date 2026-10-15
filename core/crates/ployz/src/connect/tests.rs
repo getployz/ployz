@@ -80,6 +80,7 @@ async fn target_timeout_becomes_a_typed_partial_failure() {
         std::future::pending::<Result<(), ConnectError>>(),
     )
     .await
+    .map_err(rpc_error)
     .unwrap_err();
 
     assert_eq!(error.code, RpcErrorCode::Unavailable);

@@ -472,22 +472,17 @@ impl From<ConnectError> for RpcError {
 pub(crate) async fn apply_timeout<T>(
     timeout: Option<Duration>,
     future: impl Future<Output = Result<T, ConnectError>>,
-) -> Result<T, RpcError> {
-    let result = match timeout {
-        Some(timeout) => match tokio::time::timeout(timeout, future).await {
-            Ok(result) => result,
-            Err(_) => {
-                return Err(RpcError {
-                    code: RpcErrorCode::Unavailable,
-                    message: "target Machine RPC timed out".into(),
-                    details: Value::Null,
-                    cause: Vec::new(),
-                });
-            }
-        },
+) -> Result<T, ConnectError> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .unwrap_or_else(|_| {
+                Err(ConnectError::Rpc(TransportError::budget_expired(
+                    "target Machine RPC timed out",
+                )))
+            }),
         None => future.await,
-    };
-    result.map_err(rpc_error)
+    }
 }
 
 pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> tonic::Request<T> {

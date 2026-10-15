@@ -249,7 +249,7 @@ impl Client {
         self.try_read::<T>(request, target).await.map_err(rpc_error)
     }
 
-    async fn try_read<T: Rpc>(
+    pub(crate) async fn try_read<T: Rpc>(
         &mut self,
         request: T::Request,
         target: &MachineTarget,
@@ -364,7 +364,9 @@ impl Client {
         let payload = T::into_request(request)
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
-        apply_timeout(timeout, self.call_once::<T>(payload, Some(target))).await
+        apply_timeout(timeout, self.call_once::<T>(payload, Some(target)))
+            .await
+            .map_err(rpc_error)
     }
 
     /// One unary RPC from an already-shaped request body. No retry, as [`Self::invoke`].
@@ -393,6 +395,7 @@ impl Client {
                 .decode_response()?)
         })
         .await
+        .map_err(rpc_error)
     }
 
     fn machine_rpc(&self) -> MachineRpcClient<Channel> {
@@ -1031,12 +1034,12 @@ impl Client {
             .encode()
             .map_err(|error| rpc_error(ConnectError::Codec(error)))?;
         let target = MachineTarget::from(machine_id);
-        apply_timeout(timeout, async {
-            self.call_once::<op::EnsureContainer>(payload, Some(&target))
-                .await
-                .map_err(|error| ConnectError::Remote(answered_by(machine_id, error)))
-        })
-        .await?
+        apply_timeout(
+            timeout,
+            self.call_once::<op::EnsureContainer>(payload, Some(&target)),
+        )
+        .await
+        .map_err(|error| answered_by(machine_id, error))?
         .into_settled()
     }
 
@@ -1123,11 +1126,9 @@ impl Client {
     }
 }
 
-/// Only a gRPC status can mean an old daemon lacks the route. An error body
-/// is the daemon's own answer, so it keeps the daemon's sentence.
 /// A Machine's own answer keeps its words. An unavailable call it never answered
 /// names the Machine in the deepest line, which is the one progress shows.
-fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
+pub(crate) fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     if let ConnectError::Remote(answered) = error {
         return answered;
     }
@@ -1147,6 +1148,8 @@ fn answered_by(machine_id: &MachineId, error: ConnectError) -> RpcError {
     }
 }
 
+/// Only a gRPC status can mean an old daemon lacks the route. An error body
+/// is the daemon's own answer, so it keeps the daemon's sentence.
 fn refused(status: tonic::Status, path: &str, target: Option<&MachineTarget>) -> ConnectError {
     let error = TransportError::from(status);
     ConnectError::Rpc(match target {
