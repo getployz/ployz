@@ -316,9 +316,12 @@ pub(crate) fn approve_retry(
         "environment": environment,
         "retry": source,
     });
-    // The retry destroys only what its source's review already accepted.
+    // The retry ships its source's frozen state: none of the staged changes, and it
+    // destroys only what its source's review already accepted.
     let mut diff = review.view.clone();
     diff.effects.clear();
+    diff.changes.clear();
+    diff.total_count = 0;
     let digest = digest(&diff.version, &bound);
     let message = "A human must approve this retry first.".to_owned();
     require(

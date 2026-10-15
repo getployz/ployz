@@ -3374,10 +3374,16 @@ fn an_agent_approval_admits_one_retry() {
     set_replicas(&store, &who, "api", 2);
     deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
     cancel(&store, &who, 2).unwrap();
+    set_replicas(&store, &who, "web", 3);
     let refused = agent_retries(&store, &who, 3, 2, Approval::Required).unwrap_err();
     assert_eq!(refused.code.as_str(), "approval_required");
     assert_eq!(refused.message, "A human must approve this retry first.");
     assert_eq!(refused.details["effects"], json!([]));
+    assert_eq!(
+        refused.details["diff"]["changes"],
+        json!([]),
+        "a retry ships none of the staged changes"
+    );
     let version = refused.details["diff"]["version"].as_str().unwrap();
     let approval = refused.details["approval"].as_str().unwrap();
     assert!(approval.starts_with(&format!("{version}:")), "{approval}");
