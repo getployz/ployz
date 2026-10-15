@@ -98,6 +98,9 @@ fn management_policy(management_address: ManagementAddress) -> Vec<String> {
     for port in [MACHINE_API_PORT, UNREGISTRY_PORT, VOLUME_SEND_PORT] {
         rules.push(format!("-d {management} -p tcp --dport {port} -j DROP"));
     }
+    rules.push(format!(
+        "-d {management} -p udp --dport {CORROSION_GOSSIP_PORT} -j DROP"
+    ));
     rules
 }
 
