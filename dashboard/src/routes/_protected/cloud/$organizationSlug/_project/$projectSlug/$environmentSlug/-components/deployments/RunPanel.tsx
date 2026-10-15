@@ -83,8 +83,8 @@ function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node:
         <div className="p-4"><LogEmpty title={missing ?? "No servers"} /></div>
       )}
       {node.type === "service" ? (
-        // Stacked on a phone, the logs keep a usable height and the page scrolls to them.
-        <div className="flex min-h-0 flex-1 flex-col p-4 max-lg:min-h-96">
+        // Stacked on a phone, the logs get a fixed height so they scroll and follow new lines themselves.
+        <div className="flex min-h-0 flex-1 flex-col p-4 max-lg:h-96 max-lg:flex-none">
           {missing ? <LogEmpty title={missing} />
             : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id }} />}
         </div>
