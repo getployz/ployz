@@ -43,6 +43,7 @@ class Kind:
     generated: tuple = ()  # files the build writes into the tree: outputs, so not part of the key
     surface: tuple = ()  # what callers see: while these match main's, `fetch --stale-ok` takes main's build
     embeds: tuple = ()  # kinds built into this one, which must match main's exactly for `fetch --stale-ok`
+    wire: str = ""  # the build generates types from its crates' files that mention this, so they are surface too
 
 
 SDK = "crates/ployz-sdk"
@@ -52,8 +53,9 @@ KINDS = {
     "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), SDK_FILES,
                 "sdk-v2", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
                 tuple(f"{SDK}/{name}" for name in SDK_FILES if name.startswith("generated/")),
-                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts"),
-                ("config-wasm",)),
+                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts",
+                 "crates/ployz-store/src/settings", "crates/ployz-store/src/variables.rs"),
+                ("config-wasm",), "ts_rs"),
     # Part of the SDK, cached on its own so the addon can rebuild without it. CI never uploads it alone.
     "config-wasm": Kind("config-wasm", ("ployz-config-wasm",), ("generated/config-wasm.mjs",), "wasm-v1",
                         ("scripts/build-config-wasm.sh",)),
@@ -133,6 +135,17 @@ def counts(path, crate_dir):
     return not (inside.split("/", 1)[0] in ["tests", "benches"] or path.endswith(".md"))
 
 
+def mentioning(text, paths, rev=None):
+    """Files under paths, at rev or in the working tree, that contain text."""
+    if not text:
+        return []
+    where = [text, rev] if rev else ["--untracked", text]
+    found = subprocess.run(["git", "grep", "-l", "-F", *where, "--", *paths], cwd=CORE, capture_output=True)
+    if found.returncode > 1:
+        raise subprocess.CalledProcessError(found.returncode, found.args, found.stdout, found.stderr)
+    return [line.removeprefix(f"{rev}:") if rev else line for line in found.stdout.decode().splitlines()]
+
+
 def digest(rows):
     return hashlib.sha256("".join(f"{path} {rows[path]}\n" for path in sorted(rows)).encode()).hexdigest()
 
@@ -156,7 +169,7 @@ def key(kind, extra="", rev=None):
 
 def surface(kind, rev=None):
     spec = KINDS[kind]
-    files = entries(spec.surface, rev)
+    files = entries([*spec.surface, *mentioning(spec.wire, closure(spec.roots, rev).values(), rev)], rev)
     for path in spec.generated:
         files.pop(path, None)
     return digest(files)
