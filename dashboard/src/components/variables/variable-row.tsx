@@ -1,4 +1,5 @@
 import { useReducer } from "react";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import {
   initialVariableRowState,
   variableRowReducer,
@@ -50,7 +51,7 @@ export function VariableRow({
 
   const isSealed = variable.value.type === "sealed";
   const notSet = variable.value.type === "sealed" && variable.value.notSet === true;
-  const plainValue = variable.value.type === "plain" ? variable.value.value : "";
+  const [plainValue, hold] = useCommitHold(variable.value.type === "plain" ? variable.value.value : "");
   const showMetadata = onUpdateMetadata != null;
   const brokenRefWarning = referencesDeletedOwner(plainValue)
     ? "References a variable whose service was deleted — it resolves to empty at deploy."
@@ -64,9 +65,9 @@ export function VariableRow({
       dispatch({ type: "saveSucceeded" });
       return;
     }
-    collection.update(variable.id, (draft) => {
+    hold(state.editValue, collection.update(variable.id, (draft) => {
       draft.value = { type: "plain", value: state.editValue };
-    });
+    }));
     dispatch({ type: "saveSucceeded" });
   }
 

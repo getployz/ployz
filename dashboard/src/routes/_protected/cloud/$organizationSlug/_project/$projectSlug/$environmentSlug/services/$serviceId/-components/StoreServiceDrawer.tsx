@@ -25,6 +25,7 @@ import { changedProps, deployedVcpuLimit, dnsLabelError, serviceChanges, service
 import { diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
@@ -316,10 +317,10 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
   const [refusal, setRefusal] = useState<string | null>(null);
   const setting = scalarSetting(name);
   const row = state.rows.get(name);
+  const [current, hold] = useCommitHold(settingText(row?.value ?? row?.default));
   // Settings that don't apply to this source (a Dockerfile path on an image) have no row.
   if (!row) return null;
   const change = state.changes.get(name);
-  const current = settingText(row.value ?? row.default);
   const edit = (raw: string) => {
     setRefusal(null);
     const transaction = state.edit(settingChange(state.path(name), setting, raw));
@@ -330,10 +331,9 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
   };
 
   if (setting.type === "boolean") {
-    const on = (row.value ?? row.default) === true;
     return (
-      <SwitchField id={`setting-${name}`} label={setting.title} description={hint(name, setting)} checked={on}
-        onChange={(next) => state.set(name, next)} />
+      <SwitchField id={`setting-${name}`} label={setting.title} description={hint(name, setting)} checked={current === "true"}
+        onChange={(next) => hold(String(next), state.set(name, next))} />
     );
   }
   if (setting.type === "array") return <StoreListField state={state} name={name} setting={setting} row={row} />;
@@ -357,7 +357,7 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
       </FieldContent>
       <div className="@md/field-group:basis-56 @md/field-group:shrink-0">
       {setting.enum ? (
-        <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) edit(next); }}>
+        <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, edit(next)); }}>
           <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "w-full py-1.5 data-[size=default]:h-auto" : "w-full"} data-changed={change ? true : undefined}
             title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
             <SelectValue>
@@ -452,7 +452,7 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 }
 
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
-function StoreSourceSection({ state }: { state: StoreService }) {
+export function StoreSourceSection({ state }: { state: StoreService }) {
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
   const githubWeb = useGithubWebOrigin();
   const set = (name: "image" | "repository" | "branch", value: string) => state.set(name, value);
@@ -461,7 +461,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   // Staged: the Service is empty again once deployed; its settings for this source stay until then.
   const disconnect = () => state.set(kind, null);
   const setting = serviceSetting(kind);
-  const value = settingText(state.rows.get(kind)?.value);
+  const [value, hold] = useCommitHold(settingText(state.rows.get(kind)?.value));
   const change = state.changes.get(kind);
   // Its parts change as one row, so what was deployed is the whole source.
   const deployed = `Deployed: ${sourceText(state.changes.get("source")?.before ?? null) || "none"}`;
@@ -476,9 +476,9 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   }
 
   const dialogs = <>
-    <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
+    <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { hold(image, set("image", image)); setPicking(null); }} />
     <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
-      onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
+      onSelectRepo={({ fullName }) => { hold(fullName, set("repository", fullName)); setPicking(null); }} />
   </>;
 
   if (state.source === "empty") {
@@ -548,9 +548,9 @@ function StoreSourceSection({ state }: { state: StoreService }) {
  */
 function StoreRegistryCredentials({ state, image }: { state: StoreService; image: string }) {
   const row = state.rows.get("registryCredential");
+  const [configured, hold] = useCommitHold(row !== undefined && row.value !== null);
   if (!row) return null;
   const change = state.changes.get("registryCredential");
-  const configured = row.value !== null;
   const shown = (value: JsonValue) => value === null ? "None" : "Configured";
   return (
     <RegistryCredentialsField
@@ -560,9 +560,13 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
       username={null}
       changed={change !== undefined}
       baselineValue={change ? shown(change.before) : undefined}
-      onSet={({ username, secret }) => state.set("registryCredential", username === null ? { secret } : { username, secret })}
-      onClear={() => state.set("registryCredential", null)}
-      onRestore={!configured && change?.before != null ? () => state.set("registryCredential", { secret: true }) : undefined}
+      onSet={({ username, secret }) => {
+        const write = state.set("registryCredential", username === null ? { secret } : { username, secret });
+        hold(true, write);
+        return write;
+      }}
+      onClear={() => hold(false, state.set("registryCredential", null))}
+      onRestore={!configured && change?.before != null ? () => hold(true, state.set("registryCredential", { secret: true })) : undefined}
     />
   );
 }
