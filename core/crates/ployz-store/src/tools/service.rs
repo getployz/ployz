@@ -284,7 +284,7 @@ fn rename_schema(_: &mut SchemaGenerator) -> Schema {
 
 impl Tool for ServiceUpdate {
     const NAME: &'static str = "service_update";
-    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged: Review lists them, Discard undoes them. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and Discard does not undo them; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal.";
+    const DESCRIPTION: &'static str = "Change one Service's Settings and variables in one step. set changes the Settings it names and keeps the rest; env inside set sets the variables it names. unset returns Settings to their default, deletes variables (env.KEY), or unmounts (mounts.VOLUME, configs.CONFIG). rename_env renames variables and keeps their values, secret or not. Domains are not Settings and are not changed here. Most changes are Staged until the next deploy and can be undone before it. template, autoDeploy, waitForCi, watchPaths and preferredBuilder take effect at once and cannot be undone that way; the result lists them under immediate. Secrets and registry credentials cannot be set here: the member sets them in the dashboard or terminal.";
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {
@@ -478,7 +478,7 @@ pub(crate) struct ServiceRemove {
 
 impl Tool for ServiceRemove {
     const NAME: &'static str = "service_remove";
-    const DESCRIPTION: &'static str = "Remove a Service. Staged: Review lists it and Discard undoes it; the next deploy asks a human to approve.";
+    const DESCRIPTION: &'static str = "Remove a Service. Staged, and undoable until the next deploy, which asks a human to approve.";
     const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {

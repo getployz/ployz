@@ -39,6 +39,14 @@ describe("agent tools", () => {
     expect(AGENT_TOOLS.filter((tool) => tool.readOnly && tool.destructive)).toEqual([]);
   });
 
+  it("never names another tool in a description", () => {
+    const names = AGENT_TOOLS.map((tool) => tool.name).filter((name) => name.includes("_"));
+    const offences = AGENT_TOOLS.flatMap((tool) =>
+      names.filter((name) => name !== tool.name && new RegExp(`\\b${name}\\b`).test(tool.description)).map((name) => `${tool.name} names ${name}`),
+    );
+    expect(offences).toEqual([]);
+  });
+
   it("stops at a skipped Deploy's save, in the place it was given", async () => {
     const { step } = await Effect.runPromise(untilWrite(agentStart("deploy", { skip_deploy: true }, place, "k"), () => Effect.succeed({ value: empty })));
     expect(step).toMatchObject({
