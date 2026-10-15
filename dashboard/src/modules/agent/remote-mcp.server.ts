@@ -177,7 +177,11 @@ const withApplicationType = async (request: Request) => {
   const applicationType = (metadata.value.redirect_uris ?? []).some(isNativeRedirect) ? "native" : "web";
   const headers = new Headers(request.headers);
   headers.delete("Content-Length");
-  return new Request(request, { headers, body: JSON.stringify({ ...metadata.value, application_type: applicationType }) });
+  // From parts: the server's own Request class has no undici state for `new Request(request)` to copy.
+  return new Request(request.url, {
+    method: request.method, headers, signal: request.signal,
+    body: JSON.stringify({ ...metadata.value, application_type: applicationType }),
+  });
 };
 
 /** `/api/auth/*`; on a hosted Cloud, the token, registration and key endpoints also answer browser-based agents. */
