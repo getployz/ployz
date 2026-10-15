@@ -190,23 +190,13 @@ export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function*
       .set({ seq: sql`greatest(${observeIngestCursor.seq}, ${push.seq.toString()}::bigint)`, updatedAt: new Date(now) })
       .where(cursorKey);
 
-    if (push.seq > (cursor?.seq ?? NO_BATCH_YET)) {
-      if (bots.size > 0) {
-        yield* drizzle.insert(analyticsBotDaily).values([...bots.values()]).onConflictDoUpdate({
-          target: [analyticsBotDaily.environmentId, analyticsBotDaily.day, analyticsBotDaily.reason],
-          set: { count: sql`${analyticsBotDaily.count} + excluded.count` },
-        });
-      }
-      if (gaps.size > 0) {
-        yield* drizzle.insert(analyticsGapDaily).values([...gaps.values()]).onConflictDoUpdate({
-          target: [analyticsGapDaily.environmentId, analyticsGapDaily.day],
-          set: { count: sql`${analyticsGapDaily.count} + excluded.count` },
-        });
-      }
-    }
-
-    if (pageviews.length === 0) return;
-    const environmentIds = [...new Set(pageviews.map(({ site }) => site.environmentId))].sort();
+    // Every write below waits on its environments' rollup_state rows, locked in id order, the order the rollup and the
+    // environment delete trigger take them, so a delete racing this batch waits for it or it for the delete.
+    const environmentIds = [...new Set([
+      ...pageviews.map(({ site }) => site.environmentId),
+      ...[...bots.values()].map((row) => row.environmentId),
+      ...[...gaps.values()].map((row) => row.environmentId),
+    ])].sort();
     const rolledUpTo = new Map<string, string | null>();
     for (const environmentId of environmentIds) {
       yield* drizzle.insert(analyticsRollupState).values({ environmentId }).onConflictDoNothing();
@@ -215,10 +205,32 @@ export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function*
         .for("update");
       rolledUpTo.set(environmentId, state?.rolledUpTo ?? null);
     }
-    const locked = yield* drizzle.select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone })
+    const sites = environmentIds.length === 0 ? [] : yield* drizzle
+      .select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone, enabled: analyticsSite.enabled })
       .from(analyticsSite)
-      .where(and(inArray(analyticsSite.environmentId, environmentIds), eq(analyticsSite.enabled, true)));
-    const timezones = new Map(locked.map((site) => [site.environmentId, site.timezone]));
+      .where(inArray(analyticsSite.environmentId, environmentIds));
+    const timezones = new Map(sites.filter((site) => site.enabled).map((site) => [site.environmentId, site.timezone]));
+    // An environment deleted before this batch has no site: drop the state row the lock above just made for it.
+    const gone = environmentIds.filter((id) => !sites.some((site) => site.environmentId === id));
+    if (gone.length > 0) yield* drizzle.delete(analyticsRollupState).where(inArray(analyticsRollupState.environmentId, gone));
+
+    if (push.seq > (cursor?.seq ?? NO_BATCH_YET)) {
+      const keptBots = [...bots.values()].filter((row) => timezones.has(row.environmentId));
+      if (keptBots.length > 0) {
+        yield* drizzle.insert(analyticsBotDaily).values(keptBots).onConflictDoUpdate({
+          target: [analyticsBotDaily.environmentId, analyticsBotDaily.day, analyticsBotDaily.reason],
+          set: { count: sql`${analyticsBotDaily.count} + excluded.count` },
+        });
+      }
+      const keptGaps = [...gaps.values()].filter((row) => timezones.has(row.environmentId));
+      if (keptGaps.length > 0) {
+        yield* drizzle.insert(analyticsGapDaily).values(keptGaps).onConflictDoUpdate({
+          target: [analyticsGapDaily.environmentId, analyticsGapDaily.day],
+          set: { count: sql`${analyticsGapDaily.count} + excluded.count` },
+        });
+      }
+    }
+
     const admitted = pageviews.filter(({ site }) => timezones.has(site.environmentId));
     if (admitted.length === 0) return;
 

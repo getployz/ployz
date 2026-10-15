@@ -688,3 +688,23 @@ it.live("a time zone change that waits behind a closing rollup leaves every roll
   expect(rolled).toEqual(raw);
   expect(rolled.filter((row) => row.pageviews > 0).map((row) => row.bucket)).toEqual([-5, -4, -3, -2].map((offset) => today + offset * 24 * HOUR_MS));
 }), 60_000);
+
+it.live("an environment deleted while a bot and pageview batch waits on its rollup state leaves nothing behind and deadlocks neither", () => Effect.gen(function* () {
+  const { services, send, sites, stored, rollupState } = yield* setup();
+  const race = lockRace(services);
+  yield* sites();
+  expect((yield* send(pageviews(4, [bots(1)]))).status).toBe(200);
+  const release = yield* race.holdRollupState(PRODUCTION);
+  const forget = yield* Effect.forkChild(race.provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`delete from config_environment where id = ${PRODUCTION}`);
+  })));
+  yield* race.untilWaiting(1);
+  const ingest = yield* Effect.forkChild(send(pageviews(5, [bots(3), pageview(Date.now() - HOUR_MS)])));
+  yield* race.untilWaiting(2);
+  yield* release;
+  yield* Fiber.join(forget);
+  expect((yield* Fiber.join(ingest)).status).toBe(200);
+  expect(yield* stored()).toEqual({ ...nothingStored, cursor: [{ stream: "pageviews", seq: 5n }] });
+  expect(yield* rollupState()).toEqual([]);
+}), 60_000);
