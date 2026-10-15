@@ -95,6 +95,13 @@ const planned = Effect.fn("WebAnalytics.plan")(function* (query: StoreQuery) {
   return readPlan(query, yield* rolledUpTo(query.environmentId));
 });
 
+/** Reads the rollup marker and the rows it selects from one snapshot, so a concurrent rollup or time zone reset can't split them. */
+const inSnapshot = <A, E, R>(program: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const database = yield* Database;
+    return yield* database.transaction(program, { isolationLevel: "repeatable read", accessMode: "read only" });
+  });
+
 const dailyRows = (query: StoreQuery, days: NonNullable<Plan["days"]>, dim: string) => sql`
   from analytics.daily
   where environment_id = ${query.environmentId}::text and dim = ${dim}::text
@@ -144,7 +151,7 @@ export const dailyTotals = Effect.fn("WebAnalytics.dailyTotals")(function* (quer
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<TotalsRow>(dailyTotalsSql(query, yield* planned(query)), "objects");
   return rows.map(toBucketRow);
-});
+}, inSnapshot);
 
 export const hourlyTotals = Effect.fn("WebAnalytics.hourlyTotals")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
@@ -171,7 +178,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.hourlyTotals")(function* (qu
   }
   const rows = yield* drizzle.execute<TotalsRow>(unionTotals(parts), "objects");
   return rows.map(toBucketRow);
-});
+}, inSnapshot);
 
 type ValueDbRow = { value: string; pageviews: string; visitors: string };
 
@@ -189,7 +196,7 @@ export const breakdown = Effect.fn("WebAnalytics.breakdown")(function* (query: S
     select value, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors
     from (${sql.join(parts, sql` union all `)}) parts group by value`, "objects");
   return rows.map((row): ValueRow => ({ value: row.value, pageviews: Number(row.pageviews), visitors: Number(row.visitors) }));
-});
+}, inSnapshot);
 
 type SessionDbRow = { value: string; visits: string; bounces: string; total_duration: string };
 
@@ -210,7 +217,7 @@ export const sessionsBy = Effect.fn("WebAnalytics.sessionsBy")(function* (query:
   return rows.map((row): SessionRow => ({
     value: row.value, visits: Number(row.visits), bounces: Number(row.bounces), totalDuration: Number(row.total_duration),
   }));
-});
+}, inSnapshot);
 
 type EntryDbRow = SessionDbRow & { visitors: string };
 
@@ -232,7 +239,7 @@ export const entryPages = Effect.fn("WebAnalytics.entryPages")(function* (query:
   return rows.map((row): EntryRow => ({
     value: row.value, visitors: Number(row.visitors), visits: Number(row.visits), bounces: Number(row.bounces), totalDuration: Number(row.total_duration),
   }));
-});
+}, inSnapshot);
 
 type GoalDbRow = { goal_id: string; name: string; visitors: string; conversions: string };
 
