@@ -148,17 +148,23 @@ pub(in crate::handlers) fn enroll_token(
             .lock()
             .read_line(&mut line)
             .map_err(|error| {
-                Error::usage(format!(
-                    "Could not read the enrollment token from stdin: {error}"
-                ))
+                Error::caused(
+                    RpcErrorCode::InvalidArgument,
+                    "Could not read the enrollment token from stdin",
+                    error,
+                )
             })?;
         line
     } else if let Some(path) = from_file {
         std::fs::read_to_string(path).map_err(|error| {
-            Error::usage(format!(
-                "Could not read the enrollment token from {}: {error}",
-                path.display()
-            ))
+            Error::caused(
+                RpcErrorCode::InvalidArgument,
+                format!(
+                    "Could not read the enrollment token from {}",
+                    path.display()
+                ),
+                error,
+            )
         })?
     } else {
         return Ok(None);
