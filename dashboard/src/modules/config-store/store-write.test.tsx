@@ -278,6 +278,30 @@ it("sends no edit while a rename in its Environment saves, as it could name the 
   expect(test.write).toHaveBeenCalledTimes(3);
 });
 
+it("locks only the renamed Project's Environments and writes while a Project rename saves", async () => {
+  const test = setup(view(2, 1));
+  vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const answer = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => answer.promise).mockResolvedValue(edited(4));
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={test.scope.queryClient}>{children}</QueryClientProvider>;
+  const blog = { project: "blog", environment: "production" };
+  const renamed = renderHook(() => useStoreRenamePending("acme", ref), { wrapper });
+  const other = renderHook(() => useStoreRenamePending("acme", blog), { wrapper });
+  const persisted = test.writer.commit({ command: "rename_project", project: "shop", name: "store" }).isPersisted.promise;
+  await waitFor(() => expect(renamed.result.current).toBe(true));
+  expect(other.result.current).toBe(false);
+
+  await test.writer.edit({ environment: blog, changes: replicas(3) }).isPersisted.promise;
+  await expect(test.writer.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise).rejects.toMatchObject({ code: "renaming" });
+  await expect(test.writer.commit({ command: "create_environment", id: "env_2", project: "shop", name: "staging" }).isPersisted.promise)
+    .rejects.toMatchObject({ code: "renaming" });
+
+  answer.resolve(edited(3));
+  await persisted;
+  await waitFor(() => expect(renamed.result.current).toBe(false));
+  expect(test.write.mock.calls.map(([{ data }]) => data.command.command)).toEqual(["rename_project", "edit"]);
+});
+
 it("lists a new Branch in its Project's Environments once the write persists, so its canvas opens", async () => {
   const test = setup(view(2, 1));
   const listing = (names: string[]) => ({ ok: true as const, value: { view: "environments" as const, project: { name: "shop" }, environments: names.map((name) => ({ name })) } });

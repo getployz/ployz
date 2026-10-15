@@ -31,13 +31,15 @@ it("marks a removed node as leaving, a created node as arriving, and a rename by
   expect(marksOf({ command: "rename_service", environment, service: "web", name: "site" }))
     .toEqual([{ mark: "renamed", environment, node: "service", from: "web", to: "site" }]);
   expect(marksOf({ command: "rename_project", project: "shop", name: "store" }))
-    .toEqual([{ mark: "renamed", environment: null, node: "project", from: "shop", to: "store" }]);
+    .toEqual([{ mark: "project_renamed", from: "shop", to: "store" }]);
 });
 
-it("marks a Save, a Sync and a Cancel as busy, and a Batch as the marks of its commands", () => {
+it("marks a Save and both sides of a Sync as busy, a Cancel as nothing, and a Batch as the marks of its commands", () => {
   expect(marksOf({ command: "publish", environment, version: null })).toEqual([{ mark: "busy", environment, why: "saving" }]);
-  expect(marksOf({ command: "sync", from: environment, version: "4:2:1.0" })).toEqual([{ mark: "busy", environment: null, why: "syncing" }]);
-  expect(marksOf({ command: "cancel", deployment: "dep_1" })).toEqual([{ mark: "busy", environment: null, why: "cancelling" }]);
+  const into = { project: "shop", environment: "staging" };
+  expect(marksOf({ command: "sync", from: environment, into, version: "4:2:1.0" }))
+    .toEqual([{ mark: "busy", environment, why: "syncing" }, { mark: "busy", environment: into, why: "syncing" }]);
+  expect(marksOf({ command: "cancel", deployment: "dep_1" })).toEqual([]);
   expect(marksOf({ command: "batch", environment, commands: [
     { command: "create_service", environment, id: "svc_1", name: "api" },
     { command: "edit", environment, expect: null, changes: [{ op: "set", path: "api.replicas", value: 2 }] },

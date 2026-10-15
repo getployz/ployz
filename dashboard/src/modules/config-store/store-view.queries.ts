@@ -387,7 +387,7 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
     const query = queries[index];
     if (marks.length === 0 || !result.ok || !query || !("environment" in query)) return result;
     const key = environmentKey(query.environment);
-    const mine = marks.filter((mark) => mark.environment === null || environmentKey(mark.environment) === key);
+    const mine = marks.filter((mark) => "environment" in mark && environmentKey(mark.environment) === key);
     if (mine.length === 0) return result;
     return { ok: true, value: showPending(result.value, mine) };
   }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };

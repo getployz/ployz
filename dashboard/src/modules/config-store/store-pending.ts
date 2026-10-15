@@ -8,15 +8,16 @@ export const storeWriteKey = (organizationSlug: string, key: string) => ["store-
 
 type NodeKind = "service" | "volume" | "config" | "domain";
 type Scope = { path: string | null; target: DiscardTarget } | { node: NodeKind; name: string };
-export type Busy = "saving" | "restoring" | "syncing" | "cancelling" | "discarding";
+export type Busy = "saving" | "restoring" | "syncing" | "discarding";
 
 /** What a pending command says outright about the views it moves: a closed vocabulary, never a Store row. */
 export type Mark =
   | { mark: "value"; environment: EnvironmentRef; path: string; value: Extract<Change, { op: "set" }>["value"] }
   | { mark: "leaving"; environment: EnvironmentRef; scope: Scope }
   | { mark: "arriving"; environment: EnvironmentRef; node: NodeKind; id: string; name: string }
-  | { mark: "renamed"; environment: EnvironmentRef | null; node: NodeKind | "project" | "variable"; from: string; to: string }
-  | { mark: "busy"; environment: EnvironmentRef | null; why: Busy };
+  | { mark: "renamed"; environment: EnvironmentRef; node: NodeKind | "variable"; from: string; to: string }
+  | { mark: "project_renamed"; from: string; to: string }
+  | { mark: "busy"; environment: EnvironmentRef; why: Busy };
 
 const changeMarks = (environment: EnvironmentRef, changes: readonly Change[]): Mark[] => changes.flatMap((change): Mark[] => {
   switch (change.op) {
@@ -46,15 +47,16 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "rename_service": return [{ mark: "renamed", environment: command.environment, node: "service", from: command.service, to: command.name }];
     case "rename_volume": return [{ mark: "renamed", environment: command.environment, node: "volume", from: command.volume, to: command.name }];
     case "rename_config": return [{ mark: "renamed", environment: command.environment, node: "config", from: command.config, to: command.name }];
-    case "rename_project": return [{ mark: "renamed", environment: null, node: "project", from: command.project, to: command.name }];
+    case "rename_project": return [{ mark: "project_renamed", from: command.project, to: command.name }];
     case "publish": return [{ mark: "busy", environment: command.environment, why: "saving" }];
     case "stage_history": return [{ mark: "busy", environment: command.environment, why: "restoring" }];
-    case "cancel": return [{ mark: "busy", environment: null, why: "cancelling" }];
     case "sync":
-    case "undo_sync":
-    case "take": return [{ mark: "busy", environment: null, why: "syncing" }];
+    case "take": return commandEnvironments(command).map((environment): Mark => ({ mark: "busy", environment, why: "syncing" }));
     case "batch": return command.commands.flatMap(marksOf);
     // A domain, a mount or a Config file carries no id the Store gave it; its row arrives with the answer.
+    // A Cancel or an Undo names no Environment, so none shows it busy.
+    case "cancel":
+    case "undo_sync":
     case "add_domain":
     case "attach_config":
     case "detach_config":
@@ -106,8 +108,11 @@ export function pendingMarks(queryClient: QueryClient, organizationSlug: string)
   });
 }
 
-const sameEnvironment = (mark: Mark, environment: EnvironmentRef) =>
-  mark.environment === null || (mark.environment.project ?? "") === (environment.project ?? "") && (mark.environment.environment ?? "") === (environment.environment ?? "");
+const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark &&
+  (mark.environment.project ?? "") === (environment.project ?? "") && (mark.environment.environment ?? "") === (environment.environment ?? "");
+
+/** Whether `project` names the one a Project rename moves; none means the Organization's only Project, which may be it. */
+const sameProject = (from: string, project: string | null | undefined) => project == null || project === from;
 
 /** Why the Environment is mid-command, if it is: the bottom bar and review say so. */
 export function useStoreBusy(organizationSlug: string, environment: EnvironmentRef): Busy | null {
@@ -146,15 +151,19 @@ type VersionedCommand = { [K in ConfigCommand["command"]]: "version" extends key
 /** Commands that carry a version the Store checks: it refuses one a rename moved under it, so none waits on a rename. */
 const VERSIONED = { publish: true, stage_history: true, discard: true, sync: true, remove_proposal: true, take: true, remove: true } satisfies Record<VersionedCommand, true>;
 
-const renamesIn = (marks: readonly Mark[], environment: EnvironmentRef) =>
-  marks.some((mark) => mark.mark === "renamed" && sameEnvironment(mark, environment));
+const renamesIn = (marks: readonly Mark[], environment: EnvironmentRef) => marks.some((mark) =>
+  mark.mark === "renamed" ? sameEnvironment(mark, environment) : mark.mark === "project_renamed" && sameProject(mark.from, environment.project));
 
 /**
  * Whether a pending rename moves something `command` may name: any node, variable or Project of an Environment it
- * writes, by a path, a mount, a reference or its Environment. It waits for the Store's answer, which names the new name.
+ * writes, by a path, a mount, a reference or its Environment, or the Project it names outright. It waits for the
+ * Store's answer, which names the new name.
  */
 export function renameBlocks(marks: readonly Mark[], command: ConfigCommand): boolean {
-  return !Object.hasOwn(VERSIONED, command.command) && commandEnvironments(command).some((environment) => renamesIn(marks, environment));
+  if (Object.hasOwn(VERSIONED, command.command)) return false;
+  const project = "project" in command ? command.project : undefined;
+  return commandEnvironments(command).some((environment) => renamesIn(marks, environment))
+    || project !== undefined && marks.some((mark) => mark.mark === "project_renamed" && sameProject(mark.from, project));
 }
 
 /** Whether a rename in the Environment is pending: its canvas, panels and settings lock until the Store answers. */
