@@ -432,11 +432,18 @@ export const machineEnrollmentToken = pgTable(
     }).notNull(),
     /** The first Server that completed enrollment with this token. */
     joinedMachineId: text("joined_machine_id").$type<MachineId>(),
+    /** The one Machine identity that may use this token; set before the Pairing secret is handed out. */
+    claimedMachineId: text("claimed_machine_id").$type<MachineId>(),
+    /** The claimant's WireGuard public key, in the enrollment identity's base64 form. */
+    claimedPublicKey: text("claimed_public_key"),
+    claimedAt: timestamp("claimed_at", { mode: "date", withTimezone: true }),
     createdAt,
     updatedAt,
   },
   (table) => [
     uniqueIndex("machine_enrollment_token_hash_idx").on(table.tokenHash),
+    check("machine_enrollment_token_claim_check", sql`(${table.claimedMachineId} is null) = (${table.claimedPublicKey} is null)
+      and (${table.claimedMachineId} is null) = (${table.claimedAt} is null)`),
     index("machine_enrollment_token_organization_idx").on(
       table.organizationId,
     ),
