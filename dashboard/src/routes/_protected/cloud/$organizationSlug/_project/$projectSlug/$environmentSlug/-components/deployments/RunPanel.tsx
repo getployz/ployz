@@ -15,7 +15,7 @@ import { RunTime, runNodeIcons, runNodeKinds } from "./RunCanvas";
 /** The picked node: its status, each Server's row as reported, then its logs. */
 export function RunPanel({ deployment, node }: { deployment: DeploymentView; node: RunNode | undefined }) {
   return (
-    <aside aria-label="Run node" className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm max-lg:h-full max-lg:shrink-0 lg:w-md lg:shrink-0">
+    <aside aria-label="Run node" className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm max-lg:min-h-full max-lg:shrink-0 lg:w-md lg:shrink-0">
       {node ? <RunNodeDetail key={node.id} deployment={deployment} node={node} /> : (
         <LogEmpty title="Nothing in this deployment" />
       )}
@@ -83,7 +83,8 @@ function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node:
         <div className="p-4"><LogEmpty title={missing ?? "No servers"} /></div>
       )}
       {node.type === "service" ? (
-        <div className="flex min-h-0 flex-1 flex-col p-4">
+        // Stacked on a phone, the logs keep a usable height and the page scrolls to them.
+        <div className="flex min-h-0 flex-1 flex-col p-4 max-lg:min-h-96">
           {missing ? <LogEmpty title={missing} />
             : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id }} />}
         </div>
