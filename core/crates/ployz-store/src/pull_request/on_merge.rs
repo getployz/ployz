@@ -728,7 +728,7 @@ fn land_one(
         &into,
         saved.clone(),
         latest.as_ref(),
-        Some(&format!("Merged #{}", pull_request.number)),
+        (Some(&format!("Merged #{}", pull_request.number)), &[]),
     )?;
 
     // Working: the nodes arriving as Saved has them, so their IDs match; then each

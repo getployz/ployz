@@ -79,6 +79,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
             crate::review::sealed::record_working(tx).map(|()| None)
         }),
     ),
+    (
+        "0016_saved_accepted_losses",
+        Step::Sql(include_str!("migrations/0016_saved_accepted_losses.sql")),
+    ),
 ];
 
 enum Step {

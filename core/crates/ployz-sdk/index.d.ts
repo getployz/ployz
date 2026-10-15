@@ -425,9 +425,11 @@ export interface ConfigStore {
   abandonDeployment(deployment: string, runner: string): Promise<DeploymentSummary>;
   /**
    * Cloud's GitHub workers only: apply what Cloud observed of GitHub; resolves to `{written: "automated", …}` with the
-   * Deployments it admitted (`trusted.servers`: how many Servers could run them; `trusted.domains.published`: hostnames they may not take), or rejects `conflict` when a branch head's `base` is no longer the Store's head.
+   * Deployments it admitted (`trusted.servers`: how many Servers could run them; `trusted.domains.published`: hostnames they may not take;
+   * `trusted.volumes`: which Servers hold the Docker Volumes the `consented` query lists, or they are kept), or rejects
+   * `conflict` when a branch head's `base` is no longer the Store's head.
    */
-  system(organization: string, event: SystemEvent, trusted?: Pick<ConfigTrusted, "servers" | "domains">): Promise<ConfigWritten>;
+  system(organization: string, event: SystemEvent, trusted?: Pick<ConfigTrusted, "servers" | "domains" | "volumes">): Promise<ConfigWritten>;
   /** Cloud's own Organization removal only: forget its configuration once it has no Project; else rejects `conflict`. */
   removeOrganization(organization: string): Promise<OrganizationRemoved>;
   /** Cloud's Forget Servers only: the Volumes a Deploy put on the Organization's Servers, which `cluster_forgotten` lets go of. */

@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
-import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
+import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
@@ -189,12 +189,18 @@ export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (o
   return loaded.kind === "ready" ? loaded.connections : [];
 });
 
-/** Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits and the hostnames other Namespaces publish. */
+/**
+ * Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits, the
+ * hostnames other Namespaces publish, and which Servers hold the data a Save accepted losing.
+ */
 export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizationId: string, event: SystemEvent) {
   const store = yield* cloudStore;
   const servers = yield* countOrganizationMachines(organizationId);
   const domains = yield* systemDomainEvidence(organizationId);
-  return yield* storeTry(() => store.system(organizationId, event, { servers, domains }));
+  const volumes = yield* systemVolumeEvidence(organizationId, (query) => store.read(organizationId, query));
+  const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes"> = { servers, domains };
+  if (volumes !== undefined) trusted.volumes = volumes;
+  return yield* storeTry(() => store.system(organizationId, event, trusted));
 });
 
 /**

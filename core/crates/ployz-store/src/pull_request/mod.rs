@@ -762,7 +762,7 @@ fn create(
         &id,
         environment.working.clone(),
         latest.as_ref(),
-        None,
+        (None, &[]),
     )?;
     let saved = review::latest_saved(tx, &id)?.ok_or_else(|| error::corrupt("Saved State"))?;
     let pins = environment
@@ -848,7 +848,14 @@ fn retrack(
     let mut environment = scope::lock_id(tx, who, id)?;
     if let Some(latest) = review::latest_saved(tx, id)? {
         let tracked = track(latest.intent.clone(), event);
-        review::publish(tx, who, id, tracked, Some(&latest), None)?;
+        review::publish(
+            tx,
+            who,
+            id,
+            tracked,
+            Some(&latest),
+            (None, &latest.accepted),
+        )?;
     }
     let tracked = track(environment.working.clone(), event);
     if tracked != environment.working {

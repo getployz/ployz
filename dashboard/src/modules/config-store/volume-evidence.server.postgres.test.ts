@@ -6,7 +6,7 @@ import type { JsonObject, JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { StoreRead } from "#/modules/config-store/store.contract";
-import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
+import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import { seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000e701";
@@ -42,6 +42,20 @@ it.live("a Publish gathers what the Servers hold of the Volumes it removes, as a
     expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: [] })).toEqual(removals(staging, false));
     expect(yield* gathered({ command: "admit", admit: "remove", environment: staging })).toEqual(removals(staging, true));
     expect(yield* gathered({ command: "admit", admit: "deploy", environment: staging, services: ["web"] })).toEqual([]);
+  }));
+
+it.live("a push asks which Volumes a Save accepted losing, and without Servers to ask sends no evidence", () =>
+  Effect.gen(function* () {
+    const services = yield* cloud();
+    const pushed = (volumes: string[]) => Effect.gen(function* () {
+      const read = vi.fn(async (_query: ConfigQuery) => ({ view: "consented", volumes }));
+      const evidence = yield* systemVolumeEvidence(ORGANIZATION, asTestDouble<StoreRead>()(read)).pipe(Effect.provide(services));
+      return { evidence, asked: read.mock.calls.map(([query]) => query) };
+    });
+
+    expect(yield* pushed([])).toEqual({ evidence: undefined, asked: [{ query: "consented" }] });
+    expect(yield* pushed(["shop-production_vol-00000000-0000-4000-8000-000000000005"]))
+      .toEqual({ evidence: undefined, asked: [{ query: "consented" }] });
   }));
 
 it.live("a removal gathers for each Environment it takes off, and a shutdown for its own", () =>

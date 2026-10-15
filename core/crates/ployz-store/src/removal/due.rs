@@ -610,7 +610,7 @@ pub(crate) fn shut_down(
             who,
             &review,
             (&empty, &namespace, crate::review::Shipping::Deploy(&[])),
-            (admit.version.as_deref(), &admit.accept_volume_loss),
+            (admit.version.as_deref(), &admit.accept_volume_loss, &[]),
             trusted.volumes.as_ref(),
         )?,
     };

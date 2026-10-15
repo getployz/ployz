@@ -122,11 +122,15 @@ pub(crate) fn publish(
     // same destructive review, before anything is saved.
     let target = canonicalize_environment_intent(environment.working.clone());
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
-    review::destructive(
+    let losses = review::destructive(
         who,
         &review,
         (&target, &namespace, review::Shipping::Publish),
-        (publish.version.as_deref(), &publish.accept_volume_loss),
+        (
+            publish.version.as_deref(),
+            &publish.accept_volume_loss,
+            review::consent(review.saved.as_ref()),
+        ),
         trusted.volumes.as_ref(),
     )
     .map_err(|mut error| {
@@ -152,7 +156,7 @@ pub(crate) fn publish(
         &environment.summary.id,
         environment.working,
         review.saved.as_ref(),
-        publish.message.as_deref(),
+        (publish.message.as_deref(), &review::lost(losses)),
     )?;
     // Saved State already held it: proposals ending still moves the revision.
     let mut summary = environment.summary;

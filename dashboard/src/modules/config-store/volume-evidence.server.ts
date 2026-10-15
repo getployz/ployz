@@ -48,6 +48,24 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
   return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
 });
 
+/**
+ * For a Git push: which Servers hold the Volumes whose loss was accepted when they were saved. Without it, or when the
+ * Servers can't be reached, the push keeps their data and the next Deploy asks again.
+ */
+export const systemVolumeEvidence = Effect.fn("ConfigStore.systemVolumeEvidence")(function* (
+  organizationId: string,
+  read: StoreRead,
+) {
+  const consented = yield* storeTry(() => read({ query: "consented" })).pipe(Effect.option);
+  const sought = Option.getOrUndefined(consented)?.volumes;
+  if (sought === undefined || sought.length === 0) return undefined;
+  const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
+  const connections = Option.getOrUndefined(loaded);
+  if (connections?.kind !== "ready") return undefined;
+  const observed = yield* storeTry(() => observeVolumes(connections.connections, sought)).pipe(Effect.option);
+  return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
+});
+
 /** The Volumes `command` may remove, per Environment it touches. */
 const questions = Effect.fn("ConfigStore.volumeQuestions")(function* (command: typeof EvidenceCommand.Type, read: StoreRead) {
   if (command.command !== "remove") {

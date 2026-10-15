@@ -22,8 +22,8 @@ pub use self::due::{Due, DueQuery};
 pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{due, shut_down};
 use self::mark::{Accepted, Mark, State};
-pub use self::review::{RemovedVolume, VolumeLoss, docker_volume};
-pub(crate) use self::review::{removed, review, short_digest};
+pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
+pub(crate) use self::review::{consented, covered, held, removed, review, short_digest};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{

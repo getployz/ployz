@@ -313,6 +313,137 @@ fn discarded_mount_reversal_affects_automatic_deploy_only_after_save() {
     );
 }
 
+const DOCKER_VOLUME: &str = "shop-production_vol-00000000-0000-4000-8000-000000000005";
+
+/// The Servers answered, and Server `a` holds Volume `data`.
+fn held_on_a() -> ployz_store::VolumeObservation {
+    let name = ployz_core::DockerVolumeName::parse(DOCKER_VOLUME).unwrap();
+    ployz_store::VolumeObservation {
+        sought: vec![name.clone()],
+        held: vec![ployz_core::DockerVolumeId {
+            machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
+            name,
+        }],
+        unanswered: Vec::new(),
+    }
+}
+
+/// Deploy Volume `data` on `web`, then remove it and Save, accepting its loss
+/// while Server `a` holds it.
+fn saved_volume_loss() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    let data = || ployz_store::VolumeName::parse("data").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    backend::deploy(&store, &who, "production", 1);
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data(),
+            },
+        )
+        .unwrap();
+    let save = |version: Option<String>| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version,
+                message: None,
+                accept_volume_loss: vec![data()],
+            },
+            &Trusted {
+                volumes: Some(held_on_a()),
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = save(None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    save(Some(
+        refused.details["version"].as_str().unwrap().to_owned(),
+    ))
+    .unwrap();
+    (store, who)
+}
+
+/// What the push's Deployment deletes, as `machine:docker volume`.
+fn pushed_deletes(
+    store: &ConfigStore,
+    volumes: Option<ployz_store::VolumeObservation>,
+) -> Vec<String> {
+    let Written::Automated(automated) = store
+        .system(
+            &org(),
+            &push(None, Some(H1), None),
+            &Trusted {
+                volumes,
+                ..Trusted::default()
+            },
+        )
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    store
+        .claim(
+            &automated.admitted[0].deployment.id,
+            &ployz_store::RunnerId::parse("runner").unwrap(),
+        )
+        .unwrap()
+        .deletes
+        .iter()
+        .map(|volume| format!("{}:{}", volume.machine_id, volume.name))
+        .collect()
+}
+
+#[test]
+fn a_push_after_a_save_that_accepted_a_loss_deletes_the_data() {
+    let (store, who) = saved_volume_loss();
+    let consented = store
+        .read(&who, &ployz_store::ConsentedQuery::default())
+        .unwrap();
+    assert_eq!(texts(&consented.volumes), [DOCKER_VOLUME]);
+    assert_eq!(
+        pushed_deletes(&store, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_push_keeps_saved_loss_data_without_the_same_evidence() {
+    let (store, _) = saved_volume_loss();
+    assert!(pushed_deletes(&store, None).is_empty());
+    let (store, _) = saved_volume_loss();
+    let mut more = held_on_a();
+    more.held.push(ployz_core::DockerVolumeId {
+        machine_id: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
+        name: ployz_core::DockerVolumeName::parse(DOCKER_VOLUME).unwrap(),
+    });
+    assert!(pushed_deletes(&store, Some(more)).is_empty());
+}
+
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
 #[test]
 fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
     let (store, who) = shop();

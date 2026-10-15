@@ -147,6 +147,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     environments: redact.environments,
     projects: same,
     due: same,
+    consented: same,
     pr_plans: same,
   };
 }

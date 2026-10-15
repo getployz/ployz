@@ -8,10 +8,12 @@ pub(crate) enum Scope<'a> {
     /// State holds and Saved does not, which deletes the Docker Volumes `losses` names.
     All { losses: &'a [VolumeLoss] },
     /// `services` and the Volumes and Configs they mount, and the teardown of the
-    /// Services `retire` names. It can't remove a Volume.
+    /// Services `retire` names. It removes a Volume of `losses` only once it ships
+    /// every Service Applied State mounts it on.
     Narrow {
         services: &'a [ServiceName],
         retire: &'a [Retire],
+        losses: &'a [VolumeLoss],
     },
 }
 
@@ -24,6 +26,7 @@ impl<'a> Scope<'a> {
             Self::Narrow {
                 services,
                 retire: &[],
+                losses: &[],
             }
         }
     }
@@ -131,7 +134,11 @@ pub(crate) fn freeze(
     let (full, services, retire, losses): (bool, &[ServiceName], &[Retire], &[VolumeLoss]) =
         match scope {
             Scope::All { losses } => (true, &[], &[], losses),
-            Scope::Narrow { services, retire } => (false, services, retire, &[]),
+            Scope::Narrow {
+                services,
+                retire,
+                losses,
+            } => (false, services, retire, losses),
         };
     if !full && services.is_empty() && retire.is_empty() {
         return Err(error::invalid(
@@ -245,14 +252,34 @@ pub(crate) fn freeze(
         let unmounted = unmounted(saved, applied, &nodes)?;
         nodes.extend(unmounted);
     }
-    for loss in losses {
-        let volume = applied
-            .volumes
+    let ships = |id: &str| nodes.iter().any(|node| node.id() == id);
+    let unmounts = |loss: &&VolumeLoss| {
+        let mounted: Vec<bool> = applied
+            .services
             .iter()
-            .find(|volume| volume.resource_id == loss.volume.id.as_str())
-            .ok_or_else(|| error::corrupt("Applied State"))?;
-        nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone()))?);
-    }
+            .filter(|service| {
+                service
+                    .volume_attachments
+                    .iter()
+                    .any(|mount| mount.volume_resource_id == loss.volume.id.as_str())
+            })
+            .map(|service| ships(&service.id))
+            .collect();
+        full || (mounted.contains(&true) && !mounted.contains(&false))
+    };
+    let removed: Vec<TargetNode> = losses
+        .iter()
+        .filter(unmounts)
+        .map(|loss| {
+            let volume = applied
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == loss.volume.id.as_str())
+                .ok_or_else(|| error::corrupt("Applied State"))?;
+            TargetNode::volume(volume, Some(loss.deletes.clone()))
+        })
+        .collect::<Result<_, _>>()?;
+    nodes.extend(removed);
     // Live values and Setup Commands resolve at claim; checking without them is the same.
     lower(
         environment,

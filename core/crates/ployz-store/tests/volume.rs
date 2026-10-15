@@ -836,6 +836,62 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     assert!(published.created);
 }
 
+/// Deploy `data`, then remove it and Save, accepting its loss while `holders`
+/// hold its data.
+fn save_accepting(store: &ConfigStore, who: &Actor, holders: &[char]) {
+    admit(store, who, 1, &[], None).unwrap();
+    run(store, 1, Vec::new());
+    store
+        .write(
+            who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let save = |version: Option<String>| {
+        store.write_trusted(
+            who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version,
+                message: None,
+                accept_volume_loss: vec![VolumeName::parse("data").unwrap()],
+            },
+            &Trusted {
+                volumes: Some(observed(holders)),
+                ..Trusted::default()
+            },
+        )
+    };
+    let refused = save(None).unwrap_err();
+    let version = refused.details["version"].as_str().unwrap().to_owned();
+    assert!(save(Some(version)).unwrap().created);
+}
+
+#[test]
+fn a_loss_accepted_on_save_is_not_asked_again_by_the_next_deploy() {
+    let (store, who) = shop();
+    save_accepting(&store, &who, &['a']);
+    admit(&store, &who, 2, &[], Some(observed(&['a']))).unwrap();
+    assert_eq!(run(&store, 2, Vec::new()).deletes, [held('a')]);
+}
+
+#[test]
+fn a_server_holding_more_since_the_save_asks_again() {
+    let (store, who) = shop();
+    save_accepting(&store, &who, &['a']);
+    let refused = admit(&store, &who, 2, &[], Some(observed(&['a', 'b']))).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(refused.details["accept"], json!(["data"]));
+    // Evidence is still required: consent never stands in for looking.
+    assert_eq!(
+        code(admit(&store, &who, 2, &[], None)),
+        RpcErrorCode::Unavailable
+    );
+}
+
 #[test]
 fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
     const LOGS: &str = "00000000-0000-4000-8000-000000000006";
