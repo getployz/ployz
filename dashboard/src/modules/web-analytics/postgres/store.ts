@@ -62,25 +62,32 @@ const filterClause = (filters: ReadonlyArray<Filter>, table?: string) =>
 const HEAD_DIMS = sql.raw(SESSION_DIMS.map((dim) => `first_value(${dim}) over visit as ${dim}`).join(", "));
 
 /**
- * Sessionizes every pageview in the range's window, filtered or not, and keeps as `visits` the sessions the filters
+ * Sessionizes the pageviews in the range's window, and keeps as `visits` the sessions the filters
  * select: session dim filters test the first pageview, page filters need at least one pageview of the session to pass.
  * The window reaches a session gap before the range for exact session starts, and a day past it for whole sessions.
  * A visitor seen in the gap before the range may be mid-visit, so their earlier pageviews within the entry lookback join
  * the window, and the visit takes its dims from its real first pageview. Every range, a rolled day or a raw read,
  * attributes a visit alike.
+ * Only a visitor with a pageview in the window that passes each eq filter can have a selected visit, so only theirs are
+ * sessionized: a visitor's visits never depend on another visitor's pageviews.
  * Each pageview takes its visit's first values and counts from window functions, never a join: the planner has no row
  * estimates for a CTE, and with a filter it picked nested loops that went quadratic.
  */
 export const visitCtes = (query: StoreQuery, range: Range) => {
   const picks = pageFilters(query);
   const selected = sql`${filterClause(sessionFilters(query))}${picks.length > 0 ? sql` and picked > 0` : sql``}`;
+  const candidates = sql.join(query.filters.filter((filter) => filter.op === "eq").map((filter) => sql`
+      and visitor_id in (
+        select visitor_id from analytics.pageview
+        where environment_id = ${query.environmentId}::text
+          and ts >= ${instant(range.start)} - ${lookback} and ts < ${instant(range.end)} + interval '1 day'${filterClause([filter])})`), sql``);
   return sql`
   window_rows as (
     select ts, visitor_id, host, pathname, source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, language
     from analytics.pageview
     where environment_id = ${query.environmentId}::text
       and ts >= ${instant(range.start)} - ${gap}
-      and ts < ${instant(range.end)} + interval '1 day'
+      and ts < ${instant(range.end)} + interval '1 day'${candidates}
     union all
     select ts, visitor_id, host, pathname, source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, language
     from analytics.pageview
@@ -89,14 +96,14 @@ export const visitCtes = (query: StoreQuery, range: Range) => {
       and ts < ${instant(range.start)} - ${gap}
       and visitor_id in (
         select visitor_id from analytics.pageview
-        where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} - ${gap} and ts < ${instant(range.start)})
+        where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} - ${gap} and ts < ${instant(range.start)})${candidates}
   ), marked as (
     select *, case when ts - lag(ts) over w <= ${gap} then 0 else 1 end as is_new
     from window_rows window w as (partition by visitor_id order by ts, pathname, host)
   ), numbered as (
     select *, sum(is_new) over (partition by visitor_id order by ts, pathname, host rows unbounded preceding) as sn
     from marked
-  ), attributed as (
+  ), attributed as not materialized (
     select ts, visitor_id, pathname, is_new, ${HEAD_DIMS}, max(ts) over visit as ended, count(*) over visit as pageviews,
       count(*) filter (where true${filterClause(picks)}) over visit as picked
     from numbered
@@ -118,12 +125,13 @@ export const sessionsIn = (query: StoreQuery, range: Range) => sql`
 
 /**
  * The selected pageviews in the range, each carrying its visit's session dims, as a `from ... where ...` clause.
- * Without filters a pageview's own page and the visit counts need no sessionizing, so those reads skip it.
+ * Without session filters a pageview passing the page filters is selected by its own visit, so reads that need only its
+ * own columns skip sessionizing.
  */
 const rowsIn = (query: StoreQuery, range: Range, needsVisit = false) =>
-  query.filters.length === 0 && !needsVisit
+  sessionFilters(query).length === 0 && !needsVisit
     ? sql`from analytics.pageview
-      where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} and ts < ${instant(range.end)}`
+      where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} and ts < ${instant(range.end)}${filterClause(query.filters)}`
     : sql`from (with ${visitCtes(query, range)} select * from visit_rows) visit_rows where true`;
 
 export type Plan = { readonly days: { readonly first: string; readonly last: string } | null; readonly edges: ReadonlyArray<Range> };
@@ -346,12 +354,12 @@ type GoalDbRow = { goal_id: string; name: string; visitors: string; conversions:
 
 /**
  * Only the range's distinct paths meet the goal patterns, then the matched pageviews fold per goal, day and visitor.
- * Unfiltered, the range is scanned twice, which beats spilling a million rows to a CTE; a filtered range is sessionized once.
+ * Without session filters, the range is scanned twice, which beats spilling a million rows to a CTE; with them it is sessionized once.
  */
 export const goalConversions = Effect.fn("WebAnalytics.goalConversions")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<GoalDbRow>(sql`
-    with range_rows as ${query.filters.length === 0 ? sql`not materialized` : sql`materialized`} (
+    with range_rows as ${sessionFilters(query).length === 0 ? sql`not materialized` : sql`materialized`} (
       select pathname, ts, visitor_id ${rowsIn(query, query.range)}
     ), goals as (
       select id, name, replace(replace(replace(replace(path_pattern, '\\', '\\\\'), '%', '\\%'), '_', '\\_'), '*', '%') as pattern

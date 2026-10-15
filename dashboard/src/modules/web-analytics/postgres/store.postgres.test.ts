@@ -165,9 +165,18 @@ it.live("a filtered day series reads one source's closed days from the rollup an
       [{ key: "source", op: "eq", value: "" }],
       [{ key: "source", op: "neq", value: "Google" }],
       [{ key: "page", op: "eq", value: "/" }],
+      [{ key: "page", op: "neq", value: "/" }],
     ] as const) {
-      const expected = byBucket(new Reference(site.timezone, rows, range, filters).dailyTotals());
-      expect(byBucket(yield* provide(dailyTotals({ ...site, range, filters }))), `${filters[0].key} ${filters[0].op} ${filters[0].value}`).toEqual(expected);
+      const reference = new Reference(site.timezone, rows, range, filters);
+      const query = { ...site, range, filters };
+      const when = `${filters[0].key} ${filters[0].op} ${filters[0].value}`;
+      expect(byBucket(yield* provide(dailyTotals(query))), when).toEqual(byBucket(reference.dailyTotals()));
+      const pages = yield* provide(breakdown(query, "page"));
+      expect(pages, `${when} pages`).toEqual(expect.arrayContaining(reference.breakdown("page")));
+      expect(pages, `${when} pages`).toHaveLength(reference.breakdown("page").length);
+      const sources = yield* provide(sessionsBy(query, "source"));
+      expect(sources, `${when} sources`).toEqual(expect.arrayContaining(reference.sessionsBy("source")));
+      expect(sources, `${when} sources`).toHaveLength(reference.sessionsBy("source").length);
     }
     const pageviews = (filters: StoreQuery["filters"]) =>
       provide(dailyTotals({ ...site, range, filters })).pipe(Effect.map((series) => series.reduce((sum, bucket) => sum + bucket.pageviews, 0)));
