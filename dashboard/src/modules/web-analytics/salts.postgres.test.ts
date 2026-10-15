@@ -5,7 +5,7 @@ import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
 import { ackSalts, saltWindow, setSiteAnalytics, siteDay, withholdToday } from "#/modules/web-analytics/salts.server";
-import { analyticsSalt } from "#/modules/web-analytics/tables";
+import { analyticsDaily, analyticsRollupState, analyticsSalt, analyticsSessionHourly } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
@@ -39,8 +39,8 @@ it("a site's day is its own calendar day, not UTC's", () => {
   expect(siteDay("America/New_York", Date.UTC(2026, 11, 31, 12), 2)).toBe("2027-01-02");
 });
 
-const setup = Effect.fn(function* () {
-  const services = yield* Layer.build(yield* storeTestCloud());
+const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANALYTICS_ENABLED: "true" }) {
+  const services = yield* Layer.build(yield* storeTestCloud({ env }));
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   const store = yield* provide(cloudStore);
@@ -123,4 +123,78 @@ it.live("an unknown time zone is refused", () => Effect.gen(function* () {
   const { provide } = yield* setup();
   const refused = yield* provide(Effect.flip(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "Mars/Olympus" })));
   expect(refused._tag).toBe("Validation");
+}), 60_000);
+
+it.live("a Self-hosted Cloud without ANALYTICS_ENABLED acks no salts, even for an on site", () => Effect.gen(function* () {
+  const { provide, days } = yield* setup({});
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true }));
+  expect(yield* days(PRODUCTION)).toHaveLength(3);
+  expect(yield* provide(ackSalts(ORGANIZATION))).toEqual({ sites: [] });
+}), 60_000);
+
+it.live("turning a site on starts its rollup state empty, and turning it off or on again keeps it", () => Effect.gen(function* () {
+  const { provide } = yield* setup();
+  const rollupState = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return yield* drizzle.select({ environmentId: analyticsRollupState.environmentId, rolledUpTo: analyticsRollupState.rolledUpTo, dirty: analyticsRollupState.dirty })
+      .from(analyticsRollupState);
+  }).pipe(Effect.orDie));
+  yield* provide(setSiteAnalytics(ORGANIZATION, STAGING, { enabled: false }));
+  expect(yield* rollupState()).toEqual([]);
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true }));
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: null, dirty: [] }]);
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(analyticsRollupState).set({ rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] });
+  }).pipe(Effect.orDie));
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: false }));
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true }));
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] }]);
+}), 60_000);
+
+it.live("a new time zone drops the site's rollups and starts its rollup state over; the same one keeps them", () => Effect.gen(function* () {
+  const { provide } = yield* setup();
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "Australia/Sydney" }));
+  yield* provide(setSiteAnalytics(ORGANIZATION, STAGING, { enabled: true, timezone: "Australia/Sydney" }));
+  const totals = { pageviews: 3, visitors: 2, visits: 2, bounces: 1, totalDuration: 60 };
+  const session = { visits: 2, bounces: 1, totalDuration: 60 };
+  yield* provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    for (const environmentId of [PRODUCTION, STAGING]) {
+      yield* drizzle.insert(analyticsDaily).values({ environmentId, day: "2026-10-01", dim: "page", value: "/", ...totals });
+      yield* drizzle.insert(analyticsSessionHourly).values({ environmentId, hour: new Date("2026-10-01T00:00:00Z"), ...session });
+    }
+    yield* drizzle.update(analyticsRollupState).set({ rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] });
+  }).pipe(Effect.orDie));
+  const rollups = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return {
+      daily: (yield* drizzle.select({ environmentId: analyticsDaily.environmentId }).from(analyticsDaily).orderBy(asc(analyticsDaily.environmentId)))
+        .map(({ environmentId }) => environmentId),
+      hourly: (yield* drizzle.select({ environmentId: analyticsSessionHourly.environmentId }).from(analyticsSessionHourly)
+        .orderBy(asc(analyticsSessionHourly.environmentId))).map(({ environmentId }) => environmentId),
+      state: yield* drizzle.select({ environmentId: analyticsRollupState.environmentId, rolledUpTo: analyticsRollupState.rolledUpTo, dirty: analyticsRollupState.dirty })
+        .from(analyticsRollupState).orderBy(asc(analyticsRollupState.environmentId)),
+    };
+  }).pipe(Effect.orDie));
+  const untouched = yield* rollups();
+  expect(untouched).toEqual({
+    daily: [PRODUCTION, STAGING],
+    hourly: [PRODUCTION, STAGING],
+    state: [PRODUCTION, STAGING].map((environmentId) => ({ environmentId, rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] })),
+  });
+
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "Australia/Sydney" }));
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: false }));
+  expect(yield* rollups()).toEqual(untouched);
+
+  yield* provide(setSiteAnalytics(ORGANIZATION, PRODUCTION, { enabled: true, timezone: "America/New_York" }));
+  expect(yield* rollups()).toEqual({
+    daily: [STAGING],
+    hourly: [STAGING],
+    state: [
+      { environmentId: PRODUCTION, rolledUpTo: null, dirty: [] },
+      { environmentId: STAGING, rolledUpTo: "2026-10-01", dirty: ["2026-09-30"] },
+    ],
+  });
 }), 60_000);

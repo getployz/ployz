@@ -1,11 +1,18 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
 import { TZDate } from "@date-fns/tz";
-import { and, asc, eq, gte, inArray } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
-import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
+import {
+  analyticsDaily,
+  analyticsRollupState,
+  analyticsSalt,
+  analyticsSessionHourly,
+  analyticsSite,
+} from "#/modules/web-analytics/tables";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Validation } from "#/server/public-error";
 
@@ -48,6 +55,9 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    const [previous] = yield* drizzle.select({ timezone: analyticsSite.timezone }).from(analyticsSite)
+      .where(and(eq(analyticsSite.organizationId, organizationId), eq(analyticsSite.environmentId, environmentId)))
+      .for("update");
     const [site] = yield* drizzle.insert(analyticsSite)
       .values({ organizationId, environmentId, enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }) })
       .onConflictDoUpdate({
@@ -55,7 +65,16 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
         set: { enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }), updatedAt: new Date(now) },
       })
       .returning({ timezone: analyticsSite.timezone });
+    if (previous !== undefined && site !== undefined && previous.timezone !== site.timezone) {
+      // Rollups hold site-local days, so a new timezone invalidates every one of them; the rollup job rebuilds from raw.
+      yield* drizzle.delete(analyticsDaily).where(eq(analyticsDaily.environmentId, environmentId));
+      yield* drizzle.delete(analyticsSessionHourly).where(eq(analyticsSessionHourly.environmentId, environmentId));
+      yield* drizzle.update(analyticsRollupState)
+        .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, updatedAt: new Date(now) })
+        .where(eq(analyticsRollupState.environmentId, environmentId));
+    }
     if (!setting.enabled || site === undefined) return;
+    yield* drizzle.insert(analyticsRollupState).values({ environmentId }).onConflictDoNothing();
     const days = [0, 1, 2].map((offset) => siteDay(site.timezone, now, offset));
     yield* drizzle.insert(analyticsSalt).values(salts(organizationId, environmentId, days)).onConflictDoNothing();
   }));
@@ -73,7 +92,7 @@ export const withholdToday = Effect.fn("WebAnalytics.withholdToday")(function* (
   ));
 });
 
-const namespacesByEnvironment = Effect.fn("WebAnalytics.namespaces")(function* (organizationId: string) {
+export const namespacesByEnvironment = Effect.fn("WebAnalytics.namespaces")(function* (organizationId: string) {
   const owned = yield* owners(organizationId);
   const byEnvironment = new Map<string, string>();
   for (const project of new Set(owned.map((namespace) => namespace.project))) {
@@ -87,6 +106,7 @@ const namespacesByEnvironment = Effect.fn("WebAnalytics.namespaces")(function* (
 });
 
 export const ackSalts = Effect.fn("WebAnalytics.ack")(function* (organizationId: string) {
+  if (!(yield* AppConfig).analyticsEnabled) return { sites: [] } satisfies SaltAck;
   const { drizzle } = yield* Database;
   const sites = yield* drizzle.select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone })
     .from(analyticsSite)

@@ -1,0 +1,1 @@
+ALTER TABLE "observe_ingest_cursor" DROP CONSTRAINT "observe_ingest_cursor_stream_check", ADD CONSTRAINT "observe_ingest_cursor_stream_check" CHECK ("stream" in ('crash', 'pageviews'));

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { Clock, Effect, Option, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import { createObserveCrashReceivedEvent } from "#/modules/inngest/events";
@@ -8,9 +8,14 @@ import { decryptPairingSecret } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { managementIdentity } from "#/modules/machines/management-identity";
 import { organizationMachine } from "#/modules/machines/tables";
-import type { CrashPushInput } from "#/modules/observe-ingest/ingest";
+import type { BotsInput, CrashPushInput, GapInput, PageviewInput, PageviewPushInput } from "#/modules/observe-ingest/ingest";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
+import { LONGEST_RETENTION_MONTHS } from "#/modules/web-analytics/model";
+import { ensurePartitions, monthOf } from "#/modules/web-analytics/postgres/partitions";
+import { namespacesByEnvironment, saltWindow, siteDay } from "#/modules/web-analytics/salts.server";
+import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState, analyticsSite } from "#/modules/web-analytics/tables";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 
@@ -116,6 +121,117 @@ export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pushe
     for (const row of kept) if (!firstByService.has(row.serviceId)) firstByService.set(row.serviceId, row.id);
     for (const [serviceId, crashEventId] of firstByService) {
       yield* enqueueEvent(createObserveCrashReceivedEvent({ organizationId: pusher.organizationId, serviceId }, crashEventId));
+    }
+  }));
+});
+
+const DAY_MS = 86_400_000;
+const SESSION_GAP_SECONDS = 1800;
+
+type Site = { readonly environmentId: string; readonly timezone: string };
+
+/** Site-local days whose rollups a pageview at `ts` changes: its own, and yesterday when its session may have begun there. */
+function touchedDays(timezone: string, ts: Date) {
+  const day = siteDay(timezone, ts.getTime());
+  const sinceMidnight = ts.getTime() / 1000 - saltWindow(day, timezone).start;
+  return sinceMidnight < SESSION_GAP_SECONDS ? [day, siteDay(timezone, ts.getTime(), -1)] : [day];
+}
+
+export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function* (pusher: ObservePusher, push: PageviewPushInput) {
+  if (push.dropped > 0) {
+    yield* Effect.logWarning("A Machine dropped pageviews it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
+  }
+  if (!(yield* AppConfig).analyticsEnabled) return;
+  const { drizzle } = yield* Database;
+  const enabled = yield* drizzle.select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone })
+    .from(analyticsSite)
+    .where(and(eq(analyticsSite.organizationId, pusher.organizationId), eq(analyticsSite.enabled, true)));
+  if (enabled.length === 0) return;
+  const namespaces = yield* namespacesByEnvironment(pusher.organizationId);
+  const sites = new Map<string, Site>();
+  for (const site of enabled) {
+    const namespace = namespaces.get(site.environmentId);
+    if (namespace !== undefined) sites.set(namespace, site);
+  }
+
+  const now = yield* Clock.currentTimeMillis;
+  const floor = new Date(now);
+  floor.setUTCMonth(floor.getUTCMonth() - LONGEST_RETENTION_MONTHS);
+  const pageviews: Array<{ readonly site: Site; readonly row: PageviewInput }> = [];
+  const bots = new Map<string, Omit<BotsInput, "kind" | "namespace"> & { readonly environmentId: string }>();
+  const gaps = new Map<string, Omit<GapInput, "kind" | "namespace"> & { readonly environmentId: string; readonly day: string }>();
+  for (const event of push.events) {
+    const site = sites.get(event.namespace);
+    if (site === undefined) continue;
+    if (event.kind === "pageview") {
+      if (event.ts < floor || event.ts.getTime() > now + DAY_MS) continue;
+      pageviews.push({ site, row: event });
+    } else if (event.kind === "bots") {
+      const key = JSON.stringify([site.environmentId, event.day, event.reason]);
+      bots.set(key, { environmentId: site.environmentId, day: event.day, reason: event.reason, count: (bots.get(key)?.count ?? 0) + event.count });
+    } else {
+      const day = event.day ?? siteDay(site.timezone, now);
+      const key = JSON.stringify([site.environmentId, day]);
+      gaps.set(key, { environmentId: site.environmentId, day, count: (gaps.get(key)?.count ?? 0) + event.count });
+    }
+  }
+  if (pageviews.length === 0 && bots.size === 0 && gaps.size === 0) return;
+  yield* ensurePartitions(pageviews.map(({ row }) => monthOf(row.ts)));
+
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const cursorKey = and(
+      eq(observeIngestCursor.organizationId, pusher.organizationId),
+      eq(observeIngestCursor.machineId, pusher.machineId),
+      eq(observeIngestCursor.stream, "pageviews"),
+    );
+    // -1 stands for "no batch yet" so the first batch reads as new; inserting first makes concurrent pushes queue on the row lock.
+    yield* drizzle.insert(observeIngestCursor)
+      .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "pageviews", seq: -1n })
+      .onConflictDoNothing();
+    const [cursor] = yield* drizzle.select({ seq: observeIngestCursor.seq }).from(observeIngestCursor).where(cursorKey).for("update");
+    yield* drizzle.update(observeIngestCursor)
+      .set({ seq: sql`greatest(${observeIngestCursor.seq}, ${push.seq.toString()}::bigint)`, updatedAt: new Date(now) })
+      .where(cursorKey);
+
+    // Counts are deltas, so a replayed batch would add them twice; pageview rows dedupe on their key instead.
+    if (push.seq > (cursor?.seq ?? -1n)) {
+      if (bots.size > 0) {
+        yield* drizzle.insert(analyticsBotDaily).values([...bots.values()]).onConflictDoUpdate({
+          target: [analyticsBotDaily.environmentId, analyticsBotDaily.day, analyticsBotDaily.reason],
+          set: { count: sql`${analyticsBotDaily.count} + excluded.count` },
+        });
+      }
+      if (gaps.size > 0) {
+        yield* drizzle.insert(analyticsGapDaily).values([...gaps.values()]).onConflictDoUpdate({
+          target: [analyticsGapDaily.environmentId, analyticsGapDaily.day],
+          set: { count: sql`${analyticsGapDaily.count} + excluded.count` },
+        });
+      }
+    }
+
+    if (pageviews.length === 0) return;
+    const inserted = yield* drizzle.insert(analyticsPageview)
+      .values(pageviews.map(({ site, row: { kind: _kind, namespace: _namespace, ...row } }) => ({ ...row, environmentId: site.environmentId })))
+      .onConflictDoNothing()
+      .returning({ environmentId: analyticsPageview.environmentId, ts: analyticsPageview.ts });
+    const timezones = new Map(enabled.map((site) => [site.environmentId, site.timezone]));
+    const dirty = new Map<string, Set<string>>();
+    for (const row of inserted) {
+      const timezone = timezones.get(row.environmentId) ?? "UTC";
+      const days = dirty.get(row.environmentId) ?? new Set<string>();
+      for (const day of touchedDays(timezone, row.ts)) days.add(day);
+      dirty.set(row.environmentId, days);
+    }
+    for (const [environmentId, days] of dirty) {
+      // Days after rolled_up_to are not rolled up yet, so the rollup job closes them from raw rows anyway.
+      yield* drizzle.update(analyticsRollupState)
+        .set({
+          dirty: sql`coalesce((select array_agg(distinct d order by d) from unnest(${analyticsRollupState.dirty} || ${`{${[...days].join(",")}}`}::date[]) d where d <= ${analyticsRollupState.rolledUpTo}), '{}'::date[])`,
+          updatedAt: new Date(now),
+        })
+        .where(and(eq(analyticsRollupState.environmentId, environmentId), isNotNull(analyticsRollupState.rolledUpTo)));
     }
   }));
 });

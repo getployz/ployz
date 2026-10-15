@@ -1,6 +1,6 @@
 import { Effect, Option, Result } from "effect";
-import { crashPushInput, decodeCrashPush, decodePushHeader, isObserveStream } from "#/modules/observe-ingest/ingest";
-import { authenticateObservePush, ingestCrashPush, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import { crashPushInput, decodeCrashPush, decodePageviewPush, decodePushHeader, isObserveStream, pageviewPushInput } from "#/modules/observe-ingest/ingest";
+import { authenticateObservePush, ingestCrashPush, ingestPageviewPush, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
 
@@ -46,9 +46,16 @@ export function handleObservePush(request: Request, machineId: string) {
     if (!isObserveStream(header.value.stream)) {
       return errorResponse(new NotFound({ message: `Unknown observe stream ${header.value.stream}.` }));
     }
-    const push = Option.flatMap(decodeCrashPush(json), crashPushInput);
-    if (Option.isNone(push)) return malformed();
-    const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
+    let ingested;
+    if (header.value.stream === "pageviews") {
+      const push = Option.flatMap(decodePageviewPush(json), pageviewPushInput);
+      if (Option.isNone(push)) return malformed();
+      ingested = yield* Effect.result(ingestPageviewPush(pusher.success, push.value));
+    } else {
+      const push = Option.flatMap(decodeCrashPush(json), crashPushInput);
+      if (Option.isNone(push)) return malformed();
+      ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
+    }
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
     return yield* ackSalts(pusher.success.organizationId).pipe(
       Effect.map((ack) => Response.json(ack, { headers: noStore })),

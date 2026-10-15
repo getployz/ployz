@@ -7,12 +7,15 @@ import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { observePushMessage, verifyObservePush } from "#/modules/observe-ingest/ingest.server";
+import { visitorId } from "#/modules/observe-ingest/ingest";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { operationOutbox } from "#/modules/operations/tables";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { handleObservePush } from "#/routes/api/machines/-handlers";
+import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
 import { saltWindow, setSiteAnalytics, siteDay } from "#/modules/web-analytics/salts.server";
+import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
@@ -86,10 +89,12 @@ it("the known-answer vector verifies, and not once its timestamp or body changes
   expect(verifyObservePush(PUBLIC_KEY, observePushMessage("a".repeat(32), 1_760_000_000n, Buffer.concat([body, Buffer.from(" ")])), signature)).toBe(false);
 });
 
-const setup = Effect.fn(function* () {
+const setup = Effect.fn(function* (env: Readonly<Record<string, string>> = { ANALYTICS_ENABLED: "true" }) {
   const inngest = new Inngest({ id: "observe-ingest-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-  const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+  // Every test gets a fresh database, so partitions an earlier test created are gone.
+  forgetPartitions();
+  const services = yield* Layer.build(yield* storeTestCloud({ inngest, env }));
   const provide = <A, E>(effect: Effect.Effect<A, E, Database>) => effect.pipe(Effect.provide(services));
   yield* provide(seedStoreOrganization(ORGANIZATION, { name: "Acme", slug: "acme" }));
   yield* enrollStoreServer(ORGANIZATION).pipe(Effect.provide(services));
@@ -153,7 +158,25 @@ const setup = Effect.fn(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`update analytics.site set timezone = 'Not/A_Zone'`);
   }).pipe(Effect.orDie));
-  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone };
+  const stored = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return {
+      pageviews: yield* drizzle.select().from(analyticsPageview).orderBy(asc(analyticsPageview.ts)),
+      bots: yield* drizzle.select().from(analyticsBotDaily).orderBy(asc(analyticsBotDaily.day), asc(analyticsBotDaily.reason)),
+      gaps: yield* drizzle.select().from(analyticsGapDaily).orderBy(asc(analyticsGapDaily.day)),
+      cursor: (yield* drizzle.select().from(observeIngestCursor)).map(({ stream, seq }) => ({ stream, seq })),
+    };
+  }).pipe(Effect.orDie));
+  const rollupState = () => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return yield* drizzle.select({ environmentId: analyticsRollupState.environmentId, rolledUpTo: analyticsRollupState.rolledUpTo, dirty: analyticsRollupState.dirty })
+      .from(analyticsRollupState);
+  }).pipe(Effect.orDie));
+  const rolledUp = (rolledUpTo: string, dirty: ReadonlyArray<string>) => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(analyticsRollupState).set({ rolledUpTo, dirty: [...dirty] });
+  }).pipe(Effect.orDie));
+  return { send, sendRaw, rows, identity, enrollElsewhere, sites, breakSalts, corruptTimezone, stored, rollupState, rolledUp };
 });
 
 it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
@@ -260,13 +283,6 @@ it.live("a push Cloud kept answers 204 even when issuing salts dies", () => Effe
   const answer = yield* send(push([[10, WEB]]));
   expect(answer.status).toBe(204);
   expect((yield* rows()).cursor).toEqual([{ stream: "crash", seq: 10n }]);
-}), 60_000);
-
-it.live("a pageviews push answers 404 until Cloud takes pageviews, and writes nothing", () => Effect.gen(function* () {
-  const { send, rows, sites } = yield* setup();
-  yield* sites();
-  expect((yield* send(JSON.stringify({ stream: "pageviews", seq: "1", dropped: 0, events: [] }))).status).toBe(404);
-  expect(yield* rows()).toEqual(nothing);
 }), 60_000);
 
 it.live("a stream Cloud does not know answers 404 and writes nothing", () => Effect.gen(function* () {
@@ -395,4 +411,193 @@ it.live("a malformed push answers 422 and writes nothing", () => Effect.gen(func
     expect((yield* send(body)).status).toBe(422);
   }
   expect(yield* rows()).toEqual(nothing);
+}), 60_000);
+
+const SYDNEY = "Australia/Sydney";
+const VISITOR = "ab".repeat(32);
+const HOUR_MS = 3_600_000;
+
+type QueryKey = "utm_source" | "utm_medium" | "utm_campaign" | "utm_term" | "utm_content" | "ref";
+type WirePageview = {
+  readonly kind: "pageview";
+  readonly ts: number;
+  readonly day: string;
+  readonly namespace: string;
+  readonly host: string;
+  readonly path: string;
+  readonly query: { readonly [key in QueryKey]?: string };
+  readonly referrer_host: string | null;
+  readonly language: string | null;
+  readonly visitor: string;
+  readonly flags: ReadonlyArray<string>;
+};
+type WireBots = { readonly kind: "bots"; readonly namespace: string; readonly day: string; readonly reason: string; readonly count: number };
+
+const pageview = (ts: number, fields: Partial<WirePageview> = {}): WirePageview => ({
+  kind: "pageview", ts, day: "2000-01-01", namespace: "shop-prod", host: "shop.example.com", path: "/", query: {},
+  referrer_host: null, language: "en", visitor: VISITOR, flags: [], ...fields,
+});
+const bots = (count: number, fields: Partial<WireBots> = {}): WireBots =>
+  ({ kind: "bots", namespace: "shop-prod", day: "2026-10-01", reason: "user_agent", count, ...fields });
+const pageviews = (seq: number, events: ReadonlyArray<object>, dropped = 0) =>
+  JSON.stringify({ stream: "pageviews", seq: String(seq), dropped, events });
+
+/** The pageview row Cloud stores for `pageview(ts)` with no other fields. */
+const plainRow = (ts: number) => ({
+  environmentId: PRODUCTION, ts: new Date(ts), visitorId: -6076574518398440533n, host: "shop.example.com", pathname: "/", source: "",
+  referrerHost: null, utmSource: null, utmMedium: null, utmCampaign: null, utmTerm: null, utmContent: null, ref: null, language: "en", flags: 0,
+});
+
+const nothingStored = { pageviews: [], bots: [], gaps: [], cursor: [] };
+
+it("a visitor's id is the first 8 bytes of the Machine's hash, signed", () => {
+  expect(visitorId(VISITOR)).toBe(-6076574518398440533n);
+  expect(visitorId(`0123456789abcdef${"f".repeat(48)}`)).toBe(81985529216486895n);
+});
+
+it.live("a pageviews push stores its rows, sums repeated bot and gap counts, advances the cursor, and answers with salts", () =>
+  Effect.gen(function* () {
+    const { send, stored, sites } = yield* setup();
+    yield* sites();
+    const now = Date.now();
+    const at = now - HOUR_MS;
+    const answer = yield* send(pageviews(5, [
+      pageview(at),
+      pageview(at + 1000, {
+        path: "/pricing",
+        query: { utm_source: "news", utm_medium: "email", utm_campaign: "launch", utm_term: "deploy", utm_content: "hero", ref: "hn" },
+        referrer_host: "news.ycombinator.com", language: null, flags: ["no_accept_language", "click_id"],
+      }),
+      pageview(at + 2000, { path: "/docs", query: { ref: "hn" }, referrer_host: "news.ycombinator.com", flags: ["no_sec_fetch"] }),
+      pageview(at + 3000, { path: "/blog", referrer_host: "google.com" }),
+      bots(3),
+      bots(4),
+      bots(1, { reason: "no_accept" }),
+      { kind: "gap", namespace: "shop-prod", day: null, count: 2 },
+      { kind: "gap", namespace: "shop-prod", day: null, count: 5 },
+    ], 7));
+    expect(answer.status).toBe(200);
+    const ack: { readonly sites: ReadonlyArray<{ readonly namespace: string }> } = yield* Effect.promise(() => answer.json());
+    expect(ack.sites.map(({ namespace }) => namespace)).toEqual(["shop-prod"]);
+    expect(yield* stored()).toEqual({
+      pageviews: [
+        plainRow(at),
+        {
+          ...plainRow(at + 1000), pathname: "/pricing", source: "news", referrerHost: "news.ycombinator.com", utmSource: "news", utmMedium: "email",
+          utmCampaign: "launch", utmTerm: "deploy", utmContent: "hero", ref: "hn", language: null, flags: 5,
+        },
+        { ...plainRow(at + 2000), pathname: "/docs", source: "hn", referrerHost: "news.ycombinator.com", ref: "hn", flags: 2 },
+        { ...plainRow(at + 3000), pathname: "/blog", source: "google.com", referrerHost: "google.com" },
+      ],
+      bots: [
+        { environmentId: PRODUCTION, day: "2026-10-01", reason: "no_accept", count: 1 },
+        { environmentId: PRODUCTION, day: "2026-10-01", reason: "user_agent", count: 7 },
+      ],
+      gaps: [{ environmentId: PRODUCTION, day: siteDay(SYDNEY, now), count: 7 }],
+      cursor: [{ stream: "pageviews", seq: 5n }],
+    });
+  }), 60_000);
+
+it.live("a replayed batch stores no new rows and adds no bot or gap counts", () => Effect.gen(function* () {
+  const { send, stored, sites } = yield* setup();
+  yield* sites();
+  const at = Date.now() - HOUR_MS;
+  const body = pageviews(5, [pageview(at), pageview(at + 1000), bots(3), { kind: "gap", namespace: "shop-prod", day: "2026-10-01", count: 2 }]);
+  expect((yield* send(body)).status).toBe(200);
+  const before = yield* stored();
+  expect(before.pageviews).toHaveLength(2);
+  expect(before.bots.map(({ count }) => count)).toEqual([3]);
+  expect(before.gaps.map(({ count }) => count)).toEqual([2]);
+  expect((yield* send(body)).status).toBe(200);
+  expect(yield* stored()).toEqual(before);
+}), 60_000);
+
+it.live("a batch whose ack was lost, back merged with newer rows under a higher seq, stores each row once", () => Effect.gen(function* () {
+  const { send, stored, sites } = yield* setup();
+  yield* sites();
+  const at = Date.now() - HOUR_MS;
+  expect((yield* send(pageviews(5, [pageview(at), bots(3)]))).status).toBe(200);
+  expect((yield* send(pageviews(9, [pageview(at), pageview(at + 1000), bots(2)]))).status).toBe(200);
+  expect((yield* send(pageviews(3, [pageview(at + 2000), bots(10)]))).status).toBe(200);
+  expect(yield* stored()).toEqual({
+    pageviews: [plainRow(at), plainRow(at + 1000), plainRow(at + 2000)],
+    bots: [{ environmentId: PRODUCTION, day: "2026-10-01", reason: "user_agent", count: 5 }],
+    gaps: [],
+    cursor: [{ stream: "pageviews", seq: 9n }],
+  });
+}), 60_000);
+
+it.live("rows for an unknown namespace, a site that is off, or a time outside retention are dropped", () => Effect.gen(function* () {
+  const { send, stored, sites } = yield* setup();
+  yield* sites();
+  const now = Date.now();
+  const outside = [
+    pageview(now, { namespace: "nobody-home" }),
+    pageview(now, { namespace: "shop-staging" }),
+    bots(4, { namespace: "shop-staging" }),
+    { kind: "gap", namespace: "nobody-home", day: null, count: 1 },
+    pageview(now - 400 * 24 * HOUR_MS),
+    pageview(now + 25 * HOUR_MS),
+  ];
+  expect((yield* send(pageviews(4, outside))).status).toBe(200);
+  expect(yield* stored()).toEqual(nothingStored);
+  expect((yield* send(pageviews(5, [...outside, pageview(now - HOUR_MS)]))).status).toBe(200);
+  expect(yield* stored()).toEqual({ ...nothingStored, pageviews: [plainRow(now - HOUR_MS)], cursor: [{ stream: "pageviews", seq: 5n }] });
+}), 60_000);
+
+it.live("a Cloud with analytics off stores no pageviews and acks no salts", () => Effect.gen(function* () {
+  const { send, stored, sites } = yield* setup({});
+  yield* sites();
+  const answer = yield* send(pageviews(5, [pageview(Date.now() - HOUR_MS), bots(3)]));
+  expect(answer.status).toBe(200);
+  expect(yield* Effect.promise(() => answer.json())).toEqual({ sites: [] });
+  expect(yield* stored()).toEqual(nothingStored);
+  const refresh = yield* send(EMPTY);
+  expect(refresh.status).toBe(200);
+  expect(yield* Effect.promise(() => refresh.json())).toEqual({ sites: [] });
+}), 60_000);
+
+it.live("new rows mark their site-local days dirty up to rolled_up_to, and yesterday for a row just after midnight", () => Effect.gen(function* () {
+  const { send, sites, rollupState, rolledUp } = yield* setup();
+  yield* sites();
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: null, dirty: [] }]);
+  const now = Date.now();
+  const day = (offset: number) => siteDay(SYDNEY, now, offset);
+  const midnight = (offset: number) => saltWindow(day(offset), SYDNEY).start * 1000;
+  yield* rolledUp(day(-2), [day(-10)]);
+  const body = pageviews(5, [
+    pageview(midnight(-3) + 10 * 60_000),
+    pageview(midnight(-3) + 12 * HOUR_MS),
+    pageview(midnight(-1) + 12 * HOUR_MS),
+  ]);
+  expect((yield* send(body)).status).toBe(200);
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: day(-2), dirty: [day(-10), day(-4), day(-3)] }]);
+  yield* rolledUp(day(-2), []);
+  expect((yield* send(body)).status).toBe(200);
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: day(-2), dirty: [] }]);
+}), 60_000);
+
+it.live("a site that was never rolled up gets no dirty days", () => Effect.gen(function* () {
+  const { send, sites, rollupState } = yield* setup();
+  yield* sites();
+  expect((yield* send(pageviews(5, [pageview(Date.now() - HOUR_MS)]))).status).toBe(200);
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: null, dirty: [] }]);
+}), 60_000);
+
+it.live("a pageviews batch with an unknown kind or a malformed row answers 422 and stores nothing", () => Effect.gen(function* () {
+  const { send, stored, sites } = yield* setup();
+  yield* sites();
+  const at = Date.now() - HOUR_MS;
+  for (const event of [
+    { kind: "click", namespace: "shop-prod" },
+    pageview(at, { visitor: "not-hex" }),
+    pageview(at, { flags: ["bored"] }),
+    pageview(at + 0.5),
+    bots(-1),
+    { kind: "gap", namespace: "shop-prod", day: "yesterday", count: 1 },
+  ]) {
+    expect((yield* send(pageviews(5, [pageview(at), event]))).status).toBe(422);
+  }
+  expect((yield* send(JSON.stringify({ stream: "pageviews", seq: 5, dropped: 0, events: [] }))).status).toBe(422);
+  expect(yield* stored()).toEqual(nothingStored);
 }), 60_000);
