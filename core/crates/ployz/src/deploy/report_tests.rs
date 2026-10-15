@@ -449,6 +449,152 @@ fn removal_only_work_reads_removing_then_removed() {
     );
 }
 
+fn moving_off_an_old_hook() -> DeployPreview {
+    use ployz_core::{
+        ContainerKind, ContainerObservation, ContainerObservationParts,
+        ContainerRuntimeObservation, HealthObservation, Machine, MachineObservation,
+        MembershipObservation, PlacementConstraint, WireGuardPublicKey,
+    };
+    let id = |hex: char| MachineId::parse(hex.to_string().repeat(32)).unwrap();
+    let server = |hex: char, name: &str| {
+        MachineObservation::new(
+            Machine {
+                id: id(hex),
+                name: MachineName::parse(name).unwrap(),
+                labels: [("fixture".parse().unwrap(), name.parse().unwrap())].into(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                subnet: format!("10.210.{hex}.0/24").parse().unwrap(),
+                public_key: WireGuardPublicKey([hex as u8; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            MembershipObservation::Up,
+        )
+    };
+    let mut requested: RequestedServiceSpec = serde_json::from_value(serde_json::json!({
+        "name": "web",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": "web:2", "pull_policy": "missing"},
+        "pre_deploy": {"command": ["db", "migrate"]},
+    }))
+    .unwrap();
+    let mut current = requested.clone();
+    current.container.image = "web:1".into();
+    requested.placement.constraints =
+        [PlacementConstraint::parse("node.labels.fixture == first").unwrap()].into();
+    let resolved = current
+        .to_resolved(
+            ployz_core::ServiceId::random(),
+            ResolvedUpdateConfig {
+                order: UpdateOrder::StartFirst,
+                monitor_millis: None,
+            },
+        )
+        .unwrap();
+    let observed = |hex: char, kind| {
+        ContainerObservation::try_from(ContainerObservationParts {
+            container_id: old(hex),
+            display_name: format!("web-{hex}"),
+            created_at_unix_nanos: 0,
+            machine_id: id('2'),
+            namespace: Namespace::parse("shop").unwrap(),
+            kind,
+            runtime: ContainerRuntimeObservation::Running {
+                health: HealthObservation::Healthy,
+            },
+            effective_healthcheck: None,
+            resolved_spec: resolved.clone(),
+            address: None,
+            labels: Default::default(),
+        })
+        .unwrap()
+    };
+    let snapshot = crate::deploy::DeploySnapshot {
+        machines: vec![server('1', "first"), server('2', "second")],
+        containers: vec![
+            observed('b', ContainerKind::ServiceContainer),
+            observed('c', ContainerKind::PreDeployHook),
+        ],
+        ..Default::default()
+    };
+    let mut preview = crate::deploy::preview_deploy(
+        &ployz_core::DeployIntent::apply_all(
+            Namespace::parse("shop").unwrap(),
+            [&requested],
+            ployz_core::PlanOptions::default(),
+        ),
+        &snapshot,
+    )
+    .unwrap();
+    preview.depths = [(ServiceName::parse("web").unwrap(), 0)].into();
+    let order: Vec<_> = preview
+        .operations
+        .iter()
+        .map(|row| (&row.operation, row.machine_id == id('2')))
+        .collect();
+    assert!(
+        matches!(
+            order.as_slice(),
+            [
+                (DeployOperation::StopHook { .. }, true),
+                (DeployOperation::RunHook { .. }, false),
+                (DeployOperation::RunContainer { .. }, false),
+                (DeployOperation::RemoveContainer { .. }, true),
+            ]
+        ),
+        "{order:?}"
+    );
+    preview
+}
+
+#[test]
+fn stopping_an_old_hook_before_any_start_never_reads_switched() {
+    let mut preview = moving_off_an_old_hook();
+    if let Some(stop) = preview.operations.first_mut() {
+        stop.status = running(OperationPhase::StoppingContainer);
+    }
+    assert_eq!(
+        lines(&Direct::new(&preview, "Deploying shop".into()).frame()),
+        ["depth 0", "  ⠋ web  stopping old 0/1  0.0s"]
+    );
+    for (index, row) in preview.operations.iter_mut().enumerate() {
+        row.status = match index {
+            0 => OperationStatus::Completed,
+            1 => running(OperationPhase::CreatingContainer),
+            _ => OperationStatus::Pending,
+        };
+    }
+    assert_eq!(
+        lines(&Direct::new(&preview, "Deploying shop".into()).frame()),
+        ["depth 0", "  ⠋ web  booting 0/1  0.0s"]
+    );
+    for row in &mut preview.operations {
+        if !matches!(row.operation, DeployOperation::RemoveContainer { .. }) {
+            row.status = OperationStatus::Completed;
+        }
+    }
+    assert_eq!(
+        lines(&Direct::new(&preview, "Deploying shop".into()).frame()),
+        ["depth 0", "  ⠋ web  switched 1/1  0.0s", "    draining old"]
+    );
+}
+
+#[test]
+fn a_pending_removal_drains_only_once_a_new_container_serves() {
+    let (one, two) = (MachineId::random(), MachineId::random());
+    assert_eq!(
+        tracked(vec![
+            operation(0, one, running(OperationPhase::CreatingContainer)),
+            planned(1, remove(two), OperationStatus::Pending),
+        ]),
+        ["depth 0", "  ⠋ web  booting 0/1  0.0s"]
+    );
+}
+
 #[test]
 fn a_stop_first_replacement_reads_stopping_old_until_its_start_runs() {
     let machine = MachineId::random();

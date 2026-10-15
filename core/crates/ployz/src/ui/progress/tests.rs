@@ -622,6 +622,48 @@ fn an_overflowing_view_drops_switched_rows_before_a_deeper_failure() {
 }
 
 #[test]
+fn an_overflowing_view_puts_finished_ingress_repairs_after_a_failure() {
+    let failed = ployz_store::RowState::Failed {
+        reason: "health check failed".into(),
+        cause: Vec::new(),
+        step: None,
+        log: None,
+    };
+    let mut rows: Vec<_> = (0..12)
+        .map(|n| Row {
+            subject: Subject::ServiceOnServer {
+                service: QualifiedService::system_ingress(),
+                machine: MachineId::random(),
+                server: format!("edge{n}"),
+            },
+            state: State::Completed,
+            detail: None,
+            timing: Timing::Unavailable,
+        })
+        .collect();
+    rows.push(service("web", 2, 1, &failed));
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows,
+        notices: Vec::new(),
+    };
+    let lines = live_lines(&frame, 0, 80, 8, false);
+    assert_eq!(
+        lines.get(1..).unwrap(),
+        [
+            "depth 2",
+            "  ✘ web  failed (0/1 ready)  5.0s",
+            "✔ ingress on edge0  completed",
+            "✔ ingress on edge1  completed",
+            "✔ ingress on edge2  completed",
+            "  … 9 more rows",
+        ],
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn a_retained_row_fits_the_terminal_with_its_count_whole() {
     let name = format!("a{}", "b".repeat(60));
     let terminal = InMemoryTerm::new(20, 80);

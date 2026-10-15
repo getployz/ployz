@@ -738,12 +738,12 @@ pub(crate) fn live_lines(
             .iter()
             .filter(|row| !ungraphed(row) && settled(row))
             .count();
-        body = self::body(
-            frame,
-            others.iter().copied(),
-            |row| !settled(row),
-            tick,
-            width,
+        let (finished, urgent): (Vec<_>, Vec<_>) = others.into_iter().partition(|row| settled(row));
+        body = self::body(frame, urgent, |row| !settled(row), tick, width);
+        body.extend(
+            finished
+                .into_iter()
+                .map(|row| (row_text(row, frame, tick, width), row.state.tone())),
         );
     }
     let overflow = dropped > 0 || body.len() + 1 > height;

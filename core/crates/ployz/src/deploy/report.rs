@@ -80,9 +80,17 @@ pub(crate) fn service_row<'a>(
 ) -> Row {
     let replicas: Vec<_> = replicas.into_iter().collect();
     let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let served = !removal
+        && replicas.iter().any(|replica| {
+            replica.starts
+                && matches!(
+                    replica.state,
+                    RowState::Completed | RowState::Running { serving: true, .. }
+                )
+        });
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
-            if *serving || !replica.starts {
+            if *serving || (served && !replica.starts) {
                 Step::Retire
             } else if stops_or_removes(*phase) {
                 Step::Clear
@@ -118,8 +126,8 @@ pub(crate) fn service_row<'a>(
     let draining = replicas
         .iter()
         .filter(|replica| match replica.state {
-            RowState::Pending => !removal && !replica.starts,
-            RowState::Running { serving, .. } => !removal && (*serving || !replica.starts),
+            RowState::Pending => served && !replica.starts,
+            RowState::Running { serving, .. } => *serving || (served && !replica.starts),
             RowState::Completed
             | RowState::Failed { .. }
             | RowState::NotAttempted
