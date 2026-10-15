@@ -128,7 +128,8 @@ organization's name, so it needs a terminal.
 An agent never approves its own request. When the Ployz agent or an agent you connected to Ployz
 Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org approval approve` refuses
 with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog or in
-the sidebar. Anyone in the organization can deny any request, from anywhere.
+the sidebar. If you run the same change yourself with `ployz`, typing the name in your terminal
+approves it. Anyone in the organization can deny any request, from anywhere.
 
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop a program
 that's trying to get around it: anything that holds your `ployz` login or token can approve its
