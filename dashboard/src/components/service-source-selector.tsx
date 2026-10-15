@@ -191,22 +191,27 @@ let onReturnFromGithub: (() => void) | undefined;
 
 function openGithub(queryClient: QueryClient, organizationSlug: string) {
   const href = githubConnectHref(organizationSlug);
-  if (!window.open(href, "_blank", "width=1020,height=680")) {
+  const popup = window.open(href, "_blank", "width=1020,height=680");
+  if (!popup) {
     window.location.assign(href);
     return;
   }
   // Returning from the popup fires focus but not visibilitychange, so recheck access here, and
-  // resync in case GitHub's webhook never arrives. A failed resync waits for the next return.
+  // resync in case GitHub's webhook never arrives. Keep resyncing on focus until one succeeds
+  // after the popup has closed, so a visit back mid-flow doesn't use up the resync.
   if (onReturnFromGithub) window.removeEventListener("focus", onReturnFromGithub);
   const onReturn = () => {
+    const done = popup.closed;
     void queryClient.invalidateQueries({ queryKey: githubKeys.access(organizationSlug) });
-    requestGithubRepoSyncServerFn({ data: { organizationSlug } }).then(
-      () => { if (onReturnFromGithub === onReturn) onReturnFromGithub = undefined; },
-      () => { if (onReturnFromGithub === onReturn) window.addEventListener("focus", onReturn, { once: true }); },
-    );
+    void requestGithubRepoSyncServerFn({ data: { organizationSlug } }).then(() => {
+      if (done && onReturnFromGithub === onReturn) {
+        window.removeEventListener("focus", onReturn);
+        onReturnFromGithub = undefined;
+      }
+    }, () => {});
   };
   onReturnFromGithub = onReturn;
-  window.addEventListener("focus", onReturn, { once: true });
+  window.addEventListener("focus", onReturn);
 }
 
 function GitRepoSelectorConnect({ organizationSlug }: { organizationSlug: string }) {
