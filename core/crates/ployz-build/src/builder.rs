@@ -271,6 +271,8 @@ fn create(
         "docker-container".into(),
         "--driver-opt".into(),
         format!("image={BUILDKIT_IMAGE}"),
+        // BuildKit itself stays on the host to pull mesh image contexts and push
+        // to the local registry; build steps run in the worker's bridge network.
         "--driver-opt".into(),
         "network=host".into(),
         "--buildkitd-config".into(),
