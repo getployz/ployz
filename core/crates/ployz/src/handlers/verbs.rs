@@ -2,6 +2,7 @@
 //! to know before calling it. `VERBS` is the only list.
 
 use clap::Command;
+use ployz_store::tools::ToolId;
 use serde::Serialize;
 
 #[cfg(feature = "verify-faults")]
@@ -70,6 +71,9 @@ pub(crate) struct Verb {
     pub(crate) keeps_running: KeepsRunning,
     /// The `docs/user` page that shows how to call it, when one does.
     pub(crate) docs: Option<&'static str>,
+    /// The agent tool that does this verb's write when no `ConfigCommand` claims it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the claim tests read it"))]
+    pub(crate) tool: Option<ToolId>,
 }
 
 impl Verb {
@@ -90,6 +94,7 @@ impl Verb {
             stdin: &[],
             keeps_running: KeepsRunning::Never,
             docs: None,
+            tool: None,
         }
     }
 
@@ -141,6 +146,13 @@ impl Verb {
     const fn docs(self, page: &'static str) -> Self {
         Self {
             docs: Some(page),
+            ..self
+        }
+    }
+
+    const fn tool(self, tool: ToolId) -> Self {
+        Self {
+            tool: Some(tool),
             ..self
         }
     }
@@ -439,21 +451,24 @@ pub(crate) const SERVER_CLEAN: Verb = Verb::cloud(
     server::clean::command,
     server::clean::clean,
 )
-.docs("servers/manage-servers.md");
+.docs("servers/manage-servers.md")
+.tool(ToolId::ServerClean);
 pub(crate) const SERVER_DRAIN: Verb = Verb::cloud(
     "server drain",
     Depends,
     server::drain_command,
     server::drain::drain,
 )
-.docs("servers/manage-servers.md");
+.docs("servers/manage-servers.md")
+.tool(ToolId::ServerDrain);
 pub(crate) const SERVER_FORGET: Verb = Verb::cloud(
     "server forget",
     Always,
     server::forget::command,
     server::forget::forget,
 )
-.docs("servers/manage-servers.md");
+.docs("servers/manage-servers.md")
+.tool(ToolId::ServerForget);
 pub(crate) const SERVER_INSPECT: Verb = Verb::cloud(
     "server inspect",
     Never,
@@ -471,17 +486,20 @@ pub(crate) const SERVER_LS: Verb =
     Verb::cloud("server ls", Never, server::list_command, server::list);
 pub(crate) const SERVER_RM: Verb =
     Verb::cloud("server rm", Always, server::remove_command, server::remove)
-        .docs("servers/manage-servers.md");
+        .docs("servers/manage-servers.md")
+        .tool(ToolId::ServerRemove);
 pub(crate) const SERVER_SET: Verb =
     Verb::cloud("server set", Depends, server::set_command, server::set)
-        .docs("servers/manage-servers.md");
+        .docs("servers/manage-servers.md")
+        .tool(ToolId::ServerSet);
 pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
     "server upgrade",
     Depends,
     server::upgrade_command,
     server::upgrade,
 )
-.docs("servers/manage-servers.md");
+.docs("servers/manage-servers.md")
+.tool(ToolId::ServerUpgrade);
 pub(crate) const SERVICE_ADD: Verb = Verb::cloud(
     "service add",
     Never,
@@ -522,7 +540,8 @@ pub(crate) const SERVICE_RESTART: Verb = Verb::cloud(
     service::restart_command,
     service::restart,
 )
-.docs("services/services.md");
+.docs("services/services.md")
+.tool(ToolId::ServiceRestart);
 pub(crate) const SERVICE_RM: Verb = Verb::cloud(
     "service rm",
     Never,
@@ -535,10 +554,12 @@ pub(crate) const SERVICE_START: Verb = Verb::cloud(
     service::start_command,
     service::start,
 )
-.docs("services/services.md");
+.docs("services/services.md")
+.tool(ToolId::ServiceStart);
 pub(crate) const SERVICE_STOP: Verb =
     Verb::cloud("service stop", Never, service::stop_command, service::stop)
-        .docs("services/services.md");
+        .docs("services/services.md")
+        .tool(ToolId::ServiceStop);
 pub(crate) const SET: Verb = Verb::cloud("set", Never, config::set_command, config::set)
     .stdin(&[
         ("--from-env-file", Stdin::OnDash),
@@ -588,7 +609,8 @@ pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
     volume::run::mirror,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md");
+.docs("services/move-a-volume.md")
+.tool(ToolId::VolumeMirror);
 pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
     "volume mirror rm",
     Always,
@@ -596,7 +618,8 @@ pub(crate) const VOLUME_MIRROR_RM: Verb = Verb::cloud(
     volume::run::remove_mirror,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md");
+.docs("services/move-a-volume.md")
+.tool(ToolId::VolumeMirrorRemove);
 pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     "volume move",
     Never,
@@ -604,7 +627,8 @@ pub(crate) const VOLUME_MOVE: Verb = Verb::cloud(
     volume::run::move_volume,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md");
+.docs("services/move-a-volume.md")
+.tool(ToolId::VolumeMove);
 pub(crate) const VOLUME_RELEASE: Verb = Verb::cloud(
     "volume release",
     Never,
@@ -612,7 +636,8 @@ pub(crate) const VOLUME_RELEASE: Verb = Verb::cloud(
     volume::run::release,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md");
+.docs("services/move-a-volume.md")
+.tool(ToolId::VolumeRelease);
 pub(crate) const VOLUME_RENAME: Verb = Verb::cloud(
     "volume rename",
     Never,
@@ -626,7 +651,8 @@ pub(crate) const VOLUME_RESTORE: Verb = Verb::cloud(
     volume::run::restore,
 )
 .keeps_running(KeepsRunning::With("--wait"))
-.docs("services/move-a-volume.md");
+.docs("services/move-a-volume.md")
+.tool(ToolId::VolumeRestore);
 pub(crate) const VOLUME_RM: Verb =
     Verb::cloud("volume rm", Never, volume::remove_command, volume::remove);
 pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
@@ -897,8 +923,9 @@ fn insert(
 #[cfg(test)]
 mod tests {
     use ployz_store::docs::{self, Lookup};
+    use ployz_store::{Claim, Command};
 
-    use super::VERBS;
+    use super::*;
 
     fn names(content: &str, path: &str) -> bool {
         let call = format!("ployz {path}");
@@ -951,6 +978,74 @@ mod tests {
                     verb.path
                 );
             }
+        }
+    }
+
+    fn claimed() -> impl Iterator<Item = (String, ToolId)> {
+        Command::claims().flat_map(|(name, claim)| {
+            let tools: &[ToolId] = match claim {
+                Claim::Tools(tools) => tools,
+                Claim::None(_) => &[],
+            };
+            tools.iter().map(move |tool| (name.clone(), *tool))
+        })
+    }
+
+    #[test]
+    fn every_command_in_the_commands_table_claims_tools_or_says_why_not() {
+        for (name, claim) in Command::claims() {
+            if let Claim::None(reason) = claim {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "`{name}` claims no tool and gives no reason"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn no_command_claims_a_read_only_tool() {
+        for (name, tool) in claimed() {
+            assert!(
+                !tool.read_only(),
+                "`{name}` claims `{}`, which is read-only",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_write_tool_is_claimed_by_a_command_or_a_verb() {
+        for tool in ToolId::ALL.iter().filter(|tool| !tool.read_only()) {
+            assert!(
+                claimed().any(|(_, claimed)| claimed == *tool)
+                    || VERBS.iter().any(|verb| verb.tool == Some(*tool)),
+                "write tool `{}` is claimed by no command and no verb",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_verb_tool_is_a_write_tool_of_one_verb() {
+        for verb in VERBS {
+            let Some(tool) = verb.tool else { continue };
+            assert!(
+                !tool.read_only(),
+                "`{}` names `{}`, which is read-only",
+                verb.path,
+                tool.name()
+            );
+            let verbs = VERBS
+                .iter()
+                .filter(|other| other.tool == Some(tool))
+                .map(|other| other.path);
+            assert_eq!(
+                verbs.collect::<Vec<_>>(),
+                [verb.path],
+                "`{}` is the tool of more than one verb",
+                tool.name()
+            );
         }
     }
 }
