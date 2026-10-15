@@ -15,6 +15,7 @@ import type { JsonObject } from "#/db/tables";
 import { oauthConsent, oauthRefreshToken } from "#/modules/identity/oauth-tables";
 import { member, verification } from "#/modules/identity/tables";
 import { REQUEST_KEY_HEADER } from "#/modules/operations/keyed.server";
+import { removeMembership } from "#/modules/organization/membership.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
 import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
@@ -398,26 +399,28 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     expect((yield* raw(shop, old)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
-it.live("leaving Shop ends the grant, rejoining doesn't revive it, and connecting again issues one that works", () =>
+it.live("leaving Shop ends the grant, and neither rejoining nor connecting again revives its credentials", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const clientId = yield* registerAgent(shop);
-    const old = yield* connect(shop, clientId);
-    expect((yield* raw(shop, old)).status).toBe(200);
+    const old = yield* connectTokens(shop, clientId);
+    const oldRefreshToken = old.refresh_token ?? expect.fail("no refresh token was issued");
+    expect((yield* raw(shop, old.access_token)).status).toBe(200);
 
-    const membership = (change: "leave" | "join") => shop.provided(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      yield* change === "leave"
-        ? drizzle.delete(member).where(sql`${member.userId} = ${shop.boId}`)
-        : drizzle.insert(member).values({ userId: shop.boId, organizationId: ORGANIZATION, role: "owner" });
-    }));
-    yield* membership("leave");
-    expect((yield* raw(shop, old)).status).toBe(401);
+    yield* shop.provided(removeMembership(ORGANIZATION, shop.boId, shop.boId));
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
     yield* aSecondLater;
-    yield* membership("join");
-    expect((yield* raw(shop, old)).status).toBe(401);
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(member).values({ userId: shop.boId, organizationId: ORGANIZATION, role: "owner" });
+    }));
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
 
-    expect((yield* raw(shop, yield* connect(shop, clientId))).status).toBe(200);
+    const renewed = yield* connect(shop, clientId);
+    expect((yield* raw(shop, renewed)).status).toBe(200);
+    expect((yield* raw(shop, old.access_token)).status).toBe(401);
+    expect(yield* refresh(shop, clientId, oldRefreshToken))
+      .toEqual({ status: 400, body: { error: "invalid_grant", error_description: "the connection was revoked" } });
   }).pipe(Effect.scoped), 30_000);
 
 it.live("/connect names the agent asking and the host its code returns to, and names none for a tampered link", () =>

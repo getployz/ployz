@@ -106,8 +106,8 @@ export const grantClaimsOf = Schema.decodeUnknownOption(GrantClaims);
 /**
  * A remote agent's verified access token, acting through the consent it was issued under. The consent names the
  * Organization; the grant ends when the consent is revoked or loses the `ployz` scope, the client is disabled, the signing-in session ends, or
- * the user leaves the Organization. Rejoining doesn't revive it: the membership must predate the consent's last Allow, which better-auth
- * stamps in whole seconds.
+ * the user leaves the Organization, which deletes the consent as disconnecting does. Rejoining doesn't revive it: the membership must
+ * predate the consent's first Allow, which better-auth stamps in whole seconds and keeps when a later Allow updates the row.
  */
 export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: GrantClaims) {
   const { sub, sid, org, grant, azp, client_id } = claims;
@@ -129,7 +129,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       arrayContains(oauthConsent.scopes, ["ployz"]),
       or(isNull(oauthClient.disabled), eq(oauthClient.disabled, false)),
       gt(session.expiresAt, new Date()),
-      sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.updatedAt}`,
+      sql`date_trunc('second', ${member.createdAt}) <= ${oauthConsent.createdAt}`,
     ))
     .limit(1);
   const row = rows[0];
