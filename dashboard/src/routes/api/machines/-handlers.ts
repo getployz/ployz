@@ -1,6 +1,7 @@
 import { Effect, Option, Result } from "effect";
 import { crashPushInput, decodeCrashPush, decodePushHeader, isObserveStream } from "#/modules/observe-ingest/ingest";
 import { authenticateObservePush, ingestCrashPush, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
 
 const noStore = { "cache-control": "no-store" };
@@ -30,8 +31,9 @@ async function readCappedBody(request: Request) {
 }
 
 /**
- * Takes a Machine's signed push of one observe stream. 204 acknowledges it, a replay too. 401 and 404 keep it buffered on the
- * Machine; 413 and 422 tell the Machine to drop the batch.
+ * Takes a Machine's signed push of one observe stream. 200 acknowledges it, a replay or an empty batch too, with the
+ * Organization's analytics salts as the body. 401 and 404 keep it buffered on the Machine; 413 and 422 tell the Machine
+ * to drop the batch.
  */
 export function handleObservePush(request: Request, machineId: string) {
   return Effect.gen(function* () {
@@ -53,6 +55,8 @@ export function handleObservePush(request: Request, machineId: string) {
     if (Option.isNone(push)) return malformed();
     const ingested = yield* Effect.result(ingestCrashPush(pusher.success, push.value));
     if (Result.isFailure(ingested)) return errorResponse(ingested.failure);
-    return new Response(null, { status: 204, headers: noStore });
+    const ack = yield* Effect.result(ackSalts(pusher.success.organizationId));
+    if (Result.isFailure(ack)) return errorResponse(ack.failure);
+    return Response.json(ack.success, { headers: noStore });
   });
 }

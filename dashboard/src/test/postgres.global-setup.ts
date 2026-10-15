@@ -95,11 +95,13 @@ export async function startPostgresServer() {
     // The image's init server listens only on its socket, so the mapped port is ready only once
     // the real server is up.
     await waitForPostgres(url);
-    await execFile(process.execPath, ["node_modules/drizzle-kit/bin.cjs", "migrate"], {
-      cwd: process.cwd(),
-      env: { ...process.env, DATABASE_URL: url.href },
-      maxBuffer: 20 * 1024 * 1024,
-    });
+    for (const config of ["drizzle.config.ts", "drizzle.analytics.config.ts"]) {
+      await execFile(process.execPath, ["node_modules/drizzle-kit/bin.cjs", "migrate", "--config", config], {
+        cwd: process.cwd(),
+        env: { ...process.env, DATABASE_URL: url.href },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    }
     return { url, stop };
   } catch (error) {
     await stop();
