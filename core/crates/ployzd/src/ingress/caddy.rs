@@ -190,7 +190,13 @@ fn render_caddyfile(projection: &IngressProjection, timestamp: &str) -> String {
     } else {
         ""
     };
-    let _ = write!(output, "{{\n{debug}\tauto_https off\n}}\n\n");
+    // Behind Cloudflare the peer is Cloudflare's edge, so the visitor's address comes from
+    // CF-Connecting-IP, and only when the peer is in Cloudflare's published ranges.
+    let _ = write!(
+        output,
+        "{{\n{debug}\tauto_https off\n\tservers {{\n\t\ttrusted_proxies static {}\n\t\tclient_ip_headers CF-Connecting-IP\n\t}}\n}}\n\n",
+        trace::CLOUDFLARE_RANGES.join(" ")
+    );
     trace::write_snippets(&mut output);
     write_error_page(&mut output);
     let ingress_verify = verify_handle(INGRESS_VERIFY_PATH, local_machine);
@@ -223,6 +229,11 @@ https:// {{\n\
 \t# skipped until they expire, so one stray error never ejects a Service's only upstream.\n\
 \tfail_duration 30s\n\
 \tmax_fails 2\n\
+\t# A trusted Cloudflare peer would pass its incoming X-Forwarded-* through; the app gets only\n\
+\t# what Caddy vouches for, so trusting Cloudflare changes nothing but the client address.\n\
+\theader_up X-Forwarded-For {{client_ip}}\n\
+\theader_up X-Forwarded-Host {{hostport}}\n\
+\theader_up X-Forwarded-Proto {{scheme}}\n\
 }}\n"
     );
     if projection.sites.iter().any(|site| {

@@ -195,4 +195,5 @@ before it stops.
 - **No uptime checks yet.** Self-hosted Ployz Cloud doesn't run the uptime checker, so services
   show no up or down status and have no Monitoring tab.
 - **Behind Cloudflare?** Your apps' domains need **SSL/TLS** set to **Full (strict)**. See
-  [My domain is behind Cloudflare](troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare).
+  [My domain is behind Cloudflare](troubleshooting/app-not-reachable.md#my-domain-is-behind-cloudflare). Your
+  apps see the visitor's address, not Cloudflare's.
