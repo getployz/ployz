@@ -445,6 +445,7 @@ pub(crate) const SERVER_ADD: Verb = Verb::cloud(
     server::enroll::command,
     server::enroll::add,
 )
+.stdin(&[("--token-stdin", Stdin::Only)])
 .keeps_running(KeepsRunning::With("--wait"))
 .docs("servers/add-a-server.md");
 pub(crate) const SERVER_BUILD_CACHE_CLEAR: Verb = Verb::local(
