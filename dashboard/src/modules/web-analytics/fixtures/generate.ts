@@ -101,12 +101,13 @@ function rowsFor(profile: SiteProfile): PageviewRecord[] {
     .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts) || a.visitorId.localeCompare(b.visitorId) || a.pathname.localeCompare(b.pathname));
 }
 
-const GOALS: ReadonlyArray<GoalRecord> = [
-  { id: "00000000-0000-4000-8000-00000000a101", name: "Signup", pathPattern: "/signup" },
-  { id: "00000000-0000-4000-8000-00000000a102", name: "Docs", pathPattern: "/docs/*" },
-  { id: "00000000-0000-4000-8000-00000000a103", name: "Launch post", pathPattern: "/blog/launch_2026" },
-  { id: "00000000-0000-4000-8000-00000000a104", name: "Never", pathPattern: "/nowhere" },
-];
+/** Goal ids end in b, the site id's last two digits, and the goal's number, so fixtures seeded together never share one. */
+const goalsFor = (environmentId: string): ReadonlyArray<GoalRecord> => [
+  { name: "Signup", pathPattern: "/signup" },
+  { name: "Docs", pathPattern: "/docs/*" },
+  { name: "Launch post", pathPattern: "/blog/launch_2026" },
+  { name: "Never", pathPattern: "/nowhere" },
+].map((goal, index) => ({ id: `${environmentId.slice(0, -4)}b${environmentId.slice(-2)}${index + 1}`, ...goal }));
 
 const eq = (key: Filter["key"], value: string): Filter => ({ key, op: "eq", value });
 const neq = (key: Filter["key"], value: string): Filter => ({ key, op: "neq", value });
@@ -159,12 +160,13 @@ function fixture(profile: SiteProfile, ranges: Ranges): Fixture {
     }
   }
   const rows = rowsFor(profile);
+  const goals = goalsFor(profile.site.environmentId);
   return {
     now: profile.now,
     site: profile.site,
     rows,
-    goals: GOALS,
-    queries: specs(ranges).map((spec) => ({ spec, expected: serialized(expectedOf(spec, profile.site.timezone, rows, GOALS)) })),
+    goals,
+    queries: specs(ranges).map((spec) => ({ spec, expected: serialized(expectedOf(spec, profile.site.timezone, rows, goals)) })),
   };
 }
 
