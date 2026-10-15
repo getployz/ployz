@@ -152,8 +152,8 @@ pub(crate) fn publish(
         who,
         &environment.summary.id,
         &review,
-        &target,
-        &trusted.approval,
+        (&target, review::Shipping::Publish),
+        trusted,
     )?;
     let lost = review::lost(losses);
     let (saved, created) = review::publish(

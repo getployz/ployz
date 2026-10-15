@@ -41,6 +41,10 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(as = "Option<Approval>", optional)]
     pub approval: Approval,
+    /// Which Deploys `approval` gates. Publish asks only when it destroys something.
+    #[serde(default)]
+    #[ts(as = "Option<Asks>", optional)]
+    pub asks: Asks,
 }
 
 /// Whether Cloud asks a human before a publication destroys something, and which
@@ -55,6 +59,19 @@ pub enum Approval {
     Required,
     /// Cloud holds a human's approval of exactly this `version:digest`.
     Approved(ApprovalDigest),
+}
+
+/// Which Deploys wait on a human when `approval` is required. Cloud's evidence of who
+/// called, never caller testimony.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Asks {
+    /// A Deploy asks only when it destroys something new.
+    #[default]
+    Destroys,
+    /// Every Deploy asks, even one that destroys nothing or ships already-Saved State:
+    /// an agent asked for it.
+    EveryDeploy,
 }
 
 impl Trusted {

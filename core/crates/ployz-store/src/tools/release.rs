@@ -288,7 +288,7 @@ pub(crate) struct DeployInput {
 
 impl Tool for DeployInput {
     const NAME: &'static str = "deploy";
-    const DESCRIPTION: &'static str = "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns: follow it with deployment_show. If the change removes a Service, a Volume, or a live domain, this waits for a human to approve.";
+    const DESCRIPTION: &'static str = "Deploys everything staged. With skip_deploy, saves it for the next deploy instead. A deploy queues a Deployment and returns: follow it with deployment_show. Every deploy waits for a human to approve; a save waits only if the next deploy removes a Service, a Volume, or a live domain.";
     const GATE: Gate = Gate::Store;
     const READ_ONLY: bool = false;
 
