@@ -101,10 +101,14 @@ const rowsIn = (query: StoreQuery, range: Range, needsVisit = false) =>
 
 export type Plan = { readonly days: { readonly first: string; readonly last: string } | null; readonly edges: ReadonlyArray<Range> };
 
-export function readPlan(query: StoreQuery, rolledUpTo: string | null): Plan {
+/**
+ * Which closed days the rollup answers and which edges are read raw. Rollups hold no filtered rows, so a read with
+ * filters is all raw unless `rolled` says its daily rows exist, as {@link totalsKey} does for one session dim value.
+ */
+export function readPlan(query: StoreQuery, rolledUpTo: string | null, rolled = query.filters.length === 0): Plan {
   const { range, timezone } = query;
   const raw: Plan = { days: null, edges: [range] };
-  if (rolledUpTo === null || query.filters.length > 0) return raw;
+  if (rolledUpTo === null || !rolled) return raw;
   const closed = localDays(timezone, range.start, range.end)
     .filter((day) => dayStart(timezone, day) >= range.start && dayEnd(timezone, day) <= range.end && day <= rolledUpTo);
   const first = closed[0];
@@ -123,9 +127,18 @@ export const rolledUpTo = Effect.fn("WebAnalytics.rolledUpTo")(function* (enviro
   return rows[0]?.day ?? null;
 });
 
-const planned = Effect.fn("WebAnalytics.plan")(function* (query: StoreQuery) {
-  return readPlan(query, yield* rolledUpTo(query.environmentId));
+const planned = Effect.fn("WebAnalytics.plan")(function* (query: StoreQuery, rolled?: boolean) {
+  return readPlan(query, yield* rolledUpTo(query.environmentId), rolled);
 });
+
+type DailyKey = { readonly dim: string; readonly value: string };
+
+/** The daily rows holding a totals read: the site's own, or with one eq filter on a session dim, that value's visits. */
+export function totalsKey(filters: ReadonlyArray<Filter>): DailyKey | null {
+  const [only, ...rest] = filters;
+  if (only === undefined) return { dim: "", value: "" };
+  return rest.length === 0 && only.op === "eq" && SESSION_KEYS.has(only.key) ? { dim: only.key, value: only.value } : null;
+}
 
 /** Reads the rollup marker and the rows it selects from one snapshot, so a concurrent rollup or time zone reset can't split them. */
 const inSnapshot = <A, E, R>(program: Effect.Effect<A, E, R>) =>
@@ -134,9 +147,9 @@ const inSnapshot = <A, E, R>(program: Effect.Effect<A, E, R>) =>
     return yield* database.transaction(program, { isolationLevel: "repeatable read", accessMode: "read only" });
   });
 
-const dailyRows = (query: StoreQuery, days: NonNullable<Plan["days"]>, dim: string) => sql`
+const dailyRows = (query: StoreQuery, days: NonNullable<Plan["days"]>, dim: string, value?: string) => sql`
   from analytics.daily
-  where environment_id = ${query.environmentId}::text and dim = ${dim}::text
+  where environment_id = ${query.environmentId}::text and dim = ${dim}::text${value === undefined ? sql`` : sql` and value = ${value}::text`}
     and day between ${days.first}::date and ${days.last}::date`;
 
 type TotalsRow = { bucket: string; pageviews: string; visitors: string; visits: string; bounces: string; total_duration: string };
@@ -157,12 +170,13 @@ const unionTotals = (parts: SQL[]) => sql`
 
 export function dailyTotalsSql(query: StoreQuery, plan: Plan) {
   const { timezone } = query;
+  const key = totalsKey(query.filters);
   const parts: SQL[] = [];
-  if (plan.days !== null) {
+  if (plan.days !== null && key !== null) {
     parts.push(sql`
       select ${epochMs(sql`(day::timestamp at time zone ${timezone}::text)`)} as bucket,
         pageviews, visitors, visits, bounces, total_duration
-      ${dailyRows(query, plan.days, "")}`);
+      ${dailyRows(query, plan.days, key.dim, key.value)}`);
   }
   for (const edge of plan.edges) {
     parts.push(sql`
@@ -181,7 +195,7 @@ export function dailyTotalsSql(query: StoreQuery, plan: Plan) {
 
 export const dailyTotals = Effect.fn("WebAnalytics.dailyTotals")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle.execute<TotalsRow>(dailyTotalsSql(query, yield* planned(query)), "objects");
+  const rows = yield* drizzle.execute<TotalsRow>(dailyTotalsSql(query, yield* planned(query, totalsKey(query.filters) !== null)), "objects");
   return rows.map(toBucketRow);
 }, inSnapshot);
 

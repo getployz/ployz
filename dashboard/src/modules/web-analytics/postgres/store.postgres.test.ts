@@ -98,6 +98,49 @@ it.live("a source filter keeps a visit whole, its direct pages included, raw and
     expect(yield* provide(dailyTotals(query))).toEqual(google);
   }), 60_000);
 
+it.live("a filtered day series reads one source's closed days from the rollup and matches the reference", () =>
+  Effect.gen(function* () {
+    const provide = yield* setup();
+    const site = { environmentId: "00000000-0000-4000-8000-00000000a0f4", timezone: "Australia/Sydney" };
+    const days = ["2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04"];
+    const sources = ["Google", "", "Bing"];
+    const rows: PageviewRecord[] = [];
+    let visitor = 1;
+    for (const day of days) {
+      const start = dayStart(site.timezone, day).getTime();
+      for (let at = start; at < start + 86_400_000; at += 47 * 60_000) {
+        const source = sources[visitor % sources.length] ?? "";
+        const id = String(visitor++ % 9);
+        rows.push(row(new Date(at).toISOString(), id, { source, referrerHost: source === "" ? null : `${source.toLowerCase()}.com` }));
+        rows.push(row(new Date(at + 60_000).toISOString(), id, { pathname: `/docs/${at % 4}` }));
+      }
+    }
+    yield* provide(seedSite(site, rows));
+    const range = { start: new Date(dayStart(site.timezone, "2026-10-01").getTime() + 5 * 3_600_000), end: new Date(dayStart(site.timezone, "2026-10-04").getTime() + 7 * 3_600_000) };
+    const byBucket = (series: ReadonlyArray<BucketRow>) => [...series].sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
+    yield* provide(closeDays(site.environmentId, dayEnd(site.timezone, "2026-10-03")));
+    expect(yield* provide(rolledUpTo(site.environmentId))).toBe("2026-10-02");
+    for (const filters of [
+      [{ key: "source", op: "eq", value: "Google" }],
+      [{ key: "source", op: "eq", value: "" }],
+      [{ key: "source", op: "neq", value: "Google" }],
+      [{ key: "page", op: "eq", value: "/" }],
+    ] as const) {
+      const expected = byBucket(new Reference(site.timezone, rows, range, filters).dailyTotals());
+      expect(byBucket(yield* provide(dailyTotals({ ...site, range, filters }))), `${filters[0].key} ${filters[0].op} ${filters[0].value}`).toEqual(expected);
+    }
+    const pageviews = (filters: StoreQuery["filters"]) =>
+      provide(dailyTotals({ ...site, range, filters })).pipe(Effect.map((series) => series.reduce((sum, bucket) => sum + bucket.pageviews, 0)));
+    const google = [{ key: "source", op: "eq", value: "Google" }] as const;
+    const notGoogle = [{ key: "source", op: "neq", value: "Google" }] as const;
+    const before = { google: yield* pageviews(google), notGoogle: yield* pageviews(notGoogle) };
+    yield* provide(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update analytics.daily set pageviews = pageviews + 1000 where environment_id = ${site.environmentId}::text`);
+    }));
+    expect({ google: yield* pageviews(google), notGoogle: yield* pageviews(notGoogle) }).toEqual({ google: before.google + 1000, notGoogle: before.notGoogle });
+  }), 60_000);
+
 for (const day of ["2026-10-04", "2026-04-05"]) {
   it.live(`Lord Howe ${day}: the hour series matches the reference over the shifted hours, raw and rolled`, () =>
     Effect.gen(function* () {
