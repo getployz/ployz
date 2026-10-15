@@ -17,6 +17,7 @@ import { replicaCount } from "#/modules/config-store/volume-sharing";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
+import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
@@ -154,8 +155,8 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
 function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing: boolean }) {
   const writer = useStoreWriter(state.organizationSlug);
   const { storage, storage_locked } = state.volume;
-  const managed = storage.kind === "provisioned";
-  const sizeGB = managed ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
+  const [managed, holdManaged] = useCommitHold(storage.kind === "provisioned");
+  const sizeGB = managed && storage.kind === "provisioned" ? gigabytes(storage.maximumBytes) : DEFAULT_VOLUME_GB;
   const save = (next: NonNullable<ReturnType<typeof volumeStorage>>) =>
     writer.commit({ command: "set_volume_storage", environment: state.environment, volume: state.volume.name, storage: next });
 
@@ -175,7 +176,7 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   }
   return (
     <VolumeStorageFields managed={managed} sizeGB={sizeGB} onSizeChange={() => undefined} advanced={<StoreSharedWrites state={state} />}
-      onManagedChange={(next) => save(next ? { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 } : { kind: "docker" })}
+      onManagedChange={(next) => holdManaged(next, save(next ? { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 } : { kind: "docker" }))}
       limitInput={(
         <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB"
           placeholder={DEFAULT_VOLUME_GB} value={sizeGB} isChanged={false}
@@ -246,6 +247,7 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
 function StoreSharedWrites({ state }: { state: StoreVolume }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const [shared, holdShared] = useCommitHold(state.volume.shared_writes);
   return (
     <Field orientation="horizontal" data-invalid={refusal ? true : undefined}>
       <FieldContent>
@@ -256,11 +258,12 @@ function StoreSharedWrites({ state }: { state: StoreVolume }) {
         </FieldDescription>
         {refusal ? <FieldError>{refusal}</FieldError> : null}
       </FieldContent>
-      <Switch id="volume-shared-writes" checked={state.volume.shared_writes}
+      <Switch id="volume-shared-writes" checked={shared}
         onCheckedChange={(sharedWrites) => {
           setRefusal(null);
-          writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites })
-            .isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
+          const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });
+          holdShared(sharedWrites, write);
+          write.isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
         }} />
     </Field>
   );

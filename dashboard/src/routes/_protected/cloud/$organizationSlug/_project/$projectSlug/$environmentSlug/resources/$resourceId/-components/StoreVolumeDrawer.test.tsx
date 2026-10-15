@@ -108,3 +108,18 @@ it("locks a Volume's mounts while a Service they name is renaming, so Unmount ne
   await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); await renamed; });
   await waitFor(() => expect(actions().closest("[inert]")).toBeNull());
 });
+
+it.each([
+  ["the Docker volume checkbox", "checkbox", "Use a plain Docker volume (not recommended)", "false"],
+  ["the shared writes switch", "switch", "Allow shared writes", "true"],
+] as const)("holds %s at the submitted value while its write runs", async (_, role, name, submitted) => {
+  await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings", {});
+  let answer!: (result: StoreResult<ConfigWritten>) => void;
+  const write = vi.spyOn(functions, "writeStoreServerFn").mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+  const control = () => screen.getByRole(role, { name });
+  fireEvent.click(control());
+  await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+  expect(control().getAttribute("aria-checked")).toBe(submitted);
+  await act(async () => { answer({ ok: true, value: { written: "batch", results: [] } }); });
+  await waitFor(() => expect(control().getAttribute("aria-checked")).not.toBe(submitted));
+});
