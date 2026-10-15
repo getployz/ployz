@@ -157,10 +157,12 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
     <>
       <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
       <ItemContent className="min-w-0">
-        <ItemTitle>
-          {open.environment ?? open.title} <span className="font-normal text-muted-foreground">#{open.number}</span>
+        <ItemTitle className="w-full">
+          <span className="min-w-0 truncate">{open.environment ?? open.title}</span>
+          <span className="shrink-0 font-normal text-muted-foreground">#{open.number}</span>
         </ItemTitle>
         {open.title ? <ItemDescription className="truncate">{open.environment ? `${open.title} · ` : ""}{open.author}</ItemDescription> : null}
+        {waiting ? <Badge variant="warning">Needs approval{head ? <span className="font-mono">{head.slice(0, 7)}</span> : null}</Badge> : null}
       </ItemContent>
     </>
   );
@@ -169,7 +171,6 @@ function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRe
       <Item variant="outline" size="sm">
         {content}
         <ItemActions>
-          {waiting ? <Badge variant="warning">Needs approval{head ? <span className="font-mono">{head.slice(0, 7)}</span> : null}</Badge> : null}
           {waiting && head ? <Button size="sm" variant="outline" onClick={() => onApprove(head)}>Approve deploy</Button> : null}
         </ItemActions>
       </Item>
