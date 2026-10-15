@@ -35,11 +35,6 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
-/**
- * A day's aggregates carry the generation that wrote them. Readers take the newest generation `daily` holds for
- * the day, so a rebuild publishes when its `daily` insert lands and a rebuild that stops earlier leaves the
- * previous generation in place. Both tables count, so rows a stopped rebuild left behind never share a number.
- */
 const publishedGeneration = Effect.fn("WebAnalytics.clickHousePublishedGeneration")(function* (site: RollupSite, day: string) {
   const clickhouse = yield* requiredClickHouse;
   const b = binder(site);
@@ -101,7 +96,6 @@ const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: R
   return row === undefined || row.n === 0 ? null : localDay(site.timezone, row.first);
 });
 
-/** Aggregates written before a reset, such as a timezone change, describe days the site no longer has. */
 const forgetAggregates = Effect.fn("WebAnalytics.clickHouseForgetAggregates")(function* (site: RollupSite) {
   const clickhouse = yield* requiredClickHouse;
   const b = binder(site);

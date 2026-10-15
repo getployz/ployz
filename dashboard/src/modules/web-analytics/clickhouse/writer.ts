@@ -9,10 +9,6 @@ import { TTL_DAYS } from "./schema";
 type Pageview = typeof analyticsPageview.$inferSelect;
 type ClickHouseRow = ReturnType<typeof clickHouseRow>;
 
-/**
- * A drain inserts one block per outbox batch, and a retried run replays those blocks under the same tokens. The
- * whole run's blocks stay inside `pageview`'s deduplication window, so a replay lands every batch once.
- */
 export const DRAIN_BATCHES = 200;
 export const DRAINS_PER_RUN = 30;
 const BACKFILL_PAGE = 50_000;
@@ -96,10 +92,6 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
   }));
 });
 
-/**
- * Replaces the site's ClickHouse copy with Postgres's rows. Readers are sent back to Postgres in a
- * transaction of their own first, so no read lands on the emptied copy while the retried copy runs.
- */
 export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const database = yield* Database;
   const demoted = yield* database.transaction(Effect.gen(function* () {
@@ -148,7 +140,6 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
   return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }));
 });
 
-/** Backfills a site whose ClickHouse copy was never backfilled, such as one that ingested before ClickHouse was configured. */
 export const ensureBackfilled = Effect.fn("WebAnalytics.ensureBackfilled")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const { drizzle } = yield* Database;
   const [site] = yield* drizzle.execute<{ backfilled: boolean }>(sql`

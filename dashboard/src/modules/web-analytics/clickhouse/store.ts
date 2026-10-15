@@ -133,7 +133,6 @@ const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQ
   return yield* clickhouse.query<A>(build(b), b.params);
 });
 
-/** The rollup publishes a day by inserting its `daily` rows, so the newest generation there is the day readers see. */
 const published = (b: Binder, first: string, last: string) => `(day, generation) IN (
   SELECT day, max(generation) FROM daily
   WHERE environment_id = ${b.env} AND day BETWEEN toDate(${b.text(first)}) AND toDate(${b.text(last)}) GROUP BY day)`;

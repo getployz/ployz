@@ -6,7 +6,6 @@ import { FILTER_KEYS, LONGEST_RETENTION_MONTHS, SESSION_DIMS } from "../model";
 import * as postgres from "../postgres/store";
 import * as clickhouse from "./store";
 
-/** The reads the store serves, each as the Postgres answer and the ClickHouse answer to the same query. */
 const PARITY_READS = [
   [postgres.dailyTotals, clickhouse.dailyTotals],
   ...FILTER_KEYS.map((dim) => [(query: postgres.StoreQuery) => postgres.breakdown(query, dim), (query: postgres.StoreQuery) => clickhouse.breakdown(query, dim)] as const),
@@ -17,7 +16,6 @@ const PARITY_READS = [
 const canonical = (rows: ReadonlyArray<object>) =>
   rows.map((row) => JSON.stringify(Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b))))).sort().join("\n");
 
-/** Whether two answers hold the same rows, whatever order each store returned them in. */
 export const sameRows = (expected: ReadonlyArray<object>, actual: ReadonlyArray<object>) => canonical(expected) === canonical(actual);
 
 export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (environmentId: string) {
