@@ -2341,7 +2341,7 @@
     },
     {
       "description": "Make a Volume's one mirror current. With server, copy it there as <volume>-<server>; without, hand the mirror what changed since its last pull and answer without waiting for the download. full recopies a mirror that diverged, as a run. May stop to ask a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,
@@ -2477,7 +2477,7 @@
     },
     {
       "description": "Stop what runs on a volume and start its Service again on the old server with its data. A move past its handover finishes on its new server instead. May stop to ask a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,
