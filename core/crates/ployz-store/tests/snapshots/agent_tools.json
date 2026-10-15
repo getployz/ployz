@@ -1608,7 +1608,7 @@
     },
     {
       "description": "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy. Never asks a human to approve.",
-      "destructive": false,
+      "destructive": true,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,

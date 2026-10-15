@@ -352,7 +352,7 @@ pub(crate) struct DeploymentRetry {
 impl Tool for DeploymentRetry {
     const NAME: &'static str = "deployment_retry";
     const DESCRIPTION: &'static str = "Ship a failed, unknown or cancelled Deployment again as a new one; changes saved since wait for the next deploy.";
-    const EFFECT: Effect = Effect::Change;
+    const EFFECT: Effect = Effect::Remove;
 
     fn example() -> Value {
         json!({ "deployment": 12, "request_key": "r8Tq2wLm5XcV" })

@@ -22,6 +22,7 @@ describe("agent tools", () => {
   it("marks destructive exactly the tools that delete something when they run, and never a read", () => {
     expect(AGENT_TOOLS.filter((tool) => tool.destructive).map((tool) => tool.name).sort()).toEqual([
       "deploy",
+      "deployment_retry",
       "discard",
       "environment_remove",
       "org_invite_revoke",

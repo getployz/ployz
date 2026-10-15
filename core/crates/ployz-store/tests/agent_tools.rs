@@ -55,7 +55,7 @@ const IMPERATIVES: &[&str] = &[
     "call it",
     "use it",
     "alongside",
-    " first.",
+    "first.",
     "before changing",
     "ask the member",
     "instructions",
