@@ -1743,3 +1743,68 @@ fn unrecognized_membership_cannot_admit_creation_after_wire_roundtrip_or_remove_
         );
     }
 }
+
+#[test]
+fn deploy_replaces_the_serving_container_and_removes_a_requested_one_that_never_passed() {
+    for mode in [
+        ServiceMode::Replicated {
+            replicas: NonZeroU32::new(1).unwrap(),
+        },
+        ServiceMode::Global,
+    ] {
+        for health in [HealthObservation::Starting, HealthObservation::Unhealthy] {
+            let requested = requested(mode.clone());
+            let mut current = requested.clone();
+            current.container.image = "ghcr.io/getployz/api:old".into();
+            let current_service_id = service_id('a');
+            let serving = container('b', '1', &current, &current_service_id);
+            let mut stray = container('c', '1', &requested, &current_service_id);
+            stray
+                .try_update(|parts| {
+                    parts.runtime = ContainerRuntimeObservation::Running {
+                        health: health.clone(),
+                    }
+                })
+                .unwrap();
+            let plan = plan_deploy(
+                [&requested],
+                &DeploySnapshot {
+                    machines: vec![machine('1', "first")],
+                    containers: vec![serving, stray],
+                    ..Default::default()
+                },
+                PlanOptions::default(),
+            )
+            .unwrap();
+
+            let operations = operations(&plan);
+            assert!(
+                operations.iter().any(|operation| matches!(
+                    operation,
+                    DeployOperation::ReplaceContainer(ReplacementOperation {
+                        old_container_id,
+                        ..
+                    }) if old_container_id == &container_id('b')
+                )),
+                "{mode:?} {health:?}: {operations:?}"
+            );
+            assert!(
+                operations.iter().any(|operation| matches!(
+                    operation,
+                    DeployOperation::RemoveContainer { container_id: removed, .. }
+                        if removed == &container_id('c')
+                )),
+                "{mode:?} {health:?}: {operations:?}"
+            );
+            assert!(
+                !operations.iter().any(|operation| matches!(
+                    operation,
+                    DeployOperation::RemoveContainer { container_id: removed, .. }
+                        | DeployOperation::StopContainer { container_id: removed, .. }
+                        if removed == &container_id('b')
+                )),
+                "{mode:?} {health:?}: {operations:?}"
+            );
+        }
+    }
+}
