@@ -1544,6 +1544,13 @@ fn a_deployment_shows_its_progress_then_where_its_failure_logged() {
 
     let failed = call(&store, "deployment_show", json!({}), "show-2").ok();
     assert_eq!(failed["in_flight"], false);
+    let web = &failed["nodes"][0];
+    assert!(
+        web.get("excerpt").is_none() && failed.get("message").is_none(),
+        "{failed}"
+    );
+    assert_eq!(web["untrusted"]["excerpt"]["status"], "withheld");
+    assert_eq!(failed["untrusted"], json!({ "message": null }));
     assert!(failed.get("progress").is_none(), "{failed}");
     let input = json!({ "service": "web", "deployment": failed["deployment"] });
     assert_eq!(
@@ -2249,7 +2256,10 @@ fn server_logs_asks_for_one_servers_process_and_refuses_an_unknown_server() {
     let unknown = call(json!({ "server": "nope" }), "server-logs-3");
 
     assert_eq!(one["untrusted"]["servers"][0]["server"], "web-1", "{one}");
-    assert_eq!(every["untrusted"]["servers"][0]["server"], "web-1", "{every}");
+    assert_eq!(
+        every["untrusted"]["servers"][0]["server"], "web-1",
+        "{every}"
+    );
     assert_eq!(unknown.refused().code.as_str(), "not_found");
     let [one, every] = asked.as_slice() else {
         panic!("two server logs asks: {asked:?}");

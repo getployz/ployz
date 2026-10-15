@@ -289,6 +289,10 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
 });
 
+/** A new ask for `asked` once the approval that covered it has run its one operation. */
+export const askAgain = (caller: Caller, asked: OperationAsked) =>
+  requestOperationApproval(caller, asked, operationDigest(asked)).pipe(Effect.orDie);
+
 /** One approval in the caller's Organization, superseded first if its Environment moved on or its preview changed. */
 export const getApproval = <R = never>(organizationId: string, id: string, operationDigest?: OperationDigest<R>) =>
   Effect.gen(function* () {

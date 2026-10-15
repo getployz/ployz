@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
-import { gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
+import { askAgain, gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
@@ -15,10 +15,11 @@ import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/mach
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_TOOLS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { requestServiceAct } from "#/modules/service-act/service-act.server";
+import { requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { admitRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { uuidFrom } from "#/server/uuid-from";
 
 export type OperationCall = {
   readonly key: string | null;
@@ -146,12 +147,18 @@ export const runVolume = (
   }));
 
 /** What a stop or restart interrupts, as a human approves it; a start interrupts nothing. */
-const interrupts = (input: { readonly environmentId: string; readonly service: string; readonly verb: ServiceVerb; readonly only: ServerRef | null }): OperationAsked | null => {
+const interrupts = (input: {
+  readonly environmentId: string;
+  readonly place: string;
+  readonly service: string;
+  readonly verb: ServiceVerb;
+  readonly only: ServerRef | null;
+}): OperationAsked | null => {
   if (input.verb === "start") return null;
   return {
     subject: `service:${input.environmentId}/${input.service}`,
     verb: input.verb,
-    name: input.service,
+    name: `${input.service} in ${input.place}${input.only === null ? "" : ` on ${input.only.name}`}`,
     preview: { environment: input.environmentId, service: input.service, only: input.only?.name ?? null },
     effects: [{
       kind: input.verb === "stop" ? "stops_service" : "restarts_service",
@@ -166,6 +173,7 @@ export const actService = (
   caller: Caller,
   input: {
     readonly environmentId: string;
+    readonly place: string;
     readonly service: string;
     readonly namespace: string;
     readonly runtime: string;
@@ -179,11 +187,15 @@ export const actService = (
     caller.organization.id,
     { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.gen(function* () {
+      const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input });
       const asked = interrupts(input);
-      if (asked !== null) {
-        const gated = yield* gate(caller, call, asked);
-        if (!gated.ok) return refused(gated.refusal);
-      }
-      return (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input });
+      if (asked === null) return run;
+      const gated = yield* gate(caller, call, asked);
+      if (!gated.ok) return refused(gated.refusal);
+      if (gated.approvalId === null) return run;
+      // One approval runs one stop or restart: its run takes an id the approval names, so a later call asks again.
+      const approved = uuidFrom(`ployz.approval:${caller.organization.id}:${gated.approvalId}`);
+      if (yield* serviceActExists(caller.organization.id, approved)) return refused(yield* askAgain(caller, asked));
+      return () => run(approved);
     }),
   );

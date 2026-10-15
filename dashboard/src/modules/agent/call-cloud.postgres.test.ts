@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServiceVerb } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -281,17 +281,21 @@ describe("callCloud", () => {
         select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
         from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
       const caller: Caller = { ...member, userId };
-      const act = (verb: ServiceVerb, attempt: string): Act => ({
+      const act = (verb: ServiceVerb, attempt: string, only: ServerRef | null = null): Act => ({
         attempt: attempt.repeat(32),
         digest: "d".repeat(64),
-        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb },
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only, verb },
       });
 
-      for (const [verb, attempt] of [["stop", "1"], ["restart", "2"]] as const) {
-        const asked = yield* callCloud(caller, { act: act(verb, attempt) }).pipe(Effect.provide(services));
+      for (const [verb, attempt, only, name] of [
+        ["stop", "1", null, "web in shop/production"],
+        ["restart", "2", null, "web in shop/production"],
+        ["stop", "4", { machine: MACHINE, name: "fra-1" }, "web in shop/production on fra-1"],
+      ] as const) {
+        const asked = yield* callCloud(caller, { act: act(verb, attempt, only) }).pipe(Effect.provide(services));
         expect(asked).toEqual({ ok: false, refusal: expect.objectContaining({
           code: "approval_required",
-          details: expect.objectContaining({ operation: { verb, name: "web" } }),
+          details: expect.objectContaining({ operation: { verb, name } }),
         }) });
       }
       expect(yield* drizzle.select().from(serviceAct)).toEqual([]);
@@ -300,6 +304,48 @@ describe("callCloud", () => {
       expect(started).toEqual({ ok: true, value: expect.objectContaining({ state: "accepted" }) });
       expect((yield* drizzle.select().from(serviceAct)).map((row) => row.verb)).toEqual(["start"]);
       expect(send).toHaveBeenCalledTimes(1);
+    }));
+
+  // Catches one approved stop authorizing every later stop of the Service, or a dashboard Stop made to wait for a human.
+  it.live("one approval runs one stop: a retry with its key replays it, a later stop asks again, and the dashboard never asks", () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "call-cloud-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const services = yield* Layer.build(yield* storeTestCloud({ inngest }));
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "admit", admit: "deploy", id: DEPLOYMENT, environment: { project: null, environment: null }, services: [], version: null, accept_volume_loss: [],
+      }, acmeWeb()));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = ${DEPLOYMENT}`);
+      yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
+        select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
+        from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
+      const caller: Caller = { ...member, userId };
+      const stop = (attempt: string): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb: "stop" },
+      });
+
+      const asked = yield* callCloud(caller, { act: stop("1") }).pipe(Effect.provide(services));
+      const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
+      expect(yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+      const ran = yield* callCloud(caller, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
+      expect(ran).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+      const retried = yield* callCloud(caller, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
+      expect(retried).toEqual(ran);
+      yield* drizzle.execute(sql`update service_act set state = 'done', ended_at = now()`);
+
+      const again = yield* callCloud(caller, { act: stop("3") }, approval_id).pipe(Effect.provide(services));
+      expect(again).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
+      const fresh = Schema.decodeUnknownSync(Asked)(again.ok ? null : again.refusal.details);
+      expect(fresh.approval_id).not.toBe(approval_id);
+      expect((yield* drizzle.select().from(serviceAct)).map((row) => row.state)).toEqual(["done"]);
+
+      const clicked = yield* callCloud({ ...caller, via: "dashboard" }, { act: stop("4") }).pipe(Effect.provide(services));
+      expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
     }));
 
   // Catches an approval for web off authorizing a change that also turns other policy off, or a reread that supersedes

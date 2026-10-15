@@ -121,8 +121,10 @@ server, like **Remove fra-1**.
   "save, accepting the volume loss", and only in the same project and environment.
 - **Only removals and interruptions ask.** Deploys that roll out a new image, change variables or scale a service
   go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
-  Stopping or restarting a service asks first, with a card like **Stop web** marked **Stops service**,
-  because it takes the service down. Starting a service never asks, and neither does upgrading a server or
+  Stopping or restarting a service asks first, with a card like **Stop web in shop/production**
+  marked **Stops service**, because it takes the service down. The card names the server too when
+  the agent stops the service on just one. An approval covers that one stop or restart; a later
+  one asks again. Starting a service never asks, and neither does upgrading a server or
   changing what it takes, unless turning web traffic off leaves no online server with a public IP to
   serve your domains. Then the card lists the domains that go dark and everything else the change sets,
   and approving it covers only that change. Redeploying a deployment doesn't ask either, because it ships exactly
