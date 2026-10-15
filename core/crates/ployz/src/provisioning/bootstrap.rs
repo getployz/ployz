@@ -7,6 +7,9 @@ use std::{
     time::Duration,
 };
 
+use ployz_core::{
+    MachineVersion, RELEASE_PUBLIC_KEY, RELEASE_SIGNATURE_ASSET, verify_release_checksums,
+};
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -53,7 +56,20 @@ impl Bootstrap {
             "download bootstrap release checksums",
         )
         .await?;
-        Self::extract(archive_name, &archive, &checksums).await
+        let signature = download(
+            &client,
+            &format!("{base}/{RELEASE_SIGNATURE_ASSET}"),
+            "download bootstrap release checksums signature",
+        )
+        .await?;
+        Self::extract(
+            RELEASE_PUBLIC_KEY,
+            archive_name,
+            &archive,
+            &checksums,
+            &signature,
+        )
+        .await
     }
 
     /// Build a bootstrap from a local release directory, verified like a download.
@@ -69,14 +85,24 @@ impl Bootstrap {
                 source,
             })
         };
-        Self::extract(archive_name, &read(archive_name)?, &read("checksums.txt")?).await
+        Self::extract(
+            &ployz_testkit::release_key::release_public_key(),
+            archive_name,
+            &read(archive_name)?,
+            &read("checksums.txt")?,
+            &read(RELEASE_SIGNATURE_ASSET)?,
+        )
+        .await
     }
 
     async fn extract(
+        public_key: &str,
         archive_name: &str,
         archive: &[u8],
         checksums: &[u8],
+        signature: &[u8],
     ) -> Result<Self, ProvisionError> {
+        verify_signature(public_key, checksums, signature)?;
         verify_checksum(archive, checksums, archive_name)?;
         let directory = tempfile::Builder::new()
             .prefix("ployz-bootstrap-")
@@ -163,6 +189,23 @@ async fn download(
         .await
         .map(|bytes| bytes.to_vec())
         .map_err(|source| ProvisionError::BootstrapDownload { stage, source })
+}
+
+fn verify_signature(
+    public_key: &str,
+    checksums: &[u8],
+    signature: &[u8],
+) -> Result<(), ProvisionError> {
+    let signature = std::str::from_utf8(signature).map_err(|error| {
+        ProvisionError::BootstrapVerification(format!(
+            "{RELEASE_SIGNATURE_ASSET} is not UTF-8: {error}"
+        ))
+    })?;
+    let version = MachineVersion::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|error| ProvisionError::BootstrapVerification(error.to_string()))?;
+    verify_release_checksums(public_key, checksums, signature, &version).map_err(|error| {
+        ProvisionError::BootstrapVerification(ployz_core::error_chain::inline(&error))
+    })
 }
 
 fn verify_checksum(
