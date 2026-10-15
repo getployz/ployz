@@ -47,9 +47,11 @@ pub(crate) struct Replica<'a> {
     pub timing: Timing,
 }
 
-/// One row for a Service's replicas: failed when any failed, booting while any
-/// work runs, switched once all completed, and not started when the Deploy
-/// stopped before any of it ran. A Service with no recorded work is waiting.
+/// One row for a Service's replicas: booting while any work runs, failed once
+/// any failed and none runs, switched once all completed, and not started when
+/// the Deploy stopped before any of it ran. A Service with no recorded work is
+/// waiting. While replicas still run after one failed, the row stays active and
+/// its detail counts the failures.
 pub(crate) fn service_row<'a>(
     service: QualifiedService,
     depth: Option<u32>,
@@ -80,11 +82,12 @@ pub(crate) fn service_row<'a>(
         .iter()
         .find(|(draining, _)| !draining)
         .or_else(|| phases.first());
-    let state = if replicas
+    let failed = replicas
         .iter()
-        .any(|replica| matches!(replica.state, RowState::Failed { .. }))
-    {
-        State::Failed
+        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
+        .count();
+    let state = if failed > 0 {
+        running.map_or(State::Failed, |(_, phase)| State::Running(*phase))
     } else if replicas
         .iter()
         .any(|replica| matches!(replica.state, RowState::Unknown))
@@ -146,8 +149,8 @@ pub(crate) fn service_row<'a>(
                 .count(),
             machines: replicas.iter().map(|replica| replica.machine).collect(),
         }),
+        detail: (failed > 0 && state.active()).then(|| format!("{failed} failed")),
         state,
-        detail: None,
         timing,
     }
 }
@@ -210,7 +213,7 @@ impl Direct {
             .map(|service| {
                 service_row(
                     QualifiedService::new(self.namespace.clone(), service.clone()),
-                    Some(self.depths.get(service).copied().unwrap_or(0)),
+                    self.depths.get(service).copied(),
                     self.rows
                         .values()
                         .filter(|(row, _)| row.service == *service)

@@ -64,11 +64,12 @@ fn replicas_on_two_machines_fold_into_one_partial_service_row() {
         ),
         operation(2, two, OperationStatus::Completed),
     ];
-    let preview = DeployPreview::new(
+    let mut preview = DeployPreview::new(
         operations.clone(),
         Vec::new(),
         Namespace::parse("shop").unwrap(),
     );
+    preview.depths = [(ServiceName::parse("web").unwrap(), 0)].into();
     let mut direct = Direct::new(&preview, "Deploying shop".into());
     let frame = direct.frame();
     assert_eq!(frame.rows.len(), 1);
@@ -96,6 +97,49 @@ fn replicas_on_two_machines_fold_into_one_partial_service_row() {
         .collect();
     direct.observe(&completed);
     assert_eq!(lines(&direct.frame()), ["depth 0", "  ✔ web  switched 2/2"]);
+}
+
+#[test]
+fn a_service_the_plan_gives_no_depth_renders_outside_the_depth_groups() {
+    let machine = MachineId::random();
+    let preview = DeployPreview::new(
+        vec![operation(
+            0,
+            machine,
+            OperationStatus::Running {
+                phase: OperationPhase::StartingContainer,
+            },
+        )],
+        Vec::new(),
+        Namespace::parse("shop").unwrap(),
+    );
+    let frame = Direct::new(&preview, "Deploying shop".into()).frame();
+    assert!(matches!(
+        &frame.rows.first().unwrap().subject,
+        Subject::Service(graph) if graph.depth.is_none()
+    ));
+    let live = lines(&frame);
+    assert!(
+        !live.iter().any(|line| line.starts_with("depth ")),
+        "{live:?}"
+    );
+}
+
+#[test]
+fn a_failed_replica_keeps_its_service_active_while_others_still_run() {
+    let groups = [group("web", &[])];
+    let frame = graph_frame(&groups, &[("web", &["failed", "booting"])]);
+    let row = frame.rows.first().unwrap();
+    assert!(row.state.active(), "{row:?}");
+    assert_eq!(row.detail.as_deref(), Some("1 failed"));
+    assert_eq!(
+        lines(&frame),
+        ["depth 0", "  ⠋ web  booting 0/2 (1 failed)"]
+    );
+    let settled = graph_frame(&groups, &[("web", &["failed", "completed"])]);
+    let row = settled.rows.first().unwrap();
+    assert_eq!(row.state, State::Failed);
+    assert_eq!(row.detail, None);
 }
 
 fn group(service: &str, dependencies: &[&str]) -> ServiceGroup {

@@ -165,7 +165,7 @@ pub(crate) enum State {
 }
 
 impl State {
-    fn active(&self) -> bool {
+    pub(crate) fn active(&self) -> bool {
         matches!(self, Self::Pending | Self::Running(_))
     }
 
