@@ -530,9 +530,9 @@ impl Bridge {
                 .open(directory.join(format!("{index}.lock")))
             {
                 Ok(file) => file,
-                // Another user's claim file that umask left private.
-                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
-                Err(error) => return Err(bridge_error(error)),
+                // Another user's private claim file, or anything else at the
+                // path, takes that index out of use rather than every build.
+                Err(_) => continue,
             };
             let metadata = file.metadata().map_err(bridge_error)?;
             if metadata.uid() == rustix::process::getuid().as_raw()
@@ -609,13 +609,15 @@ mod tests {
         let interfaces = root.join("net");
         fs::create_dir_all(interfaces.join(bridge_name(1))).unwrap();
         let claims = root.join("claims");
+        fs::create_dir_all(claims.join("3.lock")).unwrap();
 
         let first = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
         let second = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
+        let third = Bridge::claim(&claims, interfaces.to_str().unwrap()).unwrap();
         assert_eq!(
-            (first.index, second.index),
-            (0, 2),
-            "a held claim and a live bridge are both skipped"
+            (first.index, second.index, third.index),
+            (0, 2, 4),
+            "a held claim, a live bridge and an unusable claim file are all skipped"
         );
         fs::remove_dir_all(root).unwrap();
     }
