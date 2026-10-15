@@ -55,6 +55,34 @@ async fn discover_image(client: Client, reference: Reference) -> Result<String, 
     Ok(select_image(&response.tags))
 }
 
+/// Parse an `--ingress-image` pin, refusing a Caddy tag older than 2.8: older log filters reject
+/// the `request>` field paths the Ingress Proxy's config deletes. A tag that names no version is
+/// taken as given.
+///
+/// # Errors
+///
+/// Returns the refusal when the tag names Caddy 2.7 or older.
+pub fn pinned_image(image: &str) -> Result<String, String> {
+    let name = image.split('@').next().unwrap_or(image);
+    let tag = name
+        .rsplit('/')
+        .next()
+        .and_then(|last| last.split_once(':'));
+    let version = tag.and_then(|(_, tag)| {
+        let mut parts = tag.split('-').next()?.split('.');
+        Some((
+            parts.next()?.parse::<u64>().ok()?,
+            parts.next()?.parse::<u64>().ok()?,
+        ))
+    });
+    match version {
+        Some(version) if version < (2, 8) => {
+            Err(format!("Ployz needs Caddy 2.8 or later; {image} is older."))
+        }
+        _ => Ok(image.to_owned()),
+    }
+}
+
 #[must_use]
 fn select_image(tags: &[String]) -> String {
     tags.iter()
@@ -129,6 +157,30 @@ mod tests {
                 assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
             }
             server.abort();
+        }
+    }
+
+    #[test]
+    fn a_pin_older_than_caddy_2_8_is_refused() {
+        for old in [
+            "caddy:2.7.6",
+            "caddy:2.7",
+            "docker.io/library/caddy:2.7.6-alpine",
+            "localhost:5000/caddy:1.0.4",
+        ] {
+            assert!(pinned_image(old).is_err(), "{old}");
+        }
+        for taken in [
+            "caddy:2.8.4",
+            "caddy:2.11.7-alpine",
+            "caddy:2",
+            "caddy:latest",
+            "caddy",
+            "localhost:5000/caddy",
+            "ghcr.io/acme/caddy-custom:main",
+            "caddy@sha256:0123",
+        ] {
+            assert_eq!(pinned_image(taken).as_deref(), Ok(taken));
         }
     }
 

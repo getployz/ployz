@@ -22,7 +22,7 @@ use crate::{
 };
 
 mod caddy;
-pub use caddy::IngressImageError;
+pub use caddy::{IngressImageError, pinned_image};
 
 /// Build the Caddy ingress Service Spec.
 ///

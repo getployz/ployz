@@ -88,5 +88,7 @@ these there:
   [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
   Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
+- **Pinning your own Caddy?** `--ingress-image` needs Caddy 2.8 or newer. Ployz refuses an older
+  version tag.
 
 Next: [manage your servers](manage-servers.md).
