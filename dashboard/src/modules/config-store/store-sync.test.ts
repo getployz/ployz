@@ -112,4 +112,12 @@ describe("showNeverSyncing", () => {
       [logLevel.row, ["production"]],
     ]);
   });
+
+  it("shows a row marked and synced again before either answers as the Store has it", () => {
+    const shown = showNeverSyncing(view, [
+      { environment: "production", rows: [logLevel.row], off: false },
+      { environment: "production", rows: [logLevel.row], off: true },
+    ]);
+    expect(shown).toEqual(view);
+  });
 });

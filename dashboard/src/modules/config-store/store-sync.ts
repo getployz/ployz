@@ -97,11 +97,20 @@ export function closesIn(closesAt: number, now = Date.now() / 1000) {
 }
 
 /**
- * `view` with `pending` Never syncs echoed: a Sync from or into a marking Environment offers its newly marked row no more,
- * and lists it never synced; a row synced again loses that Environment's mark, and with none left waits for the Store to offer it.
+ * `view` with `pending` Never syncs echoed, the newest per Environment and row: a Sync from or into a marking Environment
+ * offers its newly marked row no more, and lists it never synced; a row synced again loses that Environment's mark, and
+ * with none left waits for the Store to offer it.
  */
 export function showNeverSyncing(view: SyncView, pending: readonly NeverSyncing[]): SyncView {
-  return pending.reduce((shown, { environment, rows: named, off }) => {
+  const newest = new Map<string, NeverSyncing>();
+  for (const { environment, rows, off } of pending) {
+    for (const row of rows) {
+      const key = JSON.stringify([environment, row]);
+      newest.delete(key);
+      newest.set(key, { environment, rows: [row], off });
+    }
+  }
+  return [...newest.values()].reduce((shown, { environment, rows: named, off }) => {
     if (shown.from.name !== environment && shown.into.name !== environment) return shown;
     const rows = new Set(named);
     if (off) {
