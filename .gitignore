@@ -11,4 +11,4 @@ node_modules/
 /.scratch/
 __pycache__/
 # Built by core/scripts/build-cloud-sdk.sh (run by `pnpm sdk`, `pnpm dev` and `pnpm build`), or fetched from CI.
-core/crates/ployz-sdk/generated/config-wasm.mjs
+core/crates/ployz-sdk/generated/

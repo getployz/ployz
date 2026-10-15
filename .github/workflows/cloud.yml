@@ -52,6 +52,7 @@ env:
 
 jobs:
   static:
+    needs: [sdk]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -59,6 +60,14 @@ jobs:
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.sdk.outputs.name }}
+          run-id: ${{ needs.sdk.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: core/crates/ployz-sdk
+      - name: Typecheck the SDK package
+        run: bash ../core/scripts/check-sdk-types.sh
       - name: Typecheck
         run: pnpm pr:check typecheck
       - name: Lint
@@ -104,7 +113,7 @@ jobs:
           name: ${{ steps.lookup.outputs.name }}
           path: |
             core/crates/ployz-sdk/ployz-sdk.node
-            core/crates/ployz-sdk/generated/config-wasm.mjs
+            core/crates/ployz-sdk/generated/**
           retention-days: ${{ github.ref == 'refs/heads/main' && 14 || 3 }}
           if-no-files-found: error
 

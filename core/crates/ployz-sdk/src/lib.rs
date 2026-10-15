@@ -1,5 +1,5 @@
 //! Napi package `@ployz/sdk`. Public payloads are derived from the Rust wire types
-//! (`ployz::sdk::typescript_declarations`).
+//! (`ployz::sdk::generated_files`, written by the `sdk-generated` bin).
 //!
 //! The handwritten façade wraps the native Cloud session, the Config Store, and the
 //! agent tools.

@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
-JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "sdk-types", "macos-cli", "cloud", "release-contracts"}
+JOBS = {"contracts", "rust-lint", "rust-tests", "uptime", "macos-cli", "cloud", "release-contracts"}
 NORMAL = JOBS - {"release-contracts"}
 RUST = {"rust-lint", "rust-tests"}
 CONTRACT_SCRIPTS = {
@@ -80,13 +80,11 @@ def select_normal(paths):
                 return NORMAL.copy()
             # The Cloud's parity tests read ployz-store's snapshots.
             if not relative.startswith("tests/") or crate == "ployz-sdk" or relative.startswith("tests/snapshots/"):
-                selected |= {"cloud", "sdk-types"}
+                selected.add("cloud")
         elif path == "core/install.sh" or path.startswith("core/relay/"):
             continue
-        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh"}:
+        elif path in {"core/scripts/build-cloud-sdk.sh", "core/scripts/build-config-wasm.sh", "core/scripts/check-sdk-types.sh"}:
             selected.add("cloud")
-        elif path == "core/scripts/check-sdk-types.sh":
-            selected.add("sdk-types")
         elif path == "core/scripts/test-missing-ssh-client.sh":
             selected |= RUST
         elif path.startswith(("scripts/", "core/scripts/")) and Path(path).name in CONTRACT_SCRIPTS:
