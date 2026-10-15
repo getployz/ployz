@@ -318,12 +318,13 @@ export type Decider = Actor & { readonly organization: { readonly id: string } }
 
 /**
  * An agent never approves. What an agent asked waits on a person in the dashboard, or on the `ployz mcp` that asked,
- * which shows its human the form and answers through the credential it asked with.
+ * which shows its human the form and answers through the credential it asked with. A request from before Cloud
+ * recorded who asked is treated as an agent's.
  */
 const mayApprove = (decider: Decider, row: ApprovalRow) => {
   if (decider.via === "dashboard") return true;
   if (decider.via === "agent" || !("credential" in decider)) return false;
-  if (row.via !== "agent") return true;
+  if (row.via === "cli") return true;
   return row.credentialKind !== "oauth" && decider.credential.kind === row.credentialKind && decider.credential.id === row.credentialId;
 };
 

@@ -341,7 +341,7 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     expect(yield* cli(publish, secondId)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
 
-it.live("`ployz mcp`'s Publish asks as an agent, so another of the person's tokens can't approve it", () =>
+it.live("`ployz mcp`'s Publish asks as an agent, so another of the person's tokens can't approve it, nor a request from before Cloud recorded who asked", () =>
   Effect.gen(function* () {
     const { provided, caller, cli } = yield* shopRemovingWeb();
     const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2" } };
@@ -352,6 +352,12 @@ it.live("`ployz mcp`'s Publish asks as an agent, so another of the person's toke
     });
 
     const fromMcp = yield* askedBy("agent");
+    expect(yield* approve(fromMcp.id, fromMcp.digest)).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
+
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update operation_approvals set via = null where id = ${fromMcp.id}`);
+    }));
     expect(yield* approve(fromMcp.id, fromMcp.digest)).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
 
     const fromCli = yield* askedBy();
