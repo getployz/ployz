@@ -16,8 +16,8 @@ import { Unauthorized } from "#/server/public-error";
 
 export type ObservePusher = { readonly organizationId: string; readonly machineId: MachineId };
 
-/** A push as received: the path's Machine id, its headers, and the exact body bytes its signature covers. */
-export type ObservePush = { readonly machineId: string; readonly headers: Headers; readonly body: Uint8Array };
+/** What a push's path and headers claim before its body is read: the Machine, when it signed, and the signature. */
+export type ObservePushCredentials = { readonly machineId: MachineId; readonly timestamp: bigint; readonly signature: Uint8Array };
 
 const MAX_SKEW_SECONDS = 300n;
 const TIMESTAMP = /^(0|[1-9]\d{0,11})$/;
@@ -43,28 +43,34 @@ export function verifyObservePush(identity: string, message: Uint8Array, signatu
 
 const decodeMachineId = Schema.decodeUnknownOption(rustMachineIdSchema);
 
-/**
- * The one Organization whose enrolled Machine signed this push. A row enrolled before Cloud kept management keys gets
- * its key from its capability on first use.
- */
-export const authenticateObservePush = Effect.fn("ObserveIngest.authenticate")(function* (push: ObservePush) {
-  const stamp = push.headers.get("ployz-timestamp") ?? "";
-  const signature = SIGNATURE.exec(push.headers.get("ployz-signature") ?? "")?.[1];
-  const machineId = decodeMachineId(push.machineId);
-  if (!TIMESTAMP.test(stamp) || signature === undefined || Option.isNone(machineId)) return yield* new Unauthorized();
+/** Refuses a push whose headers are missing, malformed or signed outside the clock window, before its body is read. */
+export const observePushCredentials = Effect.fn("ObserveIngest.credentials")(function* (machineId: string, headers: Headers) {
+  const stamp = headers.get("ployz-timestamp") ?? "";
+  const signature = SIGNATURE.exec(headers.get("ployz-signature") ?? "")?.[1];
+  const machine = decodeMachineId(machineId);
+  if (!TIMESTAMP.test(stamp) || signature === undefined || Option.isNone(machine)) return yield* new Unauthorized();
   const timestamp = BigInt(stamp);
   const now = BigInt(Math.floor((yield* Clock.currentTimeMillis) / 1000));
   const skew = now - timestamp;
   if (skew > MAX_SKEW_SECONDS || -skew > MAX_SKEW_SECONDS) return yield* new Unauthorized();
+  return { machineId: machine.value, timestamp, signature: Buffer.from(signature, "base64url") } satisfies ObservePushCredentials;
+});
 
+/**
+ * The one Organization whose enrolled Machine signed this body. A row enrolled before Cloud kept management keys gets
+ * its key from its capability on first use.
+ */
+export const authenticateObservePush = Effect.fn("ObserveIngest.authenticate")(function* (
+  { machineId, timestamp, signature }: ObservePushCredentials,
+  body: Uint8Array,
+) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({
     organizationId: organizationMachine.organizationId,
     managementIdentity: organizationMachine.managementIdentity,
     encryptedCapability: organizationMachine.encryptedCapability,
-  }).from(organizationMachine).where(eq(organizationMachine.machineId, machineId.value));
-  const message = observePushMessage(machineId.value, timestamp, push.body);
-  const sig = Buffer.from(signature, "base64url");
+  }).from(organizationMachine).where(eq(organizationMachine.machineId, machineId));
+  const message = observePushMessage(machineId, timestamp, body);
   const signers: string[] = [];
   for (const row of rows) {
     const identity = row.managementIdentity ?? managementIdentity(yield* decryptPairingSecret(row.encryptedCapability));
@@ -72,35 +78,36 @@ export const authenticateObservePush = Effect.fn("ObserveIngest.authenticate")(f
     if (row.managementIdentity === null) {
       yield* drizzle.update(organizationMachine).set({ managementIdentity: identity }).where(and(
         eq(organizationMachine.organizationId, row.organizationId),
-        eq(organizationMachine.machineId, machineId.value),
+        eq(organizationMachine.machineId, machineId),
         isNull(organizationMachine.managementIdentity),
       ));
     }
-    if (verifyObservePush(identity, message, sig)) signers.push(row.organizationId);
+    if (verifyObservePush(identity, message, signature)) signers.push(row.organizationId);
   }
   const [organizationId, ...others] = signers;
   if (organizationId === undefined) return yield* new Unauthorized();
   if (others.length > 0) {
     // A Machine that left one Organization's Cluster without Cloud seeing it keeps its key, and its row, there.
-    yield* Effect.logWarning("A push verified for more than one Organization; refused.", { machineId: machineId.value, organizations: signers.length });
+    yield* Effect.logWarning("A push verified for more than one Organization; refused.", { machineId, organizations: signers.length });
     return yield* new Unauthorized();
   }
-  return { organizationId, machineId: machineId.value } satisfies ObservePusher;
+  return { organizationId, machineId } satisfies ObservePusher;
 });
 
 export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pusher: ObservePusher, push: CrashPushInput) {
+  if (push.dropped > 0) {
+    yield* Effect.logWarning("A Machine dropped crash events it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
+  }
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const advanced = yield* drizzle.insert(observeIngestCursor)
+    yield* drizzle.insert(observeIngestCursor)
       .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "crash", seq: push.seq })
       .onConflictDoUpdate({
         target: [observeIngestCursor.organizationId, observeIngestCursor.machineId, observeIngestCursor.stream],
-        set: { seq: sql`excluded.seq`, updatedAt: new Date() },
-        setWhere: sql`${observeIngestCursor.seq} < excluded.seq`,
-      })
-      .returning({ seq: observeIngestCursor.seq });
-    if (advanced.length === 0 || push.events.length === 0) return;
+        set: { seq: sql`greatest(${observeIngestCursor.seq}, excluded.seq)`, updatedAt: new Date() },
+      });
+    if (push.events.length === 0) return;
     const kept = yield* drizzle.insert(crashEvent)
       .values(push.events.map((event) => ({ ...event, organizationId: pusher.organizationId, machineId: pusher.machineId })))
       .onConflictDoNothing()

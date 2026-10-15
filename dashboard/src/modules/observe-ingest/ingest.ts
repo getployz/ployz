@@ -4,6 +4,8 @@ import { OBSERVE_STREAMS } from "#/modules/observe-ingest/tables";
 export const MAX_PUSH_EVENTS = 1000;
 
 const MAX_SEQ = 2n ** 63n - 1n;
+// Unix nanos up to the last instant a Date can hold.
+const MAX_TS = 8.64e21;
 
 // A u64 sent as a decimal string, because unix nanos exceed 2^53. Postgres bigint holds up to 2^63 - 1.
 const Seq = Schema.String.check(Schema.isPattern(/^(0|[1-9]\d{0,18})$/));
@@ -16,11 +18,9 @@ const Marker = Schema.Struct({
   service: Text,
   deployment_id: Schema.optionalKey(Text),
   replica: Schema.String.check(Schema.isMaxLength(256)),
-  ts: Schema.Finite,
-  kind: Text,
+  ts: Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: MAX_TS })),
   exit_code: Schema.optionalKey(Schema.NullOr(Schema.Finite.check(Schema.isInt()))),
   oom: Schema.optionalKey(Schema.Boolean),
-  stopped: Schema.optionalKey(Schema.Boolean),
 });
 
 const CrashPush = Schema.Struct({
@@ -49,6 +49,7 @@ export type CrashEventInput = {
 
 export type CrashPushInput = {
   readonly seq: bigint;
+  readonly dropped: number;
   readonly events: ReadonlyArray<CrashEventInput>;
 };
 
@@ -57,12 +58,6 @@ const toSeq = (value: string): Option.Option<bigint> => {
   return seq <= MAX_SEQ ? Option.some(seq) : Option.none();
 };
 
-type Marker = typeof Marker.Type;
-
-const isCrash = (marker: Marker) =>
-  marker.kind === "exit"
-  && (marker.oom === true || (marker.exit_code != null && marker.exit_code !== 0 && marker.stopped !== true));
-
 export const crashPushInput = (push: CrashPush): Option.Option<CrashPushInput> => {
   const seq = toSeq(push.seq);
   if (Option.isNone(seq)) return Option.none();
@@ -70,7 +65,6 @@ export const crashPushInput = (push: CrashPush): Option.Option<CrashPushInput> =
   for (const { seq: eventSeq, marker } of push.events) {
     const seqValue = toSeq(eventSeq);
     if (Option.isNone(seqValue)) return Option.none();
-    if (!isCrash(marker)) continue;
     events.push({
       seq: seqValue.value,
       serviceId: marker.service_id,
@@ -83,5 +77,5 @@ export const crashPushInput = (push: CrashPush): Option.Option<CrashPushInput> =
       occurredAt: new Date(Math.floor(marker.ts / 1e6)),
     });
   }
-  return Option.some({ seq: seq.value, events });
+  return Option.some({ seq: seq.value, dropped: push.dropped, events });
 };

@@ -1,23 +1,45 @@
 import { Effect, Option, Result } from "effect";
 import { crashPushInput, decodeCrashPush, decodePushHeader, isObserveStream } from "#/modules/observe-ingest/ingest";
-import { authenticateObservePush, ingestCrashPush } from "#/modules/observe-ingest/ingest.server";
+import { authenticateObservePush, ingestCrashPush, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
 import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
 
 const noStore = { "cache-control": "no-store" };
+const MAX_PUSH_BYTES = 256 * 1024;
 
 function errorResponse(cause: unknown) {
   const publicError = encodePublicError(cause);
   return Response.json({ error: publicError.message }, { status: statusForPublicError(publicError), headers: noStore });
 }
 
+/** The body's bytes, or null once it says or proves it is over the cap. Stops reading at the cap. */
+async function readCappedBody(request: Request) {
+  if (Number(request.headers.get("content-length")) > MAX_PUSH_BYTES) return null;
+  if (request.body === null) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (let read = await reader.read(); !read.done; read = await reader.read()) {
+    size += read.value.byteLength;
+    if (size > MAX_PUSH_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(read.value);
+  }
+  return Buffer.concat(chunks);
+}
+
 /**
  * Takes a Machine's signed push of one observe stream. 204 acknowledges it, a replay too. 401 and 404 keep it buffered on the
- * Machine; 422 tells the Machine to drop the batch.
+ * Machine; 413 and 422 tell the Machine to drop the batch.
  */
 export function handleObservePush(request: Request, machineId: string) {
   return Effect.gen(function* () {
-    const body = new Uint8Array(yield* Effect.tryPromise(() => request.arrayBuffer()).pipe(Effect.orElseSucceed(() => new ArrayBuffer(0))));
-    const pusher = yield* Effect.result(authenticateObservePush({ machineId, headers: request.headers, body }));
+    const credentials = yield* Effect.result(observePushCredentials(machineId, request.headers));
+    if (Result.isFailure(credentials)) return errorResponse(credentials.failure);
+    const body = yield* Effect.tryPromise(() => readCappedBody(request)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
+    if (body === null) return Response.json({ error: "Observe push is over 256 KiB." }, { status: 413, headers: noStore });
+    const pusher = yield* Effect.result(authenticateObservePush(credentials.success, body));
     if (Result.isFailure(pusher)) return errorResponse(pusher.failure);
 
     const json: unknown = Option.getOrNull(yield* Effect.option(Effect.try(() => JSON.parse(new TextDecoder().decode(body)))));

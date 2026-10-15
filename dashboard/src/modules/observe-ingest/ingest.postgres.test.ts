@@ -14,6 +14,7 @@ import { handleObservePush } from "#/routes/api/machines/-handlers";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
+import type { MachineId } from "@ployz/sdk";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f201";
@@ -60,7 +61,7 @@ const privateKey = (seed: string) =>
   createPrivateKey({ key: Buffer.from(`302e020100300506032b657004220420${seed}`, "hex"), format: "der", type: "pkcs8" });
 
 type Signing = {
-  readonly machine?: string;
+  readonly machine?: MachineId;
   readonly seed?: string;
   readonly at?: number;
   readonly signed?: string;
@@ -95,11 +96,13 @@ const setup = Effect.fn(function* () {
     yield* drizzle.update(organizationMachine).set({ encryptedCapability: encryption.encrypt(capability(PUBLIC_KEY)) });
   }).pipe(Effect.provide(services), Effect.orDie);
 
-  const send = (body: string, signing: Signing = {}, headers: Record<string, string> = headersFor(body, signing)) => {
-    const machine = signing.machine ?? MACHINE;
-    const request = new Request(`https://cloud.example.com/api/machines/${machine}/observe`, { method: "POST", body, headers });
+  const sendRaw = (body: string | ReadableStream<Uint8Array>, headers: Record<string, string>, machine = MACHINE) => {
+    // undici refuses a stream body unless the request declares half duplex.
+    const init: RequestInit & { readonly duplex: "half" } = { method: "POST", body, headers, duplex: "half" };
+    const request = new Request(`https://cloud.example.com/api/machines/${machine}/observe`, init);
     return handleObservePush(request, machine).pipe(Effect.provide(services));
   };
+  const send = (body: string, signing: Signing = {}) => sendRaw(body, headersFor(body, signing), signing.machine);
   const identity = () => provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return (yield* drizzle.select({ organizationId: organizationMachine.organizationId, managementIdentity: organizationMachine.managementIdentity })
@@ -126,10 +129,10 @@ const setup = Effect.fn(function* () {
       events: (yield* drizzle.select().from(operationOutbox)).map(({ name, data }) => ({ name, data })),
     };
   }).pipe(Effect.orDie));
-  return { send, rows, identity, enrollElsewhere };
+  return { send, sendRaw, rows, identity, enrollElsewhere };
 });
 
-it.live("a push keeps its crashes, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
+it.live("a push keeps every event the Machine shipped, advances the cursor, and asks for one mail per Service", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
   const answer = yield* send(push([[10, WEB], [11, WEB, 0], [12, API, 137]]));
   expect(answer.status).toBe(204);
@@ -137,6 +140,7 @@ it.live("a push keeps its crashes, advances the cursor, and asks for one mail pe
   expect(yield* rows()).toEqual({
     crashes: [
       { seq: 10n, serviceId: WEB, serviceName: "prod/web", exitCode: 1, oom: false },
+      { seq: 11n, serviceId: WEB, serviceName: "prod/web", exitCode: 0, oom: false },
       { seq: 12n, serviceId: API, serviceName: "prod/api", exitCode: 137, oom: false },
     ],
     cursor: [{ stream: "crash", seq: 12n }],
@@ -152,9 +156,20 @@ it.live("a replayed seq answers 204 and writes nothing", () => Effect.gen(functi
   const { send, rows } = yield* setup();
   expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(204);
   const before = yield* rows();
-  expect((yield* send(push([[10, WEB], [12, WEB]]))).status).toBe(204);
-  expect((yield* send(push([[11, API]]))).status).toBe(204);
   expect(yield* rows()).toEqual(before);
+}), 60_000);
+
+it.live("crashes behind a cursor that went backwards are kept and mailed, and the cursor stays ahead", () => Effect.gen(function* () {
+  const { send, rows } = yield* setup();
+  expect((yield* send(push([[20, WEB]]))).status).toBe(204);
+  expect((yield* send(push([[5, API]]))).status).toBe(204);
+  const { crashes, cursor, events } = yield* rows();
+  expect(crashes.map(({ seq }) => seq)).toEqual([5n, 20n]);
+  expect(cursor).toEqual([{ stream: "crash", seq: 20n }]);
+  expect(events.map(({ data }) => data)).toEqual([
+    { organizationId: ORGANIZATION, serviceId: WEB },
+    { organizationId: ORGANIZATION, serviceId: API },
+  ]);
 }), 60_000);
 
 it.live("a batch that straddles the cursor keeps only the crashes it had not kept", () => Effect.gen(function* () {
@@ -200,13 +215,66 @@ it.live("a push signed more than five minutes away from now answers 401 and writ
   expect((yield* send(push([[10, WEB]]), { at: now - 290 })).status).toBe(204);
 }), 60_000);
 
-it.live("a push with no signature, or a malformed one, answers 401", () => Effect.gen(function* () {
+it.live("a push with no signature, a malformed one, or a stale timestamp answers 401 before its body or the database is read", () =>
+  Effect.gen(function* () {
+    const { sendRaw, rows, identity } = yield* setup();
+    const body = push([[10, WEB]]);
+    const signed = headersFor(body);
+    const stale = headersFor(body, { at: Math.floor(Date.now() / 1000) - 301 });
+    const cases: ReadonlyArray<Record<string, string>> = [
+      {},
+      { "ployz-timestamp": signed["ployz-timestamp"] },
+      { "ployz-signature": signed["ployz-signature"] },
+      { ...signed, "ployz-signature": signed["ployz-signature"].slice(3) },
+      { ...signed, "ployz-timestamp": `${signed["ployz-timestamp"]}.0` },
+      stale,
+    ];
+    for (const headers of cases) {
+      const stream = countedStream(Buffer.from(body), 1);
+      expect((yield* sendRaw(stream.body, headers)).status).toBe(401);
+      expect(stream.pulled()).toBe(0);
+    }
+    expect(yield* identity()).toEqual([{ organizationId: ORGANIZATION, managementIdentity: null }]);
+    expect(yield* rows()).toEqual(nothing);
+  }), 60_000);
+
+const MAX_PUSH_BYTES = 256 * 1024;
+
+/** A body that hands out `chunk` up to `limit` times, only when read, and counts the reads. */
+const countedStream = (chunk: Uint8Array, limit = Number.POSITIVE_INFINITY) => {
+  let pulled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (pulled >= limit) return controller.close();
+      pulled += 1;
+      controller.enqueue(chunk);
+    },
+  }, { highWaterMark: 0 });
+  return { body, pulled: () => pulled };
+};
+
+it.live("a signed push over 256 KiB answers 413 and writes nothing", () => Effect.gen(function* () {
   const { send, rows } = yield* setup();
-  const body = push([[10, WEB]]);
-  const signed = headersFor(body);
-  expect((yield* send(body, {}, { "ployz-timestamp": signed["ployz-timestamp"] })).status).toBe(401);
-  expect((yield* send(body, {}, { ...signed, "ployz-signature": signed["ployz-signature"].slice(3) })).status).toBe(401);
-  expect((yield* send(body, {}, { ...signed, "ployz-timestamp": `${signed["ployz-timestamp"]}.0` })).status).toBe(401);
+  const body = push([[10, WEB]]) + " ".repeat(MAX_PUSH_BYTES);
+  expect((yield* send(body)).status).toBe(413);
+  expect(yield* rows()).toEqual(nothing);
+}), 60_000);
+
+it.live("an endless body stops being read at 256 KiB and answers 413", () => Effect.gen(function* () {
+  const { sendRaw, rows } = yield* setup();
+  const chunk = Buffer.alloc(64 * 1024, 0x20);
+  const stream = countedStream(chunk);
+  expect((yield* sendRaw(stream.body, headersFor(""))).status).toBe(413);
+  expect(stream.pulled()).toBe(MAX_PUSH_BYTES / chunk.byteLength + 1);
+  expect(yield* rows()).toEqual(nothing);
+}), 60_000);
+
+it.live("a body whose Content-Length is over 256 KiB answers 413 without being read", () => Effect.gen(function* () {
+  const { sendRaw, rows } = yield* setup();
+  const stream = countedStream(Buffer.from(push([[10, WEB]])), 1);
+  const answer = yield* sendRaw(stream.body, { ...headersFor(""), "content-length": String(MAX_PUSH_BYTES + 1) });
+  expect(answer.status).toBe(413);
+  expect(stream.pulled()).toBe(0);
   expect(yield* rows()).toEqual(nothing);
 }), 60_000);
 
@@ -237,6 +305,8 @@ it.live("a malformed push answers 422 and writes nothing", () => Effect.gen(func
     push([[10, WEB]], { seq: 10 }),
     push([[10, WEB]], { seq: "9999999999999999999" }),
     push([[10, WEB]], { events: [{ seq: "10", marker: { kind: "exit" } }] }),
+    push([[10, WEB]]).replace(`"ts":${marker(WEB, 1).ts}`, '"ts":1e100'),
+    push([[10, WEB]]).replace(`"ts":${marker(WEB, 1).ts}`, '"ts":-1'),
   ]) {
     expect((yield* send(body)).status).toBe(422);
   }
