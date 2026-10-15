@@ -16,6 +16,8 @@ const INPUT_CHAIN: &str = "PLOYZ-INPUT";
 /// One chain per build slot, hooked into OUTPUT, so slots never rewrite each
 /// other's fence.
 const BUILD_CHAIN: &str = "PLOYZ-BUILD";
+/// Hooked first in mangle FORWARD for traffic off any build bridge.
+const BUILD_FORWARD_CHAIN: &str = "PLOYZ-BUILD-FORWARD";
 
 /// Apply the Machine's ingress and forwarding policy, including the private
 /// Machine API, Direct Image Transfer and Volume send endpoints on `management_address`.
@@ -50,11 +52,17 @@ pub fn apply_firewall_rules(
     if !nat_moves.is_empty() {
         ipv4_document.push_str(&format!("*nat\n{nat_moves}COMMIT\n"));
     }
+    ipv4_document.push_str(&build_forward_document(
+        "iptables",
+        &ipv4_build_forwarding(),
+    )?);
     restore("iptables", &ipv4_document)?;
-    restore(
+    let mut ipv6_document = filter_document("ip6tables", &management_policy(management_address))?;
+    ipv6_document.push_str(&build_forward_document(
         "ip6tables",
-        &filter_document("ip6tables", &management_policy(management_address))?,
-    )?;
+        &ipv6_build_forwarding(),
+    )?);
+    restore("ip6tables", &ipv6_document)?;
     ensure_rule(
         "iptables",
         "filter",
@@ -68,46 +76,73 @@ pub fn apply_firewall_rules(
             "ACCEPT",
         ],
     )?;
-    for rule in build_forwarding() {
-        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
-        ensure_rule("iptables", "mangle", "FORWARD", &rule)?;
-    }
     Ok(())
 }
 
 /// Build steps route to the internet, never into the Machine's services, across
-/// the mesh, or to a cloud metadata service. Mangle runs before BuildKit's CNI
-/// accepts its own bridge's traffic in filter. A published port is public, so DNAT to it still passes.
-fn build_forwarding() -> Vec<Vec<String>> {
-    let bridges = format!("{}+", ployz_build::BUILD_BRIDGE_PREFIX);
-    [
+/// the mesh, to a cloud metadata service or to a private network. Mangle runs
+/// before BuildKit's CNI accepts its own bridge's traffic in filter. A
+/// published port is public, so DNAT to it still passes, and so does DNS to any
+/// resolver, since the host's may sit on the LAN or on link-local.
+fn ipv4_build_forwarding() -> Vec<String> {
+    build_forwarding(
         vec![
-            "-o",
-            DOCKER_NETWORK_NAME,
-            "-m",
-            "conntrack",
-            "!",
-            "--ctstate",
-            "DNAT",
+            format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP"),
+            format!("-o {DOCKER_NETWORK_NAME} -m conntrack ! --ctstate DNAT -j DROP"),
+            "-m conntrack --ctstate DNAT -j RETURN".to_owned(),
         ],
-        vec!["-o", WIREGUARD_INTERFACE_NAME],
-        vec!["-d", LINK_LOCAL],
-    ]
-    .into_iter()
-    .map(|output| {
-        ["-i", bridges.as_str()]
-            .into_iter()
-            .chain(output)
-            .chain(["-j", "DROP"])
-            .map(str::to_owned)
-            .collect()
-    })
-    .collect()
+        &[
+            LINK_LOCAL,
+            "10.0.0.0/8",
+            "172.16.0.0/12",
+            "192.168.0.0/16",
+            "100.64.0.0/10",
+        ],
+    )
+}
+
+/// Build steps have no IPv6 route today; this holds if they ever get one.
+fn ipv6_build_forwarding() -> Vec<String> {
+    build_forwarding(
+        vec![format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP")],
+        &["fc00::/7", "fe80::/10"],
+    )
+}
+
+fn build_forwarding(mut rules: Vec<String>, private: &[&str]) -> Vec<String> {
+    rules.extend(
+        ["udp", "tcp"]
+            .iter()
+            .map(|protocol| format!("-p {protocol} --dport {DNS_PORT} -j RETURN")),
+    );
+    rules.extend(
+        private
+            .iter()
+            .map(|destination| format!("-d {destination} -j DROP")),
+    );
+    rules
+}
+
+fn build_forward_jump() -> String {
+    format!(
+        "-i {}+ -j {BUILD_FORWARD_CHAIN}",
+        ployz_build::BUILD_BRIDGE_PREFIX
+    )
+}
+
+fn build_forward_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
+    chain_document(
+        program,
+        "mangle",
+        "FORWARD",
+        &build_forward_jump(),
+        BUILD_FORWARD_CHAIN,
+        rules,
+    )
 }
 
 const LINK_LOCAL: &str = "169.254.0.0/16";
-/// The host resolver BuildKit reads from its resolv.conf, on loopback.
-const HOST_DNS_PORT: u16 = 53;
+const DNS_PORT: u16 = 53;
 
 /// Fence one build slot's BuildKit worker. BuildKit runs on the host network,
 /// so a Dockerfile `ADD` of a URL would otherwise reach everything the host
@@ -126,9 +161,16 @@ pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
         ("iptables", ipv4_fence(fence)),
         ("ip6tables", ipv6_fence(fence)),
     ] {
-        chain_document(program, &chain, "OUTPUT", &rules)
-            .and_then(|document| restore(program, &document))
-            .map_err(|error| ployz_core::error_chain::inline(&error))?;
+        chain_document(
+            program,
+            "filter",
+            "OUTPUT",
+            &format!("-j {chain}"),
+            &chain,
+            &rules,
+        )
+        .and_then(|document| restore(program, &document))
+        .map_err(|error| ployz_core::error_chain::inline(&error))?;
     }
     Ok(())
 }
@@ -145,7 +187,7 @@ fn fenced(
 ) -> Vec<String> {
     let mut rules: Vec<String> = ["udp", "tcp"]
         .iter()
-        .map(|protocol| format!("-d {loopback} -p {protocol} --dport {HOST_DNS_PORT} -j RETURN"))
+        .map(|protocol| format!("-d {loopback} -p {protocol} --dport {DNS_PORT} -j RETURN"))
         .collect();
     rules.extend(allowed.into_iter().map(|rule| format!("{rule} -j RETURN")));
     let cgroup = fence.cgroup.as_str();
@@ -233,27 +275,31 @@ fn management_policy(management_address: ManagementAddress) -> Vec<String> {
 }
 
 fn filter_document(program: &str, rules: &[String]) -> Result<String, NetworkError> {
-    chain_document(program, INPUT_CHAIN, "INPUT", rules)
+    chain_document(
+        program,
+        "filter",
+        "INPUT",
+        &format!("-j {INPUT_CHAIN}"),
+        INPUT_CHAIN,
+        rules,
+    )
 }
 
 /// Declaring the chain in a `--noflush` restore replaces its rules in the same
-/// commit that fills it again.
+/// commit that fills it again. `jump` enters `chain` from `hook`, first.
 fn chain_document(
     program: &str,
-    chain: &str,
+    table: &str,
     hook: &str,
+    jump: &str,
+    chain: &str,
     rules: &[String],
 ) -> Result<String, NetworkError> {
-    let mut document = format!("*filter\n:{chain} - [0:0]\n");
+    let mut document = format!("*{table}\n:{chain} - [0:0]\n");
     for rule in rules {
         document.push_str(&format!("-A {chain} {rule}\n"));
     }
-    document.push_str(&move_to_top(
-        program,
-        "filter",
-        hook,
-        &format!("-j {chain}"),
-    )?);
+    document.push_str(&move_to_top(program, table, hook, jump)?);
     document.push_str("COMMIT\n");
     Ok(document)
 }
@@ -328,10 +374,6 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
             "ACCEPT",
         ],
     ));
-    for rule in build_forwarding() {
-        let rule: Vec<&str> = rule.iter().map(String::as_str).collect();
-        attempt(delete_rule("iptables", "mangle", "FORWARD", &rule));
-    }
     attempt(delete_rule(
         "iptables",
         "nat",
@@ -346,16 +388,20 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
         ],
     ));
     for program in ["iptables", "ip6tables"] {
-        attempt(delete_rule(
+        attempt(remove_chain(
             program,
             "filter",
             "INPUT",
-            &["-j", INPUT_CHAIN],
+            &format!("-j {INPUT_CHAIN}"),
+            INPUT_CHAIN,
         ));
-        if command_succeeds(program, &["-t", "filter", "-n", "-L", INPUT_CHAIN]) {
-            attempt(checked_command(program, &["-t", "filter", "-F", INPUT_CHAIN]).map(|_| ()));
-            attempt(checked_command(program, &["-t", "filter", "-X", INPUT_CHAIN]).map(|_| ()));
-        }
+        attempt(remove_chain(
+            program,
+            "mangle",
+            "FORWARD",
+            &build_forward_jump(),
+            BUILD_FORWARD_CHAIN,
+        ));
         attempt(remove_build_fences(program));
     }
     if failures.is_empty() {
@@ -363,6 +409,22 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     } else {
         Err(NetworkError::Io(std::io::Error::other(failures.join("; "))))
     }
+}
+
+fn remove_chain(
+    program: &str,
+    table: &str,
+    hook: &str,
+    jump: &str,
+    chain: &str,
+) -> Result<(), NetworkError> {
+    let jump: Vec<&str> = jump.split(' ').collect();
+    delete_rule(program, table, hook, &jump)?;
+    if command_succeeds(program, &["-t", table, "-n", "-L", chain]) {
+        checked_command(program, &["-t", table, "-F", chain])?;
+        checked_command(program, &["-t", table, "-X", chain])?;
+    }
+    Ok(())
 }
 
 /// Every slot's fence, whichever slots this Machine ever ran.
@@ -482,19 +544,41 @@ mod tests {
     }
 
     #[test]
-    fn build_steps_never_reach_a_cloud_metadata_service() {
-        assert!(
-            build_forwarding().contains(
-                &["-i", "ployz-build+", "-d", "169.254.0.0/16", "-j", "DROP"]
-                    .map(str::to_owned)
-                    .to_vec()
-            )
+    fn build_steps_reach_published_ports_and_dns_but_not_the_mesh_metadata_or_a_private_network() {
+        assert_eq!(
+            ipv4_build_forwarding(),
+            [
+                "-o ployz-wg -j DROP",
+                "-o ployz -m conntrack ! --ctstate DNAT -j DROP",
+                "-m conntrack --ctstate DNAT -j RETURN",
+                "-p udp --dport 53 -j RETURN",
+                "-p tcp --dport 53 -j RETURN",
+                "-d 169.254.0.0/16 -j DROP",
+                "-d 10.0.0.0/8 -j DROP",
+                "-d 172.16.0.0/12 -j DROP",
+                "-d 192.168.0.0/16 -j DROP",
+                "-d 100.64.0.0/10 -j DROP",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_steps_never_reach_the_mesh_or_a_private_network_over_ipv6() {
+        assert_eq!(
+            ipv6_build_forwarding(),
+            [
+                "-o ployz-wg -j DROP",
+                "-p udp --dport 53 -j RETURN",
+                "-p tcp --dport 53 -j RETURN",
+                "-d fc00::/7 -j DROP",
+                "-d fe80::/10 -j DROP",
+            ]
         );
     }
 
     #[test]
     fn teardown_finds_every_slots_fence_and_nothing_else() {
-        let listing = "-P OUTPUT ACCEPT\n-N PLOYZ-BUILD0\n-N PLOYZ-BUILD12\n-N PLOYZ-BUILDX\n-N PLOYZ-INPUT\n-A OUTPUT -j PLOYZ-BUILD12\n-A OUTPUT -j PLOYZ-BUILD0\n-A OUTPUT -j ufw-before-output\n-A INPUT -j PLOYZ-INPUT\n";
+        let listing = "-P OUTPUT ACCEPT\n-N PLOYZ-BUILD0\n-N PLOYZ-BUILD12\n-N PLOYZ-BUILDX\n-N PLOYZ-BUILD-FORWARD\n-N PLOYZ-INPUT\n-A OUTPUT -j PLOYZ-BUILD12\n-A OUTPUT -j PLOYZ-BUILD0\n-A OUTPUT -j ufw-before-output\n-A FORWARD -i ployz-build+ -j PLOYZ-BUILD-FORWARD\n-A INPUT -j PLOYZ-INPUT\n";
         assert_eq!(
             build_fence_hooks(listing),
             BuildFenceHooks {
