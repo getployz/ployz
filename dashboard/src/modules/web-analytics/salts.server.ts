@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
-import { TZDate } from "@date-fns/tz";
 import { and, asc, eq, gte, inArray, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
+import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
 import {
@@ -29,20 +29,17 @@ function isTimeZone(timezone: string) {
 }
 
 export function siteDay(timezone: string, now: number, offset = 0) {
-  const local = new TZDate(now, timezone);
-  return new Date(Date.UTC(local.getFullYear(), local.getMonth(), local.getDate() + offset)).toISOString().slice(0, 10);
+  return localDay(timezone, dayStart(timezone, localDay(timezone, now), offset));
 }
 
 export function saltWindow(day: string, timezone: string) {
-  const utc = new Date(`${day}T00:00:00Z`);
-  const midnight = (offset: number) =>
-    Math.floor(new TZDate(utc.getUTCFullYear(), utc.getUTCMonth(), utc.getUTCDate() + offset, timezone).getTime() / 1000);
-  return { start: midnight(0), end: midnight(1) };
+  return { start: dayStart(timezone, day).getTime() / 1000, end: dayEnd(timezone, day).getTime() / 1000 };
 }
 
 const salts = (organizationId: string, environmentId: string, days: ReadonlyArray<string>) =>
   days.map((day) => ({ organizationId, environmentId, day, salt: randomBytes(32) }));
 
+/** Locks the site's rollup_state row before its site row, the order ingest and the rollup take them in. */
 export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   organizationId: string,
   environmentId: string,
@@ -55,6 +52,10 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    if (setting.enabled) yield* drizzle.insert(analyticsRollupState).values({ environmentId }).onConflictDoNothing();
+    yield* drizzle.select({ environmentId: analyticsRollupState.environmentId }).from(analyticsRollupState)
+      .where(eq(analyticsRollupState.environmentId, environmentId))
+      .for("update");
     const [previous] = yield* drizzle.select({ timezone: analyticsSite.timezone }).from(analyticsSite)
       .where(and(eq(analyticsSite.organizationId, organizationId), eq(analyticsSite.environmentId, environmentId)))
       .for("update");
@@ -73,7 +74,6 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
         .where(eq(analyticsRollupState.environmentId, environmentId));
     }
     if (!setting.enabled || site === undefined) return;
-    yield* drizzle.insert(analyticsRollupState).values({ environmentId }).onConflictDoNothing();
     const days = [0, 1, 2].map((offset) => siteDay(site.timezone, now, offset));
     yield* drizzle.insert(analyticsSalt).values(salts(organizationId, environmentId, days)).onConflictDoNothing();
   }));
@@ -84,10 +84,11 @@ export const withholdToday = Effect.fn("WebAnalytics.withholdToday")(function* (
   const { drizzle } = yield* Database;
   const [site] = yield* drizzle.select({ timezone: analyticsSite.timezone }).from(analyticsSite)
     .where(and(eq(analyticsSite.organizationId, organizationId), eq(analyticsSite.environmentId, environmentId)));
+  if (site === undefined) return;
   yield* drizzle.delete(analyticsSalt).where(and(
     eq(analyticsSalt.organizationId, organizationId),
     eq(analyticsSalt.environmentId, environmentId),
-    eq(analyticsSalt.day, siteDay(site?.timezone ?? "UTC", now)),
+    eq(analyticsSalt.day, siteDay(site.timezone, now)),
   ));
 });
 
