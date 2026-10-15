@@ -86,7 +86,9 @@ CLI at once can leave it either running or stopped.
 ## Approve or deny a deploy
 
 Every deploy the agent starts waits for you. Its card, like **Deploy production**, is marked
-**Deploys** when it destroys nothing, and lists what changes.
+**Deploys** when it destroys nothing, and lists what changes. A redeploy of a deployment that
+failed waits too. Its card, like **Retry production**, is marked **Redeploys** and lists no
+changes, because it ships exactly what that deployment did.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
@@ -131,9 +133,8 @@ server, like **Remove fra-1**.
   one asks again. Starting a service never asks, and neither does upgrading a server or
   changing what it takes, unless turning web traffic off leaves no online server with a public IP to
   serve your domains. Then the card lists the domains that go dark and everything else the change sets,
-  and approving it covers only that change. Redeploying a deployment doesn't ask either, because it ships exactly
-  what that deployment did and you already approved anything it removes. Starting a queued one
-  doesn't ask.
+  and approving it covers only that change. Every redeploy the agent starts asks too, and one
+  approval covers one redeploy. Starting a queued one doesn't ask.
 - **One at a time.** The agent runs at most one command that might ask per reply, so you never
   get two cards for one message.
 - **You approve one plan.** If the change moves on before you answer, the card says the plan

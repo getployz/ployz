@@ -40,7 +40,7 @@ run each time, and Ployz tells agents this when they connect.
 
 ## Approve a deploy
 
-Every deploy the agent asks for waits for you, even one that destroys nothing. A save waits
+Every deploy or redeploy the agent asks for waits for you, even one that destroys nothing. A save waits
 only when it would remove something. See
 [Destructive actions ask first](organizations.md#destructive-actions-ask-first). The call fails
 with `approval_required`, anything it would remove, and a link to your organization.
