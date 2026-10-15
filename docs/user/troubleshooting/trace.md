@@ -82,8 +82,8 @@ status. See
 - **Cloudflare adds three lines.** When the request reaches your server through Cloudflare's
   proxy, the page ends with `via=cloudflare`, `cf_ray` (the Cloudflare request ID) and
   `client_ip` (the visitor's address, from Cloudflare's `CF-Connecting-IP` header). A `cf_ray` that
-  could break the page, such as one with spaces, stays empty. A `CF-Connecting-IP` that isn't an
-  address leaves `client_ip` as Cloudflare's address.
+  could break the page, such as one with spaces, stays empty. When no address can be read from
+  `CF-Connecting-IP`, `client_ip` is Cloudflare's address.
   A Cloudflare Worker can change `client_ip`, so don't treat it as proof of who visited.
 - **A tunnel hides Cloudflare.** Through a Cloudflare Tunnel or another proxy, the request looks
   local, so the Cloudflare lines don't appear. `ip` shows that proxy's address.
