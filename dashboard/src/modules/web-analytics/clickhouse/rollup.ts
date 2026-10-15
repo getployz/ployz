@@ -9,7 +9,6 @@ type LockedSite = RollupSite & { readonly enabled: boolean; readonly rolledUpTo:
 
 const MAX_DAYS_PER_SITE_RUN = 31;
 
-/** Holds the site's clickhouse_site row lock, which the writer takes across its insert, so a day is never rolled up from half a batch. */
 const withRollupLock = <A, E, R>(environmentId: string, program: (site: LockedSite) => Effect.Effect<A, E, R>, otherwise: A) =>
   Effect.gen(function* () {
     const database = yield* Database;
@@ -36,7 +35,6 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
-/** Replaces the day's daily and session_hourly rows with a fresh sessionization, as the Postgres `writeDay` does. */
 const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: RollupSite, day: string) {
   const clickhouse = yield* requiredClickHouse;
   const start = dayStart(site.timezone, day);

@@ -8,7 +8,6 @@ import { ClickHouse } from "./client";
 
 type Params = Record<string, string | number | ReadonlyArray<string>>;
 
-/** Binds every value as a ClickHouse query parameter, so no site or user data reaches the SQL text. */
 export type Binder = {
   readonly params: Params;
   readonly env: string;
@@ -47,7 +46,6 @@ const pageviewsIn = (b: Binder, start: Date, end: Date) =>
 
 const localDate = (b: Binder) => `toString(toDate(ts, ${b.tz}))`;
 
-/** The site-local hour holding `ts` as epoch milliseconds, the same search as `hourStart` and the Postgres `localHour`. */
 export const localHour = (b: Binder) => {
   const local = `toTimeZone(ts, ${b.tz})`;
   const back = `(ts - toIntervalMillisecond((toMinute(${local}) * 60 + toSecond(${local})) * 1000 + toMillisecond(${local})))`;
@@ -56,7 +54,6 @@ export const localHour = (b: Binder) => {
   return `toUnixTimestamp64Milli(if(${offset(back)} = ${offset("ts")}, ${back}, ${search}))`;
 };
 
-/** `neq` keeps rows whose value is missing, like Postgres `is distinct from`. */
 const filterClause = (b: Binder, filters: ReadonlyArray<Filter>) =>
   filters.map((filter) => {
     const target = COLUMN[filter.key];
@@ -68,8 +65,8 @@ const HEAD_DIMS = SESSION_DIMS.map((dim) => `first_value(${dim}) RESPECT NULLS O
 const HEAD_ALIASES = SESSION_DIMS.map((dim) => `head_${dim} AS ${dim}`).join(", ");
 
 /**
- * The Postgres `visitCtes`, sessionizing the same window. Head dims take `head_` names in `attributed` because a
- * ClickHouse alias shadows the column of the same name everywhere in its query, the visit window's ordering included.
+ * Head dims take `head_` names in `attributed` because a ClickHouse alias shadows the column of the same name
+ * everywhere in its query, the visit window's ordering included.
  */
 export const visitCtes = (b: Binder, query: StoreQuery, range: Range) => {
   const picks = pageFilters(query);
@@ -108,13 +105,11 @@ const sessionsIn = (b: Binder, query: StoreQuery, range: Range) => `
   WITH ${visitCtes(b, query, range)}
   SELECT * FROM visits WHERE ts >= ${b.at(range.start)} AND ts < ${b.at(range.end)}`;
 
-/** The Postgres `rowsIn` as a `FROM ... WHERE ...` clause. */
 const rowsIn = (b: Binder, query: StoreQuery, range: Range, needsVisit = false) =>
   query.filters.length === 0 && !needsVisit
     ? `FROM pageview WHERE ${pageviewsIn(b, range.start, range.end)}`
     : `FROM (WITH ${visitCtes(b, query, range)} SELECT * FROM visit_rows) WHERE true`;
 
-/** Postgres holds the ClickHouse rollup's progress, beside the lock its rollup and writer take. */
 const rollupMarker = Effect.fn("WebAnalytics.clickHouseRollupMarker")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.execute<{ day: string | null; dirty: string[] }>(sql`
@@ -180,6 +175,11 @@ export const dailyTotals = Effect.fn("WebAnalytics.clickHouseDailyTotals")(funct
   return rows.map((row): BucketRow => ({ bucket: dayStart(query.timezone, row.local_day), ...totalsOf(row) }));
 });
 
+const staleVisitHours = (timezone: string, dirty: ReadonlyArray<string>, range: Range): Range[] =>
+  dirty
+    .map((day) => ({ start: new Date(Math.max(dayStart(timezone, day).getTime(), range.start.getTime())), end: new Date(Math.min(dayEnd(timezone, day).getTime(), range.end.getTime())) }))
+    .filter((part) => part.start < part.end);
+
 export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(function* (query: StoreQuery) {
   const { timezone, range } = query;
   if (range.start >= range.end) return [];
@@ -189,10 +189,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(fun
   const rows = yield* run<Totals & { bucket: number }>(query, (b) => {
     const parts: string[] = [];
     if (rolledEnd > range.start) {
-      // A dirty day's hours keep their stale visits until rebuilt, but count its pageviews and visitors raw.
-      const dirty = (marker?.dirty ?? [])
-        .map((day) => ({ start: new Date(Math.max(dayStart(timezone, day).getTime(), range.start.getTime())), end: new Date(Math.min(dayEnd(timezone, day).getTime(), rolledEnd.getTime())) }))
-        .filter((part) => part.start < part.end);
+      const dirty = staleVisitHours(timezone, marker?.dirty ?? [], { start: range.start, end: rolledEnd });
       const inDirty = dirty.length === 0 ? "false" : dirty.map((part) => `(hour >= ${b.at(part.start)} AND hour < ${b.at(part.end)})`).join(" OR ");
       parts.push(`
         SELECT toInt64(toUnixTimestamp(hour)) * 1000 AS bucket, if(${inDirty}, 0, pageviews) AS pv, if(${inDirty}, 0, visitors) AS vi,
@@ -261,7 +258,6 @@ export const entryPages = Effect.fn("WebAnalytics.clickHouseEntryPages")(functio
   }));
 });
 
-/** Goals live in Postgres; ClickHouse matches their patterns as the Postgres store does, as `like` patterns with `*` for `%`. */
 export const goalConversions = Effect.fn("WebAnalytics.clickHouseGoalConversions")(function* (query: StoreQuery) {
   const { drizzle } = yield* Database;
   const goals = yield* drizzle.execute<{ id: string; name: string; path_pattern: string }>(sql`

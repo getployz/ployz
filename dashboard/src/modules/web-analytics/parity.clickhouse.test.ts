@@ -40,7 +40,6 @@ type Reads = {
   readonly goalConversions: Read<[postgresStore.StoreQuery]>;
 };
 
-/** Every read the store serves, each dim included, with rows sorted so ties ordered differently still compare equal. */
 const everyRead = (store: Reads, query: postgresStore.StoreQuery) =>
   Effect.all({
     daily: Effect.map(store.dailyTotals(query), sortedRows),
@@ -80,7 +79,6 @@ const rolledUpPageviews = (clickhouse: ClickHouseService, environmentId: string,
     { environmentId, day },
   ).pipe(Effect.map(([row]) => row?.pageviews ?? 0));
 
-/** Lands a pageview the way a late ingest does, in Postgres and in the ClickHouse copy. */
 const insertBoth = (clickhouse: ClickHouseService, environmentId: string, record: PageviewRecord) =>
   Effect.gen(function* () {
     const { drizzle } = yield* Database;
