@@ -5,11 +5,13 @@ import { Card } from "#/components/ui/card";
 import { Field, FieldError, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
-import { formatCount, formatPercent, isPathPattern } from "./analytics-model";
+import { formatCount, formatPercent, goalRate, isPathPattern } from "./analytics-model";
 import { type AnalyticsGoal, type AnalyticsScope, useCreateGoal, useDeleteGoal } from "./analytics.queries";
 
 /** A goal counts the visitors who reached a path; `*` matches any run of characters. */
-export function AnalyticsGoals({ scope, goals }: { scope: AnalyticsScope; goals: ReadonlyArray<AnalyticsGoal> }) {
+type AnalyticsGoalsProps = { scope: AnalyticsScope; goals: ReadonlyArray<AnalyticsGoal>; visitors: number };
+
+export function AnalyticsGoals({ scope, goals, visitors }: AnalyticsGoalsProps) {
   const deleteGoal = useDeleteGoal(scope);
   return (
     <Card size="sm" className="min-w-0 gap-2 px-3" data-analytics-table="Goals">
@@ -19,8 +21,9 @@ export function AnalyticsGoals({ scope, goals }: { scope: AnalyticsScope; goals:
           <TableHeader>
             <TableRow>
               <TableHead>Goal</TableHead>
-              <TableHead className="w-20 text-right">Visitors</TableHead>
-              <TableHead className="w-20 text-right">Rate</TableHead>
+              <TableHead className="w-18 text-right">Visitors</TableHead>
+              <TableHead className="w-16 text-right">Views</TableHead>
+              <TableHead className="w-14 text-right">Rate</TableHead>
               <TableHead className="w-9" />
             </TableRow>
           </TableHeader>
@@ -30,10 +33,9 @@ export function AnalyticsGoals({ scope, goals }: { scope: AnalyticsScope; goals:
                 <TableCell className="truncate" title={`${goal.name} ${goal.pathPattern}`}>
                   {goal.name} <span className="font-mono text-xs text-muted-foreground">{goal.pathPattern}</span>
                 </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{formatCount(goal.visitors)}</TableCell>
                 <TableCell className="text-right font-mono tabular-nums">{formatCount(goal.conversions)}</TableCell>
-                <TableCell className="text-right font-mono tabular-nums">
-                  {goal.visitors === 0 ? "–" : formatPercent((goal.conversions / goal.visitors) * 100)}
-                </TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{formatRate(goalRate(goal.visitors, visitors))}</TableCell>
                 <TableCell>
                   <Button variant="ghost" size="icon-xs" aria-label={`Delete ${goal.name}`} disabled={goal.id.startsWith("pending:")}
                     onClick={() => deleteGoal.mutate(goal.id)}><Trash2Icon /></Button>
@@ -47,6 +49,8 @@ export function AnalyticsGoals({ scope, goals }: { scope: AnalyticsScope; goals:
     </Card>
   );
 }
+
+const formatRate = (rate: number | null) => rate === null ? "–" : formatPercent(rate);
 
 function GoalForm({ scope }: { scope: AnalyticsScope }) {
   const createGoal = useCreateGoal(scope);

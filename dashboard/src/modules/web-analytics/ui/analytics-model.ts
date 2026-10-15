@@ -91,6 +91,9 @@ export function formatDuration(seconds: number) {
   return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
 }
 
+/** The share of the range's visitors who reached the goal, or null before anyone visited. */
+export const goalRate = (goalVisitors: number, visitors: number) => visitors === 0 ? null : (goalVisitors / visitors) * 100;
+
 export const viewsPerVisit = (pageviews: number, visits: number) => visits === 0 ? 0 : Math.round((pageviews / visits) * 10) / 10;
 
 const EnvironmentScope = { organizationSlug: Schema.NonEmptyString, environmentId: Schema.NonEmptyString };

@@ -55,7 +55,7 @@ export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
         <Breakdown title="Languages" rows={view.languages} />
         <Breakdown title="Hosts" rows={view.hosts} />
       </div>
-      <AnalyticsGoals scope={scope} goals={view.goals} />
+      <AnalyticsGoals scope={scope} goals={view.goals} visitors={view.overview.visitors} />
     </div>
   );
 }

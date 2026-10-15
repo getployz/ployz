@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyticsGate, customRange, isRangeSpec, parsePageFilter, partialDays, resolveRange, viewsPerVisit } from "./analytics-model";
+import { analyticsGate, customRange, goalRate, isRangeSpec, parsePageFilter, partialDays, resolveRange, viewsPerVisit } from "./analytics-model";
 
 const iso = (range: { start: Date; end: Date }) => [range.start.toISOString(), range.end.toISOString()];
 const NOW = Date.parse("2026-10-15T09:20:00Z");
@@ -45,6 +45,17 @@ describe("partialDays", () => {
 
   it("calls today a gap when visits were lost on it", () => {
     expect(partialDays(["2026-10-15"], [{ day: "2026-10-15", count: 1 }], "2026-10-15")).toEqual([{ day: "2026-10-15", reason: "gap" }]);
+  });
+});
+
+describe("goalRate", () => {
+  it("is the share of the range's visitors who reached the goal, not views per goal visitor", () => {
+    expect(goalRate(84_862, 240_090)).toBeCloseTo(35.35, 2);
+    expect(goalRate(0, 240_090)).toBe(0);
+  });
+
+  it("has no rate before anyone visited", () => {
+    expect(goalRate(0, 0)).toBeNull();
   });
 });
 
