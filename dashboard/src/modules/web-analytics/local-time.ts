@@ -3,6 +3,8 @@ import { LONGEST_RETENTION_MONTHS } from "./model";
 
 export const HOUR_MS = 3_600_000;
 export const SESSION_GAP_SECONDS = 1800;
+/** How far before a range a visit crossing into it is followed back to find its entry. A longer visit enters at this bound. */
+export const ENTRY_LOOKBACK_SECONDS = 86_400;
 
 export function localDay(timezone: string, instant: Date | number) {
   const local = new TZDate(new Date(instant).getTime(), timezone);

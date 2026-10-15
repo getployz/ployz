@@ -161,10 +161,10 @@ it.live("a batch replayed through ingest adds nothing, and late pageviews dirty 
     ];
     yield* push(2n, late);
     expect(yield* provide(pageviewCount(PRODUCTION))).toBe(fixture.rows.length + late.length);
-    expect(yield* provide(rollupState(PRODUCTION))).toEqual({ rolled_up_to: "2026-10-14", dirty: ["2026-10-10", "2026-10-11", "2026-10-12"] });
+    expect(yield* provide(rollupState(PRODUCTION))).toEqual({ rolled_up_to: "2026-10-14", dirty: ["2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13"] });
     yield* provide(everyAnswerMatches(site, fixture, fixture.rows, fixture.goals, "while the late days are still dirty", late));
 
-    expect(yield* provide(rebuildDirtyDays(PRODUCTION))).toBe(3);
+    expect(yield* provide(rebuildDirtyDays(PRODUCTION))).toBe(4);
     expect(yield* provide(rollupState(PRODUCTION))).toEqual({ rolled_up_to: "2026-10-14", dirty: [] });
     yield* provide(everyAnswerMatches(site, fixture, [...fixture.rows, ...late], fixture.goals, "after the rebuild"));
   }).pipe(Effect.provide(TestClock.layer())), 120_000);

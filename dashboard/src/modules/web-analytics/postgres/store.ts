@@ -1,7 +1,7 @@
 import { type SQL, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
-import { dayEnd, dayStart, localDays, SESSION_GAP_SECONDS } from "../local-time";
+import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
 import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 
 export type StoreQuery = {
@@ -40,6 +40,7 @@ export const localHour = (timezone: string) => {
     where ${offset(sql`m`)} = ${offset(sql`ts`)}) end`;
 };
 const gap = sql.raw(`interval '${SESSION_GAP_SECONDS} seconds'`);
+const lookback = sql.raw(`interval '${ENTRY_LOOKBACK_SECONDS} seconds'`);
 const epochMs = (expr: SQL) => sql`(extract(epoch from ${expr}) * 1000)::bigint`;
 
 const SESSION_KEYS: ReadonlySet<FilterKey> = new Set(SESSION_DIMS);
@@ -63,6 +64,9 @@ const HEAD_DIMS = sql.raw(SESSION_DIMS.map((dim) => `first_value(${dim}) over vi
  * Sessionizes every pageview in the range's window, filtered or not, and keeps as `visits` the sessions the filters
  * select: session dim filters test the first pageview, page filters need at least one pageview of the session to pass.
  * The window reaches a session gap before the range for exact session starts, and a day past it for whole sessions.
+ * A visitor seen in the gap before the range may be mid-visit, so their earlier pageviews within the entry lookback join
+ * the window, and the visit takes its dims from its real first pageview. Every range, a rolled day or a raw read,
+ * attributes a visit alike.
  * Each pageview takes its visit's first values and counts from window functions, never a join: the planner has no row
  * estimates for a CTE, and with a filter it picked nested loops that went quadratic.
  */
@@ -76,6 +80,15 @@ export const visitCtes = (query: StoreQuery, range: Range) => {
     where environment_id = ${query.environmentId}::text
       and ts >= ${instant(range.start)} - ${gap}
       and ts < ${instant(range.end)} + interval '1 day'
+    union all
+    select ts, visitor_id, host, pathname, source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, language
+    from analytics.pageview
+    where environment_id = ${query.environmentId}::text
+      and ts >= ${instant(range.start)} - ${lookback}
+      and ts < ${instant(range.start)} - ${gap}
+      and visitor_id in (
+        select visitor_id from analytics.pageview
+        where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} - ${gap} and ts < ${instant(range.start)})
   ), marked as (
     select *, case when ts - lag(ts) over w <= ${gap} then 0 else 1 end as is_new
     from window_rows window w as (partition by visitor_id order by ts, pathname, host)

@@ -1,4 +1,4 @@
-import { dayStart, hourStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
+import { dayStart, ENTRY_LOOKBACK_SECONDS, hourStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 
 export type PageviewRecord = {
@@ -122,7 +122,8 @@ export const goalMatcher = (pathPattern: string) => {
 /**
  * Filters select visits, then pageviews inside them. A session dim filter keeps the visits whose first pageview has the
  * value; a page filter keeps the pageviews on that page, and the visits holding one. Pageviews and visitors count the
- * selected pageviews; visits, bounces and duration count the selected visits whole.
+ * selected pageviews; visits, bounces and duration count the selected visits whole. A visit is followed back at most
+ * {@link ENTRY_LOOKBACK_SECONDS} before the range for its entry, and a day past it for its end.
  */
 export class Reference {
   /** The selected pageviews in the range, each attributed to its visit by {@link attributed}. */
@@ -140,7 +141,7 @@ export class Reference {
     const end = range.end.getTime();
     const sessionFilters = filters.filter((filter) => isSessionDim(filter.key));
     const pageFilters = filters.filter((filter) => !isSessionDim(filter.key));
-    const window = all.filter((row) => Date.parse(row.ts) >= start - SESSION_GAP_SECONDS * 1000 && Date.parse(row.ts) < end + 86_400_000);
+    const window = all.filter((row) => Date.parse(row.ts) >= start - ENTRY_LOOKBACK_SECONDS * 1000 && Date.parse(row.ts) < end + 86_400_000);
     const selected = sessionize(window)
       .filter((session) => matches(session.first, sessionFilters))
       .map((session) => ({ session, picked: session.rows.filter((row) => matches(row, pageFilters)) }))

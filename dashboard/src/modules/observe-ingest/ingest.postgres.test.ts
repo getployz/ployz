@@ -573,10 +573,21 @@ it.live("new rows mark their site-local days dirty up to rolled_up_to, and yeste
     pageview(midnight(-1) + 12 * HOUR_MS),
   ]);
   expect((yield* send(body)).status).toBe(200);
-  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: day(-2), dirty: [day(-10), day(-4), day(-3)] }]);
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: day(-2), dirty: [day(-10), day(-4), day(-3), day(-2)] }]);
   yield* rolledUp(day(-2), []);
   expect((yield* send(body)).status).toBe(200);
   expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: day(-2), dirty: [] }]);
+}), 60_000);
+
+it.live("a late row before midnight marks the next day dirty, since it can become the entry of a visit crossing midnight", () => Effect.gen(function* () {
+  const { send, sites, rollupState, rolledUp } = yield* setup();
+  yield* sites();
+  const now = Date.now();
+  const day = (offset: number) => siteDay(SYDNEY, now, offset);
+  const midnight = (offset: number) => saltWindow(day(offset), SYDNEY).start * 1000;
+  yield* rolledUp(day(-1), []);
+  expect((yield* send(pageviews(5, [pageview(midnight(-2) - 2 * HOUR_MS)]))).status).toBe(200);
+  expect(yield* rollupState()).toEqual([{ environmentId: PRODUCTION, rolledUpTo: day(-1), dirty: [day(-3), day(-2)] }]);
 }), 60_000);
 
 it.live("a site that was never rolled up gets no dirty days", () => Effect.gen(function* () {

@@ -13,7 +13,7 @@ import { Database } from "#/server/database.server";
 import { storeTestCloud } from "#/test/store-cloud";
 import { ensurePartitions, forgetPartitions } from "./partitions";
 import { closeDays } from "./rollup";
-import { dailyTotals, dailyTotalsSql, hourlyTotals, readPlan, rolledUpTo, sessionsBy, type StoreQuery } from "./store";
+import { breakdown, dailyTotals, dailyTotalsSql, hourlyTotals, readPlan, rolledUpTo, sessionsBy, type StoreQuery } from "./store";
 
 const setup = Effect.fn(function* () {
   forgetPartitions();
@@ -97,6 +97,45 @@ it.live("a source filter keeps a visit whole, its direct pages included, raw and
     expect(yield* provide(dailyTotals(query))).toEqual(google);
     expect(yield* provide(closeDays(site.environmentId, new Date("2026-10-02T12:00:00Z")))).toBe(1);
     expect(yield* provide(dailyTotals(query))).toEqual(google);
+  }), 60_000);
+
+it.live("a visit that starts more than a session gap before midnight keeps its entry source on both days, raw and rolled", () =>
+  Effect.gen(function* () {
+    const provide = yield* setup();
+    const site = { environmentId: "00000000-0000-4000-8000-00000000a0f6", timezone: "UTC" };
+    const rows: PageviewRecord[] = [];
+    for (let at = Date.parse("2026-10-01T22:00:00Z"); at <= Date.parse("2026-10-02T00:20:00Z"); at += 20 * 60_000) {
+      rows.push(rows.length === 0
+        ? row(new Date(at).toISOString(), "1", { source: "Google", referrerHost: "google.com" })
+        : row(new Date(at).toISOString(), "1", { pathname: `/docs/${rows.length}` }));
+    }
+    rows.push(row("2026-10-02T00:10:00.000Z", "2"));
+    yield* provide(seedSite(site, rows));
+    const whole = { start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-10-03T00:00:00Z") };
+    const midVisit = { start: new Date("2026-10-01T23:00:00Z"), end: new Date("2026-10-02T01:00:00Z") };
+    const byBucket = (series: ReadonlyArray<BucketRow>) => [...series].sort((a, b) => a.bucket.getTime() - b.bucket.getTime());
+    const answers = (when: string) => Effect.gen(function* () {
+      for (const filters of [[], [{ key: "source", op: "eq", value: "Google" }], [{ key: "source", op: "eq", value: "" }]] as const) {
+        const query: StoreQuery = { ...site, range: whole, filters };
+        const reference = new Reference(site.timezone, rows, whole, filters);
+        const label = `${when} ${filters[0]?.value ?? "unfiltered"}`;
+        expect(byBucket(yield* provide(dailyTotals(query))), `${label} days`).toEqual(byBucket(reference.dailyTotals()));
+        expect(byBucket(yield* provide(hourlyTotals(query))), `${label} hours`).toEqual(byBucket(reference.hourlyTotals()));
+      }
+      const unfiltered: StoreQuery = { ...site, range: whole, filters: [] };
+      const reference = new Reference(site.timezone, rows, whole, []);
+      expect(yield* provide(breakdown(unfiltered, "source")), `${when} source breakdown`).toEqual(expect.arrayContaining(reference.breakdown("source")));
+      expect(yield* provide(breakdown(unfiltered, "source")), `${when} source breakdown`).toHaveLength(reference.breakdown("source").length);
+    });
+    const google = (series: ReadonlyArray<BucketRow>) => byBucket(series).map((bucket) => bucket.pageviews);
+    yield* answers("raw");
+    expect(google(yield* provide(dailyTotals({ ...site, range: whole, filters: [{ key: "source", op: "eq", value: "Google" }] })))).toEqual([6, 2]);
+    expect(yield* provide(closeDays(site.environmentId, new Date("2026-10-03T12:00:00Z")))).toBe(2);
+    yield* answers("rolled");
+    expect(google(yield* provide(dailyTotals({ ...site, range: whole, filters: [{ key: "source", op: "eq", value: "Google" }] })))).toEqual([6, 2]);
+    const midGoogle: StoreQuery = { ...site, range: midVisit, filters: [{ key: "source", op: "eq", value: "Google" }] };
+    expect(google(yield* provide(hourlyTotals(midGoogle)))).toEqual([3, 2]);
+    expect(byBucket(yield* provide(hourlyTotals(midGoogle)))).toEqual(byBucket(new Reference(site.timezone, rows, midVisit, midGoogle.filters).hourlyTotals()));
   }), 60_000);
 
 it.live("a filtered day series reads one source's closed days from the rollup and matches the reference", () =>
