@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { addDays, dayEnd, dayStart, localDay, retentionCutoff, SESSION_GAP_SECONDS } from "../local-time";
 import { ensurePartitions, monthOf, nextMonth, pageviewPartitions } from "./partitions";
-import { instant, localHour, sessionsIn, type StoreQuery } from "./store";
+import { instant, localHour, type StoreQuery, visitCtes } from "./store";
 
 export type RollupSite = { readonly environmentId: string; readonly timezone: string };
 
@@ -55,7 +55,9 @@ const writeDay = Effect.fn("WebAnalytics.writeDay")(function* (site: RollupSite,
     delete from analytics.session_hourly
     where environment_id = ${site.environmentId}::text and hour >= ${instant(start)} and hour < ${instant(end)}`);
   yield* drizzle.execute(sql`
-    with sessions as materialized (${sessionsIn(query, { start, end })}),
+    with ${visitCtes(query, { start, end })},
+    sessions as materialized (select * from visits where ts >= ${instant(start)} and ts < ${instant(end)}),
+    day_rows as materialized (select * from visit_rows),
     hourly as (
       insert into analytics.session_hourly (environment_id, hour, visits, bounces, total_duration)
       select ${site.environmentId}::text, ${localHour(site.timezone)} as hour, count(*)::bigint,
@@ -66,10 +68,9 @@ const writeDay = Effect.fn("WebAnalytics.writeDay")(function* (site: RollupSite,
       select dim, value, sum(pageviews)::bigint as pageviews, count(*)::bigint as visitors
       from (
         select kv.dim, kv.value, visitor_id, count(*) as pageviews
-        from analytics.pageview
+        from day_rows
         cross join lateral (values ${PAGE_DIMS}) as kv(dim, value)
-        where environment_id = ${site.environmentId}::text and ts >= ${instant(start)} and ts < ${instant(end)}
-          and kv.value is not null
+        where kv.value is not null
         group by kv.dim, kv.value, visitor_id
       ) per_visitor
       group by dim, value

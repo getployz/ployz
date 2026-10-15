@@ -1,5 +1,5 @@
 import { dayStart, hourStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
-import type { BucketRow, EntryRow, Filter, FilterKey, GoalRow, Range, SessionDim, SessionRow, ValueRow } from "../model";
+import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 
 export type PageviewRecord = {
   readonly ts: string;
@@ -33,16 +33,32 @@ const COLUMN = {
 
 export const column = (row: PageviewRecord, key: FilterKey): string | null => row[COLUMN[key]];
 
-export const selectRows = (rows: ReadonlyArray<PageviewRecord>, filters: ReadonlyArray<Filter>) =>
-  rows.filter((row) => filters.every((filter) => (column(row, filter.key) === filter.value) === (filter.op === "eq")));
+const matches = (row: PageviewRecord, filters: ReadonlyArray<Filter>) =>
+  filters.every((filter) => (column(row, filter.key) === filter.value) === (filter.op === "eq"));
+
+const SESSION_KEYS: ReadonlySet<FilterKey> = new Set(SESSION_DIMS);
+const isSessionDim = (key: FilterKey): key is SessionDim => SESSION_KEYS.has(key);
 
 export type Session = {
   readonly visitorId: string;
   readonly first: PageviewRecord;
   readonly started: number;
   readonly ended: number;
-  readonly pageviews: number;
+  readonly rows: ReadonlyArray<PageviewRecord>;
 };
+
+/** The pageview as its visit sees it: its own page, and every session dim taken from the visit's first pageview. */
+const attributed = (row: PageviewRecord, first: PageviewRecord): PageviewRecord => ({
+  ...row,
+  host: first.host,
+  source: first.source,
+  utmSource: first.utmSource,
+  utmMedium: first.utmMedium,
+  utmCampaign: first.utmCampaign,
+  utmTerm: first.utmTerm,
+  utmContent: first.utmContent,
+  language: first.language,
+});
 
 const order = (a: PageviewRecord, b: PageviewRecord) =>
   Date.parse(a.ts) - Date.parse(b.ts) || compare(a.pathname, b.pathname) || compare(a.host, b.host);
@@ -57,10 +73,10 @@ export function sessionize(rows: ReadonlyArray<PageviewRecord>): Session[] {
     for (const row of [...visits].sort(order)) {
       const ts = Date.parse(row.ts);
       if (current !== undefined && ts - current.ended <= SESSION_GAP_SECONDS * 1000) {
-        current = { ...current, ended: ts, pageviews: current.pageviews + 1 };
+        current = { ...current, ended: ts, rows: [...current.rows, row] };
       } else {
         if (current !== undefined) sessions.push(current);
-        current = { visitorId, first: row, started: ts, ended: ts, pageviews: 1 };
+        current = { visitorId, first: row, started: ts, ended: ts, rows: [row] };
       }
     }
     if (current !== undefined) sessions.push(current);
@@ -93,7 +109,7 @@ function groupBy<T>(items: ReadonlyArray<T>, key: (item: T) => string | null) {
 
 const sessionSums = (sessions: ReadonlyArray<Session>) => ({
   visits: sessions.length,
-  bounces: sessions.filter((session) => session.pageviews === 1).length,
+  bounces: sessions.filter((session) => session.rows.length === 1).length,
   totalDuration: sessions.reduce((sum, session) => sum + duration(session), 0),
 });
 
@@ -103,8 +119,15 @@ export const goalMatcher = (pathPattern: string) => {
   return (pathname: string) => regex.test(pathname);
 };
 
+/**
+ * Filters select visits, then pageviews inside them. A session dim filter keeps the visits whose first pageview has the
+ * value; a page filter keeps the pageviews on that page, and the visits holding one. Pageviews and visitors count the
+ * selected pageviews; visits, bounces and duration count the selected visits whole.
+ */
 export class Reference {
+  /** The selected pageviews in the range, each attributed to its visit by {@link attributed}. */
   readonly rows: ReadonlyArray<PageviewRecord>;
+  /** The selected visits that start in the range. */
   readonly sessions: ReadonlyArray<Session>;
 
   constructor(
@@ -113,12 +136,18 @@ export class Reference {
     readonly range: Range,
     filters: ReadonlyArray<Filter>,
   ) {
-    const selected = selectRows(all, filters);
     const start = range.start.getTime();
     const end = range.end.getTime();
-    this.rows = selected.filter((row) => Date.parse(row.ts) >= start && Date.parse(row.ts) < end);
-    const window = selected.filter((row) => Date.parse(row.ts) >= start - SESSION_GAP_SECONDS * 1000 && Date.parse(row.ts) < end + 86_400_000);
-    this.sessions = sessionize(window).filter((session) => session.started >= start && session.started < end);
+    const sessionFilters = filters.filter((filter) => isSessionDim(filter.key));
+    const pageFilters = filters.filter((filter) => !isSessionDim(filter.key));
+    const window = all.filter((row) => Date.parse(row.ts) >= start - SESSION_GAP_SECONDS * 1000 && Date.parse(row.ts) < end + 86_400_000);
+    const selected = sessionize(window)
+      .filter((session) => matches(session.first, sessionFilters))
+      .map((session) => ({ session, picked: session.rows.filter((row) => matches(row, pageFilters)) }))
+      .filter(({ picked }) => picked.length > 0);
+    this.rows = selected.flatMap(({ session, picked }) =>
+      picked.filter((row) => Date.parse(row.ts) >= start && Date.parse(row.ts) < end).map((row) => attributed(row, session.first)));
+    this.sessions = selected.map(({ session }) => session).filter((session) => session.started >= start && session.started < end);
   }
 
   private totals(bucketOf: (at: number) => Date): BucketRow[] {

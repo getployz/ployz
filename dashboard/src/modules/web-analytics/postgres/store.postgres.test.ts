@@ -77,6 +77,26 @@ it.live("a session breakdown keeps only entry values once the day is rolled up",
     expect(yield* provide(sessionsBy(query, "source"))).toEqual(google);
   }), 60_000);
 
+it.live("a source filter keeps a visit whole, its direct pages included, raw and rolled", () =>
+  Effect.gen(function* () {
+    const provide = yield* setup();
+    const site = { environmentId: "00000000-0000-4000-8000-00000000a0f3", timezone: "UTC" };
+    yield* provide(seedSite(site, [
+      row("2026-10-01T12:00:00.000Z", "1", { source: "Google", referrerHost: "google.com" }),
+      row("2026-10-01T12:01:00.000Z", "1", { pathname: "/pricing" }),
+      row("2026-10-01T12:02:00.000Z", "1", { pathname: "/signup" }),
+    ]));
+    const query: StoreQuery = {
+      ...site,
+      range: { start: new Date("2026-10-01T00:00:00Z"), end: new Date("2026-10-02T00:00:00Z") },
+      filters: [{ key: "source", op: "eq", value: "Google" }],
+    };
+    const google = [{ bucket: query.range.start, pageviews: 3, visitors: 1, visits: 1, bounces: 0, totalDuration: 120 }];
+    expect(yield* provide(dailyTotals(query))).toEqual(google);
+    expect(yield* provide(closeDays(site.environmentId, new Date("2026-10-02T12:00:00Z")))).toBe(1);
+    expect(yield* provide(dailyTotals(query))).toEqual(google);
+  }), 60_000);
+
 for (const day of ["2026-10-04", "2026-04-05"]) {
   it.live(`Lord Howe ${day}: the hour buckets are the hours the store groups by, raw and rolled`, () =>
     Effect.gen(function* () {

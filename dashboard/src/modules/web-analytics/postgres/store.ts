@@ -2,7 +2,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { dayEnd, dayStart, localDays, SESSION_GAP_SECONDS } from "../local-time";
-import type { BucketRow, EntryRow, Filter, FilterKey, GoalRow, Range, SessionDim, SessionRow, ValueRow } from "../model";
+import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 
 export type StoreQuery = {
   readonly environmentId: string;
@@ -33,26 +33,35 @@ export const localHour = (timezone: string) =>
 const gap = sql.raw(`interval '${SESSION_GAP_SECONDS} seconds'`);
 const epochMs = (expr: SQL) => sql`(extract(epoch from ${expr}) * 1000)::bigint`;
 
-const filterClause = (filters: ReadonlyArray<Filter>) =>
+const SESSION_KEYS: ReadonlySet<FilterKey> = new Set(SESSION_DIMS);
+const sessionFilters = (query: StoreQuery) => query.filters.filter((filter) => SESSION_KEYS.has(filter.key));
+const pageFilters = (query: StoreQuery) => query.filters.filter((filter) => !SESSION_KEYS.has(filter.key));
+
+const filterClause = (filters: ReadonlyArray<Filter>, table?: string) =>
   sql.join(
-    filters.map((filter) =>
-      filter.op === "eq"
-        ? sql` and ${column(filter.key)} = ${filter.value}::text`
-        : sql` and ${column(filter.key)} is distinct from ${filter.value}::text`),
+    filters.map((filter) => {
+      const target = sql.raw(table === undefined ? COLUMN[filter.key] : `${table}.${COLUMN[filter.key]}`);
+      return filter.op === "eq"
+        ? sql` and ${target} = ${filter.value}::text`
+        : sql` and ${target} is distinct from ${filter.value}::text`;
+    }),
     sql``,
   );
 
-const rowsIn = (query: StoreQuery, range: Range) =>
-  sql`from analytics.pageview
-    where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} and ts < ${instant(range.end)}${filterClause(query.filters)}`;
-
-export const sessionsIn = (query: StoreQuery, range: Range) => sql`
-  with window_rows as (
+/**
+ * Sessionizes every pageview in the range's window, filtered or not, and keeps as `visits` the sessions the filters
+ * select: session dim filters test the first pageview, page filters need at least one pageview of the session to pass.
+ * The window reaches a session gap before the range for exact session starts, and a day past it for whole sessions.
+ */
+export const visitCtes = (query: StoreQuery, range: Range) => {
+  const picks = pageFilters(query);
+  return sql`
+  window_rows as (
     select ts, visitor_id, host, pathname, source, utm_source, utm_medium, utm_campaign, utm_term, utm_content, language
     from analytics.pageview
     where environment_id = ${query.environmentId}::text
       and ts >= ${instant(range.start)} - ${gap}
-      and ts < ${instant(range.end)} + interval '1 day'${filterClause(query.filters)}
+      and ts < ${instant(range.end)} + interval '1 day'
   ), marked as (
     select *, case when ts - lag(ts) over w <= ${gap} then 0 else 1 end as is_new
     from window_rows window w as (partition by visitor_id order by ts, pathname, host)
@@ -60,12 +69,35 @@ export const sessionsIn = (query: StoreQuery, range: Range) => sql`
     select *, sum(is_new) over (partition by visitor_id order by ts, pathname, host rows unbounded preceding) as sn
     from marked
   ), spans as (
-    select visitor_id, sn, max(ts) as ended, count(*)::bigint as pageviews from numbered group by visitor_id, sn
-  )
-  select head.*, spans.ended, spans.pageviews,
-    floor(extract(epoch from (spans.ended - head.ts)))::bigint as duration
-  from numbered head join spans using (visitor_id, sn)
-  where head.is_new = 1 and head.ts >= ${instant(range.start)} and head.ts < ${instant(range.end)}`;
+    select visitor_id, sn, max(ts) as ended, count(*)::bigint as pageviews,
+      count(*) filter (where true${filterClause(picks)})::bigint as picked
+    from numbered group by visitor_id, sn
+  ), visits as (
+    select head.*, spans.ended, spans.pageviews, floor(extract(epoch from (spans.ended - head.ts)))::bigint as duration
+    from numbered head join spans using (visitor_id, sn)
+    where head.is_new = 1${filterClause(sessionFilters(query), "head")}${picks.length > 0 ? sql` and spans.picked > 0` : sql``}
+  ), visit_rows as (
+    select pv.ts, pv.visitor_id, pv.pathname, visit.host, visit.source, visit.utm_source, visit.utm_medium,
+      visit.utm_campaign, visit.utm_term, visit.utm_content, visit.language
+    from numbered pv join visits visit using (visitor_id, sn)
+    where pv.ts >= ${instant(range.start)} and pv.ts < ${instant(range.end)}${filterClause(picks, "pv")}
+  )`;
+};
+
+/** The selected visits that start in the range, with their first pageview's columns. */
+export const sessionsIn = (query: StoreQuery, range: Range) => sql`
+  with ${visitCtes(query, range)}
+  select * from visits where ts >= ${instant(range.start)} and ts < ${instant(range.end)}`;
+
+/**
+ * The selected pageviews in the range, each carrying its visit's session dims, as a `from ... where ...` clause.
+ * Without filters a pageview's own page and the visit counts need no sessionizing, so those reads skip it.
+ */
+const rowsIn = (query: StoreQuery, range: Range, needsVisit = false) =>
+  query.filters.length === 0 && !needsVisit
+    ? sql`from analytics.pageview
+      where environment_id = ${query.environmentId}::text and ts >= ${instant(range.start)} and ts < ${instant(range.end)}`
+    : sql`from (with ${visitCtes(query, range)} select * from visit_rows) visit_rows where true`;
 
 export type Plan = { readonly days: { readonly first: string; readonly last: string } | null; readonly edges: ReadonlyArray<Range> };
 
@@ -190,7 +222,7 @@ export const breakdown = Effect.fn("WebAnalytics.breakdown")(function* (query: S
   for (const edge of plan.edges) {
     parts.push(sql`
       select ${column(dim)} as value, count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors
-      ${rowsIn(query, edge)} and ${column(dim)} is not null group by ${column(dim)}, ${localDate(query.timezone)}`);
+      ${rowsIn(query, edge, SESSION_KEYS.has(dim))} and ${column(dim)} is not null group by ${column(dim)}, ${localDate(query.timezone)}`);
   }
   const rows = yield* drizzle.execute<ValueDbRow>(sql`
     select value, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors
