@@ -14,9 +14,9 @@ use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject, CreateService,
     CreateVolume, DataEffect, Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard,
     Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId,
-    ProjectId, ProjectName, Publish, RemovalsQuery, RemoveVolume, RenameVolume, Retry, RunEvidence,
-    RunnerId, ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath, Trusted,
-    VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    ProjectId, ProjectName, Publish, Published, RemovalsQuery, RemoveVolume, RenameVolume, Retry,
+    RunEvidence, RunnerId, ServiceLineageId, SetVolumeSharedWrites, SetVolumeStorage, SettingPath,
+    Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -838,7 +838,45 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
 
 /// Deploy `data`, then remove it and Save, accepting its loss while `holders`
 /// hold its data.
-fn save_accepting(store: &ConfigStore, who: &Actor, holders: &[char]) {
+/// Save Working State, accepting losses as [`admit`] does.
+fn save(
+    store: &ConfigStore,
+    who: &Actor,
+    accept: &[&str],
+    observed: Option<VolumeObservation>,
+) -> Result<Published, RpcError> {
+    let save = |version: Option<String>| {
+        store.write_trusted(
+            who,
+            &Publish {
+                environment: EnvironmentRef::default(),
+                version,
+                message: None,
+                accept_volume_loss: accept
+                    .iter()
+                    .map(|name| VolumeName::parse(*name).unwrap())
+                    .collect(),
+            },
+            &Trusted {
+                volumes: observed.clone(),
+                ..Trusted::default()
+            },
+        )
+    };
+    match save(None) {
+        Err(refused)
+            if !accept.is_empty() && refused.code == RpcErrorCode::ConfirmationRequired =>
+        {
+            save(Some(
+                refused.details["version"].as_str().unwrap().to_owned(),
+            ))
+        }
+        saved => saved,
+    }
+}
+
+/// Deploy `data`, remove it, and Save that removal.
+fn save_removal(store: &ConfigStore, who: &Actor, accept: &[&str], holders: &[char]) -> Published {
     admit(store, who, 1, &[], None).unwrap();
     run(store, 1, Vec::new());
     store
@@ -850,24 +888,13 @@ fn save_accepting(store: &ConfigStore, who: &Actor, holders: &[char]) {
             },
         )
         .unwrap();
-    let save = |version: Option<String>| {
-        store.write_trusted(
-            who,
-            &Publish {
-                environment: EnvironmentRef::default(),
-                version,
-                message: None,
-                accept_volume_loss: vec![VolumeName::parse("data").unwrap()],
-            },
-            &Trusted {
-                volumes: Some(observed(holders)),
-                ..Trusted::default()
-            },
-        )
-    };
-    let refused = save(None).unwrap_err();
-    let version = refused.details["version"].as_str().unwrap().to_owned();
-    assert!(save(Some(version)).unwrap().created);
+    let saved = save(store, who, accept, Some(observed(holders))).unwrap();
+    assert!(saved.created);
+    saved
+}
+
+fn save_accepting(store: &ConfigStore, who: &Actor, holders: &[char]) {
+    save_removal(store, who, &["data"], holders);
 }
 
 #[test]
@@ -890,6 +917,76 @@ fn a_server_holding_more_since_the_save_asks_again() {
         code(admit(&store, &who, 2, &[], None)),
         RpcErrorCode::Unavailable
     );
+}
+
+#[test]
+fn an_unchanged_save_records_consent_for_a_removal_saved_when_no_server_held_it() {
+    let (store, who) = shop();
+    let first = save_removal(&store, &who, &[], &[]);
+    let renewed = save(&store, &who, &["data"], Some(observed(&['a']))).unwrap();
+    assert!(!renewed.created);
+    assert_eq!(renewed.saved, first.saved);
+    admit(&store, &who, 2, &[], Some(observed(&['a']))).unwrap();
+    assert_eq!(run(&store, 2, Vec::new()).deletes, [held('a')]);
+}
+
+#[test]
+fn an_unchanged_save_asks_again_once_a_server_holds_more_and_renews_consent() {
+    let (store, who) = shop();
+    save_accepting(&store, &who, &['a']);
+    assert_eq!(
+        code(save(&store, &who, &[], Some(observed(&['a', 'b'])))),
+        RpcErrorCode::ConfirmationRequired
+    );
+    assert!(
+        !save(&store, &who, &[], Some(observed(&['a'])))
+            .unwrap()
+            .created
+    );
+    assert!(
+        !save(&store, &who, &["data"], Some(observed(&['a', 'b'])))
+            .unwrap()
+            .created
+    );
+    admit(&store, &who, 2, &[], Some(observed(&['a', 'b']))).unwrap();
+    assert_eq!(run(&store, 2, Vec::new()).deletes, [held('a'), held('b')]);
+}
+
+#[test]
+fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
+    let (store, who) = shop();
+    save_accepting(&store, &who, &['a']);
+    add_api(&store, &who);
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(2),
+                environment: EnvironmentRef::default(),
+                services: vec![ServiceName::parse("api").unwrap()],
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted {
+                volumes: Some(observed(&['a'])),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    assert!(prepare(&store, 2, &["api"]).deletes.is_empty());
+    execute(&store, 2, Vec::new());
+    admit(&store, &who, 3, &[], Some(observed(&['a']))).unwrap();
+    assert_eq!(run(&store, 3, Vec::new()).deletes, [held('a')]);
+}
+
+#[test]
+fn fewer_holders_than_were_accepted_still_deletes_them() {
+    let (store, who) = shop();
+    save_accepting(&store, &who, &['a', 'b']);
+    admit(&store, &who, 2, &[], Some(observed(&['b']))).unwrap();
+    assert_eq!(run(&store, 2, Vec::new()).deletes, [held('b')]);
 }
 
 #[test]

@@ -418,12 +418,19 @@ pub(crate) fn destructive(
     (version, accepted, consent): (Option<&str>, &[crate::id::VolumeName], &[crate::VolumeLoss]),
     observed: Option<&crate::VolumeObservation>,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
-    let full = matches!(shipping, Shipping::Deploy(services) if services.is_empty());
-    let publishes = review
-        .saved
-        .as_ref()
-        .is_none_or(|saved| saved.intent != *target);
-    let removed = match full || publishes {
+    // A Save reviews what Saved State holds pending even when it saves nothing
+    // new, so it can record or renew the consent the next Deploy reads.
+    let reviews = match shipping {
+        Shipping::Publish => true,
+        Shipping::Deploy(services) => {
+            services.is_empty()
+                || review
+                    .saved
+                    .as_ref()
+                    .is_none_or(|saved| saved.intent != *target)
+        }
+    };
+    let removed = match reviews {
         true => crate::removal::removed(&review.head.applied, target, namespace)?,
         false => Vec::new(),
     };
@@ -630,6 +637,26 @@ pub(crate) fn publish(
     )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// Replace the consent saved with `revision`, which an unchanged Save renews.
+pub(crate) fn reconsent(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    revision: Revision,
+    accepted: &[crate::VolumeLoss],
+) -> Result<(), RpcError> {
+    let accepted = (!accepted.is_empty())
+        .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
+    tx.execute(
+        "UPDATE config_saved SET accepted_losses = ?3 WHERE environment_id = ?1 AND revision = ?2",
+        &[
+            environment.as_str().into(),
+            revision_param(revision)?.into(),
+            accepted.as_deref().into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// Sealing a value removes every earlier copy of it from History: plain text

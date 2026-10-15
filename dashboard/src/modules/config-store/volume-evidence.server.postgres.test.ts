@@ -1,13 +1,15 @@
 import { it } from "@effect/vitest";
-import type { ConfigCommand, ConfigQuery } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigWritten, Connection, VolumeObservation } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { expect, vi } from "vitest";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
-import { callStore } from "#/modules/config-store/config-store.server";
+import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { StoreRead } from "#/modules/config-store/store.contract";
-import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
-import { seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
+import { machineId } from "#/test/ids";
+import { enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000e701";
 const ids = { project: "00000000-0000-4000-8000-00000000e702", environment: "00000000-0000-4000-8000-00000000e703", service: "00000000-0000-4000-8000-00000000e704" };
@@ -56,6 +58,25 @@ it.live("a push asks which Volumes a Save accepted losing, and without Servers t
     expect(yield* pushed([])).toEqual({ evidence: undefined, asked: [{ query: "consented" }] });
     expect(yield* pushed(["shop-production_vol-00000000-0000-4000-8000-000000000005"]))
       .toEqual({ evidence: undefined, asked: [{ query: "consented" }] });
+  }));
+
+it.live("a push asks the paired Servers about exactly the consented Volumes and hands what they hold to the Store", () =>
+  Effect.gen(function* () {
+    const services = yield* cloud();
+    const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
+    yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
+    const volume = "shop-production_vol-00000000-0000-4000-8000-000000000005";
+    const held: VolumeObservation = { sought: [volume], held: [{ machine_id: machineId("0"), name: volume }], unanswered: [] };
+    const observe = vi.fn(async (_connections: Connection[], _sought: string[]) => held);
+    const store = yield* provided(cloudStore);
+    const read = vi.spyOn(store, "read").mockResolvedValue({ view: "consented", volumes: [volume] });
+    const system = vi.spyOn(store, "system").mockResolvedValue(asTestDouble<ConfigWritten>()({ written: "nothing" }));
+
+    yield* provided(storeSystem(ORGANIZATION, { event: "cluster_forgotten" }).pipe(Effect.provideService(VolumeObserver, { observe })));
+
+    expect(read).toHaveBeenCalledWith(ORGANIZATION, { query: "consented" });
+    expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }], [volume]);
+    expect(system).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, { event: "cluster_forgotten" }, expect.objectContaining({ volumes: held }));
   }));
 
 it.live("a removal gathers for each Environment it takes off, and a shutdown for its own", () =>

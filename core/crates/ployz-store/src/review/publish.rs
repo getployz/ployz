@@ -150,14 +150,21 @@ pub(crate) fn publish(
         &target,
         &trusted.approval,
     )?;
+    let lost = review::lost(losses);
     let (saved, created) = review::publish(
         tx,
         who,
         &environment.summary.id,
         environment.working,
         review.saved.as_ref(),
-        (publish.message.as_deref(), &review::lost(losses)),
+        (publish.message.as_deref(), &lost),
     )?;
+    if !created
+        && let Some(latest) = review.saved.as_ref()
+        && latest.accepted != lost
+    {
+        review::reconsent(tx, &environment.summary.id, latest.revision, &lost)?;
+    }
     // Saved State already held it: proposals ending still moves the revision.
     let mut summary = environment.summary;
     if consumed && !created {

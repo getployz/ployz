@@ -389,10 +389,19 @@ fn pushed_deletes(
     store: &ConfigStore,
     volumes: Option<ployz_store::VolumeObservation>,
 ) -> Vec<String> {
+    deletes_of(store, &push(None, Some(H1), None), volumes)
+}
+
+/// What the Deployment `event` admits deletes, as `machine:docker volume`.
+fn deletes_of(
+    store: &ConfigStore,
+    event: &SystemEvent,
+    volumes: Option<ployz_store::VolumeObservation>,
+) -> Vec<String> {
     let Written::Automated(automated) = store
         .system(
             &org(),
-            &push(None, Some(H1), None),
+            event,
             &Trusted {
                 volumes,
                 ..Trusted::default()
@@ -438,6 +447,105 @@ fn a_push_keeps_saved_loss_data_without_the_same_evidence() {
         name: ployz_core::DockerVolumeName::parse(DOCKER_VOLUME).unwrap(),
     });
     assert!(pushed_deletes(&store, Some(more)).is_empty());
+}
+
+#[test]
+fn a_push_keeps_saved_loss_data_while_a_server_is_unanswered_or_unsought() {
+    let (store, _) = saved_volume_loss();
+    let mut unanswered = held_on_a();
+    unanswered
+        .unanswered
+        .push(ployz_core::MachineId::parse("b".repeat(32)).unwrap());
+    assert!(pushed_deletes(&store, Some(unanswered)).is_empty());
+    let (store, _) = saved_volume_loss();
+    let mut unsought = held_on_a();
+    unsought.sought.clear();
+    assert!(pushed_deletes(&store, Some(unsought)).is_empty());
+}
+
+#[test]
+fn a_push_that_leaves_out_the_service_mounting_the_volume_keeps_its_data() {
+    let (store, who) = saved_volume_loss();
+    set(&store, &who, "web.watchPaths", json!(["web/**"]));
+    system(&store, &push(None, Some(H1), None));
+    // Consent stays for a later push that ships web.
+    let narrow = push(Some(H1), Some(H2), Some(&["api/main.rs"]));
+    assert!(deletes_of(&store, &narrow, Some(held_on_a())).is_empty());
+    assert_eq!(
+        deletes_of(&store, &push(Some(H2), Some(H3), None), Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+#[test]
+fn a_merge_keeps_the_destinations_accepted_loss() {
+    let (store, who) = saved_volume_loss();
+    open_pull_request(&store, &who);
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef {
+                    project: None,
+                    environment: Some(ployz_store::EnvironmentName::parse("pr-5").unwrap()),
+                },
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse("web.env.SEARCH").unwrap(),
+                    value: json!("on"),
+                }],
+            }),
+        )
+        .unwrap();
+    system(&store, &pull_request(false));
+    assert_eq!(
+        pushed_deletes(&store, Some(held_on_a())),
+        [format!("{}:{DOCKER_VOLUME}", "a".repeat(32))]
+    );
+}
+
+/// Turn on pull request environments from `production`, and open pull request #5.
+fn open_pull_request(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &ployz_store::SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: Some(true),
+                start_from: Some(ployz_store::EnvironmentName::parse("production").unwrap()),
+                copy: None,
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+        )
+        .unwrap();
+    system(store, &pull_request(true));
+}
+
+/// Pull request #5 onto `main`: open, or merged.
+fn pull_request(open: bool) -> SystemEvent {
+    SystemEvent::PullRequest(ployz_store::PullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        title: "Add search".into(),
+        author: "ada".into(),
+        bot: false,
+        head_branch: backend::git_branch("search"),
+        head: backend::sha(H2),
+        target_branch: backend::git_branch("main"),
+        commits: 1,
+        open,
+        merge_commit: (!open).then(|| backend::sha(H3)),
+        target_head: None,
+        updated: ployz_store::GithubTimestamp::parse(if open {
+            "2026-09-29T10:00:00Z"
+        } else {
+            "2026-09-29T11:00:00Z"
+        })
+        .unwrap(),
+    })
 }
 
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {
