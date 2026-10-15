@@ -140,6 +140,14 @@ export const rolledUpTo = Effect.fn("WebAnalytics.rolledUpTo")(function* (enviro
   return rows[0]?.day ?? null;
 });
 
+/** The last closed day and the closed days that late pageviews have changed since. */
+const rollupMarker = Effect.fn("WebAnalytics.rollupMarker")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.execute<{ day: string | null; dirty: string[] }>(sql`
+    select rolled_up_to::text as day, dirty::text[] as dirty from analytics.rollup_state where environment_id = ${environmentId}::text`, "objects");
+  return { rolledUpTo: rows[0]?.day ?? null, dirty: rows[0]?.dirty ?? [] };
+});
+
 const planned = Effect.fn("WebAnalytics.plan")(function* (query: StoreQuery, rolled?: boolean) {
   return readPlan(query, yield* rolledUpTo(query.environmentId), rolled);
 });
@@ -216,14 +224,31 @@ export const hourlyTotals = Effect.fn("WebAnalytics.hourlyTotals")(function* (qu
   const { drizzle } = yield* Database;
   const { timezone, range } = query;
   if (range.start >= range.end) return [];
-  const closedUntil = query.filters.length > 0 ? null : yield* rolledUpTo(query.environmentId);
+  const marker = query.filters.length > 0 ? null : yield* rollupMarker(query.environmentId);
+  const closedUntil = marker?.rolledUpTo ?? null;
   const rolledEnd = closedUntil === null ? range.start : new Date(Math.min(Math.max(dayEnd(timezone, closedUntil).getTime(), range.start.getTime()), range.end.getTime()));
   const parts: SQL[] = [];
   if (rolledEnd > range.start) {
+    // A dirty day's hours keep their stale visits until rebuilt, but count its pageviews and visitors raw.
+    const dirty = (marker?.dirty ?? [])
+      .map((day) => ({ start: new Date(Math.max(dayStart(timezone, day).getTime(), range.start.getTime())), end: new Date(Math.min(dayEnd(timezone, day).getTime(), rolledEnd.getTime())) }))
+      .filter((part) => part.start < part.end);
+    const inDirty = dirty.length === 0
+      ? sql`false`
+      : sql.join(dirty.map((part) => sql`(hour >= ${instant(part.start)} and hour < ${instant(part.end)})`), sql` or `);
     parts.push(sql`
-      select ${epochMs(sql`hour`)} as bucket, pageviews, visitors, visits, bounces, total_duration
+      select ${epochMs(sql`hour`)} as bucket,
+        case when ${inDirty} then 0 else pageviews end as pageviews, case when ${inDirty} then 0 else visitors end as visitors,
+        visits, bounces, total_duration
       from analytics.session_hourly
       where environment_id = ${query.environmentId}::text and hour >= ${instant(range.start)} and hour < ${instant(rolledEnd)}`);
+    for (const part of dirty) {
+      parts.push(sql`
+        select ${epochMs(localHour(timezone))} as bucket,
+          count(*)::bigint as pageviews, count(distinct visitor_id)::bigint as visitors,
+          0::bigint as visits, 0::bigint as bounces, 0::bigint as total_duration
+        ${rowsIn(query, part)} group by 1`);
+    }
   }
   if (rolledEnd < range.end) {
     const edge = { start: rolledEnd, end: range.end };

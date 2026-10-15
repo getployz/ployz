@@ -6,7 +6,8 @@ import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { ingestPageviewPush } from "#/modules/observe-ingest/ingest.server";
 import type { PageviewInput } from "#/modules/observe-ingest/ingest";
-import { expectedOf, type Fixture, type FixtureSite, type QuerySpec, serialized, storeAnswer } from "#/modules/web-analytics/fixtures/fixture";
+import * as compute from "#/modules/web-analytics/compute";
+import { expectedOf, type Fixture, type FixtureSite, type QuerySpec, type Serialized, serialized, storeAnswer } from "#/modules/web-analytics/fixtures/fixture";
 import { loadFixture, pageviewValues, seedSite } from "#/modules/web-analytics/fixtures/seed";
 import type { GoalRecord, PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
 import { localDay } from "#/modules/web-analytics/local-time";
@@ -31,11 +32,23 @@ const wholeOverview = (fixture: Fixture) => {
   return whole;
 };
 
+type Bucket = Serialized<ReturnType<typeof compute.timeseries>>[number];
+
+/**
+ * What a query answers while `late` rows sit in closed days nobody has rebuilt: a filtered query reads raw and sees them;
+ * an unfiltered hour timeseries reads pageviews raw but sessions from `session_hourly`; everything else reads the rollup.
+ */
 const expectedWhileDirty = (spec: QuerySpec, site: FixtureSite, rows: ReadonlyArray<PageviewRecord>, late: ReadonlyArray<PageviewRecord>, goals: ReadonlyArray<GoalRecord>) => {
   const rolled = serialized(expectedOf(spec, site.timezone, rows, goals));
   if (late.length === 0) return rolled;
   const raw = serialized(expectedOf(spec, site.timezone, [...rows, ...late], goals));
-  return spec.filters.length > 0 ? raw : rolled;
+  if (spec.filters.length > 0) return raw;
+  if (spec.kind !== "timeseries" || spec.interval !== "hour") return rolled;
+  return (rolled as Bucket[]).map((bucket, i) => {
+    const seen = (raw as Bucket[])[i];
+    if (seen === undefined) throw new Error(`raw hour timeseries has no bucket ${i}`);
+    return { ...bucket, pageviews: seen.pageviews, visitors: seen.visitors };
+  });
 };
 
 const everyAnswerMatches = (site: FixtureSite, fixture: Fixture, rows: ReadonlyArray<PageviewRecord>, goals: ReadonlyArray<GoalRecord>, when: string, late: ReadonlyArray<PageviewRecord> = []) =>
