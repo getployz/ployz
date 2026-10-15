@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { PrPlan } from "@ployz/sdk";
+import type { OpenPullRequest, PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
@@ -41,7 +42,7 @@ export function StorePrPlanPanel({ repositoryId }: { repositoryId: number }) {
       </div>
     );
   }
-  const prEnvironments = new Set(plans.value.plans.flatMap((plan) => plan.open.map((open) => open.environment)));
+  const prEnvironments = new Set(plans.value.plans.flatMap((plan) => plan.open.flatMap((open) => open.environment ?? [])));
   return <Plan params={params} saved={saved} prEnvironments={prEnvironments} />;
 }
 
@@ -54,13 +55,17 @@ function usePlanWrite(organizationSlug: string, project: string, saved: PrPlan) 
       remove_on_close: null, include_bots: null, ...change,
     }).isPersisted.promise;
   }
-  return { plan: saved, set };
+  function approve(open: OpenPullRequest & { head: string }) {
+    return writer.commit({ command: "approve_pull_request", repository_id: saved.repository_id, number: open.number, head: open.head })
+      .isPersisted.promise;
+  }
+  return { plan: saved, set, approve };
 }
 
 function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan; prEnvironments: ReadonlySet<string> }) {
   const { organizationSlug, projectSlug } = params;
   const navigate = useNavigate();
-  const { plan, set } = usePlanWrite(organizationSlug, projectSlug, saved);
+  const { plan, set, approve: approveDeploy } = usePlanWrite(organizationSlug, projectSlug, saved);
   const approve = useMissingStorePrGrant(organizationSlug, projectSlug, plan.installation_id);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const environments = listing.ok ? listing.value.environments.filter((environment) => !prEnvironments.has(environment.name)) : [];
@@ -114,15 +119,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
               <FieldLegend>Open now</FieldLegend>
               <ItemGroup className="gap-2">
                 {plan.open.map((open) => (
-                  <Item key={open.environment} variant="outline" size="sm"
-                    render={<Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: open.environment }} />}>
-                    <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
-                    <ItemContent className="min-w-0">
-                      <ItemTitle>{open.environment} <span className="font-normal text-muted-foreground">#{open.number}</span></ItemTitle>
-                      {open.title ? <ItemDescription className="truncate">{open.title} · {open.author}</ItemDescription> : null}
-                    </ItemContent>
-                    <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
-                  </Item>
+                  <OpenRow key={open.number} params={params} open={open} onApprove={(head) => void approveDeploy({ ...open, head })} />
                 ))}
               </ItemGroup>
             </FieldSet>
@@ -146,6 +143,44 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
         </>}
       </FieldGroup></div>
     </div>
+  );
+}
+
+/**
+ * An open pull request: its PR Environment, or, when its author isn't a member or its code comes from a fork, the
+ * commit that waits for a member to approve it.
+ */
+function OpenRow({ params, open, onApprove }: { params: Params; open: OpenPullRequest; onApprove: (head: string) => void }) {
+  const waiting = open.standing === "needs_approval";
+  const head = open.head;
+  const content = (
+    <>
+      <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
+      <ItemContent className="min-w-0">
+        <ItemTitle>
+          {open.environment ?? open.title} <span className="font-normal text-muted-foreground">#{open.number}</span>
+        </ItemTitle>
+        {open.title ? <ItemDescription className="truncate">{open.environment ? `${open.title} · ` : ""}{open.author}</ItemDescription> : null}
+      </ItemContent>
+    </>
+  );
+  if (waiting || !open.environment) {
+    return (
+      <Item variant="outline" size="sm">
+        {content}
+        <ItemActions>
+          {waiting ? <Badge variant="warning">Needs approval{head ? <span className="font-mono">{head.slice(0, 7)}</span> : null}</Badge> : null}
+          {waiting && head ? <Button size="sm" variant="outline" onClick={() => onApprove(head)}>Approve deploy</Button> : null}
+        </ItemActions>
+      </Item>
+    );
+  }
+  return (
+    <Item variant="outline" size="sm"
+      render={<Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: open.environment }} />}>
+      {content}
+      <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+    </Item>
   );
 }
 
