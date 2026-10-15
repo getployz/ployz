@@ -1844,7 +1844,10 @@ fn a_deployments_metrics_show_its_oom_kill_and_exit_code_by_deployment_number() 
                 event
             };
             let answer = metrics_answer(json!([
-                event(150, json!({ "kind": "exit", "exit_code": 137 })),
+                event(
+                    150,
+                    json!({ "kind": "exit", "exit_code": 137, "oom": true, "stopped": false })
+                ),
                 event(140, json!({ "kind": "oom" })),
             ]));
             asked.push(query);
