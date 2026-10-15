@@ -70,6 +70,7 @@ const fn stops_or_removes(phase: RowPhase) -> bool {
 enum Step {
     Start,
     Clear,
+    Switch,
     Retire,
 }
 
@@ -94,6 +95,8 @@ pub(crate) fn service_row<'a>(
                 Step::Retire
             } else if stops_or_removes(*phase) {
                 Step::Clear
+            } else if *phase == RowPhase::WaitingForSwitch {
+                Step::Switch
             } else {
                 Step::Start
             },
@@ -119,7 +122,12 @@ pub(crate) fn service_row<'a>(
         .filter(|replica| {
             matches!(
                 replica.state,
-                RowState::Completed | RowState::Running { serving: true, .. }
+                RowState::Completed
+                    | RowState::Running { serving: true, .. }
+                    | RowState::Running {
+                        phase: RowPhase::WaitingForSwitch,
+                        ..
+                    }
             )
         })
         .count();
@@ -465,7 +473,8 @@ fn live_container_id(row: &OperationRow) -> Option<ContainerId> {
         OperationStatus::Running {
             phase:
                 OperationPhase::WaitingForHealth { container_id, .. }
-                | OperationPhase::WaitingForHook { container_id, .. },
+                | OperationPhase::WaitingForHook { container_id, .. }
+                | OperationPhase::WaitingForSwitch { container_id },
         } => Some(*container_id),
         OperationStatus::Failed {
             error:

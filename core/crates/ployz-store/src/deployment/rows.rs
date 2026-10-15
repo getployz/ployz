@@ -447,10 +447,14 @@ fn state(
     container: bool,
     serving: bool,
 ) -> RowState {
-    let (mut failed, mut running, mut pending, mut completed) = (None, None, 0, 0);
+    let (mut failed, mut running, mut switching, mut pending, mut completed) =
+        (None, None, None, 0, 0);
     for status in statuses {
         match status {
             OperationStatus::Failed { error } => failed = failed.or(Some(error)),
+            OperationStatus::Running {
+                phase: phase @ OperationPhase::WaitingForSwitch { .. },
+            } => switching = switching.or(Some(phase)),
             OperationStatus::Running { phase } => running = running.or(Some(phase)),
             OperationStatus::Pending => pending += 1,
             OperationStatus::Completed => completed += 1,
@@ -471,6 +475,17 @@ fn state(
     if let Some(phase) = running {
         return RowState::Running {
             phase: phase.into(),
+            serving,
+        };
+    }
+    if let Some(phase) = switching {
+        // A Server is ready for the switch once each of its new Containers is.
+        return RowState::Running {
+            phase: if pending == 0 {
+                phase.into()
+            } else {
+                RowPhase::Starting
+            },
             serving,
         };
     }
@@ -660,9 +675,44 @@ fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::{ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure};
+    use ployz_core::{
+        ContainerId, ContainerRuntimeObservation, ExecutionError, HealthFailure, OperationPhase,
+        OperationStatus,
+    };
 
-    use super::Failure;
+    use super::{Failure, RowPhase, RowState};
+
+    fn server(statuses: &[OperationStatus]) -> RowState {
+        super::state(&statuses.iter().collect::<Vec<_>>(), None, true, false)
+    }
+
+    #[test]
+    fn a_server_waits_for_the_switch_only_once_each_new_container_is_ready() {
+        let switch = OperationStatus::Running {
+            phase: OperationPhase::WaitingForSwitch {
+                container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+            },
+        };
+        let creating = OperationStatus::Running {
+            phase: OperationPhase::CreatingContainer,
+        };
+        let running = |phase| RowState::Running {
+            phase,
+            serving: false,
+        };
+        assert_eq!(
+            server(&[switch.clone(), creating]),
+            running(RowPhase::CreatingContainer)
+        );
+        assert_eq!(
+            server(&[switch.clone(), OperationStatus::Pending]),
+            running(RowPhase::Starting)
+        );
+        assert_eq!(
+            server(&[switch.clone(), switch]),
+            running(RowPhase::WaitingForSwitch)
+        );
+    }
 
     fn reason(observation: ContainerRuntimeObservation) -> String {
         Failure::from(&ExecutionError::Health {

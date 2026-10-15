@@ -136,8 +136,8 @@ async fn each_ready_start_waits_for_the_switch_before_it_completes() {
         phase: ployz_core::OperationPhase::WaitingForSwitch { container_id },
     };
     assert_eq!(
-        frames[switch - 1],
-        [waiting(one), waiting(two)],
+        frames.get(switch - 1).map(Vec::as_slice),
+        Some([waiting(one), waiting(two)].as_slice()),
         "{frames:?}"
     );
     assert_eq!(

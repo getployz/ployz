@@ -702,6 +702,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             stopped.entry(group).or_default().push(replacement);
                         }
                         if schedule.group(group).publish && starts_container(operation) {
+                            if let Some(container_id) = ran.started {
+                                progress.set_running(
+                                    index,
+                                    OperationPhase::WaitingForSwitch { container_id },
+                                );
+                            }
                             awaiting_flip.entry(group).or_default().push(index);
                         } else {
                             completed.insert(index);
