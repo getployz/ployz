@@ -206,6 +206,10 @@ find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a s
 offline, run it again once that server is back. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs.
 
+Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
+another that outlives it, or revoke the rest. A token you make outlives the login you made it
+with: `ployz logout` doesn't revoke it.
+
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
 error, such as the operating system's or the server's own message.
 

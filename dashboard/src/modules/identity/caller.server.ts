@@ -15,13 +15,16 @@ import { Forbidden, Unauthorized } from "#/server/public-error";
 /**
  * The one place a `ployz` API request becomes a Caller. An Organization Token acts in its own Organization while
  * it is unexpired and its maker is still a member; a session acts in its active Organization while its user is a
- * member there. Anything else is refused.
+ * member there. Anything else is refused. The session must come in the Authorization header, as the CLI sends it:
+ * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
   const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];
   if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer);
   const auth = yield* Auth;
-  const session = yield* auth.getSession(headers);
+  const presented = new Headers(headers);
+  presented.delete("cookie");
+  const session = yield* auth.getSession(presented);
   if (session === null) return yield* new Unauthorized();
   const organizationId = session.session.activeOrganizationId;
   const bound = organizationId == null

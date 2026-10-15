@@ -8,11 +8,13 @@ import type { Caller } from "#/modules/identity/actor";
 import { dashboardCaller } from "#/modules/identity/caller.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, Validation } from "#/server/public-error";
+import { requireSameOrigin } from "#/server/same-origin.server";
 
 const scopeOf = (caller: Caller) => ({ organizationId: caller.organization.id, userId: caller.userId });
 
 /** `POST /api/agent/<slug>/chat`: one sidebar turn, or its resumption after an approval, streamed as server-sent events. */
 export const handleAgentChat = Effect.fn("Agent.handleChat")(function* (request: Request, organizationSlug: string) {
+  yield* requireSameOrigin(request);
   const caller = yield* dashboardCaller(request.headers, organizationSlug);
   const scope = scopeOf(caller);
   const params = yield* Effect.tryPromise({
