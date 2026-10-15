@@ -65,7 +65,7 @@ function RootSync({ params, store, environments }: {
   const name = store.environment ?? "";
   const places = placesFrom(environments, name);
   const synced = useSynced(params, name);
-  const syncing = useStoreBusy(params.organizationSlug, store) === "syncing";
+  const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
   const [first] = places;
   if (first === undefined) return null;
   return (
@@ -103,7 +103,7 @@ function BranchSync({ params, store, branch, environments }: {
   const shuttable = branch.pull_request !== null;
   const synced = useSynced(params, name);
   const [kept, holdKept] = useCommitHold(branch.kept);
-  const syncing = useStoreBusy(params.organizationSlug, store) === "syncing";
+  const syncing = useStoreBusy(params.organizationSlug, store).has("syncing");
 
   return (
     <>

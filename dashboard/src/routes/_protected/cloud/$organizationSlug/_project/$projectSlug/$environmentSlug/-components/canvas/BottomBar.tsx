@@ -69,7 +69,7 @@ type BottomBarProps = {
   /** Secrets without a value: the next Deploy leaves them out. */
   notSet?: number;
   /** A write the Store hasn't answered for yet, in words (Discarding…). */
-  busy?: Busy | null;
+  busy?: ReadonlySet<Busy>;
   discarding?: ReadonlySet<string>;
 };
 
@@ -98,7 +98,7 @@ export function BottomBar({
   proposals,
   noServers = false,
   notSet = 0,
-  busy = null,
+  busy = new Set(),
   discarding,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
@@ -114,9 +114,9 @@ export function BottomBar({
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canSave;
   // One Save at a time: a second sends the same version and comes back stale.
-  const saveable = canSave && busy !== "saving" && busy !== "deploying";
+  const saveable = canSave && !busy.has("saving") && !busy.has("deploying");
   // A double click admits one Deploy: Deploy waits until the Store answers.
-  const admitting = busy === "saving" || busy === "deploying";
+  const admitting = busy.has("saving") || busy.has("deploying");
   const deployable = runtimeChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
@@ -201,7 +201,7 @@ export function BottomBar({
   });
 
   const staged = hasChanges ? (
-    <Row staged title={busy === "discarding" ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
+    <Row staged title={busy.has("discarding") ? "Discarding…" : ((totalChanges > 0 ? plural(totalChanges, "change") : "Changes to save") + (notSet > 0 ? ` · ${notSet} not set` : ""))}
       shortTitle={totalChanges > 0 ? plural(totalChanges, "change") : "To save"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
@@ -210,8 +210,8 @@ export function BottomBar({
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>
-          {busy === "saving" || busy === "deploying" ? <Spinner data-icon="inline-start" /> : null}
-          {busy === "saving" ? "Saving…" : busy === "deploying" ? "Deploying…" : savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
+          {admitting ? <Spinner data-icon="inline-start" /> : null}
+          {busy.has("deploying") ? "Deploying…" : busy.has("saving") ? "Saving…" : savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>}
@@ -221,7 +221,7 @@ export function BottomBar({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
           <DropdownMenuItem disabled={!saveable} onClick={save}>
-            {busy === "saving" ? <><Spinner />Saving…</> : "Save only"}
+            {busy.has("saving") ? <><Spinner />Saving…</> : "Save only"}
           </DropdownMenuItem>
           <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes

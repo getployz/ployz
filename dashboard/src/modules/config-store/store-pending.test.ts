@@ -1,6 +1,6 @@
 import type { RowId } from "@ployz/sdk";
 import { expect, it } from "vitest";
-import { marksOf, showPending } from "./store-pending";
+import { busyIn, marksOf, showPending } from "./store-pending";
 
 const environment = { project: "shop", environment: "production" };
 
@@ -93,4 +93,13 @@ it("shows an unset row at its default and leaves a renamed variable's rows to th
     { path: "web.env.API_URL", value: "https://api" },
     { path: "web.env.API_URL.exported", value: true },
   ]);
+});
+
+it("reports a Deploy as pending while an older Discard in the Environment still is", () => {
+  const marks = [
+    ...marksOf({ command: "discard", environment, path: "web.replicas", version: "4:2:1.0" }),
+    ...marksOf({ command: "admit", admit: "deploy", id: "dep_1", environment }),
+  ];
+  expect(busyIn(marks, environment)).toEqual(new Set(["discarding", "deploying"]));
+  expect(busyIn(marks, { project: "shop", environment: "staging" })).toEqual(new Set());
 });

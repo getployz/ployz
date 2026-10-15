@@ -129,10 +129,14 @@ const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environmen
 /** Whether `project` names the one a Project rename moves; none means the Organization's only Project, which may be it. */
 const sameProject = (from: string, project: string | null | undefined) => project == null || project === from;
 
+/** Every reason the Environment is mid-command: a newer write shows its own even while an older one holds. */
+export function busyIn(marks: readonly Mark[], environment: EnvironmentRef): ReadonlySet<Busy> {
+  return new Set(marks.flatMap((mark) => mark.mark === "busy" && sameEnvironment(mark, environment) ? [mark.why] : []));
+}
+
 /** Why the Environment is mid-command, if it is: the bottom bar and review say so. */
-export function useStoreBusy(organizationSlug: string, environment: EnvironmentRef): Busy | null {
-  const busy = usePendingMarks(organizationSlug).find((mark) => mark.mark === "busy" && sameEnvironment(mark, environment));
-  return busy?.mark === "busy" ? busy.why : null;
+export function useStoreBusy(organizationSlug: string, environment: EnvironmentRef): ReadonlySet<Busy> {
+  return busyIn(usePendingMarks(organizationSlug), environment);
 }
 
 /** The paths of the Environment's pending Discards: the review dims each clicked line until the answer. */

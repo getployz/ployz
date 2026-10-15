@@ -35,7 +35,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const [loss, setLoss] = useState<Loss | null>(null);
   // Settles the Save waiting on the dialog: true once it saves, false when the dialog closes first.
   const savePending = useRef<((saved: boolean) => void) | null>(null);
-  const admitting = useStoreBusy(organizationSlug, environment) === "deploying";
+  const admitting = useStoreBusy(organizationSlug, environment).has("deploying");
   // The mark shows only after a render, so two clicks in one tick need this lock to admit one Deployment.
   const inFlight = useRef(false);
 

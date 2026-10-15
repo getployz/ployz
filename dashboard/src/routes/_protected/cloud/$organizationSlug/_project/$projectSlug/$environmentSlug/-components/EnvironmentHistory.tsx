@@ -105,7 +105,7 @@ export function EnvironmentHistory({ revision: picked }: { revision?: number }) 
   const request = useRef(0);
   const [review, setReview] = useState<HistoryReview>({ kind: "closed" });
   const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(new Set());
-  const restoring = useStoreBusy(params.organizationSlug, store) === "restoring";
+  const restoring = useStoreBusy(params.organizationSlug, store).has("restoring");
 
   async function stage(preview: HistoryPreview, acceptOverwrite: boolean) {
     setReview({ kind: "preview", preview });

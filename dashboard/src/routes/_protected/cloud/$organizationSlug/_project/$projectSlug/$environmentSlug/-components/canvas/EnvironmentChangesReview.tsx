@@ -30,7 +30,7 @@ export type EnvironmentChangesReviewProps = {
   message: string;
   onMessageChange: (message: string) => void;
   /** A write the Store hasn't answered for yet. */
-  busy?: Busy | null;
+  busy?: ReadonlySet<Busy>;
   /** Paths of Discards the Store hasn't answered for yet: their lines show Discarding…. */
   discarding?: ReadonlySet<string>;
   onDiscardNode: (group: ChangeGroup) => void;
@@ -292,18 +292,18 @@ export function Value({ kind, before, after }: { kind: ChangeKind; before: strin
 }
 
 /** Discard all, quiet on the left; Save only and Deploy on the right. */
-function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, busy = null }: EnvironmentChangesReviewProps) {
+function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, busy = new Set() }: EnvironmentChangesReviewProps) {
   return (
     <DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
-        <Button variant="ghost" className="text-muted-foreground sm:mr-auto" disabled={busy === "discarding"} onClick={onDiscardAll}>{busy === "discarding" ? "Discarding…" : "Discard all"}</Button>
+        <Button variant="ghost" className="text-muted-foreground sm:mr-auto" disabled={busy.has("discarding")} onClick={onDiscardAll}>{busy.has("discarding") ? "Discarding…" : "Discard all"}</Button>
       ) : null}
-      <Button variant={canDeploy ? "outline" : "default"} disabled={!canSave || busy === "deploying"} onClick={onSave}>
-        {busy === "saving" ? <><Spinner data-icon="inline-start" />Saving…</> : "Save only"}
+      <Button variant={canDeploy ? "outline" : "default"} disabled={!canSave || busy.has("deploying")} onClick={onSave}>
+        {busy.has("saving") ? <><Spinner data-icon="inline-start" />Saving…</> : "Save only"}
       </Button>
       {canDeploy ? (
-        <Button disabled={busy === "saving" || busy === "deploying"} onClick={onDeploy}>
-          {busy === "deploying" ? <><Spinner data-icon="inline-start" />Deploying…</> : "Deploy changes"}
+        <Button disabled={busy.has("saving") || busy.has("deploying")} onClick={onDeploy}>
+          {busy.has("deploying") ? <><Spinner data-icon="inline-start" />Deploying…</> : "Deploy changes"}
         </Button>
       ) : null}
     </DialogFooter>

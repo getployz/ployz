@@ -425,13 +425,13 @@ it("leaves a Deploy's confirmation_required to a caller that handles it, and toa
 });
 
 const into = { project: "shop", environment: "staging" };
-type Mark = ReturnType<typeof useStoreBusy> | ReturnType<typeof useStorePrPlanPending> | ReturnType<typeof useStorePendingDomains> | boolean;
+type Mark = ReturnType<typeof useStorePrPlanPending> | ReturnType<typeof useStorePendingDomains> | boolean;
 const marked: { name: string; command: ConfigCommand; shown: () => Mark; idle: Mark; busy: Mark }[] = [
-  { name: "Save", command: { command: "publish", environment: ref, version: null }, shown: () => useStoreBusy("acme", ref), idle: null, busy: "saving" },
-  { name: "Deploy", command: { command: "admit", admit: "deploy", id: "dep_1", environment: ref }, shown: () => useStoreBusy("acme", ref), idle: null, busy: "deploying" },
-  { name: "Sync", command: { command: "sync", from: ref, into, version: "4:2:1.0" }, shown: () => useStoreBusy("acme", into), idle: null, busy: "syncing" },
+  { name: "Save", command: { command: "publish", environment: ref, version: null }, shown: () => [...useStoreBusy("acme", ref)], idle: [], busy: ["saving"] },
+  { name: "Deploy", command: { command: "admit", admit: "deploy", id: "dep_1", environment: ref }, shown: () => [...useStoreBusy("acme", ref)], idle: [], busy: ["deploying"] },
+  { name: "Sync", command: { command: "sync", from: ref, into, version: "4:2:1.0" }, shown: () => [...useStoreBusy("acme", into)], idle: [], busy: ["syncing"] },
   { name: "Restore", command: { command: "stage_history", environment: ref, revision: 2, action: "restore", version: "4:2:1.0" },
-    shown: () => useStoreBusy("acme", ref), idle: null, busy: "restoring" },
+    shown: () => [...useStoreBusy("acme", ref)], idle: [], busy: ["restoring"] },
   { name: "Cancel", command: { command: "cancel", deployment: "dep_1" }, shown: () => useStoreCancelling("acme", "dep_1"), idle: false, busy: true },
   { name: "domain", command: { command: "add_domain", environment: ref, service: "web", hostname: "shop.example.com", port: null },
     shown: () => useStorePendingDomains("acme", ref, "web"), idle: [], busy: ["shop.example.com"] },

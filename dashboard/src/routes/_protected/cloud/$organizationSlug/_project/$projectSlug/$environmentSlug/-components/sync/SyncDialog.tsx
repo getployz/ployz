@@ -46,7 +46,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   // `into`'s values typed for secrets it lacks: sent with the Sync, never shown back.
   const [values, setValues] = useState<Readonly<Partial<Record<RowId, string>>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
-  const pending = useStoreBusy(organizationSlug, from) === "syncing";
+  const pending = useStoreBusy(organizationSlug, from).has("syncing");
   const [stale, setStale] = useState(false);
   // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
   // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.

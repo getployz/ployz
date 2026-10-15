@@ -31,7 +31,7 @@ let storage: (deploymentId: string) => string | null = () => null;
 /** Secrets without a value the next Deploy leaves out. */
 let notSet = 0;
 /** A write the Store hasn't answered for yet. */
-let busy: Busy | null = null;
+let busy: ReadonlySet<Busy> = new Set();
 /** Moves Deployments between in flight and ended while the bar stays mounted. */
 let settle: (lists: { active: DeploymentSummary[]; ended: DeploymentSummary[] | undefined }) => void = () => {};
 
@@ -40,7 +40,7 @@ beforeEach(() => {
   ended = [];
   storage = () => null;
   notSet = 0;
-  busy = null;
+  busy = new Set();
   localStorage.clear();
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
 });
@@ -129,7 +129,7 @@ it("saves without deploying from Alt+click on Deploy and from Save only under �
 });
 
 it("offers no second Save while one is unanswered", async () => {
-  busy = "saving";
+  busy = new Set(["saving"]);
   open(canvasUrl, [replicas], 1, true);
   const staged = await bar();
   expect(staged.getByRole("button", { name: /Saving…/ })).toHaveProperty("disabled", true);
@@ -142,7 +142,7 @@ it("offers no second Save while one is unanswered", async () => {
 });
 
 it("offers no Save or second Deploy while a Deploy is unanswered", async () => {
-  busy = "deploying";
+  busy = new Set(["deploying"]);
   open(canvasUrl, [replicas], 1, true);
   const staged = await bar();
   expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
