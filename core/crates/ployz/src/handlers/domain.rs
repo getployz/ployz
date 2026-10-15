@@ -3,7 +3,6 @@
 //! Both are staged until a Deploy, and each reads Ready, Setting up or Needs attention
 //! with at most one action.
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::DomainPrefix;
 use ployz_store::{
@@ -16,76 +15,66 @@ use super::{Error, leaf_matches, required};
 use crate::cli::{positional, value};
 use crate::ui::{self, Cell, Fields, Hint, Table, Tone};
 
-pub(crate) fn command() -> Command {
-    Command::new("domain")
-        .about("Manage public domains")
-        .subcommand(
-            store::scoped(Command::new("add").about(
-                "Give a Service a domain: HOST for a custom one, none for a generated one",
-            ))
-            .arg(positional("service", true))
-            .arg(positional("host", false).help("Custom hostname, like app.example.com"))
-            .arg(
-                value("prefix", None)
-                    .conflicts_with("host")
-                    .help("Generated domain's prefix, to add another [default: a free one]"),
-            )
-            .arg(
-                value("port", None)
-                    .value_parser(clap::value_parser!(u16).range(1..))
-                    .help("Container port it reaches [default: the container's PORT]"),
-            ),
-        )
-        .subcommand(
-            store::scoped(Command::new("set").about(
-                "Change a Service's generated domain to PREFIX.CLUSTER-DOMAIN; staged until you deploy",
-            ))
-            .arg(positional("service", true))
-            .arg(
-                positional("prefix", true)
-                    .help("One DNS label, unique among the Organization's generated domains"),
-            )
-            .arg(
-                value("domain", None)
-                    .help("Which generated domain, by hostname or prefix, when it has several"),
-            )
-            .arg(
-                value("port", None)
-                    .value_parser(clap::value_parser!(u16).range(1..))
-                    .help("Container port it reaches [default: the container's PORT]"),
-            ),
-        )
-        .subcommand(
-            store::scoped(
-                Command::new("ls")
-                    .about("List domains: Ready, Setting up or Needs attention, and what to do"),
-            )
-            .arg(positional("service", false).help("Only this Service's domains")),
-        )
-        .subcommand(
-            store::scoped(Command::new("rm").about("Remove a domain; it serves until a Deploy"))
-                .arg(positional("domain", true).help("Hostname, or a generated domain's prefix")),
-        )
-        .subcommand(
-            store::scoped(
-                Command::new("check").about("Re-check a domain's DNS and certificate now"),
-            )
-            .arg(positional("domain", true).help("Hostname, or a generated domain's prefix")),
-        )
+pub(super) fn group(command: Command) -> Command {
+    command.about("Manage public domains")
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "add" => cloud(Never, add),
-        "set" => cloud(Never, set),
-        "ls" => cloud(Never, list),
-        "rm" => cloud(Never, remove),
-        "check" => cloud(Never, check),
-        _ => return None,
-    })
+pub(super) fn add_command(command: Command) -> Command {
+    store::scoped(
+        command.about("Give a Service a domain: HOST for a custom one, none for a generated one"),
+    )
+    .arg(positional("service", true))
+    .arg(positional("host", false).help("Custom hostname, like app.example.com"))
+    .arg(
+        value("prefix", None)
+            .conflicts_with("host")
+            .help("Generated domain's prefix, to add another [default: a free one]"),
+    )
+    .arg(
+        value("port", None)
+            .value_parser(clap::value_parser!(u16).range(1..))
+            .help("Container port it reaches [default: the container's PORT]"),
+    )
 }
 
-fn add(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn set_command(command: Command) -> Command {
+    store::scoped(command.about(
+        "Change a Service's generated domain to PREFIX.CLUSTER-DOMAIN; staged until you deploy",
+    ))
+    .arg(positional("service", true))
+    .arg(
+        positional("prefix", true)
+            .help("One DNS label, unique among the Organization's generated domains"),
+    )
+    .arg(
+        value("domain", None)
+            .help("Which generated domain, by hostname or prefix, when it has several"),
+    )
+    .arg(
+        value("port", None)
+            .value_parser(clap::value_parser!(u16).range(1..))
+            .help("Container port it reaches [default: the container's PORT]"),
+    )
+}
+
+pub(super) fn list_command(command: Command) -> Command {
+    store::scoped(
+        command.about("List domains: Ready, Setting up or Needs attention, and what to do"),
+    )
+    .arg(positional("service", false).help("Only this Service's domains"))
+}
+
+pub(super) fn remove_command(command: Command) -> Command {
+    store::scoped(command.about("Remove a domain; it serves until a Deploy"))
+        .arg(positional("domain", true).help("Hostname, or a generated domain's prefix"))
+}
+
+pub(super) fn check_command(command: Command) -> Command {
+    store::scoped(command.about("Re-check a domain's DNS and certificate now"))
+        .arg(positional("domain", true).help("Hostname, or a generated domain's prefix"))
+}
+
+pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let hostname = matches
         .get_one::<String>("host")
@@ -130,7 +119,7 @@ fn prefix_arg(prefix: &str) -> Result<DomainPrefix, Error> {
         .map_err(|_| Error::usage("Expected one DNS label, like shop"))
 }
 
-fn set(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let set = SetGeneratedDomain {
         environment: store::environment(matches)?,
@@ -149,7 +138,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn remove(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let remove = RemoveDomain {
         environment: store::environment(matches)?,
@@ -165,7 +154,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn list(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let service = matches
         .get_one::<String>("service")
@@ -204,7 +193,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn check(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn check(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let query = DomainQuery {
         environment: store::environment(matches)?,

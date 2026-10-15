@@ -8,7 +8,6 @@
 mod follow_tests;
 mod progress;
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use crate::ui::progress::{Disposition, Progress};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::collections::BTreeMap;
@@ -29,10 +28,10 @@ use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
 
-pub(crate) fn deploy_command() -> Command {
+pub(super) fn deploy_command(command: Command) -> Command {
     following(
         scoped(base(
-            "deploy",
+            command,
             "Deploy everything staged and follow the Deployment",
         ))
         .arg(
@@ -101,61 +100,47 @@ pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
 const UNCLAIMED: Duration = Duration::from_secs(30);
 
-pub(crate) fn deployment_command() -> Command {
-    Command::new("deployment")
-        .about("Read, retry, start and cancel Deployments")
-        .subcommand(
-            scoped(Command::new("ls").about("List Deployments, newest first"))
-                .arg(
-                    value("limit", None)
-                        .value_parser(clap::value_parser!(usize))
-                        .help("At most this many, 1-100 [default: 20]"),
-                )
-                .arg(value("cursor", None).help("The next_cursor of the previous page")),
+pub(super) fn deployment_group(command: Command) -> Command {
+    command.about("Read, retry, start and cancel Deployments")
+}
+
+pub(super) fn ls_command(command: Command) -> Command {
+    scoped(command.about("List Deployments, newest first"))
+        .arg(
+            value("limit", None)
+                .value_parser(clap::value_parser!(usize))
+                .help("At most this many, 1-100 [default: 20]"),
         )
-        .subcommand(
-            scoped(
-                Command::new("show")
-                    .about("Show a Deployment with its Deploy Preview and Node Outcomes"),
-            )
-            .arg(id()),
-        )
-        .subcommand(
-            following(scoped(base(
-                "retry",
-                "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
-            )))
-            .arg(id()),
-        )
-        .subcommand(
-            following(scoped(base(
-                "start",
-                "Hand a queued Deployment to a runner now, and follow it",
-            )))
-            .arg(id()),
-        )
-        .subcommand(
-            scoped(
-                Command::new("cancel")
-                    .about("Cancel a Deployment: a queued one never runs, a running one stops"),
-            )
-            .arg(id()),
-        )
+        .arg(value("cursor", None).help("The next_cursor of the previous page"))
+}
+
+pub(super) fn show_command(command: Command) -> Command {
+    scoped(command.about("Show a Deployment with its Deploy Preview and Node Outcomes")).arg(id())
+}
+
+pub(super) fn retry_command(command: Command) -> Command {
+    following(scoped(base(
+        command,
+        "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
+    )))
+    .arg(id())
+}
+
+pub(super) fn start_command(command: Command) -> Command {
+    following(scoped(base(
+        command,
+        "Hand a queued Deployment to a runner now, and follow it",
+    )))
+    .arg(id())
+}
+
+pub(super) fn cancel_command(command: Command) -> Command {
+    scoped(command.about("Cancel a Deployment: a queued one never runs, a running one stops"))
+        .arg(id())
 }
 
 fn id() -> clap::Arg {
     positional("id", true).help("The Deployment's ID, or its number in the Environment")
-}
-
-pub(super) fn deployment_handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "ls" => cloud(Never, ls),
-        "show" => cloud(Never, show),
-        "retry" => cloud(Never, retry),
-        "start" => cloud(Never, start),
-        "cancel" => cloud(Never, cancel),
-        _ => return None,
-    })
 }
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
@@ -874,7 +859,7 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
     })
 }
 
-fn ls(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let page = store(root)?.read(&DeploymentsQuery {
         environment: environment(matches)?,
@@ -979,7 +964,7 @@ fn id_hint(id: &DeploymentId) -> String {
     shell_words::join(["ployz", "deployment", "show", id.as_str()])
 }
 
-fn retry(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn retry(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let source = deployment_id(matches, &store, "id")?;
@@ -994,7 +979,7 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
     ship(matches, &store, &admitted, events)
 }
 
-fn start(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
@@ -1008,7 +993,7 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
     ship(matches, &store, &queued, events)
 }
 
-fn cancel(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
@@ -1021,7 +1006,7 @@ fn cancel(root: &ArgMatches) -> Result<(), Error> {
     finish_view(&view, Some(show_hint(matches, view.deployment.number)))
 }
 
-fn show(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;

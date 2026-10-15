@@ -21,10 +21,8 @@ use super::store::{mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
 
-pub(crate) fn command() -> Command {
-    super::deploy::following(scoped(base(
-        "up",
-        "Deploy this directory: create and link its Project if needed, upload, build and deploy it",
+pub(super) fn command(command: Command) -> Command {
+    super::deploy::following(scoped(base(command, "Deploy this directory: create and link its Project if needed, upload, build and deploy it",
     )))
     .arg(
         value("server", None)
@@ -172,10 +170,7 @@ fn add_server(
     let add = crate::cli::command()
         .try_get_matches_from(args)
         .map_err(|error| super::clap_usage(&error))?;
-    let handler = super::handler_for("server add")
-        .expect("server add has a handler")
-        .run;
-    let (added, server) = crate::ui::captured(|| handler(&add));
+    let (added, server) = crate::ui::captured(|| (super::verbs::SERVER_ADD.run)(&add));
     added?;
     Ok(server)
 }

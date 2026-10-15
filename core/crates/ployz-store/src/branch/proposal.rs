@@ -5,7 +5,7 @@
 //! draft that changes an owned row releases it, so Remove puts back exactly what the
 //! proposal still owns. Every ownership rule lives here.
 
-use super::pair::{self, Arrival, Which};
+use super::pair::{self, Arrival, Claim, Which};
 use super::*;
 use crate::id::{ProposalId, RepositoryId};
 use crate::pull_request::PullRequestRef;
@@ -541,7 +541,7 @@ fn take_out(tx: &mut dyn Tx, into: &mut Environment, proposal: &Proposal) -> Res
         .find(|arrived| {
             matches!(
                 &arrived.arrival,
-                Arrival::Pending { owner: None, sync: Some(sync), .. } if syncs.contains(sync)
+                Arrival::Pending { claim: Claim::Released(sync), .. } if syncs.contains(sync)
             ) && (nodes.contains(arrived.row.lineage()) || *arrived.row.at() == At::Node)
         })
         .map(|arrived| arrived.row);
@@ -818,7 +818,15 @@ pub(crate) fn undo(
     // released to the draft, and Remove would keep it, so Undo is refused as before.
     let changed = pair::arrived(tx, &receiver, Which::Of(sync))?
         .into_iter()
-        .find(|arrived| matches!(arrived.arrival, Arrival::Pending { owner: None, .. }));
+        .find(|arrived| {
+            matches!(
+                arrived.arrival,
+                Arrival::Pending {
+                    claim: Claim::Released(_),
+                    ..
+                }
+            )
+        });
     if let Some(changed) = changed {
         let label = named(&[&into.working], &changed.row)
             .map_or_else(|| changed.row.to_string(), |row| row.to_string());

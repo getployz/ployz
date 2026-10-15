@@ -78,7 +78,7 @@ POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
 # The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
 INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
              "etc/modprobe.d/ployz* etc/modules-load.d/ployz* etc/default/ployz*")
-# Files a run replaces outside INSTALLED: test-verify-warm-move.py swaps runc for a wrapper and keeps runc.<tag>-original.
+# Files a run replaces outside INSTALLED: a check may swap runc for a wrapper and keeps runc.<tag>-original.
 REPLACED = "usr/bin/runc"
 STASH = "/var/lib/ployz-verify-bake.tar"
 

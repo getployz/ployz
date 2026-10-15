@@ -9,6 +9,7 @@ use futures_util::{
     future::{Either, join_all},
     stream::FuturesUnordered,
 };
+use ployz_core::labels::CREATION_KEY;
 use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
@@ -421,91 +422,45 @@ impl Client {
                     && container.kind == slot.kind
                     && container.namespace == slot.namespace
                     && container.resolved_spec == *spec)
-                    .then(|| container.labels.get("ployz.creation.key").cloned())
+                    .then(|| container.labels.get(CREATION_KEY).cloned())
                     .flatten()
             })
             .and_then(|key| CreationKey::try_from(key).ok()))
     }
 }
 
-impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
-    async fn prepare_volumes(
-        &self,
-        machine_id: &MachineId,
-        specs: &[ployz_core::ServiceStorageSpec],
-    ) -> Result<ployz_core::PreparedVolumes, RpcError> {
-        self.inner.prepare_volumes(machine_id, specs).await
-    }
+// Each method names its restart policy. `wait` resends while the Machine is
+// restarting, so its daemon side must converge on a resend. `once` sends one
+// time and names why a resend is unsafe. A row without a policy does not parse.
+macro_rules! restart_policy {
+    ($($policy:ident $(($reason:literal))? fn $name:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {
+        impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
+            $(
+                async fn $name(&self $(, $arg: $ty)*) -> $ret {
+                    restart_policy!(@send $policy $(($reason))? self $name $($arg)*)
+                }
+            )*
+        }
+    };
+    (@send wait $self:ident $name:ident $($arg:ident)*) => {
+        wait_out_restart($self.cancellation, || $self.inner.$name($(Clone::clone(&$arg)),*)).await
+    };
+    (@send once($reason:literal) $self:ident $name:ident $($arg:ident)*) => {
+        $self.inner.$name($($arg),*).await
+    };
+}
 
-    async fn service_containers(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<Vec<ContainerObservation>, RpcError> {
-        wait_out_restart(self.cancellation, || self.inner.service_containers(service)).await
-    }
-
-    async fn ensure_container(
-        &self,
-        machine_id: &MachineId,
-        want: ContainerWant,
-    ) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.ensure_container(machine_id, want.clone())
-        })
-        .await
-    }
-
-    async fn inspect_container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Result<ContainerDetails, RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.inspect_container(machine_id, container_id)
-        })
-        .await
-    }
-
-    async fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError> {
-        wait_out_restart(self.cancellation, || self.inner.remove_volume(id)).await
-    }
-
-    async fn runs_global(
-        &self,
-        machine_id: &MachineId,
-        slot: &SlotKey,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<bool, RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.runs_global(machine_id, slot, spec)
-        })
-        .await
-    }
-
-    async fn ensure_image(
-        &self,
-        machine_id: &MachineId,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), RpcError> {
-        wait_out_restart(self.cancellation, || {
-            self.inner.ensure_image(machine_id, spec)
-        })
-        .await
-    }
-
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
-        wait_out_restart(self.cancellation, || self.inner.read_pointer(service)).await
-    }
-
-    async fn publish_pointer(
-        &self,
-        request: PublishServingPointerRequest,
-    ) -> Result<ServingPointerPublication, RpcError> {
-        self.inner.publish_pointer(request).await
-    }
+restart_policy! {
+    wait fn prepare_volumes(&self, machine_id: &MachineId, specs: &[ployz_core::ServiceStorageSpec]) -> Result<ployz_core::PreparedVolumes, RpcError>;
+    wait fn service_containers(&self, service: &QualifiedService) -> Result<Vec<ContainerObservation>, RpcError>;
+    wait fn ensure_container(&self, machine_id: &MachineId, want: ContainerWant) -> Result<(ContainerNow, Option<HealthVerdict>), RpcError>;
+    wait fn inspect_container(&self, machine_id: &MachineId, container_id: &ContainerId) -> Result<ContainerDetails, RpcError>;
+    wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
+    wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
+    wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<(), RpcError>;
+    wait fn read_pointer(&self, service: &QualifiedService) -> Result<ServingPointerRead, RpcError>;
+    once("a compare-and-set: a resend after a lost reply reads its own write as Superseded")
+    fn publish_pointer(&self, request: PublishServingPointerRequest) -> Result<ServingPointerPublication, RpcError>;
 }
 
 async fn wait_out_restart<T, Fut>(
@@ -2133,38 +2088,24 @@ async fn replace_stop_first<C: MachineOperations>(
             started: Some(new_container),
             stopped_old: old_stopped,
         }),
-        Err(error) => {
-            let new_container = if let ExecutionError::Health { container_id, .. } = &error {
-                Some(*container_id)
-            } else {
-                None
-            };
-            Err(compensate(
-                client,
-                index,
-                progress,
-                operation,
-                old_stopped,
-                new_container,
-                error,
-            )
-            .await)
-        }
+        Err(error) => Err(compensate(client, index, progress, operation, old_stopped, error).await),
     }
 }
 
-// A failure after the old container stopped restores it; otherwise only a health
-// failure is compensated, by removing the new container.
 async fn compensate<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &Progress,
     operation: &ReplacementOperation,
     old_stopped: bool,
-    new_container: Option<ContainerId>,
     error: ExecutionError,
 ) -> OperationFailure {
-    if !old_stopped && !matches!(&error, ExecutionError::Health { .. }) {
+    let new_container = if let ExecutionError::Health { container_id, .. } = &error {
+        Some(*container_id)
+    } else {
+        None
+    };
+    if !old_stopped && new_container.is_none() {
         return error.into();
     }
     progress.set_running(index, OperationPhase::Compensating);
@@ -2174,16 +2115,14 @@ async fn compensate<C: MachineOperations>(
         )),
         None => None,
     };
-    let compensation = match (old_stopped, stop_new_container) {
-        (true, stop_new_container) => ReplacementCompensation::OldStopped {
+    let compensation = match stop_new_container {
+        Some(stop_new_container) if !old_stopped => {
+            ReplacementCompensation::OldUntouched { stop_new_container }
+        }
+        stop_new_container => ReplacementCompensation::OldStopped {
             stop_new_container,
             restart_old_container: restore_old_container(client, operation).await,
         },
-        (false, Some(stop_new_container)) => {
-            ReplacementCompensation::OldUntouched { stop_new_container }
-        }
-        // A health failure always follows a started container.
-        (false, None) => return error.into(),
     };
     OperationFailure::Replacement {
         error,

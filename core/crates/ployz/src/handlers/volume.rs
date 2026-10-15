@@ -6,7 +6,6 @@
 //!
 //! Mirror, Sync and Mirror removal are Volume runs in Ployz Cloud; see [`run`].
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::VolumeKind;
 use ployz_core::{
@@ -22,88 +21,62 @@ use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Hint, Table, Tone};
 
-mod run;
+pub(super) mod run;
 
-pub(crate) fn command() -> Command {
-    base("volume", "Manage Volumes")
-        .subcommand(
-            storage_flags(store::scoped(
-                Command::new("add")
-                    .about("Add a Managed volume (or --docker); staged until you deploy"),
-            ))
-            .arg(positional("name", true).help("Volume name, unique in the Environment"))
-            .arg(
-                value("mount", None)
-                    .action(ArgAction::Append)
-                    .value_name("SERVICE:/PATH")
-                    .help("Mount it into a Service at an absolute path; repeatable"),
-            )
-            .arg(shared_writes_flag()),
-        )
-        .subcommand(
-            storage_flags(store::scoped(
-                Command::new("set").about(
-                    "Change a Volume's storage before its first deployment, or whether it allows shared writes",
-                ),
-            ))
-            .arg(positional("volume", true))
-            .arg(shared_writes_flag())
-            .group(
-                clap::ArgGroup::new("volume-change")
-                    .args(["size", "docker", "shared-writes"])
-                    .required(true),
-            ),
-        )
-        .subcommand(
-            store::scoped(Command::new("inspect").about("Show a Volume and where it is mounted"))
-                .arg(positional("volume", true)),
-        )
-        .subcommand(store::scoped(
-            Command::new("ls").about("List Volumes and what the next Deploy does to them"),
-        ))
-        .subcommand(
-            store::scoped(
-                Command::new("rename").about("Rename a Volume: staged; its data and mounts stay"),
-            )
-            .arg(positional("volume", true))
-            .arg(positional("name", true)),
-        )
-        .subcommand(
-            store::scoped(
-                Command::new("rm").about(
-                    "Remove a Volume and detach it; a Deploy of the removal deletes its data",
-                ),
-            )
-            .arg(positional("volume", true)),
-        )
-        .subcommand(run::mirror_command())
-        .subcommand(run::sync_command())
-        .subcommand(run::move_command())
-        .subcommand(run::release_command())
-        .subcommand(run::restore_command())
-        .subcommand(run::runs_command())
+pub(super) fn group(command: Command) -> Command {
+    base(command, "Manage Volumes")
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "add" => cloud(Never, add),
-        "set" => cloud(Never, set),
-        "inspect" => cloud(Never, inspect),
-        "ls" => cloud(Never, list),
-        "rename" => cloud(Never, rename),
-        "rm" => cloud(Never, remove),
-        "mirror" => cloud(Never, run::mirror),
-        "mirror rm" => cloud(Always, run::remove_mirror),
-        "sync" => cloud(Never, run::sync),
-        "move" => cloud(Never, run::move_volume),
-        "release" => cloud(Never, run::release),
-        "restore" => cloud(Always, run::restore),
-        "runs" => cloud(Never, run::runs),
-        _ => return None,
-    })
+pub(super) fn add_command(command: Command) -> Command {
+    storage_flags(store::scoped(
+        command.about("Add a Managed volume (or --docker); staged until you deploy"),
+    ))
+    .arg(positional("name", true).help("Volume name, unique in the Environment"))
+    .arg(
+        value("mount", None)
+            .action(ArgAction::Append)
+            .value_name("SERVICE:/PATH")
+            .help("Mount it into a Service at an absolute path; repeatable"),
+    )
+    .arg(shared_writes_flag())
 }
 
-fn add(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn set_command(command: Command) -> Command {
+    storage_flags(store::scoped(command.about(
+        "Change a Volume's storage before its first deployment, or whether it allows shared writes",
+    )))
+    .arg(positional("volume", true))
+    .arg(shared_writes_flag())
+    .group(
+        clap::ArgGroup::new("volume-change")
+            .args(["size", "docker", "shared-writes"])
+            .required(true),
+    )
+}
+
+pub(super) fn inspect_command(command: Command) -> Command {
+    store::scoped(command.about("Show a Volume and where it is mounted"))
+        .arg(positional("volume", true))
+}
+
+pub(super) fn list_command(command: Command) -> Command {
+    store::scoped(command.about("List Volumes and what the next Deploy does to them"))
+}
+
+pub(super) fn rename_command(command: Command) -> Command {
+    store::scoped(command.about("Rename a Volume: staged; its data and mounts stay"))
+        .arg(positional("volume", true))
+        .arg(positional("name", true))
+}
+
+pub(super) fn remove_command(command: Command) -> Command {
+    store::scoped(
+        command.about("Remove a Volume and detach it; a Deploy of the removal deletes its data"),
+    )
+    .arg(positional("volume", true))
+}
+
+pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = volume_name(matches, "name")?;
     let mounts = matches
@@ -209,7 +182,7 @@ fn requested_storage(matches: &ArgMatches) -> VolumeKind {
     }
 }
 
-fn set(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     if let Some(shared_writes) = matches.get_one::<bool>("shared-writes") {
@@ -258,7 +231,7 @@ fn storage_word(storage: VolumeKind) -> String {
     }
 }
 
-fn list(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let view = store::store(root)?.read(&VolumesQuery {
         environment: store::environment(matches)?,
@@ -299,7 +272,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&view, &table)
 }
 
-fn inspect(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?.read(&VolumeQuery {
@@ -335,7 +308,7 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::fields(&view, &record)
 }
 
-fn rename(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let name = volume_name(matches, "name")?;
@@ -347,7 +320,7 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &renamed, "Staged rename of Volume", false)
 }
 
-fn remove(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?.write(&RemoveVolume {

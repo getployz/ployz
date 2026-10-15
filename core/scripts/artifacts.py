@@ -48,12 +48,14 @@ class Kind:
 
 SDK = "crates/ployz-sdk"
 SDK_FILES = ("ployz-sdk.node", "generated/payloads.d.ts", "generated/capabilities.d.ts", "generated/capabilities.js",
-             "generated/capabilities.mjs", "generated/catalog.json", "generated/config-wasm.mjs")
+             "generated/capabilities.mjs", "generated/catalog.json", "generated/config-wasm.mjs",
+             "generated/native.d.ts")
 KINDS = {
     "sdk": Kind("cloud-sdk", ("ployz-sdk", "ployz-config-wasm"), SDK_FILES,
-                "sdk-v2", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
+                "sdk-v3", ("scripts/build-cloud-sdk.sh", "scripts/build-config-wasm.sh"),
                 tuple(f"{SDK}/{name}" for name in SDK_FILES if name.startswith("generated/")),
-                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/config.d.ts",
+                (f"{SDK}/src", f"{SDK}/index.d.ts", f"{SDK}/index.js", f"{SDK}/wrap.js",
+                 f"{SDK}/scripts/native-dts.mjs", f"{SDK}/config.d.ts",
                  "crates/ployz-store/src/settings", "crates/ployz-store/src/variables.rs",
                  "crates/ployz-core/src/rpc_catalog.rs"),
                 ("config-wasm",), ("ts_rs", "TS")),

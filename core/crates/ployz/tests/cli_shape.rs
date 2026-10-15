@@ -2,8 +2,8 @@
 use std::process::{Command as ProcessCommand, Stdio};
 
 #[test]
-fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
-    fn collect(command: &clap::Command, parent: &str, paths: &mut Vec<String>) {
+fn no_command_declares_an_alias() {
+    fn walk(command: &clap::Command, parent: &str) {
         for child in command.get_subcommands() {
             let path = format!("{parent}{}", child.get_name());
             assert_eq!(
@@ -11,145 +11,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
                 0,
                 "{path} declares an alias"
             );
-            collect(child, &format!("{path} "), paths);
-            paths.push(path);
+            walk(child, &format!("{path} "));
         }
     }
-    let mut paths = Vec::new();
-    collect(&ployz::cli::command(), "", &mut paths);
-    paths.sort_unstable();
-    if cfg!(feature = "verify-faults") {
-        paths.retain(|path| path != "debug" && !path.starts_with("debug "));
-    }
-    assert_eq!(
-        paths,
-        [
-            "build",
-            "cloud",
-            "cloud reset",
-            // Shell tooling, not a Cluster operation.
-            "completion",
-            "config",
-            "config add",
-            "config inspect",
-            "config ls",
-            "config mount",
-            "config put",
-            "config rename",
-            "config rm",
-            "config rm-file",
-            "config unmount",
-            "ctx",
-            "ctx ls",
-            "ctx rm",
-            "ctx use",
-            "deploy",
-            "deployment",
-            "deployment cancel",
-            "deployment ls",
-            "deployment retry",
-            "deployment show",
-            "deployment start",
-            "diff",
-            "discard",
-            "docs",
-            "domain",
-            "domain add",
-            "domain check",
-            "domain ls",
-            "domain rm",
-            "domain set",
-            "env",
-            "env branch",
-            "env copy",
-            "env default",
-            "env keep",
-            "env ls",
-            "env never-sync",
-            "env new",
-            "env on-merge",
-            "env pr",
-            "env rm",
-            "env setup",
-            "env shutdown",
-            "env sync",
-            "exec",
-            "explain",
-            "get",
-            "github",
-            "github cat",
-            "github connect",
-            "github disconnect",
-            "github ls",
-            "github tree",
-            "history",
-            "history restore",
-            "history undo",
-            "link",
-            "login",
-            "logout",
-            "logs",
-            "mcp",
-            "metrics",
-            "org",
-            "org build-order",
-            "org leave",
-            "org ls",
-            "org rm",
-            "org use",
-            "project",
-            "project ls",
-            "project new",
-            "project rename",
-            "project rm",
-            "ps",
-            "schema",
-            "server",
-            "server add",
-            "server build-cache-clear",
-            "server clean",
-            "server drain",
-            "server forget",
-            "server inspect",
-            "server logs",
-            "server ls",
-            "server rm",
-            "server set",
-            "server upgrade",
-            "service",
-            "service add",
-            "service inspect",
-            "service ls",
-            "service port-forward",
-            "service rename",
-            "service restart",
-            "service rm",
-            "service start",
-            "service stop",
-            "set",
-            "status",
-            "token",
-            "token ls",
-            "token new",
-            "token rm",
-            "unset",
-            "up",
-            "volume",
-            "volume add",
-            "volume inspect",
-            "volume ls",
-            "volume mirror",
-            "volume mirror rm",
-            "volume move",
-            "volume release",
-            "volume rename",
-            "volume restore",
-            "volume rm",
-            "volume runs",
-            "volume set",
-            "volume sync",
-        ]
-    );
+    walk(&ployz::cli::command(), "");
 }
 
 #[test]

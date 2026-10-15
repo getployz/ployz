@@ -1,4 +1,3 @@
-use super::catalog::{Approval::*, Runnable, cloud};
 use std::time::{Duration, Instant};
 
 use clap::{ArgMatches, Command};
@@ -23,53 +22,48 @@ use crate::ui::{Cell, Hint, Table, Tone};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_secs(3);
 
-pub(crate) fn command() -> Command {
-    Command::new("github")
-        .about("Connect GitHub so Services can build your repositories")
-        .subcommand(
-            Command::new("connect")
+pub(super) fn group(command: Command) -> Command {
+    command.about("Connect GitHub so Services can build your repositories")
+}
+
+pub(super) fn connect_command(command: Command) -> Command {
+    command
                 .about("Print the link that connects a GitHub account and wait until it is connected")
                 .long_about("Print the link that connects a GitHub account to this Organization, and wait until it is connected. With --json, prints the link at once unless --wait is given. Public repositories need no connection.")
-                .arg(switch("wait", None).help("Wait for the connection, also with --json")),
-        )
-        .subcommand(
-            Command::new("ls")
+                .arg(switch("wait", None).help("Wait for the connection, also with --json"))
+}
+
+pub(super) fn list_command(command: Command) -> Command {
+    command
                 .about("List this Organization's GitHub accounts and repositories, or one repository's branches")
-                .arg(positional("repository", false).help("OWNER/REPO: list its branches")),
-        )
-        .subcommand(
-            Command::new("tree")
-                .about("List a repository's files")
-                .arg(positional("repository", true).help("OWNER/REPO"))
-                .arg(positional("path", false).help("Only files under this directory"))
-                .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted"))
-                .arg(value("match", None).value_name("GLOB").help(
-                    "Only paths matching this glob, like **/Dockerfile or apps/*/package.json",
-                )),
-        )
-        .subcommand(
-            Command::new("cat")
-                .about("Print one file of a repository")
-                .arg(positional("repository", true).help("OWNER/REPO"))
-                .arg(positional("path", true).help("The file, like Dockerfile or web/package.json"))
-                .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted")),
-        )
-        .subcommand(
-            Command::new("disconnect")
-                .about("Disconnect a GitHub account from this Organization; uninstall the App on GitHub")
-                .arg(positional("account", true).help("GitHub login, from ployz github ls")),
+                .arg(positional("repository", false).help("OWNER/REPO: list its branches"))
+}
+
+pub(super) fn tree_command(command: Command) -> Command {
+    command
+        .about("List a repository's files")
+        .arg(positional("repository", true).help("OWNER/REPO"))
+        .arg(positional("path", false).help("Only files under this directory"))
+        .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted"))
+        .arg(
+            value("match", None)
+                .value_name("GLOB")
+                .help("Only paths matching this glob, like **/Dockerfile or apps/*/package.json"),
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "connect" => cloud(Never, connect),
-        "ls" => cloud(Never, list),
-        "tree" => cloud(Never, tree),
-        "cat" => cloud(Never, cat),
-        "disconnect" => cloud(Always, disconnect),
-        _ => return None,
-    })
+pub(super) fn cat_command(command: Command) -> Command {
+    command
+        .about("Print one file of a repository")
+        .arg(positional("repository", true).help("OWNER/REPO"))
+        .arg(positional("path", true).help("The file, like Dockerfile or web/package.json"))
+        .arg(value("ref", None).help("Branch, tag or commit; the default branch if omitted"))
+}
+
+pub(super) fn disconnect_command(command: Command) -> Command {
+    command
+        .about("Disconnect a GitHub account from this Organization; uninstall the App on GitHub")
+        .arg(positional("account", true).help("GitHub login, from ployz github ls"))
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -122,7 +116,7 @@ async fn connection(credential: &Credential) -> Result<Connection, LoginError> {
     cloud_account::call(credential, Method::GET, "github", None).await
 }
 
-fn connect(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn connect(root: &ArgMatches) -> Result<(), Error> {
     let wait = leaf_matches(root).get_flag("wait") || !crate::ui::json();
     let (before, after) = in_cloud(root, async |_, credential| {
         let before = connection(credential).await?;
@@ -171,7 +165,7 @@ fn connect(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn list(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let Some(repository) = leaf_matches(root).get_one::<String>("repository") else {
         let listed = in_cloud(root, async |_, credential| connection(credential).await)?;
         let next = (!listed.ready).then(|| "ployz github connect".to_owned());
@@ -205,7 +199,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&branches, &table)
 }
 
-fn tree(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn tree(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let query = GithubTreeQuery {
         repository: required_repository(matches)?,
@@ -233,7 +227,7 @@ fn tree(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-fn cat(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn cat(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let query = GithubFileQuery {
         repository: required_repository(matches)?,
@@ -295,7 +289,7 @@ fn read_repository<T: DeserializeOwned>(
     })?
 }
 
-fn disconnect(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn disconnect(root: &ArgMatches) -> Result<(), Error> {
     let account = leaf_matches(root)
         .get_one::<String>("account")
         .expect("account is required");

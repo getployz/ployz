@@ -43,8 +43,8 @@ use crate::cloud_login::{CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 
-pub(crate) fn command() -> Command {
-    Command::new("mcp").about("Serve the agent tools to a coding agent as MCP tools over stdio")
+pub(super) fn command(command: Command) -> Command {
+    command.about("Serve the agent tools to a coding agent as MCP tools over stdio")
 }
 
 /// Outlasts the longest wait a tool may ask for and matches the default build limit. A

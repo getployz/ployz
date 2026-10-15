@@ -9,15 +9,16 @@ use ployz_store::{EnvironmentQuery, NodeName, SettingPath};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{Error, Handler, leaf_matches};
+use super::verbs::{self, Approval, Json, KeepsRunning, Stdin, Surface, Verb};
+use super::{Error, leaf_matches};
 use crate::cli::positional;
 use crate::ui::{self, Fields, Table};
 
 /// Where agents find the catalog, stated as a fact at the end of `ployz --help`.
 pub(crate) const SIGNPOST: &str = "Settings catalog: `ployz schema --json` lists every command and Setting; `ployz explain SERVICE.SETTING` describes one Setting.";
 
-pub(crate) fn schema_command() -> Command {
-    Command::new("schema")
+pub(super) fn schema_command(command: Command) -> Command {
+    command
         .about("Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting")
         .arg(
             positional("path", false)
@@ -26,8 +27,8 @@ pub(crate) fn schema_command() -> Command {
         )
 }
 
-pub(crate) fn explain_command() -> Command {
-    Command::new("explain")
+pub(super) fn explain_command(command: Command) -> Command {
+    command
         .about("Describe one Setting with an example, or list a Service's Settings")
         .arg(
             positional("path", true)
@@ -51,60 +52,6 @@ pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     }
     crate::ui::show(&schema)?;
     Ok(())
-}
-
-/// Whether a call can destroy something live, and so whether it needs approval.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Approval {
-    /// A read, or an edit that only stages Working State.
-    Never,
-    /// Destroys a live thing at once.
-    Always,
-    /// Destroys whatever the plan it approves destroys.
-    Depends,
-}
-
-/// Where a command can run: against Cloud, only on this device, or only inside Ployz.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum Surface {
-    Cloud,
-    Local,
-    Internal,
-}
-
-/// A command's handler with its classification. Building one names both, so a new
-/// command cannot be added unclassified.
-#[derive(Clone, Copy)]
-pub(crate) struct Runnable {
-    pub run: Handler,
-    pub approval: Approval,
-    pub surface: Surface,
-}
-
-pub(crate) const fn cloud(approval: Approval, run: Handler) -> Runnable {
-    Runnable {
-        run,
-        approval,
-        surface: Surface::Cloud,
-    }
-}
-
-pub(crate) const fn local(approval: Approval, run: Handler) -> Runnable {
-    Runnable {
-        run,
-        approval,
-        surface: Surface::Local,
-    }
-}
-
-pub(crate) const fn internal(approval: Approval, run: Handler) -> Runnable {
-    Runnable {
-        run,
-        approval,
-        surface: Surface::Internal,
-    }
 }
 
 /// Who owns a command: this binary, or the Ployz Cloud it is signed in to.
@@ -163,37 +110,6 @@ pub(crate) struct ArgEntry {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum Stdin {
-    Only,
-    OnDash,
-    IfAbsent,
-}
-
-const STDIN: [(&str, &str, Stdin); 5] = [
-    ("config put", "--from", Stdin::IfAbsent),
-    ("env sync", "--value", Stdin::Only),
-    ("set", "--from-env-file", Stdin::OnDash),
-    ("set", "--patch", Stdin::OnDash),
-    ("set", "--secret", Stdin::Only),
-];
-
-const KEEPS_RUNNING_ARGS: [(&str, &str); 10] = [
-    ("github connect", "--wait"),
-    ("logs", "--follow"),
-    ("server add", "--wait"),
-    ("server logs", "--follow"),
-    ("volume mirror", "--wait"),
-    ("volume mirror rm", "--wait"),
-    ("volume move", "--wait"),
-    ("volume release", "--wait"),
-    ("volume restore", "--wait"),
-    ("volume sync", "--wait"),
-];
-
-const KEEPS_RUNNING_COMMANDS: [&str; 1] = ["service port-forward"];
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ArgType {
     Boolean,
@@ -234,8 +150,9 @@ fn walk(
         .filter(|child| !child.is_hide_set() && child.get_name() != "help")
     {
         let path = format!("{parent}{}", child.get_name());
-        let classified = match super::handler_for(&path) {
-            Some(runnable) => Some((runnable.approval, runnable.surface, Origin::Compiled)),
+        let verb = verbs::find(&path);
+        let classified = match verb {
+            Some(verb) => Some((verb.approval, verb.surface, Origin::Compiled)),
             None => published
                 .and_then(|published| published.find(&path))
                 .map(|entry| {
@@ -249,7 +166,7 @@ fn walk(
         };
         if let Some((approval, surface, origin)) = classified {
             out.push(CommandEntry {
-                json: !super::json_refused(&path),
+                json: verb.is_none_or(|verb| verb.json == Json::Result),
                 about: child
                     .get_about()
                     .map(ToString::to_string)
@@ -257,8 +174,8 @@ fn walk(
                 approval,
                 surface,
                 origin,
-                keeps_running: KEEPS_RUNNING_COMMANDS.contains(&path.as_str()),
-                args: args(&path, child, shared),
+                keeps_running: verb.is_some_and(|verb| verb.keeps_running == KeepsRunning::Always),
+                args: args(verb, child, shared),
                 command: path.clone(),
             });
         }
@@ -266,7 +183,7 @@ fn walk(
     }
 }
 
-fn args(path: &str, command: &Command, shared: &[&str]) -> Vec<ArgEntry> {
+fn args(verb: Option<&Verb>, command: &Command, shared: &[&str]) -> Vec<ArgEntry> {
     let visible = |arg: &&Arg| {
         !shared.contains(&arg.get_id().as_str())
             && !arg.is_hide_set()
@@ -288,11 +205,15 @@ fn args(path: &str, command: &Command, shared: &[&str]) -> Vec<ArgEntry> {
             let value = arg.get_action().takes_values();
             let own = name(arg);
             ArgEntry {
-                stdin: STDIN
-                    .iter()
-                    .find(|(command, arg, _)| *command == path && *arg == own)
-                    .map(|(_, _, stdin)| *stdin),
-                keeps_running: KEEPS_RUNNING_ARGS.contains(&(path, own.as_str())),
+                stdin: verb.and_then(|verb| {
+                    verb.stdin
+                        .iter()
+                        .find(|(arg, _)| *arg == own)
+                        .map(|(_, stdin)| *stdin)
+                }),
+                keeps_running: verb.is_some_and(
+                    |verb| matches!(verb.keeps_running, KeepsRunning::With(arg) if arg == own),
+                ),
                 name: own,
                 required: arg.is_required_set(),
                 value,
@@ -686,30 +607,6 @@ mod tests {
             unmarked.is_empty(),
             "these read stdin unmarked: {unmarked:?}"
         );
-    }
-
-    #[test]
-    fn every_marked_argument_and_command_exists() {
-        let entries = commands();
-        let exists = |command: &str, arg: &str| {
-            entries
-                .iter()
-                .any(|entry| entry.command == command && entry.args.iter().any(|a| a.name == arg))
-        };
-        for (command, arg, _) in STDIN {
-            assert!(exists(command, arg), "{command} {arg}");
-        }
-        for (command, arg) in KEEPS_RUNNING_ARGS {
-            assert!(exists(command, arg), "{command} {arg}");
-        }
-        for command in KEEPS_RUNNING_COMMANDS {
-            assert!(
-                entries
-                    .iter()
-                    .any(|entry| entry.command == command && entry.keeps_running),
-                "{command}"
-            );
-        }
     }
 
     #[test]

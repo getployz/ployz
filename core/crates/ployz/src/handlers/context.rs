@@ -1,4 +1,3 @@
-use super::catalog::{Approval::*, Runnable, local};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 use std::path::Path;
 
@@ -229,29 +228,25 @@ fn connection_index(
     Ok(index)
 }
 
-pub(crate) fn command() -> Command {
-    base("ctx", "Show where commands act, or manage local contexts")
-        .subcommand(base("ls", "List contexts"))
-        .subcommand(
-            base(
-                "use",
-                "Select a context and optionally its default connection",
-            )
-            .arg(positional("context-name", false))
-            .arg(
-                value("connection", None)
-                    .help("Connection label or 1-based index in the selected context"),
-            ),
-        )
-        .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
+pub(super) fn command(command: Command) -> Command {
+    base(command, "Show where commands act, or manage local contexts")
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "" => local(Never, super::link::show),
-        "ls" => local(Never, list),
-        "rm" => local(Never, remove),
-        "use" => local(Never, select),
-        _ => return None,
-    })
+pub(super) fn list_command(command: Command) -> Command {
+    base(command, "List contexts")
+}
+
+pub(super) fn select_command(command: Command) -> Command {
+    base(
+        command,
+        "Select a context and optionally its default connection",
+    )
+    .arg(positional("context-name", false))
+    .arg(
+        value("connection", None).help("Connection label or 1-based index in the selected context"),
+    )
+}
+
+pub(super) fn remove_command(command: Command) -> Command {
+    base(command, "Remove a local context").arg(positional("context-name", true))
 }

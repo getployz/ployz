@@ -14,7 +14,7 @@ use super::super::store::{self, Next, mint, project, store};
 use super::super::{Error, leaf_matches, required};
 use crate::cloud_account::StoreCallError;
 
-pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn branch(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
     let from = matches
@@ -50,7 +50,7 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
 
 /// `env sync`: with `--plan` the rows and their version, else the Sync of the rows
 /// `--only` and `--skip` name, at the version read first unless `--version`.
-pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let named = |flag: &str| {
         matches
@@ -336,7 +336,7 @@ fn in_project(matches: &ArgMatches, words: &[&str]) -> String {
     shell_words::join(std::iter::once("ployz".to_owned()).chain(words))
 }
 
-pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn copy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let node = store::service_name(matches, "node")?;
     let copy = CopyNode {
@@ -355,7 +355,7 @@ pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-pub(super) fn keep(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn keep(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let keep = KeepBranch {
         environment: store::environment(matches)?,

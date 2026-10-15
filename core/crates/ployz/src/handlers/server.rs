@@ -4,7 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use super::catalog::{Approval::*, Runnable, cloud, local};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 use crate::cli::{
@@ -31,10 +30,10 @@ use super::{Error, leaf_matches, string_values, with_client};
 use crate::ui::Hint;
 
 mod add;
-mod clean;
-mod drain;
-mod enroll;
-mod forget;
+pub(super) mod clean;
+pub(super) mod drain;
+pub(super) mod enroll;
+pub(super) mod forget;
 mod helpers;
 mod init;
 mod inspect;
@@ -48,9 +47,9 @@ pub(super) use helpers::{
     readiness_timeout_message,
 };
 use init::init;
-use inspect::{inspect, list};
-use remove::remove;
-use upgrade::upgrade;
+pub(super) use inspect::{inspect, list};
+pub(super) use remove::remove;
+pub(super) use upgrade::upgrade;
 
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
@@ -237,7 +236,7 @@ pub(super) fn server_json(machine: &Machine) -> Value {
     json!({ "machine": machine_json(machine) })
 }
 
-fn set(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?;
     let update = parse_update(matches)?;
@@ -439,42 +438,52 @@ pub(super) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoin
         .collect()
 }
 
-pub(crate) fn command() -> Command {
-    base("server", "Manage Servers")
-        .subcommand(enroll::command())
-        .subcommand(clean::command())
-        .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
-            .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
-        .subcommand(
-            base("drain", "Stop placing Services on a Server and move its Services' Containers off it")
+pub(super) fn group(command: Command) -> Command {
+    base(command, "Manage Servers")
+}
+
+pub(super) fn clear_build_cache_command(command: Command) -> Command {
+    base(command, "Clear this execution host user's Ployz build cache")
+            .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults.")
+}
+
+pub(super) fn drain_command(command: Command) -> Command {
+    base(command, "Stop placing Services on a Server and move its Services' Containers off it")
                 .long_about("Turn off the Server's services role, then move each replicated Service's Containers off it one at a time: a new Container starts on another Server from the same image and serves before the old one stops. No hooks run and no Deployment is recorded. Rerun to act on what remains. Turning the services role back on does not move anything back. Signed in to Cloud without --context or --connect, Cloud runs the drain, asking a human first when the Organization wants that.")
                 .arg(positional("server", true))
-                .arg(crate::cli::approval()),
-        )
-        .subcommand(
-            base(
-                "inspect",
-                "Inspect a Server: telemetry, round-trip times, and its latest upgrade attempt",
-            )
-            .arg(positional("server", true)),
-        )
-        .subcommand(
-            log_flags(base("logs", "Show Server daemon logs")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
-        )
-        .subcommand(forget::command())
-        .subcommand(base("ls", "List Servers"))
-        .subcommand(
-            base("rm", "Remove a Server")
+                .arg(crate::cli::approval())
+}
+
+pub(super) fn inspect_command(command: Command) -> Command {
+    base(
+        command,
+        "Inspect a Server: telemetry, round-trip times, and its latest upgrade attempt",
+    )
+    .arg(positional("server", true))
+}
+
+pub(super) fn machine_logs_command(command: Command) -> Command {
+    log_flags(base(command, "Show Server daemon logs"))
+        .arg(Arg::new("service").num_args(0..).action(ArgAction::Append))
+}
+
+pub(super) fn list_command(command: Command) -> Command {
+    base(command, "List Servers")
+}
+
+pub(super) fn remove_command(command: Command) -> Command {
+    base(command, "Remove a Server")
                 .long_about("Remove a Server from the Cluster and reset it; for a Server that is gone or can't be reset, use ployz server forget. Type the Server's name with --confirm, or in a terminal when it asks; elsewhere it fails with confirmation_required, naming what goes and the exact command to retry. When Cloud manages the Server, Cloud removes it even with --context or --connect, asking a human first when the Organization wants that.")
                 .arg(value("confirm", None).value_name("SERVER").help("The Server's name, typed to confirm its removal"))
                 .arg(positional("server", true))
                 .arg(crate::cli::approval())
                 .arg(
                     volume_acceptance().help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host"),
-                ),
-        )
-        .subcommand(
-            machine_policy_flags(base("set", "Change a Server's name, labels, roles, public IP or build concurrency")
+                )
+}
+
+pub(super) fn set_command(command: Command) -> Command {
+    machine_policy_flags(base(command, "Change a Server's name, labels, roles, public IP or build concurrency")
                 .long_about("Change a Server's name, labels, roles, public IP or build concurrency. --accepts-ingress=true also starts the Ingress Proxy on that Server; rerun the same command to finish a start that failed. --accepts-ingress=false stops advertising the Server in Hosted DNS from the next sync, but its Ingress Proxy keeps serving until `ployz server rm`."))
                 .arg(many("label-rm", None).value_name("KEY"))
                 .arg(value("name", None))
@@ -486,10 +495,11 @@ pub(crate) fn command() -> Command {
                 )
                 .arg(many("wg-endpoint", None))
                 .arg(ingress_image())
-                .arg(positional("server", true)),
-        )
-        .subcommand(
-            base("upgrade", "Upgrade the daemon on explicitly selected Servers, one at a time")
+                .arg(positional("server", true))
+}
+
+pub(super) fn upgrade_command(command: Command) -> Command {
+    base(command, "Upgrade the daemon on explicitly selected Servers, one at a time")
                 .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, the Ingress Proxy then moves to the latest Caddy image on every Server with that role. Signed in to Cloud without --context or --connect, Cloud runs each upgrade along the Organization's Release Channel; an exact version needs --context.")
                 .arg_required_else_help(true)
                 .arg(
@@ -503,8 +513,7 @@ pub(crate) fn command() -> Command {
                         .action(ArgAction::Append)
                         .help("Server name or ID, in upgrade order"),
                 )
-                .arg(ingress_image()),
-        )
+                .arg(ingress_image())
 }
 
 /// Pin the Caddy image the Ingress Proxy is deployed with (offline test clusters).
@@ -538,23 +547,6 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(many("wg-endpoint", None))
         .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-}
-
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "add" => cloud(Depends, enroll::add),
-        "build-cache-clear" => local(Never, clear_build_cache),
-        "clean" => cloud(Depends, clean::clean),
-        "drain" => cloud(Depends, drain::drain),
-        "forget" => cloud(Always, forget::forget),
-        "inspect" => cloud(Never, inspect),
-        "logs" => cloud(Never, super::operator::machine_logs),
-        "ls" => cloud(Never, list),
-        "rm" => cloud(Always, remove),
-        "set" => cloud(Depends, set),
-        "upgrade" => cloud(Depends, upgrade),
-        _ => return None,
-    })
 }
 
 #[cfg(test)]

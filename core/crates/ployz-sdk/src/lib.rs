@@ -26,7 +26,9 @@ pub struct PendingConnection {
 /// # Errors
 /// Returns InvalidArgument for malformed or empty connections.
 #[napi]
-pub fn start_connections(connections: serde_json::Value) -> Result<PendingConnection> {
+pub fn start_connections(
+    #[napi(ts_arg_type = "readonly Connection[]")] connections: serde_json::Value,
+) -> Result<PendingConnection> {
     let connections = parse_connections(connections)?;
     if connections.is_empty() {
         return Err(invalid_argument("connections must not be empty"));
@@ -120,7 +122,7 @@ impl PreparationHandle {
         self.inner.abort();
     }
     /// Bounded progress; lagging readers receive a truncation frame.
-    #[napi]
+    #[napi(ts_return_type = "Promise<PreparationEvent | null>")]
     pub async fn next(&self) -> Option<serde_json::Value> {
         self.inner.next().await
     }
@@ -150,7 +152,7 @@ impl BuildHandle {
         self.inner.abort();
     }
     /// Bounded progress; lagging readers receive a truncation frame.
-    #[napi]
+    #[napi(ts_return_type = "Promise<PreparationEvent | null>")]
     pub async fn next(&self) -> Option<serde_json::Value> {
         self.inner.next().await
     }
@@ -158,7 +160,7 @@ impl BuildHandle {
     ///
     /// # Errors
     /// Returns structured Build failure or unknown outcome.
-    #[napi]
+    #[napi(ts_return_type = "Promise<BuildOutcome>")]
     pub async fn finished(&self) -> Result<serde_json::Value> {
         to_json(&self.inner.finished().await.map_err(rpc_to_napi)?)
     }
@@ -218,7 +220,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns transport or inspection errors.
-    #[napi]
+    #[napi(ts_return_type = "Promise<MachineDetails>")]
     pub async fn inspect(&self) -> Result<serde_json::Value> {
         to_json(&self.inner.inspect().await.map_err(rpc_to_napi)?)
     }
@@ -227,7 +229,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns cancellation, transport errors, or missing enrollment facts.
-    #[napi]
+    #[napi(ts_return_type = "Promise<EnrollmentSnapshot>")]
     pub async fn observe_enrollment(&self) -> Result<serde_json::Value> {
         to_json(&self.inner.observe_enrollment().await.map_err(rpc_to_napi)?)
     }
@@ -236,8 +238,11 @@ impl Client {
     ///
     /// # Errors
     /// Returns invalid input, transport failures or Register domain errors.
-    #[napi]
-    pub async fn register(&self, assignment: serde_json::Value) -> Result<serde_json::Value> {
+    #[napi(ts_return_type = "Promise<Registered>")]
+    pub async fn register(
+        &self,
+        #[napi(ts_arg_type = "EnrollmentAssignment")] assignment: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let assignment = from_js(assignment).map_err(invalid_argument)?;
         to_json(
             &self
@@ -252,10 +257,10 @@ impl Client {
     ///
     /// # Errors
     /// Returns malformed input, transport failures, or the Machine's refusal of the material.
-    #[napi]
+    #[napi(ts_return_type = "Promise<CertificateMaterialPublished>")]
     pub async fn publish_certificate_material(
         &self,
-        request: serde_json::Value,
+        #[napi(ts_arg_type = "PublishCertificateMaterialRequest")] request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request = from_js(request).map_err(invalid_argument)?;
         to_json(
@@ -273,7 +278,7 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when the session is closed
     /// or `DescribeContract` fails.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ContractDescription>")]
     pub async fn about(&self) -> Result<serde_json::Value> {
         let description = self.inner.about().await.map_err(rpc_to_napi)?;
         to_json(&description)
@@ -283,7 +288,10 @@ impl Client {
     /// # Errors
     /// Returns malformed input and Machine transport failures.
     #[napi]
-    pub async fn container_logs(&self, input: serde_json::Value) -> Result<ContainerLogStream> {
+    pub async fn container_logs(
+        &self,
+        #[napi(ts_arg_type = "unknown")] input: serde_json::Value,
+    ) -> Result<ContainerLogStream> {
         let input = from_js(input).map_err(invalid_argument)?;
         Ok(ContainerLogStream {
             inner: self
@@ -298,7 +306,10 @@ impl Client {
     /// # Errors
     /// Returns malformed input and Machine transport failures.
     #[napi]
-    pub async fn log_history(&self, input: serde_json::Value) -> Result<LogHistoryStream> {
+    pub async fn log_history(
+        &self,
+        #[napi(ts_arg_type = "unknown")] input: serde_json::Value,
+    ) -> Result<LogHistoryStream> {
         let input = from_js(input).map_err(invalid_argument)?;
         Ok(LogHistoryStream {
             inner: self.inner.log_history(input).await.map_err(rpc_to_napi)?,
@@ -308,8 +319,11 @@ impl Client {
     /// Read one Machine's or one Service's metric history across the Cluster.
     /// # Errors
     /// Returns malformed input, a closed session, or a failure to list Machines.
-    #[napi]
-    pub async fn metric_history(&self, input: serde_json::Value) -> Result<serde_json::Value> {
+    #[napi(ts_return_type = "Promise<MetricHistory>")]
+    pub async fn metric_history(
+        &self,
+        #[napi(ts_arg_type = "MetricHistoryInput")] input: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let input = from_js(input).map_err(invalid_argument)?;
         to_json(
             &self
@@ -337,7 +351,10 @@ impl Client {
     /// # Errors
     /// Rejects malformed input or closed sessions.
     #[napi]
-    pub fn prepare(&self, input: serde_json::Value) -> Result<PreparationHandle> {
+    pub fn prepare(
+        &self,
+        #[napi(ts_arg_type = "PreparationInput")] input: serde_json::Value,
+    ) -> Result<PreparationHandle> {
         let input = from_js(input).map_err(invalid_argument)?;
         Ok(PreparationHandle {
             inner: self.inner.prepare(input).map_err(rpc_to_napi)?,
@@ -351,7 +368,7 @@ impl Client {
     #[napi]
     pub fn build(
         &self,
-        input: serde_json::Value,
+        #[napi(ts_arg_type = "PreparationInput")] input: serde_json::Value,
         start_within_ms: Option<u32>,
     ) -> Result<BuildHandle> {
         let input = from_js(input).map_err(invalid_argument)?;
@@ -370,7 +387,10 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when `intent` is not
     /// [`DeployIntent`](ployz_core::DeployIntent) data, the session is closed, or planning fails.
     #[napi]
-    pub async fn preview(&self, intent: serde_json::Value) -> Result<DeployPreviewHandle> {
+    pub async fn preview(
+        &self,
+        #[napi(ts_arg_type = "DeployIntent")] intent: serde_json::Value,
+    ) -> Result<DeployPreviewHandle> {
         let intent = from_js(intent).map_err(invalid_argument)?;
         let inner = self.inner.preview(intent).await.map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
@@ -407,8 +427,11 @@ impl Client {
     /// [`RemoveVolumesRequest`] data, the session is closed, or listing
     /// Machines fails. Already-absent Volumes count as successful removals;
     /// every failure or omission retains its Docker Volume identity.
-    #[napi]
-    pub async fn remove_volumes(&self, request: serde_json::Value) -> Result<serde_json::Value> {
+    #[napi(ts_return_type = "Promise<VolumeRemoval[]>")]
+    pub async fn remove_volumes(
+        &self,
+        #[napi(ts_arg_type = "RemoveVolumesRequest")] request: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let request: RemoveVolumesRequest = from_js(request).map_err(invalid_argument)?;
         let result = self
             .inner
@@ -424,8 +447,11 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `targets` is not a
     /// `PruneTarget` list or the session is closed.
-    #[napi]
-    pub async fn prune_images(&self, targets: serde_json::Value) -> Result<serde_json::Value> {
+    #[napi(ts_return_type = "Promise<ImageCleanupReport>")]
+    pub async fn prune_images(
+        &self,
+        #[napi(ts_arg_type = "readonly PruneTarget[]")] targets: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let targets: Vec<ployz_core::PruneTarget> = from_js(targets).map_err(invalid_argument)?;
         let report = self
             .inner
@@ -444,7 +470,7 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when the session is
     /// closed, `machine` is not a Machine Target, the Machine is not visible,
     /// or this observer cannot list Docker Volumes on that Machine.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ObservedDataLoss>")]
     pub async fn data_loss_if_machine_removed(&self, machine: String) -> Result<serde_json::Value> {
         let observed = self
             .inner
@@ -465,11 +491,11 @@ impl Client {
     /// is not a DataLossConfirmation object, the session is closed, the
     /// Machine cannot be removed, or the confirmation does not cover the fresh
     /// Data Loss.
-    #[napi]
+    #[napi(ts_return_type = "Promise<LocalMachineRemoved>")]
     pub async fn remove_machine(
         &self,
         machine: String,
-        confirm_data_loss: serde_json::Value,
+        #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
             from_js(confirm_data_loss).map_err(invalid_argument)?;
@@ -489,11 +515,11 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `scope` is not a DrainScope, the
     /// session is closed, or the Drain refuses before anything moved.
-    #[napi]
+    #[napi(ts_return_type = "Promise<DrainReport>")]
     pub async fn drain_machine(
         &self,
         machine: String,
-        scope: serde_json::Value,
+        #[napi(ts_arg_type = "DrainScope")] scope: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let scope: ployz::drain::DrainScope = from_js(scope).map_err(invalid_argument)?;
         let report = self
@@ -505,7 +531,7 @@ impl Client {
     }
 
     /// Start the Ingress Proxy on `machine` once its ingress role is on.
-    #[napi]
+    #[napi(ts_return_type = "Promise<IngressCheck>")]
     pub async fn start_ingress(&self, machine: String) -> Result<serde_json::Value> {
         let check = self
             .inner
@@ -543,11 +569,11 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when `request` is not a Volume
     /// switch request, the session is closed, or the Machine refuses; a fence refusal
     /// carries its `SwitchError` in `details`.
-    #[napi]
+    #[napi(ts_return_type = "Promise<SetVolumeCopyReply | VolumeCopyView>")]
     pub async fn volume_switch(
         &self,
         machine: String,
-        request: serde_json::Value,
+        #[napi(ts_arg_type = "VolumeSwitchRequest")] request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         #[expect(
             clippy::disallowed_methods,
@@ -566,7 +592,7 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when the target or Container ID is
     /// invalid, the session is closed, or the Machine does not know the Container.
-    #[napi]
+    #[napi(ts_return_type = "Promise<{ container: ContainerObservation }>")]
     pub async fn inspect_container(
         &self,
         machine: String,
@@ -605,11 +631,11 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `update` is not a
     /// MachineUpdate, the session is closed, or the Machine refuses the edit.
-    #[napi]
+    #[napi(ts_return_type = "Promise<MachineUpdated>")]
     pub async fn update_machine(
         &self,
         machine: String,
-        update: serde_json::Value,
+        #[napi(ts_arg_type = "Partial<MachineUpdate>")] update: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let update: ployz_core::MachineUpdate = from_js(update).map_err(invalid_argument)?;
         let updated = self
@@ -622,11 +648,11 @@ impl Client {
 
     /// Ask one Machine to Upgrade. Repeating the request with the same attempt ID returns that
     /// attempt, so resending it is the poll.
-    #[napi]
+    #[napi(ts_return_type = "Promise<MachineUpgradeAttempt>")]
     pub async fn request_machine_upgrade(
         &self,
         machine: String,
-        request: serde_json::Value,
+        #[napi(ts_arg_type = "RequestMachineUpgradeRequest")] request: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let request: ployz_core::RequestMachineUpgradeRequest =
             from_js(request).map_err(invalid_argument)?;
@@ -648,7 +674,7 @@ impl Client {
     /// a Namespace, the Namespace is reserved, the session is closed, snapshot
     /// gathering fails, or destroying volumes is requested against a known
     /// incomplete snapshot.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ObservedDataLoss>")]
     pub async fn data_loss_if_namespace_destroyed(
         &self,
         namespace: String,
@@ -674,11 +700,11 @@ impl Client {
     /// is not a DataLossConfirmation object, the session is closed, the
     /// Namespace cannot be destroyed, or the confirmation does not cover the
     /// fresh Data Loss.
-    #[napi]
+    #[napi(ts_return_type = "Promise<DeployOutcome<ExecutionError>>")]
     pub async fn destroy_namespace(
         &self,
         namespace: String,
-        confirm_data_loss: serde_json::Value,
+        #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
@@ -699,7 +725,7 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when the session is
     /// closed or listing Machines fails.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ObservedDataLoss>")]
     pub async fn data_loss_if_cluster_destroyed(&self) -> Result<serde_json::Value> {
         let observed = self
             .inner
@@ -720,10 +746,10 @@ impl Client {
     /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
     /// is not a DataLossConfirmation object, the session is closed, or the
     /// confirmation does not cover the fresh Data Loss.
-    #[napi]
+    #[napi(ts_return_type = "Promise<ClusterTeardown>")]
     pub async fn destroy_cluster(
         &self,
-        confirm_data_loss: serde_json::Value,
+        #[napi(ts_arg_type = "DataLossConfirmation")] confirm_data_loss: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let confirm_data_loss: DataLossConfirmation =
             from_js(confirm_data_loss).map_err(invalid_argument)?;
@@ -753,7 +779,7 @@ impl DeployPreviewHandle {
     /// Private completed Build evidence; availability is rechecked before reuse.
     /// # Errors
     /// Returns when evidence cannot be encoded as JSON.
-    #[napi]
+    #[napi(ts_return_type = "BuildReceipts")]
     pub fn build_receipts(&self) -> Result<serde_json::Value> {
         to_json(self.inner.build_receipts())
     }
@@ -761,7 +787,7 @@ impl DeployPreviewHandle {
     /// Machines and repositories Image Cleanup covers, as plain data.
     /// # Errors
     /// Returns when targets cannot be encoded as JSON.
-    #[napi]
+    #[napi(ts_return_type = "PruneTarget[]")]
     pub fn prune_targets(&self) -> Result<serde_json::Value> {
         to_json(&self.inner.prune_targets())
     }
@@ -771,7 +797,7 @@ impl DeployPreviewHandle {
     /// # Errors
     ///
     /// Returns when the preview cannot be encoded as JSON.
-    #[napi]
+    #[napi(ts_return_type = "DeployPreview")]
     pub fn payload(&self) -> Result<serde_json::Value> {
         to_json(&ployz_core::config::redacted_runtime_preview(
             self.inner.preview().clone(),
@@ -789,7 +815,7 @@ impl DeployPreviewHandle {
     pub fn confirm(
         &self,
         deployment_id: Option<String>,
-        image_cleanup: Option<String>,
+        #[napi(ts_arg_type = "'auto' | 'manual'")] image_cleanup: Option<String>,
     ) -> Result<RunningDeployHandle> {
         let deployment_id = deployment_id
             .map(|id| id.parse::<ployz_core::DeploymentLogId>())
@@ -822,7 +848,7 @@ impl RunningDeployHandle {
     /// # Errors
     ///
     /// Returns when an event cannot be encoded as JSON.
-    #[napi]
+    #[napi(ts_return_type = "Promise<DeployEvent | null>")]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
             Some(event) => to_json(&event).map(Some),
@@ -835,7 +861,7 @@ impl RunningDeployHandle {
     /// # Errors
     ///
     /// Returns a typed error if session closure interrupts execution, or if JSON encoding fails.
-    #[napi]
+    #[napi(ts_return_type = "Promise<DeployOutcome<ExecutionError>>")]
     pub async fn finished(&self) -> Result<serde_json::Value> {
         let outcome = self.inner.finished().await.map_err(rpc_to_napi)?;
         to_json(&outcome)
@@ -850,7 +876,7 @@ impl WatchStream {
     ///
     /// Returns a generated [`RpcError`] JSON payload when the daemon, store, or
     /// RPC fails, including when the stream ends without cancellation.
-    #[napi]
+    #[napi(ts_return_type = "Promise<RuntimeWatchView | null>")]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         match self.inner.next().await {
             Ok(Some(frame)) => to_json(&sdk::RuntimeWatchView::from(frame)).map(Some),
@@ -938,11 +964,11 @@ fn rpc_to_napi(error: RpcError) -> Error {
 ///
 /// # Errors
 /// Rejects invalid JSON, conflicting retry inputs or claims, invalid pools, and exhaustion.
-#[napi]
+#[napi(ts_return_type = "EnrollmentAssignment")]
 pub fn allocate_enrollment(
-    request: serde_json::Value,
-    snapshot: serde_json::Value,
-    saved: serde_json::Value,
+    #[napi(ts_arg_type = "RegisterRequest")] request: serde_json::Value,
+    #[napi(ts_arg_type = "EnrollmentSnapshot")] snapshot: serde_json::Value,
+    #[napi(ts_arg_type = "EnrollmentAssignment[]")] saved: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let request = from_js(request).map_err(invalid_argument)?;
     let snapshot = from_js(snapshot).map_err(invalid_argument)?;
@@ -960,8 +986,10 @@ pub fn allocate_enrollment(
 }
 
 /// The refusal a `SetVolumeCopy` error carries in `details`, or null for any other error.
-#[napi]
-pub fn set_volume_copy_refusal(details: serde_json::Value) -> Result<Option<serde_json::Value>> {
+#[napi(ts_return_type = "SetVolumeCopyRefused | null")]
+pub fn set_volume_copy_refusal(
+    #[napi(ts_arg_type = "unknown")] details: serde_json::Value,
+) -> Result<Option<serde_json::Value>> {
     from_js::<ployz_core::SetVolumeCopyRefused>(details)
         .ok()
         .map(|refused| to_json(&refused))
@@ -972,7 +1000,7 @@ pub fn set_volume_copy_refusal(details: serde_json::Value) -> Result<Option<serd
 ///
 /// # Errors
 /// Rejects a value that is not a UUID.
-#[napi]
+#[napi(ts_return_type = "MachineUpgradeAttemptId")]
 pub fn machine_upgrade_attempt_id(uuid: String) -> Result<String> {
     ployz_core::MachineUpgradeAttemptId::from_uuid(&uuid)
         .map(String::from)
@@ -996,7 +1024,7 @@ impl ContainerLogStream {
     /// Next output with its level, or null at EOF/cancellation.
     /// # Errors
     /// Returns Machine transport or encoding failures.
-    #[napi]
+    #[napi(ts_return_type = "Promise<(ContainerLogRecord & { level: LogLevel }) | null>")]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         let Some(row) = self.inner.next().await.map_err(rpc_to_napi)? else {
             return Ok(None);
@@ -1025,7 +1053,7 @@ impl LogHistoryStream {
     /// Next row of the page, or null after its `end`.
     /// # Errors
     /// Returns the store's error and Machine transport failures.
-    #[napi]
+    #[napi(ts_return_type = "Promise<LogHistoryRecord | null>")]
     pub async fn next(&self) -> Result<Option<serde_json::Value>> {
         self.inner
             .next()

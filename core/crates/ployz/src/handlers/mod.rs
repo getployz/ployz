@@ -15,6 +15,7 @@ pub(crate) mod config;
 pub(crate) mod config_item;
 pub(crate) mod context;
 mod data_loss;
+#[cfg(feature = "verify-faults")]
 pub(crate) mod debug;
 pub(crate) mod deploy;
 pub(crate) mod docs;
@@ -33,9 +34,8 @@ pub(crate) mod service;
 pub(crate) mod store;
 mod teardown;
 pub(crate) mod up;
+pub(crate) mod verbs;
 pub(crate) mod volume;
-
-use catalog::{Approval::*, Runnable, cloud, internal, local};
 
 #[doc(hidden)]
 pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
@@ -167,9 +167,9 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         return Ok(());
     }
     let path = command_path(matches);
-    // Every compiled leaf has a handler, so a missing one is a published leaf or a
+    // Every compiled leaf is a verb, so a missing one is a published leaf or a
     // group without its subcommand: its help, as a bare `ployz` shows the top level's.
-    let Some(runnable) = handler_for(&path) else {
+    let Some(verb) = verbs::find(&path) else {
         let setup = crate::published::Setup::beside(
             &config_path(leaf_matches(matches))?,
             std::env::var(crate::cli::env::CLOUD_URL).ok(),
@@ -193,7 +193,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         crate::ui::stream(group.render_help().ansi());
         return Ok(());
     };
-    if json_refused(&path) && matches.get_flag("json") {
+    if verb.json == verbs::Json::Refused && matches.get_flag("json") {
         return Err(Error::usage(format!(
             "ployz {path} does not support --json"
         )));
@@ -209,7 +209,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
             format!("ployz {path} doesn't use a context")
         }));
     }
-    (runnable.run)(matches)
+    (verb.run)(matches)
 }
 
 /// Whether `--context` was typed before the last subcommand (`ployz -c prod ps`): only the leaf
@@ -231,7 +231,7 @@ fn context_above_leaf(root: &ArgMatches) -> bool {
 
 /// Print the shell hook that asks `ployz` itself for completions, so Setting paths
 /// and Service names complete from the catalog and the Store.
-fn completion(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn completion(root: &ArgMatches) -> Result<(), Error> {
     let shell = leaf_matches(root)
         .get_one::<Shell>("shell")
         .copied()
@@ -460,60 +460,8 @@ where
 
 pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-/// Commands that print no `--json` result: a terminal session, shell code, or the
-/// Cloud runner's own fixed JSON.
-pub(crate) fn json_refused(path: &str) -> bool {
-    matches!(path, "build" | "completion" | "exec" | "mcp")
-}
-
-/// Each command's handler and classification: each group module declares its own subcommands.
-pub(crate) fn handler_for(path: &str) -> Option<Runnable> {
-    let (group, rest) = path.split_once(' ').unwrap_or((path, ""));
-    match (group, rest) {
-        ("build", "") => Some(internal(Never, build::build)),
-        ("completion", "") => Some(local(Never, completion)),
-        ("cloud", rest) => cloud::handler(rest),
-        ("config", rest) => config_item::handler(rest),
-        ("ctx", rest) => context::handler(rest),
-        ("debug", rest) => debug::handler(rest),
-        ("deploy", "") => Some(cloud(Depends, deploy::deploy)),
-        ("deployment", rest) => deploy::deployment_handler(rest),
-        ("diff", "") => Some(cloud(Never, review::diff)),
-        ("discard", "") => Some(cloud(Never, review::discard)),
-        ("history", "" | "restore" | "undo") => Some(cloud(Never, review::history)),
-        ("docs", "") => Some(local(Never, docs::run)),
-        ("domain", rest) => domain::handler(rest),
-        ("env", rest) => env::handler(rest),
-        ("exec", "") => Some(cloud(Always, operator::exec)),
-        ("explain", "") => Some(cloud(Never, catalog::explain)),
-        ("get", "") => Some(cloud(Never, config::get)),
-        ("link", "") => Some(local(Never, link::link)),
-        ("github", rest) => github::handler(rest),
-        ("login", "") => Some(local(Never, login::login)),
-        ("logout", "") => Some(local(Never, login::logout)),
-        ("mcp", "") => Some(local(Never, mcp::serve)),
-        ("logs", "") => Some(cloud(Never, operator::logs)),
-        ("metrics", "") => Some(cloud(Never, metrics::metrics)),
-        ("org", rest) => account::org_handler(rest),
-        ("project", rest) => project::handler(rest),
-        ("ps", "") => Some(cloud(Never, service::processes)),
-        ("schema", "") => Some(cloud(Never, catalog::schema)),
-        ("server", rest) => server::handler(rest),
-        ("service", rest) => service::handler(rest),
-        ("set", "") => Some(cloud(Never, config::set)),
-        ("status", "") => Some(cloud(Never, link::status)),
-        ("token", rest) => account::token_handler(rest),
-        ("unset", "") => Some(cloud(Never, config::unset)),
-        ("up", "") => Some(cloud(Depends, up::up)),
-        ("volume", rest) => volume::handler(rest),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::*;
 
     #[test]
@@ -982,49 +930,6 @@ mod tests {
                 clap::error::ErrorKind::ValueValidation,
                 "{channel}"
             );
-        }
-    }
-
-    #[test]
-    fn every_leaf_has_a_handler_and_every_visible_handler_is_in_the_catalog() {
-        let mut command = crate::cli::compiled();
-        command.build();
-        let mut leaves = BTreeSet::new();
-        let mut runnable = BTreeSet::new();
-        collect_paths(&command, "", false, &mut leaves, &mut runnable);
-        for path in &leaves {
-            assert!(handler_for(path).is_some(), "no handler for {path}");
-        }
-        let listed: BTreeSet<String> = catalog::commands()
-            .into_iter()
-            .map(|entry| entry.command)
-            .collect();
-        assert_eq!(listed, runnable);
-        for group in ["ctx", "volume mirror"] {
-            assert!(listed.contains(group), "{group} runs and has children");
-        }
-    }
-
-    fn collect_paths(
-        command: &Command,
-        parent: &str,
-        hidden: bool,
-        leaves: &mut BTreeSet<String>,
-        runnable: &mut BTreeSet<String>,
-    ) {
-        for child in command
-            .get_subcommands()
-            .filter(|child| child.get_name() != "help")
-        {
-            let path = format!("{parent}{}", child.get_name());
-            let hidden = hidden || child.is_hide_set();
-            if !child.has_subcommands() {
-                leaves.insert(path.clone());
-            }
-            if !hidden && handler_for(&path).is_some() {
-                runnable.insert(path.clone());
-            }
-            collect_paths(child, &format!("{path} "), hidden, leaves, runnable);
         }
     }
 }

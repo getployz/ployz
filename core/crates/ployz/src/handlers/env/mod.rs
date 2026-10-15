@@ -7,10 +7,9 @@
 //! `never-sync` marks settings an Environment keeps as its own; `on-merge` lists
 //! what a PR Environment's merge lands.
 
-mod branch;
-mod pr;
+pub(super) mod branch;
+pub(super) mod pr;
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
@@ -27,98 +26,110 @@ use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::ui::{Hint, Tree};
 
-pub(crate) fn command() -> Command {
-    Command::new("env")
-        .about("Manage Environments and Branches")
-        .subcommand(
-            Command::new("new")
-                .about("Create an empty Environment")
-                .arg(positional("name", true))
-                .arg(project_arg()),
+pub(super) fn group(command: Command) -> Command {
+    command.about("Manage Environments and Branches")
+}
+
+pub(super) fn new_command(command: Command) -> Command {
+    command
+        .about("Create an empty Environment")
+        .arg(positional("name", true))
+        .arg(project_arg())
+}
+
+pub(super) fn ls_command(command: Command) -> Command {
+    command
+        .about("List the Project's Environments")
+        .arg(project_arg())
+}
+
+pub(super) fn default_command(command: Command) -> Command {
+    command
+        .about("Make an Environment the Project's Default Environment")
+        .arg(positional("name", true))
+        .arg(project_arg())
+}
+
+pub(super) fn setup_command(command: Command) -> Command {
+    store::scoped(
+        command
+            .about("Set the Setup Commands a new Branch of an Environment runs when it names none"),
+    )
+    .arg(
+        repeated("setup")
+            .value_name("SERVICE=COMMAND")
+            .required_unless_present("clear")
+            .help("Run COMMAND in the Branch's copy of SERVICE; repeatable"),
+    )
+    .arg(
+        switch("clear", None)
+            .conflicts_with("setup")
+            .help("Run none by default"),
+    )
+}
+
+pub(super) fn rm_command(command: Command) -> Command {
+    deploy::following(
+        base(
+            command,
+            "Remove an Environment: from the Servers first, then from Ployz",
         )
-        .subcommand(
-            Command::new("ls")
-                .about("List the Project's Environments")
-                .arg(project_arg()),
-        )
-        .subcommand(
-            Command::new("default")
-                .about("Make an Environment the Project's Default Environment")
-                .arg(positional("name", true))
-                .arg(project_arg()),
-        )
-        .subcommand(
-            store::scoped(Command::new("setup").about(
-                "Set the Setup Commands a new Branch of an Environment runs when it names none",
-            ))
-            .arg(
-                repeated("setup")
-                    .value_name("SERVICE=COMMAND")
-                    .required_unless_present("clear")
-                    .help("Run COMMAND in the Branch's copy of SERVICE; repeatable"),
-            )
-            .arg(
-                switch("clear", None)
-                    .conflicts_with("setup")
-                    .help("Run none by default"),
-            ),
-        )
-        .subcommand(deploy::following(
-            base(
-                "rm",
-                "Remove an Environment: from the Servers first, then from Ployz",
-            )
-            .long_about(
-                "Remove an Environment. If anything of it ran, a removal Deployment \
+        .long_about(
+            "Remove an Environment. If anything of it ran, a removal Deployment \
                          takes it off the Servers first, deleting its deployed Volumes once \
                          each is accepted by name; then its configuration and history go. \
                          Type PROJECT/ENV with --confirm, or in a terminal when it asks; \
                          elsewhere it fails with confirmation_required, naming what goes and \
                          the exact retry.",
-            )
-            .arg(positional("name", true))
-            .arg(project_arg())
-            .arg(
-                value("confirm", None)
-                    .value_name("PROJECT/ENV")
-                    .help("PROJECT/ENV, typed to confirm the Environment's removal"),
-            )
-            .arg(crate::cli::volume_acceptance())
-            .arg(crate::cli::reviewed_version()),
-        ))
-        .subcommand(
-            Command::new("branch")
-                .about("Make a Branch: copies of the nodes picked, the rest used live")
-                .arg(positional("name", true).help("Branch name, unique in the Project"))
-                .arg(project_arg())
-                .arg(
-                    value("from", None).value_name("ENV").help(
-                        "The Parent to branch from [default: the Project's Default Environment]",
-                    ),
-                )
-                .arg(
-                    repeated("copy")
-                        .value_name("NODE")
-                        .help("A Service or Volume to copy; repeatable"),
-                )
-                .arg(
-                    repeated("live")
-                        .value_name("NODE")
-                        .help("A node the Branch must use live from its Parent; repeatable"),
-                )
-                .arg(
-                    repeated("setup")
-                        .value_name("SERVICE=COMMAND")
-                        .help("Run COMMAND in a copied Service before it first deploys"),
-                )
-                .arg(switch("keep", None).help("Keep it after syncing into its Parent"))
-                .arg(value("fix", None).value_name("DEPLOYMENT").help(
-                    "Fix this failed Deployment of the Parent: copies what it failed to apply",
-                )),
         )
-        .subcommand(
-            store::scoped(
-                Command::new("sync")
+        .arg(positional("name", true))
+        .arg(project_arg())
+        .arg(
+            value("confirm", None)
+                .value_name("PROJECT/ENV")
+                .help("PROJECT/ENV, typed to confirm the Environment's removal"),
+        )
+        .arg(crate::cli::volume_acceptance())
+        .arg(crate::cli::reviewed_version()),
+    )
+}
+
+pub(super) fn branch_command(command: Command) -> Command {
+    command
+        .about("Make a Branch: copies of the nodes picked, the rest used live")
+        .arg(positional("name", true).help("Branch name, unique in the Project"))
+        .arg(project_arg())
+        .arg(
+            value("from", None)
+                .value_name("ENV")
+                .help("The Parent to branch from [default: the Project's Default Environment]"),
+        )
+        .arg(
+            repeated("copy")
+                .value_name("NODE")
+                .help("A Service or Volume to copy; repeatable"),
+        )
+        .arg(
+            repeated("live")
+                .value_name("NODE")
+                .help("A node the Branch must use live from its Parent; repeatable"),
+        )
+        .arg(
+            repeated("setup")
+                .value_name("SERVICE=COMMAND")
+                .help("Run COMMAND in a copied Service before it first deploys"),
+        )
+        .arg(switch("keep", None).help("Keep it after syncing into its Parent"))
+        .arg(
+            value("fix", None)
+                .value_name("DEPLOYMENT")
+                .help("Fix this failed Deployment of the Parent: copies what it failed to apply"),
+        )
+}
+
+pub(super) fn sync_command(command: Command) -> Command {
+    store::scoped(
+                command
                     .about("Stage one Environment's changes in another of the Project")
                     .long_about(
                         "Stage the Environment's changes in another Environment of the \
@@ -189,27 +200,25 @@ pub(crate) fn command() -> Command {
                     .value_name("PARENT")
                     .help("Stage the hints `ployz diff` lists from the Parent PARENT in --env; --only picks them")
                     .conflicts_with_all(["to", "from", "skip", "value", "plan", "close", "undo"]),
-            ),
-        )
-        .subcommand(
-            store::scoped(
-                Command::new("copy").about(
-                    "Make a Live Node the Branch's own copy; a Volume it mounts comes empty",
-                ),
             )
-            .arg(positional("node", true))
-            .arg(expect()),
-        )
-        .subcommand(
-            store::scoped(
-                Command::new("keep")
-                    .about("Keep the Branch after syncing into its Parent and when idle"),
-            )
-            .arg(switch("off", None).help("Stop keeping it")),
-        )
-        .subcommand(
-            store::scoped(
-                Command::new("never-sync")
+}
+
+pub(super) fn copy_command(command: Command) -> Command {
+    store::scoped(
+        command.about("Make a Live Node the Branch's own copy; a Volume it mounts comes empty"),
+    )
+    .arg(positional("node", true))
+    .arg(expect())
+}
+
+pub(super) fn keep_command(command: Command) -> Command {
+    store::scoped(command.about("Keep the Branch after syncing into its Parent and when idle"))
+        .arg(switch("off", None).help("Stop keeping it"))
+}
+
+pub(super) fn never_sync_command(command: Command) -> Command {
+    store::scoped(
+                command
                     .about("Mark settings Never sync: Sync never carries them into or out of the Environment")
                     .long_about(
                         "Mark settings of the Environment Never sync: a Sync never carries \
@@ -226,105 +235,92 @@ pub(crate) fn command() -> Command {
                     .value_name("ROW")
                     .help("A row as this Environment names it (web.env.KEY), a prefix for every row under it (web.env), or its RowId"),
             )
-            .arg(switch("off", None).help("Sync them again")),
-        )
-        .subcommand(store::scoped(
-            Command::new("on-merge")
-                .about("Show what a PR Environment's pull request lands when it merges")
-                .long_about(
-                    "Show each change the PR Environment made and whether its pull \
+            .arg(switch("off", None).help("Sync them again"))
+}
+
+pub(super) fn on_merge_command(command: Command) -> Command {
+    store::scoped(
+        command
+            .about("Show what a PR Environment's pull request lands when it merges")
+            .long_about(
+                "Show each change the PR Environment made and whether its pull \
                      request's merge lands it in each Environment that deploys the target \
                      branch, over whatever that Environment changed since. Exclude a row \
                      with `ployz env never-sync`; --off includes it again. A secret the \
                      Environment lacks lands Not set, and its Deployments skip it.",
-                ),
-        ))
-        .subcommand(deploy::following(
-            base(
-                "shutdown",
-                "Take an Environment off the Servers, keeping its configuration",
-            )
-            .long_about(
-                "Take an Environment, such as a PR Environment, off the Servers: a removal \
+            ),
+    )
+}
+
+pub(super) fn shutdown_command(command: Command) -> Command {
+    deploy::following(
+        base(
+            command,
+            "Take an Environment off the Servers, keeping its configuration",
+        )
+        .long_about(
+            "Take an Environment, such as a PR Environment, off the Servers: a removal \
                  Deployment stops its Services and deletes its deployed Volumes once each is \
                  accepted by name. Its configuration, history and Branch stay, and pushes \
                  leave it off; `ployz deploy --env NAME` turns it back on.",
-            )
-            .arg(positional("name", true))
-            .arg(project_arg())
-            .arg(crate::cli::volume_acceptance())
-            .arg(crate::cli::reviewed_version()),
-        ))
-        .subcommand(
-            Command::new("pr")
-                .about("Show or change PR Environments for a repository")
-                .long_about(
-                    "Show the Project's PR plans, or change one. With PR Environments on, \
+        )
+        .arg(positional("name", true))
+        .arg(project_arg())
+        .arg(crate::cli::volume_acceptance())
+        .arg(crate::cli::reviewed_version()),
+    )
+}
+
+pub(super) fn pr_command(command: Command) -> Command {
+    command
+        .about("Show or change PR Environments for a repository")
+        .long_about(
+            "Show the Project's PR plans, or change one. With PR Environments on, \
                      each pull request of the repository gets a Branch of the start-from \
                      Environment named pr-NUMBER, with its own copies of the repository's \
                      Services tracking the pull request's branch, deployed on open and on \
                      each push. Only the flags given change.",
-                )
-                .arg(
-                    positional("repository", false)
-                        .help("The repository, like acme/app [default: the Project's only one]"),
-                )
-                .arg(project_arg())
-                .arg(switch("on", None).help("Give its pull requests PR Environments"))
-                .arg(
-                    switch("off", None)
-                        .conflicts_with("on")
-                        .help("Stop making PR Environments"),
-                )
-                .arg(
-                    value("from", None)
-                        .value_name("ENV")
-                        .help("The Environment each PR Environment is a Branch of"),
-                )
-                .arg(
-                    repeated("copy")
-                        .value_name("NODE")
-                        .help("Also copy this Service or Volume; repeatable, replaces the list"),
-                )
-                .arg(repeated("setup").value_name("SERVICE=COMMAND").help(
-                    "Run COMMAND in a copied Service before it first deploys; repeatable, \
+        )
+        .arg(
+            positional("repository", false)
+                .help("The repository, like acme/app [default: the Project's only one]"),
+        )
+        .arg(project_arg())
+        .arg(switch("on", None).help("Give its pull requests PR Environments"))
+        .arg(
+            switch("off", None)
+                .conflicts_with("on")
+                .help("Stop making PR Environments"),
+        )
+        .arg(
+            value("from", None)
+                .value_name("ENV")
+                .help("The Environment each PR Environment is a Branch of"),
+        )
+        .arg(
+            repeated("copy")
+                .value_name("NODE")
+                .help("Also copy this Service or Volume; repeatable, replaces the list"),
+        )
+        .arg(repeated("setup").value_name("SERVICE=COMMAND").help(
+            "Run COMMAND in a copied Service before it first deploys; repeatable, \
                      replaces the list",
-                ))
-                .arg(
-                    value("remove-on-close", None)
-                        .value_name("BOOL")
-                        .value_parser(clap::value_parser!(bool))
-                        .help("Remove a PR Environment when its pull request closes"),
-                )
-                .arg(
-                    value("bots", None)
-                        .value_name("BOOL")
-                        .value_parser(clap::value_parser!(bool))
-                        .help("Make PR Environments for bots' pull requests too"),
-                ),
+        ))
+        .arg(
+            value("remove-on-close", None)
+                .value_name("BOOL")
+                .value_parser(clap::value_parser!(bool))
+                .help("Remove a PR Environment when its pull request closes"),
+        )
+        .arg(
+            value("bots", None)
+                .value_name("BOOL")
+                .value_parser(clap::value_parser!(bool))
+                .help("Make PR Environments for bots' pull requests too"),
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "new" => cloud(Never, new),
-        "ls" => cloud(Never, ls),
-        "default" => cloud(Never, default),
-        "setup" => cloud(Never, setup),
-        "rm" => cloud(Always, rm),
-        "branch" => cloud(Never, branch::branch),
-        "sync" => cloud(Depends, branch::sync),
-        "copy" => cloud(Never, branch::copy),
-        "keep" => cloud(Never, branch::keep),
-        "never-sync" => cloud(Never, never_sync),
-        "shutdown" => cloud(Always, pr::shutdown),
-        "pr" => cloud(Depends, pr::pr),
-        "on-merge" => cloud(Never, pr::on_merge),
-        _ => return None,
-    })
-}
-
-fn new(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
     let store = store(root)?;
@@ -342,7 +338,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn ls(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let listed = store(root)?.read(&EnvironmentsQuery {
         project: project(matches)?,
@@ -350,7 +346,7 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&listed, &environments(&listed))
 }
 
-fn default(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn default(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
     let set = SetDefaultEnvironment {
@@ -363,7 +359,7 @@ fn default(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&listed, &environments(&listed))
 }
 
-fn setup(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn setup(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let set = ployz_store::SetBranchSetup {
         environment: store::environment(matches)?,
@@ -432,7 +428,7 @@ struct Removal<'a> {
 /// takes it off the Servers (under the destructive review), then the Store deletes
 /// it. A removal that didn't apply leaves the Environment, and running this again
 /// retries it.
-fn rm(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
     let at = EnvironmentRef {
@@ -502,7 +498,7 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
 
 /// `env never-sync`: mark rows Never sync, or with `--off` sync them again. The Store
 /// resolves the names in this Environment.
-fn never_sync(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn never_sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let asked = super::string_values(matches, "path");
     let environment = store::environment(matches)?;
