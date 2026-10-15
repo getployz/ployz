@@ -92,6 +92,41 @@ it.each([false, true])("shows an initial read failure and recovers (empty snapsh
   }
 });
 
+it("selects the installation of the highlighted row when one repository is reachable through two", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("scrollTo", () => {});
+  Element.prototype.scrollIntoView ??= () => {};
+  const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
+  const scope = { queryClient, organizationSlug: "shared-org", sessionId: "shared-session" };
+  getGithubReposCollection(scope);
+  const row = (installation_id: number) => ({
+    id: 42, installation_id, name: "repo", full_name: "acme/repo", default_branch: "main", private: true,
+    html_url: "https://github.com/acme/repo", repo_updated_at: new Date().toISOString(), synced_at: new Date().toISOString(),
+  });
+  queryClient.setQueryData(githubReposQueryKey(scope), [row(12), row(13)]);
+  queryClient.setQueryData(githubKeys.access("shared-org"), { hasInstallations: true });
+  queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
+  const select = vi.fn();
+  const routeTree = selectorRoutes(scope, () => <Command><CommandList><GitRepoSelector organizationSlug="shared-org" query="" onSelectRepo={select} /></CommandList></Command>);
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ["/"] }) });
+  try {
+    const view = render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
+    const options = await screen.findAllByRole("option", { name: "acme/repo" });
+    expect(options).toHaveLength(2);
+    const root = view.container.querySelector("[cmdk-root]");
+    if (!root) throw new Error("cmdk root missing");
+    await waitFor(() => expect(options.map((option) => option.getAttribute("aria-selected"))).toEqual(["true", "false"]));
+    fireEvent.keyDown(root, { key: "ArrowDown" });
+    await waitFor(() => expect(options.map((option) => option.getAttribute("aria-selected"))).toEqual(["false", "true"]));
+    fireEvent.keyDown(root, { key: "Enter" });
+    expect(select).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      access: { type: "github-installation", installationId: 13 },
+    }));
+  } finally {
+    cleanup(); await getDbClient(queryClient).cleanup(); queryClient.clear();
+  }
+});
+
 it("offers a public URL without a GitHub installation", async () => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal("scrollTo", () => {});

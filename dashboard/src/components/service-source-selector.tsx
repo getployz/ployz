@@ -341,8 +341,8 @@ function GitRepoSelectorResults({
         <CommandGroup>
           {repos.map((repo) => (
             <CommandItem
-              key={repo.id}
-              value={repo.full_name}
+              key={`${repo.installation_id}:${repo.id}`}
+              value={`${repo.installation_id}:${repo.id}`}
               keywords={["git", "github", "repository", "repo"]}
               disabled={disabled}
               onSelect={() => {
