@@ -1,11 +1,11 @@
 ---
 title: The Ployz agent
-description: Ask the agent in the dashboard about your app, have it deploy for you, and approve what it would remove.
+description: Ask the agent in the dashboard about your app, have it deploy for you, and approve each deploy.
 ---
 
 The Ployz agent opens from the **Agent** button at the right end of the top bar, on every organization page. Ask it about your projects
-and deployments, or ask it to change something and deploy. Before a deploy removes
-anything, it stops and asks you.
+and deployments, or ask it to change something and deploy. Before every deploy, it stops and
+asks you.
 
 The agent works in the project and environment you're looking at, unless you name another, and
 keeps working in them after either is renamed. If the environment you're looking at is gone, or
@@ -83,7 +83,10 @@ untouched. Stopping or restarting a service also stops its pre-deploy hook conta
 restart or start runs them again. Restarting or stopping the same service from here and from the
 CLI at once can leave it either running or stopped.
 
-## Approve or deny a removal
+## Approve or deny a deploy
+
+Every deploy the agent starts waits for you. Its card, like **Deploy production**, is marked
+**Deploys** when it destroys nothing, and lists what changes.
 
 When a deploy or save would remove a running service, delete a volume, detach a volume from a
 service or remove a domain, the agent stops and shows a card. It does the same before it removes
@@ -119,8 +122,9 @@ server, like **Remove fra-1**.
 - **Approving never deletes data on its own.** When a deploy or save would delete a volume's
   data, the agent stops and tells you which volumes. It goes ahead only if you ask it to, like
   "save, accepting the volume loss", and only in the same project and environment.
-- **Only removals and interruptions ask.** Deploys that roll out a new image, change variables or scale a service
-  go ahead without a card. Under such a deploy you'll see **Didn't ask. Nothing destroyed.**
+- **Deploys, removals and interruptions ask.** Every deploy the agent starts asks, even one that
+  only rolls out a new image, changes variables or scales a service. Saving asks only when the
+  save removes something. Under a save that doesn't, you'll see **Didn't ask. Nothing destroyed.**
   Stopping or restarting a service asks first, with a card like **Stop web in shop/production**
   marked **Stops service**, because it takes the service down. The card names the server too when
   the agent stops the service on just one. An approval covers that one stop or restart; a later
