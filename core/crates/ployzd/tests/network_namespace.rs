@@ -381,6 +381,60 @@ fn mesh_firewall_policy() {
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
+fn build_steps_never_reach_the_host() {
+    sudo(&["-n", "true"]);
+    let suffix = std::process::id();
+    let host = format!("p35-host-{suffix}");
+    let step = format!("p35-step-{suffix}");
+    let _namespaces = Namespaces::new([&host, &step]);
+    sudo(&[
+        "ip",
+        "link",
+        "add",
+        "host-build",
+        "type",
+        "veth",
+        "peer",
+        "name",
+        "step-if",
+    ]);
+    sudo(&["ip", "link", "set", "host-build", "netns", &host]);
+    sudo(&["ip", "link", "set", "step-if", "netns", &step]);
+    for namespace in [&host, &step] {
+        ns(namespace, "ip", &["link", "set", "lo", "up"]);
+    }
+    ns(
+        &host,
+        "ip",
+        &["link", "set", "host-build", "name", "ployz-build0"],
+    );
+    configure_link(&host, "ployz-build0", "10.10.0.1/24");
+    configure_link(&step, "step-if", "10.10.0.2/24");
+    ns(
+        &host,
+        "ip",
+        &["address", "add", "10.210.1.1/32", "dev", "lo"],
+    );
+    ns(
+        &step,
+        "ip",
+        &["route", "add", "default", "via", "10.10.0.1"],
+    );
+    ns(&host, "iptables", &["-N", "DOCKER-USER"]);
+
+    let mut before = stream_server(&host, "10.10.0.1", 51503);
+    connect(&step, "10.10.0.2", "10.10.0.1", 51503);
+    assert_eq!(before.peer(), "10.10.0.2");
+
+    apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
+    for address in ["10.10.0.1", "10.210.1.1"] {
+        let _server = stream_server(&host, address, 51503);
+        assert_connection_denied(&step, "10.10.0.2", address, 51503);
+    }
+}
+
+#[test]
+#[ignore = "requires passwordless sudo and Linux network namespaces"]
 fn reapplying_the_firewall_never_drops_admitted_traffic() {
     sudo(&["-n", "true"]);
     let namespace = format!("p35-reapply-{}", std::process::id());

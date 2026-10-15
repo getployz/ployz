@@ -54,8 +54,8 @@ A Dockerfile can't start `FROM` a private image either: use a public one.
 
 ## A build step can't reach a server or service
 
-Build steps have the internet but not your servers or your services on them. Move that call
-out of the build and into the service's start, or fetch the data from the internet. See
+Build steps reach the internet, not your servers' private network or your services on it. Move
+that call out of the build and into the service's start, or fetch the data from the internet. See
 [What a build can reach](../builds/railpack-and-dockerfiles.md#what-a-build-can-reach).
 
 ## A build step fails with exit code 137

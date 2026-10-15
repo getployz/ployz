@@ -67,11 +67,16 @@ pub fn apply_firewall_rules(
     )
 }
 
+/// Build steps run on their slot's bridge and get only the internet: nothing
+/// on the host answers them, on any address.
 fn mesh_ports() -> Vec<String> {
-    [WIREGUARD_PORT, MANAGEMENT_PORT]
-        .into_iter()
-        .map(|port| format!("-p udp --dport {port} -j ACCEPT"))
-        .collect()
+    let mut rules = vec![format!("-i {}+ -j DROP", ployz_build::BUILD_BRIDGE_PREFIX)];
+    rules.extend(
+        [WIREGUARD_PORT, MANAGEMENT_PORT]
+            .into_iter()
+            .map(|port| format!("-p udp --dport {port} -j ACCEPT")),
+    );
+    rules
 }
 
 /// Accepts come first: the drops close the management ports to everything the

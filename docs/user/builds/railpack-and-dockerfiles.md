@@ -93,9 +93,13 @@ A token can't get a Dockerfile `FROM` a private image: use a public base image.
 
 ### What a build can reach
 
-Build steps reach the internet, so package registries and Git hosts work. They can't reach your
-servers: not the server running the build, not the others, and not your services on them. Fetch
-what a build needs from the internet, and talk to your services after deploy.
+Build steps reach the internet over IPv4, so package registries and Git hosts work. They can't
+reach the server running the build, your servers' private network, or your services on it. They
+see your other servers only as the internet does, at their public addresses. Fetch what a build
+needs from the internet, and talk to your services after deploy.
+
+A Dockerfile `ADD` of a URL or Git repository is downloaded by the server running the build, not
+by a build step.
 
 ## When your servers mix x86 and ARM
 

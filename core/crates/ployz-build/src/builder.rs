@@ -38,6 +38,7 @@ impl<'a> Builder<'a> {
         resources: &crate::policy::Resources,
     ) -> Result<Self, BuildError> {
         let name = lock.name();
+        let slot = lock.slot;
         let mut builder = Self {
             docker,
             name,
@@ -47,7 +48,7 @@ impl<'a> Builder<'a> {
         // reuse state whose termination was never observed.
         builder.lock.as_mut().expect("owned lock").quarantine()?;
         let result = remove(&docker.releasing(), &builder.name)
-            .and_then(|()| create(docker, &builder.name, resources));
+            .and_then(|()| create(docker, &builder.name, slot, resources));
         if let Err(error) = result {
             return builder.finish(Err(error));
         }
@@ -254,12 +255,13 @@ impl Drop for Builder<'_> {
 fn create(
     docker: &Docker<'_>,
     name: &str,
+    slot: usize,
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     // Always supply a config, so ambient Buildx configuration cannot replace
     // execution-host policy.
-    let config = docker.working_dir.join("buildkitd.toml");
-    fs::write(&config, resources.buildkit_config()).map_err(|error| {
+    let config = docker.working_dir.join(format!("{name}.buildkitd.toml"));
+    fs::write(&config, resources.buildkit_config(slot)).map_err(|error| {
         BuildError::Prerequisite(format!("write BuildKit host configuration: {error}"))
     })?;
     let mut arguments = vec![
@@ -682,7 +684,7 @@ esac
                 format!("buildx rm --keep-state {name}"),
                 format!(
                     "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --buildkitd-config {}",
-                    directory.join("buildkitd.toml").display()
+                    directory.join(format!("{name}.buildkitd.toml")).display()
                 ),
             ]
         );
