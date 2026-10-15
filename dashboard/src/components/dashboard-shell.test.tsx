@@ -133,11 +133,11 @@ it("shows a retryable Org Store failure inside the shell and recovers", async ()
   expect(screen.queryByText("Organization data couldn’t load")).toBeNull();
 });
 
-it("puts the logo, the four places, the way back to the organization and the account in the rail, with the current place marked", async () => {
+it("puts the logo, the five places, the way back to the organization and the account in the rail, with the current place marked", async () => {
   const { rail } = await show();
   const links = within(rail).getAllByRole("link");
   expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(
-    ["Projects", "Architecture", "Deployments", "Logs", "Settings", "Projects", "Servers"],
+    ["Projects", "Architecture", "Deployments", "Logs", "Analytics", "Settings", "Projects", "Servers"],
   );
   expect(links[0]?.getAttribute("href")).toBe("/cloud/acme/~");
   expect(links[0]?.getAttribute("title")).toBe("Projects");
@@ -167,7 +167,7 @@ it("narrows the rail to named icons wherever the canvas shows", async () => {
 it("offers the same places in the phone tab bar and follows the route", async () => {
   const { router } = await show();
   const tabs = screen.getByRole("navigation", { name: "Places" });
-  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Architecture", "Deployments", "Logs", "Settings"]);
+  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Architecture", "Deployments", "Logs", "Analytics", "Settings"]);
   fireEvent.click(within(tabs).getByRole("link", { name: "Settings" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/store/production/settings"));
   await waitFor(() => expect(within(tabs).getByRole("link", { name: "Settings" }).getAttribute("aria-current")).toBe("page"));
