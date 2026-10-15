@@ -20,9 +20,9 @@ use crate::{
     ui::{self, Gaps},
 };
 
-pub(crate) fn command() -> Command {
+pub(super) fn command(command: Command) -> Command {
     scoped(base(
-        "metrics",
+        command,
         "Show CPU, memory, network and disk for a Service or a Server",
     ))
     .arg(positional("service", false).help("Service name"))

@@ -274,9 +274,8 @@ pub(super) fn wait_flag() -> clap::Arg {
     switch("wait", None).help("Wait for the run to end; it fails unless the run is done")
 }
 
-pub(super) fn mirror_command() -> Command {
-    store::scoped(
-        Command::new("mirror")
+pub(crate) fn mirror_command(command: Command) -> Command {
+    store::scoped(command
             .about("Copy a Volume read-only onto another Server (Ployz Cloud); `mirror rm` deletes one")
             .args_conflicts_with_subcommands(true)
             .subcommand_negates_reqs(true),
@@ -289,26 +288,26 @@ pub(super) fn mirror_command() -> Command {
             .help("The Server that gets the Mirror; it shows as VOLUME-SERVER"),
     )
     .arg(wait_flag())
-    .subcommand(
-        store::scoped(Command::new("rm").about("Delete a Volume's Mirror (Ployz Cloud)"))
-            .arg(
-                positional("mirror", true)
-                    .value_name("VOLUME-SERVER")
-                    .help("The Mirror, named by its Volume and Server, like data-web-2"),
-            )
-            .arg(
-                value("confirm", None)
-                    .value_name("VOLUME")
-                    .help("The Volume's name, to delete a Mirror that is its only copy left"),
-            )
-            .arg(approval_arg())
-            .arg(wait_flag()),
-    )
 }
 
-pub(super) fn sync_command() -> Command {
-    store::scoped(
-        Command::new("sync")
+pub(crate) fn remove_mirror_command(command: Command) -> Command {
+    store::scoped(command.about("Delete a Volume's Mirror (Ployz Cloud)"))
+        .arg(
+            positional("mirror", true)
+                .value_name("VOLUME-SERVER")
+                .help("The Mirror, named by its Volume and Server, like data-web-2"),
+        )
+        .arg(
+            value("confirm", None)
+                .value_name("VOLUME")
+                .help("The Volume's name, to delete a Mirror that is its only copy left"),
+        )
+        .arg(approval_arg())
+        .arg(wait_flag())
+}
+
+pub(crate) fn sync_command(command: Command) -> Command {
+    store::scoped(command
             .about("Hand a Volume's Mirror what changed since its last pull (Ployz Cloud); `volume show` follows the download"),
     )
     .arg(positional("volume", true))
@@ -316,9 +315,8 @@ pub(super) fn sync_command() -> Command {
     .arg(wait_flag().requires("full"))
 }
 
-pub(super) fn move_command() -> Command {
-    store::scoped(
-        Command::new("move")
+pub(crate) fn move_command(command: Command) -> Command {
+    store::scoped(command
             .about("Move a Volume and its Service onto another Server (Ployz Cloud); the Service stops for the last copy"),
     )
     .arg(positional("volume", true))
@@ -331,9 +329,8 @@ pub(super) fn move_command() -> Command {
     .arg(wait_flag())
 }
 
-pub(super) fn release_command() -> Command {
-    store::scoped(
-        Command::new("release")
+pub(crate) fn release_command(command: Command) -> Command {
+    store::scoped(command
             .about("Stop what runs on a Volume and start its Service again where it was; a Move past its handover finishes there (Ployz Cloud)"),
     )
     .arg(positional("volume", true))
@@ -341,8 +338,8 @@ pub(super) fn release_command() -> Command {
     .arg(wait_flag())
 }
 
-pub(super) fn restore_command() -> Command {
-    store::scoped(Command::new("restore").about(
+pub(crate) fn restore_command(command: Command) -> Command {
+    store::scoped(command.about(
         "Make a Server's copy of a Volume its writer when no Server holds one (Ployz Cloud)",
     ))
     .arg(positional("volume", true))
@@ -355,8 +352,8 @@ pub(super) fn restore_command() -> Command {
     .arg(wait_flag())
 }
 
-pub(super) fn runs_command() -> Command {
-    store::scoped(Command::new("runs").about("List a Volume's runs, or show one (Ployz Cloud)"))
+pub(crate) fn runs_command(command: Command) -> Command {
+    store::scoped(command.about("List a Volume's runs, or show one (Ployz Cloud)"))
         .arg(positional("volume", true))
         .arg(positional("run", false).help("A run ID, to show that run"))
 }
@@ -383,7 +380,7 @@ fn located(
     Ok((view.volume.volume.id, view.environment))
 }
 
-pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn mirror(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let to = server_name(matches, "to")?;
@@ -394,7 +391,7 @@ pub(super) fn mirror(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub(super) fn sync(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     if !matches.get_flag("full") {
@@ -460,7 +457,7 @@ fn hand_off(root: &ArgMatches, volume: &VolumeName) -> Result<(), Error> {
     })
 }
 
-pub(super) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let to = server_name(matches, "to")?;
@@ -471,7 +468,7 @@ pub(super) fn move_volume(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub(super) fn release(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn release(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let started = format!("Release of Volume {volume}");
@@ -481,7 +478,7 @@ pub(super) fn release(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub(super) fn restore(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn restore(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let from = server_name(matches, "from")?;
@@ -492,7 +489,7 @@ pub(super) fn restore(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub(super) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn remove_mirror(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let mirror = super::super::required(matches, "mirror")?;
     let confirm = matches.get_one::<String>("confirm").cloned();
@@ -705,7 +702,7 @@ fn refused(
     failure
 }
 
-pub(super) fn runs(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn runs(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = store::volume_name(matches, "volume")?;
     let wanted = matches

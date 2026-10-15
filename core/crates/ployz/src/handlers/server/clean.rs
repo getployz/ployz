@@ -13,10 +13,8 @@ use crate::cloud_account::{self, Credential};
 use crate::deploy::VolumeFate;
 use crate::ui::{Hint, Table, Tree};
 
-pub(super) fn command() -> Command {
-    base(
-        "clean",
-        "Remove a Namespace on your Servers that isn't in any Project; lists them without --namespace",
+pub(crate) fn command(command: Command) -> Command {
+    base(command, "Remove a Namespace on your Servers that isn't in any Project; lists them without --namespace",
     )
     .long_about(
         "Remove a Namespace the Servers run that no Environment owns, such as one a failed \
@@ -66,7 +64,7 @@ struct Cleaned {
     outcome: DeployOutcome<ployz_core::ExecutionError>,
 }
 
-pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let named = matches
         .get_one::<String>("namespace")

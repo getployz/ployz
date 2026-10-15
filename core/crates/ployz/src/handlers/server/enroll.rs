@@ -22,9 +22,9 @@ use crate::ui::Hint;
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
 
-pub(super) fn command() -> Command {
+pub(crate) fn command(command: Command) -> Command {
     super::provisioning_flags(
-        base("add", "Add a Server to your Organization's Cluster")
+        base(command, "Add a Server to your Organization's Cluster")
             .long_about("Add a Server to your Organization's Cluster through Cloud; the first Server founds it. Needs `ployz login`. With DESTINATION, installs Ployz over SSH; without one, adds the Server this runs on. --command prints one line to paste on the Server and waits until it joins; with --json it returns the line at once, and --wait ENROLLMENT waits."),
     )
     .arg(positional("destination", false))
@@ -64,7 +64,7 @@ pub(super) fn command() -> Command {
     )
 }
 
-pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
+pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     if matches.get_flag("standalone") {
         return standalone(root);

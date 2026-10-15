@@ -10,28 +10,28 @@ use super::store::{Next, environment, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, switch, value};
 
-pub(crate) fn diff_command() -> Command {
-    scoped(Command::new("diff").about("Show staged Service, Volume and Config changes"))
+pub(super) fn diff_command(command: Command) -> Command {
+    scoped(command.about("Show staged Service, Volume and Config changes"))
 }
 
-pub(crate) fn history_command() -> Command {
+pub(super) fn history_command(command: Command) -> Command {
     // Global, so `--project`/`--env` reach the action before or after its name.
-    scoped(Command::new("history").about("Show immutable saved versions"))
+    scoped(command.about("Show immutable saved versions"))
         .mut_arg("project", |arg| arg.global(true))
         .mut_arg("env", |arg| arg.global(true))
         .subcommand_required(false)
-        .subcommand(history_action(
-            "restore",
-            "Stage a saved version in the draft",
-        ))
-        .subcommand(history_action(
-            "undo",
-            "Stage the inverse of one saved change",
-        ))
 }
 
-fn history_action(name: &'static str, about: &'static str) -> Command {
-    Command::new(name)
+pub(super) fn restore_command(command: Command) -> Command {
+    history_action(command, "Stage a saved version in the draft")
+}
+
+pub(super) fn undo_command(command: Command) -> Command {
+    history_action(command, "Stage the inverse of one saved change")
+}
+
+fn history_action(command: Command, about: &'static str) -> Command {
+    command
         .about(about)
         .arg(positional("revision", true).value_parser(clap::value_parser!(u64)))
         .arg(version())
@@ -45,8 +45,8 @@ fn history_action(name: &'static str, about: &'static str) -> Command {
         )
 }
 
-pub(crate) fn discard_command() -> Command {
-    scoped(Command::new("discard").about("Undo staged Service, Volume, Config or Setting changes"))
+pub(super) fn discard_command(command: Command) -> Command {
+    scoped(command.about("Undo staged Service, Volume, Config or Setting changes"))
         .arg(
             positional("path", false)
                 .help("SERVICE, SERVICE.SETTING, volumes.VOLUME, configs.CONFIG or a `ployz diff` row [default: everything]"),

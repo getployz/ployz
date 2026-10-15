@@ -119,18 +119,6 @@ fn each_volume_run_command_parses_to_its_own_handler() {
             .map(String::as_str),
         Some(RUN)
     );
-
-    for words in [
-        "mirror",
-        "mirror rm",
-        "sync",
-        "move",
-        "release",
-        "restore",
-        "runs",
-    ] {
-        assert!(super::super::handler(words).is_some(), "volume {words}");
-    }
 }
 
 #[test]

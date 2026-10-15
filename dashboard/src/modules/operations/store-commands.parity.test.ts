@@ -17,9 +17,8 @@ const payloads = read(ROOT, "core/crates/ployz-sdk/generated/payloads.d.ts");
 const union = payloads.slice(payloads.indexOf("export type ConfigCommand ="));
 const commands = [...union.slice(0, union.indexOf(";\n")).matchAll(/"command": "([a-z_]+)"/g)].map((match) => match[1] ?? "");
 
-const cliCatalog = read(ROOT, "core/crates/ployz/tests/cli_shape.rs");
-const pathList = cliCatalog.slice(cliCatalog.indexOf("assert_eq!(\n        paths,"));
-const cliPaths = [...pathList.slice(0, pathList.indexOf("]")).matchAll(/"([a-z -]+)"/g)].map((match) => match[1] ?? "");
+const verbs = read(ROOT, "core/crates/ployz/src/handlers/verbs.rs");
+const cliPaths = [...verbs.matchAll(/Verb::[a-z]+\(\s*"([a-z -]+)"/g)].map((match) => match[1] ?? "");
 
 type Surface = { readonly paths: readonly string[] } | { readonly tools: readonly string[] } | { readonly sender: string }
   | { readonly absent: string; readonly quotedFrom: string } | { readonly gap: string };

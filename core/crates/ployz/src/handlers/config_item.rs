@@ -3,7 +3,6 @@
 //! rename and delete it. Every change is staged in Working State until a Deploy.
 //! A file reads Service variables as `${{ SERVICE.KEY }}`.
 
-use super::catalog::{Approval::*, Runnable, cloud};
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::{FileMode, ReviewLifecycleKind};
 use ployz_core::{ConfigFileName, ConfigName, ServiceName};
@@ -18,26 +17,27 @@ use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Table, Tone};
 
-pub(crate) fn command() -> Command {
+pub(super) fn group(command: Command) -> Command {
     base(
-        "config",
+        command,
         "Manage Configs: folders of text files Services mount",
     )
     .arg_required_else_help(true)
-    .subcommand(
-        store::scoped(Command::new("add").about("Add a Config; staged until you deploy"))
-            .arg(positional("name", true).help("Config name, unique in the Environment"))
-            .arg(
-                value("mount", None)
-                    .action(ArgAction::Append)
-                    .value_name("SERVICE:/DIR")
-                    .help("Mount it into a Service at an absolute directory; repeatable"),
-            ),
-    )
-    .subcommand(
-        store::scoped(
-            Command::new("put").about("Write one file into a Config, from --from or stdin; staged"),
+}
+
+pub(super) fn create_command(command: Command) -> Command {
+    store::scoped(command.about("Add a Config; staged until you deploy"))
+        .arg(positional("name", true).help("Config name, unique in the Environment"))
+        .arg(
+            value("mount", None)
+                .action(ArgAction::Append)
+                .value_name("SERVICE:/DIR")
+                .help("Mount it into a Service at an absolute directory; repeatable"),
         )
+}
+
+pub(super) fn put_command(command: Command) -> Command {
+    store::scoped(command.about("Write one file into a Config, from --from or stdin; staged"))
         .arg(positional("config", true))
         .arg(
             positional("file", true)
@@ -69,57 +69,46 @@ pub(crate) fn command() -> Command {
         .arg(id_flag(
             "gid",
             "Owning group ID [default: 0, or the file's current group]",
-        )),
-    )
-    .subcommand(
-        store::scoped(Command::new("rm-file").about("Remove one file from a Config; staged"))
-            .arg(positional("config", true))
-            .arg(positional("file", true)),
-    )
-    .subcommand(
-        store::scoped(
-            Command::new("inspect").about("Show a Config, its files' text and its mounts"),
-        )
-        .arg(positional("config", true)),
-    )
-    .subcommand(store::scoped(
-        Command::new("ls").about("List Configs and what the next Deploy does to them"),
-    ))
-    .subcommand(
-        store::scoped(Command::new("rename").about("Rename a Config; its files and mounts stay"))
-            .arg(positional("config", true))
-            .arg(positional("name", true)),
-    )
-    .subcommand(
-        store::scoped(Command::new("rm").about("Remove a Config and unmount it everywhere"))
-            .arg(positional("config", true)),
-    )
-    .subcommand(
-        store::scoped(Command::new("mount").about("Mount a Config into a Service at a directory"))
-            .arg(positional("service", true))
-            .arg(positional("config", true))
-            .arg(positional("dir", true).help("Absolute directory, like /etc/nginx/conf.d")),
-    )
-    .subcommand(
-        store::scoped(Command::new("unmount").about("Unmount a Config from a Service"))
-            .arg(positional("service", true))
-            .arg(positional("config", true)),
-    )
+        ))
 }
 
-pub(super) fn handler(path: &str) -> Option<Runnable> {
-    Some(match path {
-        "add" => cloud(Never, create),
-        "put" => cloud(Never, put),
-        "rm-file" => cloud(Never, remove_file),
-        "inspect" => cloud(Never, inspect),
-        "ls" => cloud(Never, list),
-        "rename" => cloud(Never, rename),
-        "rm" => cloud(Never, delete),
-        "mount" => cloud(Never, mount),
-        "unmount" => cloud(Never, unmount),
-        _ => return None,
-    })
+pub(super) fn remove_file_command(command: Command) -> Command {
+    store::scoped(command.about("Remove one file from a Config; staged"))
+        .arg(positional("config", true))
+        .arg(positional("file", true))
+}
+
+pub(super) fn inspect_command(command: Command) -> Command {
+    store::scoped(command.about("Show a Config, its files' text and its mounts"))
+        .arg(positional("config", true))
+}
+
+pub(super) fn list_command(command: Command) -> Command {
+    store::scoped(command.about("List Configs and what the next Deploy does to them"))
+}
+
+pub(super) fn rename_command(command: Command) -> Command {
+    store::scoped(command.about("Rename a Config; its files and mounts stay"))
+        .arg(positional("config", true))
+        .arg(positional("name", true))
+}
+
+pub(super) fn delete_command(command: Command) -> Command {
+    store::scoped(command.about("Remove a Config and unmount it everywhere"))
+        .arg(positional("config", true))
+}
+
+pub(super) fn mount_command(command: Command) -> Command {
+    store::scoped(command.about("Mount a Config into a Service at a directory"))
+        .arg(positional("service", true))
+        .arg(positional("config", true))
+        .arg(positional("dir", true).help("Absolute directory, like /etc/nginx/conf.d"))
+}
+
+pub(super) fn unmount_command(command: Command) -> Command {
+    store::scoped(command.about("Unmount a Config from a Service"))
+        .arg(positional("service", true))
+        .arg(positional("config", true))
 }
 
 fn id_flag(name: &'static str, help: &'static str) -> clap::Arg {
@@ -129,7 +118,7 @@ fn id_flag(name: &'static str, help: &'static str) -> clap::Arg {
         .help(help)
 }
 
-fn create(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let mounts = matches
         .get_many::<String>("mount")
@@ -157,7 +146,7 @@ fn create(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &created, "Staged new Config")
 }
 
-fn put(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn put(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let bytes = match matches.get_one::<String>("from") {
         Some(path) => std::fs::read(path)?,
@@ -190,7 +179,7 @@ fn put(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &put, "Staged Config")
 }
 
-fn remove_file(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn remove_file(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let removed = store::store(root)?.write(&RemoveConfigFile {
         environment: store::environment(matches)?,
@@ -200,7 +189,7 @@ fn remove_file(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &removed, "Staged Config")
 }
 
-fn list(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let view = store::store(root)?.read(&ConfigsQuery {
         environment: store::environment(matches)?,
@@ -228,7 +217,7 @@ fn next_deploy(listing: &ConfigListing) -> Option<String> {
     Some("new".to_owned())
 }
 
-fn inspect(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let view = store::store(root)?.read(&ConfigItemQuery {
         environment: store::environment(matches)?,
@@ -261,7 +250,7 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn rename(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let renamed = store::store(root)?.write(&RenameConfig {
         environment: store::environment(matches)?,
@@ -271,7 +260,7 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &renamed, "Staged rename of Config")
 }
 
-fn delete(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn delete(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let deleted = store::store(root)?.write(&DeleteConfig {
         environment: store::environment(matches)?,
@@ -280,7 +269,7 @@ fn delete(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &deleted, "Staged delete of Config")
 }
 
-fn mount(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn mount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let mounted = store::store(root)?.write(&AttachConfig {
         environment: store::environment(matches)?,
@@ -291,7 +280,7 @@ fn mount(root: &ArgMatches) -> Result<(), Error> {
     staged(matches, &mounted, "Staged mount of Config")
 }
 
-fn unmount(root: &ArgMatches) -> Result<(), Error> {
+pub(super) fn unmount(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let unmounted = store::store(root)?.write(&DetachConfig {
         environment: store::environment(matches)?,
