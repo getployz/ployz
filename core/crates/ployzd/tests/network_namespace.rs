@@ -16,6 +16,7 @@ const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
 const LAN: &str = "192.168.77.2";
 const METADATA: &str = "169.254.169.254";
 const INTERNET: &str = "198.51.100.2";
+const PUBLIC: &str = "203.0.113.1";
 
 #[test]
 #[ignore = "requires passwordless sudo and Linux network namespaces"]
@@ -484,7 +485,52 @@ fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
         assert_eq!(before.peer(), "10.10.0.2");
     }
 
+    // A port published on the host's public address and one on its LAN address.
+    ns(
+        &host,
+        "ip",
+        &["address", "add", &format!("{PUBLIC}/32"), "dev", "lo"],
+    );
+    for address in [PUBLIC, "192.168.77.1"] {
+        ns(
+            &host,
+            "iptables",
+            &[
+                "-t",
+                "nat",
+                "-A",
+                "PREROUTING",
+                "-d",
+                address,
+                "-p",
+                "tcp",
+                "--dport",
+                "51504",
+                "-j",
+                "DNAT",
+                "--to-destination",
+                "10.210.1.2:51505",
+            ],
+        );
+    }
+    // Rules an earlier daemon hooked; one of them dropped link-local DNS.
+    let loose = [
+        "-i ployz-build+ -o ployz -m conntrack ! --ctstate DNAT -j DROP",
+        "-i ployz-build+ -o ployz-wg -j DROP",
+        "-i ployz-build+ -d 169.254.0.0/16 -j DROP",
+    ];
+    for rule in loose {
+        let mut args = vec!["-t", "mangle", "-A", "FORWARD"];
+        args.extend(rule.split(' '));
+        ns(&host, "iptables", &args);
+    }
+
     apply_in_namespace(&host, "10.210.1.0/24", "fdcc::1");
+    assert_eq!(
+        rules(&host, "mangle", "FORWARD"),
+        ["-A FORWARD -i ployz-build+ -j PLOYZ-BUILD-FORWARD"],
+        "a loose rule survived"
+    );
     for address in ["10.10.0.1", "10.210.1.1"] {
         let _server = stream_server(&host, address, 51503);
         assert_connection_denied(&step, "10.10.0.2", address, 51503);
@@ -503,9 +549,29 @@ fn build_steps_reach_the_internet_and_dns_but_never_the_host_or_the_lan() {
         Some("10.10.0.2"),
         "DNS on the LAN was dropped"
     );
+    let mut resolver = datagram_server(&lan, METADATA, 53);
+    send_datagram(&step, "10.10.0.2", METADATA, 53);
+    assert_eq!(
+        resolver.peer_within(3).as_deref(),
+        Some("10.10.0.2"),
+        "DNS on link-local was dropped"
+    );
+    let mut service_dns = datagram_server(&service, "10.210.1.2", 53);
+    send_datagram(&step, "10.10.0.2", "10.210.1.2", 53);
+    assert_eq!(
+        service_dns.peer_within(3),
+        None,
+        "DNS reached a service on the overlay"
+    );
     let mut internet = stream_server(&lan, INTERNET, 51503);
     connect(&step, "10.10.0.2", INTERNET, 51503);
     assert_eq!(internet.peer(), "10.10.0.2");
+
+    let mut published = stream_server(&service, "10.210.1.2", 51505);
+    connect(&step, "10.10.0.2", PUBLIC, 51504);
+    assert_eq!(published.peer(), "10.10.0.2");
+    let _published = stream_server(&service, "10.210.1.2", 51505);
+    assert_connection_denied(&step, "10.10.0.2", "192.168.77.1", 51504);
 }
 
 #[test]
@@ -568,6 +634,11 @@ fn the_build_worker_reaches_the_image_servers_but_not_the_host_or_the_mesh() {
         .status()
         .unwrap();
     assert!(status.success(), "fence child failed in {host}");
+    assert_eq!(
+        rules(&host, "mangle", "FORWARD"),
+        ["-A FORWARD -i ployz-build+ -j PLOYZ-BUILD-FORWARD"],
+        "the fence left build steps unfenced"
+    );
 
     let mut image_server = stream_server(&peer, "fdcc::2", UNREGISTRY_PORT);
     cgroup.connect(&host, "fdcc::1", "fdcc::2", UNREGISTRY_PORT);

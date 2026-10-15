@@ -57,6 +57,9 @@ pub fn apply_firewall_rules(
         &ipv4_build_forwarding(),
     )?);
     restore("iptables", &ipv4_document)?;
+    for rule in LOOSE_BUILD_FORWARDING {
+        delete_rule("iptables", "mangle", "FORWARD", rule)?;
+    }
     let mut ipv6_document = filter_document("ip6tables", &management_policy(management_address))?;
     ipv6_document.push_str(&build_forward_document(
         "ip6tables",
@@ -81,47 +84,81 @@ pub fn apply_firewall_rules(
 
 /// Build steps route to the internet, never into the Machine's services, across
 /// the mesh, to a cloud metadata service or to a private network. Mangle runs
-/// before BuildKit's CNI accepts its own bridge's traffic in filter. A
-/// published port is public, so DNAT to it still passes, and so does DNS to any
-/// resolver, since the host's may sit on the LAN or on link-local.
+/// before BuildKit's CNI accepts its own bridge's traffic in filter. DNS passes
+/// to any resolver, since the host's may sit on the LAN or on link-local. A port
+/// published on a public address passes, DNAT'd to its container; one the step
+/// reached through a private address drops on that original destination.
+/// Untracked traffic has no original destination, so the closing drops match
+/// its destination instead.
 fn ipv4_build_forwarding() -> Vec<String> {
-    build_forwarding(
-        vec![
-            format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP"),
-            format!("-o {DOCKER_NETWORK_NAME} -m conntrack ! --ctstate DNAT -j DROP"),
-            "-m conntrack --ctstate DNAT -j RETURN".to_owned(),
-        ],
-        &[
-            LINK_LOCAL,
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16",
-            "100.64.0.0/10",
-        ],
-    )
-}
-
-/// Build steps have no IPv6 route today; this holds if they ever get one.
-fn ipv6_build_forwarding() -> Vec<String> {
-    build_forwarding(
-        vec![format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP")],
-        &["fc00::/7", "fe80::/10"],
-    )
-}
-
-fn build_forwarding(mut rules: Vec<String>, private: &[&str]) -> Vec<String> {
+    let mut rules = vec![
+        format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP"),
+        format!("-o {DOCKER_NETWORK_NAME} -m conntrack ! --ctstate DNAT -j DROP"),
+    ];
+    rules.extend(dns_returns());
     rules.extend(
-        ["udp", "tcp"]
+        PRIVATE_V4
             .iter()
-            .map(|protocol| format!("-p {protocol} --dport {DNS_PORT} -j RETURN")),
+            .map(|destination| format!("-m conntrack --ctorigdst {destination} -j DROP")),
     );
+    rules.push("-m conntrack --ctstate DNAT -j RETURN".to_owned());
     rules.extend(
-        private
+        PRIVATE_V4
             .iter()
             .map(|destination| format!("-d {destination} -j DROP")),
     );
     rules
 }
+
+/// Link-local, RFC1918, CGNAT, and Azure's WireServer, which hands out VM
+/// configuration from a public address.
+const PRIVATE_V4: [&str; 6] = [
+    LINK_LOCAL,
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "168.63.129.16/32",
+];
+
+/// Build steps have no IPv6 route today; this holds if they ever get one.
+fn ipv6_build_forwarding() -> Vec<String> {
+    let mut rules = vec![format!("-o {WIREGUARD_INTERFACE_NAME} -j DROP")];
+    rules.extend(dns_returns());
+    rules.extend(
+        ["fc00::/7", "fe80::/10"]
+            .iter()
+            .map(|destination| format!("-d {destination} -j DROP")),
+    );
+    rules
+}
+
+fn dns_returns() -> impl Iterator<Item = String> {
+    ["udp", "tcp"]
+        .into_iter()
+        .map(|protocol| format!("-p {protocol} --dport {DNS_PORT} -j RETURN"))
+}
+
+/// Loose rules main hooked into mangle FORWARD before this chain. A RETURN
+/// from the chain resumes FORWARD, where their link-local drop would still
+/// catch DNS to a cloud's link-local resolver.
+const LOOSE_BUILD_FORWARDING: [&[&str]; 3] = [
+    &[
+        "-i",
+        "ployz-build+",
+        "-o",
+        "ployz",
+        "-m",
+        "conntrack",
+        "!",
+        "--ctstate",
+        "DNAT",
+        "-j",
+        "DROP",
+    ],
+    &["-i", "ployz-build+", "-o", "ployz-wg", "-j", "DROP"],
+    &["-i", "ployz-build+", "-d", "169.254.0.0/16", "-j", "DROP"],
+];
 
 fn build_forward_jump() -> String {
     format!(
@@ -157,9 +194,9 @@ const DNS_PORT: u16 = 53;
 /// Returns why the fence could not be installed. The Build must not solve.
 pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
     let chain = format!("{BUILD_CHAIN}{}", fence.slot);
-    for (program, rules) in [
-        ("iptables", ipv4_fence(fence)),
-        ("ip6tables", ipv6_fence(fence)),
+    for (program, rules, forwarding) in [
+        ("iptables", ipv4_fence(fence), ipv4_build_forwarding()),
+        ("ip6tables", ipv6_fence(fence), ipv6_build_forwarding()),
     ] {
         chain_document(
             program,
@@ -169,6 +206,7 @@ pub fn fence_builder(fence: &ployz_build::Fence) -> Result<(), String> {
             &chain,
             &rules,
         )
+        .and_then(|fence| Ok(fence + &build_forward_document(program, &forwarding)?))
         .and_then(|document| restore(program, &document))
         .map_err(|error| ployz_core::error_chain::inline(&error))?;
     }
@@ -482,7 +520,7 @@ fn ensure_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result
 fn delete_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result<(), NetworkError> {
     let mut check = vec!["-t", table, "-C", chain];
     check.extend_from_slice(rule);
-    if command_succeeds(program, &check) {
+    while command_succeeds(program, &check) {
         let mut delete = vec!["-t", table, "-D", chain];
         delete.extend_from_slice(rule);
         checked_command(program, &delete)?;
@@ -550,14 +588,21 @@ mod tests {
             [
                 "-o ployz-wg -j DROP",
                 "-o ployz -m conntrack ! --ctstate DNAT -j DROP",
-                "-m conntrack --ctstate DNAT -j RETURN",
                 "-p udp --dport 53 -j RETURN",
                 "-p tcp --dport 53 -j RETURN",
+                "-m conntrack --ctorigdst 169.254.0.0/16 -j DROP",
+                "-m conntrack --ctorigdst 10.0.0.0/8 -j DROP",
+                "-m conntrack --ctorigdst 172.16.0.0/12 -j DROP",
+                "-m conntrack --ctorigdst 192.168.0.0/16 -j DROP",
+                "-m conntrack --ctorigdst 100.64.0.0/10 -j DROP",
+                "-m conntrack --ctorigdst 168.63.129.16/32 -j DROP",
+                "-m conntrack --ctstate DNAT -j RETURN",
                 "-d 169.254.0.0/16 -j DROP",
                 "-d 10.0.0.0/8 -j DROP",
                 "-d 172.16.0.0/12 -j DROP",
                 "-d 192.168.0.0/16 -j DROP",
                 "-d 100.64.0.0/10 -j DROP",
+                "-d 168.63.129.16/32 -j DROP",
             ]
         );
     }
