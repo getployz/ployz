@@ -70,6 +70,7 @@ const fn stops_or_removes(phase: RowPhase) -> bool {
 enum Step {
     Start,
     Clear,
+    Switch,
     Retire,
 }
 
@@ -88,12 +89,42 @@ pub(crate) fn service_row<'a>(
                     RowState::Completed | RowState::Running { serving: true, .. }
                 )
         });
+    let failed = replicas
+        .iter()
+        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
+        .count();
+    let counted: Vec<_> = replicas
+        .iter()
+        .filter(|replica| removal || replica.starts)
+        .collect();
+    // A failure cancels the switch, so a copy waiting on it will never serve.
+    let ready = counted
+        .iter()
+        .filter(|replica| match replica.state {
+            RowState::Completed | RowState::Running { serving: true, .. } => true,
+            RowState::Running {
+                phase: RowPhase::WaitingForSwitch,
+                ..
+            } => failed == 0,
+            RowState::Running { .. }
+            | RowState::Pending
+            | RowState::Failed { .. }
+            | RowState::NotAttempted
+            | RowState::Unknown => false,
+        })
+        .count();
+    let switching = failed == 0 && ready == counted.len();
     let work = |replica: &Replica<'_>| match replica.state {
         RowState::Running { phase, serving } => Some((
             if *serving || (served && !replica.starts) {
                 Step::Retire
             } else if stops_or_removes(*phase) {
                 Step::Clear
+            } else if *phase == RowPhase::WaitingForSwitch {
+                if !switching {
+                    return None;
+                }
+                Step::Switch
             } else {
                 Step::Start
             },
@@ -110,19 +141,6 @@ pub(crate) fn service_row<'a>(
         .iter()
         .filter_map(work)
         .min_by_key(|(work, _)| *work);
-    let counted: Vec<_> = replicas
-        .iter()
-        .filter(|replica| removal || replica.starts)
-        .collect();
-    let ready = counted
-        .iter()
-        .filter(|replica| {
-            matches!(
-                replica.state,
-                RowState::Completed | RowState::Running { serving: true, .. }
-            )
-        })
-        .count();
     let draining = replicas
         .iter()
         .filter(|replica| match replica.state {
@@ -135,10 +153,6 @@ pub(crate) fn service_row<'a>(
         })
         .count();
     let old_wait_for_routes = running.is_none() && ready == counted.len() && draining > 0;
-    let failed = replicas
-        .iter()
-        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
-        .count();
     let state = if failed > 0 {
         running.map_or(State::Failed, |(_, phase)| State::Running(phase))
     } else if replicas
@@ -465,7 +479,8 @@ fn live_container_id(row: &OperationRow) -> Option<ContainerId> {
         OperationStatus::Running {
             phase:
                 OperationPhase::WaitingForHealth { container_id, .. }
-                | OperationPhase::WaitingForHook { container_id, .. },
+                | OperationPhase::WaitingForHook { container_id, .. }
+                | OperationPhase::WaitingForSwitch { container_id },
         } => Some(*container_id),
         OperationStatus::Failed {
             error:

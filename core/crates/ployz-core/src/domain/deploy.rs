@@ -1026,6 +1026,10 @@ pub enum OperationPhase {
         elapsed_ms: u64,
         deadline_ms: u64,
     },
+    /// The new Container is ready and serves once its Service's pointer is published.
+    WaitingForSwitch {
+        container_id: ContainerId,
+    },
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,
