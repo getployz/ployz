@@ -1,10 +1,8 @@
 //! `ployz mcp`: the agent tools over stdio. Each call steps the registry's plan,
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
-use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,10 +17,9 @@ use ployz_store::{Actor, ConfigStore, OrganizationId};
 use reqwest::Method;
 use rmcp::model::{
     BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
-    ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema,
-    Implementation, InputRequest, InputRequiredResult, InputResponses, JsonObject, ListToolsResult,
-    PaginatedRequestParams, RequestId, ServerCapabilities, ServerConfig, StringSchema, Tool,
-    ToolAnnotations,
+    ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationSchema, Implementation,
+    JsonObject, ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities,
+    ServerConfig, StringSchema, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
@@ -38,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
-use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud_account::{self, Credential, StoreCallError, Via};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
@@ -220,9 +217,9 @@ impl Backend<'_> {
                 store.read(who, query).and_then(|view| value(&view))
             }
             (Self::Local(..), Ask::Cloud(_)) => Err(not_here()),
-            (Self::Cloud(credential), Ask::Store(query)) => {
-                called(cloud_account::config_store(credential, "read", query, None).await)
-            }
+            (Self::Cloud(credential), Ask::Store(query)) => called(
+                cloud_account::config_store(credential, Via::Agent, "read", query, None).await,
+            ),
             (Self::Cloud(credential), Ask::Cloud(query)) => called(
                 cloud_account::approved_answer(
                     credential,
@@ -242,9 +239,10 @@ impl Backend<'_> {
                 .write(who, command)
                 .and_then(|written| value(&written)),
             (Self::Local(..), Write::Act(_)) => Err(not_here()),
-            (Self::Cloud(credential), Write::Store(command)) => {
-                written(cloud_account::config_store(credential, "write", command, approval).await)
-            }
+            (Self::Cloud(credential), Write::Store(command)) => written(
+                cloud_account::config_store(credential, Via::Agent, "write", command, approval)
+                    .await,
+            ),
             (Self::Cloud(credential), Write::Act(act)) => written(
                 cloud_account::approved_answer(
                     credential,
@@ -345,7 +343,6 @@ struct Server {
     keys: fn(&str, &RequestId, &str) -> String,
     tools: Vec<Tool>,
     gates: HashMap<&'static str, Gate>,
-    waiting: Waiting,
     /// The Cloud whose published commands are listed, when the Store is Cloud.
     setup: Option<Setup>,
     /// The published commands as last read, replaced when a reply names a newer revision.
@@ -379,7 +376,6 @@ impl Server {
             keys: call_key,
             tools: catalog.into_iter().map(tool).collect(),
             gates,
-            waiting: Waiting::default(),
             setup: None,
             published: Mutex::new(None),
             unread: Mutex::new(BTreeSet::new()),
@@ -527,7 +523,7 @@ impl Server {
         let key = RequestKey::effective(None, &(self.keys)(&self.session, &context.id, tool));
         let (ran, revision) = tokio::select! {
             biased;
-            ran = published::run_on(&credential, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
+            ran = published::run_on(&credential, Via::Agent, tool, Value::Object(input), approval.as_deref(), key.as_str()) => ran,
             () = context.ct.cancelled() => {
                 return Err(McpError::internal_error("the call was cancelled", None));
             }
@@ -754,54 +750,28 @@ impl Server {
             Ok(backend) => backend,
             Err(text) => return Ok(refused(text).into()),
         };
-        let (step, state, answered, until, store) = match request.request_state {
-            Some(state) => {
-                let answer = answer(request.input_responses)?;
-                let held = self.waiting.take(&state, tool, &input)?;
-                if held.until <= Instant::now() {
-                    let verb = verb(tool, &input, &held.asked);
-                    return Ok(refused(late(verb, &held.asked, self.deadline)).into());
-                }
-                let step = Step::Write { write: held.write };
-                (
-                    step,
-                    held.state,
-                    Some((held.asked, answer)),
-                    held.until,
-                    None,
-                )
-            }
-            None => {
-                let store = match self.store_at(&backend).await {
-                    Ok(store) => store,
-                    Err(text) => return Ok(refused(text).into()),
-                };
-                let place = match (self.place)(store.clone()) {
-                    Ok(place) => place,
-                    Err(error) => return Ok(refused(error.to_string()).into()),
-                };
-                let key = (self.keys)(&self.session, &context.id, tool);
-                let (step, state) = tools::start(tool, input.clone(), &place, &key);
-                (
-                    step,
-                    state,
-                    None,
-                    Instant::now() + self.deadline,
-                    Some(store),
-                )
-            }
+        let store = match self.store_at(&backend).await {
+            Ok(store) => store,
+            Err(text) => return Ok(refused(text).into()),
         };
+        let place = match (self.place)(store.clone()) {
+            Ok(place) => place,
+            Err(error) => return Ok(refused(error.to_string()).into()),
+        };
+        let key = (self.keys)(&self.session, &context.id, tool);
+        let (step, state) = tools::start(tool, input.clone(), &place, &key);
+        let until = Instant::now() + self.deadline;
         let call = Call {
             tool,
             input: &input,
             backend: &backend,
-            store,
+            store: Some(store),
             until,
         };
         tokio::select! {
             // A write past the deadline settles to its refusal before the arm below fires.
             biased;
-            result = self.settle(&call, step, state, approval, answered, context) => result,
+            result = self.settle(&call, step, state, approval, context) => result,
             () = context.ct.cancelled() => {
                 Err(McpError::internal_error("the call was cancelled", None))
             }
@@ -815,104 +785,16 @@ impl Server {
 
 const APPROVAL: &str = "approval";
 
-enum Asking {
-    Unable,
-    InResult,
-    ByRequest,
-}
-
-fn asking(context: &RequestContext<RoleServer>) -> Asking {
+/// Whether the host can show a person a form and hand back their answer mid-call. A host
+/// that cannot gets no form: the call waits for the approval in Ployz Cloud instead.
+fn can_ask(context: &RequestContext<RoleServer>) -> bool {
     let form = context
         .client_capabilities()
         .and_then(|capabilities| capabilities.elicitation)
         .is_some_and(|elicitation| elicitation.form.is_some() || elicitation.url.is_none());
-    if !form {
-        Asking::Unable
-    } else if context
+    form && context
         .protocol_version()
-        .is_some_and(|version| !version.has_initialize())
-    {
-        Asking::InResult
-    } else {
-        Asking::ByRequest
-    }
-}
-
-/// A dialog returned in a tool result, waiting for the host to call the same tool again
-/// with the human's answer before the first call's deadline.
-struct Held {
-    tool: String,
-    input: Value,
-    state: State,
-    write: Box<Write>,
-    asked: Asked,
-    until: Instant,
-}
-
-#[derive(Default)]
-struct Waiting {
-    held: Mutex<HashMap<String, Held>>,
-    asked: AtomicU64,
-}
-
-impl Waiting {
-    /// Hold `held` under a state of its own: two calls can ask about the same approval.
-    fn hold(&self, held: Held) -> String {
-        let state = format!(
-            "{}.{}",
-            held.asked.id,
-            self.asked.fetch_add(1, Ordering::Relaxed)
-        );
-        let mut waiting = self
-            .held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let now = Instant::now();
-        waiting.retain(|_, held| held.until > now);
-        waiting.insert(state.clone(), held);
-        state
-    }
-
-    fn take(&self, state: &str, tool: &str, input: &Value) -> Result<Held, McpError> {
-        let mut waiting = self
-            .held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Entry::Occupied(found) = waiting.entry(state.to_owned()) else {
-            return Err(McpError::invalid_params(
-                "no approval waits on this request state".to_owned(),
-                None,
-            ));
-        };
-        if found.get().tool != tool || found.get().input != *input {
-            return Err(McpError::invalid_params(
-                format!(
-                    "this approval was asked by another call; answer it by calling `{}` again \
-                     with the same arguments",
-                    found.get().tool
-                ),
-                None,
-            ));
-        }
-        let held = found.remove();
-        let now = Instant::now();
-        waiting.retain(|_, held| held.until > now);
-        Ok(held)
-    }
-}
-
-fn answer(responses: Option<InputResponses>) -> Result<ElicitResult, McpError> {
-    let answer = responses
-        .and_then(|mut responses| responses.remove(APPROVAL))
-        .ok_or_else(|| {
-            McpError::invalid_params(
-                format!("this retry carries no answer to `{APPROVAL}`"),
-                None,
-            )
-        })?;
-    serde_json::from_value(answer).map_err(|error| {
-        McpError::invalid_params(format!("the `{APPROVAL}` answer: {error}"), None)
-    })
+        .is_none_or(|version| version.has_initialize())
 }
 
 struct Call<'a> {
@@ -956,85 +838,82 @@ impl Server {
         mut step: Step,
         mut state: State,
         mut approval: Option<String>,
-        mut answered: Option<(Asked, ElicitResult)>,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
+        let mut answered: Option<(Asked, ElicitResult)> = None;
         loop {
-            let answers =
-                match step {
-                    Step::Done { result } => return Ok(rendered(result).into()),
-                    Step::Read { asks } => call.backend.asks(&asks).await,
-                    Step::Wait { ms, then } => {
-                        tokio::time::sleep(Duration::from_millis(ms.into())).await;
-                        call.backend.asks(&then).await
-                    }
-                    Step::Write { write } => {
-                        if let Some((asked, answer)) = answered.take() {
-                            let Backend::Cloud(credential) = call.backend else {
-                                return Ok(refused(not_here().message).into());
-                            };
-                            let verb = verb(call.tool, call.input, &asked);
-                            let typed = typed(&write);
-                            match self
-                                .decide(credential, verb, &asked, typed.as_deref(), answer)
-                                .await?
-                            {
-                                Answer::Approved => approval = Some(asked.id),
-                                Answer::Refused(refused) => return Ok(refused.into()),
-                            }
-                        }
-                        // Stopped once the write is sent, Cloud may still take it: the
-                        // refusal says so, and its retry repeats the call's key.
-                        let written = tokio::select! {
-                            biased;
-                            written = call.backend.write(&write, approval.as_deref()) => written,
-                            () = tokio::time::sleep_until(call.until) => {
-                                Err(cut_off(call.tool, self.deadline))
-                            }
-                        };
-                        let asked = match (&written, call.backend) {
-                            (Err(error), Backend::Cloud(_)) => Asked::of(error),
-                            _ => None,
-                        };
-                        let Some(asked) = asked else {
-                            if written.is_ok() {
-                                self.move_links_after_project_rename(call, &write).await;
-                            }
-                            (step, state) = tools::resume(state, vec![written]);
-                            continue;
+            let answers = match step {
+                Step::Done { result } => return Ok(rendered(result).into()),
+                Step::Read { asks } => call.backend.asks(&asks).await,
+                Step::Wait { ms, then } => {
+                    tokio::time::sleep(Duration::from_millis(ms.into())).await;
+                    call.backend.asks(&then).await
+                }
+                Step::Write { write } => {
+                    if let Some((asked, answer)) = answered.take() {
+                        let Backend::Cloud(credential) = call.backend else {
+                            return Ok(refused(not_here().message).into());
                         };
                         let verb = verb(call.tool, call.input, &asked);
+                        let typed = typed(&write);
+                        match self
+                            .decide(credential, verb, &asked, typed.as_deref(), answer)
+                            .await?
+                        {
+                            Answer::Approved => approval = Some(asked.id),
+                            Answer::Refused(refused) => return Ok(refused.into()),
+                        }
+                    }
+                    // Stopped once the write is sent, Cloud may still take it: the
+                    // refusal says so, and its retry repeats the call's key.
+                    let written = tokio::select! {
+                        biased;
+                        written = call.backend.write(&write, approval.as_deref()) => written,
+                        () = tokio::time::sleep_until(call.until) => {
+                            Err(cut_off(call.tool, self.deadline))
+                        }
+                    };
+                    let asked = match (&written, call.backend) {
+                        (Err(error), Backend::Cloud(_)) => Asked::of(error),
+                        _ => None,
+                    };
+                    let Some(asked) = asked else {
+                        if written.is_ok() {
+                            self.move_links_after_project_rename(call, &write).await;
+                        }
+                        (step, state) = tools::resume(state, vec![written]);
+                        continue;
+                    };
+                    let verb = verb(call.tool, call.input, &asked);
+                    let Backend::Cloud(credential) = call.backend else {
+                        return Ok(refused(not_here().message).into());
+                    };
+                    if can_ask(context) {
                         let form = form(verb, &asked, typed(&write).as_deref());
-                        match asking(context) {
-                            Asking::Unable => return Ok(cannot_ask(verb, &asked).into()),
-                            Asking::InResult => {
-                                let requests = BTreeMap::from([(
-                                    APPROVAL.to_owned(),
-                                    InputRequest::Elicitation(ElicitRequest::new(form)),
-                                )]);
-                                let state = self.waiting.hold(Held {
-                                    tool: call.tool.to_owned(),
-                                    input: call.input.clone(),
-                                    state,
-                                    write,
-                                    asked,
-                                    until: call.until,
-                                });
-                                return Ok(
-                                    InputRequiredResult::new(Some(requests), Some(state)).into()
-                                );
+                        let answer = context
+                            .peer
+                            .create_elicitation(form)
+                            .await
+                            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+                        answered = Some((asked, answer));
+                    } else {
+                        tokio::select! {
+                            biased;
+                            decided = approval::decided(credential, &asked.id) => {
+                                if let Err(error) = decided {
+                                    return Ok(refused(Error::from(error).to_string()).into());
+                                }
+                                approval = Some(asked.id);
                             }
-                            Asking::ByRequest => {
-                                let answer = context.peer.create_elicitation(form).await.map_err(
-                                    |error| McpError::internal_error(error.to_string(), None),
-                                )?;
-                                answered = Some((asked, answer));
-                                step = Step::Write { write };
-                                continue;
+                            () = tokio::time::sleep_until(call.until) => {
+                                return Ok(pending(verb, &asked, self.deadline).into());
                             }
                         }
                     }
-                };
+                    step = Step::Write { write };
+                    continue;
+                }
+            };
             (step, state) = tools::resume(state, answers);
         }
     }
@@ -1116,17 +995,6 @@ fn reason(content: &Value) -> Option<String> {
     (!reason.is_empty()).then_some(reason)
 }
 
-fn late(verb: Verb, asked: &Asked, deadline: Duration) -> String {
-    format!(
-        "The human answered more than {span} after {what} was called, so the answer was not \
-         recorded and nothing was {past}. The approval of {what} stays pending in Ployz \
-         Cloud; call the tool again to ask again.",
-        what = asked.what(verb),
-        past = verb.past(),
-        span = span(deadline),
-    )
-}
-
 fn form(verb: Verb, asked: &Asked, typed: Option<&str>) -> ElicitRequestParams {
     let schema = ElicitationSchema::builder()
         .required_bool_property("approve", |schema: BooleanSchema| {
@@ -1159,13 +1027,15 @@ fn form(verb: Verb, asked: &Asked, typed: Option<&str>) -> ElicitRequestParams {
     }
 }
 
-fn cannot_ask(verb: Verb, asked: &Asked) -> CallToolResult {
+fn pending(verb: Verb, asked: &Asked, deadline: Duration) -> CallToolResult {
     refused(format!(
-        "A human must approve {what} first, and this agent cannot ask \
-         them. Show them what it destroys, then ask them to approve {what} in the Ployz Cloud \
-         sidebar. Once they approve, call this tool again with `approval` set to `{id}`.\n\
-         {review}",
+        "A human must approve {what} in Ployz Cloud, and nobody answered within {span}. \
+         Nothing was {past}; the approval stays pending. Show them what it destroys, then \
+         ask them to approve {what} in the Ployz Cloud sidebar. Once they approve, call this \
+         tool again with `approval` set to `{id}`.\n{review}",
         what = asked.what(verb),
+        span = span(deadline),
+        past = verb.past(),
         id = asked.id,
         review = asked.review(verb).join("\n"),
     ))

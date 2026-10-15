@@ -182,6 +182,20 @@ const RefusedReview = Schema.Struct({
   diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
 });
 
+const requester = (caller: Caller) => ({
+  requestedByUserId: caller.userId,
+  credentialKind: caller.credential.kind,
+  credentialId: caller.credential.id,
+  via: caller.via,
+});
+
+/**
+ * A person who asks again for what is pending takes the request over, so their own prompt can approve it: they could
+ * run it from `ployz` anyway. An agent asking again takes nothing, so no other agent's credential inherits the request.
+ */
+const askedAgain = (caller: Caller) =>
+  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller) };
+
 /**
  * Record the Store's `approval_required` as one pending approval per digest and answer the refusal with its ID added
  * as `details.approval_id`. Asking again while it is pending answers the same row. Recording sweeps the Environment's
@@ -204,16 +218,14 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     const [row] = yield* drizzle.insert(operationApprovals).values({
       organizationId,
       subject: diff.environment.id,
-      requestedByUserId: caller.userId,
-      credentialKind: caller.credential.kind,
-      credentialId: caller.credential.id,
+      ...requester(caller),
       command: command.command,
       review: { effects, diff },
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: { updatedAt: new Date() },
+      set: askedAgain(caller),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
@@ -242,16 +254,14 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     const [row] = yield* drizzle.insert(operationApprovals).values({
       organizationId,
       subject: asked.subject,
-      requestedByUserId: caller.userId,
-      credentialKind: caller.credential.kind,
-      credentialId: caller.credential.id,
+      ...requester(caller),
       command: asked.verb,
       review: { effects: asked.effects, operation: { ...operation, preview: asked.preview } },
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: { updatedAt: new Date() },
+      set: askedAgain(caller),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleOperation(asked.verb, digest));
@@ -300,13 +310,31 @@ export const pendingApprovals = <R = never>(organizationId: string, operationDig
 
 type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
 
+/** Who decides: a person in the dashboard, or a Caller through the credential it signed in with. */
+export type Decider = Actor & { readonly organization: { readonly id: string } } & (
+  | { readonly via: "dashboard" }
+  | Pick<Caller, "via" | "credential">
+);
+
+/**
+ * An agent never approves. What an agent asked waits on a person in the dashboard, or on the `ployz mcp` that asked,
+ * which shows its human the form and answers through the credential it asked with. A request from before Cloud
+ * recorded who asked is treated as an agent's.
+ */
+const mayApprove = (decider: Decider, row: ApprovalRow) => {
+  if (decider.via === "dashboard") return true;
+  if (decider.via === "agent" || !("credential" in decider)) return false;
+  if (row.via === "cli") return true;
+  return row.credentialKind !== "oauth" && decider.credential.kind === row.credentialKind && decider.credential.id === row.credentialId;
+};
+
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
  * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
- * may decide; the row records who.
+ * may deny; who may approve is `mayApprove`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
-  caller: Actor & { readonly organization: { readonly id: string } },
+  caller: Decider,
   id: string,
   decision: ApprovalDecision,
   operationDigest?: OperationDigest<R>,
@@ -324,6 +352,10 @@ export const decideApproval = <R = never>(
       : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
   };
   const row = yield* freshen(found, operationDigest);
+  if ("approve" in decision && !mayApprove(caller, row)) {
+    const message = "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
+    return { ok: false, refusal: { code: "forbidden", message, details: { approval: approvalView(row) } } } satisfies Decided;
+  }
   if (row.status !== "pending") return settled(row);
   if ("approve" in decision && decision.approve.digest !== row.digest) {
     return conflict("That digest isn't the one this approval asks about; review it again.", row);

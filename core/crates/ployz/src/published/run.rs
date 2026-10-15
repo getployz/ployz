@@ -64,6 +64,7 @@ pub(crate) fn run(
         let ran = runtime
             .block_on(run_on(
                 &credential,
+                cloud_account::Via::Cli,
                 &command.name,
                 input.clone(),
                 approval.as_deref(),
@@ -92,6 +93,7 @@ pub(crate) fn run(
 /// retry runs it once. The second half is the manifest revision the reply named.
 pub(crate) async fn run_on(
     credential: &cloud_account::Credential,
+    via: cloud_account::Via,
     name: &str,
     input: Value,
     approval: Option<&str>,
@@ -99,6 +101,7 @@ pub(crate) async fn run_on(
 ) -> (Result<Ran, StoreCallError>, Option<String>) {
     cloud_account::keyed_reply(
         credential,
+        via,
         Method::POST,
         &format!("run/{name}"),
         &serde_json::json!({ "input": input }),

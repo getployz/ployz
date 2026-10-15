@@ -1,0 +1,2 @@
+ALTER TABLE "operation_approvals" ADD COLUMN "via" text;--> statement-breakpoint
+ALTER TABLE "operation_approvals" ADD CONSTRAINT "operation_approvals_via_check" CHECK ("via" is null or "via" in ('dashboard', 'cli', 'agent'));

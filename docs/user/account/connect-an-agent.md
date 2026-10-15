@@ -50,7 +50,8 @@ with `approval_required`, what it would remove, and a link to your organization.
 3. Tell your agent to try again. It sends the call with the approval, and the deploy goes ahead.
 
 Until you answer, trying again only asks again, and nothing changes. A denied approval stays
-denied.
+denied. Only you approve, in the dashboard. The agent can't approve its own request, and
+`ployz org approval approve` refuses it too.
 
 ## Disconnect
 

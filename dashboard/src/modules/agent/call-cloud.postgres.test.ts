@@ -251,7 +251,7 @@ describe("callCloud", () => {
       expect(send).not.toHaveBeenCalled();
 
       const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
-      const decided = yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services));
+      const decided = yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services));
       expect(decided).toMatchObject({ ok: true });
       const approved = yield* callCloud(caller, { act }, approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
       expect(approved).toEqual({ ok: true, value: expect.objectContaining({ run: "set web-2", state: "accepted" }) });
@@ -278,7 +278,7 @@ describe("callCloud", () => {
       const asked = yield* callCloud(caller, { act: { attempt: "1".repeat(32), digest: "d".repeat(64), action: off } })
         .pipe(runtime(observing(false), []), Effect.provide(services));
       const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
-      expect(yield* decideApproval(caller, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+      expect(yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
 
       for (const [attempt, more] of [
         ["2", { accepts_services: false }],
@@ -296,7 +296,7 @@ describe("callCloud", () => {
       const asking = Schema.decodeUnknownSync(Asked)(askedWhole.ok ? null : askedWhole.refusal.details);
       const reread = yield* freshApproval(ORGANIZATION, asking.approval_id).pipe(runtime(observing(false), []), Effect.provide(services));
       expect(reread).toMatchObject({ status: "pending" });
-      const decided = yield* decideApproval(caller, asking.approval_id, { approve: { digest: asking.approval } }, freshOperationDigest)
+      const decided = yield* decideApproval({ ...caller, via: "dashboard" }, asking.approval_id, { approve: { digest: asking.approval } }, freshOperationDigest)
         .pipe(runtime(observing(false), []), Effect.provide(services));
       expect(decided).toMatchObject({ ok: true });
       const ran = yield* callCloud(caller, { act: whole }, asking.approval_id).pipe(runtime(observing(false), []), Effect.provide(services));

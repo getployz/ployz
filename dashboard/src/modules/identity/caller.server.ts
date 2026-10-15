@@ -17,14 +17,17 @@ import { Forbidden, Unauthorized } from "#/server/public-error";
  * it is unexpired and its maker is still a member; a session acts in its active Organization while its user is a
  * member there. Anything else is refused. The session must come in the Authorization header, as the CLI sends it:
  * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
+ * `ployz mcp` marks its requests with `x-ployz-via: agent`, so an agent's requests are an agent's whichever
+ * credential it borrowed.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
+  const via = headers.get("x-ployz-via") === "agent" ? "agent" : "cli";
   const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];
-  if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer);
+  if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer, via);
   const auth = yield* Auth;
   const presented = new Headers(headers);
   presented.delete("cookie");
-  const session = yield* auth.getSession(presented);
+  const session = yield* auth.getSession(presented, { bearer: true });
   if (session === null) return yield* new Unauthorized();
   const organizationId = session.session.activeOrganizationId;
   const bound = organizationId == null
@@ -39,7 +42,7 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
     credential: { kind: "session", id: session.session.id },
     role: bound.role,
     support: null,
-    via: "cli",
+    via,
   } satisfies Caller;
 });
 
@@ -59,7 +62,7 @@ export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (
   } satisfies Caller;
 });
 
-const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string) {
+const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string, via: "cli" | "agent") {
   const database = yield* Database;
   const rows = yield* database.drizzle
     .select({
@@ -89,7 +92,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string)
     credential: { kind: "token", id: row.id },
     role: row.role,
     support: null,
-    via: "cli",
+    via,
   } satisfies Caller;
 });
 

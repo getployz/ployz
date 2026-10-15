@@ -802,7 +802,7 @@ it.live(
         // Asked about Environment `production` of a Project the Store has no more: its plan moved on.
         const [row] = yield* drizzle.insert(operationApprovals).values({
           organizationId: alice.organization.id, subject: "00000000-0000-4000-8000-000000001301",
-          credentialKind: "session", credentialId: "device", command: "publish", digest: "7:abc",
+          via: "cli", credentialKind: "session", credentialId: "device", command: "publish", digest: "7:abc",
           review: asTestDouble<typeof operationApprovals.$inferInsert.review>()({
             effects: [], diff: { version: "7", environment: { id: "00000000-0000-4000-8000-000000001301", project: "gone", name: "production" } },
           }),

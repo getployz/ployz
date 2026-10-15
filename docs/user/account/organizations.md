@@ -97,7 +97,8 @@ How you answer depends on where the command runs:
   the reason given. Ctrl-C stops waiting and leaves the approval pending.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
-- In an agent that uses `ployz mcp`, the agent's app asks you. See
+- In an agent that uses `ployz mcp`, the agent's app asks you. An app that can't ask waits
+  until someone approves or denies it in Ployz Cloud. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
 - In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
   panel, and the agent waits for you.
@@ -124,8 +125,15 @@ You can answer from a terminal too. `ployz org approval ls` lists the approvals 
 `ployz org approval deny ID --reason "keep the volume"` answers it. Approving asks you to type the
 organization's name, so it needs a terminal.
 
-This keeps a well-behaved agent from deleting something by mistake. It doesn't stop one that's
-trying to get around it: anything that holds your login or token can approve its own request.
+An agent never approves its own request. When the Ployz agent or an agent you connected to Ployz
+Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org approval approve` refuses
+with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog or in
+the sidebar. If you run the same change yourself with `ployz`, typing the name in your terminal
+approves it. Anyone in the organization can deny any request, from anywhere.
+
+This keeps a well-behaved agent from deleting something by mistake. It doesn't stop a program
+that's trying to get around it: anything that holds your `ployz` login or token can approve its
+own `ployz` request, as if you'd typed the name in a terminal.
 Keep tokens you give an agent short-lived: a token can't make or revoke tokens, so revoking it
 cuts the agent off. Keep
 [backups](../services/databases.md#back-up-a-database) of data you can't lose.
