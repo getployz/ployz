@@ -36,7 +36,9 @@ pub(crate) enum Subject {
         machine: MachineId,
         server: String,
     },
-    Service(QualifiedService),
+    Service(GraphService),
+    /// A Service-wide row outside the Deploy graph, such as unchecked ingress.
+    Unlocated(QualifiedService),
     Operation {
         index: u32,
         machine: MachineId,
@@ -64,7 +66,8 @@ impl Subject {
                     ..
                 },
             ) => a == b && am == bm,
-            (Self::Service(a), Self::Service(b)) => a == b,
+            (Self::Service(a), Self::Service(b)) => a.service == b.service,
+            (Self::Unlocated(a), Self::Unlocated(b)) => a == b,
             (
                 Self::Operation {
                     index: a,
@@ -79,6 +82,97 @@ impl Subject {
             ) => a == b && am == bm,
             (Self::Node { index: a, .. }, Self::Node { index: b, .. }) => a == b,
             _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// One Service of a Deploy graph: the depth it starts at and its progress per
+/// Server. Replicas packed onto one Server count once.
+pub(crate) struct GraphService {
+    pub service: QualifiedService,
+    /// `None` until the Deploy is planned.
+    pub depth: Option<u32>,
+    /// Servers whose work completed.
+    pub ready: usize,
+    /// Servers this Deploy works on; 0 before any work is recorded.
+    pub total: usize,
+    /// Servers stopping or removing an old Container.
+    pub draining: usize,
+    pub work: Work,
+    pub machines: BTreeSet<MachineId>,
+}
+
+/// What a Service row's running work does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Work {
+    /// New Containers start.
+    Start,
+    /// Old Containers go after the new ones serve.
+    Retire,
+    /// Nothing starts; Containers only stop and go.
+    Remove,
+}
+
+impl GraphService {
+    fn mark(&self, state: &State) -> Option<&'static str> {
+        match state {
+            State::NotAttempted => Some("⊘"),
+            State::Running(_) if self.ready > 0 && self.ready < self.total => Some("◐"),
+            State::Pending
+            | State::Running(_)
+            | State::Completed
+            | State::ObservedRunning
+            | State::Unchanged
+            | State::Failed
+            | State::Warned
+            | State::Unknown
+            | State::Excluded => None,
+        }
+    }
+
+    fn word(&self, state: &State) -> String {
+        let word = match state {
+            State::Pending if self.work == Work::Remove => "waiting to remove",
+            State::Pending => "waiting",
+            State::Running(_) if self.work == Work::Remove => state.word(),
+            State::Running(_) if self.work == Work::Retire => "switched",
+            State::Running(phase) => match phase {
+                RowPhase::StoppingContainer => "stopping old",
+                RowPhase::RemovingContainer => "removing old",
+                RowPhase::RemovingVolume => "removing volume",
+                RowPhase::WaitingForHealth => "waiting for health",
+                RowPhase::Compensating => "rolling back",
+                RowPhase::Starting
+                | RowPhase::CreatingContainer
+                | RowPhase::StartingContainer
+                | RowPhase::WaitingForHook => "booting",
+            },
+            State::Completed if self.work == Work::Remove => "removed",
+            State::Completed => "switched",
+            State::NotAttempted if self.ready == 0 => "not started",
+            State::NotAttempted => "stopped",
+            State::ObservedRunning
+            | State::Unchanged
+            | State::Failed
+            | State::Warned
+            | State::Unknown
+            | State::Excluded => state.word(),
+        };
+        if self.total == 0 || (*state == State::NotAttempted && self.ready == 0) {
+            word.to_owned()
+        } else if *state == State::Failed {
+            format!("{word} ({}/{} ready)", self.ready, self.total)
+        } else {
+            format!("{word} {}/{}", self.ready, self.total)
+        }
+    }
+
+    fn draining_line(&self) -> Option<String> {
+        match self.draining {
+            0 => None,
+            1 => Some("draining old".to_owned()),
+            n => Some(format!("draining old ({n})")),
         }
     }
 }
@@ -100,7 +194,7 @@ pub(crate) enum State {
 }
 
 impl State {
-    fn active(&self) -> bool {
+    pub(crate) fn active(&self) -> bool {
         matches!(self, Self::Pending | Self::Running(_))
     }
 
@@ -143,7 +237,7 @@ impl From<&ployz_store::RowState> for State {
     fn from(state: &ployz_store::RowState) -> Self {
         match state {
             ployz_store::RowState::Pending => Self::Pending,
-            ployz_store::RowState::Running { phase } => Self::Running(*phase),
+            ployz_store::RowState::Running { phase, .. } => Self::Running(*phase),
             ployz_store::RowState::Completed => Self::Completed,
             ployz_store::RowState::Failed { .. } => Self::Failed,
             ployz_store::RowState::NotAttempted => Self::NotAttempted,
@@ -391,6 +485,10 @@ fn drive(
                 }
             }
             Ok(Message::Finish(final_frame, disposition)) => {
+                let width = match &backend {
+                    Backend::Interactive(live) => (live.size)().0,
+                    Backend::Plain => usize::MAX,
+                };
                 drop(backend);
                 let _ = finish(
                     writer,
@@ -398,6 +496,7 @@ fn drive(
                     &final_frame,
                     disposition,
                     interactive,
+                    width,
                     color,
                 );
                 let _ = writer.flush();
@@ -419,7 +518,7 @@ fn drive(
                     .rows
                     .iter()
                     .filter(|row| row.state.active())
-                    .map(|row| format!("{}, {}", label(&row.subject, &frame), row.state.word()))
+                    .map(|row| format!("{}, {}", label(&row.subject, &frame), word(row)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let _ = writeln!(writer, "  still waiting: {waiting}");
@@ -452,7 +551,8 @@ fn label(subject: &Subject, frame: &Frame) -> String {
                 format!("{} on {server}", service_label(service, frame))
             }
         }
-        Subject::Service(service) => service_label(service, frame),
+        Subject::Service(graph) => service_label(&graph.service, frame),
+        Subject::Unlocated(service) => service_label(service, frame),
         Subject::Operation { name, server, .. } => format!("{name} on {server}"),
         Subject::Node { name, .. } => name.clone(),
     }
@@ -463,7 +563,8 @@ fn service_label(service: &QualifiedService, frame: &Frame) -> String {
         .rows
         .iter()
         .filter_map(|row| match &row.subject {
-            Subject::ServiceOnServer { service, .. } | Subject::Service(service) => Some(service),
+            Subject::ServiceOnServer { service, .. } | Subject::Unlocated(service) => Some(service),
+            Subject::Service(graph) => Some(&graph.service),
             Subject::Operation { .. } | Subject::Node { .. } => None,
         })
         .any(|other| other.name == service.name && other != service);
@@ -482,7 +583,25 @@ fn paint(text: &str, tone: Tone, color: bool) -> String {
     }
 }
 
-fn row_text(row: &Row, frame: &Frame, mark: &str) -> String {
+fn word(row: &Row) -> String {
+    match &row.subject {
+        Subject::Service(graph) => graph.word(&row.state),
+        Subject::ServiceOnServer { .. }
+        | Subject::Unlocated(_)
+        | Subject::Operation { .. }
+        | Subject::Node { .. } => row.state.word().to_owned(),
+    }
+}
+
+fn row_text(row: &Row, frame: &Frame, tick: usize, width: usize) -> String {
+    let mark = match &row.subject {
+        Subject::Service(graph) => graph.mark(&row.state),
+        Subject::ServiceOnServer { .. }
+        | Subject::Unlocated(_)
+        | Subject::Operation { .. }
+        | Subject::Node { .. } => None,
+    }
+    .unwrap_or_else(|| mark(&row.state, tick));
     let elapsed = match row.timing {
         Timing::Unavailable => String::new(),
         Timing::Started(at) => format!("  {:.1}s", at.elapsed().unwrap_or_default().as_secs_f64()),
@@ -493,11 +612,56 @@ fn row_text(row: &Row, frame: &Frame, mark: &str) -> String {
         .as_deref()
         .map(|detail| format!(" ({detail})"))
         .unwrap_or_default();
-    format!(
-        "{mark} {}  {}{detail}{elapsed}",
-        label(&row.subject, frame),
-        row.state.word()
-    )
+    let rest = format!("  {}{detail}{elapsed}", word(row));
+    let room = width.saturating_sub(mark.width() + 1 + rest.width()).max(1);
+    format!("{mark} {}{rest}", clip(&label(&row.subject, frame), room))
+}
+
+fn body<'a>(
+    frame: &'a Frame,
+    others: impl IntoIterator<Item = &'a Row>,
+    shown: impl Fn(&Row) -> bool,
+    tick: usize,
+    width: usize,
+) -> Vec<(String, Tone)> {
+    let mut lines: Vec<_> = others
+        .into_iter()
+        .map(|row| (row_text(row, frame, tick, width), row.state.tone()))
+        .collect();
+    let mut graph: Vec<_> = frame
+        .rows
+        .iter()
+        .filter_map(|row| match &row.subject {
+            Subject::Service(graph) if shown(row) => Some((graph, row)),
+            Subject::Service(_)
+            | Subject::ServiceOnServer { .. }
+            | Subject::Unlocated(_)
+            | Subject::Operation { .. }
+            | Subject::Node { .. } => None,
+        })
+        .collect();
+    graph.sort_by_key(|(graph, _)| graph.depth);
+    let mut depth = None;
+    for (graph, row) in graph {
+        if depth != Some(graph.depth) {
+            depth = Some(graph.depth);
+            if let Some(at) = graph.depth {
+                lines.push((format!("depth {at}"), Tone::Muted));
+            }
+        }
+        lines.push((
+            format!("  {}", row_text(row, frame, tick, width.saturating_sub(2))),
+            row.state.tone(),
+        ));
+        if let Some(draining) = graph.draining_line() {
+            lines.push((format!("    {draining}"), Tone::Change));
+        }
+    }
+    lines
+}
+
+fn ungraphed(row: &&Row) -> bool {
+    !matches!(row.subject, Subject::Service(_))
 }
 
 fn mark(state: &State, tick: usize) -> &'static str {
@@ -533,7 +697,13 @@ fn clip(text: &str, width: usize) -> String {
     result
 }
 
-fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bool) -> Vec<String> {
+pub(crate) fn live_lines(
+    frame: &Frame,
+    tick: usize,
+    width: usize,
+    height: usize,
+    color: bool,
+) -> Vec<String> {
     let width = width.saturating_sub(1 + usize::from(terminal::ECHO_ROOM));
     let height = height.saturating_sub(1).max(1);
     let mut rows: Vec<_> = frame.rows.iter().collect();
@@ -551,14 +721,32 @@ fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bo
             || vec![clip(&frame.title, width)],
             |row| {
                 vec![paint(
-                    &clip(&row_text(row, frame, mark(&row.state, tick)), width),
+                    &clip(&row_text(row, frame, tick, width), width),
                     row.state.tone(),
                     color,
                 )]
             },
         );
     }
-    let overflow = rows.len() + 1 > height;
+    let others: Vec<_> = rows.into_iter().filter(ungraphed).collect();
+    let mut body = body(frame, others.iter().copied(), |_| true, tick, width);
+    let mut dropped = 0;
+    if body.len() + 1 > height {
+        let settled = |row: &Row| row.state != State::Failed && !row.state.active();
+        dropped = frame
+            .rows
+            .iter()
+            .filter(|row| !ungraphed(row) && settled(row))
+            .count();
+        let (finished, urgent): (Vec<_>, Vec<_>) = others.into_iter().partition(|row| settled(row));
+        body = self::body(frame, urgent, |row| !settled(row), tick, width);
+        body.extend(
+            finished
+                .into_iter()
+                .map(|row| (row_text(row, frame, tick, width), row.state.tone())),
+        );
+    }
+    let overflow = dropped > 0 || body.len() + 1 > height;
     let available = height.saturating_sub(if overflow && height > 2 { 2 } else { 1 });
     let mut lines = vec![clip(
         &format!(
@@ -569,18 +757,14 @@ fn live_lines(frame: &Frame, tick: usize, width: usize, height: usize, color: bo
         ),
         width,
     )];
-    lines.extend(rows.iter().take(available).map(|row| {
-        paint(
-            &clip(&row_text(row, frame, mark(&row.state, tick)), width),
-            row.state.tone(),
-            color,
-        )
-    }));
+    let hidden = dropped + body.len().saturating_sub(available);
+    lines.extend(
+        body.into_iter()
+            .take(available)
+            .map(|(text, tone)| paint(&clip(&text, width), tone, color)),
+    );
     if overflow && height > 2 {
-        lines.push(clip(
-            &format!("  … {} more rows", rows.len().saturating_sub(available)),
-            width,
-        ));
+        lines.push(clip(&format!("  … {hidden} more rows"), width));
     }
     lines
 }
@@ -601,21 +785,44 @@ fn changes(
                 .rows
                 .iter()
                 .find(|old| old.subject.same_identity(&row.subject))
+                .map(|old| (old, previous))
         });
-        if old.is_none_or(|old| {
-            old.state != row.state || old.detail != row.detail || old.subject != row.subject
-        }) {
+        let line = |row: &Row, frame: &Frame, color: bool| {
             let detail = row
                 .detail
                 .as_deref()
                 .map(|detail| format!(" ({detail})"))
                 .unwrap_or_default();
-            writeln!(
-                writer,
-                "  {}: {}{detail}",
+            let depth = match &row.subject {
+                Subject::Service(graph) => graph
+                    .depth
+                    .map(|depth| format!(" (depth {depth})"))
+                    .unwrap_or_default(),
+                Subject::ServiceOnServer { .. }
+                | Subject::Unlocated(_)
+                | Subject::Operation { .. }
+                | Subject::Node { .. } => String::new(),
+            };
+            format!(
+                "  {}{depth}: {}{detail}",
                 label(&row.subject, frame),
-                paint(row.state.word(), row.state.tone(), color)
-            )?;
+                paint(&word(row), row.state.tone(), color)
+            )
+        };
+        if old.is_none_or(|(old, previous)| line(old, previous, false) != line(row, frame, false)) {
+            writeln!(writer, "{}", line(row, frame, color))?;
+        }
+        let draining = |row: &Row| match &row.subject {
+            Subject::Service(graph) => graph.draining_line(),
+            Subject::ServiceOnServer { .. }
+            | Subject::Unlocated(_)
+            | Subject::Operation { .. }
+            | Subject::Node { .. } => None,
+        };
+        if let Some(text) = draining(row)
+            && old.is_none_or(|(old, _)| draining(old).as_ref() != Some(&text))
+        {
+            writeln!(writer, "  {}: {text}", label(&row.subject, frame))?;
         }
     }
     let previous_notices = previous.map(notices).unwrap_or_default();
@@ -690,6 +897,7 @@ fn finish(
     frame: &Frame,
     disposition: Disposition,
     interactive: bool,
+    width: usize,
     color: bool,
 ) -> io::Result<()> {
     if matches!(disposition, Disposition::UpToDate) {
@@ -697,16 +905,15 @@ fn finish(
     }
     if interactive {
         writeln!(writer, "{}", frame.title)?;
-        for row in &frame.rows {
-            writeln!(
-                writer,
-                "{}",
-                paint(
-                    &row_text(row, frame, mark(&row.state, 0)),
-                    row.state.tone(),
-                    color
-                )
-            )?;
+        let width = width.saturating_sub(1);
+        for (text, tone) in body(
+            frame,
+            frame.rows.iter().filter(ungraphed),
+            |_| true,
+            0,
+            width,
+        ) {
+            writeln!(writer, "{}", paint(&text, tone, color))?;
         }
         for notice in notices(frame) {
             writeln!(writer, "! {notice}")?;
@@ -745,15 +952,24 @@ fn finish(
     let servers: BTreeSet<_> = frame
         .rows
         .iter()
-        .filter_map(|row| match &row.subject {
+        .flat_map(|row| match &row.subject {
             Subject::ServiceOnServer { machine, .. } | Subject::Operation { machine, .. } => {
-                Some(machine)
+                vec![machine]
             }
-            Subject::Service(_) | Subject::Node { .. } => None,
+            Subject::Service(graph) => graph.machines.iter().collect(),
+            Subject::Unlocated(_) | Subject::Node { .. } => Vec::new(),
         })
         .collect();
     if !servers.is_empty() {
-        counts.push(format!("across {} servers", servers.len()));
+        counts.push(format!(
+            "across {} {}",
+            servers.len(),
+            if servers.len() == 1 {
+                "server"
+            } else {
+                "servers"
+            }
+        ));
     }
     if !counts.is_empty() {
         let summary = counts.join(" · ");

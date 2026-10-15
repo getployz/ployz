@@ -3,7 +3,9 @@
 use crate::{
     connect::Client,
     failure::Failure,
-    ui::progress::{Detail, Diagnostic, Frame, LogTail, Row, Run, State, Subject, Timing},
+    ui::progress::{
+        Detail, Diagnostic, Frame, GraphService, LogTail, Row, Run, State, Subject, Timing, Work,
+    },
 };
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
@@ -12,9 +14,202 @@ use ployz_core::{
     ServiceName, StopAttempt,
 };
 use ployz_store::tools::SecretSet;
-use ployz_store::{RowState, RowTracker, ServerProgress};
-use std::collections::BTreeMap;
-use std::time::SystemTime;
+use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, SystemTime};
+
+use super::ServiceGroup;
+
+/// The depth at which each Service starts: 0 without a dependency in this
+/// Deploy, else one more than its deepest dependency. `groups` come in
+/// execution order, so every dependency is placed before its dependents.
+pub(super) fn depths(groups: &[ServiceGroup]) -> BTreeMap<ServiceName, u32> {
+    let mut depths = BTreeMap::new();
+    for group in groups {
+        let Some(service) = &group.service else {
+            continue;
+        };
+        let depth = group
+            .dependencies
+            .iter()
+            .filter_map(|dependency| depths.get(dependency))
+            .max()
+            .map_or(0, |deepest: &u32| deepest + 1);
+        depths.insert(service.clone(), depth);
+    }
+    depths
+}
+
+pub(crate) struct Replica<'a> {
+    pub machine: MachineId,
+    pub state: &'a RowState,
+    pub starts: bool,
+    pub timing: Timing,
+}
+
+pub(crate) fn starts(
+    operations: &[OperationRow],
+    service: &ServiceName,
+    machine: MachineId,
+) -> bool {
+    operations.iter().any(|row| {
+        row.machine_id == machine
+            && row.service_name() == Some(service)
+            && starts_container(&row.operation)
+    })
+}
+
+const fn stops_or_removes(phase: RowPhase) -> bool {
+    matches!(
+        phase,
+        RowPhase::StoppingContainer | RowPhase::RemovingContainer | RowPhase::RemovingVolume
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Step {
+    Start,
+    Clear,
+    Retire,
+}
+
+pub(crate) fn service_row<'a>(
+    service: QualifiedService,
+    depth: Option<u32>,
+    replicas: impl IntoIterator<Item = Replica<'a>>,
+) -> Row {
+    let replicas: Vec<_> = replicas.into_iter().collect();
+    let removal = !replicas.is_empty() && replicas.iter().all(|replica| !replica.starts);
+    let served = !removal
+        && replicas.iter().any(|replica| {
+            replica.starts
+                && matches!(
+                    replica.state,
+                    RowState::Completed | RowState::Running { serving: true, .. }
+                )
+        });
+    let work = |replica: &Replica<'_>| match replica.state {
+        RowState::Running { phase, serving } => Some((
+            if *serving || (served && !replica.starts) {
+                Step::Retire
+            } else if stops_or_removes(*phase) {
+                Step::Clear
+            } else {
+                Step::Start
+            },
+            *phase,
+        )),
+        RowState::Pending
+        | RowState::Completed
+        | RowState::Failed { .. }
+        | RowState::NotAttempted
+        | RowState::Unknown => None,
+    };
+    let all = |test: fn(&RowState) -> bool| replicas.iter().all(|replica| test(replica.state));
+    let running = replicas
+        .iter()
+        .filter_map(work)
+        .min_by_key(|(work, _)| *work);
+    let counted: Vec<_> = replicas
+        .iter()
+        .filter(|replica| removal || replica.starts)
+        .collect();
+    let ready = counted
+        .iter()
+        .filter(|replica| {
+            matches!(
+                replica.state,
+                RowState::Completed | RowState::Running { serving: true, .. }
+            )
+        })
+        .count();
+    let draining = replicas
+        .iter()
+        .filter(|replica| match replica.state {
+            RowState::Pending => served && !replica.starts,
+            RowState::Running { serving, .. } => *serving || (served && !replica.starts),
+            RowState::Completed
+            | RowState::Failed { .. }
+            | RowState::NotAttempted
+            | RowState::Unknown => false,
+        })
+        .count();
+    let old_wait_for_routes = running.is_none() && ready == counted.len() && draining > 0;
+    let failed = replicas
+        .iter()
+        .filter(|replica| matches!(replica.state, RowState::Failed { .. }))
+        .count();
+    let state = if failed > 0 {
+        running.map_or(State::Failed, |(_, phase)| State::Running(phase))
+    } else if replicas
+        .iter()
+        .any(|replica| matches!(replica.state, RowState::Unknown))
+    {
+        State::Unknown
+    } else if let Some((_, phase)) = running {
+        State::Running(phase)
+    } else if old_wait_for_routes {
+        State::Running(RowPhase::RemovingContainer)
+    } else if all(|state| matches!(state, RowState::Pending)) {
+        State::Pending
+    } else if all(|state| matches!(state, RowState::Completed)) {
+        State::Completed
+    } else if replicas
+        .iter()
+        .any(|replica| matches!(replica.state, RowState::NotAttempted))
+    {
+        State::NotAttempted
+    } else {
+        State::Running(RowPhase::Starting)
+    };
+    let started = replicas
+        .iter()
+        .filter_map(|replica| match replica.timing {
+            Timing::Started(at) => Some(at),
+            Timing::Unavailable | Timing::Finished(_) => None,
+        })
+        .min();
+    let timing = match started {
+        Some(at) => Timing::Started(at),
+        None if !replicas.is_empty()
+            && replicas
+                .iter()
+                .all(|replica| matches!(replica.timing, Timing::Finished(_))) =>
+        {
+            Timing::Finished(
+                replicas
+                    .iter()
+                    .filter_map(|replica| match replica.timing {
+                        Timing::Finished(elapsed) => Some(elapsed),
+                        Timing::Unavailable | Timing::Started(_) => None,
+                    })
+                    .max()
+                    .unwrap_or(Duration::ZERO),
+            )
+        }
+        None => Timing::Unavailable,
+    };
+    Row {
+        subject: Subject::Service(GraphService {
+            service,
+            depth,
+            ready,
+            total: counted.len(),
+            draining,
+            work: if removal {
+                Work::Remove
+            } else if old_wait_for_routes || running.is_some_and(|(step, _)| step == Step::Retire) {
+                Work::Retire
+            } else {
+                Work::Start
+            },
+            machines: replicas.iter().map(|replica| replica.machine).collect(),
+        }),
+        detail: (failed > 0 && state.active()).then(|| format!("{failed} failed")),
+        state,
+        timing,
+    }
+}
 
 /// Factual Service/Server progress plus standalone operations and failed Container identity.
 pub(super) struct Direct {
@@ -24,6 +219,7 @@ pub(super) struct Direct {
     rows: BTreeMap<(ServiceName, MachineId), (ServerProgress, Timing)>,
     pub(super) operations: Vec<OperationRow>,
     notices: Vec<ployz_core::DeployWarning>,
+    depths: BTreeMap<ServiceName, u32>,
 }
 
 impl Direct {
@@ -35,6 +231,7 @@ impl Direct {
             rows: BTreeMap::new(),
             operations: Vec::new(),
             notices: preview.warnings.clone(),
+            depths: preview.depths.clone(),
         };
         direct.observe(&preview.operations);
         direct
@@ -66,18 +263,23 @@ impl Direct {
     }
 
     pub(super) fn frame(&self) -> Frame {
-        let mut rows: Vec<_> = self
-            .rows
-            .values()
-            .map(|(row, timing)| Row {
-                subject: Subject::ServiceOnServer {
-                    service: QualifiedService::new(self.namespace.clone(), row.service.clone()),
-                    machine: row.machine,
-                    server: row.server.clone(),
-                },
-                state: (&row.state).into(),
-                detail: None,
-                timing: timing.clone(),
+        let services: BTreeSet<_> = self.rows.keys().map(|(service, _)| service).collect();
+        let mut rows: Vec<_> = services
+            .into_iter()
+            .map(|service| {
+                service_row(
+                    QualifiedService::new(self.namespace.clone(), service.clone()),
+                    self.depths.get(service).copied(),
+                    self.rows
+                        .values()
+                        .filter(|(row, _)| row.service == *service)
+                        .map(|(row, timing)| Replica {
+                            machine: row.machine,
+                            state: &row.state,
+                            starts: starts(&self.operations, service, row.machine),
+                            timing: timing.clone(),
+                        }),
+                )
             })
             .collect();
         rows.extend(
