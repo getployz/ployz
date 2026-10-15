@@ -34,6 +34,9 @@ struct State {
     segments: BTreeMap<u64, Segment>,
     rows: usize,
     buffer: Buffer,
+    /// Segments in the batch the shipper holds. The row cap spares them: Cloud may already
+    /// have their rows, and counting them dropped would undercount what arrived.
+    in_flight: Vec<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,6 +80,7 @@ impl PageviewOutbox {
             rows: segments.values().map(|segment| segment.rows).sum(),
             segments,
             buffer: Buffer::default(),
+            in_flight: Vec::new(),
         };
         Ok(Arc::new(Self {
             dir,
@@ -130,7 +134,15 @@ impl PageviewOutbox {
         state.rows += buffer.rows;
         let mut dropped = 0;
         while state.rows > ROW_CAP {
-            let Some((oldest, segment)) = state.segments.pop_first() else {
+            let Some(oldest) = state
+                .segments
+                .keys()
+                .copied()
+                .find(|seq| !state.in_flight.contains(seq))
+            else {
+                break;
+            };
+            let Some(segment) = state.segments.remove(&oldest) else {
                 break;
             };
             remove_entry(&self.dir, oldest, SEGMENT_SUFFIX)?;
@@ -177,7 +189,7 @@ impl Stream for PageviewOutbox {
     const NAME: &'static str = PAGEVIEWS;
 
     fn next(&self) -> io::Result<Option<Held>> {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let mut taken = Vec::new();
         let mut rows = 0;
         let mut bytes = 0;
@@ -216,6 +228,7 @@ impl Stream for PageviewOutbox {
             }
         }
         body.extend_from_slice(b"]}");
+        state.in_flight.clone_from(&taken);
         Ok(Some(Held { body, seqs: taken }))
     }
 
@@ -227,6 +240,7 @@ impl Stream for PageviewOutbox {
                 state.rows -= segment.rows;
             }
         }
+        state.in_flight.clear();
         Ok(())
     }
 
@@ -366,6 +380,25 @@ mod tests {
         assert_eq!(batch(&reopened).0["dropped"], 200);
         push(&reopened, 0..100);
         assert_eq!(batch(&reopened).0["dropped"], 300);
+    }
+
+    #[test]
+    fn a_full_outbox_spares_the_batch_in_flight() {
+        let (_root, store) = store();
+        let outbox = PageviewOutbox::open(&store).unwrap();
+        push(&outbox, 0..ROW_CAP);
+        let (body, seqs) = batch(&outbox);
+        assert_eq!(body["events"][0]["n"], 0);
+
+        push(&outbox, ROW_CAP..ROW_CAP + 200);
+        assert_eq!(outbox.held_rows(), ROW_CAP);
+        let remaining = segments(&store);
+        assert!(seqs.iter().all(|seq| remaining.contains(seq)));
+
+        outbox.ack(&seqs).unwrap();
+        let (body, _) = batch(&outbox);
+        assert_eq!(body["dropped"], 200);
+        assert_eq!(body["events"][0]["n"], 1200);
     }
 
     fn pageview(path: &str, query_value: &str) -> serde_json::Value {
