@@ -151,6 +151,16 @@ export const serveMcpMetadata = Effect.fn("RemoteMcp.metadata")(function* (reque
   return withHeaders(yield* auth.handler(new Request(url, request)), CORS);
 });
 
+/** ployz.dev's public key in the MCP Registry, proving Ployz owns the `dev.ployz/*` names it lists `/mcp` under. */
+const REGISTRY_PROOF = "v=MCPv1; k=ed25519; p=Nrlq1rzb7NtaJi4Kc+sxSE4ual9vUlqy79z/O0trwxo=";
+
+export const serveRegistryProof = Effect.fn("RemoteMcp.registryProof")(function* (request: Request) {
+  const auth = yield* Auth;
+  if (auth.mcp === null) return notFound();
+  if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } });
+  return new Response(REGISTRY_PROOF, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+});
+
 const REGISTER = "/api/auth/oauth2/register";
 
 const Registration = Schema.Struct({
