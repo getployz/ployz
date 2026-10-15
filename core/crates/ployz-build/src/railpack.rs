@@ -14,6 +14,10 @@ use std::{
 // Railpack 0.39.0: the frontend image also ships the matching /railpack CLI.
 const IMAGE: &str = "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103";
 
+/// Preparation's own bridge. The `ployz-build` prefix puts it behind the same
+/// host firewall as build steps: internet only.
+const NETWORK: &str = "ployz-build-p";
+
 /// Private captured inputs for a Railpack target. Never a display payload.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -178,7 +182,13 @@ fn prepare_container(
     resources: &crate::policy::Resources,
 ) -> Result<(), BuildError> {
     let name = format!("{builder}-prepare");
-    let mut arguments = vec!["--entrypoint".into(), "/bin/sh".into()];
+    network(docker)?;
+    let mut arguments = vec![
+        "--entrypoint".into(),
+        "/bin/sh".into(),
+        "--network".into(),
+        NETWORK.into(),
+    ];
     arguments.extend(resources.preparation_arguments());
     arguments.extend([IMAGE.into(), "/prepare.sh".into()]);
     docker.with_container(
@@ -214,6 +224,31 @@ fn prepare_container(
     )
 }
 
+/// Create the preparation bridge once; a concurrent Build may create it first.
+fn network(docker: &Docker<'_>) -> Result<(), BuildError> {
+    let inspect = || {
+        docker.run(
+            "inspect the Railpack preparation network",
+            &["network", "inspect", "--format", "{{.Name}}", NETWORK],
+            Streams::Captured,
+        )
+    };
+    if inspect().is_ok() {
+        return Ok(());
+    }
+    let bridge = format!("com.docker.network.bridge.name={NETWORK}");
+    docker
+        .run(
+            "create the Railpack preparation network",
+            &[
+                "network", "create", "--driver", "bridge", "--opt", &bridge, NETWORK,
+            ],
+            Streams::Captured,
+        )
+        .or_else(|error| inspect().map_err(|_| error))
+        .map(|_| ())
+}
+
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -230,4 +265,22 @@ fn private_file(path: &Path, content: &[u8]) -> Result<(), BuildError> {
 
 fn input_error(error: std::io::Error) -> BuildError {
     BuildError::Request(format!("stage private Railpack inputs: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn preparation_sits_behind_the_build_bridge_firewall() {
+        assert!(super::NETWORK.starts_with(crate::BUILD_BRIDGE_PREFIX));
+        assert!(
+            super::NETWORK.len() <= 15,
+            "Linux interface names are 15 bytes"
+        );
+        assert!(
+            super::NETWORK[crate::BUILD_BRIDGE_PREFIX.len()..]
+                .parse::<u8>()
+                .is_err(),
+            "a slot's bridge never takes the preparation bridge's name"
+        );
+    }
 }
