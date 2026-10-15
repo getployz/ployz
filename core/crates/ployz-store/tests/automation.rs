@@ -26,7 +26,10 @@ fn org() -> OrganizationId {
 
 /// A Project with Git Services `web` and `api` on `acme/web`'s `main`, published.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_on(backend::open())
+}
+
+fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(org());
     store
         .write(
@@ -748,6 +751,44 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
         )
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+}
+
+#[test]
+fn an_approval_racing_news_of_a_push_refuses_the_head_it_moved_from() {
+    // SQLite writers never overlap.
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_on(ConfigStore::open(&url, backend::key()).unwrap());
+    publish(&store, &who);
+    open_as(&store, &who, &by_stranger(H2, 1));
+    // News of a push to H3, not yet committed when the approval of H2 arrives.
+    let mut news = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = news.transaction().unwrap();
+    held.execute(
+        "UPDATE config_pull_request SET facts = replace(facts, $1, $2)",
+        &[&H2, &H3],
+    )
+    .unwrap();
+    let approval = std::thread::scope(|threads| {
+        let approval = threads.spawn(|| {
+            store.write(
+                &who,
+                &ployz_store::ApprovePullRequest {
+                    repository_id: backend::repo_id(11),
+                    number: backend::pr_number(5),
+                    head: backend::sha(H2),
+                },
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        held.commit().unwrap();
+        approval.join().unwrap()
+    });
+    assert_eq!(approval.unwrap_err().code, RpcErrorCode::Conflict);
+    let approved = approve(&store, &who, H3);
+    assert_eq!(pinned(&store, &approved, "web").as_deref(), Some(H3));
 }
 
 fn texts<T: ToString>(items: &[T]) -> Vec<String> {

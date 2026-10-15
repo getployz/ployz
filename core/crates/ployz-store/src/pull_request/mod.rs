@@ -563,6 +563,7 @@ pub(crate) fn pull_request(
     validate(event)?;
     let organization = who.organization.as_str();
     let (repository_id, number) = (event.repository_id, event.number);
+    lock(tx, who, repository_id, number)?;
     let before = facts(tx, who, repository_id, number)?;
     let stood = standing(tx, who, repository_id, number)?;
     let written = tx.execute(
@@ -750,6 +751,7 @@ pub(crate) fn approve(
     trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
     let (repository_id, number) = (approval.repository_id, approval.number);
+    lock(tx, who, repository_id, number)?;
     let Some(event) = facts(tx, who, repository_id, number)? else {
         return Err(error::not_found(
             format!("No pull request #{number} in this repository"),
@@ -794,6 +796,26 @@ pub(crate) fn approve(
     }
     automated.checks.push(pr);
     Ok(automated)
+}
+
+/// Lock the pull request's row, so news of it and approvals of it take turns: each
+/// reads the facts and standing the one before it left. Taken before any Environment.
+fn lock(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: RepositoryId,
+    pr: PullRequestNumber,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_pull_request SET updated = updated \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &[
+            who.organization.as_str().into(),
+            repository_id.into(),
+            pr.into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// The Environments PR Environments of the repository start from, as its plans say.
