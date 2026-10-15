@@ -21,6 +21,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "server/auth.server.ts",
   "server/database.server.ts",
   "modules/web-analytics/postgres/partitions.ts",
+  "modules/web-analytics/clickhouse/client.ts",
   "server/marketing-proxy.server.ts",
   "modules/inngest/client.ts",
   "modules/inngest/worker.server.ts",
