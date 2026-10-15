@@ -1,15 +1,19 @@
 name: Prepare Cloud checks
 description: Install the pinned Node and pnpm dependencies
+inputs:
+  package-cache:
+    description: Restore the shared pnpm store cache; release builds pass false
+    default: 'true'
 runs:
   using: composite
   steps:
-    - uses: pnpm/action-setup@v6
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       with:
         package_json_file: dashboard/package.json
-    - uses: actions/setup-node@v6
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: 22
-        cache: pnpm
+        cache: ${{ inputs.package-cache == 'true' && 'pnpm' || '' }}
         cache-dependency-path: dashboard/pnpm-lock.yaml
     - shell: bash
       working-directory: dashboard

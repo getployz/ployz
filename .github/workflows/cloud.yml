@@ -56,11 +56,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
-      - uses: actions/download-artifact@v4
+        with:
+          package-cache: ${{ inputs.release-tag == '' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.sdk.outputs.name }}
           run-id: ${{ needs.sdk.outputs.run-id }}
@@ -83,15 +85,20 @@ jobs:
       name: ${{ steps.lookup.outputs.name }}
       run-id: ${{ steps.lookup.outputs.run-id || github.run_id }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.release-tag }}
       - name: Find an earlier build of these sources
         id: lookup
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-node@v6
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        # A release builds its own SDK rather than reuse one an earlier run uploaded.
+        run: |
+          python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" > "$RUNNER_TEMP/lookup.out"
+          if [ -n "$RELEASE_TAG" ]; then sed -i 's/^run-id=.*/run-id=/' "$RUNNER_TEMP/lookup.out"; fi
+          cat "$RUNNER_TEMP/lookup.out" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         if: steps.lookup.outputs.run-id == ''
         with:
           node-version: 22
@@ -99,7 +106,8 @@ jobs:
         if: steps.lookup.outputs.run-id == ''
         with:
           cache-key: cloud-sdk
-      - uses: taiki-e/install-action@v2
+          remote-cache: ${{ inputs.release-tag == '' }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         if: steps.lookup.outputs.run-id == ''
         with:
           tool: wasm-bindgen@0.2.127
@@ -107,7 +115,7 @@ jobs:
         if: steps.lookup.outputs.run-id == ''
         run: bash scripts/pr-check.sh sdk
       # Local verify runs download these too, so main keeps them longer.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: steps.lookup.outputs.run-id == ''
         with:
           name: ${{ steps.lookup.outputs.name }}
@@ -125,11 +133,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
-      - uses: actions/download-artifact@v4
+        with:
+          package-cache: ${{ inputs.release-tag == '' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.sdk.outputs.name }}
           run-id: ${{ needs.sdk.outputs.run-id }}
@@ -171,11 +181,13 @@ jobs:
       matrix:
         shard: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
-      - uses: actions/download-artifact@v4
+        with:
+          package-cache: ${{ inputs.release-tag == '' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ${{ needs.sdk.outputs.name }}
           run-id: ${{ needs.sdk.outputs.run-id }}
@@ -185,7 +197,7 @@ jobs:
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
         run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: cloud-test-results-${{ matrix.shard }}

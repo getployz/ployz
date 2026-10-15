@@ -520,9 +520,12 @@ impl MachineRpc for MachineService {
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
+        let cloud_routed = request
+            .metadata()
+            .contains_key(ployz_core::CLOUD_ROUTED_HEADER);
         finish(
             self.local
-                .request_upgrade(expect::<op::RequestMachineUpgrade>(request)?)
+                .request_upgrade(expect::<op::RequestMachineUpgrade>(request)?, cloud_routed)
                 .await,
         )
     }
@@ -845,7 +848,9 @@ fn upgrade_error(error: crate::installer::upgrade::Error) -> RpcError {
         Error::AttemptConflict(_) | Error::Busy | Error::Admission(mutation::Error::Busy) => {
             RpcErrorCode::Conflict
         }
-        Error::Resolve(_) | Error::NonstandardPaths(_) => RpcErrorCode::InvalidArgument,
+        Error::Resolve(_) | Error::NonstandardPaths(_) | Error::Downgrade { .. } => {
+            RpcErrorCode::InvalidArgument
+        }
         Error::Read(_)
         | Error::Decode(_)
         | Error::Write(_)

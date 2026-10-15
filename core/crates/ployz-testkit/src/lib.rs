@@ -4,6 +4,7 @@ pub mod fake_acme;
 pub mod fake_fleet;
 pub mod fake_machine;
 mod machine_admin;
+pub mod release_key;
 
 use std::{
     collections::{BTreeMap, BTreeSet},

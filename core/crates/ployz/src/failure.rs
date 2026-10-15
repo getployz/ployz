@@ -612,6 +612,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         | ProvisionError::BootstrapIo { .. }
         | ProvisionError::BootstrapCommand { .. }
         | ProvisionError::BootstrapVerification(_)
+        | ProvisionError::BootstrapSignature(_)
         | ProvisionError::Install(_)
         | ProvisionError::InstallFailed { .. }
         | ProvisionError::Cleanup(_)

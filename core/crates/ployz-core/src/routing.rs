@@ -6,6 +6,12 @@ use crate::{FanoutSelector, MachineTarget};
 pub const ONE_TARGET_HEADER: &str = "machine";
 pub const ONE_TARGET_BINARY_HEADER: &str = "machine-bin";
 pub const MANY_TARGETS_HEADER: &str = "machines";
+/// Marks a request that entered the mesh through the Ployz Cloud management tunnel.
+///
+/// The entry Machine sets it and forwarding keeps it, so the target Machine can apply
+/// Cloud's restrictions even though it never sees the tunnel. It only ever restricts,
+/// so a caller gains nothing by setting it.
+pub const CLOUD_ROUTED_HEADER: &str = "ployz-cloud-routed";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RoutingRequest {

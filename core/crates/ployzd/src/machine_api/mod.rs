@@ -179,6 +179,11 @@ impl Service<http::Request<Body>> for MachineApi {
                     tonic::Status::unauthenticated("management credential revoked").into_http(),
                 );
             }
+            let mut request = request;
+            request.headers_mut().insert(
+                ployz_core::CLOUD_ROUTED_HEADER,
+                http::HeaderValue::from_static("1"),
+            );
             // Carry the authenticated key into detached/queued local work as well.
             let mut proxy = proxy.with_local(routes(service.with_management_client(remote)));
             proxy.call(request).await

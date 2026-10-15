@@ -68,22 +68,25 @@ jobs:
     env:
       RELEASE_ID: ${{ format('{0}-linux-{1}', matrix.binary, matrix.arch) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.release-tag || github.sha }}
           fetch-depth: 0
           fetch-tags: true
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.rust_target }}
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1.2.2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - uses: taiki-e/install-action@v2
+          use-cache: ${{ inputs.release-tag == '' }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-zigbuild@${{ env.CARGO_ZIGBUILD_VERSION }}
-      - uses: actions/cache@v4
+      # Release builds compile from scratch: main pushes write these caches.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: inputs.release-tag == ''
         with:
           path: |
             ~/.cargo/registry
@@ -91,13 +94,14 @@ jobs:
           key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-downloads-
       - name: Require compiler cache writes on main
-        if: github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: inputs.release-tag == '' && github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           if [ "$KACHE_S3_WRITES" != true ]; then
             echo "::error::Main push has no R2 write credentials, so the compiler cache would not be saved."
             exit 1
           fi
       - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        if: inputs.release-tag == ''
         with:
           version: 0.18.0
           s3-bucket: ${{ env.KACHE_S3_BUCKET }}
@@ -115,13 +119,13 @@ jobs:
           sync: false
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           pr-comment: false
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           workdir: core
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
           args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-linux-${{ matrix.binary }}-${{ matrix.arch }}
           path: |
@@ -142,16 +146,18 @@ jobs:
     env:
       RELEASE_ID: ployz-darwin-${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.release-tag || github.sha }}
           fetch-depth: 0
           fetch-tags: true
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.rust_target }}
-      - uses: actions/cache@v4
+      # Release builds compile from scratch: main pushes write these caches.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: inputs.release-tag == ''
         with:
           path: |
             ~/.cargo/registry
@@ -159,13 +165,14 @@ jobs:
           key: cargo-downloads-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-downloads-
       - name: Require compiler cache writes on main
-        if: github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: inputs.release-tag == '' && github.repository == 'getployz/ployz' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           if [ "$KACHE_S3_WRITES" != true ]; then
             echo "::error::Main push has no R2 write credentials, so the compiler cache would not be saved."
             exit 1
           fi
       - uses: kunobi-ninja/kache-action@78ff455251aa37139061201a39113a1924994035 # v1
+        if: inputs.release-tag == ''
         with:
           version: 0.18.0
           s3-bucket: ${{ env.KACHE_S3_BUCKET }}
@@ -183,13 +190,13 @@ jobs:
           sync: false
           save-cache: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           pr-comment: false
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           workdir: core
           distribution: goreleaser
           version: v${{ env.GORELEASER_VERSION }}
           args: ${{ inputs.goreleaser-args || 'release --snapshot --clean --skip=publish' }} --skip=homebrew
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-darwin-${{ matrix.arch }}
           path: core/dist/*.tar.gz
@@ -199,10 +206,10 @@ jobs:
     needs: [build-macos]
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.release-tag || github.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-darwin-*
           merge-multiple: true
@@ -214,15 +221,15 @@ jobs:
     needs: [build-linux, macos-smoke]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.release-tag || github.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-linux-*
           merge-multiple: true
           path: core/linux
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-darwin-*
           merge-multiple: true
@@ -236,7 +243,7 @@ jobs:
           mkdir -p target/x86_64-unknown-linux-musl/release target/aarch64-unknown-linux-musl/release
           cp linux/target/x86_64-unknown-linux-musl/release/sqlite-probe target/x86_64-unknown-linux-musl/release/
           cp linux/target/aarch64-unknown-linux-musl/release/sqlite-probe target/aarch64-unknown-linux-musl/release/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-contracts
           path: |
@@ -248,10 +255,10 @@ jobs:
     needs: [build-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.release-tag || github.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: release-linux-*
           merge-multiple: true

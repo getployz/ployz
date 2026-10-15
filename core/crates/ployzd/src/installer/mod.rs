@@ -18,7 +18,7 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineRelease, MachineUpgradeStage, StorageChoice};
+use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StorageChoice};
 use thiserror::Error;
 
 use crate::mutation;
@@ -102,6 +102,8 @@ pub enum Error {
     ReleaseSelection(String),
     #[error("artifact verification: {0}")]
     Verification(String),
+    #[error("release {0} is not signed, and Ployz installs only signed releases")]
+    Unsigned(MachineVersion),
     #[error("{stage}: {message}")]
     Command { stage: String, message: String },
     #[error("{stage}")]
@@ -451,8 +453,6 @@ mod tests {
         process::Command,
     };
 
-    use ployz_core::MachineVersion;
-
     use super::test_support::{fixture, run_contract_child_with_environment, write_script};
     use super::*;
 
@@ -495,6 +495,8 @@ mod tests {
             "missing-tar",
             "bad-checksum",
             "corrupt",
+            "unsigned",
+            "tampered-checksums",
             "rejected-executable",
             "hung-executable",
             "busy",
@@ -688,6 +690,18 @@ mod tests {
                         && message.contains("checksum was")
                         && message.contains("expected")
             )),
+            "unsigned" => assert!(
+                matches!(result, Err(Error::Unsigned(ref version)) if version.to_string() == "1.2.3"),
+                "an unsigned release was accepted: {result:?}"
+            ),
+            "tampered-checksums" => assert!(
+                matches!(
+                    result,
+                    Err(Error::Verification(ref message))
+                        if message.contains("not signed by the Ployz release key")
+                ),
+                "a tampered checksums file was accepted: {result:?}"
+            ),
             "missing" | "rejected-executable" => {
                 assert!(result.is_err(), "{case} artifact was accepted");
             }
@@ -788,6 +802,23 @@ mod tests {
         }
         if case == "bad-checksum" {
             fs::write(release.join("checksums.txt"), "bad checksum\n").unwrap();
+        }
+        if case != "unsigned" {
+            let checksums = fs::read(release.join("checksums.txt")).unwrap();
+            fs::write(
+                release.join("checksums.txt.minisig"),
+                ployz_testkit::release_key::sign_release(
+                    &checksums,
+                    &MachineVersion::parse("1.2.3").unwrap(),
+                ),
+            )
+            .unwrap();
+        }
+        if case == "tampered-checksums" {
+            let path = release.join("checksums.txt");
+            let mut checksums = fs::read(&path).unwrap();
+            *checksums.first_mut().unwrap() ^= 1;
+            fs::write(path, checksums).unwrap();
         }
     }
 

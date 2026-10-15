@@ -7,6 +7,7 @@ use std::{
     process::Command,
 };
 
+use ployz_core::ReleaseSignatureError;
 use sha2::{Digest, Sha256};
 
 use super::*;
@@ -48,9 +49,12 @@ fn release_fixture(root: &Path, log: &Path, status: u8) -> PathBuf {
             .success()
     );
     let hash = hex::encode(Sha256::digest(fs::read(&archive).unwrap()));
+    let checksums = format!("{hash}  {}\n", daemon_archive());
+    let version = ployz_core::MachineVersion::parse(VERSION).unwrap();
+    fs::write(release.join("checksums.txt"), &checksums).unwrap();
     fs::write(
-        release.join("checksums.txt"),
-        format!("{hash}  {}\n", daemon_archive()),
+        release.join(ployz_core::RELEASE_SIGNATURE_ASSET),
+        ployz_testkit::release_key::sign_release(checksums.as_bytes(), &version),
     )
     .unwrap();
     release
@@ -139,6 +143,47 @@ async fn corrupt_local_bootstrap_is_rejected_before_execution() {
         "{error}"
     );
     assert!(!log.exists(), "corrupt bootstrap executed");
+}
+
+#[tokio::test]
+async fn bootstrap_with_rewritten_checksums_is_rejected_before_execution() {
+    let fixture = tempfile::tempdir().unwrap();
+    let log = fixture.path().join("commands.log");
+    let release = release_fixture(fixture.path(), &log, 0);
+    fs::write(release.join(daemon_archive()), b"swapped").unwrap();
+    let hash = hex::encode(Sha256::digest(b"swapped"));
+    fs::write(
+        release.join("checksums.txt"),
+        format!("{hash}  {}\n", daemon_archive()),
+    )
+    .unwrap();
+
+    let Err(error) = bootstrap(&release).await else {
+        panic!("a bootstrap with rewritten checksums was accepted");
+    };
+
+    assert!(
+        matches!(
+            error,
+            ProvisionError::BootstrapSignature(ReleaseSignatureError::Invalid(_))
+        ),
+        "{error:?}"
+    );
+    assert!(!log.exists(), "unsigned bootstrap executed");
+}
+
+#[tokio::test]
+async fn unsigned_bootstrap_is_rejected_before_execution() {
+    let fixture = tempfile::tempdir().unwrap();
+    let log = fixture.path().join("commands.log");
+    let release = release_fixture(fixture.path(), &log, 0);
+    fs::remove_file(release.join(ployz_core::RELEASE_SIGNATURE_ASSET)).unwrap();
+
+    assert!(
+        bootstrap(&release).await.is_err(),
+        "an unsigned bootstrap was accepted"
+    );
+    assert!(!log.exists(), "unsigned bootstrap executed");
 }
 
 #[tokio::test]

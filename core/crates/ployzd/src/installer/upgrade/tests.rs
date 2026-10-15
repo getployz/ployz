@@ -156,7 +156,7 @@ async fn run_contract_case(case: &str) {
             let data = data.clone();
             let run = run.clone();
             let request = request.clone();
-            async move { super::request(request, data, run, guard).await }
+            async move { super::request(request, super::Downgrade::Refused, data, run, guard).await }
         });
         timeout(Duration::from_secs(5), async {
             while !root.join("launch-started").exists() {
@@ -204,9 +204,15 @@ async fn run_contract_case(case: &str) {
         );
         return;
     }
-    let accepted = super::request(request.clone(), data.clone(), run.clone(), guard)
-        .await
-        .unwrap();
+    let accepted = super::request(
+        request.clone(),
+        super::Downgrade::Refused,
+        data.clone(),
+        run.clone(),
+        guard,
+    )
+    .await
+    .unwrap();
 
     match case {
         "retry-active" => {
@@ -230,9 +236,15 @@ async fn run_contract_case(case: &str) {
 
             let guard = admission.try_installation().unwrap();
             assert_eq!(
-                super::request(request, data.clone(), run.clone(), guard)
-                    .await
-                    .unwrap(),
+                super::request(
+                    request,
+                    super::Downgrade::Refused,
+                    data.clone(),
+                    run.clone(),
+                    guard
+                )
+                .await
+                .unwrap(),
                 accepted
             );
             let guard = admission.try_installation().unwrap();
@@ -241,7 +253,14 @@ async fn run_contract_case(case: &str) {
                 release: MachineRelease::parse("1.2.3").unwrap(),
             };
             assert!(matches!(
-                super::request(other, data.clone(), run.clone(), guard).await,
+                super::request(
+                    other,
+                    super::Downgrade::Refused,
+                    data.clone(),
+                    run.clone(),
+                    guard
+                )
+                .await,
                 Err(Error::Busy)
             ));
             let log = fs::read_to_string(root.join("commands.log")).unwrap();
@@ -608,4 +627,29 @@ impl tonic::server::UnaryService<OpaquePayload> for Contract {
             .unwrap(),
         )))
     }
+}
+
+#[test]
+fn only_a_direct_connection_downgrades() {
+    let installed = MachineVersion::parse("1.2.3").unwrap();
+    let older = MachineVersion::parse("1.2.2").unwrap();
+    let newer = MachineVersion::parse("1.2.4").unwrap();
+
+    let refused = super::Downgrade::Refused.admit(Some(&installed), &older);
+    assert!(
+        matches!(&refused, Err(Error::Downgrade { installed: i, target: t }) if *i == installed && *t == older),
+        "Ployz Cloud downgraded the Machine: {refused:?}"
+    );
+    assert!(
+        super::Downgrade::Allowed
+            .admit(Some(&installed), &older)
+            .is_ok()
+    );
+    for (policy, target) in [
+        (super::Downgrade::Refused, &installed),
+        (super::Downgrade::Refused, &newer),
+    ] {
+        assert!(policy.admit(Some(&installed), target).is_ok());
+    }
+    assert!(super::Downgrade::Refused.admit(None, &older).is_ok());
 }
