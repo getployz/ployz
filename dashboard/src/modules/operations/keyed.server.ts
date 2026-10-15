@@ -58,6 +58,8 @@ export const admittedAt = (organizationId: string, key: string) =>
  * One requested operation, admitted at most once per request key. A key seen before answers its attempt without
  * planning again; a new one plans outside the transaction (it may ask Servers), then writes the key, the attempt and
  * its outbox event in one commit. A refusal while writing rolls the key back so a corrected retry can use it.
+ * The operation never runs again on its own. An uncertain leg is resent only when it is idempotent: it names the state
+ * it wants and its expected prior state, or a key that finds its own earlier effect.
  */
 export const admitOperation = <B, E1, R1, E2, R2>(
   organizationId: string,
