@@ -18,6 +18,11 @@ const CASES: ReadonlyArray<readonly [string | null, Preference]> = [
   ["text/html;q=0, text/markdown", "markdown"],
   ["*/*;q=0", "other"],
   ["text/markdown, garbage, text/html;q=nope", "markdown"],
+  ["text/html;level=1;q=0.1, text/html;q=1, text/markdown;q=0.5", "html"],
+  ["text/html;level=1, text/markdown;q=0.5", "markdown"],
+  ["text/markdown;charset=utf-8, text/html;q=0.5", "markdown"],
+  ['text/markdown; charset="UTF-8"', "markdown"],
+  ["text/markdown;q=0.9;ext=1, text/html;q=0.5", "markdown"],
 ];
 
 it.each(CASES)("Accept %j prefers %s", (accept, preference) => {

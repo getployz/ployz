@@ -12,7 +12,12 @@ function parseAccept(accept: string): ReadonlyArray<MediaRange> {
     const [range = "", ...params] = part.split(";").map((piece) => piece.trim().toLowerCase());
     const [type, subtype] = range.split("/");
     if (!type || !subtype) return [];
-    const qParam = params.find((param) => param.startsWith("q="));
+    const qIndex = params.findIndex((param) => param.startsWith("q="));
+    // Media parameters sit before q; both representations are served as charset=utf-8 and nothing else, so a range
+    // naming any other parameter (text/html;level=1) matches neither and must not set their quality.
+    const mediaParams = qIndex === -1 ? params : params.slice(0, qIndex);
+    if (mediaParams.some((param) => param.replace(/\s*=\s*/, "=").replaceAll('"', "") !== "charset=utf-8")) return [];
+    const qParam = qIndex === -1 ? undefined : params[qIndex];
     const q = qParam === undefined ? 1 : Number(qParam.slice(2));
     return Number.isFinite(q) ? [{ type, subtype, q: Math.min(Math.max(q, 0), 1) }] : [];
   });
