@@ -201,7 +201,7 @@ const unionTotals = (parts: SQL[]) => sql`
   select bucket, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors, sum(visits)::bigint as visits,
     sum(bounces)::bigint as bounces, sum(total_duration)::bigint as total_duration
   from (${sql.join(parts, sql` union all `)}) parts
-  group by bucket`;
+  group by bucket order by bucket`;
 
 export function dailyTotalsSql(query: StoreQuery, plan: Plan) {
   const { timezone } = query;
