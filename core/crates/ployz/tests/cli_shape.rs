@@ -1072,3 +1072,264 @@ fn checkin_help_names_install_and_the_token_file() {
         assert!(stdout.contains(needle), "{needle}: {stdout}");
     }
 }
+
+#[test]
+fn server_token_verbs_need_a_sign_in() {
+    for args in [
+        &["server", "token", "create", "--json"][..],
+        &["server", "token", "ls", "--json"],
+        &["server", "token", "revoke", "amber-falcon", "--json"],
+    ] {
+        let (code, json, _) = run_json(args);
+        assert_eq!(code, Some(1), "{args:?}: {json}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "unauthenticated",
+            "{json}"
+        );
+        assert_eq!(
+            json.pointer("/error/details/next").unwrap(),
+            "ployz login",
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn server_token_create_takes_a_known_expiry_and_max_only_with_auto() {
+    for args in [
+        &["server", "token", "create", "--expires", "2d"][..],
+        &["server", "token", "create", "--max", "5"],
+        &["server", "token", "create", "--auto"],
+        &["server", "token", "create", "--auto", "--max", "0"],
+        &["server", "token", "revoke"],
+    ] {
+        let (code, stderr) = run_human(args);
+        assert_eq!(code, Some(2), "{args:?}: {stderr}");
+    }
+}
+
+/// A Cloud that answers one request with `status` and `body`; yields the request it got.
+fn token_cloud(status: u16, body: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let cloud = format!("http://{}", listener.local_addr().unwrap());
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut request = String::new();
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+            if line == "\r\n" {
+                break;
+            }
+            request.push_str(&line);
+        }
+        let mut sent = vec![0; length];
+        reader.read_exact(&mut sent).unwrap();
+        request.push_str(&String::from_utf8(sent).unwrap());
+        let reply = format!(
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        reader.get_mut().write_all(reply.as_bytes()).unwrap();
+        sender.send(request).unwrap();
+    });
+    (cloud, received)
+}
+
+/// Run against `cloud` with an Organization Token; returns (exit code, stdout, stderr).
+fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_STORE")
+        .env("PLOYZ_TOKEN", "ployz_secret")
+        .env("PLOYZ_CLOUD_URL", cloud)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn sent_body(request: &str) -> serde_json::Value {
+    serde_json::from_str(&request[request.find('{').unwrap()..]).unwrap()
+}
+
+#[test]
+fn server_token_create_prints_the_secret_once_with_its_install_line() {
+    let (cloud, request) = token_cloud(
+        200,
+        r#"{"fleet_token":{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"blue-heron","token":"pflt_secret","expires_at":"2026-10-23T00:00:00.000Z"}}"#,
+    );
+    let (code, stdout, stderr) = run_token_cloud(
+        &cloud,
+        &[
+            "server",
+            "token",
+            "create",
+            "--name",
+            "blue-heron",
+            "--expires",
+            "7d",
+            "--auto",
+            "--max",
+            "5",
+        ],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout, "pflt_secret\n");
+    let request = request.recv().unwrap();
+    assert!(
+        request.starts_with("POST /api/cli/fleet-tokens "),
+        "{request}"
+    );
+    assert_eq!(
+        sent_body(&request),
+        serde_json::json!({ "name": "blue-heron", "expires_in": "7d", "auto_enroll_max": 5 })
+    );
+    for line in [
+        "Created blue-heron · expires in 7d",
+        "Anyone with this token can add servers. Keep it secret.",
+        &format!(
+            "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh"
+        ),
+        "Shown once. Expires in 7d.",
+    ] {
+        assert!(stderr.contains(line), "{line:?} missing from {stderr}");
+    }
+}
+
+#[test]
+fn server_token_create_defaults_to_a_day_without_auto() {
+    let (cloud, request) = token_cloud(
+        200,
+        r#"{"fleet_token":{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"amber-falcon","token":"pflt_secret","expires_at":"2026-10-17T00:00:00.000Z"}}"#,
+    );
+    let (code, stdout, stderr) = run_token_cloud(&cloud, &["server", "token", "create"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert_eq!(stdout, "pflt_secret\n");
+    assert_eq!(
+        sent_body(&request.recv().unwrap()),
+        serde_json::json!({ "name": null, "expires_in": "1d", "auto_enroll_max": null })
+    );
+    assert!(stderr.contains("Shown once. Expires in 24h."), "{stderr}");
+    assert!(!stderr.contains("Keep it secret"), "{stderr}");
+}
+
+#[test]
+fn server_token_create_json_carries_the_secret_and_install_line() {
+    let (cloud, _) = token_cloud(
+        200,
+        r#"{"fleet_token":{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"amber-falcon","token":"pflt_secret","expires_at":"2026-10-17T00:00:00.000Z"}}"#,
+    );
+    let (code, stdout, stderr) = run_token_cloud(&cloud, &["server", "token", "create", "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json.pointer("/fleet_token/token").unwrap(), "pflt_secret");
+    assert_eq!(json.pointer("/fleet_token/name").unwrap(), "amber-falcon");
+    assert!(
+        json.pointer("/install")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .ends_with("PLOYZ_ENROLL_TOKEN=pflt_secret sh"),
+        "{json}"
+    );
+}
+
+#[test]
+fn server_token_ls_json_is_the_list_of_tokens() {
+    let (cloud, request) = token_cloud(
+        200,
+        r#"{"fleet_tokens":[{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"blue-heron","expires_at":"2026-10-23T00:00:00.000Z","expired":false,"auto_enroll_max":5,"last_used_at":null,"created_at":"2026-10-16T00:00:00.000Z"}]}"#,
+    );
+    let (code, stdout, stderr) = run_token_cloud(&cloud, &["server", "token", "ls", "--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        request
+            .recv()
+            .unwrap()
+            .starts_with("GET /api/cli/fleet-tokens ")
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json.pointer("/0/name").unwrap(), "blue-heron");
+    assert_eq!(json.pointer("/0/auto_enroll_max").unwrap(), 5);
+    assert!(
+        json.pointer("/0/id").is_none(),
+        "tokens are named, not numbered: {json}"
+    );
+}
+
+#[test]
+fn server_token_revoke_reports_the_waiting_servers_it_removed() {
+    let (cloud, request) = token_cloud(200, r#"{"waiting_removed":2}"#);
+    let (code, stdout, stderr) =
+        run_token_cloud(&cloud, &["server", "token", "revoke", "blue-heron"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(
+        request
+            .recv()
+            .unwrap()
+            .starts_with("DELETE /api/cli/fleet-tokens/blue-heron ")
+    );
+    assert_eq!(stdout, "Revoked blue-heron. 2 waiting servers removed.\n");
+}
+
+#[test]
+fn server_token_revoke_of_an_unknown_name_names_it() {
+    let (cloud, _) = token_cloud(
+        404,
+        r#"{"error":{"code":"not_found","message":"No such Fleet Token."}}"#,
+    );
+    let (code, json, stderr) = run_json_with(
+        &["server", "token", "revoke", "ghost", "--json"],
+        &[
+            ("PLOYZ_TOKEN", "ployz_secret"),
+            ("PLOYZ_CLOUD_URL", cloud.as_str()),
+        ],
+    );
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert_eq!(message(&json), "No Fleet Token named ghost.");
+    assert_eq!(
+        json.pointer("/error/details/next").unwrap(),
+        "ployz server token ls",
+        "{json}"
+    );
+}
+
+#[test]
+fn server_token_refusals_reach_the_reader_as_cloud_sent_them() {
+    let (cloud, _) = token_cloud(
+        400,
+        r#"{"error":{"code":"invalid_argument","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}}"#,
+    );
+    let (code, json, stderr) = run_json_with(
+        &["server", "token", "create", "--json"],
+        &[
+            ("PLOYZ_TOKEN", "ployz_secret"),
+            ("PLOYZ_CLOUD_URL", cloud.as_str()),
+        ],
+    );
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        message(&json),
+        "Only a signed-in person can make or revoke tokens; run `ployz login`."
+    );
+}
