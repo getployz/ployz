@@ -1,7 +1,7 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { it } from "@effect/vitest";
 import { asc, sql } from "drizzle-orm";
-import { Effect, Fiber, Layer } from "effect";
+import { type Context, Effect, Fiber, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Client } from "pg";
 import { expect, vi } from "vitest";
@@ -18,7 +18,9 @@ import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/postgres/rollup";
 import { dailyTotals, dailyTotalsSql, type StoreQuery } from "#/modules/web-analytics/postgres/store";
 import { saltWindow, setSiteAnalytics, siteDay } from "#/modules/web-analytics/salts.server";
-import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState } from "#/modules/web-analytics/tables";
+import { ClickHouse } from "#/modules/web-analytics/clickhouse/client";
+import { clickHouseRow } from "#/modules/web-analytics/clickhouse/writer";
+import { analyticsBotDaily, analyticsGapDaily, analyticsOutbox, analyticsPageview, analyticsRollupState } from "#/modules/web-analytics/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -512,6 +514,32 @@ it.live("a replayed batch stores no new rows and adds no bot or gap counts", () 
   expect(before.gaps.map(({ count }) => count)).toEqual([2]);
   expect((yield* send(body)).status).toBe(200);
   expect(yield* stored()).toEqual(before);
+}), 60_000);
+
+const outbox = (services: Context.Context<Database>) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.select({ environmentId: analyticsOutbox.environmentId, rows: analyticsOutbox.rows }).from(analyticsOutbox);
+}).pipe(Effect.provide(services), Effect.orDie);
+
+it.live("without ClickHouse a pageviews push leaves the outbox empty", () => Effect.gen(function* () {
+  const { send, stored, sites, services } = yield* setup();
+  yield* sites();
+  expect((yield* send(pageviews(5, [pageview(Date.now() - HOUR_MS)]))).status).toBe(200);
+  expect((yield* stored()).pageviews).toHaveLength(1);
+  expect(yield* outbox(services)).toEqual([]);
+}), 60_000);
+
+it.live("with ClickHouse a pageviews push queues the rows it stored, and a replay queues nothing more", () => Effect.gen(function* () {
+  const { sendRaw, sites, services } = yield* setup();
+  yield* sites();
+  const at = Date.now() - HOUR_MS;
+  const body = pageviews(5, [pageview(at)]);
+  const unused = Effect.die("ingest never calls ClickHouse");
+  const clickhouse = { writeLifetimeSeconds: 0, unchecked: { select: () => unused, command: () => unused, insert: () => unused } };
+  const send = () => sendRaw(body, headersFor(body)).pipe(Effect.provideService(ClickHouse, clickhouse));
+  expect((yield* send()).status).toBe(200);
+  expect((yield* send()).status).toBe(200);
+  expect(yield* outbox(services)).toEqual([{ environmentId: PRODUCTION, rows: [clickHouseRow(plainRow(at))] }]);
 }), 60_000);
 
 it.live("a batch whose ack was lost, back merged with newer rows under a higher seq, stores each row once", () => Effect.gen(function* () {

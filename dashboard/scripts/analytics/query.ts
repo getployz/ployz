@@ -7,6 +7,7 @@
 import { parseArgs } from "node:util";
 import { eq } from "drizzle-orm";
 import { Effect, Layer } from "effect";
+import { ClickHouseLive } from "#/modules/web-analytics/clickhouse/client";
 import * as analytics from "#/modules/web-analytics/adapter";
 import { addDays, dayStart, HOUR_MS, hourStart, localDay } from "#/modules/web-analytics/local-time";
 import { analyticsSite } from "#/modules/web-analytics/tables";
@@ -92,7 +93,7 @@ export async function run() {
     return yield* ask(name, q, values);
   });
   const answer = await Effect.runPromise(
-    Effect.scoped(program.pipe(Effect.provide(DatabaseLive.pipe(Layer.provide(AppConfig.layer))))),
+    Effect.scoped(program.pipe(Effect.provide(Layer.mergeAll(DatabaseLive, ClickHouseLive).pipe(Layer.provideMerge(AppConfig.layer))))),
   );
   console.log(JSON.stringify(answer, null, 2));
 }

@@ -18,6 +18,7 @@ import { AppConfig } from "#/server/config.server";
 import { DatabaseLive, ReportingDatabaseLive } from "#/server/database.server";
 import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { ClickHouseLive } from "#/modules/web-analytics/clickhouse/client";
 
 const InfrastructureLive = Layer.mergeAll(
   SecretEncryptionLive,
@@ -30,6 +31,7 @@ const InfrastructureLive = Layer.mergeAll(
   GithubOidcKeysLive,
   ReportingDatabaseLive,
   CloudStoreLive,
+  ClickHouseLive,
 ).pipe(
   Layer.provideMerge(GithubApiLive),
   Layer.provideMerge(GithubTokensLive),

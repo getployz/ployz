@@ -23,7 +23,7 @@ export default defineConfig({
           ...sharedTestConfig,
           name: "unit",
           include: ["src/**/*.test.{ts,tsx}"],
-          exclude: ["**/*.postgres.test.ts", "**/*.static.test.ts"],
+          exclude: ["**/*.postgres.test.ts", "**/*.clickhouse.test.ts", "**/*.static.test.ts"],
           maxWorkers: 4,
           isolate: false,
         },
@@ -45,6 +45,15 @@ export default defineConfig({
           include: ["src/**/*.postgres.test.ts"],
           // One server for the run; each file gets its own copy of the migrated database.
           globalSetup: ["./src/test/postgres.global-setup.ts"],
+          maxWorkers: 4,
+        },
+      },
+      {
+        test: {
+          ...sharedTestConfig,
+          name: "clickhouse",
+          include: ["src/**/*.clickhouse.test.ts"],
+          globalSetup: ["./src/test/postgres.global-setup.ts", "./src/test/clickhouse.global-setup.ts"],
           maxWorkers: 4,
         },
       },

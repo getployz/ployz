@@ -10,7 +10,7 @@ type EffectRunner = typeof runInngestEffect;
  * Runs one step per site in order. A site's step retries on its own; one that still fails is collected rather than
  * thrown, so the sites after it run, and the run fails at the end naming every failed site.
  */
-const eachSite = async (sites: ReadonlyArray<string>, run: (environmentId: string) => Promise<number>) => {
+export const eachSite = async (sites: ReadonlyArray<string>, run: (environmentId: string) => Promise<number>) => {
   const failed: Array<{ environmentId: string; error: unknown }> = [];
   for (const environmentId of sites) {
     try {

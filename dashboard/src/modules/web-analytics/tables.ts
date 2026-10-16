@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, bytea, date, pgSchema, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, bytea, check, date, jsonb, pgSchema, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
@@ -125,3 +125,28 @@ export const analyticsRollupState = analytics.table("rollup_state", {
   dirty: date("dirty", { mode: "string" }).array().default(sql`'{}'::date[]`).notNull(),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
 });
+
+export const analyticsOutbox = analytics.table("outbox", {
+  id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+  environmentId: text("environment_id").notNull(),
+  rows: jsonb("rows").notNull(),
+  createdAt: timestamptz("created_at").defaultNow().notNull(),
+});
+
+export const analyticsClickhouseAttempt = analytics.sequence("clickhouse_attempt");
+
+export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
+  environmentId: text("environment_id").primaryKey(),
+  rolledUpTo: date("rolled_up_to", { mode: "string" }),
+  dirty: date("dirty", { mode: "string" }).array().default(sql`'{}'::date[]`).notNull(),
+  reads: boolean("reads").default(false).notNull(),
+  backfilledAt: timestamptz("backfilled_at"),
+  floor: bigint("floor", { mode: "number" }).default(0).notNull(),
+  below: bigint("below", { mode: "number" }).default(0).notNull(),
+  pending: bigint("pending", { mode: "number" }).array().default(sql`'{}'::bigint[]`).notNull(),
+  days: jsonb("days").$type<Record<string, number>>().default(sql`'{}'::jsonb`).notNull(),
+  fence: bigint("fence", { mode: "number" }).default(0).notNull(),
+  fencedAt: timestamptz("fenced_at").defaultNow().notNull(),
+  generation: bigint("generation", { mode: "number" }).default(0).notNull(),
+  updatedAt: timestamptz("updated_at").defaultNow().notNull(),
+}, (table) => [check("clickhouse_site_pending_cap_check", sql`cardinality(${table.pending}) <= 32`)]);

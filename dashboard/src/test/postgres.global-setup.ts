@@ -56,10 +56,13 @@ async function removeOrphanedServers() {
   if (orphans.length > 0) await docker("rm", "--force", ...orphans).catch(() => undefined);
 }
 
+/** Names a run's test container so `removeOrphanedServers` can find it once the run's process is gone. */
+export const testContainerName = (kind: string) => `ployz-test-${process.pid}-${kind}-${randomUUID().slice(0, 8)}`;
+
 /** Starts a throwaway PostgreSQL server with a migrated `ployz_cloud` database. */
 export async function startPostgresServer() {
   await removeOrphanedServers();
-  const name = `ployz-test-${process.pid}-${randomUUID().slice(0, 8)}`;
+  const name = testContainerName("pg");
   await docker(
     "run",
     "--detach",

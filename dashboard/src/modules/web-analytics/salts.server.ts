@@ -6,6 +6,7 @@ import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
 import {
+  analyticsClickhouseSite,
   analyticsDaily,
   analyticsRollupState,
   analyticsSalt,
@@ -76,6 +77,9 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
       yield* drizzle.update(analyticsRollupState)
         .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, updatedAt: new Date(now) })
         .where(eq(analyticsRollupState.environmentId, environmentId));
+      yield* drizzle.update(analyticsClickhouseSite)
+        .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, reads: false, days: sql`'{}'::jsonb`, updatedAt: new Date(now) })
+        .where(eq(analyticsClickhouseSite.environmentId, environmentId));
     }
     if (!setting.enabled || site === undefined) return;
     const days = [0, 1, 2].map((offset) => siteDay(site.timezone, now, offset));

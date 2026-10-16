@@ -11,7 +11,7 @@ export type StoreQuery = {
   readonly filters: ReadonlyArray<Filter>;
 };
 
-const COLUMN = {
+export const COLUMN = {
   page: "pathname",
   host: "host",
   source: "source",
@@ -43,9 +43,9 @@ const gap = sql.raw(`interval '${SESSION_GAP_SECONDS} seconds'`);
 const lookback = sql.raw(`interval '${ENTRY_LOOKBACK_SECONDS} seconds'`);
 const epochMs = (expr: SQL) => sql`(extract(epoch from ${expr}) * 1000)::bigint`;
 
-const SESSION_KEYS: ReadonlySet<FilterKey> = new Set(SESSION_DIMS);
-const sessionFilters = (query: StoreQuery) => query.filters.filter((filter) => SESSION_KEYS.has(filter.key));
-const pageFilters = (query: StoreQuery) => query.filters.filter((filter) => !SESSION_KEYS.has(filter.key));
+export const SESSION_KEYS: ReadonlySet<FilterKey> = new Set(SESSION_DIMS);
+export const sessionFilters = (query: StoreQuery) => query.filters.filter((filter) => SESSION_KEYS.has(filter.key));
+export const pageFilters = (query: StoreQuery) => query.filters.filter((filter) => !SESSION_KEYS.has(filter.key));
 
 /** `neq` keeps rows whose value is missing: a pageview with no source is not from Google. */
 const filterClause = (filters: ReadonlyArray<Filter>, table?: string) =>
@@ -210,7 +210,7 @@ const unionTotals = (parts: SQL[]) => sql`
   select bucket, sum(pageviews)::bigint as pageviews, sum(visitors)::bigint as visitors, sum(visits)::bigint as visits,
     sum(bounces)::bigint as bounces, sum(total_duration)::bigint as total_duration
   from (${sql.join(parts, sql` union all `)}) parts
-  group by bucket`;
+  group by bucket order by bucket`;
 
 export function dailyTotalsSql(query: StoreQuery, plan: Plan) {
   const { timezone } = query;
