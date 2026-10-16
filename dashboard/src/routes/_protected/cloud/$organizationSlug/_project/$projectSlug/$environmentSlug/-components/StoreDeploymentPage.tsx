@@ -43,9 +43,9 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const graph = makeRunGraph(deployment);
   const selected = selectRunNode(graph, search);
   return (
-    // Stacked on a narrow screen, the page scrolls. The canvas keeps its height and the panel gets a screen of its own.
-    <div className="flex min-h-0 flex-1 gap-2 p-2 max-lg:flex-col max-lg:overflow-y-auto">
-      <div className="relative min-h-80 flex-1 overflow-hidden rounded-xl border max-lg:flex-none">
+    // Stacked when the page is narrow, on a phone or beside the Agent, it scrolls. The canvas keeps its height and the panel gets a screen of its own.
+    <div className="flex min-h-0 flex-1 gap-2 p-2 @max-5xl:flex-col @max-5xl:overflow-y-auto">
+      <div className="relative min-h-96 flex-1 overflow-hidden rounded-xl border @max-5xl:h-3/5 @max-5xl:flex-none">
         <RunCanvas graph={graph} selectedId={selected?.id}
           header={<RunHeader deployment={deployment} graph={graph} selected={selected} search={search} onCancel={cancel} />} />
       </div>
