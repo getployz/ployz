@@ -108,15 +108,14 @@ describe("goalRate", () => {
 describe("analyticsGate", () => {
   const on = { enabled: true };
   it("closes on the plan before looking at the Environment", () => {
-    expect(analyticsGate("unpaid", on)).toEqual({ gate: "unpaid" });
     expect(analyticsGate("self-host-off", on)).toEqual({ gate: "self-host-off" });
   });
 
-  it("opens on a paid or self-host plan only where the Environment turned it on", () => {
-    expect(analyticsGate("paid", on)).toEqual({ gate: "on", site: on });
+  it("opens on Cloud or a self-host plan only where the Environment turned it on", () => {
+    expect(analyticsGate("cloud", on)).toEqual({ gate: "on", site: on });
     expect(analyticsGate("self-host-on", on)).toEqual({ gate: "on", site: on });
-    expect(analyticsGate("paid", { enabled: false })).toEqual({ gate: "site-off" });
-    expect(analyticsGate("paid", undefined)).toEqual({ gate: "site-off" });
+    expect(analyticsGate("cloud", { enabled: false })).toEqual({ gate: "site-off" });
+    expect(analyticsGate("cloud", undefined)).toEqual({ gate: "site-off" });
   });
 });
 

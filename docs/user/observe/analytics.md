@@ -6,7 +6,7 @@ description: Count visitors, pages, sources and goals for each Environment, with
 Ployz counts the pages your Environment's domains serve, on the servers that serve them. There is
 no script to add and no cookie banner to show: a visit is a browser asking for an HTML page.
 
-Analytics comes with the paid plan on Ployz Cloud. A self-hosted Cloud runs it once its operator sets
+Every Ployz Cloud Organization has analytics. A self-hosted Cloud runs it once its operator sets
 `ANALYTICS_ENABLED=true` and restarts it.
 
 ## Turn it on
@@ -16,7 +16,7 @@ Analytics comes with the paid plan on Ployz Cloud. A self-hosted Cloud runs it o
 
 Ployz counts from that moment, in your browser's time zone. The zone stays the Environment's for
 good, so its days never shift under the numbers. Until the first visit lands, the page says so. If
-visits arrived but none could be counted, it names the days they were lost on instead.
+visits arrived but none could be counted, it says no visits were counted.
 
 ## Read the page
 
@@ -30,8 +30,7 @@ to flip the filter to every other page, and the cross to clear it.
 
 A dashed stretch of the chart is a partial day. That is today, whose visits are still arriving; a
 day on which some visits could not be counted; or a recent day whose visits may still arrive late,
-because a Machine held them while it could not reach Cloud. The note under the chart names those
-days.
+because a Machine held them while it could not reach Cloud.
 
 ## Goals
 

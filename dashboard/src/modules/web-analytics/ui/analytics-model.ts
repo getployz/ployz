@@ -89,16 +89,16 @@ export function partialDays(days: ReadonlyArray<string>, evidence: DayEvidence):
   });
 }
 
-export type AnalyticsPlan = "paid" | "unpaid" | "self-host-on" | "self-host-off";
-export type ClosedGate = "unpaid" | "self-host-off" | "site-off";
+export type AnalyticsPlan = "cloud" | "self-host-on" | "self-host-off";
+export type ClosedGate = "self-host-off" | "site-off";
 
 /**
- * What the page can show. Cloud sells analytics with the paid plan, a self-hosted Cloud runs it when its operator
+ * What the page can show. Cloud gives analytics to everyone, a self-hosted Cloud runs it when its operator
  * turns it on, and an Environment counts nothing until someone turns it on there.
  */
 export function analyticsGate<S extends { readonly enabled: boolean }>(plan: AnalyticsPlan, site: S | undefined):
   { readonly gate: "on"; readonly site: S } | { readonly gate: ClosedGate } {
-  if (plan === "unpaid" || plan === "self-host-off") return { gate: plan };
+  if (plan === "self-host-off") return { gate: plan };
   return site?.enabled ? { gate: "on", site } : { gate: "site-off" };
 }
 
