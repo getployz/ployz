@@ -172,7 +172,13 @@ pub(super) async fn reject(credential: &Credential, ids: &[&str]) -> Result<u64,
         let body = json!({ "ids": batch });
         let Reply { rejected } =
             cloud_account::refusable(credential, Method::POST, "reject-servers", Some(&body))
-                .await?;
+                .await
+                .map_err(|error| match total {
+                    0 => Error::from(error),
+                    done => Error::from(error).context(format!(
+                        "{done} rejected before Cloud refused the rest; run the same reject again"
+                    )),
+                })?;
         total += rejected;
     }
     Ok(total)
@@ -215,7 +221,7 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
         ]);
     }
     let raw: Vec<&Value> = waiting.iter().map(|waiting| &waiting.raw).collect();
-    ui::list(&raw, &table)
+    ui::list(&json!({ "waiting_servers": raw }), &table)
 }
 
 /// `server show` for a waiting server: its facts, then what keeps it from joining.
@@ -244,7 +250,7 @@ pub(super) fn show(waiting: &Waiting) -> Result<(), Error> {
         .field("storage", row.storage())
         .field(
             "from",
-            format!("{} · {} · {}", row.ip(), row.provider(), row.fleet_token),
+            format!("{} · {} · {}", row.from(), row.provider(), row.fleet_token),
         )
         .field(
             "first seen",
@@ -269,12 +275,19 @@ impl Row {
         self.report.provider.as_deref().unwrap_or("Unknown")
     }
 
-    /// The address the host says it has, else the one Cloud saw it check in from.
+    /// The address Cloud saw the host check in from.
     pub(super) fn ip(&self) -> &str {
-        self.report
-            .public_ip
-            .as_deref()
-            .unwrap_or(&self.observed_ip)
+        &self.observed_ip
+    }
+
+    /// The observed address, and the one the host reports when it differs.
+    fn from(&self) -> String {
+        match self.report.public_ip.as_deref() {
+            Some(reported) if reported != self.observed_ip => {
+                format!("{} (reports {reported})", self.observed_ip)
+            }
+            _ => self.observed_ip.clone(),
+        }
     }
 
     fn readiness(&self) -> (&'static str, Tone) {
@@ -437,11 +450,14 @@ mod tests {
     }
 
     #[test]
-    fn the_ip_falls_back_to_where_cloud_saw_the_host() {
+    fn the_ip_is_where_cloud_saw_the_host() {
         let mut host = waiting("waiting", None);
-        assert_eq!(host.row.ip(), "203.0.113.9");
+        assert_eq!(host.row.from(), "203.0.113.9");
+        host.row.report.public_ip = Some("203.0.113.9".into());
+        assert_eq!(host.row.from(), "203.0.113.9");
         host.row.report.public_ip = Some("198.51.100.4".into());
-        assert_eq!(host.row.ip(), "198.51.100.4");
+        assert_eq!(host.row.ip(), "203.0.113.9");
+        assert_eq!(host.row.from(), "203.0.113.9 (reports 198.51.100.4)");
     }
 
     #[test]

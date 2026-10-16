@@ -46,7 +46,14 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     }
     let listed: Vec<_> = matched
         .iter()
-        .map(|host| json!({ "id": host.row.id, "name": host.row.name }))
+        .map(|host| {
+            json!({
+                "id": host.row.id,
+                "name": host.row.name,
+                "ip": host.row.ip(),
+                "fleet_token": host.row.fleet_token,
+            })
+        })
         .collect();
     if !ui::json() {
         let mut table = Table::new(["NAME", "IP", "TOKEN"], "");

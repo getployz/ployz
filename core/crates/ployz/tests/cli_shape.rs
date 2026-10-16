@@ -697,7 +697,8 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
     let (code, json, _) = run_json_with(&["server", "ls", "--waiting", "--json"], &token);
     assert_eq!(code, Some(0), "{json}");
     let names: Vec<_> = json
-        .as_array()
+        .pointer("/waiting_servers")
+        .and_then(serde_json::Value::as_array)
         .unwrap()
         .iter()
         .map(|row| row["name"].clone())
@@ -724,8 +725,18 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
     assert_eq!(
         json.pointer("/error/details/waiting_servers").unwrap(),
         &serde_json::json!([
-            { "id": "00000000-0000-4000-8000-000000000001", "name": "web-1" },
-            { "id": "00000000-0000-4000-8000-000000000002", "name": "web-2" },
+            {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "name": "web-1",
+                "ip": "203.0.113.9",
+                "fleet_token": "amber-falcon",
+            },
+            {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "web-2",
+                "ip": "203.0.113.9",
+                "fleet_token": "amber-falcon",
+            },
         ])
     );
     assert!(posted().is_empty(), "{:?}", posted());
