@@ -1,12 +1,43 @@
 import { type QueryKey, queryOptions, useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import type { RangeSpec } from "./analytics-model";
-import { createGoalServerFn, deleteGoalServerFn, readAnalyticsViewServerFn, turnOnAnalyticsServerFn } from "./analytics.functions";
+import type { RangeSpec, RequestWindow } from "./analytics-model";
+import {
+  createGoalServerFn,
+  deleteGoalServerFn,
+  readAnalyticsViewServerFn,
+  readApiViewServerFn,
+  readErrorsViewServerFn,
+  turnOnAnalyticsServerFn,
+} from "./analytics.functions";
 
 export type AnalyticsScope = { readonly organizationSlug: string; readonly environmentId: string };
 export type AnalyticsView = Awaited<ReturnType<typeof readAnalyticsViewServerFn>>;
 export type AnalyticsGoal = Extract<AnalyticsView, { gate: "on" }>["goals"][number];
+export type ApiView = Awaited<ReturnType<typeof readApiViewServerFn>>;
+export type ErrorsView = Awaited<ReturnType<typeof readErrorsViewServerFn>>;
+
+/** One window of the API or Errors view, for every service or one. */
+export type RequestRead = { readonly window: RequestWindow; readonly service: string | undefined };
+
+const requestInput = (scope: AnalyticsScope, read: RequestRead) =>
+  ({ ...scope, window: read.window, ...(read.service !== undefined && { service: read.service }) });
+
+export function apiViewQueryOptions(scope: AnalyticsScope, read: RequestRead) {
+  return queryOptions({
+    queryKey: ["analytics-requests", scope.environmentId, "api", read.window, read.service ?? null] as const,
+    queryFn: () => readApiViewServerFn({ data: requestInput(scope, read) }),
+    staleTime: 30_000,
+  });
+}
+
+export function errorsViewQueryOptions(scope: AnalyticsScope, read: RequestRead) {
+  return queryOptions({
+    queryKey: ["analytics-requests", scope.environmentId, "errors", read.window, read.service ?? null] as const,
+    queryFn: () => readErrorsViewServerFn({ data: requestInput(scope, read) }),
+    staleTime: 30_000,
+  });
+}
 
 /** The Environment's analytics for one range and page filter, or which gate is closed. */
 export function analyticsViewQueryOptions(scope: AnalyticsScope, range: RangeSpec, page: string | undefined) {
@@ -29,7 +60,10 @@ export function useTurnOnAnalytics(scope: AnalyticsScope) {
   return useMutation({
     mutationFn: () => turnOnAnalyticsServerFn({ data: { ...scope, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } }),
     onError: (error) => { toast.error(toErrorMessage(error, "Could not turn on analytics")); },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: viewKey(scope) }),
+    onSettled: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: viewKey(scope) }),
+      queryClient.invalidateQueries({ queryKey: ["analytics-requests", scope.environmentId] }),
+    ]),
   });
 }
 

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { analyticsPlan } from "#/modules/billing/billing.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -8,20 +8,24 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Validation } from "#/server/public-error";
 import * as analytics from "../adapter";
-import { localDay, localDays } from "../local-time";
+import { hourBuckets, localDay, localDays } from "../local-time";
 import { setSiteAnalytics } from "../salts.server";
 import { analyticsGoal, analyticsRequest, analyticsSite } from "../tables";
 import {
   analyticsGate,
   type CreateGoalInput,
   DEFAULT_RANGE,
+  DEFAULT_WINDOW,
   type DeleteGoalInput,
   isPathPattern,
   isRangeSpec,
+  isRequestWindow,
   parsePageFilter,
   partialDays,
   type ReadAnalyticsViewInput,
+  type ReadRequestViewInput,
   resolveRange,
+  resolveWindow,
   type TurnOnAnalyticsInput,
 } from "./analytics-model";
 
@@ -96,6 +100,77 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
 });
 
 export type AnalyticsView = Effect.Success<ReturnType<typeof readAnalyticsView>>;
+
+/** The API and Errors views' common ground: the same gate as the Web view, the window as instants, and its services. */
+const openRequests = Effect.fn("WebAnalyticsView.openRequests")(function* (actor: Actor, input: ReadRequestViewInput) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const plan = yield* analyticsPlan();
+  const open = analyticsGate(plan, plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
+  if (open.gate !== "on") return { gate: open.gate } as const;
+  const { timezone } = open.site;
+  const now = yield* Clock.currentTimeMillis;
+  const q: analytics.Query = {
+    site: { environmentId: input.environmentId, timezone },
+    range: resolveWindow(isRequestWindow(input.window) ? input.window : DEFAULT_WINDOW, timezone, now),
+    filters: [],
+    limit: TABLE_ROWS,
+  };
+  return { gate: "on", q } as const;
+});
+
+const servicesIn = Effect.fn("WebAnalyticsView.services")(function* (environmentId: string, range: analytics.Range) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.selectDistinct({ service: analyticsRequest.service }).from(analyticsRequest)
+    .where(and(
+      eq(analyticsRequest.environmentId, environmentId),
+      ne(analyticsRequest.kind, "bot"),
+      gte(analyticsRequest.ts, range.start),
+      lt(analyticsRequest.ts, range.end),
+    ))
+    .orderBy(asc(analyticsRequest.service));
+  return rows.map((row) => row.service);
+});
+
+const sample = (row: analytics.RequestSample) => ({ ...row, ts: row.ts.getTime() });
+
+/** Routes by traffic with latency and 5xx, and the slowest requests, over a window. */
+export const readApiView = Effect.fn("WebAnalyticsView.readApi")(function* (actor: Actor, input: ReadRequestViewInput) {
+  const open = yield* openRequests(actor, input);
+  if (open.gate !== "on") return { gate: open.gate } as const;
+  const answer = yield* analytics.api(open.q, input.service);
+  return {
+    gate: "on",
+    timezone: open.q.site.timezone,
+    range: { start: answer.range.start.getTime(), end: answer.range.end.getTime() },
+    clamped: answer.clamped,
+    services: yield* servicesIn(input.environmentId, answer.range),
+    routes: answer.routes,
+    slowest: answer.slowest.map(sample),
+  } as const;
+});
+
+/** 4xx and 5xx per hour, failures by route and status, and the newest failures, over a window. */
+export const readErrorsView = Effect.fn("WebAnalyticsView.readErrors")(function* (actor: Actor, input: ReadRequestViewInput) {
+  const open = yield* openRequests(actor, input);
+  if (open.gate !== "on") return { gate: open.gate } as const;
+  const { timezone } = open.q.site;
+  const answer = yield* analytics.errors(open.q, input.service);
+  const counted = new Map(answer.hourly.map((bucket) => [bucket.bucket.getTime(), bucket]));
+  return {
+    gate: "on",
+    timezone,
+    range: { start: answer.range.start.getTime(), end: answer.range.end.getTime() },
+    clamped: answer.clamped,
+    services: yield* servicesIn(input.environmentId, answer.range),
+    hourly: hourBuckets(timezone, answer.range.start, answer.range.end).map((bucket) => ({
+      at: bucket.getTime(),
+      clientErrors: counted.get(bucket.getTime())?.clientErrors ?? 0,
+      serverErrors: counted.get(bucket.getTime())?.serverErrors ?? 0,
+    })),
+    byRoute: answer.byRoute,
+    newest: answer.newest.map(sample),
+  } as const;
+});
 
 /** Opens the gate's last step: the plan allows analytics, so the Environment starts counting in the browser's zone. */
 export const turnOnAnalytics = Effect.fn("WebAnalyticsView.turnOn")(function* (
