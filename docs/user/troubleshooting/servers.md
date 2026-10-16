@@ -129,8 +129,9 @@ Amazon Linux, `Ineligible` with `secure_boot_unknown`. When a Docker command fai
 
 The probe never starts Docker. When `docker.socket` listens but `docker.service` isn't running,
 `facts.docker` is `SocketActivated` with no version, and `facts.unread` says why. That isn't a
-blocker: the install's first Docker command starts it. A Docker that doesn't answer, or whose
-`docker.service` has failed, shows as `docker_stopped`.
+blocker: the install's first Docker command starts it. If `docker.service` failed the last time
+it ran, `facts.unread` says so, because only the install's start shows whether it fails again. A
+Docker that doesn't answer shows as `docker_stopped`.
 
 ## Managed volumes are missing after a kernel update
 

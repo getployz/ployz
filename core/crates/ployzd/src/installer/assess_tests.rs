@@ -679,26 +679,32 @@ fn probe_docker_unreadable_contract() {
     );
 }
 
-/// A `docker.service` that failed behind a listening socket fails again when install asks, so the
-/// probe blocks on it as stopped, still without running `docker`.
+/// A `docker.service` that failed behind a listening socket may start when install asks, so the
+/// probe doesn't block on it: it reports the earlier failure as unread, still without running
+/// `docker`.
 #[test]
 fn probe_failed_docker_service_contract() {
     const CASE: &str = "PLOYZ_PROBE_FAILED_DOCKER_CONTRACT";
     if env::var(CASE).is_ok() {
         let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
         let facts = read_facts(&InstallPaths::at(&root)).unwrap();
-        assert!(matches!(facts.docker, DockerFacts::Stopped), "{facts:?}");
+        assert!(
+            matches!(facts.docker, DockerFacts::SocketActivated),
+            "{facts:?}"
+        );
         assert_eq!(
             docker_blocker(&facts.docker).map(|blocker| blocker.code),
-            Some("docker_stopped")
+            None
         );
-        assert!(
-            !facts
+        assert_eq!(
+            facts
                 .unread
                 .iter()
-                .any(|reason| reason.starts_with("read Docker version")),
-            "{:?}",
-            facts.unread
+                .filter(|reason| reason.starts_with("read Docker version"))
+                .collect::<Vec<_>>(),
+            [
+                "read Docker version: docker.service failed the last time it ran, and install will try to start it through docker.socket"
+            ],
         );
         fs::write(root.join("child-completed"), "failed-docker").unwrap();
         return;

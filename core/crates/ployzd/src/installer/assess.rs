@@ -106,10 +106,10 @@ pub(super) enum DiskRole {
 #[derive(Debug, Serialize)]
 pub(super) enum DockerFacts {
     Absent,
-    /// Docker doesn't answer, or `docker.service` has failed behind a listening `docker.socket`.
+    /// Docker doesn't answer.
     Stopped,
-    /// `docker.socket` listens while `docker.service` isn't running and hasn't failed. The first
-    /// `docker` command starts the daemon, so the probe asks nothing more and install passes.
+    /// `docker.socket` listens while `docker.service` isn't running. The first `docker` command
+    /// starts the daemon, so the probe asks nothing more and `unread` says why.
     SocketActivated,
     Present {
         version: String,
@@ -189,14 +189,10 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     }
     // The Docker error lives in `docker.error` and becomes a blocker there.
     let docker = match docker_behind_its_socket() {
-        Some(DockerFacts::SocketActivated) => {
-            keep(Some(unreadable(
-                "read Docker version",
-                "docker.socket is listening but docker.service isn't running, and asking Docker would start it",
-            )));
+        Some(reason) => {
+            keep(Some(unreadable("read Docker version", reason)));
             DockerFacts::SocketActivated
         }
-        Some(docker) => docker,
         None => read_docker().0,
     };
     let (zpool_present, error) = read_zpool_present(&paths.zfs_module);
@@ -240,10 +236,11 @@ fn keep_ok<T>(keep: &mut impl FnMut(Option<Error>), result: Result<T, Error>) ->
     result.map_err(|error| keep(Some(error))).ok()
 }
 
-/// Docker's state while `docker.socket` listens and `docker.service` isn't running, or is still
-/// starting, read without a `docker` command, which would start the daemon and every container
-/// set to restart with it. A failed service fails again when install asks, so it reads as stopped.
-fn docker_behind_its_socket() -> Option<DockerFacts> {
+/// Why the probe doesn't ask Docker, when `docker.socket` listens and `docker.service` isn't
+/// running or is still starting. A `docker` command would start the daemon and every container
+/// set to restart with it. Install starts it that way, and only that start shows whether a service
+/// that failed before fails again.
+fn docker_behind_its_socket() -> Option<&'static str> {
     let systemctl = |verb, unit| {
         Command::new("systemctl")
             .args([verb, "--quiet", unit])
@@ -256,10 +253,11 @@ fn docker_behind_its_socket() -> Option<DockerFacts> {
     {
         return None;
     }
-    if systemctl("is-failed", "docker.service") {
-        return Some(DockerFacts::Stopped);
-    }
-    Some(DockerFacts::SocketActivated)
+    Some(if systemctl("is-failed", "docker.service") {
+        "docker.service failed the last time it ran, and install will try to start it through docker.socket"
+    } else {
+        "docker.socket is listening but docker.service isn't running, and asking Docker would start it"
+    })
 }
 
 fn unreadable(stage: &str, message: impl Into<String>) -> Error {
@@ -657,7 +655,7 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
         error,
     } = docker
     else {
-        // Install starts a socket-activated Docker with its first command and passes.
+        // Install starts a socket-activated Docker with its first command.
         return matches!(docker, DockerFacts::Stopped).then(|| {
             Blocker::new(
                 "docker_stopped",
