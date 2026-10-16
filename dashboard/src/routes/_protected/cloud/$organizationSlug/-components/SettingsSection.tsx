@@ -24,9 +24,10 @@ export function RowWarning({ why, action, children }: { why?: ReactNode; action?
 export const SHARED_VOLUME_WHY = "These containers write to the same files at the same time. Databases like Postgres and MySQL expect to be the only writer, so their data can be corrupted. Run 1 replica, or give each service its own volume.";
 
 /**
- * One section of settings, the same on every settings surface, panel or page: flat, a hairline above all but the first,
- * a title, and a line of description only where the title isn't enough. Its rows are Fields in one FieldGroup, so they
- * sit label left, control right where there's room, and stack where it's narrow. Danger rows are `DangerRow`s.
+ * One section of settings, the same on every settings surface, panel or page: a title, a line of description only
+ * where the title isn't enough, and its rows in one bordered card with a hairline between them. Its rows are Fields in
+ * one FieldGroup, so they sit label left, control right where there's room, and stack where it's narrow. Danger rows
+ * are `DangerRow`s.
  */
 export function SettingsSection({ id, title, description, action, children }: {
   id: string;
@@ -37,16 +38,18 @@ export function SettingsSection({ id, title, description, action, children }: {
   children: ReactNode;
 }) {
   return (
-    <section data-sec={id} aria-labelledby={`settings-${id}`} className="flex flex-col gap-4 border-t pt-6 first:border-t-0 first:pt-0">
+    <section data-sec={id} aria-labelledby={`settings-${id}`} className="flex flex-col gap-3 not-first:mt-4">
       {/* The title never breaks: where the actions don't fit beside it, they wrap under it. */}
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="flex min-w-48 flex-1 flex-col gap-1">
-          <h2 id={`settings-${id}`} className="text-base font-medium">{title}</h2>
+          <h2 id={`settings-${id}`} className="text-base font-semibold">{title}</h2>
           {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
         </div>
         {action ? <div className="flex shrink-0 flex-wrap justify-end gap-2">{action}</div> : null}
       </div>
-      <FieldGroup>{children}</FieldGroup>
+      <FieldGroup className="gap-0 rounded-lg border bg-background *:min-h-15 *:px-4 *:py-3 *:not-first:border-t *:not-first:border-border/70">
+        {children}
+      </FieldGroup>
     </section>
   );
 }

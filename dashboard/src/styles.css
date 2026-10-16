@@ -23,7 +23,7 @@
   --secondary: #fafafa;
   --secondary-foreground: #111111;
   --muted: #f2f2f2;
-  --muted-foreground: #666666;
+  --muted-foreground: #5c5c5c;
   --accent: var(--muted);
   --accent-foreground: #111111;
   --destructive: hsl(1 62% 44%);
