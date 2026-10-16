@@ -44,8 +44,8 @@ the ones waiting:
 ployz server ls --waiting
 ```
 
-Each row shows the server's name, its provider, its IP address, its status and how long ago it
-first checked in. **Ready** means it can join now. **Installing Docker** and **Building ZFS** mean
+Each row shows the server's name, its provider, the IP address Ployz Cloud saw it check in from,
+its status and how long ago it first checked in. **Ready** means it can join now. **Installing Docker** and **Building ZFS** mean
 it is still getting ready. **Docker install failed** means Ployz couldn't install Docker there.
 **Blocked** means something on the server stops it from joining, and **Offline** means it stopped
 checking in.
