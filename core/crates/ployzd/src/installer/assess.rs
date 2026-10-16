@@ -106,10 +106,10 @@ pub(super) enum DiskRole {
 #[derive(Debug, Serialize)]
 pub(super) enum DockerFacts {
     Absent,
-    /// Neither `docker.service` nor `docker.socket` is active.
+    /// Docker doesn't answer, or `docker.service` has failed behind a listening `docker.socket`.
     Stopped,
-    /// `docker.socket` listens while `docker.service` isn't running. The first `docker` command
-    /// starts the daemon, so the probe asks nothing more and install starts it and passes.
+    /// `docker.socket` listens while `docker.service` isn't running and hasn't failed. The first
+    /// `docker` command starts the daemon, so the probe asks nothing more and install passes.
     SocketActivated,
     Present {
         version: String,
@@ -188,14 +188,16 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
         keep(Some(error));
     }
     // The Docker error lives in `docker.error` and becomes a blocker there.
-    let docker = if docker_waits_on_its_socket() {
-        keep(Some(unreadable(
-            "read Docker version",
-            "docker.socket is listening but docker.service isn't running, and asking Docker would start it",
-        )));
-        DockerFacts::SocketActivated
-    } else {
-        read_docker().0
+    let docker = match docker_behind_its_socket() {
+        Some(DockerFacts::SocketActivated) => {
+            keep(Some(unreadable(
+                "read Docker version",
+                "docker.socket is listening but docker.service isn't running, and asking Docker would start it",
+            )));
+            DockerFacts::SocketActivated
+        }
+        Some(docker) => docker,
+        None => read_docker().0,
     };
     let (zpool_present, error) = read_zpool_present(&paths.zfs_module);
     keep(error);
@@ -238,16 +240,26 @@ fn keep_ok<T>(keep: &mut impl FnMut(Option<Error>), result: Result<T, Error>) ->
     result.map_err(|error| keep(Some(error))).ok()
 }
 
-/// Whether `docker.service` isn't running, or is still starting, while `docker.socket` listens,
-/// so any `docker` command would start the daemon and every container set to restart with it.
-fn docker_waits_on_its_socket() -> bool {
-    let active = |unit| {
+/// Docker's state while `docker.socket` listens and `docker.service` isn't running, or is still
+/// starting, read without a `docker` command, which would start the daemon and every container
+/// set to restart with it. A failed service fails again when install asks, so it reads as stopped.
+fn docker_behind_its_socket() -> Option<DockerFacts> {
+    let systemctl = |verb, unit| {
         Command::new("systemctl")
-            .args(["is-active", "--quiet", unit])
+            .args([verb, "--quiet", unit])
             .status()
             .is_ok_and(|status| status.success())
     };
-    command_exists("dockerd") && active("docker.socket") && !active("docker.service")
+    if !command_exists("dockerd")
+        || !systemctl("is-active", "docker.socket")
+        || systemctl("is-active", "docker.service")
+    {
+        return None;
+    }
+    if systemctl("is-failed", "docker.service") {
+        return Some(DockerFacts::Stopped);
+    }
+    Some(DockerFacts::SocketActivated)
 }
 
 fn unreadable(stage: &str, message: impl Into<String>) -> Error {
@@ -342,7 +354,10 @@ pub(super) fn read_virtualization(proc_dir: &Path) -> (Virtualization, Option<Er
     let kind = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let virt = match kind.as_str() {
         "" => {
-            let message = format!("systemd-detect-virt printed nothing and {}", output.status);
+            let message = format!(
+                "systemd-detect-virt printed nothing and exited with {}",
+                output.status
+            );
             let error = unreadable("detect virtualization", message);
             return (Virtualization::Unknown, Some(error));
         }

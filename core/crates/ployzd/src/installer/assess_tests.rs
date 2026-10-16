@@ -628,13 +628,19 @@ fn probe_contract() {
     assert!(!root.join("docker.log").exists());
 }
 
-/// A running Docker whose Buildx can't be read blocks the probe with the error install refuses with.
+/// A running Docker whose Buildx can't be started blocks the probe with the error install refuses
+/// with, cause included.
 #[test]
 fn probe_docker_unreadable_contract() {
     const CASE: &str = "PLOYZ_PROBE_DOCKER_UNREADABLE_CONTRACT";
-    const REASON: &str = "checking Docker: buildx: plugin crashed";
+    const REASON: &str = "start host command: Exec format error (os error 8)";
+    // Answers `docker version`, then empties itself so `docker buildx` can't start. PATH holds
+    // only the stubs, so the shell's own `:` does it, not `rm`.
+    const DOCKER: &str = r#"[ "$1" = version ] && echo "29.7.0 1.53"
+: > "$0""#;
     if env::var(CASE).is_ok() {
         let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+        let docker = root.join("commands/docker");
         let facts = read_facts(&InstallPaths::at(&root)).unwrap();
         let DockerFacts::Present { error, .. } = &facts.docker else {
             panic!("{facts:?}");
@@ -645,6 +651,7 @@ fn probe_docker_unreadable_contract() {
             (blocker.code, blocker.message.as_str()),
             ("docker_unreadable", REASON)
         );
+        write_script(&docker, DOCKER);
         let refusal = crate::installer::host::verify_docker().unwrap_err();
         assert_eq!(error_text(&refusal), REASON);
         fs::write(root.join("child-completed"), "docker-unreadable").unwrap();
@@ -661,14 +668,7 @@ fn probe_docker_unreadable_contract() {
     )
     .unwrap();
     write_script(&commands.join("dockerd"), "exit 0");
-    write_script(
-        &commands.join("docker"),
-        r#"case "$1" in
-version) echo "29.7.0 1.53" ;;
-buildx) echo "buildx: plugin crashed" >&2; exit 1 ;;
-*) exit 1 ;;
-esac"#,
-    );
+    write_script(&commands.join("docker"), DOCKER);
     run_contract_child_with_environment(
         "installer::assess::tests::probe_docker_unreadable_contract",
         root,
@@ -677,6 +677,64 @@ esac"#,
         "docker-unreadable",
         [],
     );
+}
+
+/// A `docker.service` that failed behind a listening socket fails again when install asks, so the
+/// probe blocks on it as stopped, still without running `docker`.
+#[test]
+fn probe_failed_docker_service_contract() {
+    const CASE: &str = "PLOYZ_PROBE_FAILED_DOCKER_CONTRACT";
+    if env::var(CASE).is_ok() {
+        let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+        let facts = read_facts(&InstallPaths::at(&root)).unwrap();
+        assert!(matches!(facts.docker, DockerFacts::Stopped), "{facts:?}");
+        assert_eq!(
+            docker_blocker(&facts.docker).map(|blocker| blocker.code),
+            Some("docker_stopped")
+        );
+        assert!(
+            !facts
+                .unread
+                .iter()
+                .any(|reason| reason.starts_with("read Docker version")),
+            "{:?}",
+            facts.unread
+        );
+        fs::write(root.join("child-completed"), "failed-docker").unwrap();
+        return;
+    }
+
+    let fixture = fixture("probe-failed-docker");
+    let root = fixture.path();
+    let commands = root.join("commands");
+    fs::create_dir_all(&commands).unwrap();
+    fs::write(
+        root.join("os-release"),
+        "NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"24.04\"\n",
+    )
+    .unwrap();
+    write_script(&commands.join("dockerd"), "exit 0");
+    write_script(
+        &commands.join("docker"),
+        r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/docker.log""#,
+    );
+    // docker.socket listens; docker.service has failed.
+    write_script(
+        &commands.join("systemctl"),
+        r#"case "$1 $2 $3" in
+"is-active --quiet docker.socket" | "is-failed --quiet docker.service") exit 0 ;;
+*) exit 1 ;;
+esac"#,
+    );
+    run_contract_child_with_environment(
+        "installer::assess::tests::probe_failed_docker_service_contract",
+        root,
+        OsString::from(CASE),
+        OsString::from("failed-docker"),
+        "failed-docker",
+        [],
+    );
+    assert!(!root.join("docker.log").exists());
 }
 
 /// An unreadable Secure Boot variable leaves the state unknown, as install reads it, even when
