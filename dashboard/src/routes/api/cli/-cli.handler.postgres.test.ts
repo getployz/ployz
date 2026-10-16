@@ -412,7 +412,7 @@ it.live(
 );
 
 it.live(
-  "an Organization Token can't make or revoke tokens, so none outlives the token that made it",
+  "an Organization Token can't make or revoke tokens or Fleet Tokens, so none outlives the token that made it",
   () =>
     Effect.gen(function* () {
       const layer = yield* cliLayer();
@@ -429,6 +429,12 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 422);
         assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
+
+        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token ?? assert.fail("no fleet token");
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", asToken, { expires_in: "30d" })).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken)).status, 422);
+        assert.deepStrictEqual((yield* database.drizzle.select().from(fleetToken)).map((row) => [row.name, row.revokedAt]), [["rack-1", null]]);
+        assert.strictEqual((yield* cli("GET", "fleet-tokens", asToken)).status, 200);
 
         // A cookie, which any page can make the browser send, signs no CLI request in.
         const forged = new Request(`${origin}/api/cli/tokens`, {

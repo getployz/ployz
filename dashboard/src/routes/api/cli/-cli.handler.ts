@@ -9,6 +9,7 @@ import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.se
 import {
   createOrganizationToken,
   listCredentials,
+  requireSignedIn,
   revokeCredential,
 } from "#/modules/identity/organization-token.server";
 import {
@@ -148,6 +149,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       };
     }
     case "POST fleet-tokens": {
+      yield* requireSignedIn(caller);
       const input = yield* decodeBody(NewFleetToken, request,
         "A Fleet Token takes an expiry of 1d, 7d or 30d, and an optional name of lowercase letters, digits and hyphens.");
       const created = yield* createFleetToken(caller, {
@@ -159,6 +161,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { fleet_token: { id: created.id, name: created.name, token: created.token, expires_at: created.expiresAt } };
     }
     case "DELETE fleet-tokens/:id": {
+      yield* requireSignedIn(caller);
       const ref = decodeURIComponent(id ?? "");
       const target = Schema.is(Uuid)(ref) ? { id: ref } : { name: ref };
       const revoked = yield* revokeFleetToken(caller, { organizationSlug: caller.organization.slug, ...target });
