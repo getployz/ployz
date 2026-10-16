@@ -1,7 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { Persistable } from "#/collections/query-collection";
 import { Button } from "#/components/ui/button";
-import { Field, FieldError, FieldLabel } from "#/components/ui/field";
+import { SettingsFormField } from "#/components/settings/settings-list";
+import { FieldError } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { StoreRefused } from "./store.contract";
@@ -17,6 +18,7 @@ export function MountEditor({ choices, initial, submit, onClose }: {
   choices: readonly MountChoice[]; initial: MountEditing;
   submit: (counterpart: string, directory: string) => Persistable | null; onClose: () => void;
 }) {
+  const serviceId = useId();
   const directoryId = useId();
   const [selected, setSelected] = useState(choices.find((choice) => choice.id === initial.counterpart) ?? null);
   const [directory, setDirectory] = useState(initial.directory);
@@ -53,27 +55,26 @@ export function MountEditor({ choices, initial, submit, onClose }: {
         if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) return;
         event.preventDefault(); event.stopPropagation(); attempt.current++; onClose();
       }}>
-      <Field>
-        <FieldLabel>Service</FieldLabel>
+      <SettingsFormField label="Service" htmlFor={serviceId}>
         <Select items={shown.map((choice) => ({ value: choice.id, label: choice.name }))} value={selected?.id ?? ""} disabled={pending || initial.editing} onValueChange={(id) => {
           const choice = choices.find((one) => one.id === id) ?? null;
           if (directory === (selected?.directory ?? initial.directory)) setDirectory(choice?.directory ?? initial.directory);
           setSelected(choice); setStatus({ kind: "idle", error: null });
         }}>
-          <SelectTrigger aria-label="Service" autoFocus={!initial.editing}><SelectValue placeholder="Select a service" /></SelectTrigger>
+          <SelectTrigger id={serviceId} className="w-full" autoFocus={!initial.editing}><SelectValue placeholder="Select a service" /></SelectTrigger>
           <SelectContent><SelectGroup>{shown.map((choice) => (
             <SelectItem key={choice.id} value={choice.id} disabled={choice.refusal !== null} label={choice.name}>
               {choice.name}{choice.refusal ? ` · ${choice.refusal}` : ""}
             </SelectItem>
           ))}</SelectGroup></SelectContent>
         </Select>
-      </Field>
-      <Field data-invalid={status.kind === "idle" && status.error ? true : undefined}>
-        <FieldLabel htmlFor={directoryId}>Directory</FieldLabel>
+      </SettingsFormField>
+      <SettingsFormField label="Directory" htmlFor={directoryId}>
         <Input id={directoryId} className="font-mono" value={directory} disabled={pending} autoFocus={initial.editing}
+          aria-invalid={status.kind === "idle" && status.error ? true : undefined}
           onChange={(event) => { setDirectory(event.target.value); setStatus({ kind: "idle", error: null }); }} />
         {status.kind === "idle" && status.error ? <FieldError role="alert">{status.error}</FieldError> : null}
-      </Field>
+      </SettingsFormField>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={() => { attempt.current++; onClose(); }}>Cancel</Button>
         <Button type="submit" disabled={pending}>{pending ? "Saving…" : initial.editing ? "Save directory" : "Mount"}</Button>

@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { FieldError } from "#/components/ui/field";
 import { RowWarning, SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
-import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import { MountEditor, mountFailure, type MountEditing } from "./MountEditor";
 import { detachedMounts, mountChange } from "./store-volumes";
 import { mountRefusal, volumeWriters, writersText } from "./volume-sharing";
@@ -107,7 +107,7 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
           hint={<>Unmounts from <span className="break-all font-mono">{mount.path}</span> on your next deploy. The data stays in this volume.</>} />)}
       </SettingsList> : <SettingsEmpty title="No mounts" />}
       {editor ? (
-        <SettingsRow label={<span ref={anchor}>{editor.editing ? "Edit directory" : "Mount on a service"}</span>} commit="form">
+        <SettingsWorkspace label={<span ref={anchor}>{editor.editing ? "Edit directory" : "Mount on a service"}</span>}>
           <MountEditor key={`${editor.editing}:${editor.counterpart}`}
             choices={choices.filter((choice) => choice.id === editor.counterpart || available.some((one) => one.id === choice.id))} initial={editor}
             onClose={closeEditor} submit={(id, directory) => {
@@ -123,7 +123,7 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
               }
               return writer.edit({ environment, changes: [mountChange(service.name, volume.name, directory)] });
             }} />
-        </SettingsRow>
+        </SettingsWorkspace>
       ) : ownerActive && available.length ? (
         <SettingsFoot>
           <SettingsAddButton onClick={() => setEditor({ trigger: null, counterpart: "", directory: "/data", editing: false })}>Mount on a service</SettingsAddButton>

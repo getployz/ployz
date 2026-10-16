@@ -5,7 +5,7 @@ import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { FieldError } from "#/components/ui/field";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
-import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import { MountEditor, mountFailure, type MountEditing } from "./MountEditor";
 import { attachConfigCommand, detachedConfigMounts } from "./store-configs";
 import { useStoreWriter } from "./store-write";
@@ -94,7 +94,7 @@ export function StoreConfigMounts({ resourceId, organizationSlug, environment, s
           hint={<>Unmounts from <span className="break-all font-mono">{mount.directory}</span> on your next deploy. The config and its files stay.</>} />)}
       </SettingsList> : <SettingsEmpty title="No mounts" />}
       {editor ? (
-        <SettingsRow label={<span ref={anchor}>{editor.editing ? "Edit directory" : "Mount on a service"}</span>} commit="form">
+        <SettingsWorkspace label={<span ref={anchor}>{editor.editing ? "Edit directory" : "Mount on a service"}</span>}>
           <MountEditor key={`${editor.editing}:${editor.counterpart}`}
             choices={choices.filter((choice) => choice.id === editor.counterpart || available.some((one) => one.id === choice.id))} initial={editor}
             onClose={closeEditor} submit={(id, directory) => {
@@ -105,7 +105,7 @@ export function StoreConfigMounts({ resourceId, organizationSlug, environment, s
               if (current?.dir === directory) return null;
               return writer.commit(attachConfigCommand(environment, service.name, config.name, directory), ["invalid", "conflict"]);
             }} />
-        </SettingsRow>
+        </SettingsWorkspace>
       ) : ownerActive && available.length ? (
         <SettingsFoot>
           <SettingsAddButton onClick={() => setEditor({ trigger: null, counterpart: "", directory: directoryDefault, editing: false })}>Mount on a service</SettingsAddButton>
