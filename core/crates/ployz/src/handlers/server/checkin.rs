@@ -47,6 +47,14 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<PathBuf>("token-file")
         .cloned()
         .unwrap_or_else(|| PathBuf::from(Paths::TOKEN_FILE));
+    // The unit runs from /, so a path relative to here would name another file there.
+    let token_file = std::path::absolute(&token_file).map_err(|error| {
+        Error::caused(
+            RpcErrorCode::InvalidArgument,
+            "Could not resolve the --token-file path.",
+            error,
+        )
+    })?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
         .map_or(DEFAULT_CLOUD, String::as_str)

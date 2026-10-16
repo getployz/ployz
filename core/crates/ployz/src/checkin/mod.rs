@@ -28,6 +28,7 @@ const ENROLL_WAIT: Duration = Duration::from_secs(10);
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+const TOKEN_SETTLE: Duration = Duration::from_secs(2);
 
 pub(crate) struct Paths {
     pub(crate) checkin_dir: PathBuf,
@@ -287,9 +288,10 @@ pub(crate) async fn run<H: Host>(
                 tokio::time::sleep(after).await;
             }
             Next::Stop(reason, message) => {
-                // The answer is about the token that was sent, not one written since.
-                if let Ok(token) = FleetToken::read(&paths.token_file)
-                    && !client.sends(&token)
+                // A token answer is about the token that was sent, not one written since. A
+                // rejection is about the host, whatever token it holds.
+                if reason != StopReason::Rejected
+                    && let Some(token) = replaced_token(client, &paths.token_file).await
                 {
                     crate::ui::note(format!(
                         "{}. Checking in with the new Fleet Token.",
@@ -312,6 +314,20 @@ pub(crate) async fn run<H: Host>(
             }
         }
     }
+}
+
+/// The token in the file when it differs from the one sent. A file caught mid-write is read
+/// again once it settles, so a replacement is not deleted as the old token.
+async fn replaced_token(client: &CheckinClient, path: &Path) -> Option<FleetToken> {
+    let token = match FleetToken::read(path) {
+        Err(KeyError::Token { source, .. }) if source.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => {
+            tokio::time::sleep(TOKEN_SETTLE).await;
+            FleetToken::read(path).ok()
+        }
+        Ok(token) => Some(token),
+    };
+    token.filter(|token| !client.sends(token))
 }
 
 pub(crate) async fn stop<H: Host>(host: &H, paths: &Paths) {

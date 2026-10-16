@@ -161,6 +161,15 @@ fn unauthorized_is_refused_not_revoked_and_rate_limits_wait() {
         Reply::Answer(Answer::Wait(Duration::from_secs(9)))
     );
     assert_eq!(
+        client::reply(
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(Duration::from_secs(u64::MAX)),
+            None,
+            b""
+        ),
+        Reply::Answer(Answer::Wait(Duration::from_secs(3600)))
+    );
+    assert_eq!(
         client::reply(StatusCode::TOO_MANY_REQUESTS, None, None, b""),
         Reply::Answer(Answer::Wait(Duration::from_secs(1)))
     );
@@ -183,17 +192,17 @@ async fn stop_removes_the_token_and_disables_the_loop() {
     assert_eq!(host.disables.load(Ordering::SeqCst), 2);
 }
 
-#[tokio::test]
-async fn a_stop_for_a_replaced_token_checks_in_with_the_new_one() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = paths(&dir);
-    fs::write(&paths.token_file, "pflt_new\n").unwrap();
+/// Answers `stops` check-ins with the same stop and returns each request.
+async fn stopping_cloud(
+    reason: &'static str,
+    stops: usize,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
-        let body = r#"{"kind":"stop","reason":"token_revoked","message":"Revoked."}"#;
+        let body = format!(r#"{{"kind":"stop","reason":"{reason}","message":"Done."}}"#);
         let mut requests = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..stops {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buf = vec![0; 16384];
             let read = stream.read(&mut buf).await.unwrap();
@@ -206,15 +215,65 @@ async fn a_stop_for_a_replaced_token_checks_in_with_the_new_one() {
         }
         requests
     });
-    let host = FakeHost::default();
-    let end = run(&host, &mut client(&url), &key(), &paths).await;
-    assert!(matches!(end, CheckinEnd::Stopped(StopReason::TokenRevoked)));
-    let requests = tokio::time::timeout(Duration::from_secs(5), server)
+    (url, server)
+}
+
+async fn old_then_new(server: tokio::task::JoinHandle<Vec<String>>) {
+    let requests = tokio::time::timeout(Duration::from_secs(10), server)
         .await
         .expect("the new token checks in once more");
     let [old, new]: [String; 2] = requests.unwrap().try_into().unwrap();
     assert!(old.contains("authorization: Bearer pflt_test"), "{old}");
     assert!(new.contains("authorization: Bearer pflt_new"), "{new}");
+}
+
+#[tokio::test]
+async fn a_stop_for_a_replaced_token_checks_in_with_the_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "pflt_new\n").unwrap();
+    let (url, server) = stopping_cloud("token_revoked", 2).await;
+    let host = FakeHost::default();
+    let end = run(&host, &mut client(&url), &key(), &paths).await;
+    assert!(matches!(end, CheckinEnd::Stopped(StopReason::TokenRevoked)));
+    old_then_new(server).await;
+    assert!(!paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_token_file_caught_mid_write_is_read_again_before_stopping() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "").unwrap();
+    let token_file = paths.token_file.clone();
+    let writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        fs::write(token_file, "pflt_new\n").unwrap();
+    });
+    let (url, server) = stopping_cloud("token_expired", 2).await;
+    let host = FakeHost::default();
+    let end = run(&host, &mut client(&url), &key(), &paths).await;
+    writer.await.unwrap();
+    assert!(matches!(end, CheckinEnd::Stopped(StopReason::TokenExpired)));
+    old_then_new(server).await;
+}
+
+#[tokio::test]
+async fn a_rejection_stops_even_when_the_token_was_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "pflt_new\n").unwrap();
+    let (url, server) = stopping_cloud("rejected", 1).await;
+    let host = FakeHost::default();
+    let end = tokio::time::timeout(
+        Duration::from_secs(10),
+        run(&host, &mut client(&url), &key(), &paths),
+    )
+    .await
+    .expect("a rejection ends the loop without checking in again");
+    assert!(matches!(end, CheckinEnd::Stopped(StopReason::Rejected)));
+    assert_eq!(server.await.unwrap().len(), 1);
     assert!(!paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
 }

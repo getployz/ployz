@@ -239,7 +239,10 @@ pub(super) fn reply(
         });
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
-        return Reply::Answer(Answer::Wait(retry_after.unwrap_or(Duration::from_secs(1))));
+        let after = retry_after
+            .unwrap_or(Duration::from_secs(1))
+            .min(wire::WAIT_CAP);
+        return Reply::Answer(Answer::Wait(after));
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
 }

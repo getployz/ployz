@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
-const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
+pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
