@@ -10,8 +10,8 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemFooter, ItemHeader
  */
 export type SettingsCommit = "confirm" | "change" | "form" | "none";
 
-/** A staged item: added by the next deploy (green), or removed by it (red, struck). */
-export type SettingsTone = "new" | "removed";
+/** A staged item: added by the next deploy (green), changed by it (pink), or removed by it (red, struck). */
+export type SettingsTone = "new" | "changed" | "removed";
 
 /**
  * Every card child draws its own top hairline. The card can't use divide-y: Item's own transparent border outranks
@@ -19,7 +19,18 @@ export type SettingsTone = "new" | "removed";
  */
 export const CARD_CHILD = "rounded-none border-0 border-t border-border first:border-t-0";
 
-const TONE = { new: "text-success", removed: "text-destructive line-through" } satisfies Record<SettingsTone, string>;
+const TONE = { new: "text-success", changed: "", removed: "text-destructive line-through" } satisfies Record<SettingsTone, string>;
+
+/**
+ * A changed row is pink edge to edge. It keeps the card's hairline and drops Item's ring, which would spill over its
+ * neighbours; at the card's ends it follows the card's corners.
+ */
+const CHANGED_ROW = "data-[changed=true]:border-border data-[changed=true]:bg-changed-soft data-[changed=true]:ring-0 first:rounded-t-[calc(var(--radius-lg)-1px)] last:rounded-b-[calc(var(--radius-lg)-1px)]";
+
+/** The attributes that paint a row by its tone: only a changed row paints the whole row, the rest tint its label. */
+export function toneRow(tone: SettingsTone | undefined, className: string) {
+  return tone === "changed" ? { "data-changed": true, className: `${className} ${CHANGED_ROW}` } : { className };
+}
 
 /** Inputs and selects fill the control column; switches and buttons sit at its right edge. */
 const FILL = {
@@ -97,7 +108,7 @@ export function SettingsRow({ id, label, hint, tone, commit, control, children }
   children?: ReactNode;
 }) {
   return (
-    <Item id={id} data-archetype="row" className={id ? `${CARD_CHILD} scroll-mt-4` : CARD_CHILD}>
+    <Item id={id} data-archetype="row" {...toneRow(tone, id ? `${CARD_CHILD} scroll-mt-4` : CARD_CHILD)}>
       <SettingsText label={label} hint={hint} tone={tone}>{children}</SettingsText>
       {control ? <SettingsControl commit={commit}>{control}</SettingsControl> : null}
     </Item>

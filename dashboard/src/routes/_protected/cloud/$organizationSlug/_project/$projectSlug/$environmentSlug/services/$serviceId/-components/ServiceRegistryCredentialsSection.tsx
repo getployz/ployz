@@ -74,11 +74,15 @@ export function RegistryCredentialsField({
 
   if (mode == null) {
     return (
-      <SettingsRow label={label} hint={`${providerLabel} · ${registryHost}${username ? ` · ${username}` : ""}`} commit="change" control={
+      <SettingsRow label={label} tone={changed ? "changed" : undefined} commit="change"
+        hint={(
+          <span title={changed && baselineValue != null ? `${baselineLabel ?? "Deployed"}: ${baselineValue}` : undefined}>
+            {providerLabel} · {registryHost}{username ? ` · ${username}` : ""}
+          </span>
+        )}
+        control={
         <>
-          <Button type="button" variant="ghost" size="icon" data-changed={changed || undefined}
-            title={changed && baselineValue != null ? `${baselineLabel ?? "Deployed"}: ${baselineValue}` : undefined}
-            onClick={() => setMode("edit")}>
+          <Button type="button" variant="ghost" size="icon" onClick={() => setMode("edit")}>
             <PencilIcon />
             <span className="sr-only">Edit registry credentials</span>
           </Button>

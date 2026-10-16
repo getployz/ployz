@@ -590,14 +590,13 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
       <RemovedSource state={state} kind={other(kind)} />
       <SettingsListItem media={SOURCES[kind].icon}
         label={kind === "repository"
-          ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer">{value}</a>
-          : <span className="truncate font-mono">{value}</span>}
+          ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer" title={change ? deployed : undefined}>{value}</a>
+          : <span className="truncate font-mono" title={change ? deployed : undefined}>{value}</span>}
         hint={connecting ? "Connects on your next deploy." : state.service.template ? `From the ${templateLabel(state.service.template)} template.` : undefined}
-        tone={connecting ? "new" : undefined}
+        tone={connecting ? "new" : change ? "changed" : undefined}
         commit="change"
         actions={<>
           <Button type="button" variant="ghost" size="icon-sm" aria-label={`Change ${setting.title.toLowerCase()}`}
-            data-changed={change && !connecting ? true : undefined} title={change ? deployed : undefined}
             onClick={() => setPicking({ kind, replacing: false })}>
             <PencilIcon />
           </Button>

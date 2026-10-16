@@ -83,6 +83,7 @@ function Gallery() {
         </SettingsRow>
         <SettingsRow label="Old port" hint="Removed on your next deploy." tone="removed" commit="none" />
         <SettingsRow label="New port" hint="Added on your next deploy." tone="new" commit="none" />
+        <SettingsRow label="Changed port" hint="Changes on your next deploy." tone="changed" commit="none" />
         <SettingsRow label="Private address" hint="api.internal" commit="none" control={<Button variant="outline" size="sm">Copy</Button>} />
       </SettingsSection>
 
@@ -107,6 +108,7 @@ function Gallery() {
           <SettingsListItem media={<GlobeIcon />} label="api.example.com" hint="→ 8080 · Live" commit="change" actions={<Button variant="ghost" size="sm">Remove</Button>} />
           <SettingsListItem media={<GlobeIcon />} label="old.example.com" hint="Removed on your next deploy." tone="removed" commit="none" />
           <SettingsListItem media={<LockIcon />} label="new.example.com" hint="Added on your next deploy." tone="new" commit="none" />
+          <SettingsListItem media={<GlobeIcon />} label="edited.example.com" hint="→ 3000 · Changes on your next deploy." tone="changed" commit="none" />
         </SettingsList>
         <SettingsFoot>
           <SettingsAddButton onClick={() => {}}>Generate domain</SettingsAddButton>

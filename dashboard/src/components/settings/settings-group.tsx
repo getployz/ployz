@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Item } from "#/components/ui/item";
-import { CARD_CHILD, SettingsControl, SettingsText, type SettingsCommit, type SettingsTone } from "./settings-section";
+import { CARD_CHILD, SettingsControl, SettingsText, toneRow, type SettingsCommit, type SettingsTone } from "./settings-section";
 
 /**
  * One setting that owns several fields: a header like a row, with the group's off control (an X or a Switch) on the
@@ -18,7 +18,7 @@ export function SettingsGroup({ id, label, hint, tone, commit, control, children
   children?: ReactNode;
 }) {
   return (
-    <div id={id} data-archetype="group" className={`${CARD_CHILD} flex flex-col${id ? " scroll-mt-4" : ""}`}>
+    <div id={id} data-archetype="group" {...toneRow(tone, `${CARD_CHILD} flex flex-col${id ? " scroll-mt-4" : ""}`)}>
       <Item className="rounded-none border-0">
         <SettingsText label={label} hint={hint} tone={tone} />
         {control ? <SettingsControl commit={commit}>{control}</SettingsControl> : null}

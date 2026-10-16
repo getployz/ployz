@@ -4,7 +4,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/u
 import { Item, ItemActions, ItemMedia } from "#/components/ui/item";
 import { Label } from "#/components/ui/label";
 import { Spinner } from "#/components/ui/spinner";
-import { CARD_CHILD, SettingsAddButton, SettingsFoot, SettingsText, type SettingsCommit, type SettingsTone } from "./settings-section";
+import { CARD_CHILD, SettingsAddButton, SettingsFoot, SettingsText, toneRow, type SettingsCommit, type SettingsTone } from "./settings-section";
 
 /** Several things of one kind, each a row with its media, so every label in the list starts at the same edge. */
 export function SettingsList({ label, children }: { label: string; children: ReactNode }) {
@@ -27,7 +27,7 @@ export function SettingsListItem({ media, label, hint, tone, commit, actions, ch
   children?: ReactNode;
 }) {
   return (
-    <Item role="listitem" data-archetype="list-item" className={CARD_CHILD}>
+    <Item role="listitem" data-archetype="list-item" {...toneRow(tone, CARD_CHILD)}>
       <ItemMedia variant="icon">{media}</ItemMedia>
       <SettingsText label={label} hint={hint} tone={tone}>{children}</SettingsText>
       {actions ? <ItemActions data-commit={commit} className="justify-end">{actions}</ItemActions> : null}

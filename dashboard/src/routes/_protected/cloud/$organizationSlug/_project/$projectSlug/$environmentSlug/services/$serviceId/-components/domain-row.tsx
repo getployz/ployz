@@ -142,10 +142,11 @@ export function PublicDomainRow({
           ) : null}
         </>
       }
+      tone={changed ? "changed" : undefined}
       commit="change"
       actions={pending ? <PendingLabel /> : (
         <>
-          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Edit ${label}`} data-changed={changed || undefined} onClick={onEdit}>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Edit ${label}`} onClick={onEdit}>
             <PencilIcon />
           </Button>
           <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${label}`} onClick={onDelete}>
