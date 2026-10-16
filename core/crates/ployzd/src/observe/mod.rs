@@ -4,7 +4,6 @@
 //! The Observe Store only observes this Machine: it never places, moves, restarts
 //! or removes a container, and no Deploy waits on it.
 
-mod bots;
 pub mod cleanup;
 mod client;
 pub mod frame;
@@ -13,8 +12,8 @@ mod harvest;
 mod integration_tests;
 pub mod layout;
 pub(crate) mod metrics;
-mod pageview;
 mod query;
+mod request;
 mod salts;
 mod serve;
 mod ship;
@@ -79,21 +78,21 @@ pub async fn run(run_dir: &Path, data_dir: &Path) -> io::Result<()> {
     let salts = Arc::new(salts::Salts::open(&store, ship::unix_seconds()));
     let crashes = ship::Outbox::open(&store)?;
     spawn_shipper(crashes.clone(), salts.clone(), data_dir)?;
-    if let Err(error) = harvest_pageviews(&store, run_dir, data_dir, salts) {
-        tracing::warn!(%error, "cannot harvest pageviews; crash reports still ship");
+    if let Err(error) = harvest_requests(&store, run_dir, data_dir, salts) {
+        tracing::warn!(%error, "cannot harvest requests; crash reports still ship");
     }
     harvest::Harvester::run(docker, &docker_root, store, data_dir.to_path_buf(), crashes).await
 }
 
-fn harvest_pageviews(
+fn harvest_requests(
     store: &StoreRoot,
     run_dir: &Path,
     data_dir: &Path,
     salts: Arc<salts::Salts>,
 ) -> io::Result<()> {
-    let pageviews = ship::PageviewOutbox::open(store)?;
-    spawn_shipper(pageviews.clone(), salts.clone(), data_dir)?;
-    pageview::spawn(run_dir, salts, pageviews)
+    let requests = ship::RequestOutbox::open(store)?;
+    spawn_shipper(requests.clone(), salts.clone(), data_dir)?;
+    request::spawn(run_dir, salts, requests)
 }
 
 fn spawn_shipper<S: ship::Stream>(

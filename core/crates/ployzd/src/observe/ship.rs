@@ -1,4 +1,4 @@
-mod pageviews;
+mod requests;
 
 use std::{
     fs, io,
@@ -8,10 +8,10 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-pub(super) use pageviews::PageviewOutbox;
-#[cfg(test)]
-pub(super) use pageviews::dir_has;
 use ployz_core::{MachineId, metrics::MetricMarker};
+pub(super) use requests::RequestOutbox;
+#[cfg(test)]
+pub(super) use requests::dir_has;
 use reqwest::{
     RequestBuilder, StatusCode, Url,
     header::{CONTENT_TYPE, RETRY_AFTER},
@@ -31,7 +31,7 @@ const BATCH: usize = 100;
 const LAST_SEQ_FILE: &str = "last_seq";
 const DROPPED_FILE: &str = "dropped";
 const CRASH: &str = "crash";
-const PAGEVIEWS: &str = "pageviews";
+const REQUESTS: &str = "requests";
 const TICK: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_FLOOR: Duration = Duration::from_secs(1);
@@ -438,8 +438,8 @@ impl<S: Stream, T: Fn() -> Option<Pusher>> Shipper<S, T> {
                     after: retry_after(&response),
                 };
             }
-            StatusCode::NOT_FOUND if S::NAME == PAGEVIEWS => {
-                tracing::debug!("Cloud does not take pageviews yet; holding them");
+            StatusCode::NOT_FOUND if S::NAME == REQUESTS => {
+                tracing::debug!("Cloud does not take requests yet; holding them");
                 return Shipped::Retry { after: None };
             }
             StatusCode::UNAUTHORIZED | StatusCode::NOT_FOUND => {
@@ -1162,21 +1162,19 @@ mod tests {
         );
     }
 
-    fn pageviews(store: &StoreRoot, rows: usize) -> Arc<PageviewOutbox> {
-        let outbox = PageviewOutbox::open(store).unwrap();
+    fn requests(store: &StoreRoot, rows: usize) -> Arc<RequestOutbox> {
+        let outbox = RequestOutbox::open(store).unwrap();
         for n in 0..rows {
-            outbox
-                .push(&serde_json::json!({ "kind": "pageview", "n": n }))
-                .unwrap();
+            outbox.push(&serde_json::json!({ "n": n })).unwrap();
         }
         outbox
     }
 
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-    async fn pageviews_cloud_does_not_take_yet_stay_held_without_a_warning() {
+    async fn requests_cloud_does_not_take_yet_stay_held_without_a_warning() {
         let (_root, store) = store();
-        let outbox = pageviews(&store, 200);
+        let outbox = requests(&store, 200);
         let (cloud, url) = Cloud::serve(vec![
             (StatusCode::NOT_FOUND, None),
             (StatusCode::NOT_FOUND, None),
@@ -1199,20 +1197,17 @@ mod tests {
 
         let bodies = cloud.bodies();
         let last = bodies.last().unwrap();
-        assert_eq!(last["stream"], "pageviews");
+        assert_eq!(last["stream"], "requests");
         assert_eq!(last["dropped"], 0);
-        assert_eq!(last["events"].as_array().unwrap().len(), 200);
-        assert_eq!(
-            last["events"][199],
-            serde_json::json!({ "kind": "pageview", "n": 199 })
-        );
+        assert_eq!(last["rows"].as_array().unwrap().len(), 200);
+        assert_eq!(last["rows"][199], serde_json::json!({ "n": 199 }));
     }
 
     #[tokio::test]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-    async fn pageviews_cloud_refuses_are_dropped_and_counted() {
+    async fn requests_cloud_refuses_are_dropped_and_counted() {
         let (_root, store) = store();
-        let outbox = pageviews(&store, 300);
+        let outbox = requests(&store, 300);
         let (cloud, url) = Cloud::serve(vec![
             (StatusCode::UNPROCESSABLE_ENTITY, None),
             (StatusCode::NO_CONTENT, None),
@@ -1226,9 +1221,7 @@ mod tests {
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
         assert_eq!(outbox.held_rows(), 0);
         for n in 0..100 {
-            outbox
-                .push(&serde_json::json!({ "kind": "pageview", "n": n }))
-                .unwrap();
+            outbox.push(&serde_json::json!({ "n": n })).unwrap();
         }
         assert_eq!(shipper.ship_once().await, Shipped::Progress);
         assert_eq!(outbox.held_rows(), 0);
@@ -1236,9 +1229,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_pageviews_shipper_never_asks_for_salts() {
+    async fn the_requests_shipper_never_asks_for_salts() {
         let (_root, store) = store();
-        let outbox = pageviews(&store, 0);
+        let outbox = requests(&store, 0);
         let (cloud, url) = Cloud::serve(Vec::new()).await;
         let salts = Arc::new(Salts::open(&store, 0));
         let shipper = Shipper::new(outbox, salts, move || Some(pusher(&url))).unwrap();

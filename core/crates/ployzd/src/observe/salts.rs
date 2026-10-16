@@ -63,7 +63,7 @@ pub(super) struct Salts {
 
 impl Salts {
     /// Load the cached salts. A cache that cannot be read or created is an empty, stale one:
-    /// pageviews wait for Cloud's next salts, and crash reports ship regardless.
+    /// requests ship without a visitor until Cloud's next salts, and crash reports ship regardless.
     pub(super) fn open(store: &StoreRoot, now: i64) -> Self {
         let path = store.salts();
         let cache = match read(&path) {

@@ -27,6 +27,13 @@
 //!         last_seq                      the newest seq handed out
 //!         dropped                       entries lost to the cap or refused
 //!                                       by Cloud
+//!       requests/
+//!         <first>-<last>.jsonl          a sealed segment of request rows
+//!                                       waiting for Cloud
+//!         dropped                       rows lost to the cap or refused by
+//!                                       Cloud
+//!     analytics/
+//!       salts.json                      the day salts Cloud handed out
 //! ```
 //!
 //! The store sits under `DockerRootDir` because a hardlink only works on the
@@ -59,7 +66,8 @@ pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
 const OUTBOX_DIR: &str = "outbox";
 const CRASH_DIR: &str = "crash";
-const PAGEVIEWS_DIR: &str = "pageviews";
+const REQUESTS_DIR: &str = "requests";
+const RETIRED_OUTBOXES: [&str; 1] = ["pageviews"];
 const ANALYTICS_DIR: &str = "analytics";
 const SALTS_FILE: &str = "salts.json";
 const LOG_SUFFIX: &str = ".log";
@@ -107,8 +115,8 @@ impl StoreRoot {
     }
 
     #[must_use]
-    pub fn pageviews_outbox(&self) -> PathBuf {
-        self.0.join(OUTBOX_DIR).join(PAGEVIEWS_DIR)
+    pub fn requests_outbox(&self) -> PathBuf {
+        self.0.join(OUTBOX_DIR).join(REQUESTS_DIR)
     }
 
     #[must_use]
@@ -149,6 +157,12 @@ impl StoreRoot {
             }
         }
         create_store_dir(&self.0)?;
+        for retired in RETIRED_OUTBOXES {
+            match fs::remove_dir_all(self.0.join(OUTBOX_DIR).join(retired)) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+        }
         create_store_dir(&self.containers())
     }
 }
@@ -382,6 +396,18 @@ mod tests {
         assert!(parent.join("notes").is_dir());
         assert!(parent.join("v1x").is_file());
         assert!(root.containers().is_dir());
+    }
+
+    #[test]
+    fn prepare_deletes_the_pageviews_outbox_beta_releases_left() {
+        let docker = TestDir::new("ployzd-observe-layout-retired");
+        let root = StoreRoot::under(&docker.0);
+        let pageviews = root.path().join("outbox/pageviews");
+        std::fs::create_dir_all(&pageviews).unwrap();
+        std::fs::write(pageviews.join("1.jsonl"), b"{}\n").unwrap();
+        root.prepare().unwrap();
+        root.prepare().unwrap();
+        assert!(!pageviews.exists());
     }
 
     #[test]

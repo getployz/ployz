@@ -13,6 +13,10 @@ use crate::{
 const SALT: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 const IP: &str = "203.0.113.77";
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36";
+const REQUEST_ID: &str = "b4150e5b-03fe-4cf0-a247-66da4b50c84a";
+/// A line Caddy 2.11.4 wrote for a POST through `reverse_proxy` behind the `ployz_requests` snippet.
+const RECORDED: &str = r#"{"level":"info","ts":1792135934.0080822,"logger":"http.log.access.ployz_requests","msg":"handled request","request":{"remote_ip":"172.17.0.1","remote_port":"39548","client_ip":"172.17.0.1","proto":"HTTP/1.1","method":"POST","host":"127.0.0.1:18080","uri":"/pricing?utm_source=hn&email=a@b.com","headers":{"Content-Length":["5"],"Content-Type":["application/x-www-form-urlencoded"],"Accept":["*/*"],"User-Agent":["Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0"],"Accept-Language":["en-AU,en;q=0.9"],"Referer":["https://news.example.com/x?y=1"],"Sec-Purpose":["prefetch"]}},"bytes_read":5,"user_id":"","duration":0.001074433,"size":11,"status":200,"resp_headers":{"Via":["1.1 Caddy"],"Content-Length":["11"],"Content-Type":["text/plain; charset=utf-8"],"Server":["Caddy"],"Date":["Fri, 16 Oct 2026 07:32:14 GMT"],"Ployz-Request-Id":["b4150e5b-03fe-4cf0-a247-66da4b50c84a"]},"uuid":"b4150e5b-03fe-4cf0-a247-66da4b50c84a","service":"web","namespace":"app","request_id":"b4150e5b-03fe-4cf0-a247-66da4b50c84a"}"#;
+
 fn day_start() -> i64 {
     chrono::DateTime::parse_from_rfc3339("2026-10-15T00:00:00+01:00")
         .unwrap()
@@ -23,12 +27,12 @@ struct Lab {
     _root: TestDir,
     store: StoreRoot,
     salts: Salts,
-    outbox: Arc<PageviewOutbox>,
+    outbox: Arc<RequestOutbox>,
 }
 
 impl Lab {
     fn new(windows: &[(&str, i64, i64)]) -> Self {
-        let root = TestDir::new("ployzd-observe-pageview");
+        let root = TestDir::new("ployzd-observe-request");
         fs::create_dir_all(&root.0).unwrap();
         let store = StoreRoot::under(&root.0);
         store.prepare().unwrap();
@@ -41,7 +45,7 @@ impl Lab {
             .collect();
         let ack = json!({ "sites": [{ "namespace": "acme-prod", "salts": windows }] });
         salts.accept(&serde_json::to_vec(&ack).unwrap(), day_start());
-        let outbox = PageviewOutbox::open(&store).unwrap();
+        let outbox = RequestOutbox::open(&store).unwrap();
         Self {
             _root: root,
             store,
@@ -54,13 +58,23 @@ impl Lab {
         Self::new(&[("2026-10-15", day_start(), day_start() + 24 * 3600)])
     }
 
-    fn harvest(&self, lines: &[Value]) -> Vec<Value> {
-        let mut harvest = Harvest::new(&self.salts, &self.outbox);
+    fn harvest_raw(&self, lines: &[Vec<u8>]) -> Vec<Value> {
+        let harvest = Harvest {
+            salts: &self.salts,
+            outbox: &self.outbox,
+        };
         for line in lines {
-            harvest.line(&serde_json::to_vec(line).unwrap());
+            harvest.line(line);
         }
-        harvest.flush_counts();
         self.outbox.rows()
+    }
+
+    fn harvest(&self, lines: &[Value]) -> Vec<Value> {
+        let lines: Vec<_> = lines
+            .iter()
+            .map(|line| serde_json::to_vec(line).unwrap())
+            .collect();
+        self.harvest_raw(&lines)
     }
 }
 
@@ -68,7 +82,7 @@ fn request(uri: &str) -> Value {
     json!({
         "level": "info",
         "ts": day_start() as f64 + 3600.25,
-        "logger": "http.log.access.ployz_pageviews",
+        "logger": "http.log.access.ployz_requests",
         "msg": "handled request",
         "request": {
             "remote_ip": "10.0.0.1",
@@ -81,14 +95,16 @@ fn request(uri: &str) -> Value {
                 "User-Agent": [UA],
                 "Accept-Language": ["en-AU,en;q=0.9"],
                 "Referer": ["https://news.ycombinator.com/item?id=1"],
-                "Sec-Fetch-Site": ["cross-site"],
-                "Sec-Fetch-Mode": ["navigate"],
-                "Sec-Fetch-Dest": ["document"],
             },
         },
+        "bytes_read": 0,
+        "duration": 0.0182,
+        "size": 48213,
         "status": 200,
         "resp_headers": { "Content-Type": ["text/html; charset=utf-8"] },
         "namespace": "acme-prod",
+        "service": "web",
+        "request_id": REQUEST_ID,
     })
 }
 
@@ -108,58 +124,86 @@ fn without(mut line: Value, pointer: &str) -> Value {
     line
 }
 
-fn kinds(rows: &[Value]) -> Vec<&str> {
-    rows.iter()
-        .map(|row| row["kind"].as_str().unwrap())
-        .collect()
-}
-
-#[test]
-fn a_browser_page_load_becomes_the_contract_row() {
-    let lab = Lab::today();
-    let rows = lab.harvest(&[request("/pricing?utm_source=hn&utm_source=other&page=2")]);
-
+fn acme_visitor() -> String {
     let salt: Vec<u8> = (0..32).collect();
     let mut hash = Sha256::new();
     hash.update(&salt);
     hash.update(b"acme-prod\x00203.0.113.77\x00");
     hash.update(UA);
+    hex::encode(hash.finalize())
+}
+
+#[test]
+fn a_request_becomes_the_contract_row() {
+    let lab = Lab::today();
+    let rows = lab.harvest(&[request("/pricing?utm_source=hn&utm_source=other&page=2")]);
     assert_eq!(
         rows,
         [json!({
-            "kind": "pageview",
             "ts": (day_start() + 3600) * 1000 + 250,
-            "day": "2026-10-15",
             "namespace": "acme-prod",
+            "service": "web",
             "host": "acme.com",
+            "method": "GET",
             "path": "/pricing",
             "query": { "utm_source": "hn" },
+            "status": 200,
+            "duration_us": 18_200,
+            "bytes_in": 0,
+            "bytes_out": 48_213,
+            "request_id": REQUEST_ID,
+            "ua": UA,
             "referrer_host": "news.ycombinator.com",
             "language": "en",
-            "visitor": hex::encode(hash.finalize()),
-            "flags": [],
+            "content_type": "text/html; charset=utf-8",
+            "sec_purpose": null,
+            "visitor": acme_visitor(),
         })]
     );
 }
 
 #[test]
-fn only_html_gets_answered_2xx_that_are_not_prefetches_count() {
+fn a_line_caddy_wrote_decodes_its_duration_and_body_sizes() {
+    let lab = Lab::new(&[]);
+    let rows = lab.harvest_raw(&[RECORDED.as_bytes().to_vec()]);
+    assert_eq!(
+        rows,
+        [json!({
+            "ts": 1_792_135_934_008_i64,
+            "namespace": "app",
+            "service": "web",
+            "host": "127.0.0.1",
+            "method": "POST",
+            "path": "/pricing",
+            "query": { "utm_source": "hn" },
+            "status": 200,
+            "duration_us": 1074,
+            "bytes_in": 5,
+            "bytes_out": 11,
+            "request_id": REQUEST_ID,
+            "ua": "Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0",
+            "referrer_host": "news.example.com",
+            "language": "en",
+            "content_type": "text/plain; charset=utf-8",
+            "sec_purpose": "prefetch",
+            "visitor": null,
+        })]
+    );
+}
+
+#[test]
+fn every_request_ships_whatever_its_method_status_or_content_type() {
     let lab = Lab::today();
     let page = request("/");
     let rows = lab.harvest(&[
         with(page.clone(), "/request/method", json!("POST")),
         with(page.clone(), "/request/method", json!("HEAD")),
         with(page.clone(), "/status", json!(304)),
-        with(page.clone(), "/status", json!(404)),
+        with(page.clone(), "/status", json!(502)),
         with(
             page.clone(),
             "/resp_headers/Content-Type",
             json!(["application/json"]),
-        ),
-        with(
-            page.clone(),
-            "/resp_headers/Content-Type",
-            json!(["text/plain"]),
         ),
         without(page.clone(), "/resp_headers/Content-Type"),
         with(
@@ -167,25 +211,40 @@ fn only_html_gets_answered_2xx_that_are_not_prefetches_count() {
             "/request/headers/Sec-Purpose",
             json!(["prefetch;prerender"]),
         ),
-        with(
-            page.clone(),
-            "/request/headers/Purpose",
-            json!(["prefetch"]),
-        ),
-        with(
-            page.clone(),
-            "/resp_headers/Content-Type",
-            json!(["TEXT/HTML"]),
-        ),
-        with(page.clone(), "/status", json!(203)),
-        with(
-            page.clone(),
-            "/request/headers/Sec-Purpose",
-            json!(["prerender"]),
-        ),
-        page,
+        with(page, "/request/headers/Purpose", json!(["prefetch"])),
     ]);
-    assert_eq!(kinds(&rows), ["pageview"; 4]);
+    let shape = |row: &Value| {
+        [
+            row["method"].clone(),
+            row["status"].clone(),
+            row["content_type"].clone(),
+            row["sec_purpose"].clone(),
+        ]
+    };
+    let html = json!("text/html; charset=utf-8");
+    assert_eq!(
+        rows.iter().map(shape).collect::<Vec<_>>(),
+        [
+            [json!("POST"), json!(200), html.clone(), Value::Null],
+            [json!("HEAD"), json!(200), html.clone(), Value::Null],
+            [json!("GET"), json!(304), html.clone(), Value::Null],
+            [json!("GET"), json!(502), html.clone(), Value::Null],
+            [
+                json!("GET"),
+                json!(200),
+                json!("application/json"),
+                Value::Null
+            ],
+            [json!("GET"), json!(200), Value::Null, Value::Null],
+            [
+                json!("GET"),
+                json!(200),
+                html.clone(),
+                json!("prefetch;prerender")
+            ],
+            [json!("GET"), json!(200), html, json!("prefetch")],
+        ]
+    );
 }
 
 #[test]
@@ -212,28 +271,19 @@ fn the_query_keeps_only_campaign_keys_and_redacts_what_looks_personal() {
             "utm_term": "spring sale",
         })
     );
-    assert_eq!(rows[0]["flags"], json!([]));
     assert_eq!(rows[1]["query"]["ref"], "a.".repeat(128));
     assert_eq!(rows[1]["query"]["utm_content"], "short-token_12");
-    assert_eq!(rows[1]["flags"], json!(["click_id"]));
     assert_eq!(rows[2]["query"], json!({}));
-    assert_eq!(rows[2]["flags"], json!(["click_id"]));
 }
 
 #[test]
-fn missing_headers_flag_the_row_instead_of_dropping_it() {
+fn missing_headers_ship_as_nulls_and_long_values_are_cut() {
     let lab = Lab::today();
-    let bare = [
-        "Accept-Language",
-        "Referer",
-        "Sec-Fetch-Site",
-        "Sec-Fetch-Mode",
-        "Sec-Fetch-Dest",
-    ]
-    .into_iter()
-    .fold(request("/a"), |line, header| {
-        without(line, &format!("/request/headers/{header}"))
-    });
+    let bare = ["User-Agent", "Accept-Language", "Referer"]
+        .into_iter()
+        .fold(request("/a"), |line, header| {
+            without(line, &format!("/request/headers/{header}"))
+        });
     let rows = lab.harvest(&[
         bare,
         with(
@@ -247,23 +297,31 @@ fn missing_headers_flag_the_row_instead_of_dropping_it() {
             json!(["*"]),
         ),
         with(
-            request(&format!("/{}", "p".repeat(2000))),
-            "/request/headers/Referer",
-            json!(["not a url"]),
+            with(
+                request(&format!("/{}", "p".repeat(2000))),
+                "/request/headers/Referer",
+                json!(["not a url"]),
+            ),
+            "/request/headers/User-Agent",
+            json!(["é".repeat(400)]),
         ),
+        without(without(request("/d"), "/duration"), "/request_id"),
     ]);
-    assert_eq!(kinds(&rows), ["pageview"; 4]);
-    assert_eq!(
-        rows[0]["flags"],
-        json!(["no_accept_language", "no_sec_fetch"])
-    );
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0]["ua"], "");
     assert_eq!(rows[0]["language"], Value::Null);
     assert_eq!(rows[0]["referrer_host"], Value::Null);
-    assert_eq!(rows[1]["referrer_host"], Value::Null);
+    assert_eq!(
+        rows[1]["referrer_host"],
+        Value::Null,
+        "a same-site referrer"
+    );
     assert_eq!(rows[2]["language"], Value::Null);
-    assert_eq!(rows[2]["flags"], json!([]));
     assert_eq!(rows[3]["path"].as_str().unwrap().len(), 1024);
     assert_eq!(rows[3]["referrer_host"], Value::Null);
+    assert_eq!(rows[3]["ua"], "é".repeat(256));
+    assert_eq!(rows[4]["duration_us"], 0);
+    assert_eq!(rows[4]["request_id"], "");
 }
 
 #[test]
@@ -289,7 +347,7 @@ fn a_referrer_host_longer_than_dns_allows_is_nulled() {
 }
 
 #[test]
-fn a_request_takes_the_salt_whose_window_holds_it_across_a_dst_change() {
+fn a_request_outside_every_salt_window_ships_without_a_visitor() {
     let short = day_start();
     let long = short + 23 * 3600;
     let after = long + 25 * 3600;
@@ -309,80 +367,54 @@ fn a_request_takes_the_salt_whose_window_holds_it_across_a_dst_change() {
         at(after, 0),
         at(short - 1, 999),
     ]);
-    let days: Vec<_> = rows
-        .iter()
-        .filter(|row| row["kind"] == "pageview")
-        .map(|row| row["day"].as_str().unwrap())
-        .collect();
+    let visitor = json!(acme_visitor());
     assert_eq!(
-        days,
-        ["2026-10-04", "2026-10-04", "2026-10-05", "2026-10-05"]
-    );
-    assert_eq!(
-        rows.iter().find(|row| row["kind"] == "gap"),
-        Some(&json!({ "kind": "gap", "namespace": "acme-prod", "day": null, "count": 2 }))
+        rows.iter()
+            .map(|row| row["visitor"].clone())
+            .collect::<Vec<_>>(),
+        [
+            visitor.clone(),
+            visitor.clone(),
+            visitor.clone(),
+            visitor,
+            Value::Null,
+            Value::Null,
+        ]
     );
 }
 
 #[test]
-fn bots_and_gaps_become_counts_and_an_off_site_leaves_no_trace() {
-    let lab = Lab::new(&[("2026-10-15", day_start(), day_start() + 24 * 3600)]);
+fn bots_and_namespaces_without_salts_ship_and_unattributed_lines_do_not() {
+    let lab = Lab::today();
     let bot = with(
         request("/"),
         "/request/headers/User-Agent",
         json!(["Googlebot/2.1"]),
     );
-    let empty = without(request("/"), "/request/headers/User-Agent");
-    let late = with(
-        request("/"),
-        "/ts",
-        json!(day_start() as f64 + 25.0 * 3600.0),
-    );
-    let late_bot = with(
-        late.clone(),
-        "/request/headers/User-Agent",
-        json!(["Googlebot/2.1"]),
-    );
     let off = with(request("/"), "/namespace", json!("other-prod"));
     let unnamed = without(request("/"), "/namespace");
+    let invalid = with(request("/"), "/namespace", json!("Not A Namespace"));
+    let no_service = without(request("/"), "/service");
 
-    let mut harvest = Harvest::new(&lab.salts, &lab.outbox);
-    for line in [&bot, &bot, &empty, &late, &late_bot, &off, &unnamed] {
-        harvest.line(&serde_json::to_vec(line).unwrap());
-    }
-    harvest.tick(Instant::now());
-    assert_eq!(lab.outbox.rows(), [] as [Value; 0], "counts wait a minute");
-    harvest.tick(Instant::now() + COUNTS_EVERY);
-    let mut rows = lab.outbox.rows();
-    rows.sort_by_key(Value::to_string);
-    assert_eq!(
-        rows,
-        [
-            json!({ "kind": "bots", "namespace": "acme-prod", "day": "2026-10-15", "reason": "empty_ua", "count": 1 }),
-            json!({ "kind": "gap", "namespace": "acme-prod", "day": null, "count": 1 }),
-            json!({ "kind": "bots", "namespace": "acme-prod", "day": "2026-10-15", "reason": "googlebot", "count": 2 }),
-        ]
-    );
-    harvest.tick(Instant::now() + COUNTS_EVERY * 2);
-    assert_eq!(
-        lab.outbox.rows().len(),
-        3,
-        "a flush sends deltas, not totals"
-    );
+    let rows = lab.harvest(&[bot, off, unnamed, invalid, no_service]);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["ua"], "Googlebot/2.1");
+    assert_eq!(rows[0]["visitor"].as_str().unwrap().len(), 64);
+    assert_eq!(rows[1]["namespace"], "other-prod");
+    assert_eq!(rows[1]["visitor"], Value::Null);
 }
 
 #[test]
-fn no_client_address_or_user_agent_reaches_a_row_or_the_disk() {
+fn no_client_address_reaches_a_row_or_the_disk() {
     let lab = Lab::today();
     let lines: Vec<_> = (0..150).map(|n| request(&format!("/{n}"))).collect();
     let rows = lab.harvest(&lines);
     assert_eq!(rows.len(), 150);
-    let text = serde_json::to_string(&rows).unwrap();
-    assert!(!text.contains(IP) && !text.contains("Chrome/130"));
-    let outbox = lab.store.pageviews_outbox();
+    assert!(!serde_json::to_string(&rows).unwrap().contains(IP));
+    let outbox = lab.store.requests_outbox();
     assert!(dir_has(&outbox, b"/149"), "the segments hold the rows");
+    assert!(dir_has(&outbox, b"Chrome/130"), "the user agent ships");
     assert!(!dir_has(&outbox, IP.as_bytes()));
-    assert!(!dir_has(&outbox, b"Chrome/130"));
 }
 
 fn append(path: &Path, text: &str) {
@@ -404,7 +436,7 @@ fn lines(tail: &mut Tail) -> Vec<String> {
 
 #[test]
 fn the_tail_starts_at_the_end_and_follows_appends_rolls_and_truncation() {
-    let root = TestDir::new("ployzd-observe-pageview-tail");
+    let root = TestDir::new("ployzd-observe-request-tail");
     fs::create_dir_all(&root.0).unwrap();
     let path = root.0.join("access.log");
     let append = |text: &str| append(&path, text);
@@ -447,7 +479,7 @@ fn the_tail_starts_at_the_end_and_follows_appends_rolls_and_truncation() {
 
 #[test]
 fn a_log_that_appears_after_startup_is_read_from_its_first_line() {
-    let root = TestDir::new("ployzd-observe-pageview-tail-cold");
+    let root = TestDir::new("ployzd-observe-request-tail-cold");
     fs::create_dir_all(&root.0).unwrap();
     let path = root.0.join("access.log");
     let mut tail = Tail::new(path.clone());
