@@ -569,31 +569,30 @@ fn missing_proc_files_say_why_their_facts_are_null() {
     );
 }
 
-/// The probe reads a stopped Docker without touching its socket, which would start it, and keeps
-/// reading when `lsblk` is missing.
+/// The probe reads a socket-activated Docker without touching its socket, which would start it,
+/// keeps reading when `lsblk` is missing, and names every read it couldn't make.
 #[test]
 fn probe_contract() {
     const CASE: &str = "PLOYZ_PROBE_CONTRACT";
     if env::var(CASE).is_ok() {
         let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
         let facts = read_facts(&InstallPaths::at(&root)).unwrap();
-        assert!(matches!(facts.docker, DockerFacts::Stopped), "{facts:?}");
+        assert!(
+            matches!(facts.docker, DockerFacts::SocketActivated),
+            "{facts:?}"
+        );
+        assert_eq!(docker_blocker(&facts.docker), None);
         assert!(facts.disks.is_none(), "{facts:?}");
-        for stage in [
-            "start host command",
-            "read cgroup layout",
-            "read CPU count",
-            "read memory size",
-        ] {
-            assert!(
-                facts.unread.iter().any(|reason| reason.starts_with(stage)),
-                "{stage}: {:?}",
-                facts.unread
-            );
-        }
         assert_eq!(
-            codes(&assess(&facts).blockers).first(),
-            Some(&"docker_stopped")
+            facts.unread,
+            [
+                "start systemd-detect-virt to detect virtualization: No such file or directory (os error 2)",
+                "read cgroup layout: No such file or directory (os error 2)",
+                "read CPU count: No such file or directory (os error 2)",
+                "read memory size: No such file or directory (os error 2)",
+                "start lsblk to list disks: No such file or directory (os error 2)",
+                "read Docker version: docker.socket is listening but docker.service isn't running, and asking Docker would start it",
+            ]
         );
         fs::write(root.join("child-completed"), "probe").unwrap();
         return;
@@ -627,4 +626,98 @@ fn probe_contract() {
         [],
     );
     assert!(!root.join("docker.log").exists());
+}
+
+/// A running Docker whose Buildx can't be read blocks the probe with the error install refuses with.
+#[test]
+fn probe_docker_unreadable_contract() {
+    const CASE: &str = "PLOYZ_PROBE_DOCKER_UNREADABLE_CONTRACT";
+    const REASON: &str = "checking Docker: buildx: plugin crashed";
+    if env::var(CASE).is_ok() {
+        let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+        let facts = read_facts(&InstallPaths::at(&root)).unwrap();
+        let DockerFacts::Present { error, .. } = &facts.docker else {
+            panic!("{facts:?}");
+        };
+        assert_eq!(error.as_deref(), Some(REASON));
+        let blocker = docker_blocker(&facts.docker).unwrap();
+        assert_eq!(
+            (blocker.code, blocker.message.as_str()),
+            ("docker_unreadable", REASON)
+        );
+        let refusal = crate::installer::host::verify_docker().unwrap_err();
+        assert_eq!(error_text(&refusal), REASON);
+        fs::write(root.join("child-completed"), "docker-unreadable").unwrap();
+        return;
+    }
+
+    let fixture = fixture("probe-docker-unreadable");
+    let root = fixture.path();
+    let commands = root.join("commands");
+    fs::create_dir_all(&commands).unwrap();
+    fs::write(
+        root.join("os-release"),
+        "NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"24.04\"\n",
+    )
+    .unwrap();
+    write_script(&commands.join("dockerd"), "exit 0");
+    write_script(
+        &commands.join("docker"),
+        r#"case "$1" in
+version) echo "29.7.0 1.53" ;;
+buildx) echo "buildx: plugin crashed" >&2; exit 1 ;;
+*) exit 1 ;;
+esac"#,
+    );
+    run_contract_child_with_environment(
+        "installer::assess::tests::probe_docker_unreadable_contract",
+        root,
+        OsString::from(CASE),
+        OsString::from("docker-unreadable"),
+        "docker-unreadable",
+        [],
+    );
+}
+
+/// An unreadable Secure Boot variable leaves the state unknown, as install reads it, even when
+/// mokutil would say it's off.
+#[test]
+fn probe_secure_boot_unreadable_contract() {
+    const CASE: &str = "PLOYZ_PROBE_SECURE_BOOT_CONTRACT";
+    if env::var(CASE).is_ok() {
+        let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+        let facts = read_facts(&InstallPaths::at(&root)).unwrap();
+        assert_eq!(facts.secure_boot, None);
+        assert!(
+            facts
+                .unread
+                .iter()
+                .any(|reason| reason == "read Secure Boot state: Is a directory (os error 21)"),
+            "{:?}",
+            facts.unread
+        );
+        assert_eq!(zfs_refusal(&facts), Some("secure_boot_unknown"));
+        fs::write(root.join("child-completed"), "secure-boot").unwrap();
+        return;
+    }
+
+    let fixture = fixture("probe-secure-boot");
+    let root = fixture.path();
+    let commands = root.join("commands");
+    fs::create_dir_all(&commands).unwrap();
+    fs::create_dir_all(root.join("efivars/SecureBoot")).unwrap();
+    fs::write(
+        root.join("os-release"),
+        "NAME=\"Debian GNU/Linux\"\nID=debian\nVERSION_ID=\"12\"\n",
+    )
+    .unwrap();
+    write_script(&commands.join("mokutil"), "echo 'SecureBoot disabled'");
+    run_contract_child_with_environment(
+        "installer::assess::tests::probe_secure_boot_unreadable_contract",
+        root,
+        OsString::from(CASE),
+        OsString::from("secure-boot"),
+        "secure-boot",
+        [],
+    );
 }

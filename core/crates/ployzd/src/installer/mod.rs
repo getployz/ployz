@@ -131,6 +131,8 @@ pub(super) struct InstallPaths {
     pub(super) apt_dir: PathBuf,
     /// Where running processes are inspected, so readiness can prove which executable runs.
     pub(super) proc_dir: PathBuf,
+    /// Present only while the ZFS kernel module is loaded.
+    pub(super) zfs_module: PathBuf,
 }
 
 impl InstallPaths {
@@ -150,6 +152,7 @@ impl InstallPaths {
             ),
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
+            zfs_module: PathBuf::from("/sys/module/zfs"),
         }
     }
 
@@ -173,6 +176,7 @@ impl InstallPaths {
             secure_boot: root.join("efivars/SecureBoot"),
             apt_dir: root.join("apt"),
             proc_dir: root.join("proc"),
+            zfs_module: root.join("sys/module/zfs"),
         }
     }
 }

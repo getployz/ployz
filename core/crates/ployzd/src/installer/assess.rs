@@ -106,7 +106,11 @@ pub(super) enum DiskRole {
 #[derive(Debug, Serialize)]
 pub(super) enum DockerFacts {
     Absent,
+    /// Neither `docker.service` nor `docker.socket` is active.
     Stopped,
+    /// `docker.socket` listens while `docker.service` isn't running. The first `docker` command
+    /// starts the daemon, so the probe asks nothing more and install starts it and passes.
+    SocketActivated,
     Present {
         version: String,
         api: String,
@@ -165,7 +169,7 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     })?;
     let root_filesystem = Filesystem::read_root()?;
     let mut unread = Vec::new();
-    let mut keep = |error: Option<Error>| unread.extend(error.map(|error| error.to_string()));
+    let mut keep = |error: Option<Error>| unread.extend(error.as_ref().map(error_text));
     let (virt, error) = read_virtualization(&paths.proc_dir);
     keep(error);
     // Install reads only this variable, so the probe agrees with it rather than asking mokutil.
@@ -185,11 +189,15 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     }
     // The Docker error lives in `docker.error` and becomes a blocker there.
     let docker = if docker_waits_on_its_socket() {
-        DockerFacts::Stopped
+        keep(Some(unreadable(
+            "read Docker version",
+            "docker.socket is listening but docker.service isn't running, and asking Docker would start it",
+        )));
+        DockerFacts::SocketActivated
     } else {
         read_docker().0
     };
-    let (zpool_present, error) = read_zpool_present(Path::new("/sys/module/zfs"));
+    let (zpool_present, error) = read_zpool_present(&paths.zfs_module);
     keep(error);
     Ok(HostFacts {
         os,
@@ -209,12 +217,29 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     })
 }
 
+/// An error with every cause, as `main` prints the installer's refusals.
+fn error_text(error: &Error) -> String {
+    ployz_core::error_chain::inline(error)
+}
+
+/// A failure to start `program` named after it, rather than run_command's shared stage.
+fn naming_program(error: Error, stage: &'static str) -> Error {
+    if let Error::Io {
+        stage: "start host command",
+        source,
+    } = error
+    {
+        return Error::Io { stage, source };
+    }
+    error
+}
+
 fn keep_ok<T>(keep: &mut impl FnMut(Option<Error>), result: Result<T, Error>) -> Option<T> {
     result.map_err(|error| keep(Some(error))).ok()
 }
 
-/// Whether `docker.service` is stopped while `docker.socket` listens, so any `docker` command
-/// would start the daemon, and with it every container whose restart policy brings it back.
+/// Whether `docker.service` isn't running, or is still starting, while `docker.socket` listens,
+/// so any `docker` command would start the daemon and every container set to restart with it.
 fn docker_waits_on_its_socket() -> bool {
     let active = |unit| {
         Command::new("systemctl")
@@ -279,7 +304,10 @@ pub(super) fn read_zpool_present(module: &Path) -> (Option<bool>, Option<Error>)
     }
     match run_host("list ZFS pools", "zpool", ["list", "-H"]) {
         Ok(output) => (Some(!output.stdout.trim_ascii().is_empty()), None),
-        Err(error) => (None, Some(error)),
+        Err(error) => (
+            None,
+            Some(naming_program(error, "start zpool to list ZFS pools")),
+        ),
     }
 }
 
@@ -296,19 +324,28 @@ const CONTAINERS: [&str; 9] = [
     "container-other",
 ];
 
-/// The virtualization this Machine runs under, and why an LXC container's privilege is unknown.
+/// The virtualization this Machine runs under, and why it, or an LXC container's privilege, is
+/// unknown.
 pub(super) fn read_virtualization(proc_dir: &Path) -> (Virtualization, Option<Error>) {
     // OpenVZ hosts expose /proc/bc; its containers have only /proc/vz.
     if proc_dir.join("vz").is_dir() && !proc_dir.join("bc").is_dir() {
         return (Virtualization::OpenVz, None);
     }
     // It exits 1 when it prints `none`, so its output is the answer either way.
-    let kind = Command::new("systemd-detect-virt")
-        .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .unwrap_or_default();
+    let output = match Command::new("systemd-detect-virt").output() {
+        Ok(output) => output,
+        Err(source) => {
+            let stage = "start systemd-detect-virt to detect virtualization";
+            return (Virtualization::Unknown, Some(Error::Io { stage, source }));
+        }
+    };
+    let kind = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let virt = match kind.as_str() {
-        "" => Virtualization::Unknown,
+        "" => {
+            let message = format!("systemd-detect-virt printed nothing and {}", output.status);
+            let error = unreadable("detect virtualization", message);
+            return (Virtualization::Unknown, Some(error));
+        }
         "none" => Virtualization::BareMetal,
         "openvz" => Virtualization::OpenVz,
         "lxc" => {
@@ -387,7 +424,7 @@ fn read_disks(root: Filesystem) -> (Option<Vec<Disk>>, Vec<Error>) {
                 &format!("NAME,PATH,SIZE,TYPE,FSTYPE,PTTYPE,{mounts},PKNAME"),
             ]);
             run_command(DISKS_STAGE, &mut command)
-                .map_err(|error| failure = Some(error))
+                .map_err(|error| failure = Some(naming_program(error, "start lsblk to list disks")))
                 .ok()
         });
     let Some(output) = output else {
@@ -513,7 +550,7 @@ pub(super) fn read_docker() -> (DockerFacts, Option<Error>) {
         api: api.to_owned(),
         buildx,
         containerd_store,
-        error: error.map(Error::to_string),
+        error: error.map(error_text),
     };
     if !at_least(api, MINIMUM_DOCKER_API) {
         return (present(None, None, None), None);
@@ -605,6 +642,7 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
         error,
     } = docker
     else {
+        // Install starts a socket-activated Docker with its first command and passes.
         return matches!(docker, DockerFacts::Stopped).then(|| {
             Blocker::new(
                 "docker_stopped",

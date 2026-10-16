@@ -43,11 +43,6 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
   Turn Secure Boot off in your provider's settings for the server, or reinstall it with Ubuntu.
   Then run the command again.
 
-- ``Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for ... Turn Secure Boot off, use Ubuntu, or add `--storage none`.``
-
-  The server's firmware settings couldn't be read, and `mokutil` isn't installed or didn't say.
-  Install `mokutil` and run the command again, or follow the Secure Boot fix above.
-
 - ``Amazon Linux 2023 has no kernel-devel package for the running kernel ..., so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.``
 
   The server runs an older kernel than its package repositories offer. Update it, reboot, then
@@ -128,9 +123,14 @@ Docker. `assessment.blockers` lists what stops Ployz, each with a `code` and a `
 with the disks managed volumes can use, or `Ineligible` with the reason the ZFS install stops on.
 A value Ployz couldn't read shows as `null`, and `facts.unread` says why. When Ployz can't read
 whether an LXC container is privileged, `assessment.zfs` is `Ineligible` with
-`lxc_privilege_unknown`. When a Docker command fails partway, the `docker_unreadable` blocker
-carries the error the install would stop on. The probe never starts Docker: a stopped
-`docker.service` behind a listening `docker.socket` shows as `docker_stopped`.
+`lxc_privilege_unknown`, and when it can't read the firmware's Secure Boot setting on Debian or
+Amazon Linux, `Ineligible` with `secure_boot_unknown`. When a Docker command fails partway, the
+`docker_unreadable` blocker carries the error the install would stop on.
+
+The probe never starts Docker. When `docker.socket` listens but `docker.service` isn't running,
+`facts.docker` is `SocketActivated` with no version, and `facts.unread` says why. That isn't a
+blocker: the install's first Docker command starts it. Only a Docker with neither running shows
+as `docker_stopped`.
 
 ## Managed volumes are missing after a kernel update
 

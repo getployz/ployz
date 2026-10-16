@@ -12,7 +12,7 @@ use std::{
 use ployz_core::StorageChoice;
 
 use super::assess::{
-    Filesystem, ZFS_SMOKE_BYTES, read_secure_boot_variable, read_virtualization,
+    Filesystem, Virtualization, ZFS_SMOKE_BYTES, read_secure_boot_variable, read_virtualization,
     root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
 };
 use super::os_release::OsRelease;
@@ -110,7 +110,8 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
         }
     }
     let (virt, unread) = read_virtualization(&paths.proc_dir);
-    if let Some(error) = unread {
+    // Install never refused a Machine whose virtualization it couldn't detect.
+    if let (Virtualization::Lxc { privileged: None }, Some(error)) = (&virt, unread) {
         return Err(error);
     }
     if let Some(reason) = virtualization_blocker(&virt) {
