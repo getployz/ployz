@@ -16,7 +16,7 @@ Every Ployz Cloud Organization has analytics. A self-hosted Cloud runs it once i
 
 Ployz counts from that moment, in your browser's time zone. The zone stays the Environment's for
 good, so its days never shift under the numbers. Until the first visit lands, the page says so. If
-visits arrived but none could be counted, it names the days they were lost on instead.
+visits arrived but none could be counted, it says no visits were counted.
 
 ## Read the page
 
