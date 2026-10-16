@@ -6,7 +6,6 @@ use serde_json::json;
 use super::*;
 use crate::installer::test_support::fixture;
 
-/// An Ubuntu VM with a current Docker, a 100 GiB root disk and one empty disk.
 fn host() -> HostFacts {
     let root_filesystem = Filesystem {
         size_bytes: 100 * GIB,
@@ -71,7 +70,7 @@ fn a_ready_host_has_no_blockers_and_both_disks_as_zfs_targets() {
     assert!(assessment.warnings.is_empty(), "{:?}", assessment.warnings);
     let ZfsEligibility::Eligible {
         targets,
-        build_minutes,
+        prepare_minutes,
     } = assessment.zfs
     else {
         panic!("ZFS ineligible: {:?}", assessment.zfs);
@@ -85,7 +84,7 @@ fn a_ready_host_has_no_blockers_and_both_disks_as_zfs_targets() {
             }
         ]
     );
-    assert_eq!(build_minutes, 1);
+    assert_eq!(prepare_minutes, 1);
 }
 
 #[test]

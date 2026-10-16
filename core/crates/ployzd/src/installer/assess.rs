@@ -1,5 +1,3 @@
-//! What the host is, read once without changing it, and what Ployz can do on it.
-
 use std::{
     fs, io,
     os::unix::fs::FileTypeExt,
@@ -17,9 +15,8 @@ use super::{Error, InstallPaths, command_exists, run_host};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const MINIMUM_DISK_BYTES: u64 = 30 * GIB;
-/// The scratch file ZFS validation allocates on the host root.
 pub(super) const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
-pub(super) const ROOT_RESERVE: &str = "root_reserve";
+const ROOT_RESERVE: &str = "root_reserve";
 const DOCKER_STAGE: &str = "checking Docker";
 const ROOT_STAGE: &str = "inspect host-root capacity for ZFS storage preparation";
 
@@ -134,7 +131,7 @@ impl Blocker {
 pub(super) enum ZfsEligibility {
     Eligible {
         targets: Vec<ZfsTarget>,
-        build_minutes: u32,
+        prepare_minutes: u32,
     },
     Ineligible {
         reason: Blocker,
@@ -147,10 +144,6 @@ pub(super) enum ZfsTarget {
     Disk { by_id: String },
 }
 
-/// # Errors
-///
-/// Fails where the installer always failed: an unreadable os-release, root filesystem or LXC
-/// user namespace, or a running Docker that won't report buildx or its storage driver.
 pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     let os = OsRelease::read(&paths.os_release)?;
     let uts = nix::sys::utsname::uname().map_err(|errno| Error::Io {
@@ -271,7 +264,6 @@ fn read_secure_boot(variable: &Path) -> Option<bool> {
     }
 }
 
-/// The cgroup layout from `/proc/self/mounts`.
 fn cgroup_version(mounts: &str) -> Option<CgroupVersion> {
     let fstype = |target: &str| {
         mounts.lines().find_map(|line| {
@@ -305,7 +297,6 @@ fn read_disks(root: Filesystem) -> Option<Vec<Disk>> {
     Some(disks_from_lsblk(&listing, root, &by_id))
 }
 
-/// The root disk and every whole disk with no partitions, holders, filesystem signature or mount.
 pub(super) fn disks_from_lsblk(
     listing: &Value,
     root: Filesystem,
@@ -361,7 +352,6 @@ fn mounts_root(device: &Value) -> bool {
             .is_some_and(|children| children.iter().any(mounts_root))
 }
 
-/// Each `/dev/disk/by-id` link's target with its name, the most stable name first per target.
 fn disk_ids(directory: &Path) -> Vec<(PathBuf, String)> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
@@ -376,19 +366,14 @@ fn disk_ids(directory: &Path) -> Vec<(PathBuf, String)> {
                 .then(|| (target, entry.file_name().to_string_lossy().into_owned()))
         })
         .collect();
-    // WWN and EUI names are hex serials; the model-and-serial name is the one a person reads.
-    ids.sort_by_key(|(_, name)| {
-        (
-            name.starts_with("wwn-") || name.starts_with("nvme-eui."),
-            name.clone(),
-        )
-    });
+    ids.sort_by_key(|(_, name)| (is_hex_serial_id(name), name.clone()));
     ids
 }
 
-/// # Errors
-///
-/// Fails when a running Docker won't report its buildx or storage driver.
+fn is_hex_serial_id(name: &str) -> bool {
+    name.starts_with("wwn-") || name.starts_with("nvme-eui.")
+}
+
 pub(super) fn read_docker() -> Result<DockerFacts, Error> {
     if !command_exists("dockerd") {
         return Ok(DockerFacts::Absent);
@@ -443,7 +428,6 @@ fn docker_output<const N: usize>(args: [&str; N]) -> Result<String, Error> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Whether `version`'s first two numbers (`1.53`, `0.18.0+ds1`) are at least `minimum`.
 pub(super) fn at_least(version: &str, minimum: (u32, u32)) -> bool {
     let mut parts = version
         .split(|c: char| !c.is_ascii_digit())
@@ -495,7 +479,6 @@ pub(super) fn assess(facts: &HostFacts) -> Assessment {
     }
 }
 
-/// The refusal for a Docker Ployz can't use, in the order the installer checks it.
 pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
     let DockerFacts::Present {
         version,
@@ -538,11 +521,32 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
     })
 }
 
-/// Whether ZFS can be prepared here, refusing in the order the installer always has.
 fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
-    let ineligible = |code, message: String| ZfsEligibility::Ineligible {
-        reason: Blocker::new(code, message),
+    let route = match zfs_route(facts) {
+        Ok(route) => route,
+        Err(reason) => return ZfsEligibility::Ineligible { reason },
     };
+    if let Some(reason) = root_reserve_blocker(facts.root_filesystem) {
+        return ZfsEligibility::Ineligible { reason };
+    }
+    let mut targets = vec![ZfsTarget::MainDisk];
+    targets.extend(
+        facts
+            .disks
+            .iter()
+            .flatten()
+            .filter(|disk| matches!(disk.role, DiskRole::Empty))
+            .filter_map(|disk| disk.by_id.clone())
+            .map(|by_id| ZfsTarget::Disk { by_id }),
+    );
+    ZfsEligibility::Eligible {
+        targets,
+        prepare_minutes: route.prepare_minutes(),
+    }
+}
+
+pub(super) fn zfs_route(facts: &HostFacts) -> Result<ZfsRoute, Blocker> {
+    let ineligible = |code, message: String| Err(Blocker::new(code, message));
     let os = &facts.os;
     let Some(route) = ZfsRoute::for_os(os) else {
         return ineligible(
@@ -553,7 +557,6 @@ fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
             ),
         );
     };
-    // Unsigned modules this Machine builds can't load under Secure Boot.
     if route.builds_module() {
         match facts.secure_boot {
             Some(false) => {}
@@ -597,26 +600,9 @@ fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
         | Virtualization::Container { .. }
         | Virtualization::Unknown => {}
     }
-    if let Some(reason) = root_reserve_blocker(facts.root_filesystem) {
-        return ZfsEligibility::Ineligible { reason };
-    }
-    let mut targets = vec![ZfsTarget::MainDisk];
-    targets.extend(
-        facts
-            .disks
-            .iter()
-            .flatten()
-            .filter(|disk| matches!(disk.role, DiskRole::Empty))
-            .filter_map(|disk| disk.by_id.clone())
-            .map(|by_id| ZfsTarget::Disk { by_id }),
-    );
-    ZfsEligibility::Eligible {
-        targets,
-        build_minutes: route.build_minutes(),
-    }
+    Ok(route)
 }
 
-/// The host-root reserve ZFS validation must leave untouched.
 pub(super) fn root_reserve_blocker(root: Filesystem) -> Option<Blocker> {
     let Filesystem {
         size_bytes,

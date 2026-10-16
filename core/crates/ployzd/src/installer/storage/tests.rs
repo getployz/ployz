@@ -215,7 +215,6 @@ fn zfs_unsupported_os_contract() {
                 "echo \"$0\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97",
             );
         }
-        // Reading host facts may ask these, but only in their read-only forms.
         for (command, allowed, answer) in [
             ("systemd-detect-virt", "", "echo none; exit 1"),
             ("zpool", "list -H", "exit 0"),

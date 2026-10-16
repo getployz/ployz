@@ -11,10 +11,7 @@ use std::{
 
 use ployz_core::StorageChoice;
 
-use super::assess::{
-    Filesystem, ROOT_RESERVE, ZFS_SMOKE_BYTES, ZfsEligibility, assess, read_facts,
-    root_reserve_blocker,
-};
+use super::assess::{Filesystem, ZFS_SMOKE_BYTES, read_facts, root_reserve_blocker, zfs_route};
 use super::os_release::OsRelease;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
@@ -71,8 +68,7 @@ impl ZfsRoute {
         !matches!(self, Self::Ubuntu)
     }
 
-    /// Roughly how long preparation takes on a small Server, building the module included.
-    pub(super) fn build_minutes(self) -> u32 {
+    pub(super) fn prepare_minutes(self) -> u32 {
         match self {
             Self::Ubuntu => 1,
             Self::Debian { .. } => 10,
@@ -102,19 +98,8 @@ impl ZfsRoute {
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     let facts = read_facts(paths)?;
-    // The host-root reserve is checked last, below, where the installer always checked it.
-    if let ZfsEligibility::Ineligible { reason } = assess(&facts).zfs
-        && reason.code != ROOT_RESERVE
-    {
-        return Err(refuse(STAGE, reason.message));
-    }
+    let route = zfs_route(&facts).map_err(|reason| refuse(STAGE, reason.message))?;
     let os = facts.os;
-    let route = ZfsRoute::for_os(&os).ok_or_else(|| {
-        Error::Verification(format!(
-            "{} passed ZFS assessment with no route",
-            os.display()
-        ))
-    })?;
     let package_manager = route.package_manager();
     if !command_exists(package_manager) {
         return Err(refuse(
