@@ -113,7 +113,7 @@ const run = (seed: number) => Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [marker] = yield* drizzle.execute<{ dirty: string[] }>(sql`
       select dirty::text[] as dirty from analytics.clickhouse_site where environment_id = ${site}::text`, "objects");
-    return new Set((marker?.dirty ?? []).map((day) => dayOf(new Date(`${day}T00:00:00Z`))));
+    return new Set(marker === undefined ? [] : marker.dirty.map((day) => dayOf(new Date(`${day}T00:00:00Z`))));
   }));
   const enqueue = provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;

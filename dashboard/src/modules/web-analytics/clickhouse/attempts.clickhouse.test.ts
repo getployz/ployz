@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, pin, PUBLISHED_COLUMNS, publishedOf } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, pin, PUBLISHED_COLUMNS, publishedOf, type PublishedRow } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService, clickHouseClient, makeClickHouse } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as store from "#/modules/web-analytics/clickhouse/store";
@@ -151,7 +151,7 @@ it.live("garbage collection removes abandoned attempts below the fence and keeps
     (rows) => rows.map(({ id }) => id));
     const published = provide(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      const [row] = yield* drizzle.execute<{ floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+      const [row] = yield* drizzle.execute<PublishedRow>(sql`
         select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
       return publishedOf(row);
     }));

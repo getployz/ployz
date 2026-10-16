@@ -3,30 +3,26 @@ import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { collectGarbage, insertRows, mint, pin, publish, PublishRefused } from "#/modules/web-analytics/clickhouse/attempt";
-import type { ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
+
 import { seedSite } from "#/modules/web-analytics/fixtures/seed";
 import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
 import { Database } from "#/server/database.server";
+import { silentClickHouse as silent } from "#/test/clickhouse";
 import { storeTestCloud } from "#/test/store-cloud";
 
 const SITE = "00000000-0000-4000-8000-00000000a7e1";
-
-/** Acknowledges every write and holds no rows, so the Postgres side of the attempt API runs without ClickHouse. */
-const silent: ClickHouseService = {
-  query: () => Effect.succeed([]),
-  unchecked: { command: () => Effect.void, insert: () => Effect.void },
-};
 
 const setup = Effect.gen(function* () {
   forgetPartitions();
   const services = yield* Layer.build(yield* storeTestCloud({ env: { ANALYTICS_ENABLED: "true" } }));
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services), Effect.orDie);
   yield* provide(seedSite({ environmentId: SITE, timezone: "UTC" }, []));
+  // The site row is created by the first mint, so before it nothing is pending.
   const pending = provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.execute<{ pending: string[] }>(sql`
       select pending::text[] as pending from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
-    return (row?.pending ?? []).map(Number);
+    return row === undefined ? [] : row.pending.map(Number);
   }));
   const minted = Effect.gen(function* () {
     const attempt = (yield* mint([SITE])).get(SITE);

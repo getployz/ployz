@@ -4,7 +4,7 @@ import { Database } from "#/server/database.server";
 import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, SESSION_GAP_SECONDS } from "../local-time";
 import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 import { COLUMN, pageFilters, type Plan, readPlan, SESSION_KEYS, sessionFilters, type StoreQuery, totalsKey } from "../postgres/store";
-import { type Published, PUBLISHED_COLUMNS, publishedOf, visibility } from "./attempt";
+import { type Published, PUBLISHED_COLUMNS, publishedOf, type PublishedRow, visibility } from "./attempt";
 import { ClickHouse, type Params } from "./client";
 
 export type Binder = {
@@ -116,7 +116,7 @@ const rowsIn = (b: Binder, query: StoreQuery, range: Range, needsVisit = false) 
 
 const published = Effect.fn("WebAnalytics.clickHousePublished")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ day: string | null; dirty: string[]; floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+  const [row] = yield* drizzle.execute<PublishedRow & { day: string | null; dirty: string[] }>(sql`
     select rolled_up_to::text as day, dirty::text[] as dirty, ${PUBLISHED_COLUMNS}
     from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
   return { rolledUpTo: row?.day ?? null, dirty: row?.dirty ?? [], published: publishedOf(row) };

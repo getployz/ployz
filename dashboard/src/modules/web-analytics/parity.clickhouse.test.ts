@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
-import { insertRows, mint, publish, PUBLISHED_COLUMNS, publishedOf } from "#/modules/web-analytics/clickhouse/attempt";
+import { insertRows, mint, publish, PUBLISHED_COLUMNS, publishedOf, type PublishedRow } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import * as clickHouseRollup from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
@@ -78,7 +78,7 @@ const clickHouseState = (environmentId: string) =>
 const publishedState = (environmentId: string) =>
   Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.execute<{ floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+    const [row] = yield* drizzle.execute<PublishedRow>(sql`
       select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
     return publishedOf(row);
   });
@@ -95,7 +95,7 @@ const rolledUpPageviews = (clickhouse: ClickHouseService, environmentId: string,
 const landInClickHouse = (clickhouse: ClickHouseService, environmentId: string, rows: ReadonlyArray<object>) =>
   Effect.gen(function* () {
     const attempt = (yield* mint([environmentId])).get(environmentId);
-    if (attempt === undefined) throw new Error("site row held by another writer");
+    if (attempt === undefined) return yield* Effect.die("site row held by another writer");
     const proof = yield* insertRows(clickhouse, "pageview", rows, attempt);
     const database = yield* Database;
     yield* database.transaction(publish(proof, environmentId, sql`below = greatest(below, ${attempt}::bigint + 1)`));

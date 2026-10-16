@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { addDays, dayEnd, dayStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import type { RollupSite } from "../postgres/rollup";
-import { type Attempt, insertSelect, mint, type Published, publish, PUBLISHED_COLUMNS, publishedOf } from "./attempt";
+import { type Attempt, insertSelect, mint, type Published, publish, PUBLISHED_COLUMNS, publishedOf, type PublishedRow } from "./attempt";
 import { type Binder, binder, localHour, pageCounts, RETAINED, requiredClickHouse, sessionCounts, visitCtes } from "./store";
 
 type SiteState = RollupSite & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string>; readonly published: Published };
@@ -12,21 +12,20 @@ const MAX_DAYS_PER_SITE_RUN = 31;
 
 const siteState = Effect.fn("WebAnalytics.clickHouseSiteState")(function* (environmentId: string, lock: boolean) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ rolled_up_to: string | null; dirty: string[]; floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+  const [row] = yield* drizzle.execute<PublishedRow & { rolled_up_to: string | null; dirty: string[] }>(sql`
     select rolled_up_to::text as rolled_up_to, dirty::text[] as dirty, ${PUBLISHED_COLUMNS}
     from analytics.clickhouse_site where environment_id = ${environmentId}::text ${lock ? sql`for update` : sql``}`, "objects");
   const [site] = yield* drizzle.execute<{ timezone: string; enabled: boolean }>(sql`
     select timezone, enabled from analytics.site where environment_id = ${environmentId}::text`, "objects");
   if (site === undefined) return null;
-  const state: SiteState = {
+  return {
     environmentId,
     timezone: site.timezone,
     enabled: site.enabled,
     rolledUpTo: row?.rolled_up_to ?? null,
     dirty: row?.dirty ?? [],
     published: publishedOf(row),
-  };
-  return state;
+  } satisfies SiteState;
 });
 
 const PAGE_DIMS = `[('', ''), ('page', pathname), ('host', host), ('source', source), ('utm_source', utm_source),
@@ -101,8 +100,9 @@ const rollupDay = <E, R>(environmentId: string, pick: (site: SiteState) => Effec
     const database = yield* Database;
     return yield* database.transaction(Effect.gen(function* () {
       const site = yield* siteState(environmentId, true);
-      const day = site === null ? null : yield* pick(site);
-      if (site === null || day === null) return false;
+      if (site === null) return false;
+      const day = yield* pick(site);
+      if (day === null) return false;
       const proof = yield* writeDay(site, day, attempt);
       yield* publish(proof, environmentId, set(day, attempt));
       return true;

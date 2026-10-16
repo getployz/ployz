@@ -26,7 +26,7 @@ export class SiteUnavailable extends Data.TaggedError("SiteUnavailable")<{ reado
 export const TABLES = ["pageview", "daily", "session_hourly"] as const;
 export type Table = (typeof TABLES)[number];
 
-type PublishedRow = { floor: string; below: string; pending: string[]; days: Record<string, number> };
+export type PublishedRow = { floor: string; below: string; pending: string[]; days: Record<string, number> };
 
 export const PUBLISHED_COLUMNS = sql`floor::text as floor, below::text as below, pending::text[] as pending, days`;
 
@@ -39,7 +39,6 @@ export const publishedOf = (row: PublishedRow | undefined): Published => ({
 
 export type Bind = (type: string, value: Params[string]) => string;
 
-/** The two ClickHouse predicates that read `published`. `visible` selects pageview rows, `publishedDay` selects rollup rows by their `day`. */
 export const visibility = (published: Published, bind: Bind) => {
   const days = Object.entries(published.days);
   return {
@@ -87,7 +86,7 @@ export const insertRows = (clickhouse: ClickHouseService, table: Table, rows: Re
 
 export type InsertSelect = { readonly query: string; readonly params: Params };
 
-const STAMPED = /^\s*INSERT INTO (pageview|daily|session_hourly) \([^)]*\battempt\b[^)]*\)[\s\S]*\{attempt:UInt64\}/;
+const STAMPED = new RegExp(`^\\s*INSERT INTO (${TABLES.join("|")}) \\([^)]*\\battempt\\b[^)]*\\)[\\s\\S]*\\{attempt:UInt64\\}`);
 
 /** Runs `INSERT INTO ... SELECT` statements that write `{attempt:UInt64}` into their `attempt` column. */
 export const insertSelect = Effect.fn("WebAnalytics.insertSelect")(function* (clickhouse: ClickHouseService, attempt: Attempt, statements: ReadonlyArray<InsertSelect>) {
@@ -105,7 +104,7 @@ export const insertSelect = Effect.fn("WebAnalytics.insertSelect")(function* (cl
 export const publish = Effect.fn("WebAnalytics.publish")(function* (proof: Acknowledged, environmentId: string, set: SQL) {
   const database = yield* Database;
   if (!database.inTransaction) return yield* Effect.die("publish runs inside the transaction that commits the publication.");
-  const attempt = proof.attempt;
+  const { attempt } = proof;
   const rows = yield* database.drizzle.execute<{ environment_id: string }>(sql`
     update analytics.clickhouse_site
     set pending = array_remove(pending, ${attempt}::bigint), ${set}, updated_at = now()
@@ -156,9 +155,10 @@ export const collectGarbage = Effect.fn("WebAnalytics.collectGarbage")(function*
     for (const [table, published] of [["pageview", kept.visible], ["daily", kept.publishedDay], ["session_hourly", kept.publishedDay]] as const) {
       const where = `environment_id = {env:String} AND attempt < {fence:UInt64} AND NOT ${published}`;
       const [row] = yield* clickhouse.query<{ n: number }>(`SELECT count() AS n FROM ${table} WHERE ${where}`, params);
-      if (row === undefined || Number(row.n) === 0) continue;
+      const n = Number(row?.n ?? 0);
+      if (n === 0) continue;
       yield* clickhouse.unchecked.command(`DELETE FROM ${table} WHERE ${where}`, params);
-      collected += Number(row.n);
+      collected += n;
     }
   }
   return collected;

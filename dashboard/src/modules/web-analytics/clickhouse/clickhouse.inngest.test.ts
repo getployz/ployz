@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { beforeEach, expect, it, vi } from "vitest";
 import { makeEffectRunner, makeInngestEffectRunner } from "#/server/run.server";
+import { silentClickHouse } from "#/test/clickhouse";
 import * as postgresRollup from "../postgres/rollup";
 import { ClickHouse, type ClickHouseService } from "./client";
 import { createClickHouseFunctions } from "./clickhouse.inngest";
@@ -12,7 +13,6 @@ import * as attempt from "./attempt";
 import * as writer from "./writer";
 
 const SHOP = "00000000-0000-4000-8000-00000000c4b1";
-const fake: ClickHouseService = { query: () => Effect.succeed([]), unchecked: { command: () => Effect.void, insert: () => Effect.void } };
 const queued: Array<number> = [];
 vi.spyOn(writer, "drainOutbox").mockImplementation(() => Effect.sync(() => queued.shift() ?? 0));
 vi.spyOn(writer, "ensureBackfilled").mockImplementation(() => Effect.succeed(2));
@@ -45,15 +45,15 @@ it("without ClickHouse the drain stops before touching the outbox", async () => 
 it("the drain keeps taking full batches and stops at the first short one", async () => {
   queued.push(writer.DRAIN_BATCHES, writer.DRAIN_BATCHES, 3, writer.DRAIN_BATCHES);
 
-  await functions(fake).drain.execute();
+  await functions(silentClickHouse).drain.execute();
 
   expect(queued).toEqual([writer.DRAIN_BATCHES]);
 });
 
 it("the rollup backfills a site's ClickHouse copy before closing its days, with the clock read inside a step", async () => {
-  const { state } = await functions(fake).rollup.execute();
+  const { state } = await functions(silentClickHouse).rollup.execute();
 
-  expect(writer.ensureBackfilled).toHaveBeenCalledWith(fake, SHOP);
+  expect(writer.ensureBackfilled).toHaveBeenCalledWith(silentClickHouse, SHOP);
   const [backfill] = vi.mocked(writer.ensureBackfilled).mock.invocationCallOrder;
   const [close] = vi.mocked(rollup.closeDays).mock.invocationCallOrder;
   expect(backfill).toBeLessThan(close ?? 0);
@@ -62,8 +62,8 @@ it("the rollup backfills a site's ClickHouse copy before closing its days, with 
 });
 
 it("garbage collection takes a pin, waits out a grace period, then fences and collects below that pin", async () => {
-  const { state } = await functions(fake).gc.execute({ steps: [{ id: "grace", handler: () => undefined }] });
+  const { state } = await functions(silentClickHouse).gc.execute({ steps: [{ id: "grace", handler: () => undefined }] });
 
-  expect(attempt.collectGarbage).toHaveBeenCalledWith(fake, 5);
+  expect(attempt.collectGarbage).toHaveBeenCalledWith(silentClickHouse, 5);
   expect(Object.keys(state)).toHaveLength(["pin", "grace", "collect"].length);
 });

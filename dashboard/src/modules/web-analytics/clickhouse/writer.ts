@@ -54,8 +54,7 @@ export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse
  * The outbox rows go first so a backfill that already consumed them refuses this publication instead of double counting.
  */
 const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: ClickHouseService, environmentId: string, batches: ReadonlyArray<Batch>) {
-  const attempts = yield* mint([environmentId]);
-  const attempt = attempts.get(environmentId);
+  const attempt = (yield* mint([environmentId])).get(environmentId);
   if (attempt === undefined) return false;
   const ids = batches.map((batch) => batch.id);
   const rows = batches.flatMap((batch) => batch.rows);
@@ -72,19 +71,12 @@ const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: Cli
       where c.environment_id = ${environmentId}::text for update of c`, "objects");
     if (site === undefined) return yield* new PublishRefused({ environmentId, attempt });
     const closed = site.rolled_up_to;
-    if (closed !== null) {
-      const days = new Set<string>();
-      for (const row of rows) {
-        for (const day of rollupDaysChangedBy(site.timezone, new Date(`${row.ts.replace(" ", "T")}Z`))) if (day <= closed) days.add(day);
-      }
-      if (days.size > 0) {
-        yield* drizzle.execute(sql`
-          update analytics.clickhouse_site
-          set dirty = array(select distinct d from unnest(dirty || ${sql.param([...days])}::date[]) d order by d), updated_at = now()
-          where environment_id = ${environmentId}::text`);
-      }
-    }
-    yield* publish(proof, environmentId, sql`below = greatest(below, ${attempt}::bigint + 1)`);
+    const dirtied = closed === null ? [] : rows
+      .flatMap((row) => rollupDaysChangedBy(site.timezone, new Date(`${row.ts.replace(" ", "T")}Z`)))
+      .filter((day) => day <= closed);
+    yield* publish(proof, environmentId, sql`
+      below = greatest(below, ${attempt}::bigint + 1),
+      dirty = array(select distinct d from unnest(dirty || ${sql.param(dirtied)}::date[]) d order by d)`);
     return true;
   })).pipe(Effect.catchTag("PublishRefused", () => Effect.succeed(false)));
 });
@@ -95,7 +87,11 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
     select id::text as id, environment_id, rows from analytics.outbox order by id limit ${DRAIN_BATCHES}`, "objects");
   if (batches.length === 0) return 0;
   const byEnvironment = new Map<string, Array<Batch>>();
-  for (const batch of batches) byEnvironment.set(batch.environment_id, [...(byEnvironment.get(batch.environment_id) ?? []), batch]);
+  for (const batch of batches) {
+    const group = byEnvironment.get(batch.environment_id) ?? [];
+    group.push(batch);
+    byEnvironment.set(batch.environment_id, group);
+  }
   let drained = 0;
   for (const [environmentId, group] of [...byEnvironment].sort(([a], [b]) => a.localeCompare(b))) {
     if (yield* drainSite(clickhouse, environmentId, group)) drained += group.length;
@@ -137,6 +133,7 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
       yield* drizzle.execute(sql`delete from analytics.outbox where id = any(${sql.param(queued.map((row) => row.id))}::bigint[])`);
       let copied = 0;
       let after: Pageview | undefined;
+      // A site with no pageviews still publishes its new floor, so the proof starts from an acknowledged empty insert.
       let proof = yield* insertRows(clickhouse, "pageview", [], attempt);
       for (;;) {
         const page: ReadonlyArray<Pageview> = yield* drizzle.select().from(analyticsPageview)

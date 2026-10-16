@@ -1,7 +1,8 @@
 import { sql } from "drizzle-orm";
 import { Effect, Exit, Scope } from "effect";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
-import { collectGarbage, pin } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, pin, PUBLISHED_COLUMNS, publishedOf, type PublishedRow, TABLES } from "#/modules/web-analytics/clickhouse/attempt";
+import { binder } from "#/modules/web-analytics/clickhouse/store";
 import { ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { backfillSite, drainOutbox, enqueueForClickHouse, forgetDeletedSites } from "#/modules/web-analytics/clickhouse/writer";
 import { ensurePartitions } from "#/modules/web-analytics/postgres/partitions";
@@ -30,7 +31,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await harness.db.execute(sql`truncate analytics.site, analytics.pageview, analytics.outbox, analytics.clickhouse_site`);
-  for (const table of ["pageview", "daily", "session_hourly"]) await Effect.runPromise(clickhouse.unchecked.command(`TRUNCATE TABLE ${table}`));
+  for (const table of TABLES) await Effect.runPromise(clickhouse.unchecked.command(`TRUNCATE TABLE ${table}`));
   await harness.db.insert(analyticsSite).values([
     { organizationId: ORGANIZATION, environmentId: SHOP, enabled: true, timezone: "Australia/Sydney" },
   ]);
@@ -67,11 +68,10 @@ const storedCount = async (environmentId: string) => {
 };
 
 const clickhouseCount = async (environmentId: string) => {
-  const [site] = await harness.db.select({ floor: analyticsClickhouseSite.floor, below: analyticsClickhouseSite.below, pending: analyticsClickhouseSite.pending })
-    .from(analyticsClickhouseSite).where(sql`${analyticsClickhouseSite.environmentId} = ${environmentId}`);
-  const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(
-    "SELECT count() AS n FROM pageview WHERE environment_id = {environmentId:String} AND attempt >= {floor:UInt64} AND attempt < {below:UInt64} AND NOT has({pending:Array(UInt64)}, attempt)",
-    { environmentId, floor: Number(site?.floor ?? 0), below: Number(site?.below ?? 0), pending: (site?.pending ?? []).map(Number) }));
+  const [site] = await harness.db.execute<PublishedRow>(sql`
+    select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+  const b = binder({ environmentId, timezone: "UTC" }, publishedOf(site));
+  const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(`SELECT count() AS n FROM pageview WHERE environment_id = ${b.env} AND ${b.visible}`, b.params));
   return row?.n;
 };
 

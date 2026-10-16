@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { Effect } from "effect";
 import { inject } from "vitest";
-import { clickHouseClient, makeClickHouse } from "#/modules/web-analytics/clickhouse/client";
+import { clickHouseClient, type ClickHouseService, makeClickHouse } from "#/modules/web-analytics/clickhouse/client";
 import { ensureSchema } from "#/modules/web-analytics/clickhouse/schema";
+
+/** Acknowledges every write and holds no rows, so the Postgres side of the attempt API runs without ClickHouse. */
+export const silentClickHouse: ClickHouseService = {
+  query: () => Effect.succeed([]),
+  unchecked: { command: () => Effect.void, insert: () => Effect.void },
+};
 
 export const clickhouseTestDatabase = Effect.gen(function* () {
   const name = `test_${randomUUID().replaceAll("-", "")}`;

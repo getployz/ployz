@@ -3,31 +3,22 @@ import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { expect } from "vitest";
 import { type Acknowledged, type Attempt, collectGarbage, insertRows, insertSelect, mint, publish } from "#/modules/web-analytics/clickhouse/attempt";
-import type { ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { Database, type DatabaseService } from "#/server/database.server";
+import { silentClickHouse as client } from "#/test/clickhouse";
 
 declare const attempt: Attempt;
 declare const proof: Acknowledged;
 
-const client: ClickHouseService = {
-  query: () => Effect.succeed([]),
-  unchecked: { command: () => Effect.void, insert: () => Effect.void },
-};
-
 it("a write needs an Attempt from mint and a publication needs the proof an insert returns", () => {
-  const rejected = [
-    // @ts-expect-error a number is not an Attempt
-    () => insertRows(client, "pageview", [], 7),
-    // @ts-expect-error a number is not an Attempt
-    () => insertSelect(client, 7, []),
-    // @ts-expect-error an Attempt is not proof that its rows were acknowledged
-    () => publish(attempt, "site", sql``),
-    // @ts-expect-error an object carrying an attempt is not proof either
-    () => publish({ attempt }, "site", sql``),
-  ];
-  const accepted = () => publish(proof, "site", sql``);
-  expect(rejected).toHaveLength(4);
-  expect(accepted).toBeTypeOf("function");
+  // @ts-expect-error a number is not an Attempt
+  void (() => insertRows(client, "pageview", [], 7));
+  // @ts-expect-error a number is not an Attempt
+  void (() => insertSelect(client, 7, []));
+  // @ts-expect-error an Attempt is not proof that its rows were acknowledged
+  void (() => publish(attempt, "site", sql``));
+  // @ts-expect-error an object carrying an attempt is not proof either
+  void (() => publish({ attempt }, "site", sql``));
+  void (() => publish(proof, "site", sql``));
 });
 
 // SAFETY: the calls under test die on `inTransaction` before touching drizzle.
