@@ -12,24 +12,25 @@ function parseAccept(accept: string): ReadonlyArray<MediaRange> {
     const [range = "", ...params] = part.split(";").map((piece) => piece.trim().toLowerCase());
     const [type, subtype] = range.split("/");
     if (!type || !subtype) return [];
-    const qIndex = params.findIndex((param) => param.startsWith("q="));
-    // Media parameters sit before q; both representations are served as charset=utf-8 and nothing else, so a range
-    // naming any other parameter (text/html;level=1) matches neither and must not set their quality.
-    const mediaParams = qIndex === -1 ? params : params.slice(0, qIndex);
-    if (mediaParams.some((param) => param.replace(/\s*=\s*/, "=").replaceAll('"', "") !== "charset=utf-8")) return [];
-    const qParam = qIndex === -1 ? undefined : params[qIndex];
+    const qParam = params.find((param) => param.startsWith("q="));
     const q = qParam === undefined ? 1 : Number(qParam.slice(2));
     return Number.isFinite(q) ? [{ type, subtype, q: Math.min(Math.max(q, 0), 1) }] : [];
   });
 }
 
-/** RFC 9110 12.5.1: the most specific matching range sets the quality. */
+/**
+ * RFC 9110 12.5.1: the most specific matching range sets the quality. Media parameters are ignored and the highest q
+ * at that level wins, so a header the parser reads loosely (text/html;level=1;q=0.1, text/html) leans to HTML, which
+ * is what every page served before Markdown existed.
+ */
 function quality(ranges: ReadonlyArray<MediaRange>, type: string, subtype: string): number {
-  const exact = ranges.find((r) => r.type === type && r.subtype === subtype);
-  if (exact) return exact.q;
-  const family = ranges.find((r) => r.type === type && r.subtype === "*");
-  if (family) return family.q;
-  return ranges.find((r) => r.type === "*" && r.subtype === "*")?.q ?? 0;
+  const levels = [
+    ranges.filter((r) => r.type === type && r.subtype === subtype),
+    ranges.filter((r) => r.type === type && r.subtype === "*"),
+    ranges.filter((r) => r.type === "*" && r.subtype === "*"),
+  ];
+  const matched = levels.find((level) => level.length > 0);
+  return matched ? Math.max(...matched.map((r) => r.q)) : 0;
 }
 
 /** HTML wins ties, so a browser's Accept (or none at all) always gets the page. */
