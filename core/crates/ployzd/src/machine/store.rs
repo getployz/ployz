@@ -552,7 +552,21 @@ impl LocalMachineStore {
         if persisted != self.record {
             return Err(StoreError::OwnershipLost(self.data_dir.clone()));
         }
-        fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io)
+        if !self.data_dir.join(super::PREPARE_DIR_NAME).exists() {
+            return fs::remove_dir_all(&self.data_dir).map_err(StoreError::Io);
+        }
+        for entry in fs::read_dir(&self.data_dir)? {
+            let entry = entry?;
+            if entry.file_name() == super::PREPARE_DIR_NAME {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
     }
 }
 

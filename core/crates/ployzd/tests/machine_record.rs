@@ -561,6 +561,27 @@ fn directory_holding_only_host_preparation_is_claimed() {
 }
 
 #[test]
+fn reset_keeps_host_preparation() {
+    let dir = TestDir::new("ployzd-state");
+    let mut store = LocalMachineStore::open(&dir.0).unwrap();
+    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    fs::create_dir_all(&prepare).unwrap();
+    fs::write(prepare.join("state.json"), b"{}").unwrap();
+
+    store.begin_reset().unwrap();
+    store.complete_reset().unwrap();
+
+    assert_eq!(fs::read(prepare.join("state.json")).unwrap(), b"{}");
+    assert_eq!(
+        fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>(),
+        vec![std::ffi::OsString::from(ployzd::machine::PREPARE_DIR_NAME)]
+    );
+}
+
+#[test]
 fn nonempty_directory_without_a_machine_record_is_not_claimed() {
     let dir = TestDir::new("ployzd-state");
     fs::create_dir_all(&dir.0).unwrap();
