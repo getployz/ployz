@@ -2,11 +2,14 @@
 
 use std::{fs, path::Path};
 
+use serde::Serialize;
+
 use super::{Error, refuse};
 
 const STAGE: &str = "identify Linux distribution";
 
 /// The os-release fields that pick an install route and name the OS in a refusal.
+#[derive(Debug, Serialize)]
 pub(super) struct OsRelease {
     pub(super) id: String,
     pub(super) name: String,

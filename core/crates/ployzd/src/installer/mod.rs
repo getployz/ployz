@@ -1,5 +1,6 @@
 //! Bounded local installation of a Ployz Machine release.
 
+mod assess;
 mod compensation;
 mod host;
 mod os_release;
@@ -24,6 +25,7 @@ use thiserror::Error;
 use crate::mutation;
 
 use self::{
+    assess::{assess, read_facts},
     host::{
         activate_units, create_user_and_directories, install_docker, install_prerequisites,
         install_units, verify_docker, verify_running_daemon, verify_software_prerequisites,
@@ -129,6 +131,8 @@ pub(super) struct InstallPaths {
     pub(super) apt_dir: PathBuf,
     /// Where running processes are inspected, so readiness can prove which executable runs.
     pub(super) proc_dir: PathBuf,
+    /// Present only while the ZFS kernel module is loaded.
+    pub(super) zfs_module: PathBuf,
 }
 
 impl InstallPaths {
@@ -148,6 +152,7 @@ impl InstallPaths {
             ),
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
+            zfs_module: PathBuf::from("/sys/module/zfs"),
         }
     }
 
@@ -171,6 +176,7 @@ impl InstallPaths {
             secure_boot: root.join("efivars/SecureBoot"),
             apt_dir: root.join("apt"),
             proc_dir: root.join("proc"),
+            zfs_module: root.join("sys/module/zfs"),
         }
     }
 }
@@ -209,6 +215,28 @@ pub async fn install(
         InstallPaths::system(data_dir, DEFAULT_RUN_DIR),
     )
     .await
+}
+
+/// What this host is and what Ployz can do on it, as `{ facts, assessment }` JSON. Reads only.
+///
+/// # Errors
+///
+/// Fails without root, or where a fact the installer depends on can't be read.
+pub fn probe() -> Result<String, Error> {
+    require_root()?;
+    let facts = read_facts(&InstallPaths::system(
+        crate::machine::DEFAULT_DATA_DIR,
+        DEFAULT_RUN_DIR,
+    ))?;
+    let assessment = assess(&facts);
+    serde_json::to_string_pretty(&serde_json::json!({
+        "facts": facts,
+        "assessment": assessment,
+    }))
+    .map_err(|error| Error::Io {
+        stage: "print host probe",
+        source: io::Error::other(error),
+    })
 }
 
 async fn install_at(

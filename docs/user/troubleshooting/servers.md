@@ -107,6 +107,32 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
   `sudo systemctl restart docker`. Images you pulled before switching don't carry over, so pull
   them again.
 
+## See what Ployz reads from a server
+
+Once Ployz is installed, this prints what it reads from the server and what would stop it, without
+changing anything:
+
+```sh
+sudo ployzd install --probe --json
+```
+
+`facts` holds the distribution, kernel, virtualization, cgroup version, CPUs, memory, disks and
+Docker. `assessment.blockers` lists what stops Ployz, each with a `code` and a `message`, and
+`assessment.warnings` lists what may misbehave. A root disk under 30 GiB shows as the
+`disk_too_small` blocker, but the install doesn't refuse it yet. `assessment.zfs` is `Eligible`
+with the disks managed volumes can use, or `Ineligible` with the reason the ZFS install stops on.
+A value Ployz couldn't read shows as `null`, and `facts.unread` says why. When Ployz can't read
+whether an LXC container is privileged, `assessment.zfs` is `Ineligible` with
+`lxc_privilege_unknown`, and when it can't read the firmware's Secure Boot setting on Debian or
+Amazon Linux, `Ineligible` with `secure_boot_unknown`. When a Docker command fails partway, the
+`docker_unreadable` blocker carries the error the install would stop on.
+
+The probe never starts Docker. When `docker.socket` listens but `docker.service` isn't running,
+`facts.docker` is `SocketActivated` with no version, and `facts.unread` says why. That isn't a
+blocker: the install's first Docker command starts it. If `docker.service` failed the last time
+it ran, `facts.unread` says so, because only the install's start shows whether it fails again. A
+Docker that doesn't answer shows as `docker_stopped`.
+
 ## Managed volumes are missing after a kernel update
 
 After a Debian or Amazon Linux server reboots into a new kernel, its managed volumes are

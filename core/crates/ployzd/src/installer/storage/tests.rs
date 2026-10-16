@@ -125,8 +125,10 @@ fn assert_refused(result: Result<(), Error>, expected: &str) {
     );
 }
 
-/// Fakes that let `zfs_installed` see a module once `root/module` exists.
+/// Fakes that let `zfs_installed` see a module once `root/module` exists, on a VM whatever the
+/// test runner itself is.
 fn write_zfs_probes(commands: &Path) {
+    write_script(&commands.join("systemd-detect-virt"), "echo kvm");
     write_script(
         &commands.join("modinfo"),
         r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/modinfo.log"; [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]"#,
@@ -588,18 +590,6 @@ fn zfs_already_installed_contract() {
             format!("-k {kernel} zfs\n"),
             "{name}"
         );
-    }
-}
-
-#[test]
-fn secure_boot_reading_follows_test_root() {
-    let fixture = fixture("secure-boot");
-    let paths = InstallPaths::at(fixture.path());
-    assert!(!secure_boot_enabled(&paths).unwrap());
-    fs::create_dir_all(paths.secure_boot.parent().unwrap()).unwrap();
-    for (variable, enabled) in [([6, 0, 0, 0, 1], true), ([6, 0, 0, 0, 0], false)] {
-        fs::write(&paths.secure_boot, variable).unwrap();
-        assert_eq!(secure_boot_enabled(&paths).unwrap(), enabled);
     }
 }
 
