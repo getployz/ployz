@@ -2,6 +2,7 @@ use std::{
     env,
     ffi::OsString,
     io,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -599,6 +600,24 @@ async fn install_local(
             .status()
             .await,
     )
+}
+
+/// Download this release's verified daemon to `path`, for a host that doesn't have one.
+pub(crate) async fn fetch_daemon(path: &Path) -> Result<(), ProvisionError> {
+    if env::consts::OS != "linux" {
+        return Err(ProvisionError::UnsupportedOs);
+    }
+    let bootstrap = Bootstrap::acquire(env::consts::ARCH).await?;
+    bootstrap.verify_local_version().await?;
+    let io = |stage| move |source| ProvisionError::BootstrapIo { stage, source };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(io("create the daemon directory"))?;
+    }
+    let staged = path.with_extension("new");
+    std::fs::copy(bootstrap.daemon(), &staged).map_err(io("copy the daemon"))?;
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
+        .map_err(io("make the daemon executable"))?;
+    std::fs::rename(&staged, path).map_err(io("install the daemon"))
 }
 
 pub(crate) fn process_is_root() -> bool {

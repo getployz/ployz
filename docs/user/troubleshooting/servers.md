@@ -192,6 +192,22 @@ your first server.
    front of them.
 3. Read the server's logs with `sudo journalctl -u ployz -n 200`.
 
+## A server waits for approval and never shows up
+
+A server you started with a Fleet Token runs `ployz server checkin --install`. That installs a
+service, `ployz-checkin`, which checks in with Ployz Cloud until you approve the server, and
+prepares Docker and ZFS meanwhile.
+
+1. Run `ployz status` on the server. The **this server** line says where it stands, and `blocked`
+   lines say what stops it.
+2. Read the loop's log with `sudo journalctl -u ployz-checkin -n 100`, and preparation's with
+   `sudo journalctl -u ployz-prepare -n 200`.
+3. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS. It keeps trying every
+   minute.
+4. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
+   `/etc/ployz/fleet-token` and won't start again at boot. Put a new Fleet Token in that file and
+   run `sudo ployz server checkin --install` again. A rejected server stays rejected.
+
 ## Ployz stops over a leftover network
 
 `sudo systemctl status ployz` shows the service failed with `status=78`, and its logs say

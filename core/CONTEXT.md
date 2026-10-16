@@ -480,6 +480,18 @@ _Avoid_: allocator role, global reservation, Cluster IPAM
 Cloud's Organization-scoped bearer that authorizes copy-paste founding and joining. It does not own enrollment lifecycle and is not a Pairing Credential or Management Capability.
 _Avoid_: pairing token, API key, join URL as identity
 
+**Fleet Token**:
+Cloud's Organization-scoped `pflt_` bearer that lets many hosts check in as Waiting Servers. It admits a host to the waiting list, never to a Cluster; a revoked or expired Fleet Token ends every check-in loop that holds it.
+_Avoid_: Cloud Enroll Token, join token, API key
+
+**Waiting Server**:
+A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry.
+_Avoid_: pending Machine, unenrolled Machine, Cluster member
+
+**Check-in Key**:
+The ed25519 key a Waiting Server generates and keeps under `/var/lib/ployz/checkin` to sign each check-in, so Cloud knows repeat check-ins come from the same host. It is not the Management Identity and never reaches the management plane.
+_Avoid_: Management Identity, Machine key, WireGuard key
+
 **Founding Claim**:
 Cloud's Organization-scoped exclusive pending enrollment attempt. It has no automatic timeout or transfer: only the matching founder resumes it, and recovery requires an explicit verified reset.
 _Avoid_: token claim, timed lease, init mutex, leader election, cluster lock

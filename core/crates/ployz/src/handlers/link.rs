@@ -20,12 +20,13 @@ use ployz_store::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, scoped, store};
+use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, reachable, scoped, store};
 use super::{Error, config_path, leaf_matches};
+use crate::checkin::{LocalCheckin, Paths};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
-use crate::ui::{Fields, Hint};
+use crate::ui::{Cell, Fields, Hint, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
     scoped(command.about("Link this directory to a Project and Environment"))
@@ -452,7 +453,11 @@ struct Attention {
 
 #[derive(Serialize)]
 struct Status {
-    identity: Identity,
+    /// This host's last check-in, when it waits for approval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    this_server: Option<LocalCheckin>,
+    /// Who acts; none when signed out.
+    identity: Option<Identity>,
     scope: Scope,
     /// The Environment the scope resolves to; none when it doesn't resolve.
     environment: Option<EnvironmentSummary>,
@@ -468,36 +473,41 @@ const RECENT: usize = 5;
 /// `ployz status`: one call that orients an agent.
 pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
-    let identity = identity(&store)?;
+    let this_server = this_server();
+    let store = reachable(root)?;
+    let identity = store.as_ref().map(identity).transpose()?;
     let scope = scope(matches)?;
     let mut attention = Vec::new();
-    let diff = match store.try_read(&DiffQuery {
-        environment: scope.at(),
-    }) {
-        Ok(diff) => Some(diff),
-        // The scope doesn't resolve: say so, and still say who and where.
-        Err(StoreCallError::Refused(error))
-            if matches!(error.code, RpcErrorCode::NotFound | RpcErrorCode::Ambiguous) =>
-        {
-            let next = match error.details.get("next").and_then(|next| next.as_str()) {
-                Some(next) => next.to_owned(),
-                // Ambiguous, or the linked Project is gone: pick one to act in.
-                None => "ployz link --project PROJECT".to_owned(),
-            };
-            let next = Some(next);
-            attention.push(Attention {
-                reason: error.code.to_string(),
-                message: crate::ui::row(&error),
-                deployment: None,
-                next,
-            });
-            None
-        }
-        Err(error) => return Err(store.fail(error)),
+    // Signed out, say what this host knows and nothing about a scope.
+    let diff = match &store {
+        None => None,
+        Some(store) => match store.try_read(&DiffQuery {
+            environment: scope.at(),
+        }) {
+            Ok(diff) => Some(diff),
+            // The scope doesn't resolve: say so, and still say who and where.
+            Err(StoreCallError::Refused(error))
+                if matches!(error.code, RpcErrorCode::NotFound | RpcErrorCode::Ambiguous) =>
+            {
+                let next = match error.details.get("next").and_then(|next| next.as_str()) {
+                    Some(next) => next.to_owned(),
+                    // Ambiguous, or the linked Project is gone: pick one to act in.
+                    None => "ployz link --project PROJECT".to_owned(),
+                };
+                let next = Some(next);
+                attention.push(Attention {
+                    reason: error.code.to_string(),
+                    message: crate::ui::row(&error),
+                    deployment: None,
+                    next,
+                });
+                None
+            }
+            Err(error) => return Err(store.fail(error)),
+        },
     };
     let mut deploying = Vec::new();
-    if diff.is_some() {
+    if let (Some(store), Some(_)) = (&store, &diff) {
         let page = store.read(&DeploymentsQuery {
             environment: scope.at(),
             limit: Some(RECENT),
@@ -550,8 +560,12 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             deploying
                 .first()
                 .map(|deployment| super::deploy::show_hint(matches, deployment.number))
+        })
+        .or_else(|| {
+            (identity.is_none() && this_server.is_none()).then(|| "ployz login".to_owned())
         });
     let status = Status {
+        this_server,
         identity,
         scope,
         environment: diff.map(|diff| diff.environment),
@@ -566,9 +580,38 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+/// The last check-in this host recorded, when it runs `ployz server checkin`.
+fn this_server() -> Option<LocalCheckin> {
+    let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
+    LocalCheckin::read(&path)
+        .inspect_err(|error| {
+            crate::ui::warn(format!("Could not read {}: {error}", path.display()));
+        })
+        .ok()
+        .flatten()
+}
+
 fn status_record(status: &Status) -> Fields {
-    let identity = &status.identity;
     let mut record = Fields::new();
+    if let Some(checkin) = &status.this_server {
+        let (headline, ended) = checkin.headline();
+        let tone = if ended { Tone::Bad } else { Tone::Change };
+        record.push("this server", Cell::status(headline, tone));
+        record.push(
+            "checked in",
+            crate::checkin::ago(checkin.at, chrono::Utc::now()),
+        );
+        if let Some(message) = checkin.message.as_deref().filter(|_| ended) {
+            record.push("reason", message);
+        }
+        for blocker in &checkin.blockers {
+            record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
+        }
+    }
+    let Some(identity) = &status.identity else {
+        record.push("signed in as", "no one");
+        return record;
+    };
     if let Some(cloud) = &identity.cloud {
         record.push("cloud", cloud);
     }
@@ -622,7 +665,7 @@ fn status_record(status: &Status) -> Fields {
     for attention in &status.attention {
         record.push(
             "needs attention",
-            crate::ui::Cell::status(&attention.message, crate::ui::Tone::Bad),
+            Cell::status(&attention.message, Tone::Bad),
         );
     }
     record

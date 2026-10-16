@@ -227,6 +227,12 @@ stderr, such as `No Services in production yet.`; piped, it also prints the head
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
 
+`ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
+server waiting for approval, it leads with a **this server** line: `Installing Docker`,
+`Building ZFS`, `Waiting for approval`, `Rejected`, `Token expired`, `Token revoked` or
+`Can't reach Cloud`. Then it says when the server last checked in and lists anything that blocks
+it as `blocked` lines. With `--json` this is the `this_server` object.
+
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
 
