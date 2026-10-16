@@ -3,7 +3,7 @@
 use std::{
     ffi::OsStr,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::Write,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     process::Command,
@@ -11,6 +11,10 @@ use std::{
 
 use ployz_core::StorageChoice;
 
+use super::assess::{
+    Filesystem, ROOT_RESERVE, ZFS_SMOKE_BYTES, ZfsEligibility, assess, read_facts,
+    root_reserve_blocker,
+};
 use super::os_release::OsRelease;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
@@ -18,7 +22,6 @@ use super::{
     release::{staging_directory, verify_checksum, write_private},
 };
 
-const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
 const POSIX_STAT_BLOCK_BYTES: u64 = 512;
 
 pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> Result<(), Error> {
@@ -32,7 +35,7 @@ const STAGE: &str = "prepare ZFS storage";
 
 /// How the ZFS kernel module becomes loadable on the Machine's distro.
 #[derive(Clone, Copy)]
-enum ZfsRoute {
+pub(super) enum ZfsRoute {
     /// Canonical's prebuilt module package for the running kernel.
     Ubuntu,
     /// Debian's `zfs-dkms` from `contrib`, built on the Machine and rebuilt by DKMS for new
@@ -47,31 +50,34 @@ enum ZfsRoute {
 }
 
 impl ZfsRoute {
-    fn for_os(os: &OsRelease) -> Result<Self, Error> {
+    pub(super) fn for_os(os: &OsRelease) -> Option<Self> {
         match (os.id.as_str(), os.version_id.as_deref()) {
-            ("ubuntu", _) => Ok(Self::Ubuntu),
-            ("debian", Some("12")) => Ok(Self::Debian {
+            ("ubuntu", _) => Some(Self::Ubuntu),
+            ("debian", Some("12")) => Some(Self::Debian {
                 codename: "bookworm",
                 keyring: "debian-archive-keyring.gpg",
             }),
-            ("debian", Some("13")) => Ok(Self::Debian {
+            ("debian", Some("13")) => Some(Self::Debian {
                 codename: "trixie",
                 keyring: "debian-archive-keyring.pgp",
             }),
-            (_, Some("2023")) if os.is_amazon_linux() => Ok(Self::AmazonLinux),
-            _ => Err(refuse(
-                STAGE,
-                format!(
-                    "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
-                    os.display()
-                ),
-            )),
+            (_, Some("2023")) if os.is_amazon_linux() => Some(Self::AmazonLinux),
+            _ => None,
         }
     }
 
     /// Whether the Machine builds the module itself, unsigned, rather than installing Ubuntu's.
-    fn builds_module(self) -> bool {
+    pub(super) fn builds_module(self) -> bool {
         !matches!(self, Self::Ubuntu)
+    }
+
+    /// Roughly how long preparation takes on a small Server, building the module included.
+    pub(super) fn build_minutes(self) -> u32 {
+        match self {
+            Self::Ubuntu => 1,
+            Self::Debian { .. } => 10,
+            Self::AmazonLinux => 20,
+        }
     }
 
     fn package_manager(self) -> &'static str {
@@ -95,32 +101,20 @@ impl ZfsRoute {
 }
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
-    let os = OsRelease::read(&paths.os_release)?;
-    let route = ZfsRoute::for_os(&os)?;
-    // Unsigned modules this Machine builds can't load under Secure Boot; refuse before installing.
-    if route.builds_module() && secure_boot_enabled(paths)? {
-        return Err(refuse(
-            STAGE,
-            format!(
-                "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
-                os.name
-            ),
-        ));
-    }
-    let container = container_virtualization();
-    if container == "openvz" || (Path::new("/proc/vz").is_dir() && !Path::new("/proc/bc").is_dir())
+    let facts = read_facts(paths)?;
+    // The host-root reserve is checked last, below, where the installer always checked it.
+    if let ZfsEligibility::Ineligible { reason } = assess(&facts).zfs
+        && reason.code != ROOT_RESERVE
     {
-        return Err(refuse(
-            STAGE,
-            "OpenVZ does not allow this Machine to load the host ZFS kernel module",
-        ));
+        return Err(refuse(STAGE, reason.message));
     }
-    if container == "lxc" && lxc_is_unprivileged()? {
-        return Err(refuse(
-            STAGE,
-            "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module",
-        ));
-    }
+    let os = facts.os;
+    let route = ZfsRoute::for_os(&os).ok_or_else(|| {
+        Error::Verification(format!(
+            "{} passed ZFS assessment with no route",
+            os.display()
+        ))
+    })?;
     let package_manager = route.package_manager();
     if !command_exists(package_manager) {
         return Err(refuse(
@@ -138,7 +132,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     if install && matches!(route, ZfsRoute::AmazonLinux) {
         require_kernel_devel(&os, &kernel)?;
     }
-    require_host_root_reserve(ZFS_SMOKE_BYTES)?;
+    require_host_root_reserve()?;
     let cap = zfs_arc_max()?;
     if install {
         route.install(paths, &os, &kernel)?;
@@ -150,23 +144,6 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     validate_zfs()?;
     println!("ZFS storage preparation validated; no Machine Pool was created");
     Ok(())
-}
-
-/// Firmware Secure Boot state; a Machine without EFI variables boots with it off.
-///
-/// # Errors
-///
-/// Fails when the Secure Boot variable exists but can't be read.
-fn secure_boot_enabled(paths: &InstallPaths) -> Result<bool, Error> {
-    match fs::read(&paths.secure_boot) {
-        // The variable is 4 attribute bytes followed by one data byte; 1 means on.
-        Ok(variable) => Ok(variable.last() == Some(&1)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(Error::Io {
-            stage: "read Secure Boot state",
-            source,
-        }),
-    }
 }
 
 /// A build step that failed: its name, as the refusal shows it, and the cause for the log.
@@ -468,28 +445,6 @@ fn debian_kernel_flavour(kernel: &str) -> Option<&str> {
         .filter(|flavour| !flavour.is_empty())
 }
 
-fn container_virtualization() -> String {
-    Command::new("systemd-detect-virt")
-        .arg("--container")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .unwrap_or_default()
-}
-
-fn lxc_is_unprivileged() -> Result<bool, Error> {
-    let map = fs::read_to_string("/proc/self/uid_map").map_err(|source| Error::Io {
-        stage: "inspect LXC user namespace",
-        source,
-    })?;
-    let mut fields = map.split_whitespace();
-    Ok(matches!(
-        (fields.next(), fields.next()),
-        (Some("0"), Some(outside)) if outside != "0"
-    ))
-}
-
 fn uname(arg: &str, stage: &str) -> Result<String, Error> {
     let output = run_host(stage, "uname", [arg])?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -503,22 +458,11 @@ fn uname(arg: &str, stage: &str) -> Result<String, Error> {
     }
 }
 
-fn require_host_root_reserve(allocation: u64) -> Result<(), Error> {
-    let (size, available) =
-        crate::host_capacity::filesystem_space(Path::new("/")).map_err(|source| Error::Io {
-            stage: "inspect host-root capacity for ZFS storage preparation",
-            source,
-        })?;
-    let reserve = ployz_core::storage_host_reserve(size);
-    if available < reserve.saturating_add(allocation) {
-        return Err(refuse(
-            STAGE,
-            format!(
-                "Host root has {available} bytes available; ZFS validation needs {allocation} bytes while preserving the {reserve}-byte host-root reserve"
-            ),
-        ));
+fn require_host_root_reserve() -> Result<(), Error> {
+    match root_reserve_blocker(Filesystem::read_root()?) {
+        Some(blocker) => Err(refuse(STAGE, blocker.message)),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 fn zfs_arc_max() -> Result<u64, Error> {
@@ -704,7 +648,7 @@ fn set_and_verify_zfs_arc_max(cap: u64) -> Result<(), Error> {
 }
 
 fn validate_zfs() -> Result<(), Error> {
-    require_host_root_reserve(ZFS_SMOKE_BYTES)?;
+    require_host_root_reserve()?;
     let stage = staging_directory(Path::new("/var/tmp"))?;
     let backing = stage.path().join("backing");
     write_private(&backing, b"", "create ZFS smoke backing file")?;

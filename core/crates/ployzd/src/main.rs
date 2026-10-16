@@ -109,6 +109,12 @@ enum Command {
         /// Add this existing operator to the Ployz service group during host preparation.
         #[arg(long, value_name = "USER")]
         group_user: Option<String>,
+        /// Print what this host is and what blocks Ployz on it, without changing anything.
+        #[arg(long, requires = "json", conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version"])]
+        probe: bool,
+        /// Print the probe as JSON.
+        #[arg(long, requires = "probe")]
+        json: bool,
     },
 }
 
@@ -198,8 +204,14 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         software_only,
         install_only,
         group_user,
+        probe,
+        json: _,
     }) = args.command
     {
+        if probe {
+            println!("{}", ployzd::installer::probe().map_err(io::Error::other)?);
+            return Ok(ExitCode::SUCCESS);
+        }
         let request = install_request(version, storage, software_only, install_only, group_user)
             .map_err(Error::from)?;
         let outcome = ployzd::installer::install(request, &args.data_dir, &args.socket)

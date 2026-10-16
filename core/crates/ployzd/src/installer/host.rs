@@ -15,12 +15,12 @@ use tonic::transport::Endpoint;
 use crate::filesystem::{MACHINE_API_SOCKET_MODE, PLOYZ_DIR_MODE, atomic_write};
 use ployz_core::{DescribeContractRequest, MachineRpcClient, MachineVersion, op};
 
+use super::assess::{docker_blocker, read_docker};
 use super::os_release::OsRelease;
 use super::release::{fetch, installed_release};
 use super::{
     Error, InstallPaths, PLOYZ_USER, command_exists, refuse, run_apt, run_host, systemctl,
 };
-use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API, MINIMUM_DOCKER_RELEASE};
 
 const INSTALL_UNITS_TIMEOUT: Duration = Duration::from_secs(10);
 const USAGE_ERROR: i32 = 2;
@@ -443,65 +443,9 @@ const STAGE: &str = "checking Docker";
 /// Refuses a Docker Ployz can't use: too old an Engine API or buildx, or no containerd image
 /// store. A Machine without Docker passes.
 pub(super) fn verify_docker() -> Result<(), Error> {
-    if !command_exists("dockerd") {
-        return Ok(());
-    }
-    // The CLI can't read the server's version only when it can't reach the daemon.
-    let output = docker_output([
-        "version",
-        "--format",
-        "{{.Server.Version}} {{.Server.APIVersion}}",
-    ])
-    .map_err(|_| {
-        refuse(
-            STAGE,
-            "Docker is installed but not running. Start it (systemctl start docker) and run this again.",
-        )
-    })?;
-    let (version, api) = output.split_once(' ').unwrap_or((&output, ""));
-    if !at_least(api, MINIMUM_DOCKER_API) {
-        return Err(refuse(
-            STAGE,
-            format!(
-                "Docker {version} is too old: Ployz needs Docker {MINIMUM_DOCKER_RELEASE} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
-            ),
-        ));
-    }
-    // e.g. `github.com/docker/buildx v0.37.1 c8d4ec2`
-    let output = docker_output(["buildx", "version"])?;
-    let buildx = output.split_whitespace().nth(1).unwrap_or(&output);
-    if !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX) {
-        let (major, minor) = MINIMUM_BUILDX;
-        return Err(refuse(
-            STAGE,
-            format!(
-                "Docker Buildx {buildx} is too old: Ployz needs Buildx {major}.{minor} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
-            ),
-        ));
-    }
-    if !docker_output(["info", "-f", "{{.DriverStatus}}"])?.contains("io.containerd.snapshotter.v1")
-    {
-        return Err(refuse(
-            STAGE,
-            r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
-        ));
-    }
-    Ok(())
-}
-
-fn docker_output<const N: usize>(args: [&str; N]) -> Result<String, Error> {
-    let output = run_host(STAGE, "docker", args)?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
-/// Whether `version`'s first two numbers (`1.53`, `0.18.0+ds1`) are at least `minimum`.
-fn at_least(version: &str, minimum: (u32, u32)) -> bool {
-    let mut parts = version
-        .split(|c: char| !c.is_ascii_digit())
-        .map(str::parse::<u32>);
-    match (parts.next(), parts.next()) {
-        (Some(Ok(major)), Some(Ok(minor))) => (major, minor) >= minimum,
-        _ => false,
+    match docker_blocker(&read_docker()?) {
+        Some(blocker) => Err(refuse(STAGE, blocker.message)),
+        None => Ok(()),
     }
 }
 
@@ -692,22 +636,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn docker_and_buildx_must_be_at_least_the_minimum() {
-        for (version, minimum, supported) in [
-            ("1.44", MINIMUM_DOCKER_API, false),
-            ("1.52", MINIMUM_DOCKER_API, false),
-            ("1.53", MINIMUM_DOCKER_API, true),
-            ("1.54", MINIMUM_DOCKER_API, true),
-            ("", MINIMUM_DOCKER_API, false),
-            ("0.17.1", MINIMUM_BUILDX, false),
-            ("0.18.0", MINIMUM_BUILDX, true),
-            ("0.37.1+ds1", MINIMUM_BUILDX, true),
-        ] {
-            assert_eq!(at_least(version, minimum), supported, "{version}");
-        }
-    }
-
     struct DockerCase {
         name: &'static str,
         /// Whether `dockerd` is already there.
@@ -827,11 +755,12 @@ mod tests {
             if case.retained {
                 write_script(&commands.join("dockerd"), "exit 0");
             }
+            let (server_version, server_api) = case.server.split_once(' ').unwrap_or_default();
             write_script(
                 &commands.join("docker"),
                 &format!(
-                    "case \"$1\" in\nversion) [ -n '{0}' ] || exit 1; echo '{0}' ;;\nbuildx) echo 'github.com/docker/buildx {1} 0000000' ;;\ninfo) echo '{2}' ;;\nesac",
-                    case.server, case.buildx, case.driver_status
+                    "case \"$1\" in\nversion) [ \"$2 $3\" = '--format json' ] || exit 2; [ -n '{0}' ] || {{ echo '{{\"Server\":null}}'; exit 1; }}; echo '{{\"Server\":{{\"Version\":\"{1}\",\"ApiVersion\":\"{2}\"}}}}' ;;\nbuildx) echo 'github.com/docker/buildx {3} 0000000' ;;\ninfo) echo '{4}' ;;\nesac",
+                    case.server, server_version, server_api, case.buildx, case.driver_status
                 ),
             );
             // Installing Docker puts `dockerd` on the PATH.

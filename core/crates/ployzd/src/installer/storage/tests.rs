@@ -205,16 +205,26 @@ fn zfs_unsupported_os_contract() {
             "dpkg-deb",
             "dnf",
             "curl",
-            "systemd-detect-virt",
             "uname",
             "modprobe",
             "fallocate",
-            "zpool",
             "zfs",
         ] {
             write_script(
                 &commands.join(command),
                 "echo \"$0\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97",
+            );
+        }
+        // Reading host facts may ask these, but only in their read-only forms.
+        for (command, allowed, answer) in [
+            ("systemd-detect-virt", "", "echo none; exit 1"),
+            ("zpool", "list -H", "exit 0"),
+        ] {
+            write_script(
+                &commands.join(command),
+                &format!(
+                    "[ \"$*\" = '{allowed}' ] || {{ echo \"$0 $*\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97; }}\n{answer}"
+                ),
             );
         }
         let forbidden = fixture.path().join("forbidden-invocation");
@@ -588,18 +598,6 @@ fn zfs_already_installed_contract() {
             format!("-k {kernel} zfs\n"),
             "{name}"
         );
-    }
-}
-
-#[test]
-fn secure_boot_reading_follows_test_root() {
-    let fixture = fixture("secure-boot");
-    let paths = InstallPaths::at(fixture.path());
-    assert!(!secure_boot_enabled(&paths).unwrap());
-    fs::create_dir_all(paths.secure_boot.parent().unwrap()).unwrap();
-    for (variable, enabled) in [([6, 0, 0, 0, 1], true), ([6, 0, 0, 0, 0], false)] {
-        fs::write(&paths.secure_boot, variable).unwrap();
-        assert_eq!(secure_boot_enabled(&paths).unwrap(), enabled);
     }
 }
 

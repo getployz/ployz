@@ -43,6 +43,11 @@ only**; see [Start without ZFS](../servers/add-a-server.md#start-without-zfs) fo
   Turn Secure Boot off in your provider's settings for the server, or reinstall it with Ubuntu.
   Then run the command again.
 
+- ``Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for ... Turn Secure Boot off, use Ubuntu, or add `--storage none`.``
+
+  The server's firmware settings couldn't be read, and `mokutil` isn't installed or didn't say.
+  Install `mokutil` and run the command again, or follow the Secure Boot fix above.
+
 - ``Amazon Linux 2023 has no kernel-devel package for the running kernel ..., so ZFS can't be built for it. Update the kernel, reboot, and retry, or add `--storage none`.``
 
   The server runs an older kernel than its package repositories offer. Update it, reboot, then
@@ -106,6 +111,21 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
   Add `"features": {"containerd-snapshotter": true}` to `/etc/docker/daemon.json` and run
   `sudo systemctl restart docker`. Images you pulled before switching don't carry over, so pull
   them again.
+
+## See what Ployz reads from a server
+
+Once Ployz is installed, this prints what it reads from the server and what would stop it, without
+changing anything:
+
+```sh
+sudo ployzd install --probe --json
+```
+
+`facts` holds the distribution, kernel, virtualization, cgroup version, CPUs, memory, disks and
+Docker. `assessment.blockers` lists what stops Ployz, each with a `code` and the message the
+install shows, and `assessment.warnings` lists what may misbehave. `assessment.zfs` is `Eligible`
+with the disks managed volumes can use, or `Ineligible` with the reason the ZFS install stops on.
+A value Ployz couldn't read shows as `null`.
 
 ## Managed volumes are missing after a kernel update
 
