@@ -9,8 +9,8 @@ use std::{
 
 use clap::{ArgMatches, Command};
 
-use super::{command, loop_ployzd, loop_start};
-use crate::checkin::{Host, Paths, Probe, unit};
+use super::{LoopPloyzd, command, loop_ployzd, loop_start};
+use crate::checkin::{Host, LocalCheckin, Paths, Probe, Seen, unit};
 
 fn exec_start(text: &str) -> Vec<String> {
     let line = text
@@ -71,11 +71,21 @@ async fn the_unit_starts_the_loop_with_the_ployzd_install_chose() {
         .try_get_matches_from(args.get(3..).unwrap())
         .unwrap();
     let paths = Paths::system(PathBuf::from("/etc/ployz/fleet-token"));
-    assert_eq!(loop_ployzd(&matches, &paths, None).await.unwrap(), chosen);
+    assert_eq!(
+        loop_ployzd(&matches, &paths, None).await.unwrap(),
+        current(chosen)
+    );
+}
+
+fn current(path: &Path) -> LoopPloyzd {
+    LoopPloyzd {
+        path: path.to_owned(),
+        stale: None,
+    }
 }
 
 #[tokio::test]
-async fn a_pinned_ployzd_that_is_gone_or_stale_is_found_again_without_a_fetch() {
+async fn a_pinned_ployzd_that_is_gone_or_stale_gives_way_to_a_current_one_without_a_fetch() {
     let dir = tempfile::tempdir().unwrap();
     let paths = temp_paths(&dir);
     let bin = dir.path().join("bin");
@@ -86,24 +96,13 @@ async fn a_pinned_ployzd_that_is_gone_or_stale_is_found_again_without_a_fetch() 
     let search = bin.clone().into_os_string();
     let missing = dir.path().join("gone/ployzd");
 
-    for pin in [&stale, &missing] {
-        let error = loop_ployzd(&pinned(pin), &paths, Some(&search))
-            .await
-            .unwrap_err();
-        assert!(
-            format!("{error:?}").contains("Run ployz server checkin --install"),
-            "{error:?}"
-        );
-    }
-    assert!(!copy.exists(), "the loop never fetches");
-
     daemon(&copy, env!("CARGO_PKG_VERSION"));
     for pin in [&stale, &missing] {
         assert_eq!(
             loop_ployzd(&pinned(pin), &paths, Some(&search))
                 .await
                 .unwrap(),
-            copy
+            current(&copy)
         );
     }
     daemon(&on_path, env!("CARGO_PKG_VERSION"));
@@ -111,8 +110,41 @@ async fn a_pinned_ployzd_that_is_gone_or_stale_is_found_again_without_a_fetch() 
         loop_ployzd(&pinned(&stale), &paths, Some(&search))
             .await
             .unwrap(),
-        on_path
+        current(&on_path)
     );
+}
+
+#[tokio::test]
+async fn with_no_current_ployzd_the_loop_runs_an_older_one_and_says_to_reinstall() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    let bin = dir.path().join("bin");
+    let search = bin.clone().into_os_string();
+    let pin = dir.path().join("old/ployzd");
+    let copy = paths.checkin_dir.join("ployzd");
+    daemon(&pin, "0.0.1");
+    daemon(&bin.join("ployzd"), "0.0.2");
+    daemon(&copy, "0.0.3");
+
+    let found = loop_ployzd(&pinned(&pin), &paths, Some(&search))
+        .await
+        .unwrap();
+    assert_eq!(found.path, pin, "the pin still comes first");
+    let stale = found.stale.unwrap();
+    assert!(stale.contains("is older than this ployz"), "{stale}");
+    assert!(
+        stale.ends_with("Run sudo ployz server checkin --install"),
+        "{stale}"
+    );
+
+    let gone = dir.path().join("gone/ployzd");
+    fs::remove_file(bin.join("ployzd")).unwrap();
+    let found = loop_ployzd(&pinned(&gone), &paths, Some(&search))
+        .await
+        .unwrap();
+    assert_eq!(found.path, copy);
+    assert!(found.stale.is_some());
+    assert!(!dir.path().join("gone").exists(), "the loop never fetches");
 }
 
 #[derive(Default)]
@@ -141,6 +173,10 @@ impl Host for Stopper {
         self.disables.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
+
+    fn stale_ployzd(&self) -> Option<String> {
+        unreachable!("the loop never starts")
+    }
 }
 
 #[tokio::test]
@@ -158,4 +194,44 @@ async fn a_loop_without_a_token_ends_before_it_looks_for_ployzd() {
     .await;
     assert!(matches!(started, Ok(None)), "{:?}", started.err());
     assert_eq!(stopper.disables.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    fs::write(
+        &paths.token_file,
+        "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    let search = dir.path().join("bin").into_os_string();
+    let stopper = Stopper::default();
+    let started = loop_start(
+        &stopper,
+        &pinned(&dir.path().join("gone/ployzd")),
+        &paths,
+        Some(&search),
+    )
+    .await;
+    let error = started.err().unwrap();
+    assert!(
+        format!("{error:?}").contains("Run sudo ployz server checkin --install"),
+        "{error:?}"
+    );
+    assert_eq!(
+        stopper.disables.load(Ordering::SeqCst),
+        0,
+        "systemd retries it"
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.answer, Seen::ProbeFailed);
+    assert!(status.says_why());
+    assert!(
+        status
+            .message
+            .unwrap()
+            .starts_with("No ployzd on PATH or at "),
+        "the status names what is missing"
+    );
 }

@@ -191,6 +191,15 @@ impl CheckinClient {
         self.token == *token
     }
 
+    /// Names the token in status.json without writing the token itself there.
+    pub(super) fn fingerprint(&self) -> String {
+        hex::encode(
+            Sha256::digest(self.token.0.as_bytes())
+                .get(..8)
+                .unwrap_or_default(),
+        )
+    }
+
     pub(super) async fn post(&self, key: &CheckinKey, request: &CheckinRequest<'_>) -> Reply {
         let body = match serde_json::to_vec(request) {
             Ok(body) => body,
@@ -272,6 +281,10 @@ fn unauthorized(skew: Option<i64>, body: &[u8]) -> Reply {
     }
     match skew {
         Some(skew) if skew.abs() <= TRUSTED_SKEW_SECONDS => Reply::Refused,
+        Some(skew) if skew.abs() <= MAX_SKEW_SECONDS => Reply::ClockOff(format!(
+            "Cloud refused this Fleet Token, and this server's clock is {}s off from Cloud's. Set the clock right (timedatectl) so the refusal can be confirmed",
+            skew.abs()
+        )),
         Some(skew) => Reply::ClockOff(format!(
             "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
             skew.abs()

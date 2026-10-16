@@ -34,6 +34,7 @@ const REVOKED: &str = "Cloud no longer accepts this Fleet Token.";
 const REFUSED_ONCE: &str =
     "Cloud refused this Fleet Token. It is checked once more before the loop removes it";
 const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
+const STALE_PLOYZD: &str = "ployzd_outdated";
 
 pub(crate) struct Paths {
     pub(crate) checkin_dir: PathBuf,
@@ -65,6 +66,8 @@ impl Paths {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CheckinEnd {
     Stopped(StopReason),
+    /// The token file changed as the loop stopped. The loop stays enabled to restart with it.
+    TokenChanged,
 }
 
 pub(crate) trait Host {
@@ -73,10 +76,22 @@ pub(crate) trait Host {
     async fn prepare_running(&self) -> Result<bool, String>;
     async fn start_prepare(&self) -> Result<(), String>;
     async fn disable_loop(&self) -> Result<(), String>;
+    /// Why the ployzd this loop runs with should be replaced, when it is older than this CLI.
+    fn stale_ployzd(&self) -> Option<String>;
 }
 
 pub(crate) struct System {
     pub(crate) ployzd: PathBuf,
+    pub(crate) stale: Option<String>,
+}
+
+impl System {
+    pub(crate) fn with(ployzd: PathBuf) -> Self {
+        Self {
+            ployzd,
+            stale: None,
+        }
+    }
 }
 
 impl Host for System {
@@ -129,6 +144,10 @@ impl Host for System {
         let disabled = systemctl(&["disable", unit::CHECKIN]).await;
         let stopped = systemctl(&["stop", "--no-block", unit::PREPARE]).await;
         disabled.and(stopped)
+    }
+
+    fn stale_ployzd(&self) -> Option<String> {
+        self.stale.clone()
     }
 }
 
@@ -228,6 +247,16 @@ pub(crate) struct LocalCheckin {
     pub(crate) prepare_retries: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) prepare_started: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) refused: Option<Refusal>,
+}
+
+/// Cloud's first refusal of a token, which a second refusal of the same token confirms once
+/// BACKOFF has passed, across restarts.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub(crate) struct Refusal {
+    pub(crate) token: String,
+    pub(crate) at: DateTime<Utc>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,7 +295,7 @@ impl LocalCheckin {
     pub(crate) fn says_why(&self) -> bool {
         matches!(
             self.answer,
-            Seen::Stop | Seen::Refused | Seen::ClockOff | Seen::Outdated
+            Seen::Stop | Seen::Refused | Seen::ClockOff | Seen::Outdated | Seen::ProbeFailed
         )
     }
 
@@ -338,8 +367,7 @@ pub(crate) async fn run<H: Host>(
                     continue;
                 }
                 crate::ui::note(format!("{}. {message}", reason.title()));
-                stop(host, client, paths).await;
-                return CheckinEnd::Stopped(reason);
+                return stop(host, client, paths, reason).await;
             }
             Next::ClockOff(why) => {
                 last_log = None;
@@ -388,19 +416,35 @@ pub(crate) async fn loop_token<H: Host>(
     }
 }
 
-/// Removes the token file only while it still holds the token Cloud refused, so a token written
-/// since survives.
-pub(crate) async fn stop<H: Host>(host: &H, client: &CheckinClient, paths: &Paths) {
-    let still_sent = FleetToken::read(&paths.token_file).is_ok_and(|token| client.sends(&token));
+/// Removes the token file only while it still holds the token Cloud answered, so a token written
+/// since survives, and the loop stays enabled to restart with it. A rejection is about the host,
+/// so it ends the loop whatever the file holds.
+pub(crate) async fn stop<H: Host>(
+    host: &H,
+    client: &CheckinClient,
+    paths: &Paths,
+    reason: StopReason,
+) -> CheckinEnd {
+    let held = FleetToken::read(&paths.token_file);
+    let still_sent = held.as_ref().is_ok_and(|token| client.sends(token));
+    let gone = matches!(&held, Err(KeyError::Token { source, .. }) if source.kind() == io::ErrorKind::NotFound);
     if still_sent && let Err(error) = fs::remove_file(&paths.token_file) {
         crate::ui::note(format!(
             "Could not remove the Fleet Token at {}: {error}",
             paths.token_file.display()
         ));
     }
+    if !still_sent && !gone && reason != StopReason::Rejected {
+        crate::ui::note(format!(
+            "{} changed. The check-in loop restarts with it.",
+            paths.token_file.display()
+        ));
+        return CheckinEnd::TokenChanged;
+    }
     if let Err(why) = host.disable_loop().await {
         crate::ui::note(format!("Could not disable {}: {why}", unit::CHECKIN));
     }
+    CheckinEnd::Stopped(reason)
 }
 
 pub(crate) async fn pass<H: Host>(
@@ -434,9 +478,11 @@ async fn pass_from<H: Host>(
     installing: bool,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    let refused_before = previous
+    let refusal = previous
         .as_ref()
-        .is_some_and(|status| status.answer == Seen::Refused);
+        .filter(|status| status.answer == Seen::Refused)
+        .and_then(|status| status.refused.clone())
+        .filter(|refusal| refusal.token == client.fingerprint());
     let mut prepare_retries = previous.as_ref().map_or(0, |status| status.prepare_retries);
     let mut prepare_started = previous.and_then(|status| status.prepare_started);
     let running = host.prepare_running().await.unwrap_or_else(|why| {
@@ -491,7 +537,13 @@ async fn pass_from<H: Host>(
         blockers: Vec::new(),
         prepare_retries,
         prepare_started,
+        refused: None,
     };
+    let stale = host.stale_ployzd().map(|message| Issue {
+        code: STALE_PLOYZD.to_owned(),
+        message,
+    });
+    status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
         .unwrap_or_else(|_| {
@@ -511,7 +563,8 @@ async fn pass_from<H: Host>(
             };
         }
     };
-    let report = probe.report(host.hostname(), state.as_ref());
+    let mut report = probe.report(host.hostname(), state.as_ref());
+    report.blockers.extend(stale);
     status.blockers.clone_from(&report.blockers);
     let request = CheckinRequest {
         protocol_version: wire::PROTOCOL_VERSION,
@@ -538,18 +591,28 @@ async fn pass_from<H: Host>(
             status.message = Some(message.clone());
             Next::Stop(reason, message)
         }
-        client::Reply::Refused if refused_before => {
-            status.answer = Seen::Stop;
-            status.reason = Some(StopReason::TokenRevoked);
-            status.message = Some(REVOKED.to_owned());
-            Next::Stop(StopReason::TokenRevoked, REVOKED.to_owned())
-        }
         client::Reply::Refused => {
-            status.answer = Seen::Refused;
-            status.message = Some(REFUSED_ONCE.to_owned());
-            Next::Retry {
-                after: client::BACKOFF,
-                why: format!("{REFUSED_ONCE}."),
+            let waited = refusal
+                .as_ref()
+                .and_then(|refusal| now.signed_duration_since(refusal.at).to_std().ok());
+            if waited.is_some_and(|waited| waited >= client::BACKOFF) {
+                status.answer = Seen::Stop;
+                status.reason = Some(StopReason::TokenRevoked);
+                status.message = Some(REVOKED.to_owned());
+                Next::Stop(StopReason::TokenRevoked, REVOKED.to_owned())
+            } else {
+                status.answer = Seen::Refused;
+                status.message = Some(REFUSED_ONCE.to_owned());
+                status.refused = Some(refusal.unwrap_or_else(|| Refusal {
+                    token: client.fingerprint(),
+                    at: now,
+                }));
+                Next::Retry {
+                    after: client::BACKOFF
+                        .saturating_sub(waited.unwrap_or_default())
+                        .max(Duration::from_secs(1)),
+                    why: format!("{REFUSED_ONCE}."),
+                }
             }
         }
         client::Reply::Unreachable(after, why) => {
@@ -576,6 +639,23 @@ async fn pass_from<H: Host>(
     };
     record(&status, paths);
     next
+}
+
+/// Says in status.json why the loop can't start, keeping what the last pass saw of the host.
+pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
+    let previous = LocalCheckin::read(&paths.status()).ok().flatten();
+    let status = LocalCheckin {
+        answer: Seen::ProbeFailed,
+        reason: None,
+        message: Some(why.to_owned()),
+        at: now,
+        prep: previous.as_ref().and_then(|status| status.prep),
+        blockers: Vec::new(),
+        prepare_retries: previous.as_ref().map_or(0, |status| status.prepare_retries),
+        prepare_started: previous.and_then(|status| status.prepare_started),
+        refused: None,
+    };
+    record(&status, paths);
 }
 
 fn record(status: &LocalCheckin, paths: &Paths) {
