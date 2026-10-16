@@ -1,5 +1,8 @@
 import { defineRule, eslintCompatPlugin } from "@oxlint/plugins";
 import type { ESTree } from "@oxlint/plugins";
+import fs from "node:fs";
+import path from "node:path";
+import { parseSync } from "oxc-parser";
 
 /** What a settings card used to be built from, before every row had an archetype. */
 const LEGACY_ROWS = new Set(["Field", "FieldGroup", "FieldSet", "Item", "ItemGroup", "Separator", "DangerRow"]);
@@ -71,31 +74,121 @@ function isNode(value: unknown): value is ESTree.Node {
   return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
 }
 
-/** The file's own components and helpers by name, so a section that renders `<Rows />` is checked through `Rows`. */
-function localBodies(program: ESTree.Program): Map<string, Body> {
+/** A file the rule can see into: its own components and helpers by name, and where each imported name comes from. */
+interface Scope {
+  file: string;
+  bodies: Map<string, Body>;
+  values: Map<string, ESTree.Node[]>;
+  imports: Map<string, { source: string; name: string }>;
+}
+
+function functionBody(node: ESTree.Node): Body | null {
+  if (node.type === "FunctionDeclaration") return node.body ?? node;
+  if (node.type === "ArrowFunctionExpression" || node.type === "FunctionExpression") return node.body;
+  return null;
+}
+
+/** The file's own components and helpers by exported and local name, so a section that renders `<Rows />` is checked through `Rows`. */
+function scopeOf(file: string, program: ESTree.Program): Scope {
   const bodies = new Map<string, Body>();
+  const imports = new Map<string, { source: string; name: string }>();
+  const aliases: [string, string][] = [];
   const visit = (statement: ESTree.Node) => {
-    if (statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration") {
+    if (statement.type === "ImportDeclaration") {
+      if (statement.importKind === "type") return;
+      for (const specifier of statement.specifiers) {
+        if (specifier.type === "ImportNamespaceSpecifier") continue;
+        const name = specifier.type === "ImportDefaultSpecifier" ? "default"
+          : specifier.imported.type === "Identifier" ? specifier.imported.name : String(specifier.imported.value);
+        imports.set(specifier.local.name, { source: String(statement.source.value), name });
+      }
+      return;
+    }
+    if (statement.type === "ExportNamedDeclaration") {
       if (statement.declaration && isNode(statement.declaration)) visit(statement.declaration);
+      for (const specifier of statement.specifiers) {
+        const local = specifier.local.type === "Identifier" ? specifier.local.name : String(specifier.local.value);
+        const exported = specifier.exported.type === "Identifier" ? specifier.exported.name : String(specifier.exported.value);
+        if (statement.source) imports.set(exported, { source: String(statement.source.value), name: local });
+        else aliases.push([exported, local]);
+      }
+      return;
+    }
+    if (statement.type === "ExportDefaultDeclaration") {
+      const declaration = statement.declaration;
+      const body = isNode(declaration) ? functionBody(declaration) : null;
+      if (body) bodies.set("default", body);
+      if (declaration.type === "Identifier") aliases.push(["default", declaration.name]);
+      if (isNode(declaration)) visit(declaration);
       return;
     }
     if (statement.type === "FunctionDeclaration" && statement.id) bodies.set(statement.id.name, statement.body ?? statement);
     if (statement.type === "VariableDeclaration") {
       for (const declarator of statement.declarations) {
-        const init = declarator.init;
-        if (declarator.id.type === "Identifier" && init && (init.type === "ArrowFunctionExpression" || init.type === "FunctionExpression")) {
-          bodies.set(declarator.id.name, init.body);
-        }
+        const body = declarator.init ? functionBody(declarator.init) : null;
+        if (declarator.id.type === "Identifier" && body) bodies.set(declarator.id.name, body);
       }
     }
   };
   for (const statement of program.body) visit(statement);
-  return bodies;
+  const values = new Map<string, ESTree.Node[]>();
+  const collect = (node: ESTree.Node): void => {
+    if (node.type === "VariableDeclarator" && node.id.type === "Identifier" && node.init) {
+      values.set(node.id.name, [...values.get(node.id.name) ?? [], node.init]);
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "parent") continue;
+      if (Array.isArray(value)) {
+        for (const item of value) if (isNode(item)) collect(item);
+      } else if (isNode(value)) collect(value);
+    }
+  };
+  collect(program);
+  for (const [exported, local] of aliases) {
+    const body = bodies.get(local);
+    if (body && !bodies.has(exported)) bodies.set(exported, body);
+  }
+  return { file, bodies, values, imports };
+}
+
+/** A child that names something rather than refers to a value: a declared binding, a key, a non-computed member. */
+function isName(node: ESTree.Node, key: string): boolean {
+  if (node.type === "VariableDeclarator") return key === "id";
+  if (node.type === "Property" || node.type === "PropertyDefinition") return key === "key" && !node.computed;
+  if (node.type === "MemberExpression") return key === "property" && !node.computed;
+  return false;
+}
+
+const RESOLVE_SUFFIXES = ["", ".tsx", ".ts", "/index.tsx", "/index.ts"];
+
+/** The app file an import names, or null for packages and for the shared primitives, which own their own layout. */
+function resolveImport(srcRoot: string, from: string, source: string): string | null {
+  const base = source.startsWith("#/") ? path.join(srcRoot, source.slice(2))
+    : source.startsWith(".") ? path.resolve(path.dirname(from), source)
+    : null;
+  if (base === null || base.startsWith(path.join(srcRoot, "components") + path.sep)) return null;
+  for (const suffix of RESOLVE_SUFFIXES) {
+    const file = base + suffix;
+    if (/\.tsx?$/u.test(file) && fs.existsSync(file) && fs.statSync(file).isFile()) return file;
+  }
+  return null;
+}
+
+const importedScopes = new Map<string, Scope | null>();
+
+function importedScope(file: string): Scope | null {
+  if (!importedScopes.has(file)) {
+    const parsed = parseSync(file, fs.readFileSync(file, "utf8"));
+    // SAFETY: oxc-parser and oxlint share one ESTree shape; the plugin types just name it separately.
+    importedScopes.set(file, parsed.errors.length > 0 ? null : scopeOf(file, parsed.program as unknown as ESTree.Program));
+  }
+  return importedScopes.get(file) ?? null;
 }
 
 /**
  * A raw Field anywhere under a SettingsSection, or a raw Input outside a primitive built to hold it, draws its own
- * label and spacing inside the card. Follows the file's own components and helpers, and stops at floating surfaces.
+ * label and spacing inside the card. Follows the file's own components and helpers and the app components it imports,
+ * reporting an imported one at the element in this file that renders it, and stops at floating surfaces.
  */
 const noRawFieldInSection = defineRule({
   meta: {
@@ -104,50 +197,75 @@ const noRawFieldInSection = defineRule({
     messages: {
       field: "`<{{name}}>` is the old field shape inside a SettingsSection. Use SettingsRow, SettingsField or SettingsFormField.",
       input: "`<{{name}}>` sits bare inside a SettingsSection. Put it in a SettingsRow, SettingsField or SettingsForm, or use ConfirmableInput there.",
+      fieldVia: "`<{{via}}>` renders `<{{name}}>` ({{file}}), the old field shape, inside a SettingsSection. Use SettingsRow, SettingsField or SettingsFormField there.",
+      inputVia: "`<{{via}}>` renders `<{{name}}>` ({{file}}) bare inside a SettingsSection. Put it in a SettingsRow, SettingsField or SettingsForm, or use ConfirmableInput there.",
     },
   },
   createOnce(context) {
     return {
       Program(program) {
-        const bodies = localBodies(program);
-        const reported = new Set<ESTree.Node>();
-        const report = (node: ESTree.JSXElement, messageId: "field" | "input", name: string) => {
-          if (reported.has(node)) return;
-          reported.add(node);
-          context.report({ node, messageId, data: { name } });
+        const srcRoot = path.join(context.cwd, "src");
+        const home = scopeOf(context.filename, program);
+        const reported = new Set<string>();
+        const report = (node: ESTree.JSXElement, entry: ESTree.JSXElement | null, scope: Scope, kind: "field" | "input", name: string) => {
+          const at = entry ?? node;
+          const key = `${at.start}:${scope.file}:${node.start}`;
+          if (reported.has(key)) return;
+          reported.add(key);
+          if (entry === null) context.report({ node, messageId: kind, data: { name } });
+          else context.report({ node: entry, messageId: kind === "field" ? "fieldVia" : "inputVia", data: { name, via: elementName(entry) ?? "", file: path.relative(context.cwd, scope.file) } });
         };
         const followed = new Set<string>();
-        const follow = (name: string, housed: boolean) => {
-          const body = bodies.get(name);
-          const key = `${name}:${housed}`;
-          if (!body || followed.has(key)) return;
+        const follow = (name: string, housed: boolean, scope: Scope, entry: ESTree.JSXElement | null, site: ESTree.Node) => {
+          let target: Scope | null = scope;
+          let local = name;
+          while (target && !target.bodies.has(local)) {
+            const origin: { source: string; name: string } | undefined = target.imports.get(local);
+            const file = origin ? resolveImport(srcRoot, target.file, origin.source) : null;
+            target = file ? importedScope(file) : null;
+            local = origin?.name ?? local;
+          }
+          const body = target?.bodies.get(local);
+          if (!target || !body) return;
+          const via = target === scope ? entry : entry ?? (site.type === "JSXElement" ? site : null);
+          if (target !== scope && via === null) return;
+          const key = `${via?.start ?? -1}:${target.file}:${local}:${housed}`;
+          if (followed.has(key)) return;
           followed.add(key);
-          walk(body, housed);
+          walk(body, housed, target, via);
         };
-        const walk = (node: ESTree.Node, housed: boolean): void => {
+        const walk = (node: ESTree.Node, housed: boolean, scope: Scope, entry: ESTree.JSXElement | null): void => {
           let inside = housed;
           if (node.type === "JSXElement") {
             const name = elementName(node);
             if (name !== null) {
               if (SURFACES.has(name)) return;
-              if (RAW_FIELDS.has(name)) report(node, "field", name);
-              else if (RAW_INPUTS.has(name) && !housed) report(node, "input", name);
+              if (RAW_FIELDS.has(name)) report(node, entry, scope, "field", name);
+              else if (RAW_INPUTS.has(name) && !housed) report(node, entry, scope, "input", name);
               if (CONTROL_HOMES.has(name)) inside = true;
-              follow(name, inside);
+              follow(name, inside, scope, entry, node);
             }
           }
-          if (node.type === "CallExpression" && node.callee.type === "Identifier") follow(node.callee.name, inside);
+          if (node.type === "CallExpression" && node.callee.type === "Identifier") follow(node.callee.name, inside, scope, entry, node);
+          if (node.type === "Identifier") {
+            for (const value of scope.values.get(node.name) ?? []) {
+              const key = `${entry?.start ?? -1}:${scope.file}:${value.start}:${inside}`;
+              if (followed.has(key)) continue;
+              followed.add(key);
+              walk(value, inside, scope, entry);
+            }
+          }
           for (const [key, value] of Object.entries(node)) {
-            if (key === "parent") continue;
+            if (key === "parent" || isName(node, key)) continue;
             if (Array.isArray(value)) {
-              for (const item of value) if (isNode(item)) walk(item, inside);
-            } else if (isNode(value)) walk(value, inside);
+              for (const item of value) if (isNode(item)) walk(item, inside, scope, entry);
+            } else if (isNode(value)) walk(value, inside, scope, entry);
           }
         };
         const findSections = (node: ESTree.Node): void => {
           if (node.type === "JSXElement" && elementName(node) === "SettingsSection") {
-            for (const child of node.children) walk(child, false);
-            for (const attribute of node.openingElement.attributes) walk(attribute, false);
+            for (const child of node.children) walk(child, false, home, null);
+            for (const attribute of node.openingElement.attributes) walk(attribute, false, home, null);
           }
           for (const [key, value] of Object.entries(node)) {
             if (key === "parent") continue;
