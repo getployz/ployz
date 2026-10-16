@@ -93,7 +93,7 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
   let drained = 0;
   for (const { environment_id: environmentId } of sites) {
     const batches = yield* drizzle.execute<Batch>(sql`
-      select id::text as id, environment_id, rows from analytics.outbox
+      select id, environment_id, rows from analytics.outbox
       where environment_id = ${environmentId}::text order by id limit ${DRAIN_BATCHES}`, "objects");
     if (yield* drainSite(clickhouse, environmentId, batches)) {
       drained += batches.length;
@@ -115,7 +115,7 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const queued = yield* drizzle.execute<{ id: string }>(sql`
-        select id::text as id from analytics.outbox where environment_id = ${environmentId}::text order by id for update`, "objects");
+        select id from analytics.outbox where environment_id = ${environmentId}::text order by id for update`, "objects");
       const [site] = yield* drizzle.execute<{ environment_id: string }>(sql`
         select environment_id from analytics.clickhouse_site where environment_id = ${environmentId}::text for update`, "objects");
       if (site === undefined) return 0;
