@@ -54,23 +54,32 @@ const failingSelect = (clickhouse: ClickHouseService): ClickHouseService => ({
   unchecked: { ...clickhouse.unchecked, select: () => Effect.fail(new ClickHouseFailure({ message: "GC failed after fence committed", cause: null })) },
 });
 
+const pausedSecondExecute = (drizzle: DatabaseService["drizzle"], before: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): DatabaseService["drizzle"] => {
+  let statements = 0;
+  return Object.assign(Object.create(drizzle) as typeof drizzle, {
+    execute: (...args: Parameters<typeof drizzle.execute>) => Effect.gen(function* () {
+      if (++statements === 2) {
+        yield* Deferred.succeed(before, undefined);
+        yield* Deferred.await(resume);
+      }
+      return yield* drizzle.execute(...args);
+    }),
+  });
+};
+
 /** Pauses the second statement of every transaction, which for a fence transaction is the UPDATE after the row lock. */
 const pausedSecondStatement = (database: DatabaseService, beforeUpdate: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): DatabaseService => ({
   ...database,
   transaction: (program, config) => database.transaction(Effect.gen(function* () {
     const transaction = yield* Database;
-    let statements = 0;
-    const drizzle: typeof transaction.drizzle = Object.assign(Object.create(transaction.drizzle) as typeof transaction.drizzle, {
-      execute: (...args: Parameters<typeof transaction.drizzle.execute>) => Effect.gen(function* () {
-        if (++statements === 2) {
-          yield* Deferred.succeed(beforeUpdate, undefined);
-          yield* Deferred.await(resume);
-        }
-        return yield* transaction.drizzle.execute(...args);
-      }),
-    });
-    return yield* program.pipe(Effect.provideService(Database, { ...transaction, drizzle }));
+    return yield* program.pipe(Effect.provideService(Database, { ...transaction, drizzle: pausedSecondExecute(transaction.drizzle, beforeUpdate, resume) }));
   }), config),
+});
+
+/** Pauses the second pool statement, which for a drain is the writer's fence check, so the mint has committed and the INSERT has not started. */
+const pausedSecondPoolStatement = (database: DatabaseService, beforeInsert: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): DatabaseService => ({
+  ...database,
+  drizzle: pausedSecondExecute(database.drizzle, beforeInsert, resume),
 });
 
 const insertRunning = (clickhouse: ClickHouseService) => Effect.gen(function* () {
@@ -91,7 +100,7 @@ it.live("an interrupted INSERT stays excluded through any number of collections 
   const resume = yield* Deferred.make<void>();
   yield* clickhouse.unchecked.command("ALTER TABLE pageview ADD COLUMN stalled UInt8 DEFAULT sleep(3)");
   const writing = yield* Effect.forkChild(provide(drainOutbox(clickhouse).pipe(
-    Effect.provideService(Database, pausedSecondStatement(database, minted, resume)))));
+    Effect.provideService(Database, pausedSecondPoolStatement(database, minted, resume)))));
   yield* Deferred.await(minted);
   const fence = yield* provide(pin());
   yield* Deferred.succeed(resume, undefined);
@@ -180,7 +189,7 @@ it.live("a production client INSERT queued behind busy sockets lands excluded ho
     insert: (table, rows) => Deferred.succeed(started, undefined).pipe(Effect.andThen(queued.unchecked.insert(table, rows))),
   } };
   const writing = yield* Effect.forkChild(provide(drainOutbox(observed).pipe(
-    Effect.provideService(Database, pausedSecondStatement(database, minted, resumeWriter)))));
+    Effect.provideService(Database, pausedSecondPoolStatement(database, minted, resumeWriter)))));
   yield* Deferred.await(minted);
   const fence = yield* provide(pin());
   const blockers = yield* Effect.forEach(Array.from({ length: 30 }), (_, index) => Effect.forkChild(
