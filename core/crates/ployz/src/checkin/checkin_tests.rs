@@ -348,6 +348,11 @@ fn the_headline_says_where_the_host_stands() {
         zfs: ZfsPrep::Ready,
     });
     assert_eq!(status.headline(), ("Waiting for approval", false));
+    status.blockers = vec![Issue {
+        code: "docker_stopped".into(),
+        message: "Docker is installed but not running.".into(),
+    }];
+    assert_eq!(status.headline(), ("Blocked", false));
     status.answer = Seen::Stop;
     status.reason = Some(StopReason::TokenExpired);
     assert_eq!(status.headline(), ("Token expired", true));

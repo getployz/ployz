@@ -195,6 +195,7 @@ impl LocalCheckin {
             Seen::Unreachable => ("Can't reach Cloud", false),
             Seen::ProbeFailed => ("Can't inspect this host", false),
             Seen::Enroll => ("Enroll needs a newer ployz", false),
+            Seen::Wait if !self.blockers.is_empty() => ("Blocked", false),
             Seen::Wait => match self.prep {
                 Some(prep) if prep.docker == DockerPrep::Installing => ("Installing Docker", false),
                 Some(prep) if prep.zfs == ZfsPrep::Installing => ("Building ZFS", false),

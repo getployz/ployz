@@ -597,16 +597,16 @@ fn status_record(status: &Status) -> Fields {
         let (headline, ended) = checkin.headline();
         let tone = if ended { Tone::Bad } else { Tone::Change };
         record.push("this server", Cell::status(headline, tone));
+        for blocker in &checkin.blockers {
+            record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
+        }
+        if let Some(message) = checkin.message.as_deref().filter(|_| ended) {
+            record.push("reason", message);
+        }
         record.push(
             "checked in",
             crate::checkin::ago(checkin.at, chrono::Utc::now()),
         );
-        if let Some(message) = checkin.message.as_deref().filter(|_| ended) {
-            record.push("reason", message);
-        }
-        for blocker in &checkin.blockers {
-            record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
-        }
     }
     let Some(identity) = &status.identity else {
         record.push("signed in as", "no one");
