@@ -100,10 +100,10 @@ export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clic
   for (const [environmentId, group] of [...byEnvironment].sort(([a], [b]) => a.localeCompare(b))) {
     if (yield* drainSite(clickhouse, environmentId, group)) drained += group.length;
   }
-  yield* drizzle.execute(sql`
+  const dropped = yield* drizzle.execute<{ id: string }>(sql`
     delete from analytics.outbox o where o.id = any(${sql.param(batches.map((batch) => batch.id))}::bigint[])
-      and not exists (select 1 from analytics.site s where s.environment_id = o.environment_id)`);
-  return drained;
+      and not exists (select 1 from analytics.site s where s.environment_id = o.environment_id) returning id::text as id`, "objects");
+  return drained + dropped.length;
 });
 
 const demoteReads = Effect.fn("WebAnalytics.demoteReads")(function* (environmentId: string) {

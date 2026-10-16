@@ -8,19 +8,19 @@ import { ClickHouse, type ClickHouseService } from "./client";
 import { createClickHouseFunctions } from "./clickhouse.inngest";
 import * as promote from "./promote";
 import * as rollup from "./rollup";
+import * as attempt from "./attempt";
 import * as writer from "./writer";
 
 const SHOP = "00000000-0000-4000-8000-00000000c4b1";
-const fake: ClickHouseService = { query: () => Effect.succeed([]), command: () => Effect.void, insert: () => Effect.void };
+const fake: ClickHouseService = { query: () => Effect.succeed([]), unchecked: { command: () => Effect.void, insert: () => Effect.void } };
 const queued: Array<number> = [];
 vi.spyOn(writer, "drainOutbox").mockImplementation(() => Effect.sync(() => queued.shift() ?? 0));
 vi.spyOn(writer, "ensureBackfilled").mockImplementation(() => Effect.succeed(2));
 vi.spyOn(postgresRollup, "rollupSites").mockImplementation(() => Effect.succeed([SHOP]));
 vi.spyOn(rollup, "closeDays").mockImplementation(() => Effect.succeed(1));
 vi.spyOn(promote, "promoteReads").mockImplementation(() => Effect.succeed(false));
-const pins: Array<writer.Pinned> = [{ environmentId: SHOP, timezone: "UTC", copy: 2, floor: 1, generation: 4, settledBelow: 5 }];
-vi.spyOn(writer, "publishedPins").mockImplementation(() => Effect.succeed(pins));
-vi.spyOn(writer, "collectGarbage").mockImplementation(() => Effect.succeed(3));
+vi.spyOn(attempt, "pin").mockImplementation(() => Effect.succeed(5));
+vi.spyOn(attempt, "collectGarbage").mockImplementation(() => Effect.succeed(3));
 
 beforeEach(() => {
   queued.length = 0;
@@ -61,9 +61,9 @@ it("the rollup backfills a site's ClickHouse copy before closing its days, with 
   expect(Object.keys(state)).toHaveLength(["now", "sites", "backfill", "close-days", "promote"].length);
 });
 
-it("garbage collection pins what each site publishes, waits out a grace period, then collects against those pins", async () => {
+it("garbage collection takes a pin, waits out a grace period, then fences and collects below that pin", async () => {
   const { state } = await functions(fake).gc.execute({ steps: [{ id: "grace", handler: () => undefined }] });
 
-  expect(writer.collectGarbage).toHaveBeenCalledWith(fake, pins);
+  expect(attempt.collectGarbage).toHaveBeenCalledWith(fake, 5);
   expect(Object.keys(state)).toHaveLength(["pin", "grace", "collect"].length);
 });

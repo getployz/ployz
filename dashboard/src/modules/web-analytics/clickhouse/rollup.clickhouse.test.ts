@@ -1,10 +1,11 @@
 import { it } from "@effect/vitest";
 import { Effect, Exit, Layer } from "effect";
 import { expect } from "vitest";
+import { collectGarbage, pin } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
-import { backfillSite, collectGarbage, drainOutbox, enqueueForClickHouse, publishedPins } from "#/modules/web-analytics/clickhouse/writer";
+import { backfillSite, drainOutbox, enqueueForClickHouse } from "#/modules/web-analytics/clickhouse/writer";
 import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
 import { pageviewValues, seedSite } from "#/modules/web-analytics/fixtures/seed";
 import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
@@ -27,19 +28,23 @@ const row = (ts: Date, visitorId: string): PageviewRecord => ({
 const failingAtCommand = (real: ClickHouseService, step: number): ClickHouseService => {
   let commands = 0;
   return {
-    query: real.query,
-    insert: real.insert,
-    command: (query, params) =>
-      ++commands === step ? Effect.fail(new ClickHouseFailure({ message: "injected", cause: null })) : real.command(query, params),
+    ...real,
+    unchecked: {
+      ...real.unchecked,
+      command: (query, params) =>
+        ++commands === step ? Effect.fail(new ClickHouseFailure({ message: "injected", cause: null })) : real.unchecked.command(query, params),
+    },
   };
 };
 
 const writesPartOfDaily = (real: ClickHouseService): ClickHouseService => ({
-  query: real.query,
-  insert: real.insert,
-  command: (query, params) => query.trim().startsWith("INSERT INTO daily")
-    ? real.command(`${query} HAVING dim = ''`, params).pipe(Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "injected", cause: null }))))
-    : real.command(query, params),
+  ...real,
+  unchecked: {
+    ...real.unchecked,
+    command: (query, params) => query.trim().startsWith("INSERT INTO daily")
+      ? real.unchecked.command(`${query} HAVING dim = ''`, params).pipe(Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "injected", cause: null }))))
+      : real.unchecked.command(query, params),
+  },
 });
 
 const setup = Effect.gen(function* () {
@@ -90,7 +95,7 @@ it.live("a rebuild that fails part way leaves readers on the day's previous tota
     expect(failed).toBeGreaterThan(0);
     expect(yield* provide(reads(clickHouseStore))).toEqual(truth);
 
-    yield* provide(Effect.flatMap(publishedPins(), (pins) => collectGarbage(clickhouse, pins)));
+    yield* provide(Effect.flatMap(pin(), (fence) => collectGarbage(clickhouse, fence)));
     expect(yield* provide(reads(clickHouseStore))).toEqual(truth);
     const [daily] = yield* clickhouse.query<{ n: number }>(
       "SELECT count() AS n FROM daily WHERE environment_id = {environmentId:String} AND dim = '' AND value = ''", { environmentId: SHOP });

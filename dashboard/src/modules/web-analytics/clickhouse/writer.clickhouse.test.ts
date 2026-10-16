@@ -1,9 +1,9 @@
 import { sql } from "drizzle-orm";
 import { Effect, Exit, Scope } from "effect";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { collectGarbage, pin } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
-import { DEDUPLICATION_WINDOW } from "#/modules/web-analytics/clickhouse/schema";
-import { backfillSite, collectGarbage, drainOutbox, enqueueForClickHouse, forgetDeletedSites, publishedPins } from "#/modules/web-analytics/clickhouse/writer";
+import { backfillSite, drainOutbox, enqueueForClickHouse, forgetDeletedSites } from "#/modules/web-analytics/clickhouse/writer";
 import { ensurePartitions } from "#/modules/web-analytics/postgres/partitions";
 import { analyticsClickhouseSite, analyticsOutbox, analyticsPageview, analyticsSite } from "#/modules/web-analytics/tables";
 import { clickhouseTestDatabase } from "#/test/clickhouse";
@@ -12,7 +12,6 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c401";
 const SHOP = "00000000-0000-4000-8000-00000000c403";
 const GONE = "00000000-0000-4000-8000-00000000c404";
-const BUSY = "00000000-0000-4000-8000-00000000c405";
 
 let harness: PostgresTestHarness;
 let clickhouse: ClickHouseService;
@@ -31,7 +30,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await harness.db.execute(sql`truncate analytics.site, analytics.pageview, analytics.outbox, analytics.clickhouse_site`);
-  for (const table of ["pageview", "daily", "session_hourly", "complete_day"]) await Effect.runPromise(clickhouse.command(`TRUNCATE TABLE ${table}`));
+  for (const table of ["pageview", "daily", "session_hourly"]) await Effect.runPromise(clickhouse.unchecked.command(`TRUNCATE TABLE ${table}`));
   await harness.db.insert(analyticsSite).values([
     { organizationId: ORGANIZATION, environmentId: SHOP, enabled: true, timezone: "Australia/Sydney" },
   ]);
@@ -68,15 +67,24 @@ const storedCount = async (environmentId: string) => {
 };
 
 const clickhouseCount = async (environmentId: string) => {
-  const [site] = await harness.db.select({ copy: analyticsClickhouseSite.copy }).from(analyticsClickhouseSite)
-    .where(sql`${analyticsClickhouseSite.environmentId} = ${environmentId}`);
+  const [site] = await harness.db.select({ floor: analyticsClickhouseSite.floor, below: analyticsClickhouseSite.below, pending: analyticsClickhouseSite.pending })
+    .from(analyticsClickhouseSite).where(sql`${analyticsClickhouseSite.environmentId} = ${environmentId}`);
   const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(
-    "SELECT count() AS n FROM pageview WHERE environment_id = {environmentId:String} AND copy = {copy:UInt64}",
-    { environmentId, copy: Number(site?.copy ?? 0) }));
+    "SELECT count() AS n FROM pageview WHERE environment_id = {environmentId:String} AND attempt >= {floor:UInt64} AND attempt < {below:UInt64} AND NOT has({pending:Array(UInt64)}, attempt)",
+    { environmentId, floor: Number(site?.floor ?? 0), below: Number(site?.below ?? 0), pending: (site?.pending ?? []).map(Number) }));
   return row?.n;
 };
 
-const collect = () => harness.runEffect(Effect.flatMap(publishedPins(), (pins) => collectGarbage(clickhouse, pins)));
+const collect = () => harness.runEffect(Effect.flatMap(pin(), (fence) => collectGarbage(clickhouse, fence)));
+
+const crashingAfterInsert = (real: ClickHouseService, crash: () => boolean): ClickHouseService => ({
+  ...real,
+  unchecked: {
+    ...real.unchecked,
+    insert: (table, rows) => real.unchecked.insert(table, rows).pipe(Effect.andThen(Effect.suspend(() =>
+      rows.length > 0 && crash() ? Effect.fail(new ClickHouseFailure({ message: "killed", cause: null })) : Effect.void))),
+  },
+});
 
 const outboxSize = async () => (await harness.db.select().from(analyticsOutbox)).length;
 
@@ -96,21 +104,19 @@ it("a drain copies every queued pageview to ClickHouse once and empties the outb
   expect(await drain()).toBe(0);
 });
 
-it("a writer killed after its ClickHouse insert leaves the batch queued, and the replay lands it once", async () => {
+it("a writer killed after its ClickHouse insert leaves the batch queued and its rows unpublished, the replay lands them once, and collection drops the orphan", async () => {
   await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
-  const crashesAfterInsert: ClickHouseService = {
-    ...clickhouse,
-    insert: (table, rows, token) => clickhouse.insert(table, rows, token).pipe(
-      Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "killed", cause: null })))),
-  };
 
-  await expect(drain(crashesAfterInsert)).rejects.toThrow();
+  await expect(drain(crashingAfterInsert(clickhouse, () => true))).rejects.toThrow();
   expect(await outboxSize()).toBe(1);
-  expect(await clickhouseCount(SHOP)).toBe(3);
+  expect([await storedCount(SHOP), await clickhouseCount(SHOP)]).toEqual([3, 0]);
 
   expect(await drain()).toBe(1);
-  expect(await clickhouseCount(SHOP)).toBe(3);
+  expect([await storedCount(SHOP), await clickhouseCount(SHOP)]).toEqual([6, 3]);
   expect(await outboxSize()).toBe(0);
+
+  expect(await collect()).toBe(3);
+  expect([await storedCount(SHOP), await clickhouseCount(SHOP)]).toEqual([3, 3]);
 });
 
 it("a drain drops batches whose environment has no site", async () => {
@@ -173,46 +179,20 @@ it("garbage collection drops the raw rows of superseded copies and keeps the pub
   expect(await collect()).toBe(0);
 });
 
-it("a drain replay still lands once after a backfill of another site writes more partitions than the deduplication window holds", async () => {
-  const window = 3;
-  await harness.db.insert(analyticsSite).values({ organizationId: ORGANIZATION, environmentId: BUSY, enabled: true, timezone: "UTC" });
-  const months = Array.from({ length: window + 2 }, (_, back) => new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - back, 2)));
-  await harness.runEffect(ensurePartitions(months.map((month) => month.toISOString().slice(0, 7))));
-  await harness.db.insert(analyticsPageview).values(months.map((month, index) => pageview(BUSY, index, "/", month)));
-  await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
-  const crashesAfterInsert: ClickHouseService = {
-    ...clickhouse,
-    insert: (table, rows, token) => clickhouse.insert(table, rows, token).pipe(
-      Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "killed", cause: null })))),
-  };
-  await Effect.runPromise(clickhouse.command(`ALTER TABLE pageview MODIFY SETTING non_replicated_deduplication_window = ${window}`));
-  try {
-    await expect(drain(crashesAfterInsert)).rejects.toThrow();
-    for (let run = 0; run < window; run++) expect(await harness.runEffect(backfillSite(clickhouse, BUSY))).toBe(months.length);
-
-    expect(await drain()).toBe(1);
-  } finally {
-    await Effect.runPromise(clickhouse.command(`ALTER TABLE pageview MODIFY SETTING non_replicated_deduplication_window = ${DEDUPLICATION_WINDOW}`));
-  }
-
-  expect(await clickhouseCount(SHOP)).toBe(3);
-});
-
 it("a backfill killed after its insert retries into exactly Postgres's rows", async () => {
   await ingest([pageview(SHOP, 1), pageview(SHOP, 2), pageview(SHOP, 3)]);
   let killed = false;
-  const killedOnce: ClickHouseService = {
-    ...clickhouse,
-    insert: (table, rows, token) => clickhouse.insert(table, rows, token).pipe(Effect.andThen(Effect.suspend(() => {
-      if (killed) return Effect.void;
-      killed = true;
-      return Effect.fail(new ClickHouseFailure({ message: "killed", cause: null }));
-    }))),
-  };
+  const killedOnce = crashingAfterInsert(clickhouse, () => {
+    if (killed) return false;
+    killed = true;
+    return true;
+  });
 
   expect(await harness.runEffect(backfillSite(killedOnce, SHOP))).toBe(3);
 
-  expect(await clickhouseCount(SHOP)).toBe(3);
+  expect([await storedCount(SHOP), await clickhouseCount(SHOP)]).toEqual([6, 3]);
+  expect(await collect()).toBe(3);
+  expect([await storedCount(SHOP), await clickhouseCount(SHOP)]).toEqual([3, 3]);
 });
 
 it("a deleted environment's ClickHouse copy is forgotten", async () => {

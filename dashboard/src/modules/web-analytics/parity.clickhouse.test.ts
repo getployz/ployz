@@ -2,10 +2,11 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
+import { insertRows, mint, publish, PUBLISHED_COLUMNS, publishedOf } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import * as clickHouseRollup from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
-import { binder, newestPublished } from "#/modules/web-analytics/clickhouse/store";
+import { binder } from "#/modules/web-analytics/clickhouse/store";
 import { backfillSite, clickHouseRow } from "#/modules/web-analytics/clickhouse/writer";
 import { type Fixture, rangeOf, serialized } from "#/modules/web-analytics/fixtures/fixture";
 import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
@@ -74,22 +75,30 @@ const clickHouseState = (environmentId: string) =>
     return state;
   });
 
-const pinOf = (environmentId: string) =>
+const publishedState = (environmentId: string) =>
   Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [pin] = yield* drizzle.execute<{ copy: string; floor: string; generation: string }>(sql`
-      select copy::text as copy, floor::text as floor, generation::text as generation from analytics.clickhouse_site
-      where environment_id = ${environmentId}::text`, "objects");
-    return { copy: Number(pin?.copy ?? 0), floor: Number(pin?.floor ?? 0), generation: Number(pin?.generation ?? 0) };
+    const [row] = yield* drizzle.execute<{ floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+      select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+    return publishedOf(row);
   });
 
 const rolledUpPageviews = (clickhouse: ClickHouseService, environmentId: string, day: string) =>
   Effect.gen(function* () {
-    const b = binder({ environmentId, timezone: "UTC" }, yield* pinOf(environmentId));
+    const b = binder({ environmentId, timezone: "UTC" }, yield* publishedState(environmentId));
     const [row] = yield* clickhouse.query<{ pageviews: number }>(`
       SELECT sum(pageviews) AS pageviews FROM daily
-      WHERE environment_id = ${b.env} AND day = toDate(${b.text(day)}) AND dim = '' AND ${newestPublished(b, "")}`, b.params);
+      WHERE environment_id = ${b.env} AND day = toDate(${b.text(day)}) AND dim = '' AND ${b.publishedDay}`, b.params);
     return row?.pageviews ?? 0;
+  });
+
+const landInClickHouse = (clickhouse: ClickHouseService, environmentId: string, rows: ReadonlyArray<object>) =>
+  Effect.gen(function* () {
+    const attempt = (yield* mint([environmentId])).get(environmentId);
+    if (attempt === undefined) throw new Error("site row held by another writer");
+    const proof = yield* insertRows(clickhouse, "pageview", rows, attempt);
+    const database = yield* Database;
+    yield* database.transaction(publish(proof, environmentId, sql`below = greatest(below, ${attempt}::bigint + 1)`));
   });
 
 const insertBoth = (clickhouse: ClickHouseService, environmentId: string, record: PageviewRecord) =>
@@ -97,8 +106,7 @@ const insertBoth = (clickhouse: ClickHouseService, environmentId: string, record
     const { drizzle } = yield* Database;
     yield* ensurePartitions([monthOf(new Date(record.ts))]);
     const [inserted] = yield* drizzle.insert(analyticsPageview).values(pageviewValues(environmentId, [record])).returning();
-    const { copy } = yield* pinOf(environmentId);
-    if (inserted !== undefined) yield* clickhouse.insert("pageview", [{ ...clickHouseRow(inserted), copy }], `late-${inserted.ts.toISOString()}`);
+    if (inserted !== undefined) yield* landInClickHouse(clickhouse, environmentId, [clickHouseRow(inserted)]);
   });
 
 const row = (ts: string, visitorId: string, fields: Partial<PageviewRecord> = {}): PageviewRecord => ({
@@ -163,9 +171,8 @@ it.live("ClickHouse reads and rollups skip a pageview older than its retention",
     const [expired] = pageviewValues(site.environmentId, [row(new Date(now.getTime() - 500 * 86_400_000).toISOString(), "2", { pathname: "/expired" })]);
     if (expired === undefined) throw new Error("no expired row");
     // An insert drops already-expired rows, so lift the TTL to hold one the way it sits until a TTL merge removes it.
-    yield* clickhouse.command("ALTER TABLE pageview REMOVE TTL");
-    const { copy } = yield* provide(pinOf(site.environmentId));
-    yield* clickhouse.insert("pageview", [{ ...clickHouseRow({ ...expired, flags: 0 }), copy }], "expired");
+    yield* clickhouse.unchecked.command("ALTER TABLE pageview REMOVE TTL");
+    yield* provide(landInClickHouse(clickhouse, site.environmentId, [clickHouseRow({ ...expired, flags: 0 })]));
 
     const query = { ...site, range: { start: new Date(now.getTime() - 600 * 86_400_000), end: now }, filters: [] };
     const reads = yield* provide(everyRead(clickHouseStore, query));

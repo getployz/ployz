@@ -67,7 +67,7 @@ const createGarbageCollection = (inngest: PloyzInngest, runEffect: EffectRunner)
   inngest.createFunction(
     { id: "analytics-clickhouse-gc", retries: 3, triggers: [{ cron: "TZ=UTC 20 * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => {
-      const fence = await step.run("pin", () => runEffect(withClickHouse(() => pin, 0)));
+      const fence = await step.run("pin", () => runEffect(withClickHouse(() => pin(), 0)));
       await step.sleep("grace", "10m");
       await step.run("collect", () => runEffect(withClickHouse((clickhouse) => collectGarbage(clickhouse, fence), 0)));
     },

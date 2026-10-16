@@ -69,10 +69,10 @@ it.live("a site whose ClickHouse rollup matches Postgres flips to ClickHouse rea
       yield* provide(closeDays(environmentId, now));
     }
     yield* postgresOnly(DRIFTED);
-    yield* clickhouse.command(
+    yield* clickhouse.unchecked.command(
       "INSERT INTO daily SELECT * REPLACE ('/renamed' AS value) FROM daily WHERE environment_id = {environmentId:String} AND dim = 'page'",
       { environmentId: RENAMED });
-    yield* clickhouse.command("DELETE FROM daily WHERE environment_id = {environmentId:String} AND dim = 'page' AND value = '/'", { environmentId: RENAMED });
+    yield* clickhouse.unchecked.command("DELETE FROM daily WHERE environment_id = {environmentId:String} AND dim = 'page' AND value = '/'", { environmentId: RENAMED });
 
     expect(yield* provide(promoteReads(MATCHED))).toBe(true);
     expect(yield* provide(promoteReads(DRIFTED))).toBe(false);
@@ -116,7 +116,7 @@ it.live("while ClickHouse is unreachable a promoted site's reads fail instead of
   Effect.gen(function* () {
     const { clickhouse, provide, today, now, rows } = yield* cloud;
     const unreachable = Effect.fail(new ClickHouseFailure({ message: "connect ECONNREFUSED", cause: null }));
-    const down: ClickHouseService = { query: () => unreachable, command: () => unreachable, insert: () => unreachable };
+    const down: ClickHouseService = { query: () => unreachable, unchecked: { command: () => unreachable, insert: () => unreachable } };
     const during = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(ClickHouse, down), Effect.flip);
     const overview = adapter.overview({
       site: { environmentId: CUT_OFF, timezone: "UTC", retentionMonths: 13 },
@@ -160,8 +160,8 @@ it.live("a site whose hourly rollup or goal conversions differ from Postgres sta
       yield* provide(backfillSite(clickhouse, environmentId));
       yield* provide(closeDays(environmentId, now));
     }
-    yield* clickhouse.command("DELETE FROM session_hourly WHERE environment_id = {environmentId:String}", { environmentId: HOURLY_GONE });
-    yield* clickhouse.command("DELETE FROM pageview WHERE environment_id = {environmentId:String}", { environmentId: GOAL_DRIFT });
+    yield* clickhouse.unchecked.command("DELETE FROM session_hourly WHERE environment_id = {environmentId:String}", { environmentId: HOURLY_GONE });
+    yield* clickhouse.unchecked.command("DELETE FROM pageview WHERE environment_id = {environmentId:String}", { environmentId: GOAL_DRIFT });
 
     expect(yield* provide(promoteReads(HOURLY_GONE))).toBe(false);
     expect(yield* provide(promoteReads(GOAL_DRIFT))).toBe(false);

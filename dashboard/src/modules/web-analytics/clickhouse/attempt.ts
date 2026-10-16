@@ -115,7 +115,7 @@ export const publish = Effect.fn("WebAnalytics.publish")(function* (proof: Ackno
 });
 
 /** A sequence value taken now. Every attempt minted before it is smaller. */
-export const pin = Effect.gen(function* () {
+export const pin = Effect.fn("WebAnalytics.pinAttempts")(function* () {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.execute<{ n: string }>(sql`select nextval('analytics.clickhouse_attempt')::text as n`, "objects");
   if (row === undefined) return yield* Effect.die("nextval returned no row.");
