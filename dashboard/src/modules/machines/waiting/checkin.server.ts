@@ -15,6 +15,7 @@ import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 
 export const WAITING_PER_TOKEN = 1000;
+const EXCLUSIVE_NEAR_CAP = 100;
 const PER_TOKEN_PER_SECOND = 300;
 const PER_IP_PER_SECOND = 50;
 
@@ -70,6 +71,15 @@ function parseRequest(body: Uint8Array) {
   }
 }
 
+const heldByToken = Effect.fn("Checkin.heldByToken")(function* (fleetTokenId: string) {
+  const { drizzle } = yield* Database;
+  const [held] = yield* drizzle
+    .select({ rows: count() })
+    .from(waitingServer)
+    .where(eq(waitingServer.fleetTokenId, fleetTokenId));
+  return held?.rows ?? 0;
+});
+
 /**
  * The only writer of `waiting_server`. Authenticates a host's signed check-in by its Fleet Token and Check-in Key,
  * records what it reports, and answers wait or stop.
@@ -119,8 +129,11 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
         .from(waitingServer)
         .where(key);
       const newToToken = existing?.fleetTokenId !== token.id;
-      // A key new to the token locks the token row exclusively so two hosts can't both take the last slot under the
-      // cap. Every other check-in shares the lock, so a concurrent revoke waits and then deletes the row it wrote.
+      const heldBefore = newToToken ? yield* heldByToken(token.id) : 0;
+      // Every check-in shares the token row lock, so a concurrent revoke waits and then deletes the row it wrote. Only a
+      // new key near the cap locks it exclusively and recounts, so two hosts can't both take the last slot; far from the
+      // cap, a fleet's first check-ins don't queue behind each other.
+      const nearCap = heldBefore >= WAITING_PER_TOKEN - EXCLUSIVE_NEAR_CAP;
       const [live] = yield* drizzle
         .select({
           revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
@@ -128,24 +141,18 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
         })
         .from(fleetToken)
         .where(eq(fleetToken.id, token.id))
-        .for(newToToken ? "update" : "share");
+        .for(nearCap ? "update" : "share");
       const ended = live === undefined || live.revoked ? "token_revoked" : live.expired ? "token_expired" : null;
       if (ended !== null) {
         yield* drizzle.delete(waitingServer).where(and(key, eq(waitingServer.fleetTokenId, token.id)));
         return stop(ended);
       }
       if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
-      if (newToToken) {
-        const [held] = yield* drizzle
-          .select({ rows: count() })
-          .from(waitingServer)
-          .where(eq(waitingServer.fleetTokenId, token.id));
-        if ((held?.rows ?? 0) >= WAITING_PER_TOKEN) {
-          return yield* new CheckinRefused({
-            status: 429,
-            message: `This Fleet Token already has ${WAITING_PER_TOKEN} waiting servers.`,
-          });
-        }
+      if (nearCap && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
+        return yield* new CheckinRefused({
+          status: 429,
+          message: `This Fleet Token already has ${WAITING_PER_TOKEN} waiting servers.`,
+        });
       }
       const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
       const [row] = yield* drizzle

@@ -214,6 +214,22 @@ it(`refuses a new host once a token has ${WAITING_PER_TOKEN} waiting, but still 
   expect(await rows()).toHaveLength(WAITING_PER_TOKEN);
 });
 
+it("lets only as many concurrent new hosts in as the cap has room for", async () => {
+  const { token, id } = await fleetToken("rack-1");
+  await harness.pool.query(
+    `insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+     select $1, $2, lpad(to_hex(n), 64, '0'), $3::jsonb, '203.0.113.9' from generate_series(1, $4::int) n`,
+    [adaOrg, id, JSON.stringify(report), WAITING_PER_TOKEN - 2],
+  );
+  const outcomes = await Promise.all(
+    Array.from({ length: 6 }, (_, n) =>
+      harness.runEffect(Effect.exit(checkIn(request(token, newHost(), { ip: `198.51.100.${n + 1}` })))),
+    ),
+  );
+  expect(outcomes.filter((exit) => Exit.isSuccess(exit))).toHaveLength(2);
+  expect(await rows()).toHaveLength(WAITING_PER_TOKEN);
+});
+
 it("rate limits one source address and keeps what it already wrote", async () => {
   const { token } = await fleetToken("rack-1");
   const hosts = Array.from({ length: 120 }, newHost);
