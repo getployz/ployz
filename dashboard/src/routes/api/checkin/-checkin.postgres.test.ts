@@ -124,3 +124,9 @@ it("takes the client from the trusted end of an appended forwarded chain", () =>
   expect(observedIp(appended, undefined, "172.17.0.1")).toBe("203.0.113.7");
   expect(observedIp(new Headers({ "x-forwarded-for": "10.0.0.5, 10.0.0.1" }), undefined, "10.0.0.2")).toBe("10.0.0.5");
 });
+
+it("strips the port a proxy appends to a forwarded hop", () => {
+  expect(observedIp(new Headers({ "x-forwarded-for": "198.51.100.99, 203.0.113.7:5678" }), undefined, "127.0.0.1")).toBe("203.0.113.7");
+  expect(observedIp(new Headers({ "x-forwarded-for": "[2001:db8::7]:5678, 10.0.0.1:443" }), undefined, "::1")).toBe("2001:db8::7");
+  expect(observedIp(new Headers({ "x-forwarded-for": "[2001:db8::7]" }), undefined, "::1")).toBe("2001:db8::7");
+});

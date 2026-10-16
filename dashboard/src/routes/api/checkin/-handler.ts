@@ -34,10 +34,18 @@ function fromProxy(peer: string) {
   return proxyPeers.check(address, isIP(address) === 4 ? "ipv4" : "ipv6");
 }
 
+const HOP_WITH_PORT = /^\[([^\]]+)\](?::\d+)?$|^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/u;
+
+/** Some proxies append `ip:port` or `[ipv6]:port`; the port is not part of the address. */
+const hopAddress = (hop: string) => {
+  const match = HOP_WITH_PORT.exec(hop);
+  return match?.[1] ?? match?.[2] ?? hop;
+};
+
 /** Proxies append, so only the right end of the chain is trustworthy: the first hop that isn't a proxy is the client. */
 function clientFromForwardedFor(value: string | null, peer: string) {
   let client = peer;
-  for (const hop of (value ?? "").split(",").map((entry) => entry.trim()).reverse()) {
+  for (const hop of (value ?? "").split(",").map((entry) => hopAddress(entry.trim())).reverse()) {
     if (isIP(hop) === 0) break;
     client = hop;
     if (!fromProxy(hop)) break;

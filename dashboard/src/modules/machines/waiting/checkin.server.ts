@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, count, eq, sql } from "drizzle-orm";
+import { and, count, eq, isNull, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import {
   CHECKIN_WAIT_SECONDS,
@@ -143,32 +143,23 @@ const admit = Effect.fn("Checkin.admit")(function* (
     });
   }
   const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-  const [row] = yield* drizzle
-    .insert(waitingServer)
-    .values({
-      organizationId: token.organizationId,
-      fleetTokenId: token.id,
-      checkinKey: request.checkinKey,
-      report,
-      observedIp,
-      probe: request.probe ?? null,
-    })
-    .onConflictDoUpdate({
-      target: [waitingServer.organizationId, waitingServer.checkinKey],
-      set: {
-        fleetTokenId: token.id,
-        report,
-        observedIp,
-        probe: sql`coalesce(excluded.probe, ${waitingServer.probe})`,
-        lastCheckInAt: sql`now()`,
-        rejectedAt: null,
-      },
-      // The capacity decision above holds only while the row is as it was read.
-      setWhere: existing === undefined
-        ? sql`false`
-        : sql`${waitingServer.fleetTokenId} = ${existing.fleetTokenId} and (${waitingServer.rejectedAt} is null or ${waitingServer.fleetTokenId} <> excluded.fleet_token_id)`,
-    })
-    .returning({ id: waitingServer.id });
+  const fresh = { report, observedIp, probe: request.probe ?? sql`${waitingServer.probe}`, lastCheckInAt: sql`now()` };
+  // The capacity decision above holds only while the row is as it was read, so a changed row goes back through it.
+  const [row] = newToToken
+    ? yield* drizzle
+      .insert(waitingServer)
+      .values({ organizationId: token.organizationId, fleetTokenId: token.id, checkinKey: request.checkinKey, report, observedIp, probe: request.probe ?? null })
+      .onConflictDoUpdate({
+        target: [waitingServer.organizationId, waitingServer.checkinKey],
+        set: { ...fresh, fleetTokenId: token.id, rejectedAt: null },
+        setWhere: existing === undefined ? sql`false` : eq(waitingServer.fleetTokenId, existing.fleetTokenId),
+      })
+      .returning({ id: waitingServer.id })
+    : yield* drizzle
+      .update(waitingServer)
+      .set(fresh)
+      .where(and(key, eq(waitingServer.fleetTokenId, token.id), isNull(waitingServer.rejectedAt)))
+      .returning({ id: waitingServer.id });
   if (row === undefined) return OWNERSHIP_CHANGED;
   return { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS } satisfies CheckinResponse;
 });
@@ -220,5 +211,5 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
     const answer = yield* database.transaction(admit(token, request, input.observedIp));
     if (answer !== OWNERSHIP_CHANGED) return answer;
   }
-  return yield* tooMany;
+  return yield* new CheckinRefused({ status: 429, message: "Busy, retry." });
 });

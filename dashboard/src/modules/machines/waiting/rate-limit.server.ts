@@ -15,8 +15,8 @@ export const countWithinRateLimit = Effect.fn("Checkin.rateLimit")(function* (ke
     .onConflictDoUpdate({
       target: checkinRateLimit.key,
       set: {
-        windowStart: thisSecond,
-        count: sql`case when ${checkinRateLimit.windowStart} = ${thisSecond} then ${checkinRateLimit.count} + 1 else 1 end`,
+        windowStart: sql`greatest(${checkinRateLimit.windowStart}, ${thisSecond})`,
+        count: sql`case when ${checkinRateLimit.windowStart} >= ${thisSecond} then ${checkinRateLimit.count} + 1 else 1 end`,
       },
     })
     .returning({ count: checkinRateLimit.count });

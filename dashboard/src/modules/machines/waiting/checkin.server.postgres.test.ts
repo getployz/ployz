@@ -1,5 +1,5 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Random } from "effect";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
@@ -73,6 +73,7 @@ const newHost = (): Host => {
 type Send = {
   readonly hostname?: string;
   readonly prep?: Prep;
+  readonly probe?: CheckinRequest["probe"];
   readonly skew?: number;
   readonly badSignature?: boolean;
   readonly ip?: string;
@@ -85,7 +86,8 @@ const request = (token: string, host: Host, options: Send = {}) => {
     cliVersion: "0.3.0",
     report: { ...report, hostname: options.hostname ?? report.hostname },
   } as const;
-  const checkin: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
+  const withPrep: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
+  const checkin: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
   const body = Buffer.from(JSON.stringify(checkin));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + (options.skew ?? 0));
   const signature = sign(null, checkinMessage(host.key, timestamp, body), host.privateKey);
@@ -146,6 +148,19 @@ it("stores prep while the host prepares, and reads a check-in without it as read
   expect(waitingServerStatus(ready.report, new Date(), new Date())).toBe("waiting");
 });
 
+it("keeps the last probe result when a check-in carries none", async () => {
+  const first = await fleetToken("rack-1");
+  const second = await fleetToken("rack-2");
+  const host = newHost();
+  const probe = { nonce: "n1", heardFrom: ["10.0.0.4"], bindFailed: [] };
+  const stored = async () => (await harness.pool.query("select probe from waiting_server")).rows[0]?.probe;
+  await send(first.token, host, { probe });
+  await send(first.token, host);
+  expect(await stored()).toEqual(probe);
+  await send(second.token, host);
+  expect(await stored()).toEqual(probe);
+});
+
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {
   const { token } = await fleetToken("rack-1");
   const host = newHost();
@@ -198,15 +213,29 @@ it("prunes rate-limit windows that have passed", async () => {
   await harness.pool.query(`
     insert into checkin_rate_limit (key, window_start, count) values
       ('ip:198.51.100.1', now() - interval '1 hour', 3),
-      ('ip:198.51.100.2', date_trunc('second', now()), 1)`);
+      ('ip:198.51.100.2', date_trunc('second', now()) + interval '1 hour', 1)`);
   await harness.runEffect(pruneStaleRateLimits());
   expect((await harness.pool.query("select key from checkin_rate_limit")).rows).toEqual([{ key: "ip:198.51.100.2" }]);
+});
+
+it("prunes passed rate-limit windows on the check-ins its sample picks", async () => {
+  const { token } = await fleetToken("rack-1");
+  await harness.pool.query("insert into checkin_rate_limit (key, window_start, count) values ('ip:198.51.100.1', now() - interval '1 hour', 3)");
+  const sampled = (draw: number) =>
+    harness.runEffect(checkIn(request(token, newHost(), { ip: "198.51.100.60" })).pipe(
+      Effect.provideService(Random.Random, { nextDoubleUnsafe: () => draw, nextIntUnsafe: () => 0 }),
+    ));
+  const stale = async () => (await harness.pool.query("select 1 from checkin_rate_limit where key = 'ip:198.51.100.1'")).rowCount;
+  expect(await sampled(0.5)).toEqual(wait);
+  expect(await stale()).toBe(1);
+  expect(await sampled(0)).toEqual(wait);
+  expect(await stale()).toBe(0);
 });
 
 it("doesn't spend the source address's budget on a check-in the token's budget refused", async () => {
   const { token, id } = await fleetToken("rack-1");
   await harness.pool.query(
-    "insert into checkin_rate_limit (key, window_start, count) values ($1, date_trunc('second', now()), 10000)",
+    "insert into checkin_rate_limit (key, window_start, count) values ($1, date_trunc('second', now()) + interval '1 hour', 10000)",
     [`token:${id}`],
   );
   expect(await failure(checkIn(request(token, newHost(), { ip: "198.51.100.40" })))).toMatchObject({ status: 429 });
@@ -260,7 +289,10 @@ it("lets only as many concurrent new hosts in as the cap has room for", async ()
   expect(await rows()).toHaveLength(WAITING_PER_TOKEN);
 });
 
-it("holds a token at the cap when a host it refreshes moves to another token mid check-in", async () => {
+it.each([
+  { case: "moves to another token", thenRevoke: false },
+  { case: "moves to another token that is then revoked", thenRevoke: true },
+])("holds a token at the cap when a host it refreshes $case mid check-in", async ({ thenRevoke }) => {
   const a = await fleetToken("rack-1");
   const b = await fleetToken("rack-2");
   const moving = newHost();
@@ -285,6 +317,9 @@ it("holds a token at the cap when a host it refreshes moves to another token mid
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(await send(b.token, moving, { ip: "198.51.100.51" })).toEqual(wait);
+    if (thenRevoke) {
+      expect(await harness.runEffect(revokeFleetToken(ada, { organizationSlug: "ada", id: b.id }))).toEqual({ waitingRemoved: 1 });
+    }
     await holder.query(
       `insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
        values ($1, $2, repeat('f', 64), $3::jsonb, '203.0.113.9')`,
