@@ -118,13 +118,14 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   type Snapshot = Effect.Success<ReturnType<typeof reads>>;
   const marker = provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.execute<{ dirty: string[]; demoted: boolean; pending: number }>(sql`
-      select dirty::text[] as dirty, backfilled_at is null as demoted, cardinality(pending) as pending
+    const [row] = yield* drizzle.execute<{ dirty: string[]; demoted: boolean; pending: number; floor: string }>(sql`
+      select dirty::text[] as dirty, backfilled_at is null as demoted, cardinality(pending) as pending, floor::text as floor
       from analytics.clickhouse_site where environment_id = ${site}::text`, "objects");
     return {
       dirty: new Set(row === undefined ? [] : row.dirty.map((day) => dayOf(new Date(`${day}T00:00:00Z`)))),
       demoted: row?.demoted ?? true,
       pending: row?.pending ?? 0,
+      floor: Number(row?.floor ?? 0),
     };
   }));
   const enqueue = provide(Effect.gen(function* () {
@@ -135,7 +136,6 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     trace.push(name);
     yield* Fiber.await(yield* Effect.forkChild(op));
   });
-  /** A read that issued its Postgres snapshot, then stalled before its first ClickHouse query, while later steps run. */
   type Paused = { readonly result: Fiber.Fiber<Snapshot>; readonly resume: Deferred.Deferred<void>; readonly since: number };
   const snapshots: Snapshot[] = [];
   const paused: Paused[] = [];
@@ -143,7 +143,7 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     const captured = yield* Deferred.make<void>();
     const resume = yield* Deferred.make<void>();
     const gate = Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(resume)));
-    const stalled: ClickHouseService = { ...clickhouse, query: <A>(text: string, params?: Params) => gate.pipe(Effect.andThen(clickhouse.query<A>(text, params))) };
+    const stalled: ClickHouseService = { unchecked: { ...clickhouse.unchecked, select: <A>(text: string, params?: Params) => gate.pipe(Effect.andThen(clickhouse.unchecked.select<A>(text, params))) } };
     const result = yield* Effect.forkChild(reads(clickHouseStore, stalled));
     yield* Effect.raceFirst(Deferred.await(captured), Fiber.await(result));
     paused.push({ result, resume, since: snapshots.length - 1 });
@@ -185,7 +185,8 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
       const hours = hourly.filter((hour) => dayOf(hour.bucket) === dayOf(day.bucket));
       expect({ pageviews: day.pageviews, visits: day.visits }, label()).toEqual({ pageviews: total(hours), visits: hours.reduce((sum, { visits }) => sum + visits, 0) });
     }
-    if (kind !== "backfill" && !(after.demoted && !before.demoted)) {
+    const refloored = after.demoted && (!before.demoted || after.floor !== before.floor);
+    if (kind !== "backfill" && !refloored) {
       expect(total(pages), label()).toBeGreaterThanOrEqual(total(previous[2]));
       expect(total(daily), label()).toBeGreaterThanOrEqual(total(previous[0]));
       expect(total(hourly), label()).toBeGreaterThanOrEqual(total(previous[1]));

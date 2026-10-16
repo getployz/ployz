@@ -4,7 +4,7 @@ import { Deferred, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 import * as adapter from "#/modules/web-analytics/adapter";
-import { ClickHouse, ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
+import { ClickHouse, ClickHouseFailure, type ClickHouseService, type Params } from "#/modules/web-analytics/clickhouse/client";
 import { promoteReads } from "#/modules/web-analytics/clickhouse/promote";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import { backfillSite, drainOutbox, enqueueForClickHouse } from "#/modules/web-analytics/clickhouse/writer";
@@ -116,7 +116,7 @@ it.live("while ClickHouse is unreachable a promoted site's reads fail instead of
   Effect.gen(function* () {
     const { clickhouse, provide, today, now, rows } = yield* cloud;
     const unreachable = Effect.fail(new ClickHouseFailure({ message: "connect ECONNREFUSED", cause: null }));
-    const down: ClickHouseService = { query: () => unreachable, unchecked: { command: () => unreachable, insert: () => unreachable } };
+    const down: ClickHouseService = { unchecked: { select: () => unreachable, command: () => unreachable, insert: () => unreachable } };
     const during = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(ClickHouse, down), Effect.flip);
     const overview = adapter.overview({
       site: { environmentId: CUT_OFF, timezone: "UTC", retentionMonths: 13 },
@@ -178,11 +178,13 @@ it.live("a read that routed to ClickHouse before a backfill of its site still an
     const paused = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
     const gated: ClickHouseService = {
-      ...clickhouse,
-      query: <A>(query: string, params?: Parameters<ClickHouseService["query"]>[1]) => Effect.gen(function* () {
-        if (yield* Deferred.succeed(paused, undefined)) yield* Deferred.await(release);
-        return yield* clickhouse.query<A>(query, params);
-      }),
+      unchecked: {
+        ...clickhouse.unchecked,
+        select: <A>(query: string, params?: Params) => Effect.gen(function* () {
+          if (yield* Deferred.succeed(paused, undefined)) yield* Deferred.await(release);
+          return yield* clickhouse.unchecked.select<A>(query, params);
+        }),
+      },
     };
     const reader = yield* Effect.forkChild(provide(adapter.overview({
       site: { environmentId: PAUSED, timezone: "UTC", retentionMonths: 13 },

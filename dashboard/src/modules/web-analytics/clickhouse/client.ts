@@ -6,16 +6,13 @@ export class ClickHouseFailure extends Data.TaggedError("ClickHouseFailure")<{ r
 
 export type Params = Readonly<Record<string, string | number | boolean | ReadonlyArray<string> | ReadonlyArray<number>>>;
 
-/** Writes that bypass attempt identities. Only `attempt.ts` and the schema DDL may call them; a static test enforces it. */
-export type UncheckedWrites = {
+export type Unchecked = {
+  readonly select: <A>(query: string, params?: Params) => Effect.Effect<ReadonlyArray<A>, ClickHouseFailure>;
   readonly command: (query: string, params?: Params) => Effect.Effect<void, ClickHouseFailure>;
   readonly insert: (table: string, rows: ReadonlyArray<object>) => Effect.Effect<void, ClickHouseFailure>;
 };
 
-export type ClickHouseService = {
-  readonly query: <A>(query: string, params?: Params) => Effect.Effect<ReadonlyArray<A>, ClickHouseFailure>;
-  readonly unchecked: UncheckedWrites;
-};
+export type ClickHouseService = { readonly unchecked: Unchecked };
 
 export const ClickHouse = Context.Reference<ClickHouseService | null>("ployz/ClickHouse", { defaultValue: () => null });
 
@@ -23,10 +20,10 @@ const attempt = <A>(message: string, run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: (cause) => new ClickHouseFailure({ message, cause }) });
 
 export const makeClickHouse = (client: ClickHouseClient): ClickHouseService => ({
-  query: <A>(query: string, params?: Params) =>
-    attempt("ClickHouse query failed.", async () =>
-      (await client.query({ query, query_params: params, format: "JSONEachRow" })).json<A>()),
   unchecked: {
+    select: <A>(query: string, params?: Params) =>
+      attempt("ClickHouse query failed.", async () =>
+        (await client.query({ query, query_params: params, format: "JSONEachRow" })).json<A>()),
     command: (query, params) =>
       attempt("ClickHouse command failed.", () => client.command({ query, query_params: params })).pipe(Effect.asVoid),
     insert: (table, rows) =>

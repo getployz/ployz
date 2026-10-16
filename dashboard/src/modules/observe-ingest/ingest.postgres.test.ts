@@ -535,7 +535,7 @@ it.live("with ClickHouse a pageviews push queues the rows it stored, and a repla
   const at = Date.now() - HOUR_MS;
   const body = pageviews(5, [pageview(at)]);
   const unused = Effect.die("ingest never calls ClickHouse");
-  const clickhouse = { query: () => unused, unchecked: { command: () => unused, insert: () => unused } };
+  const clickhouse = { unchecked: { select: () => unused, command: () => unused, insert: () => unused } };
   const send = () => sendRaw(body, headersFor(body)).pipe(Effect.provideService(ClickHouse, clickhouse));
   expect((yield* send()).status).toBe(200);
   expect((yield* send()).status).toBe(200);

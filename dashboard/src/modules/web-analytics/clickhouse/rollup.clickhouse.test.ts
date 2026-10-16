@@ -97,9 +97,9 @@ it.live("a rebuild that fails part way leaves readers on the day's previous tota
 
     yield* provide(Effect.flatMap(pin(), (fence) => collectGarbage(clickhouse, fence)));
     expect(yield* provide(reads(clickHouseStore))).toEqual(truth);
-    const [daily] = yield* clickhouse.query<{ n: number }>(
+    const [daily] = yield* clickhouse.unchecked.select<{ n: number }>(
       "SELECT count() AS n FROM daily WHERE environment_id = {environmentId:String} AND dim = '' AND value = ''", { environmentId: SHOP });
-    const [hourly] = yield* clickhouse.query<{ n: number }>(
+    const [hourly] = yield* clickhouse.unchecked.select<{ n: number }>(
       "SELECT count() AS n FROM session_hourly WHERE environment_id = {environmentId:String}", { environmentId: SHOP });
     expect([daily?.n, hourly?.n]).toEqual([1, 2]);
   }), 300_000);

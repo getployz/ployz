@@ -59,10 +59,11 @@ const losesEveryAck = (real: ClickHouseService): ClickHouseService => ({
   },
 });
 
-/** A client whose first query stalls until `resume` fires, after `captured` reports that the read took its Postgres snapshot. */
 const stallsFirstQuery = (real: ClickHouseService, captured: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): ClickHouseService => ({
-  ...real,
-  query: <A>(query: string, params?: Params) => Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(resume)), Effect.andThen(real.query<A>(query, params))),
+  unchecked: {
+    ...real.unchecked,
+    select: <A>(query: string, params?: Params) => Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(resume)), Effect.andThen(real.unchecked.select<A>(query, params))),
+  },
 });
 
 const failsAfterDaily = (real: ClickHouseService): ClickHouseService => ({
@@ -114,7 +115,7 @@ it.live("a drain interrupted mid-INSERT cannot land rows inside a rollup", () =>
     yield* clickhouse.unchecked.command("ALTER TABLE pageview ADD COLUMN stalled UInt8 DEFAULT sleep(3)");
     const drain = yield* Effect.forkChild(provide(drainOutbox(clickhouse)));
     for (let n = 0; n < 100; n++) {
-      const [running] = yield* clickhouse.query<{ n: number }>("SELECT count() AS n FROM system.processes WHERE query LIKE 'INSERT INTO%pageview%'");
+      const [running] = yield* clickhouse.unchecked.select<{ n: number }>("SELECT count() AS n FROM system.processes WHERE query LIKE 'INSERT INTO%pageview%'");
       if (running?.n) break;
       yield* Effect.sleep("10 millis");
     }
@@ -155,12 +156,14 @@ it.live("losing every acknowledgement for longer than the pending cap keeps visi
     const lost = PENDING_CAP + 8;
     for (let n = 0; n < lost; n++) {
       yield* enqueue(String(3 + n));
-      yield* provide(drainOutbox(lossy), lossy);
+      yield* provide(Effect.ignore(drainOutbox(lossy)), lossy);
       expect(yield* pendingCount).toBeLessThanOrEqual(PENDING_CAP);
     }
     expect(yield* daily).toBeLessThanOrEqual(2);
     yield* provide(ensureBackfilled(clickhouse, SITE));
     while ((yield* provide(drainOutbox(clickhouse))) > 0) {}
     expect(yield* daily).toBe(2 + lost);
+    expect(yield* pendingCount).toBeLessThanOrEqual(PENDING_CAP);
+    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
     expect(yield* pendingCount).toBe(0);
   }), 300_000);

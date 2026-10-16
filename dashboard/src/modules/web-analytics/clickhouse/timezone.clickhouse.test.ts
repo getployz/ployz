@@ -79,7 +79,7 @@ it.live("changing a promoted site's timezone sends readers back to Postgres, and
 
     yield* provide(Effect.flatMap(pin(), (fence) => collectGarbage(clickhouse, fence)));
     const sydneyDays = rows.map((pageview) => localDay(SYDNEY, new Date(pageview.ts).getTime()));
-    const days = yield* clickhouse.query<{ day: string }>(
+    const days = yield* clickhouse.unchecked.select<{ day: string }>(
       "SELECT DISTINCT toString(day) AS day FROM daily WHERE environment_id = {environmentId:String} ORDER BY day", { environmentId: PRODUCTION });
     expect(days.map((daily) => daily.day)).toEqual(sydneyDays);
     const query: postgresStore.StoreQuery = {

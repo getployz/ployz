@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, pin, PUBLISHED_COLUMNS, publishedOf, type PublishedRow } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, pin } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService, clickHouseClient, makeClickHouse } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as store from "#/modules/web-analytics/clickhouse/store";
@@ -135,9 +135,9 @@ it.live("the production client's statements are killed by the server before the 
       SETTINGS function_sleep_max_microseconds_per_block = 30000000`;
 
     const failure = yield* Effect.flip(production.unchecked.command(stalled));
-    const [running] = yield* production.query<{ n: number }>(
+    const [running] = yield* production.unchecked.select<{ n: number }>(
       `SELECT count() AS n FROM system.processes WHERE query LIKE '%${tag}%' AND query NOT LIKE '%system.processes%'`);
-    const [landed] = yield* production.query<{ n: number }>(`SELECT count() AS n FROM daily WHERE environment_id = '${tag}'`);
+    const [landed] = yield* production.unchecked.select<{ n: number }>(`SELECT count() AS n FROM daily WHERE environment_id = '${tag}'`);
 
     expect(failure.cause).toMatchObject({ type: "TIMEOUT_EXCEEDED" });
     expect([running?.n, landed?.n]).toEqual([0, 0]);
@@ -146,14 +146,16 @@ it.live("the production client's statements are killed by the server before the 
 it.live("garbage collection removes abandoned attempts below the fence and keeps the published ones and the attempts still in flight", () =>
   Effect.gen(function* () {
     const { clickhouse, provide, now, reads, add } = yield* setup;
-    const attempts = (table: string) => Effect.map(clickhouse.query<{ id: number }>(
+    const attempts = (table: string) => Effect.map(clickhouse.unchecked.select<{ id: number }>(
       `SELECT DISTINCT attempt AS id FROM ${table} WHERE environment_id = {site:String} ORDER BY id`, { site: SITE }),
     (rows) => rows.map(({ id }) => id));
     const published = provide(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      const [row] = yield* drizzle.execute<PublishedRow>(sql`
-        select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
-      return publishedOf(row);
+      const [row] = yield* drizzle.execute<{ floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+        select floor::text as floor, below::text as below, pending::text[] as pending, days
+        from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
+      if (row === undefined) return yield* Effect.die("the site has no clickhouse_site row");
+      return { floor: Number(row.floor), below: Number(row.below), pending: row.pending.map(Number), days: row.days };
     }));
     const unpublished = (table: string) => Effect.gen(function* () {
       const days = new Set(Object.values((yield* published).days));

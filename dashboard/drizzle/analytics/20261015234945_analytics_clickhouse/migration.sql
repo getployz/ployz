@@ -10,7 +10,9 @@ CREATE TABLE "analytics"."clickhouse_site" (
 	"pending" bigint[] DEFAULT '{}'::bigint[] NOT NULL,
 	"days" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"fence" bigint DEFAULT 0 NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+	"generation" bigint DEFAULT 0 NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "clickhouse_site_pending_cap_check" CHECK (cardinality("pending") <= 32)
 );
 --> statement-breakpoint
 CREATE TABLE "analytics"."outbox" (

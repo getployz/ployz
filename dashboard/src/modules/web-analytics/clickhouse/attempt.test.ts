@@ -1,44 +1,130 @@
 import { it } from "@effect/vitest";
-import { sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Deferred, Effect, Exit, Fiber } from "effect";
 import { expect } from "vitest";
-import { type Acknowledged, type Attempt, collectGarbage, insertRows, insertSelect, mint, publish } from "#/modules/web-analytics/clickhouse/attempt";
+import { type Attempt, collectGarbage, locked, mint, PublishRefused, read, type Writer } from "#/modules/web-analytics/clickhouse/attempt";
+import { ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { Database, type DatabaseService } from "#/server/database.server";
-import { silentClickHouse as client } from "#/test/clickhouse";
+import { silentClickHouse as silent } from "#/test/clickhouse";
 
-declare const attempt: Attempt;
-declare const proof: Acknowledged;
+declare const n: number;
+declare const writer: Writer;
 
-it("a write needs an Attempt from mint and a publication needs the proof an insert returns", () => {
+it("an Attempt is minted, never cast, and a publication names one of the three kinds in full", () => {
   // @ts-expect-error a number is not an Attempt
-  void (() => insertRows(client, "pageview", [], 7));
-  // @ts-expect-error a number is not an Attempt
-  void (() => insertSelect(client, 7, []));
-  // @ts-expect-error an Attempt is not proof that its rows were acknowledged
-  void (() => publish(attempt, "site", sql``));
-  // @ts-expect-error an object carrying an attempt is not proof either
-  void (() => publish({ attempt }, "site", sql``));
-  void (() => publish(proof, "site", sql``));
+  void (() => { const attempt: Attempt = n; return attempt; });
+  // @ts-expect-error an append names the days it dirtied
+  void (() => writer.publish({ kind: "append" }));
+  // @ts-expect-error a day publication says whether it closes the day
+  void (() => writer.publish({ kind: "day", day: "2026-10-01" }));
+  void (() => writer.publish({ kind: "refloor" }));
 });
 
-// SAFETY: the calls under test die on `inTransaction` before touching drizzle.
-const untouched = {} as DatabaseService["drizzle"];
-const insideTransaction: DatabaseService = {
-  drizzle: untouched,
-  inTransaction: true,
-  afterCommit: () => Effect.void,
-  transaction: (program) => Effect.die(`transaction must not run: ${String(program)}`),
+const SITE = { rolled_up_to: null, dirty: [], floor: "1", below: "1", pending: [], days: {} };
+
+const answering = (rows: () => ReadonlyArray<object>): DatabaseService => {
+  const drizzle = Object.assign({} as DatabaseService["drizzle"], { execute: () => Effect.sync(rows) });
+  const service: DatabaseService = {
+    drizzle,
+    inTransaction: false,
+    afterCommit: () => Effect.void,
+    transaction: (program) => program.pipe(Effect.provideService(Database, { ...service, inTransaction: true })),
+  };
+  return service;
 };
 
-const defect = <A, E>(effect: Effect.Effect<A, E, Database>) =>
-  effect.pipe(Effect.catchDefect((cause) => Effect.fail(String(cause))), Effect.flip, Effect.map(String), Effect.provideService(Database, insideTransaction));
+const insideTransaction: DatabaseService = { ...answering(() => []), inTransaction: true };
+
+const defect = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.catchDefect((cause) => Effect.fail(String(cause))), Effect.flip, Effect.map(String));
+
+const withDatabase = (database: DatabaseService) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.provideService(effect, Database, database);
 
 it.effect("mint refuses to run inside a caller's transaction, so an attempt is pending before any row carries it", () =>
   Effect.gen(function* () {
-    expect(yield* defect(mint(["site"]))).toContain("mint commits on its own");
+    expect(yield* defect(mint(silent, ["site"])).pipe(withDatabase(insideTransaction))).toContain("mint commits on its own");
   }));
 
 it.effect("garbage collection refuses to run inside a caller's transaction, so its fence commits before it deletes", () =>
   Effect.gen(function* () {
-    expect(yield* defect(collectGarbage(client, 1))).toContain("collectGarbage commits on its own");
+    expect(yield* defect(collectGarbage(silent, 1)).pipe(withDatabase(insideTransaction))).toContain("collectGarbage commits on its own");
+  }));
+
+it.effect("the locked snapshot exists only inside the transaction that will publish against it", () =>
+  Effect.gen(function* () {
+    expect(yield* defect(locked(silent, "site")).pipe(withDatabase(answering(() => [])))).toContain("inside the transaction that publishes");
+  }));
+
+const minted = (clickhouse: ClickHouseService, database: DatabaseService) => Effect.gen(function* () {
+  const writer = (yield* mint(clickhouse, ["site"])).get("site");
+  if (writer === undefined) return yield* Effect.die("the answering database minted nothing");
+  return writer;
+}).pipe(withDatabase(database));
+
+const publishRow = () => [{ environment_id: "site", attempt: "7" }];
+
+it.effect("a writer accepts rows only before it publishes, so nothing can land under a published attempt", () =>
+  Effect.gen(function* () {
+    const database = answering(publishRow);
+    const writer = yield* minted(silent, database);
+    yield* database.transaction(writer.publish({ kind: "append", dirty: [] }));
+    expect(yield* defect(writer.rows("pageview", [{}]))).toContain("already published");
+    expect(yield* defect(writer.select([{ query: "INSERT INTO daily (attempt) SELECT {attempt:UInt64}", params: {} }]))).toContain("already published");
+    expect(yield* defect(database.transaction(writer.publish({ kind: "refloor" })))).toContain("cannot publish twice");
+  }));
+
+it.effect("a writer publishes only inside a transaction", () =>
+  Effect.gen(function* () {
+    const database = answering(publishRow);
+    const writer = yield* minted(silent, database);
+    expect(yield* defect(writer.publish({ kind: "refloor" })).pipe(withDatabase(database))).toContain("inside the transaction");
+  }));
+
+it.effect("a writer whose write failed is refused publication, so unacknowledged rows never become visible", () =>
+  Effect.gen(function* () {
+    const database = answering(publishRow);
+    const lost = new ClickHouseFailure({ message: "socket hang up", cause: null });
+    const writer = yield* minted({ unchecked: { ...silent.unchecked, insert: () => Effect.fail(lost) } }, database);
+    expect(yield* Effect.flip(writer.rows("pageview", [{}]))).toBe(lost);
+    expect(yield* Effect.flip(database.transaction(writer.publish({ kind: "append", dirty: [] })))).toBeInstanceOf(PublishRefused);
+  }));
+
+it.effect("a writer with a write still in flight cannot publish, and the write that was interrupted poisons it", () =>
+  Effect.gen(function* () {
+    const database = answering(publishRow);
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const slow: ClickHouseService = { unchecked: { ...silent.unchecked, insert: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))) } };
+    const writer = yield* minted(slow, database);
+    const write = yield* Effect.forkChild(writer.rows("pageview", [{}]));
+    yield* Deferred.await(started);
+    expect(yield* defect(database.transaction(writer.publish({ kind: "append", dirty: [] })))).toContain("still in flight");
+    yield* Deferred.succeed(release, undefined);
+    expect(Exit.isSuccess(yield* Fiber.await(write))).toBe(true);
+  }));
+
+it.effect("Writer.select takes only inserts that stamp the attempt column, so rollups cannot land under an unminted attempt", () =>
+  Effect.gen(function* () {
+    const database = answering(publishRow);
+    const commands: string[] = [];
+    const recording: ClickHouseService = { unchecked: { ...silent.unchecked, command: (query) => Effect.sync(() => { commands.push(query); }) } };
+    const writer = yield* minted(recording, database);
+    const stamped = "INSERT INTO daily (environment_id, day, attempt, dim) SELECT environment_id, day, {attempt:UInt64}, dim FROM pageview";
+    yield* writer.select([{ query: stamped, params: {} }]);
+    expect(commands).toEqual([stamped]);
+    expect(yield* defect(writer.select([{ query: "INSERT INTO daily (environment_id, day, dim) SELECT environment_id, day, dim FROM pageview", params: {} }]))).toContain("{attempt:UInt64}");
+    expect(yield* defect(writer.select([{ query: "INSERT INTO daily (environment_id, day, attempt, dim) SELECT environment_id, day, 7, dim FROM pageview", params: {} }]))).toContain("{attempt:UInt64}");
+  }));
+
+it.effect("a read returns its body's result when the site's generation held, and retries a bounded number of times when it moved", () =>
+  Effect.gen(function* () {
+    let ran = 0;
+    const body = () => Effect.sync(() => ++ran);
+    const steady = answering(() => [{ ...SITE, generation: "3" }]);
+    expect(yield* read(silent, "site", body).pipe(withDatabase(steady))).toBe(1);
+    let generation = 0;
+    const moving = answering(() => [{ ...SITE, generation: String(generation++) }]);
+    const failure = yield* Effect.flip(read(silent, "site", body)).pipe(withDatabase(moving));
+    expect(failure).toBeInstanceOf(ClickHouseFailure);
+    expect(failure.message).toContain("Garbage collection raced 4 reads");
+    expect(ran).toBe(5);
   }));

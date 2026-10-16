@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, bytea, date, jsonb, pgSchema, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, bytea, check, date, jsonb, pgSchema, primaryKey, smallint, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamptz = (name: string) => timestamp(name, { mode: "date", withTimezone: true });
 
@@ -146,5 +146,6 @@ export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   pending: bigint("pending", { mode: "number" }).array().default(sql`'{}'::bigint[]`).notNull(),
   days: jsonb("days").$type<Record<string, number>>().default(sql`'{}'::jsonb`).notNull(),
   fence: bigint("fence", { mode: "number" }).default(0).notNull(),
+  generation: bigint("generation", { mode: "number" }).default(0).notNull(),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
-});
+}, (table) => [check("clickhouse_site_pending_cap_check", sql`cardinality(${table.pending}) <= 32`)]);

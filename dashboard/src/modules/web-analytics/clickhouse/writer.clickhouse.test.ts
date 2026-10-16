@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { Effect, Exit, Scope } from "effect";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
-import { collectGarbage, pin, PUBLISHED_COLUMNS, publishedOf, type PublishedRow, TABLES } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, pin, read, TABLES } from "#/modules/web-analytics/clickhouse/attempt";
 import { binder } from "#/modules/web-analytics/clickhouse/store";
 import { ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { backfillSite, drainOutbox, enqueueForClickHouse, forgetDeletedSites } from "#/modules/web-analytics/clickhouse/writer";
@@ -62,18 +62,15 @@ const ingest = (rows: ReadonlyArray<ReturnType<typeof pageview>>) =>
   }));
 
 const storedCount = async (environmentId: string) => {
-  const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(
+  const [row] = await Effect.runPromise(clickhouse.unchecked.select<{ n: number }>(
     "SELECT count() AS n FROM pageview WHERE environment_id = {environmentId:String}", { environmentId }));
   return row?.n;
 };
 
-const clickhouseCount = async (environmentId: string) => {
-  const [site] = await harness.db.execute<PublishedRow>(sql`
-    select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  const b = binder({ environmentId, timezone: "UTC" }, publishedOf(site));
-  const [row] = await Effect.runPromise(clickhouse.query<{ n: number }>(`SELECT count() AS n FROM pageview WHERE environment_id = ${b.env} AND ${b.visible}`, b.params));
-  return row?.n;
-};
+const clickhouseCount = (environmentId: string) => harness.runEffect(read(clickhouse, environmentId, (reader) => {
+  const b = binder({ environmentId, timezone: "UTC" }, reader.snapshot);
+  return Effect.map(reader.select<{ n: number }>(`SELECT count() AS n FROM pageview WHERE environment_id = ${b.env} AND ${b.visible}`, b.params), ([row]) => row?.n);
+}));
 
 const collect = () => harness.runEffect(Effect.flatMap(pin(), (fence) => collectGarbage(clickhouse, fence)));
 
@@ -98,7 +95,7 @@ it("a drain copies every queued pageview to ClickHouse once and empties the outb
 
   expect(await clickhouseCount(SHOP)).toBe(3);
   expect(await outboxSize()).toBe(0);
-  const [stored] = await Effect.runPromise(clickhouse.query<{ ts: string; visitor_id: number; pathname: string }>(
+  const [stored] = await Effect.runPromise(clickhouse.unchecked.select<{ ts: string; visitor_id: number; pathname: string }>(
     "SELECT ts, visitor_id, pathname FROM pageview ORDER BY ts LIMIT 1"));
   expect(stored).toEqual({ ts: "2026-10-10T00:01:00.000Z", visitor_id: 1, pathname: "/" });
   expect(await drain()).toBe(0);
@@ -207,7 +204,7 @@ it("a deleted environment's ClickHouse copy is forgotten", async () => {
 });
 
 it("raw pageviews are partitioned by retention and month, so expiry drops whole parts instead of rewriting them", async () => {
-  const [table] = await Effect.runPromise(clickhouse.query<{ partition_key: string; engine: string; create_table_query: string }>(
+  const [table] = await Effect.runPromise(clickhouse.unchecked.select<{ partition_key: string; engine: string; create_table_query: string }>(
     "SELECT partition_key, engine, create_table_query FROM system.tables WHERE database = currentDatabase() AND name = 'pageview'"));
   expect(table).toMatchObject({ partition_key: "(retention_days, toYYYYMM(ts))", engine: "MergeTree" });
   expect(table?.create_table_query).toContain("ttl_only_drop_parts = 1");

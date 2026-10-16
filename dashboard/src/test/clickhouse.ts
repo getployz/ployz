@@ -6,8 +6,7 @@ import { ensureSchema } from "#/modules/web-analytics/clickhouse/schema";
 
 /** Acknowledges every write and holds no rows, so the Postgres side of the attempt API runs without ClickHouse. */
 export const silentClickHouse: ClickHouseService = {
-  query: () => Effect.succeed([]),
-  unchecked: { command: () => Effect.void, insert: () => Effect.void },
+  unchecked: { select: () => Effect.succeed([]), command: () => Effect.void, insert: () => Effect.void },
 };
 
 export const clickhouseTestDatabase = Effect.gen(function* () {

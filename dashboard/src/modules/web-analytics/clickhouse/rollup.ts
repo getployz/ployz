@@ -1,20 +1,17 @@
-import { type SQL, sql } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
 import { addDays, dayEnd, dayStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import type { RollupSite } from "../postgres/rollup";
-import { type Attempt, insertSelect, mint, type Published, publish, PUBLISHED_COLUMNS, publishedOf, type PublishedRow } from "./attempt";
+import { locked, mint, type Publication, read, type Reader, type Writer } from "./attempt";
 import { type Binder, binder, localHour, pageCounts, RETAINED, requiredClickHouse, sessionCounts, visitCtes } from "./store";
 
-type SiteState = RollupSite & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string>; readonly published: Published };
+type SiteState = RollupSite & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string>; readonly reader: Reader };
 
 const MAX_DAYS_PER_SITE_RUN = 31;
 
-const siteState = Effect.fn("WebAnalytics.clickHouseSiteState")(function* (environmentId: string, lock: boolean) {
+const siteState = Effect.fn("WebAnalytics.clickHouseSiteState")(function* (environmentId: string, reader: Reader) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<PublishedRow & { rolled_up_to: string | null; dirty: string[] }>(sql`
-    select rolled_up_to::text as rolled_up_to, dirty::text[] as dirty, ${PUBLISHED_COLUMNS}
-    from analytics.clickhouse_site where environment_id = ${environmentId}::text ${lock ? sql`for update` : sql``}`, "objects");
   const [site] = yield* drizzle.execute<{ timezone: string; enabled: boolean }>(sql`
     select timezone, enabled from analytics.site where environment_id = ${environmentId}::text`, "objects");
   if (site === undefined) return null;
@@ -22,9 +19,9 @@ const siteState = Effect.fn("WebAnalytics.clickHouseSiteState")(function* (envir
     environmentId,
     timezone: site.timezone,
     enabled: site.enabled,
-    rolledUpTo: row?.rolled_up_to ?? null,
-    dirty: row?.dirty ?? [],
-    published: publishedOf(row),
+    rolledUpTo: reader.snapshot.rolledUpTo,
+    dirty: reader.snapshot.dirty,
+    reader,
   } satisfies SiteState;
 });
 
@@ -35,18 +32,17 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
-const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: SiteState, day: string, attempt: Attempt) {
-  const clickhouse = yield* requiredClickHouse;
+const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: SiteState, day: string, writer: Writer) {
   const start = dayStart(site.timezone, day);
   const end = dayEnd(site.timezone, day);
   const query = { environmentId: site.environmentId, timezone: site.timezone, range: { start, end }, filters: [] };
   const statement = (build: (b: Binder) => string) => {
-    const b = binder(site, site.published);
+    const b = binder(site, site.reader.snapshot);
     return { query: build(b), params: b.params };
   };
   const ctes = (b: Binder) => `WITH ${visitCtes(b, query, { start, end })},
     sessions AS (SELECT * FROM visits WHERE ts >= ${b.at(start)} AND ts < ${b.at(end)})`;
-  return yield* insertSelect(clickhouse, attempt, [
+  return yield* writer.select([
     statement((b) => `
     INSERT INTO session_hourly (environment_id, day, attempt, hour, pageviews, visitors, visits, bounces, total_duration)
     ${ctes(b)}
@@ -79,9 +75,8 @@ const writeDay = Effect.fn("WebAnalytics.clickHouseWriteDay")(function* (site: S
 });
 
 const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: SiteState) {
-  const clickhouse = yield* requiredClickHouse;
-  const b = binder(site, site.published);
-  const [row] = yield* clickhouse.query<{ n: number; first: number }>(`
+  const b = binder(site, site.reader.snapshot);
+  const [row] = yield* site.reader.select<{ n: number; first: number }>(`
     SELECT count() AS n, toUnixTimestamp64Milli(min(ts)) AS first FROM pageview WHERE environment_id = ${b.env} AND ${b.visible} AND ${RETAINED}`, b.params);
   return row === undefined || row.n === 0 ? null : localDay(site.timezone, row.first);
 });
@@ -91,20 +86,25 @@ const firstDay = Effect.fn("WebAnalytics.clickHouseFirstDay")(function* (site: S
  * pageview set the day was computed from is the set that is visible when it lands. The peek before minting keeps an idle
  * site from accumulating attempts that never publish.
  */
-const rollupDay = <E, R>(environmentId: string, pick: (site: SiteState) => Effect.Effect<string | null, E, R>, set: (day: string, attempt: Attempt) => SQL) =>
+const rollupDay = <E, R>(environmentId: string, pick: (site: SiteState) => Effect.Effect<string | null, E, R>, publication: (day: string) => Publication) =>
   Effect.gen(function* () {
-    const peeked = yield* siteState(environmentId, false);
-    if (peeked === null || (yield* pick(peeked)) === null) return false;
-    const attempt = (yield* mint([environmentId])).get(environmentId);
-    if (attempt === undefined) return false;
+    const clickhouse = yield* requiredClickHouse;
+    const peeked = yield* read(clickhouse, environmentId, (reader) => Effect.gen(function* () {
+      const site = yield* siteState(environmentId, reader);
+      return site === null ? null : yield* pick(site);
+    }));
+    if (peeked === null) return false;
+    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+    if (writer === undefined) return false;
     const database = yield* Database;
     return yield* database.transaction(Effect.gen(function* () {
-      const site = yield* siteState(environmentId, true);
+      const reader = yield* locked(clickhouse, environmentId);
+      const site = reader === null ? null : yield* siteState(environmentId, reader);
       if (site === null) return false;
       const day = yield* pick(site);
       if (day === null) return false;
-      const proof = yield* writeDay(site, day, attempt);
-      yield* publish(proof, environmentId, set(day, attempt));
+      yield* writeDay(site, day, writer);
+      yield* writer.publish(publication(day));
       return true;
     }));
   });
@@ -114,14 +114,13 @@ const closeNextDay = (environmentId: string, now: Date) =>
     if (!site.enabled) return null;
     const day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
     return day === null || dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime() ? null : day;
-  }), (day, attempt) => sql`
-    rolled_up_to = ${day}::date, dirty = array_remove(dirty, ${day}::date), days = days || jsonb_build_object(${day}::text, ${attempt}::bigint)`);
+  }), (day) => ({ kind: "day", day, close: true }));
 
 const rebuildNextDirty = (environmentId: string) =>
   rollupDay(environmentId, (site) => {
     const closed = site.rolledUpTo;
     return Effect.succeed(closed === null ? null : site.dirty.filter((dirty) => dirty <= closed).sort()[0] ?? null);
-  }, (day, attempt) => sql`dirty = array_remove(dirty, ${day}::date), days = days || jsonb_build_object(${day}::text, ${attempt}::bigint)`);
+  }, (day) => ({ kind: "day", day, close: false }));
 
 const repeat = <E, R>(step: Effect.Effect<boolean, E, R>) =>
   Effect.gen(function* () {

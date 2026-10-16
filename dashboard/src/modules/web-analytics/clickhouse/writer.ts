@@ -3,7 +3,7 @@ import { Effect, Schedule } from "effect";
 import { Database } from "#/server/database.server";
 import { ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
 import { analyticsOutbox, analyticsPageview } from "../tables";
-import { deleteSite, insertRows, mint, publish, PublishRefused, SiteUnavailable } from "./attempt";
+import { deleteSite, mint, PublishRefused, SiteUnavailable } from "./attempt";
 import type { ClickHouseService } from "./client";
 import { TTL_DAYS } from "./schema";
 
@@ -54,11 +54,12 @@ export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse
  * The outbox rows go first so a backfill that already consumed them refuses this publication instead of double counting.
  */
 const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: ClickHouseService, environmentId: string, batches: ReadonlyArray<Batch>) {
-  const attempt = (yield* mint([environmentId])).get(environmentId);
-  if (attempt === undefined) return false;
+  const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+  if (writer === undefined) return false;
+  const { attempt } = writer;
   const ids = batches.map((batch) => batch.id);
   const rows = batches.flatMap((batch) => batch.rows);
-  const proof = yield* insertRows(clickhouse, "pageview", rows, attempt);
+  yield* writer.rows("pageview", rows);
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -74,9 +75,7 @@ const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: Cli
     const dirtied = closed === null ? [] : rows
       .flatMap((row) => rollupDaysChangedBy(site.timezone, new Date(`${row.ts.replace(" ", "T")}Z`)))
       .filter((day) => day <= closed);
-    yield* publish(proof, environmentId, sql`
-      below = greatest(below, ${attempt}::bigint + 1),
-      dirty = array(select distinct d from unnest(dirty || ${sql.param(dirtied)}::date[]) d order by d)`);
+    yield* writer.publish({ kind: "append", dirty: dirtied });
     return true;
   })).pipe(Effect.catchTag("PublishRefused", () => Effect.succeed(false)));
 });
@@ -121,8 +120,8 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
   const demoted = yield* demoteReads(environmentId);
   if (demoted.length === 0) return 0;
   const copy = Effect.gen(function* () {
-    const attempt = (yield* mint([environmentId])).get(environmentId);
-    if (attempt === undefined) return yield* new SiteUnavailable({ environmentId });
+    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+    if (writer === undefined) return yield* new SiteUnavailable({ environmentId });
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const queued = yield* drizzle.execute<{ id: string }>(sql`
@@ -133,8 +132,6 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
       yield* drizzle.execute(sql`delete from analytics.outbox where id = any(${sql.param(queued.map((row) => row.id))}::bigint[])`);
       let copied = 0;
       let after: Pageview | undefined;
-      // A site with no pageviews still publishes its new floor, so the proof starts from an acknowledged empty insert.
-      let proof = yield* insertRows(clickhouse, "pageview", [], attempt);
       for (;;) {
         const page: ReadonlyArray<Pageview> = yield* drizzle.select().from(analyticsPageview)
           .where(after === undefined
@@ -143,14 +140,12 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
           .orderBy(analyticsPageview.ts, analyticsPageview.visitorId, analyticsPageview.host, analyticsPageview.pathname)
           .limit(BACKFILL_PAGE);
         if (page.length === 0) break;
-        proof = yield* insertRows(clickhouse, "pageview", page.map(clickHouseRow), attempt);
+        yield* writer.rows("pageview", page.map(clickHouseRow));
         copied += page.length;
         after = page[page.length - 1];
         if (page.length < BACKFILL_PAGE) break;
       }
-      yield* publish(proof, environmentId, sql`
-        floor = ${attempt}::bigint, below = ${attempt}::bigint + 1, days = '{}'::jsonb,
-        rolled_up_to = null, dirty = '{}', reads = false, backfilled_at = now()`);
+      yield* writer.publish({ kind: "refloor" });
       return copied;
     }), { isolationLevel: "repeatable read" });
   });

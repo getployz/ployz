@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
-import { insertRows, mint, publish, PUBLISHED_COLUMNS, publishedOf, type PublishedRow } from "#/modules/web-analytics/clickhouse/attempt";
+import { mint, read } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import * as clickHouseRollup from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
@@ -75,30 +75,21 @@ const clickHouseState = (environmentId: string) =>
     return state;
   });
 
-const publishedState = (environmentId: string) =>
-  Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.execute<PublishedRow>(sql`
-      select ${PUBLISHED_COLUMNS} from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-    return publishedOf(row);
-  });
-
 const rolledUpPageviews = (clickhouse: ClickHouseService, environmentId: string, day: string) =>
-  Effect.gen(function* () {
-    const b = binder({ environmentId, timezone: "UTC" }, yield* publishedState(environmentId));
-    const [row] = yield* clickhouse.query<{ pageviews: number }>(`
+  read(clickhouse, environmentId, (reader) => {
+    const b = binder({ environmentId, timezone: "UTC" }, reader.snapshot);
+    return Effect.map(reader.select<{ pageviews: number }>(`
       SELECT sum(pageviews) AS pageviews FROM daily
-      WHERE environment_id = ${b.env} AND day = toDate(${b.text(day)}) AND dim = '' AND ${b.publishedDay}`, b.params);
-    return row?.pageviews ?? 0;
+      WHERE environment_id = ${b.env} AND day = toDate(${b.text(day)}) AND dim = '' AND ${b.publishedDay}`, b.params), ([row]) => row?.pageviews ?? 0);
   });
 
 const landInClickHouse = (clickhouse: ClickHouseService, environmentId: string, rows: ReadonlyArray<object>) =>
   Effect.gen(function* () {
-    const attempt = (yield* mint([environmentId])).get(environmentId);
-    if (attempt === undefined) return yield* Effect.die("site row held by another writer");
-    const proof = yield* insertRows(clickhouse, "pageview", rows, attempt);
+    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+    if (writer === undefined) return yield* Effect.die("site row held by another writer");
+    yield* writer.rows("pageview", rows);
     const database = yield* Database;
-    yield* database.transaction(publish(proof, environmentId, sql`below = greatest(below, ${attempt}::bigint + 1)`));
+    yield* database.transaction(writer.publish({ kind: "append", dirty: [] }));
   });
 
 const insertBoth = (clickhouse: ClickHouseService, environmentId: string, record: PageviewRecord) =>
