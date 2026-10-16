@@ -109,3 +109,10 @@ it("takes the observed address from the proxy header, else the socket peer", () 
   expect(observedIp(new Headers({ "x-forwarded-for": "not-an-ip" }), undefined, "10.0.0.2")).toBe("10.0.0.2");
   expect(observedIp(new Headers(), undefined, undefined)).toBe("unknown");
 });
+
+it("ignores a forwarded address that did not come through a proxy", () => {
+  const headers = new Headers({ "x-forwarded-for": "198.51.100.4" });
+  expect(observedIp(headers, undefined, "203.0.113.7")).toBe("203.0.113.7");
+  expect(observedIp(headers, undefined, "::ffff:127.0.0.1")).toBe("198.51.100.4");
+  expect(observedIp(headers, undefined, "::1")).toBe("198.51.100.4");
+});

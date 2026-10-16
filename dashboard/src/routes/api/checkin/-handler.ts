@@ -1,4 +1,4 @@
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { Effect } from "effect";
 import { CHECKIN_MAX_BYTES } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, CheckinRefused } from "#/modules/machines/waiting/checkin.server";
@@ -23,12 +23,25 @@ async function readCappedBody(request: Request) {
   return Buffer.concat(chunks);
 }
 
+const proxyPeers = new BlockList();
+for (const [network, prefix] of [["127.0.0.0", 8], ["10.0.0.0", 8], ["172.16.0.0", 12], ["192.168.0.0", 16], ["169.254.0.0", 16]] as const) {
+  proxyPeers.addSubnet(network, prefix, "ipv4");
+}
+for (const [network, prefix] of [["::1", 128], ["fc00::", 7], ["fe80::", 10]] as const) proxyPeers.addSubnet(network, prefix, "ipv6");
+
+function fromProxy(peer: string) {
+  const address = peer.startsWith("::ffff:") && isIP(peer.slice(7)) === 4 ? peer.slice(7) : peer;
+  return proxyPeers.check(address, isIP(address) === 4 ? "ipv4" : "ipv6");
+}
+
 export function observedIp(headers: Headers, clientIpHeaders: ReadonlyArray<string> | undefined, peer: string | undefined) {
-  for (const name of clientIpHeaders ?? ["x-forwarded-for"]) {
+  const validPeer = peer !== undefined && isIP(peer) !== 0 ? peer : undefined;
+  const trusted = clientIpHeaders ?? (validPeer !== undefined && fromProxy(validPeer) ? ["x-forwarded-for"] : []);
+  for (const name of trusted) {
     const value = headers.get(name)?.split(",")[0]?.trim();
     if (value !== undefined && isIP(value) !== 0) return value;
   }
-  return peer !== undefined && isIP(peer) !== 0 ? peer : "unknown";
+  return validPeer ?? "unknown";
 }
 
 const refused = (status: number, error: string, headers: Record<string, string> = {}) =>
