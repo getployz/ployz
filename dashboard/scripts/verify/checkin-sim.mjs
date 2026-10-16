@@ -2,10 +2,10 @@
 // tick to /api/checkin, then the run prints answers, p50, p95 and errors. Run from dashboard/ against up.sh's Cloud:
 //   node scripts/verify/checkin-sim.mjs --token pflt_... [--hosts N] [--ticks N | --once] [--interval ms]
 //     [--bad-signature] [--skew seconds] [--prep docker=installing,zfs=installing] [--hostname name]
-//     [--pad-bytes N] [--ip addr] [--url http://localhost:port]
-// Each host claims its own source address through x-forwarded-for (198.18.0.0/15), which dev Cloud trusts; --ip
+//     [--pad-bytes N] [--ip addr] [--seed text] [--url http://localhost:port]
+// --seed derives each host's key from text, so a later run checks in as the same hosts. Each host claims its own source address through x-forwarded-for (198.18.0.0/15), which dev Cloud trusts; --ip
 // sends every host from one address instead.
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
@@ -22,6 +22,7 @@ const { values: flags } = parseArgs({
     hostname: { type: "string" },
     "pad-bytes": { type: "string", default: "0" },
     ip: { type: "string" },
+    seed: { type: "string" },
     url: { type: "string" },
   },
 });
@@ -38,8 +39,16 @@ const ticks = flags.once ? 1 : Number(flags.ticks);
 const interval = Number(flags.interval);
 const prep = flags.prep === undefined ? undefined : Object.fromEntries(flags.prep.split(",").map((pair) => pair.split("=")));
 
+const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+function keyPair(index) {
+  if (flags.seed === undefined) return generateKeyPairSync("ed25519");
+  const secret = createHash("sha256").update(`${flags.seed}-${index}`).digest();
+  const privateKey = createPrivateKey({ key: Buffer.concat([ED25519_PKCS8_PREFIX, secret]), format: "der", type: "pkcs8" });
+  return { privateKey, publicKey: createPublicKey(privateKey) };
+}
+
 const hosts = Array.from({ length: hostCount }, (_, index) => {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const { publicKey, privateKey } = keyPair(index);
   return {
     key: Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url").toString("hex"),
     privateKey,
