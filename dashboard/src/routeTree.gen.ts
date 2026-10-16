@@ -21,6 +21,7 @@ import { Route as DotwellKnownMcpRegistryAuthRouteImport } from './routes/[.]wel
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
+import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
@@ -141,6 +142,11 @@ const PublicAuthRoute = PublicAuthRouteImport.update({
   id: '/auth',
   path: '/auth',
   getParentRoute: () => PublicRouteRoute,
+} as any)
+const ApiSplatRoute = ApiSplatRouteImport.update({
+  id: '/api/$',
+  path: '/api/$',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
   id: '/api/health',
@@ -539,6 +545,7 @@ export interface FileRoutesByFullPath {
   '/.well-known/mcp-registry-auth': typeof DotwellKnownMcpRegistryAuthRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -608,6 +615,7 @@ export interface FileRoutesByTo {
   '/.well-known/mcp-registry-auth': typeof DotwellKnownMcpRegistryAuthRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -678,6 +686,7 @@ export interface FileRoutesById {
   '/.well-known/mcp-registry-auth': typeof DotwellKnownMcpRegistryAuthRoute
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
+  '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
   '/invite/$token': typeof InviteTokenRoute
@@ -753,6 +762,7 @@ export interface FileRouteTypes {
     | '/.well-known/mcp-registry-auth'
     | '/dashboard'
     | '/auth'
+    | '/api/$'
     | '/api/health'
     | '/auth/github'
     | '/invite/$token'
@@ -822,6 +832,7 @@ export interface FileRouteTypes {
     | '/.well-known/mcp-registry-auth'
     | '/dashboard'
     | '/auth'
+    | '/api/$'
     | '/api/health'
     | '/auth/github'
     | '/invite/$token'
@@ -891,6 +902,7 @@ export interface FileRouteTypes {
     | '/.well-known/mcp-registry-auth'
     | '/_protected/dashboard'
     | '/_public/auth'
+    | '/api/$'
     | '/api/health'
     | '/auth/github'
     | '/invite/$token'
@@ -964,6 +976,7 @@ export interface RootRouteChildren {
   HomeRoute: typeof HomeRoute
   McpRoute: typeof McpRoute
   DotwellKnownMcpRegistryAuthRoute: typeof DotwellKnownMcpRegistryAuthRoute
+  ApiSplatRoute: typeof ApiSplatRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
   InviteTokenRoute: typeof InviteTokenRoute
@@ -1082,6 +1095,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/auth'
       preLoaderRoute: typeof PublicAuthRouteImport
       parentRoute: typeof PublicRouteRoute
+    }
+    '/api/$': {
+      id: '/api/$'
+      path: '/api/$'
+      fullPath: '/api/$'
+      preLoaderRoute: typeof ApiSplatRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/health': {
       id: '/api/health'
@@ -1730,6 +1750,7 @@ const rootRouteChildren: RootRouteChildren = {
   HomeRoute: HomeRoute,
   McpRoute: McpRoute,
   DotwellKnownMcpRegistryAuthRoute: DotwellKnownMcpRegistryAuthRoute,
+  ApiSplatRoute: ApiSplatRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
   InviteTokenRoute: InviteTokenRoute,

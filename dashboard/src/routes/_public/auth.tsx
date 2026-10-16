@@ -2,6 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { getAuthSession } from "#/auth/auth";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
+import { authSummary, requestPreference } from "#/server/content-negotiation";
 
 // Sign in and Deploy on the marketing site go straight to GitHub (/auth/github). This page is where the rest land: a
 // protected page while signed out, Self-hosted Cloud's /, and better-auth's OAuth errors (onAPIError, ?error=).
@@ -13,6 +14,11 @@ const VIEWS = {
 } as const;
 
 export const Route = createFileRoute("/_public/auth")({
+  server: {
+    handlers: {
+      GET: async ({ request, next }) => (requestPreference(request) === "markdown" ? authSummary() : next()),
+    },
+  },
   validateSearch: Schema.toStandardSchemaV1(AuthSearch),
   beforeLoad: async () => {
     const session = await getAuthSession();
@@ -27,6 +33,7 @@ export const Route = createFileRoute("/_public/auth")({
   head: () => ({
     meta: [
       { title: "Sign in - Ployz" },
+      { name: "robots", content: "noindex" },
       {
         name: "description",
         content: "Sign in with GitHub to create a project, connect a repo or image, and start using Ployz Cloud.",
