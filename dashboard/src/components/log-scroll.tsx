@@ -18,10 +18,15 @@ export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HT
     followOnAppend: true,
     scrollEndThreshold: 48,
     // A view that shrinks while it shows the newest line keeps showing it, rather than reading as scrolled away.
+    // The DOM already has the new size here, so whether it was at the end is read from the size it had, and the
+    // view moves to the end before the virtualizer hears of the new size, so its readers never see it scrolled up.
     observeElementRect: (instance, cb) => observeElementRect(instance, (rect) => {
-      const pinned = instance.scrollRect !== null && instance.isAtEnd();
+      const was = instance.scrollRect, view = instance.scrollElement;
+      if (view && was && rect.height < was.height && instance.getTotalSize() - was.height - (instance.scrollOffset ?? 0) <= instance.options.scrollEndThreshold) {
+        view.scrollTop = view.scrollHeight;
+        instance.scrollOffset = view.scrollTop;
+      }
       cb(rect);
-      if (pinned && !instance.isAtEnd()) instance.scrollToEnd();
     }),
   });
   useLayoutEffect(() => { virtual.scrollToEnd(); }, [virtual]);
