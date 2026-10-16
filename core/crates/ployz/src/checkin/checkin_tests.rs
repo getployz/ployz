@@ -272,7 +272,12 @@ async fn a_token_file_still_partial_after_settling_keeps_the_loop_to_restart() {
     fs::write(&paths.token_file, "pflt_").unwrap();
     let (url, server) = stopping_cloud("token_revoked", 1).await;
     let host = FakeHost::default();
-    let end = run(&host, &mut client(&url), &key(), &paths).await;
+    let end = tokio::time::timeout(
+        Duration::from_secs(10),
+        run(&host, &mut client(&url), &key(), &paths),
+    )
+    .await
+    .expect("a partial token is never sent, so the loop ends after the one stop");
     assert_eq!(end, CheckinEnd::TokenChanged);
     assert_eq!(server.await.unwrap().len(), 1);
     assert_eq!(fs::read_to_string(&paths.token_file).unwrap(), "pflt_");
