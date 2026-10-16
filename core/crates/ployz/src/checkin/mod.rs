@@ -64,7 +64,8 @@ pub(crate) enum CheckinEnd {
 pub(crate) trait Host {
     async fn probe(&self) -> Result<Probe, String>;
     fn hostname(&self) -> String;
-    async fn start_prepare(&self) -> Result<(), String>;
+    /// Start preparation unless it is already running; true when it started.
+    async fn start_prepare(&self) -> Result<bool, String>;
     async fn disable_loop(&self) -> Result<(), String>;
 }
 
@@ -74,12 +75,18 @@ pub(crate) struct System {
 
 impl Host for System {
     async fn probe(&self) -> Result<Probe, String> {
-        let output = tokio::process::Command::new(&self.ployzd)
+        let run = |error: io::Error| format!("run {}: {error}", self.ployzd.display());
+        let child = tokio::process::Command::new(&self.ployzd)
             .args(["install", "--probe", "--json"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true)
-            .output()
-            .await
-            .map_err(|error| format!("run {}: {error}", self.ployzd.display()))?;
+            .spawn()
+            .map_err(run)?;
+        let _group = child.id().map(ProcessGroup);
+        let output = child.wait_with_output().await.map_err(run)?;
         if !output.status.success() {
             return Err(format!(
                 "ployzd install --probe exited with {}: {}",
@@ -97,14 +104,42 @@ impl Host for System {
             .unwrap_or_default()
     }
 
-    async fn start_prepare(&self) -> Result<(), String> {
-        systemctl(&["start", "--no-block", unit::PREPARE]).await
+    async fn start_prepare(&self) -> Result<bool, String> {
+        let output = tokio::process::Command::new("systemctl")
+            .args(["show", "--property=ActiveState", "--value", unit::PREPARE])
+            .output()
+            .await
+            .map_err(|error| format!("run systemctl: {error}"))?;
+        let state = String::from_utf8_lossy(&output.stdout);
+        if matches!(
+            state.trim(),
+            "active" | "activating" | "deactivating" | "reloading"
+        ) {
+            return Ok(false);
+        }
+        systemctl(&["start", "--no-block", unit::PREPARE]).await?;
+        Ok(true)
     }
 
     async fn disable_loop(&self) -> Result<(), String> {
         let disabled = systemctl(&["disable", unit::CHECKIN]).await;
         let stopped = systemctl(&["stop", "--no-block", unit::PREPARE]).await;
         disabled.and(stopped)
+    }
+}
+
+/// Kills the probe's whole process group, so a hung `docker` or `lsblk` under
+/// `ployzd` goes with it.
+struct ProcessGroup(u32);
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Some(group) = i32::try_from(self.0)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
     }
 }
 
@@ -165,8 +200,6 @@ pub(crate) struct LocalCheckin {
     pub(crate) blockers: Vec<Issue>,
     #[serde(default)]
     pub(crate) prepare_retries: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) prepare_retried: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,24 +332,13 @@ pub(crate) async fn pass<H: Host>(
     {
         client.use_token(token);
     }
-    let (mut prepare_retries, mut prepare_retried) = previous.map_or((0, None), |status| {
-        (status.prepare_retries, status.prepare_retried)
-    });
+    let mut prepare_retries = previous.map_or(0, |status| status.prepare_retries);
     let state = read_prep_state(&paths.prepare_state);
-    if let Some(run) = prepare_due(
-        state.as_ref(),
-        prepare_retries,
-        prepare_retried.as_deref(),
-        now,
-    ) {
+    if let Some(run) = prepare_due(state.as_ref(), prepare_retries, now) {
         match host.start_prepare().await {
-            Ok(()) => {
-                if run == PrepareRun::Retry {
+            Ok(started) => {
+                if started && run == PrepareRun::Retry {
                     prepare_retries += 1;
-                    prepare_retried = state
-                        .as_ref()
-                        .and_then(PrepState::failed_at)
-                        .map(str::to_owned);
                 }
             }
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
@@ -337,7 +359,6 @@ pub(crate) async fn pass<H: Host>(
         prep: Some(prep),
         blockers: Vec::new(),
         prepare_retries,
-        prepare_retried,
     };
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
@@ -432,24 +453,15 @@ enum PrepareRun {
     Retry,
 }
 
-fn prepare_due(
-    state: Option<&PrepState>,
-    retries: u32,
-    retried: Option<&str>,
-    now: DateTime<Utc>,
-) -> Option<PrepareRun> {
+fn prepare_due(state: Option<&PrepState>, retries: u32, now: DateTime<Utc>) -> Option<PrepareRun> {
     let Some(state) = state else {
         return Some(PrepareRun::Start);
     };
     if state.installing() {
-        // Running, or cut short by a reboot; `systemctl start` is a no-op while it runs.
+        // Running, or cut short by a reboot; `start_prepare` leaves a running one alone.
         return Some(PrepareRun::Start);
     }
-    let failed = state.failed_at()?;
-    if retried == Some(failed) {
-        return None;
-    }
-    let failed_at = DateTime::parse_from_rfc3339(failed).ok()?;
+    let failed_at = DateTime::parse_from_rfc3339(state.failed_at()?).ok()?;
     let waited = now.signed_duration_since(failed_at).to_std().ok()?;
     (waited >= PREPARE_RETRY && retries < PREPARE_TRIES).then_some(PrepareRun::Retry)
 }

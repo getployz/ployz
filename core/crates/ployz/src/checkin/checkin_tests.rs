@@ -1,7 +1,7 @@
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Duration,
 };
 
@@ -37,6 +37,7 @@ const PROBE: &str = r#"{
 struct FakeHost {
     prepares: AtomicU32,
     disables: AtomicU32,
+    preparing: AtomicBool,
     probe_hangs: bool,
 }
 
@@ -52,9 +53,12 @@ impl Host for FakeHost {
         "waiting-1".to_owned()
     }
 
-    async fn start_prepare(&self) -> Result<(), String> {
+    async fn start_prepare(&self) -> Result<bool, String> {
+        if self.preparing.swap(true, Ordering::SeqCst) {
+            return Ok(false);
+        }
         self.prepares.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        Ok(true)
     }
 
     async fn disable_loop(&self) -> Result<(), String> {
@@ -367,10 +371,68 @@ async fn one_failed_preparation_is_retried_once_however_often_the_loop_polls() {
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.prepare_retries, 1);
-    assert_eq!(
-        status.prepare_retried.as_deref(),
-        Some("2026-10-16T00:00:00Z")
-    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_preparation_is_retried_after_each_reboot_up_to_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
+    )
+    .unwrap();
+    let mut unused = client("http://127.0.0.1:9");
+    let mut prepares = 0;
+    for minute in 20..25 {
+        let rebooted = FakeHost {
+            probe_hangs: true,
+            ..FakeHost::default()
+        };
+        let now = at("2026-10-16T00:00:00Z") + TimeDelta::minutes(minute);
+        pass(&rebooted, &mut unused, &key(), &paths, now).await;
+        prepares += rebooted.prepares.load(Ordering::SeqCst);
+    }
+    assert_eq!(prepares, PREPARE_TRIES);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, PREPARE_TRIES);
+}
+
+#[tokio::test]
+async fn a_probe_cut_off_takes_the_processes_it_started_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let ployzd = dir.path().join("ployzd");
+    let child = dir.path().join("child");
+    fs::write(
+        &ployzd,
+        format!(
+            "#!/bin/sh\nsleep 300 &\necho $! > {}\nwait\n",
+            child.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&ployzd, fs::Permissions::from_mode(0o755)).unwrap();
+    let system = System { ployzd };
+    let probed = tokio::time::timeout(Duration::from_secs(2), system.probe()).await;
+    assert!(probed.is_err(), "the probe should hang until cut off");
+    let pid = fs::read_to_string(&child).unwrap();
+    let stat = PathBuf::from(format!("/proc/{}/stat", pid.trim()));
+    for _ in 0..50 {
+        let alive = fs::read_to_string(&stat).is_ok_and(|stat| {
+            !stat
+                .rsplit(')')
+                .next()
+                .unwrap_or("")
+                .trim_start()
+                .starts_with('Z')
+        });
+        if !alive {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the probe's child {} outlived it", pid.trim());
 }
 
 #[tokio::test]
@@ -404,14 +466,14 @@ fn state(json: &str) -> PrepState {
 #[test]
 fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    assert_eq!(prepare_due(None, 0, None, now), Some(PrepareRun::Start));
+    assert_eq!(prepare_due(None, 0, now), Some(PrepareRun::Start));
     let installing = state(r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#);
     assert_eq!(
-        prepare_due(Some(&installing), 3, None, now),
+        prepare_due(Some(&installing), 3, now),
         Some(PrepareRun::Start)
     );
     let ready = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#);
-    assert_eq!(prepare_due(Some(&ready), 0, None, now), None);
+    assert_eq!(prepare_due(Some(&ready), 0, now), None);
 
     let failed = |finished: &str| {
         state(&format!(
@@ -419,28 +481,19 @@ fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
         ))
     };
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:55:00Z")), 0, None, now),
+        prepare_due(Some(&failed("2026-10-16T00:55:00Z")), 0, now),
         None
     );
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 0, None, now),
+        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 0, now),
         Some(PrepareRun::Retry)
     );
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 2, None, now),
+        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 2, now),
         Some(PrepareRun::Retry)
     );
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 3, None, now),
-        None
-    );
-    assert_eq!(
-        prepare_due(
-            Some(&failed("2026-10-16T00:50:00Z")),
-            1,
-            Some("2026-10-16T00:50:00Z"),
-            now
-        ),
+        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 3, now),
         None
     );
 }
@@ -458,7 +511,6 @@ fn the_headline_says_where_the_host_stands() {
         }),
         blockers: Vec::new(),
         prepare_retries: 0,
-        prepare_retried: None,
     };
     assert_eq!(
         status.headline(),
