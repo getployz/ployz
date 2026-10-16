@@ -12,11 +12,7 @@ export type Unchecked = {
   readonly insert: (table: string, rows: ReadonlyArray<object>) => Effect.Effect<void, ClickHouseFailure>;
 };
 
-export type ClickHouseService = {
-  readonly unchecked: Unchecked;
-  /** Seconds after a fence commits by which every write that passed its fence check has landed or been killed by max_execution_time. */
-  readonly writeLifetimeSeconds: number;
-};
+export type ClickHouseService = { readonly unchecked: Unchecked };
 
 export const ClickHouse = Context.Reference<ClickHouseService | null>("ployz/ClickHouse", { defaultValue: () => null });
 
@@ -24,11 +20,8 @@ const attempt = <A>(message: string, run: () => Promise<A>) =>
   Effect.tryPromise({ try: run, catch: (cause) => new ClickHouseFailure({ message, cause }) });
 
 const STATEMENT_DEADLINE_SECONDS = 25;
-/** The server deadline, plus the same again for a statement to travel from its fence check to the server. */
-const WRITE_LIFETIME_SECONDS = STATEMENT_DEADLINE_SECONDS * 2;
 
-export const makeClickHouse = (client: ClickHouseClient, writeLifetimeSeconds = WRITE_LIFETIME_SECONDS): ClickHouseService => ({
-  writeLifetimeSeconds,
+export const makeClickHouse = (client: ClickHouseClient): ClickHouseService => ({
   unchecked: {
     select: <A>(query: string, params?: Params) =>
       attempt("ClickHouse query failed.", async () =>

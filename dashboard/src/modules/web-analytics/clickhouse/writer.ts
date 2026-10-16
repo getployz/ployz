@@ -3,7 +3,7 @@ import { Effect, Schedule } from "effect";
 import { Database } from "#/server/database.server";
 import { ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
 import { analyticsOutbox, analyticsPageview } from "../tables";
-import { deleteSite, mint, PublishRefused, SiteUnavailable } from "./attempt";
+import { capped, deleteSite, mint, PublishRefused, SiteUnavailable } from "./attempt";
 import type { ClickHouseService } from "./client";
 import { TTL_DAYS } from "./schema";
 
@@ -54,7 +54,7 @@ export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse
  * The outbox rows go first so a backfill that already consumed them refuses this publication instead of double counting.
  */
 const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: ClickHouseService, environmentId: string, batches: ReadonlyArray<Batch>) {
-  const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+  const writer = (yield* mint(clickhouse, [environmentId], "append")).get(environmentId);
   if (writer === undefined) return false;
   const { attempt } = writer;
   const ids = batches.map((batch) => batch.id);
@@ -120,7 +120,7 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
   const demoted = yield* demoteReads(environmentId);
   if (demoted.length === 0) return 0;
   const copy = Effect.gen(function* () {
-    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+    const writer = (yield* mint(clickhouse, [environmentId], "backfill")).get(environmentId);
     if (writer === undefined) return yield* new SiteUnavailable({ environmentId });
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
@@ -152,11 +152,12 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
   return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second"), while: (error) => error._tag !== "SiteUnavailable" }));
 });
 
+/** A capped site recovers only through a refloor, so the capped state schedules the backfill that publishes one. */
 export const ensureBackfilled = Effect.fn("WebAnalytics.ensureBackfilled")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const { drizzle } = yield* Database;
   const [site] = yield* drizzle.execute<{ backfilled: boolean }>(sql`
     select backfilled_at is not null as backfilled from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  if (site?.backfilled) return null;
+  if (site?.backfilled && !(yield* capped(environmentId))) return null;
   return yield* backfillSite(clickhouse, environmentId).pipe(Effect.catchTag("SiteUnavailable", () => Effect.succeed(null)));
 });
 

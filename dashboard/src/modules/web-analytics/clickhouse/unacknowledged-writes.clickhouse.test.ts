@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, PENDING_CAP, pin } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, PENDING_CAP, PENDING_CEILING, pin } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService, type Params } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as store from "#/modules/web-analytics/clickhouse/store";
@@ -150,10 +150,9 @@ for (const supersedes of ["a rebuild", "a backfill"] as const) {
     }), 300_000);
 }
 
-it.live("losing every acknowledgement for longer than the pending cap parks the drain at the cap, keeps the published view, and resumes once garbage collection frees the dead slots", () =>
+it.live("losing every acknowledgement past the pending cap parks appends behind the published view until a backfill publishes the refloor that frees them", () =>
   Effect.gen(function* () {
-    const { clickhouse: real, provide, daily, enqueue, pendingCount } = yield* setup;
-    const clickhouse: ClickHouseService = { ...real, writeLifetimeSeconds: 2 };
+    const { clickhouse, provide, daily, enqueue, pendingCount } = yield* setup;
     const lossy = losesEveryAck(clickhouse);
     const lost = PENDING_CAP + 8;
     for (let n = 0; n < lost; n++) {
@@ -164,16 +163,21 @@ it.live("losing every acknowledgement for longer than the pending cap parks the 
     }
     expect(yield* pendingCount).toBe(PENDING_CAP);
     expect(yield* provide(drainOutbox(clickhouse))).toBe(0);
-    expect(yield* provide(ensureBackfilled(clickhouse, SITE))).toBeNull();
+    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
+    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
+    expect(yield* pendingCount).toBe(PENDING_CAP);
+    yield* provide(Effect.ignore(ensureBackfilled(lossy, SITE)), lossy);
+    const parked = yield* pendingCount;
+    expect(parked).toBeGreaterThan(PENDING_CAP);
+    expect(parked).toBeLessThanOrEqual(PENDING_CEILING);
+    expect(yield* provide(drainOutbox(clickhouse))).toBe(0);
     expect(yield* daily).toBe(2);
-    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
-    expect(yield* pendingCount).toBe(PENDING_CAP);
-    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
-    expect(yield* pendingCount).toBe(PENDING_CAP);
-    yield* Effect.sleep("2500 millis");
-    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
+    expect(yield* provide(ensureBackfilled(clickhouse, SITE))).toBe(2 + lost);
     expect(yield* pendingCount).toBe(0);
-    while ((yield* provide(drainOutbox(clickhouse))) > 0) {}
     expect(yield* daily).toBe(2 + lost);
+    expect(yield* provide(ensureBackfilled(clickhouse, SITE))).toBeNull();
+    yield* enqueue(String(3 + lost));
+    expect(yield* provide(drainOutbox(clickhouse))).toBe(1);
+    expect(yield* daily).toBe(3 + lost);
     expect(yield* pendingCount).toBe(0);
   }), 300_000);

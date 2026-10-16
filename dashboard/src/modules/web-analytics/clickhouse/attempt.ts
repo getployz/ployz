@@ -16,8 +16,11 @@ export const TABLES = ["pageview", "daily", "session_hourly"] as const;
 export type Table = (typeof TABLES)[number];
 
 export const PENDING_CAP = 32;
+/** Pending shrinks only when an attempt publishes, so above the cap a backfill gets as many tries as appends had; a site that loses every one of them stays parked. */
+export const PENDING_CEILING = PENDING_CAP * 2;
 
 const READ_TRIES = 4;
+const STALE = Symbol("stale");
 
 type SiteRow = {
   rolled_up_to: string | null;
@@ -90,7 +93,8 @@ const siteRow = Effect.fn("WebAnalytics.siteRow")(function* (environmentId: stri
 
 const garbageCollectedBetween = (before: SiteRow, after: SiteRow) => after.generation !== before.generation;
 
-const sealed = <A, E, R>(clickhouse: ClickHouseService, site: SiteRow, body: (reader: Reader) => Effect.Effect<A, E, R>) => {
+/** Rows reach the caller only if `current` still holds once their select has resolved, so no fiber inside the callback can answer from a collected attempt. */
+const sealed = <A, E, R>(clickhouse: ClickHouseService, site: SiteRow, current: Effect.Effect<void, ClickHouseFailure>, body: (reader: Reader) => Effect.Effect<A, E, R>) => {
   let open = true;
   const stillOpen = Effect.suspend(() => open ? Effect.void : Effect.die("A Reader answers only inside the read or locked callback that made it."));
   const reader: Reader = {
@@ -99,20 +103,33 @@ const sealed = <A, E, R>(clickhouse: ClickHouseService, site: SiteRow, body: (re
       yield* stillOpen;
       const rows = yield* clickhouse.unchecked.select<A>(query, params);
       yield* stillOpen;
+      yield* current;
       return rows;
     }),
   };
   return body(reader).pipe(Effect.ensuring(Effect.sync(() => { open = false; })));
 };
 
+const isStale = <E>(error: E): error is E & ClickHouseFailure => error instanceof ClickHouseFailure && error.cause === STALE;
+
 export const read = Effect.fn("WebAnalytics.read")(function* <A, E, R>(clickhouse: ClickHouseService, environmentId: string, body: (reader: Reader) => Effect.Effect<A, E, R>) {
   const database = yield* Database;
   if (database.inTransaction) return yield* Effect.die("read checks the site's generation across its own statements; a transaction would freeze it, so read must not run inside one.");
+  const raced = new ClickHouseFailure({ message: `Garbage collection raced a read of site ${environmentId}.`, cause: STALE });
   for (let tries = 0; tries < READ_TRIES; tries++) {
     const before = (yield* siteRow(environmentId, sql``)) ?? EMPTY_SITE;
-    const result = yield* sealed(clickhouse, before, body);
+    const current = siteRow(environmentId, sql``).pipe(
+      Effect.mapError((cause) => new ClickHouseFailure({ message: `Postgres could not confirm the read of site ${environmentId}.`, cause })),
+      Effect.flatMap((now) => garbageCollectedBetween(before, now ?? EMPTY_SITE) ? Effect.fail(raced) : Effect.void),
+      Effect.provideService(Database, database),
+    );
+    const outcome = yield* sealed(clickhouse, before, current, body).pipe(
+      Effect.map((result) => ({ result })),
+      Effect.catchIf(isStale, () => Effect.succeed(undefined)),
+    );
+    if (outcome === undefined) continue;
     const after = (yield* siteRow(environmentId, sql``)) ?? EMPTY_SITE;
-    if (!garbageCollectedBetween(before, after)) return result;
+    if (!garbageCollectedBetween(before, after)) return outcome.result;
   }
   return yield* new ClickHouseFailure({ message: `Garbage collection raced ${READ_TRIES} reads of site ${environmentId}.`, cause: null });
 });
@@ -122,7 +139,7 @@ export const locked = Effect.fn("WebAnalytics.lockSite")(function* <A, E, R>(cli
   if (!database.inTransaction) return yield* Effect.die("locked takes the site lock inside the transaction that publishes.");
   const row = yield* siteRow(environmentId, sql`for update`);
   if (row === undefined) return null;
-  return yield* sealed(clickhouse, row, body);
+  return yield* sealed(clickhouse, row, Effect.void, body);
 });
 
 const outsideTransaction = (what: string) => Effect.gen(function* () {
@@ -210,9 +227,13 @@ const writer = (clickhouse: ClickHouseService, pool: DatabaseService, environmen
   };
 };
 
-export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse: ClickHouseService, environmentIds: ReadonlyArray<string>) {
+/** An append fills pending up to the cap. A backfill may use the headroom above it, because its refloor is what empties a capped site's pending. */
+export type MintPurpose = "append" | "backfill";
+
+export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse: ClickHouseService, environmentIds: ReadonlyArray<string>, purpose: MintPurpose) {
   const database = yield* outsideTransaction("mint");
   if (environmentIds.length === 0) return new Map<string, Writer>();
+  const room = purpose === "backfill" ? PENDING_CEILING : PENDING_CAP;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`
@@ -222,7 +243,7 @@ export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse:
     const rows = yield* drizzle.execute<{ environment_id: string; attempt: string }>(sql`
       update analytics.clickhouse_site
       set pending = pending || nextval('analytics.clickhouse_attempt'), updated_at = now()
-      where cardinality(pending) < ${PENDING_CAP} and environment_id in (
+      where cardinality(pending) < ${room} and environment_id in (
         select environment_id from analytics.clickhouse_site
         where environment_id = any(${sql.param(environmentIds)}::text[]) order by environment_id for update skip locked)
       returning environment_id, pending[cardinality(pending)]::text as attempt`, "objects");
@@ -232,6 +253,14 @@ export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse:
 });
 
 /** A sequence value taken now. Every attempt minted before it is smaller. */
+/** Append mints refuse at the cap, so a capped site writes again only once a refloor publishes. */
+export const capped = Effect.fn("WebAnalytics.capped")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.execute<{ capped: boolean }>(sql`
+    select cardinality(pending) >= ${PENDING_CAP} as capped from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+  return row?.capped ?? false;
+});
+
 export const pin = Effect.fn("WebAnalytics.pinAttempts")(function* () {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.execute<{ n: string }>(sql`select nextval('analytics.clickhouse_attempt')::text as n`, "objects");
@@ -247,17 +276,15 @@ export const collectGarbage = Effect.fn("WebAnalytics.collectGarbage")(function*
   for (const { environment_id: environmentId } of sites) {
     const fenced = yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      const [held] = yield* drizzle.execute<{ fence: string; settled: boolean }>(sql`
-        select fence::text as fence, fenced_at <= now() - make_interval(secs => ${clickhouse.writeLifetimeSeconds}::double precision) as settled
-        from analytics.clickhouse_site where environment_id = ${environmentId}::text for update skip locked`, "objects");
+      const [held] = yield* drizzle.execute<{ environment_id: string }>(sql`
+        select environment_id from analytics.clickhouse_site where environment_id = ${environmentId}::text for update skip locked`, "objects");
       if (held === undefined) return undefined;
       const [row] = yield* drizzle.execute<SiteRow & { fence: string }>(sql`
         update analytics.clickhouse_site
-        set fence = greatest(fence, ${pin}::bigint), fenced_at = case when ${pin}::bigint > fence then now() else fenced_at end,
-          generation = generation + 1, updated_at = now()
+        set fence = greatest(fence, ${pin}::bigint), generation = generation + 1, updated_at = now()
         where environment_id = ${environmentId}::text
         returning ${SITE_COLUMNS}, fence::text as fence`, "objects");
-      return row === undefined ? undefined : { ...row, settledBelow: held.settled ? held.fence : undefined };
+      return row;
     }));
     if (fenced === undefined) continue;
     const bound: Array<[string, Params[string]]> = [];
@@ -274,12 +301,6 @@ export const collectGarbage = Effect.fn("WebAnalytics.collectGarbage")(function*
       yield* clickhouse.unchecked.command(`DELETE FROM ${table} WHERE ${where}`, params);
       collected += n;
     }
-    if (fenced.settledBelow === undefined) continue;
-    yield* database.drizzle.execute(sql`
-      update analytics.clickhouse_site
-      set pending = array(select p from unnest(pending) p where p >= ${fenced.settledBelow}::bigint order by p), updated_at = now()
-      where environment_id in (
-        select environment_id from analytics.clickhouse_site where environment_id = ${environmentId}::text for update skip locked)`);
   }
   return collected;
 });

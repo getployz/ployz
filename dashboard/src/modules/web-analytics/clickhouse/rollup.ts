@@ -94,7 +94,7 @@ const rollupDay = <E, R>(environmentId: string, pick: (site: SiteState) => Effec
       return site === null ? null : yield* pick(site);
     }));
     if (peeked === null) return false;
-    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
+    const writer = (yield* mint(clickhouse, [environmentId], "append")).get(environmentId);
     if (writer === undefined) return false;
     const database = yield* Database;
     const published = yield* database.transaction(locked(clickhouse, environmentId, (reader) => Effect.gen(function* () {

@@ -146,7 +146,6 @@ export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   pending: bigint("pending", { mode: "number" }).array().default(sql`'{}'::bigint[]`).notNull(),
   days: jsonb("days").$type<Record<string, number>>().default(sql`'{}'::jsonb`).notNull(),
   fence: bigint("fence", { mode: "number" }).default(0).notNull(),
-  fencedAt: timestamptz("fenced_at").defaultNow().notNull(),
   generation: bigint("generation", { mode: "number" }).default(0).notNull(),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
-}, (table) => [check("clickhouse_site_pending_cap_check", sql`cardinality(${table.pending}) <= 32`)]);
+}, (table) => [check("clickhouse_site_pending_cap_check", sql`cardinality(${table.pending}) <= 64`)]);

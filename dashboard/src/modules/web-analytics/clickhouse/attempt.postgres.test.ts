@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, mint, PENDING_CAP, pin, PublishRefused } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, mint, PENDING_CAP, PENDING_CEILING, pin, PublishRefused, type Writer } from "#/modules/web-analytics/clickhouse/attempt";
 import { seedSite } from "#/modules/web-analytics/fixtures/seed";
 import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
 import { Database } from "#/server/database.server";
@@ -29,7 +29,7 @@ const setup = Effect.gen(function* () {
   }));
   const pending = Effect.map(site, (row) => row?.pending ?? []);
   const minted = Effect.gen(function* () {
-    const writer = (yield* mint(silent, [SITE])).get(SITE);
+    const writer = (yield* mint(silent, [SITE], "append")).get(SITE);
     if (writer === undefined) return yield* Effect.die("mint gave the seeded site no attempt");
     return writer;
   });
@@ -44,7 +44,7 @@ it.live("mint lists the attempt as pending before any row carries it, and gives 
     expect(yield* pending).toEqual([]);
     const writer = yield* provide(minted);
     expect(yield* pending).toEqual([writer.attempt]);
-    expect(yield* provide(mint(silent, ["00000000-0000-4000-8000-00000000a7e2"]))).toEqual(new Map());
+    expect(yield* provide(mint(silent, ["00000000-0000-4000-8000-00000000a7e2"], "append"))).toEqual(new Map());
   }));
 
 it.live("an attempt publishes only inside a transaction, only once, and accepts no rows afterwards", () =>
@@ -76,24 +76,34 @@ it.live("an attempt minted before a garbage collection fence can never publish, 
     expect(yield* pending).toEqual([stale.attempt]);
   }));
 
-it.live("a site holding the pending cap of lost attempts mints nothing and keeps its published view until garbage collection frees the dead slots", () =>
+it.live("a site holding the pending cap of lost attempts mints only backfills, refuses everything at the ceiling, and writes again once a refloor publishes", () =>
   Effect.gen(function* () {
     const { provide, site, minted, database } = yield* setup;
     const { drizzle } = database;
     const [cap] = yield* provide(drizzle.execute<{ definition: string }>(sql`
       select pg_get_constraintdef(oid) as definition from pg_constraint where conname = 'clickhouse_site_pending_cap_check'`, "objects"));
-    expect(cap?.definition).toBe(`CHECK ((cardinality(pending) <= ${PENDING_CAP}))`);
+    expect(cap?.definition).toBe(`CHECK ((cardinality(pending) <= ${PENDING_CEILING}))`);
     const lost: number[] = [];
     for (let i = 0; i < PENDING_CAP; i++) lost.push((yield* provide(minted)).attempt);
     yield* provide(drizzle.execute(sql`update analytics.clickhouse_site set reads = true, backfilled_at = now() where environment_id = ${SITE}::text`));
     const full = yield* site;
     expect(full?.pending).toEqual(lost);
-    expect(yield* provide(mint(silent, [SITE]))).toEqual(new Map());
-    expect(yield* site).toEqual(full);
+    expect(yield* provide(mint(silent, [SITE], "append"))).toEqual(new Map());
     yield* provide(collectGarbage(silent, yield* provide(pin())));
-    expect(yield* site).toEqual({ ...full, generation: 1 });
     yield* provide(collectGarbage(silent, yield* provide(pin())));
-    expect(yield* site).toEqual({ ...full, pending: [], generation: 2 });
+    expect(yield* site).toEqual({ ...full, generation: 2 });
+    const backfills: Writer[] = [];
+    for (let i = PENDING_CAP; i < PENDING_CEILING; i++) {
+      const writer = (yield* provide(mint(silent, [SITE], "backfill"))).get(SITE);
+      if (writer === undefined) return yield* Effect.die(`backfill mint ${i} refused below the ceiling`);
+      backfills.push(writer);
+    }
+    expect((yield* site)?.pending).toHaveLength(PENDING_CEILING);
+    expect(yield* provide(mint(silent, [SITE], "backfill"))).toEqual(new Map());
+    const last = backfills[backfills.length - 1];
+    if (last === undefined) return yield* Effect.die("no backfill minted");
+    yield* provide(database.transaction(last.publish({ kind: "refloor" })));
+    expect(yield* site).toEqual({ ...full, floor: last.attempt, below: last.attempt + 1, pending: [], generation: 2, reads: false });
     const next = yield* provide(minted);
     expect((yield* site)?.pending).toEqual([next.attempt]);
   }));

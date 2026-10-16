@@ -116,7 +116,7 @@ it.live("while ClickHouse is unreachable a promoted site's reads fail instead of
   Effect.gen(function* () {
     const { clickhouse, provide, today, now, rows } = yield* cloud;
     const unreachable = Effect.fail(new ClickHouseFailure({ message: "connect ECONNREFUSED", cause: null }));
-    const down: ClickHouseService = { writeLifetimeSeconds: 0, unchecked: { select: () => unreachable, command: () => unreachable, insert: () => unreachable } };
+    const down: ClickHouseService = { unchecked: { select: () => unreachable, command: () => unreachable, insert: () => unreachable } };
     const during = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provideService(ClickHouse, down), Effect.flip);
     const overview = adapter.overview({
       site: { environmentId: CUT_OFF, timezone: "UTC", retentionMonths: 13 },
