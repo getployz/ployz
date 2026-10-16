@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import {
@@ -113,7 +113,11 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
       .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
     const removed = yield* drizzle
       .delete(waitingServer)
-      .where(eq(waitingServer.fleetTokenId, found.id))
+      .where(and(
+        eq(waitingServer.fleetTokenId, found.id),
+        // An enrolling host keeps its row so its attempt can finish; spelled out, as a delete renders columns unqualified.
+        sql`not exists (select 1 from server_enrollment where server_enrollment.waiting_server_id = waiting_server.id and server_enrollment.ended_at is null)`,
+      ))
       .returning({ id: waitingServer.id });
     return { waitingRemoved: removed.length };
   }));

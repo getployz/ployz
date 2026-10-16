@@ -210,13 +210,13 @@ describe("organization enrollment coordinator", () => {
 
   let issued = 0;
   /** An enrollment token nobody has claimed yet, or one already claimed by `claimedBy`. */
-  async function issueToken(claimedBy?: ReturnType<typeof identity>) {
+  async function issueToken(claimedBy?: ReturnType<typeof identity>, role: "founder" | "joiner" | null = null) {
     issued += 1;
     const token = `pmet_issued_${issued}`;
     await harness.pool.query(`insert into machine_enrollment_token (
-      organization_id, created_by_user_id, token_hash, expires_at, claimed_machine_id, claimed_public_key, claimed_at
-    ) values ($1, $2, $3, now() + interval '1 day', $4, $5, case when $4::text is null then null else now() end)`, [
-      organizationId, userId, hashEnrollmentToken(token), claimedBy?.machineId ?? null, claimedBy?.publicKey ?? null,
+      organization_id, created_by_user_id, token_hash, expires_at, claimed_machine_id, claimed_public_key, claimed_at, enrollment_role
+    ) values ($1, $2, $3, now() + interval '1 day', $4, $5, case when $4::text is null then null else now() end, $6)`, [
+      organizationId, userId, hashEnrollmentToken(token), claimedBy?.machineId ?? null, claimedBy?.publicKey ?? null, role,
     ]);
     return token;
   }
@@ -951,6 +951,19 @@ describe("organization enrollment coordinator", () => {
     expect(first).toMatchObject({ success: { kind: "join" } });
     expect(again).toEqual(first);
     expect(new Set(fake.published.map((assignment) => JSON.stringify(assignment))).size).toBe(1);
+  });
+
+  it("never lets a joiner token take or resume the Founding Claim", async () => {
+    const fake = fakeSession(harness.database);
+    const joiner = await issueToken(undefined, "joiner");
+    expect(await fake.coordinator.enroll({ token: joiner, identity: identity(0) })).toMatchObject({ success: { kind: "not_yet" } });
+    expect((await harness.pool.query("select 1 from organization_pairing")).rowCount).toBe(0);
+
+    expect(await fake.coordinator.enroll({ token: tokens[0] ?? "", identity: identity(0) }))
+      .toMatchObject({ success: { kind: "initialize", resumed: false } });
+    expect(await fake.coordinator.enroll({ token: joiner, identity: identity(0) })).toMatchObject({ success: { kind: "not_yet" } });
+    expect((await harness.pool.query("select claimed_machine_id from machine_enrollment_token where enrollment_role = 'joiner'")).rows)
+      .toEqual([{ claimed_machine_id: null }]);
   });
 
   it("lets exactly one of two racing identities claim a fresh token", async () => {

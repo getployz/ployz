@@ -1,4 +1,5 @@
 import { type Effect, Option, Schema } from "effect";
+import type { GroupTools } from "inngest";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType } from "#/modules/inngest/events";
@@ -22,7 +23,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
     readonly concurrency?: RunConcurrency;
     readonly cancelOn?: RunCancelOn;
     readonly handler: (
-      ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string },
+      ctx: { event: { data: unknown }; step: PloyzStepTools; runId: string; group: Pick<GroupTools, "parallel"> },
       runEffect: EffectRunner,
     ) => Promise<Result>;
   };
@@ -51,7 +52,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
           if (Option.isSome(failed)) await runEffect(closeRun(failed.value.data.run_id, "failure", Option.none()));
         },
       },
-      async ({ event, step, runId }) => run.handler({ event, step, runId }, runEffect),
+      async ({ event, step, runId, group }) => run.handler({ event, step, runId, group }, runEffect),
     );
 
   const createCancel = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) => {

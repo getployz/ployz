@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { EnrollInstruction, EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
 
 export const CHECKIN_PROTOCOL_VERSION = 1 as const;
 export const CHECKIN_MAX_BYTES = 64 * 1024;
@@ -72,10 +73,11 @@ export const CheckinRequest = Schema.Struct({
 });
 export type CheckinRequest = typeof CheckinRequest.Type;
 
-export type StoredReport = HostReport & { readonly prep?: Prep };
+export type StoredReport = HostReport & { readonly prep?: Prep; readonly cliVersion?: string };
 
 export type CheckinStopReason = "rejected" | "token_expired" | "token_revoked";
 
 export type CheckinResponse =
   | { readonly kind: "wait"; readonly retryAfter: number }
-  | { readonly kind: "stop"; readonly reason: CheckinStopReason; readonly message: string };
+  | { readonly kind: "stop"; readonly reason: CheckinStopReason; readonly message: string }
+  | { readonly kind: "enroll"; readonly attemptId: string; readonly token: string; readonly role: EnrollmentRole } & EnrollInstruction;
