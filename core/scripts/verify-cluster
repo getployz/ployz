@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 
 CORE = Path(__file__).resolve().parents[1]
@@ -290,7 +291,7 @@ def runner(run, commands, on):
             time.sleep(0.1)
 
 
-def install(run, backend, node, daemon):
+def stage(run, backend, node, daemon):
     binaries, directory = daemon_binaries(run, daemon), daemon_artifacts(run, daemon)
     backend.exec(node, ["install", "-d", "/opt/ployz-verify"])
     paths = ["/opt/ployz-verify/" + name for name in binaries]
@@ -300,6 +301,17 @@ def install(run, backend, node, daemon):
         destination = "/opt/ployz-verify/" + name
         if staged.get(destination) != binaries[name]:
             backend.push(node, directory / name, destination)
+    return list(binaries)
+
+
+def stage_bare(run, backend, node, daemon):
+    binaries = stage(run, backend, node, daemon)
+    backend.exec(node, ["sh", "-ec", 'for binary in "$@"; do install -m 755 "/opt/ployz-verify/$binary" "/usr/local/bin/$binary"; done',
+                        "stage", *binaries])
+
+
+def install(run, backend, node, daemon):
+    binaries = stage(run, backend, node, daemon)
     backend.exec(node, ["bash", "-ec", """
 observe=
 if systemctl cat ployz-observe.service >/dev/null 2>&1; then observe=ployz-observe.service; fi
@@ -627,11 +639,17 @@ def up(args):
     private = directory / "private"
     (private / "bin").mkdir(parents=True, mode=0o700)
     (directory / "workspace").mkdir()
+    if args.bare and args.provider != "boat":
+        raise RuntimeError("--bare needs --provider boat")
+    if args.distro != boat.DISTROS[0] and not args.bare:
+        raise RuntimeError("--distro needs --bare; enrolled Machines boot the baked Ubuntu image")
     run = dict(manifest=str(directory / "cluster.json"), root=str(CORE),
                owner=host.owner(CORE.parent, directory / "cluster.json"),
                id=directory.name.rsplit("-", 1)[1], provider=args.provider,
                provider_state={resource: size for resource, size in [("memory", args.memory), ("disk", args.disk)] if size}, state="starting",
                timings={}, machines=[dict(name=f"machine-{index}") for index in range(1, args.machines + 1)])
+    if args.bare:
+        run.update(bare=True, distro=args.distro)
     save(run)
     commands = Commands(run)
     backend = provider(run, commands)
@@ -647,7 +665,7 @@ def up(args):
         head = commands(["git", "rev-parse", "HEAD"], cwd=CORE).stdout
         released = commands(["git", "rev-parse", "-q", "--verify", f"refs/tags/v{checkout['version']}^{{commit}}"],
                             cwd=CORE, check=False).stdout == head
-        boot = {node["name"]: checkout if paired and node["daemon"]["source"] not in LOCAL
+        boot = {node["name"]: checkout if paired and not args.bare and node["daemon"]["source"] not in LOCAL
                 and not (released and node["daemon"]["version"] == checkout["version"]) else node["daemon"]
                 for node in run["machines"]}
         run["bridged"] = [name for name, daemon in boot.items() if daemon is checkout]
@@ -677,6 +695,11 @@ def up(args):
             wrapper.chmod(0o755)
             def start(node):
                 backend.start(node)
+                if args.bare:
+                    binaries.result()
+                    stage_bare(run, backend, node, boot[node["name"]])
+                    node["address"] = backend.address(node)
+                    return
                 backend.push(node, private / "id_ed25519.pub", "/root/.ssh/authorized_keys")
                 backend.exec(node, ["bash", "-ec", "chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; systemctl stop ssh.service ssh.socket; rm -f /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl start ssh.socket ssh.service"])
                 daemon = boot[node["name"]]
@@ -698,6 +721,15 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
                 run["cloud"] = cloud.result()
         run["timings"]["boot_and_install"] = round(time.monotonic() - started, 3)
         save(run)
+        if args.bare:
+            if paired:
+                attach_bare(run, backend)
+            run["state"] = "ready"
+            run["timings"]["total"] = round(time.monotonic() - total_started, 3)
+            save(run)
+            print(run["manifest"])
+            print(json.dumps(run["timings"]), file=sys.stderr)
+            return
         started = time.monotonic()
         for node in run["machines"]:
             # Cloud enrollment currently ignores --public-ip and --wg-endpoint; the Machine advertises the endpoints it discovers.
@@ -750,6 +782,21 @@ systemctl enable --now ployz.socket ployz-volume-plugin.socket ployz.service $ob
         raise
 
 
+def attach_bare(run, backend):
+    url = run["cloud"]["url"]
+    port = urllib.parse.urlsplit(url).port
+    for node in run["machines"]:
+        backend.tunnel(node, port)
+        backend.exec(node, ["sh", "-ec", 'sed -i /^PLOYZ_CLOUD_URL=/d /etc/environment; echo "PLOYZ_CLOUD_URL=$1" >> /etc/environment',
+                            "attach", url])
+        deadline = time.monotonic() + 30
+        while backend.exec(node, ["curl", "-fsS", "-o", "/dev/null", url], check=False, timeout=10).returncode:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"{node['name']} cannot reach the lab Cloud at {url} through its forward")
+            time.sleep(1)
+    save(run)
+
+
 @contextmanager
 def locked(run):
     with Path(run["manifest"]).with_suffix(".lock").open("a") as lock:
@@ -777,6 +824,11 @@ def main():
                          help="Start this checkout's dashboard verify instance and enroll through it; down stops it")
     # dashboard/scripts/verify/up.sh started the dashboard and owns it.
     pairing.add_argument("--cloud-attach", action="store_true", help=argparse.SUPPRESS)
+    launch.add_argument("--bare", action="store_true",
+                        help="Stage the daemon's binaries on fresh hosts without installing or enrolling; "
+                             "with --cloud or --cloud-attach each host gets PLOYZ_CLOUD_URL but no token")
+    launch.add_argument("--distro", choices=boat.DISTROS, default=boat.DISTROS[0],
+                        help="The bare host's distribution; debian-12 runs the Debian cloud image nested in a Boat sandbox. Needs --bare")
     listing = actions.add_parser("ls", help="List every verify run on this host, from any checkout")
     listing.add_argument("--json", action="store_true")
     reaping = actions.add_parser("reap", help="Remove runs whose checkout or manifest is gone or that are old; a dry run without --yes")
@@ -903,8 +955,11 @@ def main():
             select_daemons(run, commands, args.daemon or [], default="checkout")
             build(run, commands, daemon=local_daemon([node["daemon"] for node in run["machines"]]))
             started = time.monotonic()
-            parallel(lambda node: install(run, backend, node, node["daemon"]), run["machines"])
-            wait_ready(run, commands, backend)
+            if run.get("bare"):
+                parallel(lambda node: stage_bare(run, backend, node, node["daemon"]), run["machines"])
+            else:
+                parallel(lambda node: install(run, backend, node, node["daemon"]), run["machines"])
+                wait_ready(run, commands, backend)
             run["timings"]["update_and_ready"] = round(time.monotonic() - started, 3)
             save(run)
             print(json.dumps(run["timings"]))

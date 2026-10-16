@@ -115,6 +115,15 @@ enum Command {
         /// Print the probe as JSON.
         #[arg(long, requires = "probe")]
         json: bool,
+        /// Install Docker and build ZFS ahead of enroll, without starting Ployz or creating a pool.
+        #[arg(long, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe"])]
+        prepare: bool,
+        /// Build no ZFS during `--prepare`.
+        #[arg(long, requires = "prepare")]
+        skip_zfs: bool,
+        /// Remove what `--prepare` built for ZFS.
+        #[arg(long, hide = true, conflicts_with_all = ["software_only", "install_only", "group_user", "storage", "version", "probe", "prepare"])]
+        discard_zfs_build: bool,
     },
 }
 
@@ -206,8 +215,21 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         group_user,
         probe,
         json: _,
+        prepare,
+        skip_zfs,
+        discard_zfs_build,
     }) = args.command
     {
+        if prepare {
+            ployzd::installer::prepare(skip_zfs)
+                .await
+                .map_err(io::Error::other)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        if discard_zfs_build {
+            ployzd::installer::discard_zfs_build().map_err(io::Error::other)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         if probe {
             println!("{}", ployzd::installer::probe().map_err(io::Error::other)?);
             return Ok(ExitCode::SUCCESS);

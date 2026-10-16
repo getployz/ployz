@@ -4,6 +4,7 @@ mod assess;
 mod compensation;
 mod host;
 mod os_release;
+mod prepare;
 mod release;
 mod storage;
 #[cfg(test)]
@@ -11,6 +12,7 @@ mod test_support;
 pub mod upgrade;
 
 pub use self::host::write_units;
+pub use self::prepare::{discard_zfs_build, prepare};
 
 use std::{
     io,
@@ -133,6 +135,7 @@ pub(super) struct InstallPaths {
     pub(super) proc_dir: PathBuf,
     /// Present only while the ZFS kernel module is loaded.
     pub(super) zfs_module: PathBuf,
+    pub(super) usr_src: PathBuf,
 }
 
 impl InstallPaths {
@@ -153,6 +156,7 @@ impl InstallPaths {
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
             zfs_module: PathBuf::from("/sys/module/zfs"),
+            usr_src: PathBuf::from("/usr/src"),
         }
     }
 
@@ -177,6 +181,7 @@ impl InstallPaths {
             apt_dir: root.join("apt"),
             proc_dir: root.join("proc"),
             zfs_module: root.join("sys/module/zfs"),
+            usr_src: root.join("usr/src"),
         }
     }
 }
@@ -454,16 +459,21 @@ pub(super) fn run_host<const N: usize>(
     run_command(stage, &mut command)
 }
 
+pub(super) fn apt_get() -> Command {
+    let mut command = Command::new("apt-get");
+    command
+        .args(["-o", "DPkg::Lock::Timeout=300"])
+        .env("DEBIAN_FRONTEND", "noninteractive");
+    command
+}
+
 pub(super) fn run_apt<const N: usize>(
     stage: &str,
     args: [&str; N],
     working_directory: Option<&Path>,
 ) -> Result<Output, Error> {
-    let mut command = Command::new("apt-get");
-    command
-        .args(["-o", "DPkg::Lock::Timeout=300"])
-        .args(args)
-        .env("DEBIAN_FRONTEND", "noninteractive");
+    let mut command = apt_get();
+    command.args(args);
     if let Some(working_directory) = working_directory {
         command.current_dir(working_directory);
     }
