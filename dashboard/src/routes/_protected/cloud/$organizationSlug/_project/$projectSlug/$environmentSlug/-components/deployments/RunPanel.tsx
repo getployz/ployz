@@ -1,4 +1,4 @@
-import { Suspense, useLayoutEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import type { DeploymentView, ServerRow } from "@ployz/sdk";
 import { ContainerLogs } from "#/components/container-logs";
@@ -68,6 +68,14 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
   useLayoutEffect(() => {
     if (following && element.current) element.current.scrollTop = element.current.scrollHeight;
   }, [log, following]);
+  useEffect(() => {
+    const pre = element.current;
+    if (!following || !pre) return;
+    // The log keeps its end in view when the panel around it shrinks.
+    const observer = new ResizeObserver(() => { pre.scrollTop = pre.scrollHeight; });
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [following, result.ok]);
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col @max-5xl:h-96 @max-5xl:flex-none">

@@ -5,7 +5,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { useTimeZone, zoneLabel } from "#/utils/time-zone";
 import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
+import { observeElementRect, useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
 
 export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange">) {
   const element = useRef<HTMLDivElement>(null);
@@ -17,6 +17,12 @@ export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HT
     anchorTo: "end",
     followOnAppend: true,
     scrollEndThreshold: 48,
+    // A view that shrinks while it shows the newest line keeps showing it, rather than reading as scrolled away.
+    observeElementRect: (instance, cb) => observeElementRect(instance, (rect) => {
+      const pinned = instance.scrollRect !== null && instance.isAtEnd();
+      cb(rect);
+      if (pinned && !instance.isAtEnd()) instance.scrollToEnd();
+    }),
   });
   useLayoutEffect(() => { virtual.scrollToEnd(); }, [virtual]);
   return { element, virtual };
