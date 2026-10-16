@@ -9,6 +9,7 @@ import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.se
 import {
   createOrganizationToken,
   listCredentials,
+  requireSignedIn,
   revokeCredential,
 } from "#/modules/identity/organization-token.server";
 import {
@@ -19,6 +20,8 @@ import {
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
+import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
+import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
 import { readCliNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
@@ -37,6 +40,12 @@ import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.ser
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
+});
+
+const NewFleetToken = Schema.Struct({
+  name: Schema.optional(FleetTokenName),
+  expires_in: Schema.Literals(FLEET_TOKEN_LIFETIMES),
+  auto_enroll_max: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 }))),
 });
 
 const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
@@ -93,7 +102,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices and Fleet Tokens,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
@@ -124,6 +133,39 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         Effect.catchTag("NotFound", (missing) => pendingRevocation(caller, id, missing)),
       );
       return { removed, servers: yield* retireServerAccess(id) };
+    }
+    case "GET fleet-tokens": {
+      const tokens = yield* listFleetTokens(caller, { organizationSlug: caller.organization.slug });
+      return {
+        fleet_tokens: tokens.map((token) => ({
+          id: token.id,
+          name: token.name,
+          expires_at: token.expiresAt,
+          expired: token.expired,
+          auto_enroll_max: token.autoEnrollMax,
+          last_used_at: token.lastUsedAt,
+          created_at: token.createdAt,
+        })),
+      };
+    }
+    case "POST fleet-tokens": {
+      yield* requireSignedIn(caller);
+      const input = yield* decodeBody(NewFleetToken, request,
+        "A Fleet Token takes an expiry of 1d, 7d or 30d, and an optional name of lowercase letters, digits and hyphens.");
+      const created = yield* createFleetToken(caller, {
+        organizationSlug: caller.organization.slug,
+        name: input.name ?? null,
+        expiresIn: input.expires_in,
+        autoEnroll: input.auto_enroll_max === undefined ? null : { maxServers: input.auto_enroll_max },
+      });
+      return { fleet_token: { id: created.id, name: created.name, token: created.token, expires_at: created.expiresAt } };
+    }
+    case "DELETE fleet-tokens/:id": {
+      yield* requireSignedIn(caller);
+      const ref = decodeURIComponent(id ?? "");
+      const target = Schema.is(Uuid)(ref) ? { id: ref } : { name: ref };
+      const revoked = yield* revokeFleetToken(caller, { organizationSlug: caller.organization.slug, ...target });
+      return { waiting_removed: revoked.waitingRemoved };
     }
     case "POST logout": {
       if (caller.credential.kind !== "session") {

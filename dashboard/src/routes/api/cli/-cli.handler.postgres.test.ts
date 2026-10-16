@@ -27,6 +27,7 @@ import { callStore, readStore } from "#/modules/config-store/config-store.server
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
+import { fleetToken } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
@@ -147,6 +148,11 @@ const Reply = Schema.Struct({
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
   token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String })),
   tokens: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean, expired: Schema.Boolean }))),
+  fleet_token: Schema.optionalKey(Schema.Struct({ id: Schema.String, name: Schema.String, token: Schema.String, expires_at: Schema.String })),
+  fleet_tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
+    id: Schema.String, name: Schema.String, expired: Schema.Boolean, auto_enroll_max: Schema.NullOr(Schema.Number),
+  }))),
+  waiting_removed: Schema.optionalKey(Schema.Number),
   devices: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean }))),
   removed: Schema.optionalKey(Schema.Union([Schema.Boolean, Named])),
   connections: Schema.optionalKey(Schema.Array(Schema.Struct({ machine_id: Schema.String, management: Schema.String }))),
@@ -316,7 +322,99 @@ it.live(
 );
 
 it.live(
-  "an Organization Token can't make or revoke tokens, so none outlives the token that made it",
+  "POST fleet-tokens discloses a pflt_ token once and stores only its hash",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { expires_in: "2d" })).status, 422);
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { name: "Bad Name", expires_in: "1d" })).status, 422);
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice,
+          { name: "00000000-0000-4000-8000-000000000001", expires_in: "1d" })).status, 422);
+
+        const made = yield* cli("POST", "fleet-tokens", alice, { expires_in: "7d" });
+        assert.strictEqual(made.status, 200);
+        const created = made.json.fleet_token ?? assert.fail("no fleet token");
+        assert.match(created.token, /^pflt_[\w-]{43}$/);
+        assert.match(created.name, /^[a-z]+-[a-z]+$/);
+
+        const rows = yield* database.drizzle.select().from(fleetToken);
+        assert.deepStrictEqual(rows.map((row) => [row.name, row.tokenHash]), [
+          [created.name, createHash("sha256").update(created.token).digest("hex")],
+        ]);
+        assert.notInclude(JSON.stringify(rows), created.token);
+
+        const named = yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d", auto_enroll_max: 3 });
+        assert.strictEqual(named.json.fleet_token?.name, "rack-1");
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).status, 409);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "GET fleet-tokens lists the Organization's unrevoked tokens without their secrets",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const first = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
+          ?? assert.fail("no fleet token");
+        yield* cli("POST", "fleet-tokens", alice, { name: "rack-2", expires_in: "30d", auto_enroll_max: 5 });
+        yield* database.drizzle.update(fleetToken)
+          .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(fleetToken.id, first.id));
+
+        const listed = yield* cli("GET", "fleet-tokens", alice);
+        assert.notInclude(listed.text, first.token);
+        assert.deepStrictEqual(
+          listed.json.fleet_tokens?.map((row) => [row.name, row.expired, row.auto_enroll_max]),
+          [["rack-1", true, null], ["rack-2", false, 5]],
+        );
+        assert.deepStrictEqual((yield* cli("GET", "fleet-tokens", bob)).json.fleet_tokens, []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "DELETE fleet-tokens revokes by id or name, frees the name, and refuses another Organization's token",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const made = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
+          ?? assert.fail("no fleet token");
+
+        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${made.id}`, bob)).status, 404);
+        assert.strictEqual((yield* cli("DELETE", "fleet-tokens/rack-1", bob)).status, 404);
+        const [untouched] = yield* database.drizzle.select().from(fleetToken).where(eq(fleetToken.id, made.id));
+        assert.isNull(untouched?.revokedAt);
+
+        const revoked = yield* cli("DELETE", "fleet-tokens/rack-1", alice);
+        assert.strictEqual(revoked.status, 200);
+        assert.strictEqual(revoked.json.waiting_removed, 0);
+        assert.deepStrictEqual((yield* cli("GET", "fleet-tokens", alice)).json.fleet_tokens, []);
+        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${made.id}`, alice)).status, 200);
+        assert.strictEqual((yield* cli("DELETE", "fleet-tokens/rack-1", alice)).status, 404);
+
+        const reused = yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" });
+        assert.strictEqual(reused.json.fleet_token?.name, "rack-1");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an Organization Token can't make or revoke tokens or Fleet Tokens, so none outlives the token that made it",
   () =>
     Effect.gen(function* () {
       const layer = yield* cliLayer();
@@ -333,6 +431,12 @@ it.live(
         assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 422);
         assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
+
+        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token ?? assert.fail("no fleet token");
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", asToken, { expires_in: "30d" })).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `fleet-tokens/${fleet.id}`, asToken)).status, 422);
+        assert.deepStrictEqual((yield* database.drizzle.select().from(fleetToken)).map((row) => [row.name, row.revokedAt]), [["rack-1", null]]);
+        assert.strictEqual((yield* cli("GET", "fleet-tokens", asToken)).status, 200);
 
         // A cookie, which any page can make the browser send, signs no CLI request in.
         const forged = new Request(`${origin}/api/cli/tokens`, {

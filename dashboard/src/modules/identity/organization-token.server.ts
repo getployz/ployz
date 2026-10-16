@@ -22,7 +22,7 @@ export function hashOrganizationTokenSecret(secret: string) {
  * Only a signed-in person manages credentials. A token that could mint tokens would outlive its own revocation
  * through the ones it made, and one that could revoke would let a leaked secret lock its Organization out of CI.
  */
-const requireSignedIn = (caller: Caller) =>
+export const requireSignedIn = (caller: Caller) =>
   caller.credential.kind === "session"
     ? Effect.void
     : Effect.fail(new Validation({ message: "Only a signed-in person can make or revoke tokens; run `ployz login`.", userFacing: true }));

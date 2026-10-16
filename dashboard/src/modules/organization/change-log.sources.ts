@@ -46,6 +46,7 @@ export const changeSources = {
   enrollment_allocation: { key: ["cluster_key"] },
   invitation: { key: ["id"] },
   machine_enrollment_token: { key: ["id"] },
+  fleet_token: { key: ["id"] },
   machine_remove_attempt: { key: ["id"] },
   member: { key: ["id"] },
   organization_billing_state: { key: ["organization_id"] },
