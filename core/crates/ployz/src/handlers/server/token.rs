@@ -130,12 +130,12 @@ pub(crate) fn ls(root: &ArgMatches) -> Result<(), Error> {
     let reply = in_cloud(root, async |_, credential| {
         ask::<ListReply>(credential, Method::GET, "fleet-tokens", None).await
     })?;
-    let tokens = reply?.fleet_tokens;
+    let listed = reply?;
     let mut table = Table::new(
         ["NAME", "AUTO", "LAST USED", "EXPIRES", "STATE"],
         "No Fleet Tokens. Make one with ployz server token create.",
     );
-    for token in &tokens {
+    for token in &listed.fleet_tokens {
         table.row([
             Cell::from(&token.name),
             Cell::from(
@@ -152,7 +152,7 @@ pub(crate) fn ls(root: &ArgMatches) -> Result<(), Error> {
             },
         ]);
     }
-    ui::list(&tokens, &table)
+    ui::list(&listed, &table)
 }
 
 pub(crate) fn revoke(root: &ArgMatches) -> Result<(), Error> {
@@ -196,7 +196,7 @@ struct CreatedReply {
     fleet_token: Created,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ListReply {
     fleet_tokens: Vec<Listed>,
 }

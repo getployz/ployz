@@ -1254,7 +1254,7 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
 }
 
 #[test]
-fn server_token_ls_json_is_the_list_of_tokens() {
+fn server_token_ls_json_keys_the_tokens_by_noun() {
     let (cloud, request) = token_cloud(
         200,
         r#"{"fleet_tokens":[{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"blue-heron","expires_at":"2026-10-23T00:00:00.000Z","expired":false,"auto_enroll_max":5,"last_used_at":null,"created_at":"2026-10-16T00:00:00.000Z"}]}"#,
@@ -1268,10 +1268,10 @@ fn server_token_ls_json_is_the_list_of_tokens() {
             .starts_with("GET /api/cli/fleet-tokens ")
     );
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json.pointer("/0/name").unwrap(), "blue-heron");
-    assert_eq!(json.pointer("/0/auto_enroll_max").unwrap(), 5);
+    assert_eq!(json.pointer("/fleet_tokens/0/name").unwrap(), "blue-heron");
+    assert_eq!(json.pointer("/fleet_tokens/0/auto_enroll_max").unwrap(), 5);
     assert!(
-        json.pointer("/0/id").is_none(),
+        json.pointer("/fleet_tokens/0/id").is_none(),
         "tokens are named, not numbered: {json}"
     );
 }
