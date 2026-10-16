@@ -79,7 +79,7 @@ function network(ip: string) {
 export function planServerEnrollment(
   input: EnrollInput,
   candidates: ReadonlyArray<EnrollCandidate>,
-  organization: { readonly paired: boolean },
+  organization: { readonly hasFirst: boolean },
 ): EnrollPlan {
   const byId = new Map(candidates.map((row) => [row.id, row]));
   const ids = [...new Set(input.ids)];
@@ -98,7 +98,7 @@ export function planServerEnrollment(
   }
 
   let founder: string | null = null;
-  if (!organization.paired) {
+  if (!organization.hasFirst) {
     if (input.first !== undefined && !ids.includes(input.first)) {
       return { kind: "refused", message: "The first server must be one of the servers you enroll." };
     }
@@ -175,10 +175,15 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
       .select({ founded: sql<boolean>`${organizationPairing.founderMachineId} is not null` })
       .from(organizationPairing)
       .where(eq(organizationPairing.organizationId, organization.id));
+    // A first server still on its way counts: servers added meanwhile join it.
+    const [founding] = pairing !== undefined ? [] : yield* drizzle
+      .select({ id: serverEnrollment.id })
+      .from(serverEnrollment)
+      .where(and(eq(serverEnrollment.organizationId, organization.id), eq(serverEnrollment.role, "founder"), isNull(serverEnrollment.endedAt)));
     const plan = planServerEnrollment(
       input,
       ids.length === 0 ? [] : yield* candidatesOf(organization.id, ids),
-      { paired: pairing !== undefined },
+      { hasFirst: pairing !== undefined || founding !== undefined },
     );
     if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
     const attempts = [];

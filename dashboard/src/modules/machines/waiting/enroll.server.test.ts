@@ -39,8 +39,8 @@ const input = (overrides: Partial<EnrollInput> = {}): EnrollInput => ({
   ...overrides,
 });
 
-const empty = { paired: false };
-const founded = { paired: true };
+const empty = { hasFirst: false };
+const founded = { hasFirst: true };
 
 const planned = (plan: EnrollPlan) => {
   if (plan.kind !== "planned") throw new Error(`expected a plan, got: ${plan.message}`);

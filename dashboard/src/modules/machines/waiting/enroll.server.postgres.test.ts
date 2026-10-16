@@ -139,18 +139,18 @@ it("starts the first server and its joiners, each on its own role-bound token, w
   expect(await outbox()).toEqual(["server/enrollment.requested", "server/enrollment.requested"]);
 });
 
-it("refuses a second first server while one is open, and skips a host already enrolling", async () => {
-  const [a, b] = await waiting("web-a", "web-b");
-  if (a === undefined || b === undefined) throw new Error("two hosts");
+it("joins servers added while the first server is on its way, and skips a host already enrolling", async () => {
+  const [a, b, c] = await waiting("web-a", "web-b", "web-c");
+  if (a === undefined || b === undefined || c === undefined) throw new Error("three hosts");
   await run(enroll([a]));
-  expect(await failure(enroll([b]))).toMatchObject({
-    _tag: "Conflict",
-    message: "Another enrollment just started for these servers, or another first server.",
-  });
+  const meanwhile = await run(enroll([a, b]));
+  expect(meanwhile.skipped).toEqual([{ id: a.id, reason: "Already enrolling" }]);
+  expect(meanwhile.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.state])).toEqual([
+    [b.id, "joiner", "awaiting_founder"],
+  ]);
   await harness.pool.query("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id) values ($1, '{}'::jsonb, 'k', $2)", [adaOrg, "00000000000000000000000000000001"]);
-  const again = await run(enroll([a, b]));
-  expect(again.skipped).toEqual([{ id: a.id, reason: "Already enrolling" }]);
-  expect(again.attempts.map((attempt) => [attempt.waitingServerId, attempt.role])).toEqual([[b.id, "joiner"]]);
+  const paired = await run(enroll([c]));
+  expect(paired.attempts.map((attempt) => [attempt.waitingServerId, attempt.role])).toEqual([[c.id, "joiner"]]);
 });
 
 it("holds one open attempt per host, and one open first server per Organization, at the database", async () => {
