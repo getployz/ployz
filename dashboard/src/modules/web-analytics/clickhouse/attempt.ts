@@ -289,13 +289,6 @@ export const mintRecovery = Effect.fn("WebAnalytics.mintRecovery")(function* (cl
 /** A site that cannot mint an append: pending is full or a recovery occupant is waiting for its refloor. Only a published refloor clears it. */
 export const PARKED = sql`(cardinality(pending) >= ${PENDING_CAP} or recovery is not null)`;
 
-export const parked = Effect.fn("WebAnalytics.parked")(function* (environmentId: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ parked: boolean }>(sql`
-    select ${PARKED} as parked from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  return row?.parked ?? false;
-});
-
 /** A sequence value taken now. Every attempt minted before it is smaller. */
 export const pin = Effect.fn("WebAnalytics.pinAttempts")(function* () {
   const { drizzle } = yield* Database;

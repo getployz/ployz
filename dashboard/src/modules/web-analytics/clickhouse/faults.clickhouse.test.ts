@@ -5,6 +5,7 @@ import { expect } from "vitest";
 import { collectGarbage, PENDING_CAP, pin, read } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService, type Params } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
+import { TTL_DAYS } from "#/modules/web-analytics/clickhouse/schema";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
 import { backfillSite, drainOutbox, enqueueForClickHouse, ensureBackfilled } from "#/modules/web-analytics/clickhouse/writer";
 import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
@@ -40,7 +41,21 @@ const pick = <T extends string>(rng: () => number, weights: Weighted<T>): T => {
 /** What happens to one ClickHouse write: acknowledged, acknowledged but the ack lost, landing at any later step however many collections have run, or cut off mid-flight. */
 type Fate = "ok" | "lost" | "late" | "cut";
 type Step = "add" | "drain" | "close" | "rebuild" | "backfill" | "pin" | "collect" | "late" | "fence" | "read" | "escape" | "inner" | "finish";
-type Profile = { readonly fates: Weighted<Fate>; readonly steps: Weighted<Step>; readonly length: number; readonly seeds: ReadonlyArray<number>; readonly crossesCap?: true };
+/**
+ * exhausts fills the pending cap and then fails the backfill many more times than the cap holds, so recovery must survive losing every slot.
+ * starves queues more batches than one drain window behind the parked site while a healthy site waits.
+ * history projects that many already published days into the site before the run, as a site that outlived its retention would carry.
+ */
+type Profile = {
+  readonly fates: Weighted<Fate>;
+  readonly steps: Weighted<Step>;
+  readonly length: number;
+  readonly seeds: ReadonlyArray<number>;
+  readonly crossesCap?: true;
+  readonly exhausts?: true;
+  readonly starves?: true;
+  readonly history?: number;
+};
 
 const MIXED_STEPS: Weighted<Step> = [
   ["add", 0.3], ["drain", 0.1], ["close", 0.15], ["rebuild", 0.12], ["backfill", 0.05], ["pin", 0.08], ["collect", 0.12], ["late", 0.08], ["fence", 0.05],
@@ -56,6 +71,8 @@ const PROFILES: ReadonlyArray<Profile> = [
   { fates: [["ok", 0.55], ["lost", 0.15], ["late", 0.15], ["cut", 0.15]], steps: MIXED_STEPS, length: 30, seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
   { fates: [["ok", 0.2], ["lost", 0.6], ["late", 0.1], ["cut", 0.1]], steps: MIXED_STEPS, length: 150, seeds: [13, 14, 15, 16] },
   { fates: [["ok", 0.1], ["lost", 0.8], ["late", 0.05], ["cut", 0.05]], steps: CAPPING_STEPS, length: 120, seeds: [17, 18, 19, 20], crossesCap: true },
+  { fates: [["lost", 1]], steps: CAPPING_STEPS, length: 60, seeds: [21, 22, 23, 24], crossesCap: true, exhausts: true, starves: true },
+  { fates: [["ok", 0.55], ["lost", 0.15], ["late", 0.15], ["cut", 0.15]], steps: MIXED_STEPS, length: 30, seeds: [25, 26], history: 2 * TTL_DAYS },
 ];
 
 type Stamped = { readonly attempt?: Params[string] };
@@ -128,15 +145,17 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   const today = Math.floor(Date.now() / DAY) * DAY;
   const now = new Date(today + 12 * HOUR);
   const site = `00000000-0000-4000-8000-0000000000${(0xd0 + seed).toString(16)}`;
-  const query = { environmentId: site, timezone: "UTC", range: { start: new Date(today - 4 * DAY), end: new Date(today) }, filters: [] };
+  const other = `00000000-0000-4000-8000-0000000000${(0xa0 + seed).toString(16)}`;
+  const queryFor = (environmentId: string) => ({ environmentId, timezone: "UTC", range: { start: new Date(today - 4 * DAY), end: new Date(today) }, filters: [] });
+  const query = queryFor(site);
   let rows = 0;
   const row = (): PageviewRecord => ({
     ts: new Date(today - (1 + Math.floor(rng() * 3)) * DAY + (1 + Math.floor(rng() * 22)) * HOUR + rows++ * 1000).toISOString(),
     visitorId: String(1 + Math.floor(rng() * 4)), host: "shop.example", pathname: "/", source: "", referrerHost: null,
     utmSource: null, utmMedium: null, utmCampaign: null, utmTerm: null, utmContent: null, ref: null, language: "en",
   });
-  const reads = (store: typeof clickHouseStore | typeof postgresStore, service = clickhouse) =>
-    provide(Effect.all([store.dailyTotals(query), store.hourlyTotals(query), store.breakdown(query, "page")]), service);
+  const reads = (store: typeof clickHouseStore | typeof postgresStore, service = clickhouse, of = query) =>
+    provide(Effect.all([store.dailyTotals(of), store.hourlyTotals(of), store.breakdown(of, "page")]), service);
   type Snapshot = Effect.Success<ReturnType<typeof reads>>;
   const noLoss = (label: string, later: Snapshot, earlier: Snapshot) =>
     later.forEach((component, i) => expect(total(component), label).toBeGreaterThanOrEqual(total(earlier[i] ?? [])));
@@ -144,20 +163,28 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     seen.forEach((component, i) => expect(total(component), label).toBeLessThanOrEqual(total(truth[i] ?? [])));
   const marker = provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [row] = yield* drizzle.execute<{ dirty: string[]; demoted: boolean; pending: number; floor: string }>(sql`
-      select dirty::text[] as dirty, backfilled_at is null as demoted, cardinality(pending) as pending, floor::text as floor
+    const [row] = yield* drizzle.execute<{ dirty: string[]; demoted: boolean; pending: number; floor: string; days: number }>(sql`
+      select dirty::text[] as dirty, backfilled_at is null as demoted, cardinality(pending) as pending, floor::text as floor,
+        (select count(*)::int from jsonb_object_keys(days)) as days
       from analytics.clickhouse_site where environment_id = ${site}::text`, "objects");
     return {
       dirty: new Set(row === undefined ? [] : row.dirty.map((day) => dayOf(new Date(`${day}T00:00:00Z`)))),
       demoted: row?.demoted ?? true,
       pending: row?.pending ?? 0,
       floor: Number(row?.floor ?? 0),
+      days: row?.days ?? 0,
     };
   }));
-  const enqueue = provide(Effect.gen(function* () {
+  const queued = (environmentId: string) => provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* enqueueForClickHouse(yield* drizzle.insert(analyticsPageview).values(pageviewValues(site, [row()])).returning());
+    const [row] = yield* drizzle.execute<{ n: number }>(sql`select count(*)::int as n from analytics.outbox where environment_id = ${environmentId}::text`, "objects");
+    return row?.n ?? 0;
   }));
+  const enqueueFor = (environmentId: string) => provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* enqueueForClickHouse(yield* drizzle.insert(analyticsPageview).values(pageviewValues(environmentId, [row()])).returning());
+  }));
+  const enqueue = enqueueFor(site);
   const step = (name: string, op: Effect.Effect<unknown>) => Effect.gen(function* () {
     trace.push(name);
     yield* Fiber.await(yield* Effect.forkChild(op));
@@ -279,6 +306,16 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   });
   yield* provide(seedSite({ environmentId: site, timezone: "UTC" }, [row(), row()]));
   yield* provide(backfillSite(clickhouse, site));
+  if (profile.history !== undefined) {
+    yield* provide(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`
+        update analytics.clickhouse_site
+        set days = days || (select jsonb_object_agg((current_date - 6 - i)::text, i) from generate_series(1, ${profile.history}::int) as i)
+        where environment_id = ${site}::text`);
+    }));
+    expect((yield* marker).days, `seed ${seed} carries its projected history`).toBeGreaterThan(TTL_DAYS);
+  }
   let fence: number | undefined;
   let previous = yield* reads(clickHouseStore);
   let before = yield* marker;
@@ -320,13 +357,36 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     if (kind === "collect") expect(current, label()).toEqual(previous);
     expect(after.floor, label()).toBeGreaterThanOrEqual(before.floor);
     expect(after.pending, label()).toBeLessThanOrEqual(PENDING_CAP);
+    expect(after.days, label()).toBeLessThanOrEqual(Math.max(before.days, TTL_DAYS));
     if (after.pending >= PENDING_CAP) trace.push("capped");
     previous = current;
     before = after;
     snapshots.push(current);
   }
-  if (profile.crossesCap) expect(trace, `seed ${seed} never filled the pending cap: ${trace.join(" ")}`).toContain("capped");
   yield* commitFence;
+  if (profile.exhausts) {
+    for (let n = 0; n < 2 * PENDING_CAP && (yield* marker).pending < PENDING_CAP; n++) {
+      yield* enqueue;
+      yield* step("add", provide(drainOutbox(faulty.client), faulty.client));
+    }
+    expect((yield* marker).pending, `seed ${seed} could not fill the pending cap: ${trace.join(" ")}`).toBe(PENDING_CAP);
+    trace.push("capped");
+    for (let n = 0; n < 9; n++) yield* step("backfill", provide(backfillSite(faulty.client, site), faulty.client));
+    const exhausted = `seed ${seed} exhausting every slot: ${trace.join(" ")}`;
+    expect(trace.filter((entry) => entry === "insert-pageview:lost").length, exhausted).toBeGreaterThanOrEqual(2 * PENDING_CAP);
+    expect((yield* marker).pending, exhausted).toBe(PENDING_CAP);
+  }
+  if (profile.crossesCap) expect(trace, `seed ${seed} never filled the pending cap: ${trace.join(" ")}`).toContain("capped");
+  if (profile.starves) {
+    yield* provide(seedSite({ environmentId: other, timezone: "UTC" }, [row(), row()]));
+    yield* provide(backfillSite(clickhouse, other));
+    for (let n = 0; n < 301; n++) yield* enqueue;
+    yield* enqueueFor(other);
+    yield* provide(drainOutbox(clickhouse));
+    const starved = `seed ${seed}: a healthy site queued behind ${yield* queued(site)} parked batches`;
+    expect(yield* queued(other), starved).toBe(0);
+    expect(yield* reads(clickHouseStore, clickhouse, queryFor(other)), starved).toEqual(yield* reads(postgresStore, clickhouse, queryFor(other)));
+  }
   const draining = `seed ${seed} draining paused reads: ${trace.join(" ")}`;
   while (paused.length > 0) yield* finishRead(draining);
   while (escaped.length > 0) yield* finishEscape(draining);
@@ -338,7 +398,11 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   yield* provide(rebuildDirtyDays(site));
   yield* provide(closeDays(site, now));
   yield* provide(rebuildDirtyDays(site));
+  const settled = yield* marker;
   expect(yield* reads(clickHouseStore), `seed ${seed} settled: ${trace.join(" ")}`).toEqual(yield* reads(postgresStore));
+  expect({ demoted: settled.demoted, queued: yield* queued(site) }, `seed ${seed} settled: ${trace.join(" ")}`).toEqual({ demoted: false, queued: 0 });
+  if (profile.exhausts) expect(settled.pending, `seed ${seed} recovered: ${trace.join(" ")}`).toBe(0);
+  expect(settled.days, `seed ${seed} settled with ${settled.days} published days`).toBeLessThanOrEqual(TTL_DAYS);
 });
 
 for (const profile of PROFILES) {
