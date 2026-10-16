@@ -134,8 +134,11 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     let Err(error) = server(root, selector) else {
         return Ok(());
     };
+    if error.report().code != RpcErrorCode::NotFound {
+        return Err(error);
+    }
     let runtime = runtime()?;
-    let Some(credential) = cloud_runs(&runtime, leaf)? else {
+    let Ok(Some(credential)) = cloud_runs(&runtime, leaf) else {
         return Err(error);
     };
     let Ok(listed) = runtime.block_on(waiting::fetch(&credential)) else {

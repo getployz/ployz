@@ -46,8 +46,9 @@ ployz server ls --waiting
 
 Each row shows the server's name, its provider, its IP address, its status and how long ago it
 first checked in. **Ready** means it can join now. **Installing Docker** and **Building ZFS** mean
-it is still getting ready. **Blocked** means something on the server stops it from joining, and
-**Offline** means it stopped checking in.
+it is still getting ready. **Docker install failed** means Ployz couldn't install Docker there.
+**Blocked** means something on the server stops it from joining, and **Offline** means it stopped
+checking in.
 
 To see one in full, with its CPU, memory, disks, Docker, the storage it would get and anything
 blocking it:
@@ -58,8 +59,9 @@ ployz server show web-3
 
 `ployz server show` shows a server in your cluster the same way, so one command covers both.
 
-To turn away servers you don't want, name them or give a pattern. Ployz lists what matches and asks
-before it does anything:
+To turn away servers you don't want, name them, give a pattern or give one server's id from
+`ployz server ls --waiting --json`. Patterns match names only, and case matters. Ployz lists what
+matches and asks before it does anything:
 
 ```sh
 ployz server reject 'web-*'

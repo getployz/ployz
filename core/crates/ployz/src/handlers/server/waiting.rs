@@ -132,11 +132,34 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
     waiting_servers
         .into_iter()
         .map(|raw| {
-            let row = serde_json::from_value(raw.clone())?;
+            let row = serde_json::from_value(printable(raw.clone()))?;
             Ok(Waiting { raw, row })
         })
         .collect()
 }
+
+/// `value` with every control character in its strings replaced. A host names itself, so
+/// an escape sequence in its report must not reach the terminal.
+fn printable(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(
+            text.chars()
+                .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(printable).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, printable(value)))
+                .collect(),
+        ),
+        other @ (Value::Null | Value::Bool(_) | Value::Number(_)) => other,
+    }
+}
+
+/// Cloud takes at most this many ids in one reject.
+const REJECT_BATCH: usize = 1000;
 
 /// Reject `ids`, answering how many Cloud rejected now.
 pub(super) async fn reject(credential: &Credential, ids: &[&str]) -> Result<u64, Error> {
@@ -144,10 +167,15 @@ pub(super) async fn reject(credential: &Credential, ids: &[&str]) -> Result<u64,
     struct Reply {
         rejected: u64,
     }
-    let body = json!({ "ids": ids });
-    let Reply { rejected } =
-        cloud_account::refusable(credential, Method::POST, "reject-servers", Some(&body)).await?;
-    Ok(rejected)
+    let mut total = 0;
+    for batch in ids.chunks(REJECT_BATCH) {
+        let body = json!({ "ids": batch });
+        let Reply { rejected } =
+            cloud_account::refusable(credential, Method::POST, "reject-servers", Some(&body))
+                .await?;
+        total += rejected;
+    }
+    Ok(total)
 }
 
 /// The credential a waiting-list command runs under. The list lives in Cloud alone, so
@@ -397,6 +425,15 @@ mod tests {
         );
         assert_eq!(readiness("waiting", None), "Ready");
         assert_eq!(readiness("enrolling", None), "Unknown");
+    }
+
+    #[test]
+    fn a_host_cannot_print_escape_sequences() {
+        let raw = json!({ "name": "web\u{1b}[2J-1", "blockers": [{ "message": "a\u{7}b" }] });
+        assert_eq!(
+            printable(raw),
+            json!({ "name": "web\u{FFFD}[2J-1", "blockers": [{ "message": "a\u{FFFD}b" }] })
+        );
     }
 
     #[test]

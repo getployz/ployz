@@ -648,6 +648,10 @@ fn waiting_cloud(routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Strin
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             let (status, body) = match route.as_str() {
                 "GET /api/cli/waiting-servers" => ("200 OK", listed.clone()),
+                "POST /api/cli/server-access" => (
+                    "200 OK",
+                    serde_json::json!({ "connections": [], "unreachable": [] }),
+                ),
                 "POST /api/cli/reject-servers" => {
                     let sent: serde_json::Value = serde_json::from_slice(&sent).unwrap();
                     let ids = sent
@@ -719,7 +723,10 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
     );
     assert_eq!(
         json.pointer("/error/details/waiting_servers").unwrap(),
-        &serde_json::json!(["web-1", "web-2"])
+        &serde_json::json!([
+            { "id": "00000000-0000-4000-8000-000000000001", "name": "web-1" },
+            { "id": "00000000-0000-4000-8000-000000000002", "name": "web-2" },
+        ])
     );
     assert!(posted().is_empty(), "{:?}", posted());
 
@@ -744,6 +751,22 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
         "No waiting server matches nomatch. Nothing rejected."
     );
     assert_eq!(posted().len(), 1);
+
+    let (code, json, _) = run_json_with(
+        &[
+            "server",
+            "reject",
+            "00000000-0000-4000-8000-000000000003",
+            "--yes",
+            "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(
+        posted().last().unwrap(),
+        r#"POST /api/cli/reject-servers {"ids":["00000000-0000-4000-8000-000000000003"]}"#
+    );
 
     let (code, json, _) = run_json_with(
         &[

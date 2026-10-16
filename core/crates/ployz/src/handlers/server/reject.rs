@@ -16,12 +16,16 @@ use crate::ui::{self, Cell, Hint, Table};
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Reject servers waiting to join")
         .long_about(
-            "Reject the servers waiting to join whose names match a glob, such as 'web-*'. \
+            "Reject the servers waiting to join whose names match a glob, such as 'web-*', \
+             or one by its id. \
              It lists the matches and asks before it rejects them; --yes skips the ask. \
              A rejected server stops checking in and the same install never comes back. \
              Outside a terminal without --yes it fails with confirmation_required.",
         )
-        .arg(positional("pattern", true).help("A name or glob, such as 'web-*'"))
+        .arg(
+            positional("pattern", true)
+                .help("A name, a glob such as 'web-*', or a waiting server's id"),
+        )
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
@@ -40,7 +44,10 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         ))
         .hint(Hint::Next("ployz server ls --waiting".into())));
     }
-    let names: Vec<&str> = matched.iter().map(|host| host.row.name.as_str()).collect();
+    let listed: Vec<_> = matched
+        .iter()
+        .map(|host| json!({ "id": host.row.id, "name": host.row.name }))
+        .collect();
     if !ui::json() {
         let mut table = Table::new(["NAME", "IP", "TOKEN"], "");
         for host in &matched {
@@ -64,7 +71,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                         "Rejecting {count} waiting server{} needs confirmation. Nothing rejected.",
                         plural(count)
                     ),
-                    json!({ "waiting_servers": names }),
+                    json!({ "waiting_servers": listed }),
                 )
                 .hint(Hint::Retry(typed_with(&["--yes"])))
             },
@@ -78,19 +85,19 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         count => format!("{count} rejected. They won't come back."),
     };
     ui::done(
-        &json!({ "rejected": rejected, "waiting_servers": names }),
+        &json!({ "rejected": rejected, "waiting_servers": listed }),
         sentence,
     )
 }
 
-/// The waiting servers whose name `pattern` matches, in the list's order.
+/// The waiting servers whose name `pattern` matches, or whose id it is, in the list's order.
 fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting>, Error> {
     let glob = Glob::new(pattern)
         .map_err(|error| Error::usage(format!("{pattern} is not a valid glob: {}", error.kind())))?
         .compile_matcher();
     Ok(waiting
         .iter()
-        .filter(|host| glob.is_match(&host.row.name))
+        .filter(|host| host.row.id == pattern || glob.is_match(&host.row.name))
         .collect())
 }
 
