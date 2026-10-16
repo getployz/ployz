@@ -1,7 +1,6 @@
-export const BASE_RETENTION_MONTHS = 13;
-export const LONGEST_RETENTION_MONTHS = 13;
+export const RETENTION_DAYS = 30;
 
-export type Site = { readonly environmentId: string; readonly timezone: string; readonly retentionMonths: number };
+export type Site = { readonly environmentId: string; readonly timezone: string };
 
 /** Half-open `[start, end)` in UTC instants. Both bounds sit on site-local hour starts. */
 export type Range = { readonly start: Date; readonly end: Date };

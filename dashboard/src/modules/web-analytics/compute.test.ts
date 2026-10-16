@@ -1,18 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { breakdown, entryPages, goalConversions, overview, rates, sessions, timeseries } from "./compute";
+import { breakdown, entryPages, goalConversions, overview, rates, timeseries } from "./compute";
 
 const value = (value: string, pageviews: number, visitors: number) => ({ value, pageviews, visitors });
 const session = (value: string, visits: number, bounces = 0, totalDuration = 0) => ({ value, visits, bounces, totalDuration });
 
 describe("ordering", () => {
-  it("breakdown orders by visitors, then by value so a tie is stable", () => {
+  it("breakdown orders by visitors, then by value so a tie is stable, and cuts to the limit", () => {
     const rows = [value("/pricing", 9, 3), value("/about", 1, 3), value("/", 50, 4), value("/zebra", 2, 1)];
-    expect(breakdown(rows, 10).map((row) => row.value)).toEqual(["/", "/about", "/pricing", "/zebra"]);
+    expect(breakdown(rows, 3).map((row) => row.value)).toEqual(["/", "/about", "/pricing"]);
   });
 
-  it("sessions order by visits, entry pages by visitors, goals by visitors then name", () => {
-    expect(sessions([session("google", 2), session("direct", 5), session("bing", 2)], 10).map((row) => row.value))
-      .toEqual(["direct", "bing", "google"]);
+  it("entry pages order by visitors, goals by visitors then name", () => {
     const entries = [{ ...session("/b", 9), visitors: 1 }, { ...session("/a", 1), visitors: 7 }, { ...session("/c", 1), visitors: 7 }];
     expect(entryPages(entries, 10).map((row) => row.value)).toEqual(["/a", "/c", "/b"]);
     const goals = [
@@ -21,18 +19,6 @@ describe("ordering", () => {
       { goalId: "3", name: "Download", visitors: 8, conversions: 8 },
     ];
     expect(goalConversions(goals).map((row) => row.name)).toEqual(["Download", "Checkout", "Signup"]);
-  });
-});
-
-describe("limit", () => {
-  it("merges a value split across rollup and raw parts before cutting to the limit", () => {
-    const rows = [value("/split", 1, 2), value("/big", 10, 5), value("/mid", 4, 4), value("/split", 1, 3)];
-    expect(breakdown(rows, 2)).toEqual([value("/big", 10, 5), value("/split", 2, 5)]);
-  });
-
-  it("sums every session field of a split value", () => {
-    const rows = [session("google", 2, 1, 30), session("direct", 1, 0, 5), session("google", 3, 2, 70)];
-    expect(sessions(rows, 1)).toEqual([{ value: "google", visits: 5, bounces: 3, totalDuration: 100, bounceRatePercent: 60, avgDurationSeconds: 20 }]);
   });
 });
 

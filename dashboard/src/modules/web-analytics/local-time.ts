@@ -1,5 +1,5 @@
 import { TZDate } from "@date-fns/tz";
-import { LONGEST_RETENTION_MONTHS } from "./model";
+import { RETENTION_DAYS } from "./model";
 
 export const HOUR_MS = 3_600_000;
 export const SESSION_GAP_SECONDS = 1800;
@@ -42,20 +42,15 @@ export function hourStart(timezone: string, instant: Date) {
 
 export const isHourStart = (timezone: string, instant: Date) => hourStart(timezone, instant).getTime() === instant.getTime();
 
-export function retentionFloor(timezone: string, now: number, months: number) {
-  const today = new TZDate(now, timezone);
-  const first = new Date(Date.UTC(today.getFullYear(), today.getMonth() - months, 1));
-  const lastDate = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
-  return new Date(new TZDate(first.getUTCFullYear(), first.getUTCMonth(), Math.min(today.getDate(), lastDate), timezone).getTime());
+/** The start of the oldest site-local day kept: today and the 29 days before it, the 30d range. */
+export function retentionFloor(timezone: string, now: number) {
+  return dayStart(timezone, localDay(timezone, now), 1 - RETENTION_DAYS);
 }
 
-/** Raw and aggregated rows strictly before this instant are outside every site's retention window. */
+/** Rows strictly before this instant are outside every site's retention window. */
 export function retentionCutoff(now: number) {
-  // A site's local date is never earlier than the UTC date a day back, and month
-  // arithmetic is monotonic in that date, so the UTC floor of that day bounds
-  // every site's floor. The extra day covers zones up to UTC+14.
-  const floor = retentionFloor("UTC", now - 24 * HOUR_MS, LONGEST_RETENTION_MONTHS);
-  return new Date(floor.getTime() - 24 * HOUR_MS);
+  // No zone's local date runs more than a day behind UTC's, so a day before the UTC floor covers them all.
+  return new Date(retentionFloor("UTC", now).getTime() - 24 * HOUR_MS);
 }
 
 export function localDays(timezone: string, start: Date, end: Date) {

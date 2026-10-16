@@ -80,15 +80,16 @@ export const crashPushInput = (push: CrashPush): Option.Option<CrashPushInput> =
   return Option.some({ seq: seq.value, dropped: push.dropped, events });
 };
 
-const Day = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/));
-const Count = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
 const QueryValue = Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1024)));
+const Count = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+const Header = Schema.NullOr(Schema.String.check(Schema.isMaxLength(512)));
 
-const PageviewRow = Schema.Struct({
-  kind: Schema.Literal("pageview"),
+const RequestRow = Schema.Struct({
   ts: Schema.Finite.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: MAX_TS / 1e6 })),
   namespace: Text,
+  service: Text,
   host: Schema.String.check(Schema.isMaxLength(1024)),
+  method: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32)),
   path: Schema.String.check(Schema.isMaxLength(4096)),
   query: Schema.Struct({
     utm_source: QueryValue,
@@ -98,82 +99,95 @@ const PageviewRow = Schema.Struct({
     utm_content: QueryValue,
     ref: QueryValue,
   }),
+  status: Schema.Finite.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 999 })),
+  duration_us: Count,
+  bytes_in: Count,
+  bytes_out: Count,
+  request_id: Schema.String.check(Schema.isMaxLength(256)),
+  ua: Schema.String.check(Schema.isMaxLength(1024)),
   referrer_host: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1024))),
-  language: Schema.NullOr(Schema.String.check(Schema.isMaxLength(256))),
-  visitor: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
-  flags: Schema.Array(Schema.Literals(["no_accept_language", "no_sec_fetch", "click_id"])),
+  language: Header,
+  content_type: Header,
+  sec_purpose: Header,
+  visitor: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
 });
 
-const BotsRow = Schema.Struct({ kind: Schema.Literal("bots"), namespace: Text, day: Day, reason: Text, count: Count });
-const GapRow = Schema.Struct({ kind: Schema.Literal("gap"), namespace: Text, day: Schema.NullOr(Day), count: Count });
+export type RequestWireRow = typeof RequestRow.Encoded;
 
-const PageviewPush = Schema.Struct({
-  stream: Schema.Literal("pageviews"),
+const RequestPush = Schema.Struct({
+  stream: Schema.Literal("requests"),
   seq: Seq,
   dropped: Schema.Finite,
-  events: Schema.Array(Schema.Union([PageviewRow, BotsRow, GapRow])).check(Schema.isMaxLength(MAX_PUSH_EVENTS)),
+  rows: Schema.Array(RequestRow).check(Schema.isMaxLength(MAX_PUSH_EVENTS)),
 });
-type PageviewPush = typeof PageviewPush.Type;
+type RequestPush = typeof RequestPush.Type;
 
-export const decodePageviewPush = Schema.decodeUnknownOption(PageviewPush);
-
-const FLAG_BITS = { no_accept_language: 1, no_sec_fetch: 2, click_id: 4 } as const;
+export const decodeRequestPush = Schema.decodeUnknownOption(RequestPush);
 
 export function visitorId(visitor: string) {
   return BigInt.asIntN(64, BigInt(`0x${visitor.slice(0, 16)}`));
 }
 
-export type PageviewInput = {
-  readonly kind: "pageview";
+export type RequestInput = {
   readonly namespace: string;
   readonly ts: Date;
-  readonly visitorId: bigint;
+  readonly requestId: string;
+  readonly service: string;
   readonly host: string;
-  readonly pathname: string;
+  readonly method: string;
+  readonly path: string;
+  readonly status: number;
+  readonly durationMs: number;
+  readonly bytesIn: number;
+  readonly bytesOut: number;
+  readonly visitorId: bigint | null;
   readonly source: string;
   readonly referrerHost: string | null;
+  readonly language: string | null;
   readonly utmSource: string | null;
   readonly utmMedium: string | null;
   readonly utmCampaign: string | null;
   readonly utmTerm: string | null;
   readonly utmContent: string | null;
-  readonly ref: string | null;
-  readonly language: string | null;
-  readonly flags: number;
+  readonly ua: string;
+  readonly contentType: string | null;
+  readonly secPurpose: string | null;
 };
-export type BotsInput = { readonly kind: "bots"; readonly namespace: string; readonly day: string; readonly reason: string; readonly count: number };
-export type GapInput = { readonly kind: "gap"; readonly namespace: string; readonly day: string | null; readonly count: number };
 
-export type PageviewPushInput = {
+export type RequestPushInput = {
   readonly seq: bigint;
   readonly dropped: number;
-  readonly events: ReadonlyArray<PageviewInput | BotsInput | GapInput>;
+  readonly rows: ReadonlyArray<RequestInput>;
 };
 
-export const pageviewPushInput = (push: PageviewPush): Option.Option<PageviewPushInput> =>
+export const requestPushInput = (push: RequestPush): Option.Option<RequestPushInput> =>
   Option.map(toSeq(push.seq), (seq) => ({
     seq,
     dropped: push.dropped,
-    events: push.events.map((row): PageviewInput | BotsInput | GapInput => {
-      if (row.kind !== "pageview") return row;
-      const { query } = row;
-      return {
-        kind: "pageview",
-        namespace: row.namespace,
-        ts: new Date(row.ts),
-        visitorId: visitorId(row.visitor),
-        host: row.host,
-        pathname: row.path,
-        source: query.utm_source ?? query.ref ?? row.referrer_host ?? "",
-        referrerHost: row.referrer_host,
-        utmSource: query.utm_source ?? null,
-        utmMedium: query.utm_medium ?? null,
-        utmCampaign: query.utm_campaign ?? null,
-        utmTerm: query.utm_term ?? null,
-        utmContent: query.utm_content ?? null,
-        ref: query.ref ?? null,
-        language: row.language,
-        flags: row.flags.reduce((bits, flag) => bits | FLAG_BITS[flag], 0),
-      };
-    }),
+    rows: push.rows.map(({ query, ...row }, index): RequestInput => ({
+      namespace: row.namespace,
+      ts: new Date(row.ts),
+      // A replayed batch keeps its seq, so a row without an id lands on the same key again.
+      requestId: row.request_id || `${push.seq}:${index}`,
+      service: row.service,
+      host: row.host,
+      method: row.method,
+      path: row.path,
+      status: row.status,
+      durationMs: row.duration_us / 1000,
+      bytesIn: row.bytes_in,
+      bytesOut: row.bytes_out,
+      visitorId: row.visitor === null ? null : visitorId(row.visitor),
+      source: query.utm_source ?? query.ref ?? row.referrer_host ?? "",
+      referrerHost: row.referrer_host,
+      language: row.language,
+      utmSource: query.utm_source ?? null,
+      utmMedium: query.utm_medium ?? null,
+      utmCampaign: query.utm_campaign ?? null,
+      utmTerm: query.utm_term ?? null,
+      utmContent: query.utm_content ?? null,
+      ua: row.ua,
+      contentType: row.content_type,
+      secPurpose: row.sec_purpose,
+    })),
   }));

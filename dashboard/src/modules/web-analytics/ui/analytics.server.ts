@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, asc, eq, gt, gte, lte } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { analyticsPlan } from "#/modules/billing/billing.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -8,9 +8,9 @@ import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Validation } from "#/server/public-error";
 import * as analytics from "../adapter";
-import { addDays, localDay, localDays } from "../local-time";
+import { localDay, localDays } from "../local-time";
 import { setSiteAnalytics } from "../salts.server";
-import { analyticsGapDaily, analyticsGoal, analyticsPageview, analyticsRollupState, analyticsSite } from "../tables";
+import { analyticsGoal, analyticsRequest, analyticsSite } from "../tables";
 import {
   analyticsGate,
   type CreateGoalInput,
@@ -46,12 +46,14 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
   const { drizzle } = yield* Database;
   const goals = yield* drizzle.select({ id: analyticsGoal.id, name: analyticsGoal.name, pathPattern: analyticsGoal.pathPattern })
     .from(analyticsGoal).where(eq(analyticsGoal.environmentId, input.environmentId)).orderBy(asc(analyticsGoal.createdAt));
-  const [seen] = yield* drizzle.select({ ts: analyticsPageview.ts }).from(analyticsPageview)
-    .where(eq(analyticsPageview.environmentId, input.environmentId)).orderBy(asc(analyticsPageview.ts)).limit(1);
+  const pageviews = and(eq(analyticsRequest.environmentId, input.environmentId), eq(analyticsRequest.kind, "pageview"));
+  const [seen] = yield* drizzle.select({ ts: analyticsRequest.ts }).from(analyticsRequest)
+    .where(and(pageviews, isNotNull(analyticsRequest.visitorId))).limit(1);
   if (seen === undefined) {
-    // Every visit can be dropped, for a day with no salt: then the count of lost visits is all the site has.
-    const lost = yield* drizzle.select({ day: analyticsGapDaily.day }).from(analyticsGapDaily)
-      .where(and(eq(analyticsGapDaily.environmentId, input.environmentId), gt(analyticsGapDaily.count, 0))).orderBy(asc(analyticsGapDaily.day));
+    // Every pageview can come on a day with no salt: then the days they came are all the site has.
+    const day = sql<string>`((${analyticsRequest.ts} at time zone ${site.timezone}::text)::date)::text`;
+    const lost = yield* drizzle.selectDistinct({ day }).from(analyticsRequest)
+      .where(and(pageviews, isNull(analyticsRequest.visitorId))).orderBy(sql`1`);
     return {
       gate: "on",
       empty: true,
@@ -65,21 +67,12 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
   const { range, interval } = resolveRange(isRangeSpec(input.range) ? input.range : DEFAULT_RANGE, site.timezone, now);
   const page = parsePageFilter(input.page);
   const q: analytics.Query = {
-    site: { environmentId: input.environmentId, timezone: site.timezone, retentionMonths: analytics.BASE_RETENTION_MONTHS },
+    site: { environmentId: input.environmentId, timezone: site.timezone },
     range,
     filters: page === null ? [] : [page],
     limit: TABLE_ROWS,
   };
-  const [figures, gaps, [rollup]] = yield* Effect.all([
-    analytics.figures(q, interval, ["page", "source", "utm_campaign", "language", "host"]),
-    drizzle.select({ day: analyticsGapDaily.day, count: analyticsGapDaily.count }).from(analyticsGapDaily).where(and(
-      eq(analyticsGapDaily.environmentId, input.environmentId),
-      gte(analyticsGapDaily.day, localDay(site.timezone, range.start)),
-      lte(analyticsGapDaily.day, localDay(site.timezone, range.end.getTime() - 1)),
-    )),
-    drizzle.select({ rolledUpTo: analyticsRollupState.rolledUpTo, dirty: analyticsRollupState.dirty }).from(analyticsRollupState)
-      .where(eq(analyticsRollupState.environmentId, input.environmentId)),
-  ], { concurrency: "unbounded" });
+  const figures = yield* analytics.figures(q, interval, ["page", "source", "utm_campaign", "language", "host"]);
   const today = localDay(site.timezone, now);
   const byGoal = new Map(figures.goals.map((goal) => [goal.goalId, goal]));
   return {
@@ -91,13 +84,7 @@ export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (a
     interval,
     overview: figures.overview,
     buckets: figures.buckets.map(({ bucket, pageviews, visitors }) => ({ at: bucket.getTime(), pageviews, visitors })),
-    partialDays: partialDays(localDays(site.timezone, figures.range.start, figures.range.end), {
-      gaps,
-      today,
-      // Before the rollup closes its first day, every day from the first pageview on is still open.
-      closedThrough: rollup?.rolledUpTo ?? addDays(site.timezone, localDay(site.timezone, seen.ts), -1),
-      dirty: rollup?.dirty ?? [],
-    }),
+    partialDays: partialDays(localDays(site.timezone, figures.range.start, figures.range.end), { today, noSalt: figures.noSaltDays }),
     pages: figures.values("page"),
     sources: figures.values("source"),
     entryPages: figures.entryPages.map(({ value, visitors, visits, bounceRatePercent }) => ({ value, visitors, visits, bounceRatePercent })),

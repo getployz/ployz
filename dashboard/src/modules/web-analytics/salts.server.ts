@@ -1,17 +1,11 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { owners } from "#/modules/config-store/store-lookup.server";
-import {
-  analyticsDaily,
-  analyticsRollupState,
-  analyticsSalt,
-  analyticsSessionHourly,
-  analyticsSite,
-} from "#/modules/web-analytics/tables";
+import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -39,7 +33,6 @@ export function saltWindow(day: string, timezone: string) {
 const salts = (organizationId: string, environmentId: string, days: ReadonlyArray<string>) =>
   days.map((day) => ({ organizationId, environmentId, day, salt: randomBytes(32) }));
 
-/** Locks the site's rollup_state row before its site row, the order ingest and the rollup take them in, and refuses an environment that is gone. */
 export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   organizationId: string,
   environmentId: string,
@@ -52,17 +45,11 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    if (setting.enabled) yield* drizzle.insert(analyticsRollupState).values({ environmentId }).onConflictDoNothing();
-    yield* drizzle.select({ environmentId: analyticsRollupState.environmentId }).from(analyticsRollupState)
-      .where(eq(analyticsRollupState.environmentId, environmentId))
-      .for("update");
-    // Read after the lock, so an enable that waited on the environment's delete sees it gone instead of leaving rows.
+    // The lock holds off the environment's delete, so its forget trigger cannot run before these rows exist.
     const [environment] = yield* drizzle.execute<{ id: string }>(sql`
-      select id from config_environment where id = ${environmentId} and organization_id = ${organizationId}`, "objects");
+      select id from config_environment where id = ${environmentId} and organization_id = ${organizationId}
+      for key share`, "objects");
     if (environment === undefined) return yield* new NotFound({ message: "Environment not found." });
-    const [previous] = yield* drizzle.select({ timezone: analyticsSite.timezone }).from(analyticsSite)
-      .where(and(eq(analyticsSite.organizationId, organizationId), eq(analyticsSite.environmentId, environmentId)))
-      .for("update");
     const [site] = yield* drizzle.insert(analyticsSite)
       .values({ organizationId, environmentId, enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }) })
       .onConflictDoUpdate({
@@ -70,13 +57,6 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
         set: { enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }), updatedAt: new Date(now) },
       })
       .returning({ timezone: analyticsSite.timezone });
-    if (previous !== undefined && site !== undefined && previous.timezone !== site.timezone) {
-      yield* drizzle.delete(analyticsDaily).where(eq(analyticsDaily.environmentId, environmentId));
-      yield* drizzle.delete(analyticsSessionHourly).where(eq(analyticsSessionHourly.environmentId, environmentId));
-      yield* drizzle.update(analyticsRollupState)
-        .set({ rolledUpTo: null, dirty: sql`'{}'::date[]`, updatedAt: new Date(now) })
-        .where(eq(analyticsRollupState.environmentId, environmentId));
-    }
     if (!setting.enabled || site === undefined) return;
     const days = [0, 1, 2].map((offset) => siteDay(site.timezone, now, offset));
     yield* drizzle.insert(analyticsSalt).values(salts(organizationId, environmentId, days)).onConflictDoNothing();
@@ -94,6 +74,12 @@ export const withholdToday = Effect.fn("WebAnalytics.withholdToday")(function* (
     eq(analyticsSalt.environmentId, environmentId),
     eq(analyticsSalt.day, siteDay(site.timezone, now)),
   ));
+});
+
+/** Keeps two UTC days back, which covers yesterday in every zone; Machines still ship yesterday's rows. */
+export const pruneSalts = Effect.fn("WebAnalytics.pruneSalts")(function* (now: Date) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.delete(analyticsSalt).where(lt(analyticsSalt.day, siteDay("UTC", now.getTime(), -2)));
 });
 
 export const namespacesByEnvironment = Effect.fn("WebAnalytics.namespaces")(function* (organizationId: string) {

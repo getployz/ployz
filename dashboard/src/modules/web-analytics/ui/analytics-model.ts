@@ -40,8 +40,8 @@ function nextHourStart(timezone: string, now: number) {
 export type ResolvedRange = { readonly range: Range; readonly interval: Interval };
 
 /**
- * The instants a spec covers in the site's zone, through the end of the current hour: the same bounds as
- * `pnpm analytics:query --range Nd`. A day range reads hourly; anything longer reads daily.
+ * The instants a spec covers in the site's zone, through the end of the current hour. A day range reads hourly; anything
+ * longer reads daily.
  */
 export function resolveRange(spec: RangeSpec, timezone: string, now: number): ResolvedRange {
   const end = nextHourStart(timezone, now);
@@ -57,36 +57,22 @@ export function resolveRange(spec: RangeSpec, timezone: string, now: number): Re
   return { range: { start: dayStart(timezone, addDays(timezone, today, 1 - days)), end }, interval: days === 1 ? "hour" : "day" };
 }
 
-/**
- * Why a day's numbers are short: some visits could not be counted, the day is today, or a past day's visits may
- * still be arriving late.
- */
-export type PartialReason = "gap" | "today" | "late";
+/** Why a day's numbers are short: some visits could not be counted, or the day is today. */
+export type PartialReason = "no-salt" | "today";
 export type PartialDay = { readonly day: string; readonly reason: PartialReason };
 
 /** What Cloud knows about how complete each day is. */
 export type DayEvidence = {
-  readonly gaps: ReadonlyArray<{ readonly day: string; readonly count: number }>;
   readonly today: string;
-  /** The last day the rollup closed, which it does only once a Machine's late pageviews for it stop being likely. */
-  readonly closedThrough: string;
-  /** Closed days that pageviews reached after closing, not yet rebuilt. */
-  readonly dirty: ReadonlyArray<string>;
+  /** Days with pageviews a Machine could not tie to a visitor, for want of the day's salt. */
+  readonly noSalt: ReadonlyArray<string>;
 };
 
-/** Days in `days` with uncounted visits, then today, then past days whose pageviews may still reach Cloud. */
+/** Days in `days` with uncounted visitors, then today. */
 export function partialDays(days: ReadonlyArray<string>, evidence: DayEvidence): PartialDay[] {
-  const gapped = new Set(evidence.gaps.filter((gap) => gap.count > 0).map((gap) => gap.day));
-  const dirty = new Set(evidence.dirty);
-  const reason = (day: string): PartialReason | undefined =>
-    gapped.has(day) ? "gap"
-    : day === evidence.today ? "today"
-    : day > evidence.closedThrough || dirty.has(day) ? "late"
-    : undefined;
-  return days.flatMap((day): PartialDay[] => {
-    const why = reason(day);
-    return why === undefined ? [] : [{ day, reason: why }];
-  });
+  const noSalt = new Set(evidence.noSalt);
+  return days.flatMap((day): PartialDay[] =>
+    noSalt.has(day) ? [{ day, reason: "no-salt" }] : day === evidence.today ? [{ day, reason: "today" }] : []);
 }
 
 export type AnalyticsPlan = "cloud" | "self-host-on" | "self-host-off";
