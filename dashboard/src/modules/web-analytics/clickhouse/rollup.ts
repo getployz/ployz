@@ -97,16 +97,16 @@ const rollupDay = <E, R>(environmentId: string, pick: (site: SiteState) => Effec
     const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
     if (writer === undefined) return false;
     const database = yield* Database;
-    return yield* database.transaction(Effect.gen(function* () {
-      const reader = yield* locked(clickhouse, environmentId);
-      const site = reader === null ? null : yield* siteState(environmentId, reader);
+    const published = yield* database.transaction(locked(clickhouse, environmentId, (reader) => Effect.gen(function* () {
+      const site = yield* siteState(environmentId, reader);
       if (site === null) return false;
       const day = yield* pick(site);
       if (day === null) return false;
       yield* writeDay(site, day, writer);
       yield* writer.publish(publication(day));
       return true;
-    }));
+    })));
+    return published === true;
   });
 
 const closeNextDay = (environmentId: string, now: Date) =>

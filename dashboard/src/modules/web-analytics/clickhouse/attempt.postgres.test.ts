@@ -76,7 +76,7 @@ it.live("an attempt minted before a garbage collection fence can never publish, 
     expect(yield* pending).toEqual([stale.attempt]);
   }));
 
-it.live("a site holding the pending cap of lost attempts forgets them on the next mint and demotes until a backfill republishes it", () =>
+it.live("a site holding the pending cap of lost attempts mints nothing and keeps its published view until garbage collection frees the dead slots", () =>
   Effect.gen(function* () {
     const { provide, site, minted, database } = yield* setup;
     const { drizzle } = database;
@@ -86,10 +86,26 @@ it.live("a site holding the pending cap of lost attempts forgets them on the nex
     const lost: number[] = [];
     for (let i = 0; i < PENDING_CAP; i++) lost.push((yield* provide(minted)).attempt);
     yield* provide(drizzle.execute(sql`update analytics.clickhouse_site set reads = true, backfilled_at = now() where environment_id = ${SITE}::text`));
-    expect((yield* site)?.pending).toEqual(lost);
+    const full = yield* site;
+    expect(full?.pending).toEqual(lost);
+    expect(yield* provide(mint(silent, [SITE]))).toEqual(new Map());
+    expect(yield* site).toEqual(full);
+    yield* provide(collectGarbage(silent, yield* provide(pin())));
+    expect(yield* site).toEqual({ ...full, generation: 1 });
+    yield* provide(collectGarbage(silent, yield* provide(pin())));
+    expect(yield* site).toEqual({ ...full, pending: [], generation: 2 });
     const next = yield* provide(minted);
-    const past = (lost.at(-1) ?? 0) + 1;
-    expect(yield* site).toEqual({ floor: past, below: past, pending: [next.attempt], generation: 0, reads: false, backfilled: false });
-    yield* provide(database.transaction(next.publish({ kind: "append", dirty: [] })));
-    expect((yield* site)?.pending).toEqual([]);
+    expect((yield* site)?.pending).toEqual([next.attempt]);
+  }));
+
+it.live("the floor moves only by publishing a refloor, which also retires every older pending attempt so no earlier refloor can lower it again", () =>
+  Effect.gen(function* () {
+    const { provide, site, pending, minted, database } = yield* setup;
+    const older = yield* provide(minted);
+    const newer = yield* provide(minted);
+    yield* provide(database.transaction(newer.publish({ kind: "refloor" })));
+    expect(yield* pending).toEqual([]);
+    expect((yield* site)?.floor).toBe(newer.attempt);
+    expect(yield* provide(database.transaction(Effect.flip(older.publish({ kind: "refloor" }))))).toBeInstanceOf(PublishRefused);
+    expect((yield* site)?.floor).toBe(newer.attempt);
   }));

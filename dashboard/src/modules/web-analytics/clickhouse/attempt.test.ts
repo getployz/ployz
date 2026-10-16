@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { Deferred, Effect, Exit, Fiber } from "effect";
 import { expect } from "vitest";
-import { type Attempt, collectGarbage, locked, mint, PublishRefused, read, type Writer } from "#/modules/web-analytics/clickhouse/attempt";
+import { type Attempt, collectGarbage, locked, mint, PublishRefused, read, type Reader, type Writer } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { silentClickHouse as silent } from "#/test/clickhouse";
@@ -51,7 +51,23 @@ it.effect("garbage collection refuses to run inside a caller's transaction, so i
 
 it.effect("the locked snapshot exists only inside the transaction that will publish against it", () =>
   Effect.gen(function* () {
-    expect(yield* defect(locked(silent, "site")).pipe(withDatabase(answering(() => [])))).toContain("inside the transaction that publishes");
+    expect(yield* defect(locked(silent, "site", () => Effect.void)).pipe(withDatabase(answering(() => [])))).toContain("inside the transaction that publishes");
+  }));
+
+it.effect("a read refuses to run inside a transaction, whose snapshot would hide the generation bump it checks for", () =>
+  Effect.gen(function* () {
+    expect(yield* defect(read(silent, "site", () => Effect.void)).pipe(withDatabase(insideTransaction))).toContain("must not run inside one");
+  }));
+
+it.effect("a Reader that escapes its callback answers no further queries, so no result can outlive its validation", () =>
+  Effect.gen(function* () {
+    const database = answering(() => [{ ...SITE, generation: "3" }]);
+    const count = (reader: Reader) => reader.select("SELECT count() AS n FROM pageview", {});
+    const escaped = yield* read(silent, "site", Effect.succeed).pipe(withDatabase(database));
+    expect(yield* defect(count(escaped))).toContain("only inside the read or locked callback");
+    const held = yield* database.transaction(locked(silent, "site", (reader) => Effect.as(count(reader), reader)));
+    if (held === null) return yield* Effect.die("the answering database had no site row");
+    expect(yield* defect(count(held))).toContain("only inside the read or locked callback");
   }));
 
 const minted = (clickhouse: ClickHouseService, database: DatabaseService) => Effect.gen(function* () {
@@ -60,7 +76,17 @@ const minted = (clickhouse: ClickHouseService, database: DatabaseService) => Eff
   return writer;
 }).pipe(withDatabase(database));
 
-const publishRow = () => [{ environment_id: "site", attempt: "7" }];
+const publishRow = () => [{ environment_id: "site", attempt: "7", fence: "0" }];
+
+it.effect("a writer behind the garbage collection fence refuses to write, so a stalled attempt cannot land rows after its slot is freed", () =>
+  Effect.gen(function* () {
+    const database = answering(() => [{ environment_id: "site", attempt: "7", fence: "8" }]);
+    const writer = yield* minted(silent, database);
+    const refused = yield* Effect.flip(writer.rows("pageview", [{}]));
+    expect(refused).toBeInstanceOf(ClickHouseFailure);
+    expect(refused.message).toContain("behind the garbage collection fence");
+    expect(yield* Effect.flip(database.transaction(writer.publish({ kind: "append", dirty: [] })))).toBeInstanceOf(PublishRefused);
+  }));
 
 it.effect("a writer accepts rows only before it publishes, so nothing can land under a published attempt", () =>
   Effect.gen(function* () {

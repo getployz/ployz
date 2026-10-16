@@ -149,7 +149,7 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
       return copied;
     }), { isolationLevel: "repeatable read" });
   });
-  return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }));
+  return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second"), while: (error) => error._tag !== "SiteUnavailable" }));
 });
 
 export const ensureBackfilled = Effect.fn("WebAnalytics.ensureBackfilled")(function* (clickhouse: ClickHouseService, environmentId: string) {
@@ -157,7 +157,7 @@ export const ensureBackfilled = Effect.fn("WebAnalytics.ensureBackfilled")(funct
   const [site] = yield* drizzle.execute<{ backfilled: boolean }>(sql`
     select backfilled_at is not null as backfilled from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
   if (site?.backfilled) return null;
-  return yield* backfillSite(clickhouse, environmentId);
+  return yield* backfillSite(clickhouse, environmentId).pipe(Effect.catchTag("SiteUnavailable", () => Effect.succeed(null)));
 });
 
 export const forgetDeletedSites = Effect.fn("WebAnalytics.forgetDeletedSites")(function* (clickhouse: ClickHouseService) {
