@@ -1,11 +1,12 @@
 import { it } from "@effect/vitest";
-import { Effect, Fiber, Layer } from "effect";
+import { sql } from "drizzle-orm";
+import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, pin } from "#/modules/web-analytics/clickhouse/attempt";
-import { ClickHouse, ClickHouseFailure, type ClickHouseService } from "#/modules/web-analytics/clickhouse/client";
+import { collectGarbage, PENDING_CAP, pin } from "#/modules/web-analytics/clickhouse/attempt";
+import { ClickHouse, ClickHouseFailure, type ClickHouseService, type Params } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as store from "#/modules/web-analytics/clickhouse/store";
-import { backfillSite, drainOutbox, enqueueForClickHouse } from "#/modules/web-analytics/clickhouse/writer";
+import { backfillSite, drainOutbox, enqueueForClickHouse, ensureBackfilled } from "#/modules/web-analytics/clickhouse/writer";
 import type { PageviewRecord } from "#/modules/web-analytics/fixtures/reference";
 import { pageviewValues, seedSite } from "#/modules/web-analytics/fixtures/seed";
 import { forgetPartitions } from "#/modules/web-analytics/postgres/partitions";
@@ -39,7 +40,29 @@ const setup = Effect.gen(function* () {
   }));
   yield* provide(seedSite({ environmentId: SITE, timezone: "UTC" }, [row("1"), row("2")]));
   yield* provide(backfillSite(clickhouse, SITE));
-  return { clickhouse, provide, today, daily, hourly, enqueue };
+  const pendingCount = provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.execute<{ n: number }>(sql`
+      select cardinality(pending) as n from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
+    return row?.n ?? 0;
+  }));
+  return { clickhouse, provide, today, daily, hourly, enqueue, pendingCount, query, total };
+});
+
+const losesEveryAck = (real: ClickHouseService): ClickHouseService => ({
+  ...real,
+  unchecked: {
+    ...real.unchecked,
+    insert: (table, rows) => real.unchecked.insert(table, rows).pipe(Effect.andThen(rows.length === 0
+      ? Effect.void
+      : Effect.fail(new ClickHouseFailure({ message: "acknowledgement lost", cause: null })))),
+  },
+});
+
+/** A client whose first query stalls until `resume` fires, after `captured` reports that the read took its Postgres snapshot. */
+const stallsFirstQuery = (real: ClickHouseService, captured: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): ClickHouseService => ({
+  ...real,
+  query: <A>(query: string, params?: Params) => Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(resume)), Effect.andThen(real.query<A>(query, params))),
 });
 
 const failsAfterDaily = (real: ClickHouseService): ClickHouseService => ({
@@ -99,4 +122,45 @@ it.live("a drain interrupted mid-INSERT cannot land rows inside a rollup", () =>
     yield* provide(closeDays(SITE, new Date(today - 2 * DAY + HOUR)), sleepsAfterHourly(clickhouse));
     expect(yield* daily).toBe(yield* hourly);
     expect(yield* daily).toBe(2);
+  }), 300_000);
+
+for (const supersedes of ["a rebuild", "a backfill"] as const) {
+  it.live(`a read that paused before its ClickHouse query survives ${supersedes} and a garbage collection`, () =>
+    Effect.gen(function* () {
+      const { clickhouse, provide, today, daily, enqueue, query, total } = yield* setup;
+      if (supersedes === "a rebuild") yield* provide(closeDays(SITE, new Date(today - 2 * DAY + HOUR)));
+      expect(yield* daily).toBe(2);
+      const fence = yield* provide(pin());
+      const captured = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const reading = yield* Effect.forkChild(provide(Effect.map(store.dailyTotals(query), total), stallsFirstQuery(clickhouse, captured, resume)));
+      yield* Deferred.await(captured);
+      if (supersedes === "a rebuild") {
+        yield* enqueue("3");
+        yield* provide(drainOutbox(clickhouse));
+        yield* provide(rebuildDirtyDays(SITE));
+      } else {
+        yield* provide(backfillSite(clickhouse, SITE));
+      }
+      expect(yield* provide(collectGarbage(clickhouse, fence))).toBeGreaterThan(0);
+      yield* Deferred.succeed(resume, undefined);
+      expect([2, yield* daily]).toContain(yield* Fiber.join(reading));
+    }), 300_000);
+}
+
+it.live("losing every acknowledgement for longer than the pending cap keeps visibility state bounded and reads working", () =>
+  Effect.gen(function* () {
+    const { clickhouse, provide, daily, enqueue, pendingCount } = yield* setup;
+    const lossy = losesEveryAck(clickhouse);
+    const lost = PENDING_CAP + 8;
+    for (let n = 0; n < lost; n++) {
+      yield* enqueue(String(3 + n));
+      yield* provide(drainOutbox(lossy), lossy);
+      expect(yield* pendingCount).toBeLessThanOrEqual(PENDING_CAP);
+    }
+    expect(yield* daily).toBeLessThanOrEqual(2);
+    yield* provide(ensureBackfilled(clickhouse, SITE));
+    while ((yield* provide(drainOutbox(clickhouse))) > 0) {}
+    expect(yield* daily).toBe(2 + lost);
+    expect(yield* pendingCount).toBe(0);
   }), 300_000);
