@@ -326,7 +326,7 @@ struct LocalCheckin { key: CheckinKey, attempt: Option<AttemptRecord>, last: Hos
 async fn enroll(instruction: Instruction) -> Result<MachineId, StageFailure>;  // today's server add body, in-process
 ```
 
-`checkin --install` writes `ployz-checkin.service` and `ployz-prepare.service`, starts the loop and exits 0. It doesn't install Docker and doesn't wait for anything. It reuses an existing key file. A rerun of the install line on the same host keeps its identity, so a rejected host stays rejected.
+`checkin --install` writes `ployz-checkin.service` and `ployz-prepare.service`, starts the loop and exits 0. It doesn't install Docker and doesn't wait for anything. It reuses an existing key file. A rerun of the install line on the same host keeps its identity, so a rejected host stays rejected under the same token and comes back under a new one.
 
 `enroll` calls the same function `ployz server add` calls after it resolves the token. The per-attempt token never touches argv or disk. A loop restarted mid-install resumes through the existing local enrollment record, because Cloud keeps serving the same instruction while the attempt is open.
 
@@ -453,12 +453,12 @@ The installer gains `--storage zfs:<device>`.
 
 1. Load the `fleetToken` by hash. Verify the signature against `checkinKey` and check timestamp skew of 5 minutes or less. Apply per-token and per-source-IP rate limits.
 2. If the token is revoked or past `expiresAt`, look for an open attempt on this key. With one, keep going so the attempt can finish. Without one, delete the row and answer `stop{token_revoked | token_expired}`.
-3. Upsert on `(organizationId, checkinKey)`. A tombstoned key gets `stop{rejected}`. A new key over the per-token cap of 1000 waiting rows gets 429.
+3. Upsert on `(organizationId, checkinKey)`. A key tombstoned under this same token gets `stop{rejected}`. A key tombstoned under another token clears `rejectedAt` and takes the new `fleetTokenId`, so a new token brings a rejected host back. A new key over the per-token cap of 1000 waiting rows gets 429.
 4. If `attempt` is present, emit `server/enrollment.reported`. The run applies it.
 5. Read the open `serverEnrollment`.
    - If it is `running`, answer `enroll` with the decrypted token.
    - If it is `instructed`, answer `enroll` only when the host is ready for the attempt's storage. That means `prep.docker` is `ready`, and `prep.zfs` is `ready` when the storage is `zfs`. Otherwise answer `wait{10}`, and the row reads "Queued".
-   - Otherwise, if the token has `autoEnrollMax`, the Organization already has a Cloud Pairing, the host is ready with no blockers, and the used count is under the max, call `startServerEnrollment` with the default plan and answer `wait{2}`. A host still preparing doesn't start an attempt and doesn't count.
+   - Otherwise, if the token has `autoEnrollMax`, the Organization already has a Cloud Pairing, and the host is ready with no blockers, lock the `fleetToken` row (`SELECT ... FOR UPDATE`), derive its used count, and if it is under the max call `startServerEnrollment` with the default plan and answer `wait{2}`. A host still preparing doesn't start an attempt and doesn't count.
    - Otherwise answer `wait{10, probe?}`.
 
 The default plan for enroll on arrival uses the hostname as the name, ZFS on a spare disk when there is one, Docker only where ZFS can't run, and today's default policy. It runs only once the host is ready, so the ZFS choice reads a finished build. A host whose ZFS build failed gets Docker volumes.
@@ -725,7 +725,7 @@ Each unit is one PR with its own check. Units run in this order. A unit may star
 | C1 | `installer/assess.rs` with `HostFacts`, `read_facts`, `assess`, and `ployzd install --probe --json`. Today's refusals route through it unchanged. | core | none | `cargo nextest run -p ployzd assess` passes a test per blocker, and `probe --json` on a Boat host prints the facts. |
 | C2 | `ployzd install --prepare` as one locked, idempotent background job. It installs Docker, then builds ZFS ahead without installing it (Ubuntu downloads only, Debian and Amazon Linux build with DKMS), and writes `state.json`. | core | C1 | A Debian Boat host ends with Docker running, a DKMS-built module, nothing in `/lib/modules/<kernel>/updates`, no ZFS package, no `ployzd` service and no pool. |
 | D1 | `fleet_token` table, two-word names, expiry, `createFleetToken`, `listFleetTokens`, `revokeFleetToken`, and the CLI API routes. | dashboard | none | A Postgres vitest shows an expired token refused, a name collision retried, and revoke deleting only waiting rows with no open attempt. |
-| D2 | `waiting_server` table, `POST /api/checkin` answering `wait` and `stop`, signature check, the optional `prep` field, `rejectWaitingServers`. | dashboard | D1 | Route tests cover a bad signature (401), an expired token (`stop{token_expired}`), a rejected key (`stop{rejected}`), and a request with and without `prep`. |
+| D2 | `waiting_server` table, `POST /api/checkin` answering `wait` and `stop`, signature check, the optional `prep` field, `rejectWaitingServers`. | dashboard | D1 | Route tests cover a bad signature (401), an expired token (`stop{token_expired}`), a rejected key (`stop{rejected}`), the same key back under a new token (`wait`), and a request with and without `prep`. |
 | C3 | `ployz server checkin` loop, signed client, both systemd units, starting preparation, `prep` in each check-in, `status.json`, and the This server block in `ployz status`. | core | C1, C2, D2 | On Boat against `SERVERS=1` Cloud, a host shows in the waiting list within 10 s of `checkin --install` exiting, its status moves from Installing Docker to Ready, and reject stops both units. |
 | C4 | `install.sh` reads `PLOYZ_ENROLL_TOKEN` and `PLOYZ_SKIP_ZFS`, writes the token file and runs `checkin --install`. Without it, behavior is unchanged. | core | C3 | `core/scripts/test-cli-installer.sh` covers both paths, and one `curl \| sh` on Boat lands a waiting row. |
 | C5 | `ployz server token create\|ls\|revoke` with `--name`, `--auto --max`, `--expires`. | core | D1 | A `cli_shape.rs` case per verb, and the revoke output reports the removed count against `SERVERS=1`. |
@@ -736,7 +736,7 @@ Each unit is one PR with its own check. Units run in this order. A unit may star
 | D5 | Join gate with the derived `joining` count, `not_yet.reason` and `ahead`. | dashboard | D4 | A test with `JOIN_SLOTS = 1` and three joiners shows serialized joins. |
 | C8 | `ployz server enroll` with globs, `--name 'web-{n}'`, `--first`, `--all` provider breakdown, `--status`, and the storage flags. | core | C6, C7 | `cli_shape.rs` cases, and a glob enroll on three Boat hosts prints the skip list and progress. |
 | D6 | UI for the Enroll sheet (first server, volumes, names, runs, spread banner) and the Enrolling list with six fixed counters, append order, joined rows that stay, and sent-back rows at the bottom of Waiting. | dashboard | D3, D4, D5 | verify-dashboard with `SERVERS=1` and three hosts. Screenshots before and after each stage change show no row or column moving. |
-| D7 | Enroll on arrival. `autoEnrollMax`, the default plan, the used count, ready hosts only, and never founding. | dashboard | D4 | A Postgres vitest with max 2 and three hosts enrolls two and leaves the third waiting. An empty Organization enrolls none. A host still preparing starts no attempt until it is ready. |
+| D7 | Enroll on arrival. `autoEnrollMax`, the default plan, the used count, ready hosts only, and never founding. | dashboard | D4 | A Postgres vitest with max 2 and three hosts enrolls two and leaves the third waiting, including when all three check in concurrently. An empty Organization enrolls none. A host still preparing starts no attempt until it is ready. |
 | D8 | Inbound probes on 80 and 443 with private-range refusal, and the probe request in `wait`. | dashboard | D2 | A route test refuses a private observed IP. |
 | C9 | The bounded probe window on the host. | core | C3, D8 | A Boat pair with UDP 51820 blocked on one host shows Closed for that edge. |
 | C10 | `--storage zfs:<device>` in the installer and the instruction. | core | C7, open risk 1 | A Boat host with a spare disk builds its pool on that disk. |

@@ -477,6 +477,7 @@ function statusCell(s) {
   if (s.offline) return `<div class="two status"><b class="t-off">Offline</b><span>${s.lastSeen} min ago</span></div>`;
   if (s.block) return `<div class="two status"><b class="t-warn">${esc(s.block)}</b><span>${esc(s.blockWhy)}</span></div>`;
   if (s.failed) return `<div class="two status"><b class="t-off">Failed at ${s.failed.stage}</b><span title="${esc(s.failed.msg)}">${esc(s.failed.msg)}</span></div>`;
+  if (s.prep) return `<div class="two status"><b class="t-info">${s.prep === "docker" ? "Installing Docker" : "Building ZFS"}</b><span>${s.lastSeen}s ago</span></div>`;
   return `<div class="two status"><b class="t-ok">Ready</b><span>${s.warn ? `<span class="t-warn">${s.warn}</span> · ` : ""}${s.lastSeen}s ago</span></div>`;
 }
 
@@ -530,7 +531,7 @@ const BUCKETS = [
 ];
 function renderEnrolling() {
   const rows = st.enr.filter((e) => e.end !== "cancelled" && e.end !== "failed");
-  if (!rows.some((e) => !e.end)) return "";
+  if (!rows.length) return "";
   const joined = rows.filter((e) => e.end === "joined").length;
   const live = rows.filter((e) => !e.end);
   const bucket = ([label, keys]) => {
@@ -784,8 +785,10 @@ function simulateArrivals(n, done, tokenName) {
     if (i >= n) { clearInterval(arrivalTimer); if (done) done(); return; }
     const s = { ...src[i], id: "a" + i + Math.floor(rnd() * 1e6), token: tokenName || "amber-falcon", firstSeen: 0, lastSeen: 1 };
     if (n === 1) { s.host = "hz-fsn1-001"; s.empty = 3.8; s.zfsWhy = null; s.build = 0; s.os = "Ubuntu 24.04"; }
-    if (auto) startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true);
-    else st.waiting.push(s);
+    s.prep = s.docker ? (s.zfsWhy ? null : "zfs") : "docker";
+    s.prepT = 6 + Math.floor(rnd() * 10);
+    if (auto && !s.prep) startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true);
+    else { s.autoOnReady = auto; st.waiting.push(s); runPrep(); }
     i++;
     if (!$("mint").hidden) {
       $("live-text").innerHTML = auto ? `<b>${i}</b> joining` : `<b>${i}</b> ${i === 1 ? "server is" : "servers are"} here`;
@@ -929,6 +932,22 @@ function tick() {
   render();
 }
 function run() { if (!ticker) ticker = setInterval(tick, 260); }
+// Preparation runs on every waiting host before approval: Docker, then the ZFS build where it applies.
+let prepTimer = null;
+function runPrep() {
+  if (prepTimer) return;
+  prepTimer = setInterval(() => {
+    const preparing = st.waiting.filter((s) => s.prep);
+    if (!preparing.length) { clearInterval(prepTimer); prepTimer = null; return; }
+    for (const s of preparing) {
+      if (--s.prepT > 0) continue;
+      if (s.prep === "docker" && !s.zfsWhy) { s.prep = "zfs"; s.prepT = 8 + Math.floor(rnd() * 12); continue; }
+      s.prep = null;
+      if (s.autoOnReady) { st.waiting = st.waiting.filter((w) => w !== s); startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true); }
+    }
+    render();
+  }, 400);
+}
 function fail(e, stage, msg) {
   e.end = "failed";
   st.waiting.push({ ...e.w, failed: { stage, msg }, lastSeen: 2 });
