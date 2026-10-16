@@ -4,7 +4,9 @@
 //! running under systemd. Without it, this is the loop the unit runs.
 
 use std::{
-    env as process_env, fs,
+    env as process_env,
+    ffi::OsStr,
+    fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
@@ -79,15 +81,18 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         let (key, mut client) = connect(&paths, &cloud_url, token)?;
         return runtime.block_on(install(&mut client, &key, &paths, &cloud_url));
     }
-    let host = System {
-        ployzd: runtime.block_on(loop_ployzd(matches, &paths))?,
-    };
-    let Some(token) = runtime
-        .block_on(checkin::loop_token(&host, &paths))
-        .map_err(key_failure)?
+    let Some((ployzd, token)) = runtime.block_on(loop_start(
+        &System {
+            ployzd: PathBuf::new(),
+        },
+        matches,
+        &paths,
+        process_env::var_os("PATH").as_deref(),
+    ))?
     else {
         return Ok(());
     };
+    let host = System { ployzd };
     let (key, mut client) = connect(&paths, &cloud_url, token)?;
     let CheckinEnd::Stopped(_) = runtime.block_on(checkin::run(&host, &mut client, &key, &paths));
     Ok(())
@@ -117,7 +122,7 @@ async fn install(
 ) -> Result<(), Error> {
     keep_token_private(&paths.token_file)?;
     let host = System {
-        ployzd: ployzd(paths, true).await?,
+        ployzd: ployzd(paths, process_env::var_os("PATH").as_deref(), true).await?,
     };
     let ployz = process_env::current_exe().map_err(|error| {
         Error::caused(
@@ -145,7 +150,7 @@ async fn install(
             crate::ui::warn(format!("{why} The loop keeps trying."));
         }
         Next::Stop(reason, message) => {
-            checkin::stop(&host, paths).await;
+            checkin::stop(&host, client, paths).await;
             return Err(Error::coded(
                 RpcErrorCode::Unauthenticated,
                 format!("{}. {message}", reason.title()),
@@ -171,30 +176,55 @@ async fn stop_old_loop() -> Result<(), Error> {
     systemd(&["disable", "--now", unit::CHECKIN]).await
 }
 
-async fn loop_ployzd(matches: &ArgMatches, paths: &Paths) -> Result<PathBuf, Error> {
-    match matches.get_one::<PathBuf>("ployzd") {
-        Some(pinned) => Ok(pinned.clone()),
-        None => ployzd(paths, false).await,
-    }
+/// The token, then the ployzd, the loop runs with. A missing token ends the loop before it looks
+/// for a ployzd it would not use. `stopper` only disables the loop.
+async fn loop_start<H: checkin::Host>(
+    stopper: &H,
+    matches: &ArgMatches,
+    paths: &Paths,
+    search: Option<&OsStr>,
+) -> Result<Option<(PathBuf, FleetToken)>, Error> {
+    let Some(token) = checkin::loop_token(stopper, paths)
+        .await
+        .map_err(key_failure)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some((loop_ployzd(matches, paths, search).await?, token)))
 }
 
-async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {
-    // An install skips a ployzd older than this CLI, which may not know the flags this one uses.
-    let usable = async |path: &Path| !fetch || crate::provisioning::daemon_is_current(path).await;
-    if let Some(found) = on_path("ployzd")
-        && usable(&found).await
+/// The ployzd `--install` pinned while it is still there and current, else one found again.
+async fn loop_ployzd(
+    matches: &ArgMatches,
+    paths: &Paths,
+    search: Option<&OsStr>,
+) -> Result<PathBuf, Error> {
+    if let Some(pinned) = matches.get_one::<PathBuf>("ployzd")
+        && pinned.is_file()
+        && crate::provisioning::daemon_is_current(pinned).await
     {
-        return Ok(found);
+        return Ok(pinned.clone());
     }
+    ployzd(paths, search, false).await
+}
+
+/// A ployzd as new as this CLI, which knows the flags this one uses. Only an install fetches one.
+async fn ployzd(paths: &Paths, search: Option<&OsStr>, fetch: bool) -> Result<PathBuf, Error> {
     let copy = paths.checkin_dir.join("ployzd");
-    if copy.is_file() && usable(&copy).await {
-        return Ok(copy);
+    for found in on_path(search, "ployzd")
+        .into_iter()
+        .chain(copy.is_file().then(|| copy.clone()))
+    {
+        if crate::provisioning::daemon_is_current(&found).await {
+            return Ok(found);
+        }
     }
     if !fetch {
         return Err(Error::coded(
             RpcErrorCode::NotFound,
             format!(
-                "No ployzd on PATH or at {}. Run ployz server checkin --install.",
+                "No ployzd {} on PATH or at {}. Run ployz server checkin --install.",
+                env!("CARGO_PKG_VERSION"),
                 copy.display()
             ),
         ));
@@ -224,9 +254,8 @@ fn keep_token_private(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn on_path(name: &str) -> Option<PathBuf> {
-    let path = process_env::var_os("PATH")?;
-    process_env::split_paths(&path)
+fn on_path(search: Option<&OsStr>, name: &str) -> Option<PathBuf> {
+    process_env::split_paths(search?)
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
 }

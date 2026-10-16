@@ -203,22 +203,26 @@ prepares Docker and ZFS meanwhile.
 2. Read the loop's log with `sudo journalctl -u ployz-checkin -n 100`, and preparation's with
    `sudo journalctl -u ployz-prepare -n 200`. A failed preparation is retried 10 minutes later,
    up to three times. Once you've fixed the cause, `sudo ployz server checkin --install` starts it
-   again right away.
-3. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS. It keeps trying every
-   minute.
-4. `Clock is off` means the server's clock is more than 5 minutes away from Ployz Cloud's, so
-   Cloud can't check the signature. The `reason` line says by how much. Set the clock right, for
-   example with `timedatectl set-ntp true`, and the running loop checks in again within a minute.
-   If `ployz server checkin --install` itself said so, the loop isn't running: fix the clock and
-   run that command again.
-5. `Needs a newer ployz` means Ployz Cloud couldn't read this server's check-in. The loop tries
+   again right away. Preparation that stopped mid-step on every try reads as failed.
+3. `sudo systemctl status ployz-checkin` says whether the loop is running at all.
+4. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS, or something in
+   between, such as a proxy, answered instead. It keeps trying every minute.
+5. `Clock is off` means Ployz Cloud refused the check-in and the server's clock is more than 4
+   minutes away from Cloud's, close to the 5 minutes Cloud allows, so the token isn't to blame.
+   The `reason` line says by how much. Set the clock right, for example with
+   `timedatectl set-ntp true`, and the running loop checks in again within a minute. If
+   `ployz server checkin --install` itself said so, the loop isn't running: fix the clock and run
+   that command again.
+6. `Needs a newer ployz` means Ployz Cloud couldn't read this server's check-in. The loop tries
    again every hour. Install a newer `ployz` and run `sudo ployz server checkin --install`.
-6. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
-   `/etc/ployz/fleet-token` and won't start again at boot. A token Cloud no longer accepts at all,
-   because you revoked or deleted it or the file holds only part of it, reads `Token revoked`. Put
-   a new Fleet Token in that file and run `sudo ployz server checkin --install` again. A rejected
-   server stays rejected. If the token file goes missing while the loop runs, the loop stops the
-   same way.
+7. `Token refused` means Ployz Cloud refused the Fleet Token once. The loop asks again a minute
+   later and goes on as before if Cloud accepts it.
+8. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
+   `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
+   boot. A token Cloud refuses twice in a row, because you revoked or deleted it, reads `Token
+   revoked`. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
+   again. A rejected server stays rejected. If the token file goes missing, the loop stops the
+   next time it starts.
 
 ## Ployz stops over a leftover network
 

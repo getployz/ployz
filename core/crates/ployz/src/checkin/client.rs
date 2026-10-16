@@ -17,7 +17,7 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::wire::{self, Answer, CheckinRequest, StopReason};
+use super::wire::{self, Answer, CheckinRequest};
 
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-checkin-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
@@ -27,7 +27,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
+const FLEET_TOKEN_SECRET_CHARS: usize = 43;
 const MAX_SKEW_SECONDS: i64 = 300;
+const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
+const CLOUD_REFUSAL: &str = "Authentication is required.";
 
 #[derive(Debug, Error)]
 pub enum KeyError {
@@ -128,7 +131,12 @@ impl FleetToken {
             source,
         })?;
         let token = text.trim();
-        if token.starts_with(FLEET_TOKEN_PREFIX) && !token.contains(char::is_whitespace) {
+        let secret = token.strip_prefix(FLEET_TOKEN_PREFIX).unwrap_or_default();
+        if secret.len() == FLEET_TOKEN_SECRET_CHARS
+            && secret
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        {
             Ok(Self(token.to_owned()))
         } else {
             Err(KeyError::NotAToken {
@@ -152,6 +160,7 @@ pub(crate) struct CheckinClient {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Reply {
     Answer(Answer),
+    Refused,
     Unreachable(Duration, String),
     ClockOff(String),
     Outdated(String),
@@ -230,25 +239,15 @@ pub(super) fn reply(
         return Reply::Answer(wire::answer(body));
     }
     if status == StatusCode::UNAUTHORIZED {
-        // A clock this far off fails the signature check, so the 401 says nothing about the token.
-        return match skew {
-            Some(skew) if skew.abs() > MAX_SKEW_SECONDS => Reply::ClockOff(format!(
-                "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
-                skew.abs()
-            )),
-            Some(_) | None => Reply::Answer(Answer::Stop(
-                StopReason::TokenRevoked,
-                "Cloud no longer accepts this Fleet Token.".to_owned(),
-            )),
-        };
+        return unauthorized(skew, body);
     }
-    if matches!(
-        status,
-        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE
-    ) {
+    if status == StatusCode::BAD_REQUEST {
         return Reply::Outdated(format!(
             "Cloud answered {status} to this check-in. Install a newer ployz"
         ));
+    }
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        return Reply::Outdated(format!("Cloud couldn't take this check-in ({status})"));
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after
@@ -257,6 +256,32 @@ pub(super) fn reply(
         return Reply::Answer(Answer::Wait(after));
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
+}
+
+/// A 401 counts against the token only when Cloud itself refused it and the clocks agree well
+/// inside Cloud's window. Anything else may be a proxy or a clock, and says nothing about it.
+fn unauthorized(skew: Option<i64>, body: &[u8]) -> Reply {
+    let refused = serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|body| {
+        body.get("error").and_then(serde_json::Value::as_str) == Some(CLOUD_REFUSAL)
+    });
+    if !refused {
+        return Reply::Unreachable(
+            BACKOFF,
+            format!("Cloud answered {}", StatusCode::UNAUTHORIZED),
+        );
+    }
+    match skew {
+        Some(skew) if skew.abs() <= TRUSTED_SKEW_SECONDS => Reply::Refused,
+        Some(skew) => Reply::ClockOff(format!(
+            "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
+            skew.abs()
+        )),
+        None => Reply::Unreachable(
+            BACKOFF,
+            "Cloud refused this check-in without a readable Date, so the clock can't be checked"
+                .to_owned(),
+        ),
+    }
 }
 
 fn unix_seconds() -> i64 {

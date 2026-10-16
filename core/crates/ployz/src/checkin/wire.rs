@@ -328,6 +328,33 @@ impl PrepState {
         docker.into_iter().chain(zfs).max()
     }
 
+    pub(super) const fn fresh() -> Self {
+        Self {
+            docker: Step {
+                step: DockerStep::Installing,
+                finished_at: None,
+            },
+            zfs: Step {
+                step: ZfsStep::Installing,
+                finished_at: None,
+            },
+        }
+    }
+
+    /// Marks a step still installing as failed, once nothing will run it again.
+    pub(super) fn give_up(&mut self, message: &str) {
+        if matches!(self.docker.step, DockerStep::Installing) {
+            self.docker.step = DockerStep::Failed {
+                message: message.to_owned(),
+            };
+        }
+        if matches!(self.zfs.step, ZfsStep::Installing) {
+            self.zfs.step = ZfsStep::Failed {
+                message: message.to_owned(),
+            };
+        }
+    }
+
     pub(super) fn installing(&self) -> bool {
         matches!(self.docker.step, DockerStep::Installing)
             || matches!(self.zfs.step, ZfsStep::Installing)

@@ -20,8 +20,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
-use wire::{Answer, CheckinRequest, PrepState, Probe};
-pub(crate) use wire::{DockerPrep, Issue, Prep, StopReason, ZfsPrep};
+use wire::{Answer, CheckinRequest, PrepState};
+pub(crate) use wire::{DockerPrep, Issue, Prep, Probe, StopReason, ZfsPrep};
 
 pub(crate) const ENROLL_LINE: &str = "Enroll needs a newer ployz. Waiting.";
 const ENROLL_WAIT: Duration = Duration::from_secs(10);
@@ -30,6 +30,10 @@ const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_SETTLE: Duration = Duration::from_secs(2);
+const REVOKED: &str = "Cloud no longer accepts this Fleet Token.";
+const REFUSED_ONCE: &str =
+    "Cloud refused this Fleet Token. It is checked once more before the loop removes it";
+const GAVE_UP: &str = "Preparation stopped mid-step on every try. Run sudo ployz server checkin --install to try again.";
 
 pub(crate) struct Paths {
     pub(crate) checkin_dir: PathBuf,
@@ -159,7 +163,7 @@ async fn systemctl_output(args: &[&str]) -> Result<std::process::Output, String>
         .await
         .map_err(|_| {
             format!(
-                "systemctl {} did not finish in {}s",
+                "systemctl {} did not finish in {}s. The change may still apply",
                 args.join(" "),
                 SYSTEMCTL_TIMEOUT.as_secs()
             )
@@ -201,6 +205,7 @@ pub(crate) enum Seen {
     Wait,
     Enroll,
     Stop,
+    Refused,
     Unreachable,
     ClockOff,
     Outdated,
@@ -221,6 +226,8 @@ pub(crate) struct LocalCheckin {
     pub(crate) blockers: Vec<Issue>,
     #[serde(default)]
     pub(crate) prepare_retries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) prepare_started: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,12 +264,16 @@ impl LocalCheckin {
 
     /// Whether `ployz status` should show the message: it says what ended the loop or what to fix.
     pub(crate) fn says_why(&self) -> bool {
-        matches!(self.answer, Seen::Stop | Seen::ClockOff | Seen::Outdated)
+        matches!(
+            self.answer,
+            Seen::Stop | Seen::Refused | Seen::ClockOff | Seen::Outdated
+        )
     }
 
     pub(crate) fn headline(&self) -> Headline {
         match self.answer {
             Seen::Stop => Headline::ended(self.reason.map_or("Stopped", StopReason::title)),
+            Seen::Refused => Headline::open("Token refused"),
             Seen::Unreachable => Headline::open("Can't reach Cloud"),
             Seen::ClockOff => Headline::open("Clock is off"),
             Seen::Outdated => Headline::open("Needs a newer ployz"),
@@ -327,7 +338,7 @@ pub(crate) async fn run<H: Host>(
                     continue;
                 }
                 crate::ui::note(format!("{}. {message}", reason.title()));
-                stop(host, paths).await;
+                stop(host, client, paths).await;
                 return CheckinEnd::Stopped(reason);
             }
             Next::ClockOff(why) => {
@@ -377,14 +388,15 @@ pub(crate) async fn loop_token<H: Host>(
     }
 }
 
-pub(crate) async fn stop<H: Host>(host: &H, paths: &Paths) {
-    match fs::remove_file(&paths.token_file) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => crate::ui::note(format!(
+/// Removes the token file only while it still holds the token Cloud refused, so a token written
+/// since survives.
+pub(crate) async fn stop<H: Host>(host: &H, client: &CheckinClient, paths: &Paths) {
+    let still_sent = FleetToken::read(&paths.token_file).is_ok_and(|token| client.sends(&token));
+    if still_sent && let Err(error) = fs::remove_file(&paths.token_file) {
+        crate::ui::note(format!(
             "Could not remove the Fleet Token at {}: {error}",
             paths.token_file.display()
-        )),
+        ));
     }
     if let Err(why) = host.disable_loop().await {
         crate::ui::note(format!("Could not disable {}: {why}", unit::CHECKIN));
@@ -422,30 +434,46 @@ async fn pass_from<H: Host>(
     installing: bool,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    let mut prepare_retries = previous.map_or(0, |status| status.prepare_retries);
-    let (state, written) = read_prep_state(&paths.prepare_state).unzip();
+    let refused_before = previous
+        .as_ref()
+        .is_some_and(|status| status.answer == Seen::Refused);
+    let mut prepare_retries = previous.as_ref().map_or(0, |status| status.prepare_retries);
+    let mut prepare_started = previous.and_then(|status| status.prepare_started);
     let running = host.prepare_running().await.unwrap_or_else(|why| {
         crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
         true
     });
+    // Read after the unit is seen stopped, so a run that finished in between reads as finished.
+    let (mut state, written) = read_prep_state(&paths.prepare_state).unzip();
     let due = if running {
         None
     } else if installing
         && state
             .as_ref()
-            .is_some_and(|state| state.installing() || state.failed_at().is_some())
+            .is_none_or(|state| state.installing() || state.failed_at().is_some())
     {
         prepare_retries = 0;
         Some(PrepareRun::Start)
     } else {
-        prepare_due(state.as_ref(), written.flatten(), prepare_retries, now)
+        // Only a step left installing is dated by its state file. A failure carries its own time.
+        let written = written
+            .flatten()
+            .filter(|_| state.as_ref().is_some_and(PrepState::installing));
+        let last_try = written.max(prepare_started);
+        prepare_due(state.as_ref(), last_try, prepare_retries, now)
     };
     if let Some(run) = due {
         match host.start_prepare().await {
-            Ok(()) if run == PrepareRun::Retry => prepare_retries += 1,
-            Ok(()) => {}
+            Ok(()) => {
+                prepare_started = Some(now);
+                if run == PrepareRun::Retry {
+                    prepare_retries += 1;
+                }
+            }
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
         }
+    } else if !running && prepare_retries >= PREPARE_TRIES {
+        state.get_or_insert_with(PrepState::fresh).give_up(GAVE_UP);
     }
     let prep = state.as_ref().map_or(
         Prep {
@@ -462,6 +490,7 @@ async fn pass_from<H: Host>(
         prep: Some(prep),
         blockers: Vec::new(),
         prepare_retries,
+        prepare_started,
     };
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
@@ -508,6 +537,20 @@ async fn pass_from<H: Host>(
             status.reason = Some(reason);
             status.message = Some(message.clone());
             Next::Stop(reason, message)
+        }
+        client::Reply::Refused if refused_before => {
+            status.answer = Seen::Stop;
+            status.reason = Some(StopReason::TokenRevoked);
+            status.message = Some(REVOKED.to_owned());
+            Next::Stop(StopReason::TokenRevoked, REVOKED.to_owned())
+        }
+        client::Reply::Refused => {
+            status.answer = Seen::Refused;
+            status.message = Some(REFUSED_ONCE.to_owned());
+            Next::Retry {
+                after: client::BACKOFF,
+                why: format!("{REFUSED_ONCE}."),
+            }
         }
         client::Reply::Unreachable(after, why) => {
             status.answer = Seen::Unreachable;
@@ -570,23 +613,26 @@ enum PrepareRun {
     Retry,
 }
 
-/// What to do about a preparation that is not running.
+/// What to do about a preparation that is not running, `last_try` being its last start or, for a
+/// step left installing, its last state write if later.
 fn prepare_due(
     state: Option<&PrepState>,
-    written: Option<DateTime<Utc>>,
+    last_try: Option<DateTime<Utc>>,
     retries: u32,
     now: DateTime<Utc>,
 ) -> Option<PrepareRun> {
-    let Some(state) = state else {
-        return Some(PrepareRun::Start);
-    };
-    // A step still installing with no run behind it died mid-step, by a crash or a reboot.
-    let ended_at = if state.installing() {
-        written?
+    // A start that left no state, or a step still installing with no run behind it, died
+    // mid-step, by a crash or a reboot.
+    let ended_at = if state.is_none_or(PrepState::installing) {
+        let Some(last_try) = last_try else {
+            return state.is_none().then_some(PrepareRun::Start);
+        };
+        last_try
     } else {
-        DateTime::parse_from_rfc3339(state.failed_at()?)
+        let failed = DateTime::parse_from_rfc3339(state?.failed_at()?)
             .ok()?
-            .to_utc()
+            .to_utc();
+        last_try.map_or(failed, |last_try| last_try.max(failed))
     };
     let waited = now.signed_duration_since(ended_at).to_std().ok()?;
     (waited >= PREPARE_RETRY && retries < PREPARE_TRIES).then_some(PrepareRun::Retry)
