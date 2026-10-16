@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Item, ItemActions, ItemMedia } from "#/components/ui/item";
 import { Label } from "#/components/ui/label";
 import { Spinner } from "#/components/ui/spinner";
@@ -15,8 +15,11 @@ export function SettingsList({ label, children }: { label: string; children: Rea
   );
 }
 
-/** One thing in a list: its icon or avatar, its name and a line about it, and its actions at the right edge. */
-export function SettingsListItem({ media, label, hint, tone, commit, actions, children }: {
+/**
+ * One thing in a list: its icon or avatar, its name and a line about it, and its actions at the right edge. A `pick`
+ * row is one choice of a pick list: it renders as a label, so a click anywhere on it flips the checkbox in its actions.
+ */
+export function SettingsListItem({ media, label, hint, tone, commit, actions, pick, children }: {
   media: ReactNode;
   label: ReactNode;
   hint?: ReactNode;
@@ -24,10 +27,16 @@ export function SettingsListItem({ media, label, hint, tone, commit, actions, ch
   /** How the actions save: a remove that stages at once is `change`; a menu that only navigates is `none`. */
   commit: SettingsCommit;
   actions?: ReactNode;
+  pick?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <Item role="listitem" data-archetype="list-item" {...toneRow(tone, CARD_CHILD)}>
+    <Item
+      role="listitem"
+      data-archetype="list-item"
+      render={pick ? <label /> : undefined}
+      {...toneRow(tone, pick ? `${CARD_CHILD} cursor-pointer hover:bg-muted` : CARD_CHILD)}
+    >
       <ItemMedia variant="icon">{media}</ItemMedia>
       <SettingsText label={label} hint={hint} tone={tone}>{children}</SettingsText>
       {actions ? <ItemActions data-commit={commit} className="justify-end">{actions}</ItemActions> : null}
@@ -35,8 +44,11 @@ export function SettingsListItem({ media, label, hint, tone, commit, actions, ch
   );
 }
 
-/** A list with nothing in it yet: what would be here and why, left aligned. Its add stays in the foot below. */
-export function SettingsEmpty({ title, children }: { title: ReactNode; children?: ReactNode }) {
+/**
+ * A list with nothing in it yet: what would be here and why, left aligned. Its add stays in the foot below, unless the
+ * add is the first step of a setup, which sits under the message as `actions`.
+ */
+export function SettingsEmpty({ title, actions, children }: { title: ReactNode; actions?: ReactNode; children?: ReactNode }) {
   return (
     <Item data-archetype="empty" className={CARD_CHILD}>
       <Empty variant="placeholder">
@@ -44,6 +56,7 @@ export function SettingsEmpty({ title, children }: { title: ReactNode; children?
           <EmptyTitle>{title}</EmptyTitle>
           {children ? <EmptyDescription>{children}</EmptyDescription> : null}
         </EmptyHeader>
+        {actions ? <EmptyContent className="flex-row flex-wrap">{actions}</EmptyContent> : null}
       </Empty>
     </Item>
   );
