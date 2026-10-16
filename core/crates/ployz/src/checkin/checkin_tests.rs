@@ -520,6 +520,51 @@ async fn a_failed_preparation_is_retried_after_each_reboot_up_to_the_cap() {
     assert_eq!(status.prepare_retries, PREPARE_TRIES);
 }
 
+#[tokio::test(start_paused = true)]
+async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
+    )
+    .unwrap();
+    let mut unused = client("http://127.0.0.1:9");
+    let hangs = || FakeHost {
+        probe_hangs: true,
+        ..FakeHost::default()
+    };
+    for minute in 20..25 {
+        let now = at("2026-10-16T00:00:00Z") + TimeDelta::minutes(minute);
+        pass(&hangs(), &mut unused, &key(), &paths, now).await;
+    }
+    let spent = hangs();
+    pass(
+        &spent,
+        &mut unused,
+        &key(),
+        &paths,
+        at("2026-10-16T00:30:00Z"),
+    )
+    .await;
+    assert_eq!(spent.prepares.load(Ordering::SeqCst), 0);
+
+    restart_failed_preparation(&paths);
+    let reinstalled = hangs();
+    pass(
+        &reinstalled,
+        &mut unused,
+        &key(),
+        &paths,
+        at("2026-10-16T00:31:00Z"),
+    )
+    .await;
+    assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, 0);
+}
+
 #[tokio::test]
 async fn a_probe_cut_off_takes_the_processes_it_started_with_it() {
     let dir = tempfile::tempdir().unwrap();

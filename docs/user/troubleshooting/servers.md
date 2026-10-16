@@ -201,7 +201,9 @@ prepares Docker and ZFS meanwhile.
 1. Run `ployz status` on the server. The **this server** line says where it stands, and `blocked`
    lines say what stops it.
 2. Read the loop's log with `sudo journalctl -u ployz-checkin -n 100`, and preparation's with
-   `sudo journalctl -u ployz-prepare -n 200`.
+   `sudo journalctl -u ployz-prepare -n 200`. A failed preparation is retried 10 minutes later,
+   up to three times. Once you've fixed the cause, `sudo ployz server checkin --install` starts it
+   again right away.
 3. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS. It keeps trying every
    minute.
 4. `Cloud refused this server` means Ployz Cloud didn't accept the check-in. Either the server's

@@ -460,6 +460,30 @@ fn record(status: &LocalCheckin, paths: &Paths) {
     }
 }
 
+/// An explicit `--install` is a fresh preparation attempt: a failed preparation starts again at
+/// once, with its automatic retries restored.
+pub(crate) fn restart_failed_preparation(paths: &Paths) {
+    if read_prep_state(&paths.prepare_state).is_none_or(|state| state.failed_at().is_none()) {
+        return;
+    }
+    if let Err(error) = fs::remove_file(&paths.prepare_state) {
+        crate::ui::note(format!(
+            "Could not clear {}: {error}",
+            paths.prepare_state.display()
+        ));
+        return;
+    }
+    if let Ok(Some(mut status)) = LocalCheckin::read(&paths.status()) {
+        status.prepare_retries = 0;
+        if let Err(error) = status.write(&paths.status()) {
+            crate::ui::note(format!(
+                "Could not write {}: {error}",
+                paths.status().display()
+            ));
+        }
+    }
+}
+
 fn read_prep_state(path: &Path) -> Option<PrepState> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
