@@ -5,10 +5,12 @@ import { BoxIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
 import { DashboardPage } from "#/components/dashboard-page";
 import { ServerStatusLabel } from "#/components/server-status-label";
+import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Input } from "#/components/ui/input";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
 import { needsAttention } from "#/modules/machines/server-status";
@@ -207,35 +209,22 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
   );
 
   return (
-    <section aria-labelledby="running-here-heading">
-      <ItemGroup>
-        <ItemContent>
-          <ItemTitle>
-            <h2 id="running-here-heading">Running here</h2>
-          </ItemTitle>
-        </ItemContent>
-        {count === 0 ? (
-          <Item variant="outline">
-            <ItemContent>
-              <ItemDescription>{runsHere(server)}</ItemDescription>
-            </ItemContent>
-          </Item>
-        ) : server.services.slice(0, SHOWN_HERE).map(row)}
-        {count > SHOWN_HERE ? (
-          <Item variant="outline" size="sm" render={<Link from={Route.fullPath} to="." search={{ services: true }} />}>
-            <ItemContent>
-              <ItemTitle>All {count} services</ItemTitle>
-              {onlyHere > 0 ? (
-                <ItemDescription>
-                  <ServerStatusLabel status="offline" stale={stale}>{onlyHere} run only here</ServerStatusLabel>
-                </ItemDescription>
-              ) : null}
-            </ItemContent>
-            <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
-          </Item>
-        ) : null}
+    <>
+      <SettingsSection id="running-here" title="Running here">
+        {count === 0 ? <SettingsEmpty title={runsHere(server)} /> : (
+          <SettingsList label={`Services on ${server.name}`}>{server.services.slice(0, SHOWN_HERE).map(row)}</SettingsList>
+        )}
         <StrayNamespaces organizationSlug={organizationSlug} server={server} servers={servers} />
-      </ItemGroup>
+        {count > SHOWN_HERE ? (
+          <SettingsFoot>
+            <Button variant="outline" size="sm" render={<Link from={Route.fullPath} to="." search={{ services: true }} />}>
+              All {count} services
+              <ChevronRightIcon data-icon="inline-end" />
+            </Button>
+            {onlyHere > 0 ? <ServerStatusLabel status="offline" stale={stale}>{onlyHere} run only here</ServerStatusLabel> : null}
+          </SettingsFoot>
+        ) : null}
+      </SettingsSection>
       <Sheet open={open && count > SHOWN_HERE} onOpenChange={(next) => { if (!next) void navigate({ to: ".", search: {} }); }}>
         <SheetContent className="gap-0">
           <SheetHeader>
@@ -244,7 +233,7 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
           <ServiceList services={server.services} row={row} />
         </SheetContent>
       </Sheet>
-    </section>
+    </>
   );
 }
 
@@ -269,9 +258,11 @@ function ServiceList({ services, row }: {
           onChange={(event) => setFilter(event.target.value)}
         />
       </div>
-      <ItemGroup className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        {shown.length === 0 ? <ItemDescription>No services match “{filter.trim()}”</ItemDescription> : shown.map(row)}
-      </ItemGroup>
+      <div className="@container/settings mx-4 mb-4 min-h-0 overflow-y-auto rounded-lg border bg-card">
+        {shown.length === 0 ? <SettingsEmpty title={`No services match “${filter.trim()}”`} /> : (
+          <SettingsList label="Services">{shown.map(row)}</SettingsList>
+        )}
+      </div>
     </>
   );
 }
@@ -285,28 +276,25 @@ function ServiceRow({ organizationSlug, server, service, up, stale }: {
 }) {
   const elsewhere = up.find((other) => service.machineIds.has(other.machine.id));
   return (
-    <Item variant="outline" size="sm">
-      <ItemMedia variant="icon"><BoxIcon /></ItemMedia>
-      <ItemContent className="min-w-0">
-        <ItemTitle>{service.name}</ItemTitle>
-        {service.namespace ? <ItemDescription className="line-clamp-1">{service.namespace}</ItemDescription> : null}
-      </ItemContent>
-      <ItemActions>
-        {server.status !== "offline" ? (
-          service.namespace ? (
-            <ServiceUsage
-              organizationSlug={organizationSlug}
-              server={{ id: server.machine.id, name: server.name }}
-              namespace={service.namespace}
-              name={service.name}
-            />
-          ) : null
-        ) : elsewhere ? (
-          <ItemDescription>Still on {elsewhere.name}</ItemDescription>
-        ) : (
-          <ServerStatusLabel status="offline" stale={stale}>Down</ServerStatusLabel>
-        )}
-      </ItemActions>
-    </Item>
+    <SettingsListItem
+      media={<BoxIcon />}
+      label={service.name}
+      hint={service.namespace ? <span className="line-clamp-1">{service.namespace}</span> : undefined}
+      commit="none"
+      actions={server.status !== "offline" ? (
+        service.namespace ? (
+          <ServiceUsage
+            organizationSlug={organizationSlug}
+            server={{ id: server.machine.id, name: server.name }}
+            namespace={service.namespace}
+            name={service.name}
+          />
+        ) : null
+      ) : elsewhere ? (
+        <span className="text-sm text-muted-foreground">Still on {elsewhere.name}</span>
+      ) : (
+        <ServerStatusLabel status="offline" stale={stale}>Down</ServerStatusLabel>
+      )}
+    />
   );
 }
