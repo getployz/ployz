@@ -62,6 +62,7 @@ const notOrganizationOwned = {
   oauth_refresh_token: "An agent's refresh token, read only by the token endpoint; no view reads it, so it needs no change log.",
   oauth_access_token: "An agent's access token, read only by the token endpoint; no view reads it, so it needs no change log.",
   rate_limit: "Request counts per caller and path for auth rate limiting; it belongs to no Organization.",
+  checkin_rate_limit: "Check-in counts per Fleet Token and source address for rate limiting; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;

@@ -47,6 +47,7 @@ export const changeSources = {
   invitation: { key: ["id"] },
   machine_enrollment_token: { key: ["id"] },
   fleet_token: { key: ["id"] },
+  waiting_server: { key: ["id"] },
   machine_remove_attempt: { key: ["id"] },
   member: { key: ["id"] },
   organization_billing_state: { key: ["organization_id"] },
