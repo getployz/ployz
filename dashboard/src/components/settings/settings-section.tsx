@@ -143,7 +143,7 @@ export function SettingsWorkspace({ label, hint, tools, children }: {
         <SettingsText label={label} hint={hint} />
         {tools ? <ItemActions>{tools}</ItemActions> : null}
       </ItemHeader>
-      <ItemFooter>{children}</ItemFooter>
+      <ItemFooter className="*:min-w-0 *:flex-1">{children}</ItemFooter>
     </Item>
   );
 }
