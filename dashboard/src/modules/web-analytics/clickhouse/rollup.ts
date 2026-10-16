@@ -4,6 +4,7 @@ import { Database } from "#/server/database.server";
 import { addDays, dayEnd, dayStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import type { RollupSite } from "../postgres/rollup";
 import { type Binder, binder, localHour, pageCounts, type Pin, RETAINED, requiredClickHouse, sessionCounts, visitCtes } from "./store";
+import { nextAttempt } from "./writer";
 
 type LockedSite = RollupSite & Pin & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string> };
 
@@ -44,18 +45,6 @@ const SESSION_DIMS = `[('', ''), ('host', host), ('source', source), ('utm_sourc
   ('utm_medium', utm_medium), ('utm_campaign', utm_campaign), ('utm_term', utm_term), ('utm_content', utm_content),
   ('language', language), ('entry_page', pathname)]`;
 
-const AGGREGATES = ["daily", "session_hourly"];
-
-const dropUnpublished = Effect.fn("WebAnalytics.clickHouseDropUnpublished")(function* (site: LockedSite) {
-  const clickhouse = yield* requiredClickHouse;
-  const b = binder(site, site);
-  const above = `environment_id = ${b.env} AND generation > ${b.generation}`;
-  const [row] = yield* clickhouse.query<{ n: number }>(`
-    SELECT (SELECT count() FROM daily WHERE ${above}) + (SELECT count() FROM session_hourly WHERE ${above}) AS n`, b.params);
-  if (row === undefined || row.n === 0) return;
-  for (const table of AGGREGATES) yield* clickhouse.command(`DELETE FROM ${table} WHERE ${above}`, b.params);
-});
-
 const writeUnpublishedDay = Effect.fn("WebAnalytics.clickHouseWriteUnpublishedDay")(function* (site: LockedSite, day: string) {
   const clickhouse = yield* requiredClickHouse;
   const start = dayStart(site.timezone, day);
@@ -67,8 +56,7 @@ const writeUnpublishedDay = Effect.fn("WebAnalytics.clickHouseWriteUnpublishedDa
   };
   const ctes = (b: Binder) => `WITH ${visitCtes(b, query, { start, end })},
     sessions AS (SELECT * FROM visits WHERE ts >= ${b.at(start)} AND ts < ${b.at(end)})`;
-  yield* dropUnpublished(site);
-  const generation = site.generation + 1;
+  const generation = yield* nextAttempt;
   yield* statement((b) => `
     INSERT INTO session_hourly (environment_id, day, generation, hour, pageviews, visitors, visits, bounces, total_duration)
     ${ctes(b)}
@@ -97,6 +85,7 @@ const writeUnpublishedDay = Effect.fn("WebAnalytics.clickHouseWriteUnpublishedDa
         WHERE kv.2 IS NOT NULL GROUP BY dim, value, visitor_id
       ) GROUP BY dim, value
     ) GROUP BY dim, value`);
+  yield* clickhouse.insert("complete_day", [{ environment_id: site.environmentId, day, generation }], null);
   return generation;
 });
 

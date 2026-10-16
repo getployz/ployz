@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "506ea970-5a4e-44be-89e1-5fc6adccfb8b",
+  "id": "0fbe47f6-ef69-45cc-9829-72a1a2834c02",
   "prevIds": [
     "a89462fd-5002-4600-af74-4a8eb6787cd6"
   ],
@@ -1146,6 +1146,17 @@
       "schema": "analytics",
       "table": "rollup_state",
       "entityType": "pks"
+    },
+    {
+      "incrementBy": "1",
+      "minValue": "1",
+      "maxValue": "9223372036854775807",
+      "startWith": "1",
+      "cacheSize": 1,
+      "cycle": false,
+      "name": "clickhouse_attempt",
+      "entityType": "sequences",
+      "schema": "analytics"
     }
   ],
   "renames": []

@@ -1,3 +1,4 @@
+CREATE SEQUENCE "analytics"."clickhouse_attempt" INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START WITH 1 CACHE 1;--> statement-breakpoint
 CREATE TABLE "analytics"."clickhouse_site" (
 	"environment_id" text PRIMARY KEY,
 	"rolled_up_to" date,

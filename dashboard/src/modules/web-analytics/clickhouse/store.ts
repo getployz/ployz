@@ -148,7 +148,7 @@ const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQ
 });
 
 export const newestPublished = (b: Binder, days: string) => `(day, generation) IN (
-  SELECT day, max(generation) FROM daily
+  SELECT day, max(generation) FROM complete_day
   WHERE environment_id = ${b.env} AND generation > ${b.floor} AND generation <= ${b.generation}${days} GROUP BY day)`;
 
 const publishedIn = (b: Binder, first: string, last: string) =>

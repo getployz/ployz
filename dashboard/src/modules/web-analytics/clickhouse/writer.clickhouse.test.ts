@@ -31,7 +31,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await harness.db.execute(sql`truncate analytics.site, analytics.pageview, analytics.outbox, analytics.clickhouse_site`);
-  for (const table of ["pageview", "daily", "session_hourly"]) await Effect.runPromise(clickhouse.command(`TRUNCATE TABLE ${table}`));
+  for (const table of ["pageview", "daily", "session_hourly", "complete_day"]) await Effect.runPromise(clickhouse.command(`TRUNCATE TABLE ${table}`));
   await harness.db.insert(analyticsSite).values([
     { organizationId: ORGANIZATION, environmentId: SHOP, enabled: true, timezone: "Australia/Sydney" },
   ]);

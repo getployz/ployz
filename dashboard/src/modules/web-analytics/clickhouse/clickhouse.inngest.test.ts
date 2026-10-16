@@ -18,7 +18,7 @@ vi.spyOn(writer, "ensureBackfilled").mockImplementation(() => Effect.succeed(2))
 vi.spyOn(postgresRollup, "rollupSites").mockImplementation(() => Effect.succeed([SHOP]));
 vi.spyOn(rollup, "closeDays").mockImplementation(() => Effect.succeed(1));
 vi.spyOn(promote, "promoteReads").mockImplementation(() => Effect.succeed(false));
-const pins: Array<writer.Pinned> = [{ environmentId: SHOP, timezone: "UTC", copy: 2, floor: 1, generation: 4 }];
+const pins: Array<writer.Pinned> = [{ environmentId: SHOP, timezone: "UTC", copy: 2, floor: 1, generation: 4, settledBelow: 5 }];
 vi.spyOn(writer, "publishedPins").mockImplementation(() => Effect.succeed(pins));
 vi.spyOn(writer, "collectGarbage").mockImplementation(() => Effect.succeed(3));
 

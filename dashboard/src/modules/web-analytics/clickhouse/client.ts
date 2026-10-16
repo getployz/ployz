@@ -36,11 +36,15 @@ export const makeClickHouse = (client: ClickHouseClient): ClickHouseService => (
     })).pipe(Effect.asVoid),
 });
 
+const STATEMENT_DEADLINE_SECONDS = 25;
+
 export const clickHouseClient = (url: string) =>
   Effect.acquireRelease(
     Effect.sync(() => createClient({
       url,
+      request_timeout: (STATEMENT_DEADLINE_SECONDS + 5) * 1000,
       clickhouse_settings: {
+        max_execution_time: STATEMENT_DEADLINE_SECONDS,
         output_format_json_quote_64bit_integers: 0,
         date_time_output_format: "iso",
         // Lightweight deletes and the inserts after them must be visible to the next read of the same rollup run.

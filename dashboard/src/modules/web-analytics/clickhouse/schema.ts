@@ -64,6 +64,16 @@ const DDL = [
   ORDER BY (environment_id, hour)
   TTL hour + toIntervalDay(${TTL_DAYS})
   SETTINGS ttl_only_drop_parts = 1`,
+  `CREATE TABLE IF NOT EXISTS complete_day (
+    environment_id String,
+    day Date,
+    generation UInt64
+  )
+  ENGINE = MergeTree
+  PARTITION BY toYYYYMM(day)
+  ORDER BY (environment_id, day, generation)
+  TTL day + toIntervalDay(${TTL_DAYS})
+  SETTINGS ttl_only_drop_parts = 1`,
 ];
 
 export const ensureSchema = (clickhouse: ClickHouseService) => Effect.forEach(DDL, (ddl) => clickhouse.command(ddl), { discard: true });

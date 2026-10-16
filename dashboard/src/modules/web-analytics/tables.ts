@@ -133,6 +133,8 @@ export const analyticsOutbox = analytics.table("outbox", {
   createdAt: timestamptz("created_at").defaultNow().notNull(),
 });
 
+export const analyticsClickhouseAttempt = analytics.sequence("clickhouse_attempt");
+
 export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   environmentId: text("environment_id").primaryKey(),
   rolledUpTo: date("rolled_up_to", { mode: "string" }),
