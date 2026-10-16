@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, PENDING_CAP, PENDING_CEILING, pin } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, PENDING_CAP, pin } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService, type Params } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as store from "#/modules/web-analytics/clickhouse/store";
@@ -46,7 +46,13 @@ const setup = Effect.gen(function* () {
       select cardinality(pending) as n from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
     return row?.n ?? 0;
   }));
-  return { clickhouse, provide, today, daily, hourly, enqueue, pendingCount, query, total };
+  const recovery = provide(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.execute<{ recovery: string | null }>(sql`
+      select recovery::text as recovery from analytics.clickhouse_site where environment_id = ${SITE}::text`, "objects");
+    return row?.recovery ?? null;
+  }));
+  return { clickhouse, provide, today, daily, hourly, enqueue, pendingCount, recovery, query, total };
 });
 
 const losesEveryAck = (real: ClickHouseService): ClickHouseService => ({
@@ -152,7 +158,7 @@ for (const supersedes of ["a rebuild", "a backfill"] as const) {
 
 it.live("losing every acknowledgement past the pending cap parks appends behind the published view until a backfill publishes the refloor that frees them", () =>
   Effect.gen(function* () {
-    const { clickhouse, provide, daily, enqueue, pendingCount } = yield* setup;
+    const { clickhouse, provide, daily, enqueue, pendingCount, recovery } = yield* setup;
     const lossy = losesEveryAck(clickhouse);
     const lost = PENDING_CAP + 8;
     for (let n = 0; n < lost; n++) {
@@ -166,14 +172,14 @@ it.live("losing every acknowledgement past the pending cap parks appends behind 
     yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
     yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
     expect(yield* pendingCount).toBe(PENDING_CAP);
-    yield* provide(Effect.ignore(ensureBackfilled(lossy, SITE)), lossy);
-    const parked = yield* pendingCount;
-    expect(parked).toBeGreaterThan(PENDING_CAP);
-    expect(parked).toBeLessThanOrEqual(PENDING_CEILING);
+    expect((yield* provide(Effect.flip(ensureBackfilled(lossy, SITE)), lossy))._tag).toBe("ClickHouseFailure");
+    expect(yield* pendingCount).toBe(PENDING_CAP);
+    expect(yield* recovery).not.toBeNull();
     expect(yield* provide(drainOutbox(clickhouse))).toBe(0);
     expect(yield* daily).toBe(2);
     expect(yield* provide(ensureBackfilled(clickhouse, SITE))).toBe(2 + lost);
     expect(yield* pendingCount).toBe(0);
+    expect(yield* recovery).toBeNull();
     expect(yield* daily).toBe(2 + lost);
     expect(yield* provide(ensureBackfilled(clickhouse, SITE))).toBeNull();
     yield* enqueue(String(3 + lost));

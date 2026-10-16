@@ -272,6 +272,19 @@
       "table": "clickhouse_site"
     },
     {
+      "type": "bigint",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "recovery",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "clickhouse_site"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -1187,7 +1200,7 @@
       "entityType": "pks"
     },
     {
-      "value": "cardinality(\"pending\") <= 64",
+      "value": "cardinality(\"pending\") <= 32",
       "name": "clickhouse_site_pending_cap_check",
       "entityType": "checks",
       "schema": "analytics",

@@ -4,6 +4,7 @@ import { Database } from "#/server/database.server";
 import { addDays, dayEnd, dayStart, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import type { RollupSite } from "../postgres/rollup";
 import { locked, mint, type Publication, read, type Reader, type Writer } from "./attempt";
+import { TTL_DAYS } from "./schema";
 import { type Binder, binder, localHour, pageCounts, RETAINED, requiredClickHouse, sessionCounts, visitCtes } from "./store";
 
 type SiteState = RollupSite & { readonly enabled: boolean; readonly rolledUpTo: string | null; readonly dirty: ReadonlyArray<string>; readonly reader: Reader };
@@ -94,7 +95,7 @@ const rollupDay = <E, R>(environmentId: string, pick: (site: SiteState) => Effec
       return site === null ? null : yield* pick(site);
     }));
     if (peeked === null) return false;
-    const writer = (yield* mint(clickhouse, [environmentId], "append")).get(environmentId);
+    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
     if (writer === undefined) return false;
     const database = yield* Database;
     const published = yield* database.transaction(locked(clickhouse, environmentId, (reader) => Effect.gen(function* () {
@@ -114,13 +115,13 @@ const closeNextDay = (environmentId: string, now: Date) =>
     if (!site.enabled) return null;
     const day = site.rolledUpTo === null ? yield* firstDay(site) : addDays(site.timezone, site.rolledUpTo, 1);
     return day === null || dayEnd(site.timezone, day).getTime() + SESSION_GAP_SECONDS * 1000 > now.getTime() ? null : day;
-  }), (day) => ({ kind: "day", day, close: true }));
+  }), (day) => ({ kind: "day", day, close: true, keepDays: TTL_DAYS }));
 
 const rebuildNextDirty = (environmentId: string) =>
   rollupDay(environmentId, (site) => {
     const closed = site.rolledUpTo;
     return Effect.succeed(closed === null ? null : site.dirty.filter((dirty) => dirty <= closed).sort()[0] ?? null);
-  }, (day) => ({ kind: "day", day, close: false }));
+  }, (day) => ({ kind: "day", day, close: false, keepDays: TTL_DAYS }));
 
 const repeat = <E, R>(step: Effect.Effect<boolean, E, R>) =>
   Effect.gen(function* () {

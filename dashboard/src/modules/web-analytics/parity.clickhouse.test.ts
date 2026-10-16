@@ -85,7 +85,7 @@ const rolledUpPageviews = (clickhouse: ClickHouseService, environmentId: string,
 
 const landInClickHouse = (clickhouse: ClickHouseService, environmentId: string, rows: ReadonlyArray<object>) =>
   Effect.gen(function* () {
-    const writer = (yield* mint(clickhouse, [environmentId], "append")).get(environmentId);
+    const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
     if (writer === undefined) return yield* Effect.die("site row held by another writer");
     yield* writer.rows("pageview", rows);
     const database = yield* Database;

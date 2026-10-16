@@ -41,7 +41,7 @@ const withDatabase = (database: DatabaseService) => <A, E, R>(effect: Effect.Eff
 
 it.effect("mint refuses to run inside a caller's transaction, so an attempt is pending before any row carries it", () =>
   Effect.gen(function* () {
-    expect(yield* defect(mint(silent, ["site"], "append")).pipe(withDatabase(insideTransaction))).toContain("mint commits on its own");
+    expect(yield* defect(mint(silent, ["site"])).pipe(withDatabase(insideTransaction))).toContain("mint commits on its own");
   }));
 
 it.effect("garbage collection refuses to run inside a caller's transaction, so its fence commits before it deletes", () =>
@@ -71,7 +71,7 @@ it.effect("a Reader that escapes its callback answers no further queries, so no 
   }));
 
 const minted = (clickhouse: ClickHouseService, database: DatabaseService) => Effect.gen(function* () {
-  const writer = (yield* mint(clickhouse, ["site"], "append")).get("site");
+  const writer = (yield* mint(clickhouse, ["site"])).get("site");
   if (writer === undefined) return yield* Effect.die("the answering database minted nothing");
   return writer;
 }).pipe(withDatabase(database));

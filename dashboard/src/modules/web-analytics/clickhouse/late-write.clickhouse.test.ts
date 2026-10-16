@@ -227,7 +227,7 @@ it.live("a fence that commits long after its transaction began excludes an INSER
   const { clickhouse, provide, daily, enqueue, pendingCount } = yield* setup;
   yield* enqueue("3");
   const database = yield* provide(Database);
-  const writer = (yield* provide(mint(clickhouse, [SITE], "append"))).get(SITE);
+  const writer = (yield* provide(mint(clickhouse, [SITE]))).get(SITE);
   if (writer === undefined) return yield* Effect.die("missing minted writer");
   const fence = yield* provide(pin());
   const beforeUpdate = yield* Deferred.make<void>();

@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 import { expect } from "vitest";
-import { collectGarbage, PENDING_CAP, PENDING_CEILING, pin, read } from "#/modules/web-analytics/clickhouse/attempt";
+import { collectGarbage, PENDING_CAP, pin, read } from "#/modules/web-analytics/clickhouse/attempt";
 import { ClickHouse, ClickHouseFailure, type ClickHouseService, type Params } from "#/modules/web-analytics/clickhouse/client";
 import { closeDays, rebuildDirtyDays } from "#/modules/web-analytics/clickhouse/rollup";
 import * as clickHouseStore from "#/modules/web-analytics/clickhouse/store";
@@ -291,7 +291,7 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
       case "drain": yield* commitFence; yield* step(kind, provide(drainOutbox(faulty.client), faulty.client)); break;
       case "close": yield* commitFence; yield* step(kind, provide(closeDays(site, now), faulty.client)); break;
       case "rebuild": yield* commitFence; yield* step(kind, provide(rebuildDirtyDays(site), faulty.client)); break;
-      case "backfill": yield* commitFence; yield* step(kind, provide(Effect.catchTag(backfillSite(faulty.client, site), "SiteUnavailable", () => Effect.succeed(0)), faulty.client)); break;
+      case "backfill": yield* commitFence; yield* step(kind, provide(backfillSite(faulty.client, site), faulty.client)); break;
       case "pin": trace.push(kind); fence = yield* provide(pin()); break;
       case "collect": {
         const pinned = fence ?? (yield* provide(pin()));
@@ -319,7 +319,7 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     noPhantom(label(), current, yield* reads(postgresStore));
     if (kind === "collect") expect(current, label()).toEqual(previous);
     expect(after.floor, label()).toBeGreaterThanOrEqual(before.floor);
-    expect(after.pending, label()).toBeLessThanOrEqual(PENDING_CEILING);
+    expect(after.pending, label()).toBeLessThanOrEqual(PENDING_CAP);
     if (after.pending >= PENDING_CAP) trace.push("capped");
     previous = current;
     before = after;

@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
-import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, SESSION_GAP_SECONDS } from "../local-time";
+import { addDays, dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, localDay, SESSION_GAP_SECONDS } from "../local-time";
 import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 import { COLUMN, pageFilters, type Plan, readPlan, SESSION_KEYS, sessionFilters, type StoreQuery, totalsKey } from "../postgres/store";
 import { read, type Snapshot } from "./attempt";
@@ -20,7 +20,8 @@ export type Binder = {
   readonly at: (instant: Date) => string;
 };
 
-export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">, site: Snapshot): Binder {
+/** A ranged query binds only the published days around its range; the rest of the site's day metadata stays out of the request. */
+export function binder(query: Pick<StoreQuery, "environmentId" | "timezone"> & { readonly range?: Range }, site: Snapshot): Binder {
   const params: Record<string, Params[string]> = {};
   let next = 0;
   const bind = (type: string, value: Params[string]) => {
@@ -32,7 +33,10 @@ export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">, si
   return {
     params,
     env: text(query.environmentId),
-    ...site.visibility(bind),
+    ...site.visibility(bind, query.range === undefined ? undefined : {
+      first: addDays(query.timezone, localDay(query.timezone, query.range.start), -1),
+      last: addDays(query.timezone, localDay(query.timezone, query.range.end), 1),
+    }),
     tz: text(query.timezone),
     text,
     texts: (values) => bind("Array(String)", values),

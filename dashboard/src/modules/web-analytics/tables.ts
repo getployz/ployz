@@ -147,5 +147,6 @@ export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   days: jsonb("days").$type<Record<string, number>>().default(sql`'{}'::jsonb`).notNull(),
   fence: bigint("fence", { mode: "number" }).default(0).notNull(),
   generation: bigint("generation", { mode: "number" }).default(0).notNull(),
+  recovery: bigint("recovery", { mode: "number" }),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
-}, (table) => [check("clickhouse_site_pending_cap_check", sql`cardinality(${table.pending}) <= 64`)]);
+}, (table) => [check("clickhouse_site_pending_cap_check", sql`cardinality(${table.pending}) <= 32`)]);

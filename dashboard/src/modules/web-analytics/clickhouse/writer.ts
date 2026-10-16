@@ -3,7 +3,7 @@ import { Effect, Schedule } from "effect";
 import { Database } from "#/server/database.server";
 import { ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
 import { analyticsOutbox, analyticsPageview } from "../tables";
-import { capped, deleteSite, mint, PublishRefused, SiteUnavailable } from "./attempt";
+import { deleteSite, mint, mintRecovery, PARKED, PublishRefused } from "./attempt";
 import type { ClickHouseService } from "./client";
 import { TTL_DAYS } from "./schema";
 
@@ -54,7 +54,7 @@ export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse
  * The outbox rows go first so a backfill that already consumed them refuses this publication instead of double counting.
  */
 const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: ClickHouseService, environmentId: string, batches: ReadonlyArray<Batch>) {
-  const writer = (yield* mint(clickhouse, [environmentId], "append")).get(environmentId);
+  const writer = (yield* mint(clickhouse, [environmentId])).get(environmentId);
   if (writer === undefined) return false;
   const { attempt } = writer;
   const ids = batches.map((batch) => batch.id);
@@ -80,48 +80,38 @@ const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: Cli
   })).pipe(Effect.catchTag("PublishRefused", () => Effect.succeed(false)));
 });
 
+/**
+ * Drains each site's oldest batches in its own window, oldest site first.
+ * A parked site is skipped rather than queued, so its backlog never holds the window another site needs.
+ */
 export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clickhouse: ClickHouseService) {
   const { drizzle } = yield* Database;
-  const batches = yield* drizzle.execute<Batch>(sql`
-    select id::text as id, environment_id, rows from analytics.outbox order by id limit ${DRAIN_BATCHES}`, "objects");
-  if (batches.length === 0) return 0;
-  const byEnvironment = new Map<string, Array<Batch>>();
-  for (const batch of batches) {
-    const group = byEnvironment.get(batch.environment_id) ?? [];
-    group.push(batch);
-    byEnvironment.set(batch.environment_id, group);
-  }
+  const sites = yield* drizzle.execute<{ environment_id: string }>(sql`
+    select environment_id from analytics.outbox o
+    where not exists (select 1 from analytics.clickhouse_site c where c.environment_id = o.environment_id and ${PARKED})
+    group by environment_id order by min(id) limit ${DRAIN_BATCHES}`, "objects");
   let drained = 0;
-  for (const [environmentId, group] of [...byEnvironment].sort(([a], [b]) => a.localeCompare(b))) {
-    if (yield* drainSite(clickhouse, environmentId, group)) drained += group.length;
+  for (const { environment_id: environmentId } of sites) {
+    const batches = yield* drizzle.execute<Batch>(sql`
+      select id::text as id, environment_id, rows from analytics.outbox
+      where environment_id = ${environmentId}::text order by id limit ${DRAIN_BATCHES}`, "objects");
+    if (yield* drainSite(clickhouse, environmentId, batches)) {
+      drained += batches.length;
+      continue;
+    }
+    const dropped = yield* drizzle.execute<{ id: string }>(sql`
+      delete from analytics.outbox o where o.id = any(${sql.param(batches.map((batch) => batch.id))}::bigint[])
+        and not exists (select 1 from analytics.site s where s.environment_id = o.environment_id) returning id::text as id`, "objects");
+    drained += dropped.length;
   }
-  const dropped = yield* drizzle.execute<{ id: string }>(sql`
-    delete from analytics.outbox o where o.id = any(${sql.param(batches.map((batch) => batch.id))}::bigint[])
-      and not exists (select 1 from analytics.site s where s.environment_id = o.environment_id) returning id::text as id`, "objects");
-  return drained + dropped.length;
+  return drained;
 });
 
-const demoteReads = Effect.fn("WebAnalytics.demoteReads")(function* (environmentId: string) {
-  const database = yield* Database;
-  return yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`
-      insert into analytics.clickhouse_site (environment_id)
-      select environment_id from analytics.site where environment_id = ${environmentId}::text
-      on conflict do nothing`);
-    return yield* drizzle.execute(sql`
-      update analytics.clickhouse_site set reads = false, backfilled_at = null, updated_at = now()
-      where environment_id = ${environmentId}::text returning environment_id`, "objects");
-  }));
-});
-
+/** Recopies the site under a recovery attempt and publishes the refloor that retires every older attempt. */
 export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const database = yield* Database;
-  const demoted = yield* demoteReads(environmentId);
-  if (demoted.length === 0) return 0;
   const copy = Effect.gen(function* () {
-    const writer = (yield* mint(clickhouse, [environmentId], "backfill")).get(environmentId);
-    if (writer === undefined) return yield* new SiteUnavailable({ environmentId });
+    const writer = yield* mintRecovery(clickhouse, environmentId);
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const queued = yield* drizzle.execute<{ id: string }>(sql`
@@ -152,13 +142,16 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
   return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second"), while: (error) => error._tag !== "SiteUnavailable" }));
 });
 
-/** A capped site recovers only through a refloor, so the capped state schedules the backfill that publishes one. */
+/**
+ * Backfills a site that is not yet backfilled or is parked; only a published refloor settles either.
+ * A failed backfill is the caller's error to retry on schedule, never a silent null.
+ */
 export const ensureBackfilled = Effect.fn("WebAnalytics.ensureBackfilled")(function* (clickhouse: ClickHouseService, environmentId: string) {
   const { drizzle } = yield* Database;
-  const [site] = yield* drizzle.execute<{ backfilled: boolean }>(sql`
-    select backfilled_at is not null as backfilled from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  if (site?.backfilled && !(yield* capped(environmentId))) return null;
-  return yield* backfillSite(clickhouse, environmentId).pipe(Effect.catchTag("SiteUnavailable", () => Effect.succeed(null)));
+  const [site] = yield* drizzle.execute<{ settled: boolean }>(sql`
+    select backfilled_at is not null and not ${PARKED} as settled from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+  if (site?.settled) return null;
+  return yield* backfillSite(clickhouse, environmentId);
 });
 
 export const forgetDeletedSites = Effect.fn("WebAnalytics.forgetDeletedSites")(function* (clickhouse: ClickHouseService) {

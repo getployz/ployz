@@ -16,8 +16,6 @@ export const TABLES = ["pageview", "daily", "session_hourly"] as const;
 export type Table = (typeof TABLES)[number];
 
 export const PENDING_CAP = 32;
-/** Pending shrinks only when an attempt publishes, so above the cap a backfill gets as many tries as appends had; a site that loses every one of them stays parked. */
-export const PENDING_CEILING = PENDING_CAP * 2;
 
 const READ_TRIES = 4;
 const STALE = Symbol("stale");
@@ -32,6 +30,9 @@ type SiteRow = {
   generation: string;
 };
 
+/** Inclusive local-day span; published-day metadata outside it stays unbound. */
+export type DaySpan = { readonly first: string; readonly last: string };
+
 const SITE_COLUMNS = sql`
   rolled_up_to::text as rolled_up_to, dirty::text[] as dirty, floor::text as floor, below::text as below,
   pending::text[] as pending, days, generation::text as generation`;
@@ -42,8 +43,8 @@ export type Bind = (type: string, value: Params[string]) => string;
 
 export type Visibility = { readonly visible: string; readonly publishedDay: string };
 
-const visibility = (site: SiteRow, bind: Bind): Visibility => {
-  const days = Object.entries(site.days);
+const visibility = (site: SiteRow, bind: Bind, within?: DaySpan): Visibility => {
+  const days = Object.entries(site.days).filter(([day]) => within === undefined || (day >= within.first && day <= within.last));
   return {
     visible: `(attempt >= ${bind("UInt64", Number(site.floor))} AND attempt < ${bind("UInt64", Number(site.below))} AND NOT has(${bind("Array(UInt64)", site.pending.map(Number))}, attempt))`,
     publishedDay: `attempt = arrayElement(${bind("Array(UInt64)", days.map(([, attempt]) => attempt))}, indexOf(${bind("Array(Date)", days.map(([day]) => day))}, day))`,
@@ -69,14 +70,14 @@ export type Snapshot = {
   readonly rolledUpTo: string | null;
   readonly dirty: ReadonlyArray<string>;
   readonly stamp: Stamp;
-  readonly visibility: (bind: Bind) => Visibility;
+  readonly visibility: (bind: Bind, within?: DaySpan) => Visibility;
 };
 
 const snapshotOf = (site: SiteRow): Snapshot => ({
   rolledUpTo: site.rolled_up_to,
   dirty: site.dirty,
   stamp: new SiteStamp(site),
-  visibility: (bind) => visibility(site, bind),
+  visibility: (bind, within) => visibility(site, bind, within),
 });
 
 export type Reader = {
@@ -153,7 +154,7 @@ export type InsertSelect = { readonly query: string; readonly params: Params };
 export type Publication =
   | { readonly kind: "append"; readonly dirty: ReadonlyArray<string> }
   | { readonly kind: "refloor" }
-  | { readonly kind: "day"; readonly day: string; readonly close: boolean };
+  | { readonly kind: "day"; readonly day: string; readonly close: boolean; readonly keepDays: number };
 
 export type WriteFailure = ClickHouseFailure | EffectDrizzleQueryError;
 
@@ -174,15 +175,22 @@ const publicationSet = (attempt: Attempt, publication: Publication): SQL => {
         dirty = array(select distinct d from unnest(dirty || ${sql.param(publication.dirty)}::date[]) d order by d)`;
     case "refloor":
       return sql`
-        pending = array(select p from unnest(pending) p where p > ${attempt}::bigint order by p),
+        pending = array(select p from unnest(pending) p where p > ${attempt}::bigint order by p), recovery = null,
         floor = ${attempt}::bigint, below = ${attempt}::bigint + 1, days = '{}'::jsonb,
         rolled_up_to = null, dirty = '{}', reads = false, backfilled_at = now()`;
     case "day":
       return sql`
         pending = array_remove(pending, ${attempt}::bigint), ${publication.close ? sql`rolled_up_to = ${publication.day}::date,` : sql``}
-        dirty = array_remove(dirty, ${publication.day}::date), days = days || jsonb_build_object(${publication.day}::text, ${attempt}::bigint)`;
+        dirty = array_remove(dirty, ${publication.day}::date),
+        days = (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
+          from (select days || jsonb_build_object(${publication.day}::text, ${attempt}::bigint) as published) p, jsonb_each(p.published)
+          where key::date > (select max(k::date) from jsonb_object_keys(p.published) k) - ${publication.keepDays}::int)`;
   }
 };
+
+/** A refloor publishes only the current recovery occupant; every other kind publishes a pending append. */
+const publishable = (attempt: Attempt, publication: Publication): SQL =>
+  publication.kind === "refloor" ? sql`${attempt}::bigint = recovery` : sql`${attempt}::bigint = any(pending)`;
 
 const writer = (clickhouse: ClickHouseService, pool: DatabaseService, environmentId: string, attempt: Attempt): Writer => {
   const state = { inflight: 0, poisoned: false, spent: false };
@@ -220,43 +228,72 @@ const writer = (clickhouse: ClickHouseService, pool: DatabaseService, environmen
       const rows = yield* database.drizzle.execute<{ environment_id: string }>(sql`
         update analytics.clickhouse_site
         set ${publicationSet(attempt, publication)}, updated_at = now()
-        where environment_id = ${environmentId}::text and ${attempt}::bigint = any(pending) and ${attempt}::bigint >= fence
+        where environment_id = ${environmentId}::text and ${publishable(attempt, publication)} and ${attempt}::bigint >= fence
         returning environment_id`, "objects");
       if (rows.length === 0) return yield* new PublishRefused({ environmentId, attempt });
     }),
   };
 };
 
-/** An append fills pending up to the cap. A backfill may use the headroom above it, because its refloor is what empties a capped site's pending. */
-export type MintPurpose = "append" | "backfill";
+const ensureSites = (environmentIds: ReadonlyArray<string>) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`
+    insert into analytics.clickhouse_site (environment_id)
+    select environment_id from analytics.site where environment_id = any(${sql.param(environmentIds)}::text[])
+    on conflict do nothing`);
+});
 
-export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse: ClickHouseService, environmentIds: ReadonlyArray<string>, purpose: MintPurpose) {
+/**
+ * Mints one append per site with room in pending and no recovery occupant.
+ * While a recovery is minted no append can be born after it, so no append publication can ever raise `below` past an unpublished recovery.
+ */
+export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse: ClickHouseService, environmentIds: ReadonlyArray<string>) {
   const database = yield* outsideTransaction("mint");
   if (environmentIds.length === 0) return new Map<string, Writer>();
-  const room = purpose === "backfill" ? PENDING_CEILING : PENDING_CAP;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    yield* drizzle.execute(sql`
-      insert into analytics.clickhouse_site (environment_id)
-      select environment_id from analytics.site where environment_id = any(${sql.param(environmentIds)}::text[])
-      on conflict do nothing`);
+    yield* ensureSites(environmentIds);
     const rows = yield* drizzle.execute<{ environment_id: string; attempt: string }>(sql`
       update analytics.clickhouse_site
       set pending = pending || nextval('analytics.clickhouse_attempt'), updated_at = now()
-      where cardinality(pending) < ${room} and environment_id in (
+      where cardinality(pending) < ${PENDING_CAP} and recovery is null and environment_id in (
         select environment_id from analytics.clickhouse_site
         where environment_id = any(${sql.param(environmentIds)}::text[]) order by environment_id for update skip locked)
       returning environment_id, pending[cardinality(pending)]::text as attempt`, "objects");
-    // SAFETY: each row's `attempt` is the nextval this statement just appended to `pending`, the only place an Attempt is born.
+    // SAFETY: each row's `attempt` is the nextval this statement just appended to `pending`, one of the two places an Attempt is born.
     return new Map(rows.map((row) => [row.environment_id, writer(clickhouse, database, row.environment_id, Number(row.attempt) as Attempt)]));
   }));
 });
 
-export const capped = Effect.fn("WebAnalytics.capped")(function* (environmentId: string) {
+/**
+ * Mints the recovery attempt whose refloor rebuilds the site, replacing any occupant: recovery never runs out of room.
+ * Demotes reads in the same statement, so a site with an occupant always schedules another recovery until one publishes.
+ * A replaced occupant can never publish (publish requires `attempt = recovery`) and stays below the next published floor.
+ */
+export const mintRecovery = Effect.fn("WebAnalytics.mintRecovery")(function* (clickhouse: ClickHouseService, environmentId: string) {
+  const database = yield* outsideTransaction("mintRecovery");
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* ensureSites([environmentId]);
+    const [row] = yield* drizzle.execute<{ attempt: string }>(sql`
+      update analytics.clickhouse_site
+      set recovery = nextval('analytics.clickhouse_attempt'), reads = false, backfilled_at = null, updated_at = now()
+      where environment_id = ${environmentId}::text
+      returning recovery::text as attempt`, "objects");
+    if (row === undefined) return yield* new SiteUnavailable({ environmentId });
+    // SAFETY: `attempt` is the nextval this statement just stored in `recovery`, the other place an Attempt is born.
+    return writer(clickhouse, database, environmentId, Number(row.attempt) as Attempt);
+  }));
+});
+
+/** A site that cannot mint an append: pending is full or a recovery occupant is waiting for its refloor. Only a published refloor clears it. */
+export const PARKED = sql`(cardinality(pending) >= ${PENDING_CAP} or recovery is not null)`;
+
+export const parked = Effect.fn("WebAnalytics.parked")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ capped: boolean }>(sql`
-    select cardinality(pending) >= ${PENDING_CAP} as capped from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  return row?.capped ?? false;
+  const [row] = yield* drizzle.execute<{ parked: boolean }>(sql`
+    select ${PARKED} as parked from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
+  return row?.parked ?? false;
 });
 
 /** A sequence value taken now. Every attempt minted before it is smaller. */
