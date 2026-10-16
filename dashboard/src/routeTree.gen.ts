@@ -29,6 +29,7 @@ import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './rou
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as ApiCheckinIndexRouteImport } from './routes/api/checkin/index'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiCliManifestRouteImport } from './routes/api/cli/manifest'
 import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
@@ -182,6 +183,11 @@ const ProtectedCloudOrganizationSlugRouteRoute =
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCheckinIndexRoute = ApiCheckinIndexRouteImport.update({
+  id: '/api/checkin/',
+  path: '/api/checkin/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiCliSplatRoute = ApiCliSplatRouteImport.update({
@@ -553,6 +559,7 @@ export interface FileRoutesByFullPath {
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/cloud/': typeof ProtectedCloudIndexRoute
+  '/api/checkin/': typeof ApiCheckinIndexRoute
   '/api/enroll/': typeof ApiEnrollIndexRoute
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
@@ -621,6 +628,7 @@ export interface FileRoutesByTo {
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/cloud': typeof ProtectedCloudIndexRoute
+  '/api/checkin': typeof ApiCheckinIndexRoute
   '/api/enroll': typeof ApiEnrollIndexRoute
   '/.well-known/oauth-authorization-server/api/auth': typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   '/api/agent/$organizationSlug/chat': typeof ApiAgentOrganizationSlugChatRoute
@@ -690,6 +698,7 @@ export interface FileRoutesById {
   '/api/runtime/logs': typeof ApiRuntimeLogsRoute
   '/.well-known/oauth-authorization-server/': typeof DotwellKnownOauthAuthorizationServerIndexRoute
   '/_protected/cloud/': typeof ProtectedCloudIndexRoute
+  '/api/checkin/': typeof ApiCheckinIndexRoute
   '/api/enroll/': typeof ApiEnrollIndexRoute
   '/_protected/cloud/$organizationSlug/_org': typeof ProtectedCloudOrganizationSlugOrgRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project': typeof ProtectedCloudOrganizationSlugProjectRouteRouteWithChildren
@@ -764,6 +773,7 @@ export interface FileRouteTypes {
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
     | '/cloud/'
+    | '/api/checkin/'
     | '/api/enroll/'
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
@@ -832,6 +842,7 @@ export interface FileRouteTypes {
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server'
     | '/cloud'
+    | '/api/checkin'
     | '/api/enroll'
     | '/.well-known/oauth-authorization-server/api/auth'
     | '/api/agent/$organizationSlug/chat'
@@ -900,6 +911,7 @@ export interface FileRouteTypes {
     | '/api/runtime/logs'
     | '/.well-known/oauth-authorization-server/'
     | '/_protected/cloud/'
+    | '/api/checkin/'
     | '/api/enroll/'
     | '/_protected/cloud/$organizationSlug/_org'
     | '/_protected/cloud/$organizationSlug/_project'
@@ -970,6 +982,7 @@ export interface RootRouteChildren {
   ApiRuntimeEventsRoute: typeof ApiRuntimeEventsRoute
   ApiRuntimeLogsRoute: typeof ApiRuntimeLogsRoute
   DotwellKnownOauthAuthorizationServerIndexRoute: typeof DotwellKnownOauthAuthorizationServerIndexRoute
+  ApiCheckinIndexRoute: typeof ApiCheckinIndexRoute
   ApiEnrollIndexRoute: typeof ApiEnrollIndexRoute
   DotwellKnownOauthAuthorizationServerApiAuthRoute: typeof DotwellKnownOauthAuthorizationServerApiAuthRoute
   ApiAgentOrganizationSlugChatRoute: typeof ApiAgentOrganizationSlugChatRoute
@@ -1124,6 +1137,13 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/$'
       fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/checkin/': {
+      id: '/api/checkin/'
+      path: '/api/checkin'
+      fullPath: '/api/checkin/'
+      preLoaderRoute: typeof ApiCheckinIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/cli/$': {
@@ -1730,6 +1750,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiRuntimeLogsRoute: ApiRuntimeLogsRoute,
   DotwellKnownOauthAuthorizationServerIndexRoute:
     DotwellKnownOauthAuthorizationServerIndexRoute,
+  ApiCheckinIndexRoute: ApiCheckinIndexRoute,
   ApiEnrollIndexRoute: ApiEnrollIndexRoute,
   DotwellKnownOauthAuthorizationServerApiAuthRoute:
     DotwellKnownOauthAuthorizationServerApiAuthRoute,

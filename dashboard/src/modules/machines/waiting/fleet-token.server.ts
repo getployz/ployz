@@ -11,7 +11,7 @@ import {
   type ListFleetTokensInput,
 } from "#/modules/machines/waiting/fleet-token";
 import { generateTokenName } from "#/modules/machines/waiting/names";
-import { fleetToken } from "#/modules/machines/waiting/tables";
+import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -93,27 +93,30 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
   }));
 });
 
-/**
- * Revokes a Fleet Token by id, or by the name of a live one. Revoking a revoked token changes nothing. Hosts waiting on
- * the token are not removed yet, so `waitingRemoved` is always 0.
- */
 export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string } & ({ readonly id: string } | { readonly name: string }),
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
   const target = and(
     eq(fleetToken.organizationId, organization.id),
     "id" in input ? eq(fleetToken.id, input.id) : and(eq(fleetToken.name, input.name), isNull(fleetToken.revokedAt)),
   );
-  const [found] = yield* drizzle.select({ id: fleetToken.id }).from(fleetToken).where(target).limit(1);
-  if (found === undefined) return yield* new NotFound({ message: "No such Fleet Token." });
-  yield* drizzle
-    .update(fleetToken)
-    .set({ revokedAt: new Date() })
-    .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
-  return { waitingRemoved: 0 };
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [found] = yield* drizzle.select({ id: fleetToken.id }).from(fleetToken).where(target).limit(1).for("update");
+    if (found === undefined) return yield* new NotFound({ message: "No such Fleet Token." });
+    yield* drizzle
+      .update(fleetToken)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
+    const removed = yield* drizzle
+      .delete(waitingServer)
+      .where(eq(waitingServer.fleetTokenId, found.id))
+      .returning({ id: waitingServer.id });
+    return { waitingRemoved: removed.length };
+  }));
 });
 
 /** The live Fleet Token a host presents, or null when it is unknown, expired or revoked. */

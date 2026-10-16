@@ -104,6 +104,14 @@ _Avoid_: API key, personal access token, CLI token
 A `pflt_` secret a signed-in member makes for one Organization so many hosts can carry it and ask to join; an Organization Token can't make or revoke one. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls.
 _Avoid_: Enrollment token, join token, bootstrap token
 
+**Waiting Server**:
+A host that checked in with a Fleet Token and waits to be enrolled. Cloud keeps one row per Check-in Key in an Organization, holding the host's own report and the address the check-in came from; it is not a Server and holds no Management Identity. Revoking or expiring its token removes it. Rejecting it leaves a tombstone that tells the same key to stop until a different token brings it back. Its status (waiting, preparing, blocked, offline) is read from the report and the last check-in, never stored.
+_Avoid_: Pending server, candidate, unenrolled machine
+
+**Check-in Key**:
+The Ed25519 key a waiting host makes for itself and signs each check-in with, alongside its Fleet Token. It names the host while it waits and nothing after; enrollment issues the Management Identity separately.
+_Avoid_: Host key, machine key, enrollment key
+
 **Signed-in Device**:
 A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations. Logout or `ployz token rm` ends it at once.
 _Avoid_: CLI login, device token

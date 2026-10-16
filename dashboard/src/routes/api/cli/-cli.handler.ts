@@ -22,6 +22,8 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
+import { listWaitingServers, showWaitingServer, type WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
 import { readCliNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
@@ -47,6 +49,8 @@ const NewFleetToken = Schema.Struct({
   expires_in: Schema.Literals(FLEET_TOKEN_LIFETIMES),
   auto_enroll_max: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 }))),
 });
+
+const RejectServers = Schema.Struct({ ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)) });
 
 const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
 
@@ -102,7 +106,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices and Fleet Tokens,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices, Fleet Tokens and Waiting Servers,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
@@ -166,6 +170,18 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const target = Schema.is(Uuid)(ref) ? { id: ref } : { name: ref };
       const revoked = yield* revokeFleetToken(caller, { organizationSlug: caller.organization.slug, ...target });
       return { waiting_removed: revoked.waitingRemoved };
+    }
+    case "GET waiting-servers":
+      return {
+        waiting_servers: (yield* listWaitingServers(caller, { organizationSlug: caller.organization.slug })).map(cliWaitingServer),
+      };
+    case "GET waiting-servers/:id": {
+      if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such waiting server." });
+      return { waiting_server: cliWaitingServer(yield* showWaitingServer(caller, { organizationSlug: caller.organization.slug, id })) };
+    }
+    case "POST reject-servers": {
+      const input = yield* decodeBody(RejectServers, request, "Rejecting takes the ids of 1 to 1000 waiting servers.");
+      return yield* rejectWaitingServers(caller, { organizationSlug: caller.organization.slug, ids: input.ids });
     }
     case "POST logout": {
       if (caller.credential.kind !== "session") {
@@ -318,6 +334,19 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return yield* new NotFound({ message: "Not found." });
   }
 });
+
+function cliWaitingServer(server: WaitingServerView) {
+  return {
+    id: server.id,
+    name: server.report.hostname,
+    status: server.status,
+    observed_ip: server.observedIp,
+    fleet_token: server.fleetToken,
+    report: server.report,
+    first_seen_at: server.firstSeenAt,
+    last_check_in_at: server.lastCheckInAt,
+  };
+}
 
 /** A Server removal as `ployz server rm` follows it: under way, settled, or refused as it ended. */
 function serverRemoval(attempt: MachineRemoveAttemptView) {
