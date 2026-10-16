@@ -117,6 +117,9 @@ export function RunCanvas({ graph, selectedId, header }: { graph: RunGraph; sele
       elementsSelectable={false}
       nodesFocusable={false}
       proOptions={{ hideAttribution: true }}
+      // React Flow gives a node pointer events only when it has a click handler (or is selectable), so without one a
+      // mouse click falls through to the pane and the card's link never opens.
+      onNodeClick={() => {}}
     >
       <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
       {nodes.length ? <FitRun {...bounds(nodes)} /> : null}
