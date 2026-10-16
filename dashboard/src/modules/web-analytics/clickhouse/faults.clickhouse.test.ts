@@ -39,35 +39,54 @@ const pick = <T extends string>(rng: () => number, weights: Weighted<T>): T => {
 
 /** What happens to one ClickHouse write: acknowledged, acknowledged but the ack lost, landing at a later step, or cut off mid-flight. */
 type Fate = "ok" | "lost" | "late" | "cut";
-type Profile = { readonly fates: Weighted<Fate>; readonly steps: number; readonly seeds: ReadonlyArray<number> };
+type Step = "add" | "drain" | "close" | "rebuild" | "backfill" | "pin" | "collect" | "late" | "read" | "finish";
+type Profile = { readonly fates: Weighted<Fate>; readonly steps: Weighted<Step>; readonly length: number; readonly seeds: ReadonlyArray<number>; readonly crossesCap?: true };
 
-const PROFILES: ReadonlyArray<Profile> = [
-  { fates: [["ok", 0.55], ["lost", 0.15], ["late", 0.15], ["cut", 0.15]], steps: 30, seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
-  { fates: [["ok", 0.2], ["lost", 0.6], ["late", 0.1], ["cut", 0.1]], steps: 150, seeds: [13, 14, 15, 16] },
-];
-
-const STEPS_WEIGHTED = [
+const MIXED_STEPS: Weighted<Step> = [
   ["add", 0.3], ["drain", 0.1], ["close", 0.15], ["rebuild", 0.12], ["backfill", 0.05], ["pin", 0.08], ["collect", 0.12], ["late", 0.08],
   ["read", 0.12], ["finish", 0.12],
-] as const;
+];
+/** Mints outrun collections and no refloor retires the dead slots, so the pending cap fills while reads are in flight. */
+const CAPPING_STEPS: Weighted<Step> = [
+  ["add", 0.43], ["drain", 0.15], ["close", 0.05], ["rebuild", 0.05], ["pin", 0.04], ["collect", 0.04], ["late", 0.04], ["read", 0.1], ["finish", 0.1],
+];
+
+const PROFILES: ReadonlyArray<Profile> = [
+  { fates: [["ok", 0.55], ["lost", 0.15], ["late", 0.15], ["cut", 0.15]], steps: MIXED_STEPS, length: 30, seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+  { fates: [["ok", 0.2], ["lost", 0.6], ["late", 0.1], ["cut", 0.1]], steps: MIXED_STEPS, length: 150, seeds: [13, 14, 15, 16] },
+  { fates: [["ok", 0.1], ["lost", 0.8], ["late", 0.05], ["cut", 0.05]], steps: CAPPING_STEPS, length: 120, seeds: [17, 18, 19, 20], crossesCap: true },
+];
+
+type Stamped = { readonly attempt?: Params[string] };
+const attemptOf = (stamped: Stamped | undefined) => Number(stamped?.attempt);
 
 const faults = (real: ClickHouseService, rng: () => number, trace: string[], fates: Weighted<Fate>) => {
-  const late: Array<Effect.Effect<void, ClickHouseFailure>> = [];
-  const daemons: Array<Fiber.Fiber<void, ClickHouseFailure>> = [];
-  const landLate = Effect.suspend(() => {
-    const write = late.shift();
-    if (write === undefined) return Effect.succeed(false);
+  type Late = { readonly attempt: number; readonly write: Effect.Effect<void, ClickHouseFailure> };
+  const late: Late[] = [];
+  const daemons: Array<{ readonly attempt: number; readonly fiber: Fiber.Fiber<void, ClickHouseFailure> }> = [];
+  const land = ({ write }: Late) => Effect.suspend(() => {
     trace.push("lands");
-    return write.pipe(Effect.ignore, Effect.as(true));
+    return Effect.ignore(write);
   });
-  const doomed = (what: string, write: Effect.Effect<void, ClickHouseFailure>) => Effect.suspend(() => {
+  const landLate = Effect.suspend(() => {
+    const next = late.shift();
+    return next === undefined ? Effect.succeed(false) : Effect.as(land(next), true);
+  });
+  /** The server-side deadline ends every write long before a collection could fence its attempt, so the harness settles them first. */
+  const landBefore = (fence: number) => Effect.suspend(() => {
+    const due = late.filter(({ attempt }) => attempt < fence);
+    late.splice(0, late.length, ...late.filter(({ attempt }) => attempt >= fence));
+    const cut = daemons.filter(({ attempt }) => attempt < fence);
+    return Effect.forEach(due, land, { discard: true }).pipe(Effect.andThen(Effect.forEach(cut, ({ fiber }) => Fiber.await(fiber), { discard: true })));
+  });
+  const doomed = (what: string, attempt: number, write: Effect.Effect<void, ClickHouseFailure>) => Effect.suspend(() => {
     const fate = pick(rng, fates);
     trace.push(`${what}:${fate}`);
     switch (fate) {
       case "ok": return write;
       case "lost": return write.pipe(Effect.andThen(Effect.fail(new ClickHouseFailure({ message: "acknowledgement lost", cause: null }))));
-      case "late": late.push(write); return Effect.fail(new ClickHouseFailure({ message: "timed out", cause: null }));
-      case "cut": return Effect.forkDetach(write).pipe(Effect.andThen((fiber) => { daemons.push(fiber); return Effect.interrupt; }));
+      case "late": late.push({ attempt, write }); return Effect.fail(new ClickHouseFailure({ message: "timed out", cause: null }));
+      case "cut": return Effect.forkDetach(write).pipe(Effect.andThen((fiber) => { daemons.push({ attempt, fiber }); return Effect.interrupt; }));
     }
   });
   const client: ClickHouseService = {
@@ -75,20 +94,20 @@ const faults = (real: ClickHouseService, rng: () => number, trace: string[], fat
     unchecked: {
       ...real.unchecked,
       insert: (table, rows): Effect.Effect<void, ClickHouseFailure> =>
-        rows.length === 0 ? real.unchecked.insert(table, rows) : doomed(`insert-${table}`, real.unchecked.insert(table, rows)),
+        rows.length === 0 ? real.unchecked.insert(table, rows) : doomed(`insert-${table}`, attemptOf(rows[0]), real.unchecked.insert(table, rows)),
       command: (query, params): Effect.Effect<void, ClickHouseFailure> => {
         const head = query.trim().split(/\s+/, 3).join(" ");
         if (!head.startsWith("INSERT INTO")) return real.unchecked.command(query, params);
         const interleaved = head === "INSERT INTO daily" && late.length > 0 && rng() < 0.5 ? landLate : Effect.void;
-        return interleaved.pipe(Effect.andThen(doomed(head.slice("INSERT INTO ".length).toLowerCase(), real.unchecked.command(query, params))));
+        return interleaved.pipe(Effect.andThen(doomed(head.slice("INSERT INTO ".length).toLowerCase(), attemptOf(params), real.unchecked.command(query, params))));
       },
     },
   };
   const quiesce = Effect.gen(function* () {
     while (yield* landLate) {}
-    yield* Effect.forEach(daemons, (fiber) => Fiber.await(fiber), { discard: true });
+    yield* Effect.forEach(daemons, ({ fiber }) => Fiber.await(fiber), { discard: true });
   });
-  return { client, landLate, quiesce };
+  return { client, landLate, landBefore, quiesce };
 };
 
 const total = (rows: ReadonlyArray<{ pageviews: number }>) => rows.reduce((sum, { pageviews }) => sum + pageviews, 0);
@@ -116,6 +135,8 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   const reads = (store: typeof clickHouseStore | typeof postgresStore, service = clickhouse) =>
     provide(Effect.all([store.dailyTotals(query), store.hourlyTotals(query), store.breakdown(query, "page")]), service);
   type Snapshot = Effect.Success<ReturnType<typeof reads>>;
+  const noLoss = (label: string, later: Snapshot, earlier: Snapshot) =>
+    later.forEach((component, i) => expect(total(component), label).toBeGreaterThanOrEqual(total(earlier[i] ?? [])));
   const marker = provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.execute<{ dirty: string[]; demoted: boolean; pending: number; floor: string }>(sql`
@@ -154,7 +175,11 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     yield* Deferred.succeed(read.resume, undefined);
     const result = yield* Fiber.join(read.result);
     const seen = [...snapshots.slice(read.since), yield* reads(clickHouseStore)];
-    result.forEach((component, i) => expect(seen.map((snapshot) => snapshot[i]), `${label}: a read that paused since snapshot ${read.since}`).toContainEqual(component));
+    const since = `${label}: a read that paused since snapshot ${read.since}`;
+    const started = snapshots[read.since];
+    if (started === undefined) return yield* Effect.die(`no snapshot ${read.since} for a paused read`);
+    noLoss(since, result, started);
+    result.forEach((component, i) => expect(seen.map((snapshot) => snapshot[i]), since).toContainEqual(component));
   });
   yield* provide(seedSite({ environmentId: site, timezone: "UTC" }, [row(), row()]));
   yield* provide(backfillSite(clickhouse, site));
@@ -162,43 +187,47 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   let previous = yield* reads(clickHouseStore);
   let before = yield* marker;
   snapshots.push(previous);
-  for (let n = 0; n < profile.steps; n++) {
-    const kind = pick(rng, STEPS_WEIGHTED);
+  for (let n = 0; n < profile.length; n++) {
+    const kind = pick(rng, profile.steps);
     const label = () => `seed ${seed} after step ${n} (${kind}): ${trace.join(" ")}`;
     switch (kind) {
       case "add": yield* enqueue; yield* step(kind, provide(drainOutbox(faulty.client), faulty.client)); break;
       case "drain": yield* step(kind, provide(drainOutbox(faulty.client), faulty.client)); break;
       case "close": yield* step(kind, provide(closeDays(site, now), faulty.client)); break;
       case "rebuild": yield* step(kind, provide(rebuildDirtyDays(site), faulty.client)); break;
-      case "backfill": yield* step(kind, provide(backfillSite(faulty.client, site), faulty.client)); break;
+      case "backfill": yield* step(kind, provide(Effect.catchTag(backfillSite(faulty.client, site), "SiteUnavailable", () => Effect.succeed(0)), faulty.client)); break;
       case "pin": trace.push(kind); fence = yield* provide(pin()); break;
-      case "collect": yield* step(kind, provide(collectGarbage(faulty.client, fence ?? (yield* provide(pin()))), faulty.client)); break;
+      case "collect": {
+        const pinned = fence ?? (yield* provide(pin()));
+        yield* faulty.landBefore(pinned);
+        yield* step(kind, provide(collectGarbage(faulty.client, pinned), faulty.client));
+        break;
+      }
       case "late": trace.push(kind); yield* faulty.landLate; break;
       case "read": trace.push(kind); yield* startRead; break;
       case "finish": trace.push(kind); yield* finishRead(label()); break;
     }
     const current = yield* reads(clickHouseStore);
-    const [daily, hourly, pages] = current;
+    const [daily, hourly] = current;
     const after = yield* marker;
     for (const day of daily) {
       if (after.dirty.has(dayOf(day.bucket))) continue;
       const hours = hourly.filter((hour) => dayOf(hour.bucket) === dayOf(day.bucket));
       expect({ pageviews: day.pageviews, visits: day.visits }, label()).toEqual({ pageviews: total(hours), visits: hours.reduce((sum, { visits }) => sum + visits, 0) });
     }
-    const refloored = after.demoted && (!before.demoted || after.floor !== before.floor);
-    if (kind !== "backfill" && !refloored) {
-      expect(total(pages), label()).toBeGreaterThanOrEqual(total(previous[2]));
-      expect(total(daily), label()).toBeGreaterThanOrEqual(total(previous[0]));
-      expect(total(hourly), label()).toBeGreaterThanOrEqual(total(previous[1]));
-    }
+    noLoss(label(), current, previous);
     if (kind === "collect") expect(current, label()).toEqual(previous);
+    expect(after.floor, label()).toBeGreaterThanOrEqual(before.floor);
     expect(after.pending, label()).toBeLessThanOrEqual(PENDING_CAP);
+    if (after.pending === PENDING_CAP) trace.push("capped");
     previous = current;
     before = after;
     snapshots.push(current);
   }
+  if (profile.crossesCap) expect(trace, `seed ${seed} never filled the pending cap: ${trace.join(" ")}`).toContain("capped");
   while (paused.length > 0) yield* finishRead(`seed ${seed} draining paused reads: ${trace.join(" ")}`);
   yield* faulty.quiesce;
+  for (let n = 0; n < 2; n++) yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
   yield* provide(ensureBackfilled(clickhouse, site));
   for (let n = 0; n < 10 && (yield* provide(drainOutbox(clickhouse))) > 0; n++) {}
   yield* provide(rebuildDirtyDays(site));

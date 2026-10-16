@@ -149,7 +149,7 @@ for (const supersedes of ["a rebuild", "a backfill"] as const) {
     }), 300_000);
 }
 
-it.live("losing every acknowledgement for longer than the pending cap keeps visibility state bounded and reads working", () =>
+it.live("losing every acknowledgement for longer than the pending cap parks the drain at the cap, keeps the published view, and resumes once garbage collection frees the dead slots", () =>
   Effect.gen(function* () {
     const { clickhouse, provide, daily, enqueue, pendingCount } = yield* setup;
     const lossy = losesEveryAck(clickhouse);
@@ -158,12 +158,17 @@ it.live("losing every acknowledgement for longer than the pending cap keeps visi
       yield* enqueue(String(3 + n));
       yield* provide(Effect.ignore(drainOutbox(lossy)), lossy);
       expect(yield* pendingCount).toBeLessThanOrEqual(PENDING_CAP);
+      expect(yield* daily).toBe(2);
     }
-    expect(yield* daily).toBeLessThanOrEqual(2);
-    yield* provide(ensureBackfilled(clickhouse, SITE));
+    expect(yield* pendingCount).toBe(PENDING_CAP);
+    expect(yield* provide(drainOutbox(clickhouse))).toBe(0);
+    expect(yield* provide(ensureBackfilled(clickhouse, SITE))).toBeNull();
+    expect(yield* daily).toBe(2);
+    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
+    expect(yield* pendingCount).toBe(PENDING_CAP);
+    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
+    expect(yield* pendingCount).toBe(0);
     while ((yield* provide(drainOutbox(clickhouse))) > 0) {}
     expect(yield* daily).toBe(2 + lost);
-    expect(yield* pendingCount).toBeLessThanOrEqual(PENDING_CAP);
-    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
     expect(yield* pendingCount).toBe(0);
   }), 300_000);
