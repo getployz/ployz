@@ -58,29 +58,34 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
             "Run ployz server checkin as root.",
         ));
     }
+    let runtime = runtime()?;
+    let installing = matches.get_flag("install");
+    if installing {
+        runtime.block_on(stop_old_loop())?;
+    }
     let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
     let key = CheckinKey::load_or_create(&paths.key()).map_err(key_failure)?;
-    let client = CheckinClient::new(&cloud_url, token).map_err(|error| {
+    let mut client = CheckinClient::new(&cloud_url, token).map_err(|error| {
         Error::caused(
             RpcErrorCode::Internal,
             "Could not build the Cloud client.",
             error,
         )
     })?;
-    let runtime = runtime()?;
-    if matches.get_flag("install") {
-        runtime.block_on(install(&client, &key, &paths, &cloud_url))
+    if installing {
+        runtime.block_on(install(&mut client, &key, &paths, &cloud_url))
     } else {
         let host = System {
             ployzd: runtime.block_on(ployzd(&paths, false))?,
         };
-        let CheckinEnd::Stopped(_) = runtime.block_on(checkin::run(&host, &client, &key, &paths));
+        let CheckinEnd::Stopped(_) =
+            runtime.block_on(checkin::run(&host, &mut client, &key, &paths));
         Ok(())
     }
 }
 
 async fn install(
-    client: &CheckinClient,
+    client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
     cloud_url: &str,
@@ -102,7 +107,6 @@ async fn install(
     )?;
     write_unit(unit::PREPARE, &unit::prepare(&host.ployzd, skip_zfs))?;
     systemd(&["daemon-reload"]).await?;
-    systemd(&["stop", unit::CHECKIN]).await?;
     keep_token_private(&paths.token_file)?;
     crate::ui::stream("Checking in");
     match checkin::pass(&host, client, key, paths, Utc::now()).await {
@@ -124,13 +128,20 @@ async fn install(
         Next::Refused(why) => {
             return Err(Error::coded(
                 RpcErrorCode::Unauthenticated,
-                format!("{why}."),
+                format!("{why}, then run this again."),
             ));
         }
     }
     systemd(&["enable", "--now", unit::CHECKIN]).await?;
     crate::ui::stream("Waiting for approval");
     Ok(())
+}
+
+async fn stop_old_loop() -> Result<(), Error> {
+    if !Path::new(UNIT_DIR).join(unit::CHECKIN).exists() {
+        return Ok(());
+    }
+    systemd(&["stop", unit::CHECKIN]).await
 }
 
 async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {

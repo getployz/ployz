@@ -215,7 +215,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
     let (url, server) = cloud("200 OK", r#"{"kind":"enroll","instruction":{}}"#).await;
     let host = FakeHost::default();
     let now = at("2026-10-16T00:00:00Z");
-    let next = pass(&host, &client(&url), &key(), &paths, now).await;
+    let next = pass(&host, &mut client(&url), &key(), &paths, now).await;
     assert_eq!(
         next,
         Next::Wait {
@@ -264,7 +264,7 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
     )
     .await;
     let host = FakeHost::default();
-    let next = pass(&host, &client(&url), &key(), &paths, Utc::now()).await;
+    let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     assert_eq!(
         next,
         Next::Stop(
@@ -289,7 +289,7 @@ async fn a_refused_check_in_keeps_the_token_and_retries() {
     fs::write(&paths.token_file, "pflt_test\n").unwrap();
     let (url, _server) = cloud("401 Unauthorized", r#"{"error":"unauthorized"}"#).await;
     let host = FakeHost::default();
-    let next = pass(&host, &client(&url), &key(), &paths, Utc::now()).await;
+    let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     assert!(matches!(next, Next::Refused(_)), "{next:?}");
     assert!(paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
@@ -303,6 +303,23 @@ async fn a_refused_check_in_keeps_the_token_and_retries() {
     );
 }
 
+#[tokio::test]
+async fn a_fixed_token_file_is_read_again_after_a_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let host = FakeHost::default();
+    let (url, _server) = cloud("401 Unauthorized", r#"{"error":"unauthorized"}"#).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    fs::write(&paths.token_file, "pflt_fixed\n").unwrap();
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
+    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(
+        request.contains("authorization: Bearer pflt_fixed"),
+        "{request}"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_probe_that_never_finishes_is_cut_off_and_retried() {
     let dir = tempfile::tempdir().unwrap();
@@ -313,7 +330,7 @@ async fn a_probe_that_never_finishes_is_cut_off_and_retried() {
     };
     let Next::Retry { after, why } = pass(
         &host,
-        &client("http://127.0.0.1:9"),
+        &mut client("http://127.0.0.1:9"),
         &key(),
         &paths,
         Utc::now(),
@@ -342,10 +359,10 @@ async fn one_failed_preparation_is_retried_once_however_often_the_loop_polls() {
         probe_hangs: true,
         ..FakeHost::default()
     };
-    let unused = client("http://127.0.0.1:9");
+    let mut unused = client("http://127.0.0.1:9");
     for minute in 20..24 {
         let now = at("2026-10-16T00:00:00Z") + TimeDelta::minutes(minute);
-        pass(&host, &unused, &key(), &paths, now).await;
+        pass(&host, &mut unused, &key(), &paths, now).await;
     }
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
@@ -364,7 +381,8 @@ async fn a_cloud_that_does_not_answer_is_retried_in_a_minute() {
     let url = format!("http://{}", closed.local_addr().unwrap());
     drop(closed);
     let host = FakeHost::default();
-    let Next::Retry { after, .. } = pass(&host, &client(&url), &key(), &paths, Utc::now()).await
+    let Next::Retry { after, .. } =
+        pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
     else {
         panic!("an unreachable Cloud must retry");
     };

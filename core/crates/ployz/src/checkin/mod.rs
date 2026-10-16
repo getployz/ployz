@@ -234,7 +234,7 @@ impl LocalCheckin {
 
 pub(crate) async fn run<H: Host>(
     host: &H,
-    client: &CheckinClient,
+    client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
 ) -> CheckinEnd {
@@ -286,12 +286,19 @@ pub(crate) async fn stop<H: Host>(host: &H, paths: &Paths) {
 
 pub(crate) async fn pass<H: Host>(
     host: &H,
-    client: &CheckinClient,
+    client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
+    if previous
+        .as_ref()
+        .is_some_and(|status| status.answer == Seen::Refused)
+        && let Ok(token) = FleetToken::read(&paths.token_file)
+    {
+        client.use_token(token);
+    }
     let (mut prepare_retries, mut prepare_retried) = previous.map_or((0, None), |status| {
         (status.prepare_retries, status.prepare_retried)
     });

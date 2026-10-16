@@ -171,6 +171,10 @@ impl CheckinClient {
         })
     }
 
+    pub(super) fn use_token(&mut self, token: FleetToken) {
+        self.token = token;
+    }
+
     pub(super) async fn post(&self, key: &CheckinKey, request: &CheckinRequest<'_>) -> Reply {
         let body = match serde_json::to_vec(request) {
             Ok(body) => body,
