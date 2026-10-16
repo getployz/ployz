@@ -1,22 +1,20 @@
 import { useState } from "react";
-import { PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
+import { ZapIcon } from "lucide-react";
 import type { DomainRow, JsonValue, ServiceSettingChange } from "@ployz/sdk";
 import { Link } from "@tanstack/react-router";
 import { PLATFORM_HTTP_PORT } from "#/modules/variables/managed-service-exports";
-import { Button } from "#/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { useStorePendingDomains, useStorePendingNodes } from "#/modules/config-store/store-pending";
 import type { StoreService } from "./StoreServiceDrawer";
 import { ServiceSettingInput } from "./ServiceSettingInput";
-import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
-import { cn } from "#/lib/utils";
+import { SettingsAddButton, SettingsFoot, SettingsRow } from "#/components/settings/settings-section";
+import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CustomDomainDialog, type CustomDomain } from "./CustomDomainDialog";
-import { DomainRowShell, DomainTitle, PendingLabel, PublicDomainRow, storeStatusView } from "./domain-row";
+import { DomainTitle, PendingLabel, PublicDomainRow, storeStatusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";
 
 type Editor =
@@ -96,8 +94,6 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   const adding = pendingNames.filter((name) => name === null || !domains.some((domain) => names(domain).includes(name)));
   const writer = useStoreWriter(organizationSlug);
   const [editor, setEditor] = useState<Editor>(null);
-  const [editingPrivateDns, setEditingPrivateDns] = useState(false);
-  const privateDnsChange = changes.get("privateDns");
   const own = prefixesOf(domains);
   const generated = editor?.kind === "generated"
     ? domains.find((domain) => domain.kind === "generated" && domain.prefix === editor.prefix)
@@ -114,70 +110,27 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
   const remove = (domain: string) => writer.commit({ command: "remove_domain", environment, domain });
 
   const removed = removedDomains(changes, domains);
-  const addButtons = (
-    <div className="flex shrink-0 flex-wrap gap-2">
-      <Button type="button" variant="outline" onClick={() => setEditor({ kind: "generate" })}>
-        <ZapIcon data-icon="inline-start" />
-        Generate domain
-      </Button>
-      <Button type="button" variant="outline" onClick={() => setEditor({ kind: "add" })}>
-        <PlusIcon data-icon="inline-start" />
-        Custom domain
-      </Button>
-    </div>
-  );
   const none = domains.length === 0 && removed.length === 0 && adding.length === 0;
   // A domain without its own port routes to PORT, which Ployz sets when the user doesn't. Whether the app listens
   // there is unknown, so this is a hint, never a failure.
   const defaultPort = defaultPortHint(state.rows.get("env.PORT")?.value, domains);
   const privateRow = (
-      <Field orientation="responsive" data-changed={privateDnsChange ? true : undefined}>
-        <FieldContent>
-          <FieldLabel>Private address</FieldLabel>
-        </FieldContent>
-        <div className={cn("flex min-w-0 shrink-0 items-center gap-1", privateDnsChange && "rounded-lg border border-changed-border bg-changed-soft px-2")}
-          title={privateDnsChange ? `Deployed: ${settingText(privateDnsChange.before) || service.name}` : undefined}>
-          <DomainTitle hostname={`${privateDns}.internal`} copyLabel="Copy private address" />
-          <Button type="button" variant="ghost" size="icon-xs" aria-label="Edit private address" onClick={() => setEditingPrivateDns(true)}>
-            <PencilIcon />
-          </Button>
-        </div>
-        {editingPrivateDns ? (
-          <Dialog open onOpenChange={(open) => { if (!open) setEditingPrivateDns(false); }}>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Edit private endpoint</DialogTitle>
-                <DialogDescription>The name other services in this environment use to reach it. Blank returns it to the service's name.</DialogDescription>
-              </DialogHeader>
-              <ServiceSettingInput ariaLabel="Private endpoint name" placeholder={service.name} value={privateDns}
-                {...changedProps(privateDnsChange)}
-                validate={validatePrivateDns}
-                onCommit={(raw) => {
-                  setEditingPrivateDns(false);
-                  return state.set("privateDns", raw === "" ? null : raw);
-                }} />
-            </DialogContent>
-          </Dialog>
-        ) : null}
-      </Field>
+    <SettingsRow label="Private address" hint="How other services in this environment reach it." commit="confirm" control={
+      <ServiceSettingInput ariaLabel="Private address" suffix=".internal" placeholder={service.name} value={privateDns}
+        {...changedProps(changes.get("privateDns"))}
+        validate={validatePrivateDns}
+        onCommit={(raw) => state.set("privateDns", raw === "" ? null : raw)} />
+    } />
   );
 
   return (
     <>
       {privateFirst ? privateRow : null}
-      <Field orientation="responsive" data-changed={domains.some((domain) => domainChanged(changes, domain)) || undefined}>
-        <FieldContent>
-          <FieldLabel>Public domains</FieldLabel>
-          {none ? <FieldDescription>None</FieldDescription> : null}
-        </FieldContent>
-        {addButtons}
-      </Field>
-      {none ? null : (
-        <div className="flex flex-col gap-1">
+      {none ? <SettingsEmpty title="No public domains">Generate one under the cluster domain, or add your own.</SettingsEmpty> : (
+        <SettingsList label="Public domains">
           {removed.map((removed) => (
-            <DomainRowShell key={`removed:${removed.name}`} icon={<ZapIcon className="opacity-50" />} changed actions={null}>
-              <div className="truncate font-mono text-sm text-muted-foreground line-through">{removed.name}</div>
-            </DomainRowShell>
+            <SettingsListItem key={`removed:${removed.name}`} media={<ZapIcon />} label={removed.name} tone="removed"
+              hint="Removed on your next deploy." commit="none" />
           ))}
           {domains.map((domain) => {
             const name = nameOf(domain);
@@ -187,10 +140,7 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
                 key={`${domain.kind}:${name}`}
                 organizationSlug={organizationSlug}
                 title={hostname ? <DomainTitle hostname={hostname} live={domain.status === "ready"} /> : (
-                  <div className="truncate font-mono text-sm">
-                    {name}
-                    <span className="text-muted-foreground">.…</span>
-                  </div>
+                  <span className="font-mono">{name}<span className="text-muted-foreground">.…</span></span>
                 )}
                 label={hostname ?? name}
                 portLabel={portLabel(domain.port)}
@@ -206,63 +156,64 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
             );
           })}
           {adding.map((name, index) => (
-            <DomainRowShell key={`adding:${name ?? index}`} icon={<ZapIcon className="opacity-50" />} pending actions={null}>
-              {name === null
-                ? <PendingLabel>Adding…</PendingLabel>
-                : <div className="truncate font-mono text-sm text-muted-foreground">{name}</div>}
-            </DomainRowShell>
+            <SettingsListItem key={`adding:${name ?? index}`} media={<ZapIcon className="opacity-50" />}
+              label={<span aria-busy className="font-mono opacity-60">{name ?? "New domain"}</span>}
+              commit="none" actions={<PendingLabel>Adding…</PendingLabel>} />
           ))}
-        </div>
+        </SettingsList>
       )}
+      <SettingsFoot>
+        <SettingsAddButton onClick={() => setEditor({ kind: "generate" })}>Generate domain</SettingsAddButton>
+        <SettingsAddButton onClick={() => setEditor({ kind: "add" })}>Custom domain</SettingsAddButton>
+      </SettingsFoot>
       {defaultPort ? (
-        <FieldDescription>
-          Uses port {defaultPort}. <Link to="." search={(prev) => ({ ...prev, tab: "variables" })}>Change</Link>
-        </FieldDescription>
+        <SettingsRow label="Default port" commit="none"
+          hint={<>Domains without a port use {defaultPort}. <Link to="." search={(prev) => ({ ...prev, tab: "variables" })} className="underline">Change</Link></>} />
       ) : null}
-        {editor?.kind === "generate" ? (
-          <ManagedDomainDialog
-            mode="generate"
-            // The first one takes the Private DNS name; another needs a subdomain of its own.
-            choosePrefix={own.length > 0}
-            managed={{ prefix: freePrefix(privateDns, allPrefixes), targetPort: null }}
-            clusterDomain={clusterDomain}
-            takenPrefixes={allPrefixes}
-            defaultTargetPort={null}
-            onClose={() => setEditor(null)}
-            onSubmit={({ prefix, targetPort }) => void add(null, targetPort, own.length > 0 ? prefix.trim().toLowerCase() : null)}
-          />
-        ) : null}
-        {generated?.kind === "generated" ? (
-          <ManagedDomainDialog
-            managed={{ prefix: generated.prefix, targetPort: generated.port }}
-            clusterDomain={clusterDomain}
-            takenPrefixes={allPrefixes.filter((prefix) => prefix !== generated.prefix)}
-            defaultTargetPort={null}
-            onClose={() => setEditor(null)}
-            onSubmit={({ prefix, targetPort }) => {
-              // One command: the subdomain, and the port (null follows the container's PORT).
-              const next = prefix.trim().toLowerCase();
-              void writer.commit({
-                command: "set_generated_domain", environment, service: service.name, domain: generated.prefix, prefix: next, port: targetPort,
-              });
-            }}
-          />
-        ) : null}
-        {editor?.kind === "add" || (editor?.kind === "custom" && edited?.kind === "custom") ? (
-          <CustomDomainDialog
-            route={edited?.kind === "custom" ? { hostname: edited.hostname, targetPort: edited.port } : undefined}
-            hostnameFixed
-            defaultTargetPort={null}
-            onClose={() => setEditor(null)}
-            initial={editor.kind === "add" ? editor.draft : undefined}
-            onSubmit={({ hostname, targetPort }) => {
-              add(hostname, targetPort).isPersisted.promise.catch(() => {
-                if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
-              });
-            }}
-          />
-        ) : null}
       {privateFirst ? null : privateRow}
+      {editor?.kind === "generate" ? (
+        <ManagedDomainDialog
+          mode="generate"
+          // The first one takes the Private DNS name; another needs a subdomain of its own.
+          choosePrefix={own.length > 0}
+          managed={{ prefix: freePrefix(privateDns, allPrefixes), targetPort: null }}
+          clusterDomain={clusterDomain}
+          takenPrefixes={allPrefixes}
+          defaultTargetPort={null}
+          onClose={() => setEditor(null)}
+          onSubmit={({ prefix, targetPort }) => void add(null, targetPort, own.length > 0 ? prefix.trim().toLowerCase() : null)}
+        />
+      ) : null}
+      {generated?.kind === "generated" ? (
+        <ManagedDomainDialog
+          managed={{ prefix: generated.prefix, targetPort: generated.port }}
+          clusterDomain={clusterDomain}
+          takenPrefixes={allPrefixes.filter((prefix) => prefix !== generated.prefix)}
+          defaultTargetPort={null}
+          onClose={() => setEditor(null)}
+          onSubmit={({ prefix, targetPort }) => {
+            // One command: the subdomain, and the port (null follows the container's PORT).
+            const next = prefix.trim().toLowerCase();
+            void writer.commit({
+              command: "set_generated_domain", environment, service: service.name, domain: generated.prefix, prefix: next, port: targetPort,
+            });
+          }}
+        />
+      ) : null}
+      {editor?.kind === "add" || (editor?.kind === "custom" && edited?.kind === "custom") ? (
+        <CustomDomainDialog
+          route={edited?.kind === "custom" ? { hostname: edited.hostname, targetPort: edited.port } : undefined}
+          hostnameFixed
+          defaultTargetPort={null}
+          onClose={() => setEditor(null)}
+          initial={editor.kind === "add" ? editor.draft : undefined}
+          onSubmit={({ hostname, targetPort }) => {
+            add(hostname, targetPort).isPersisted.promise.catch(() => {
+              if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
+            });
+          }}
+        />
+      ) : null}
     </>
   );
 }

@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import { MoreVerticalIcon } from "lucide-react";
+import { BoxIcon, MoreVerticalIcon } from "lucide-react";
 import type { DiffView, EnvironmentRef, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { FieldError } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
-import { SettingsSection, RowWarning, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { RowWarning, SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsAddButton, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { MountEditor, mountFailure, type MountEditing } from "./MountEditor";
 import { detachedMounts, mountChange } from "./store-volumes";
 import { mountRefusal, volumeWriters, writersText } from "./volume-sharing";
@@ -21,11 +22,14 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
   const [unmount, setUnmount] = useState<{ pending: ReadonlySet<string>; error: string | null }>({ pending: new Set(), error: null });
   const pending = useRef(new Set<string>());
   const trigger = useRef<HTMLButtonElement | null>(null);
-  const panel = useRef<HTMLDivElement | null>(null);
+  const anchor = useRef<HTMLSpanElement | null>(null);
   function closeEditor() {
+    // The Add button unmounts while its form is open, so focus falls back to the one the foot renders again.
+    const card = anchor.current?.closest("[data-slot=settings-card]");
     setEditor(null);
     requestAnimationFrame(() => {
-      const target = editor?.trigger?.isConnected ? editor.trigger : panel.current?.querySelector<HTMLButtonElement>("button");
+      const target = editor?.trigger?.isConnected ? editor.trigger
+        : card?.querySelector<HTMLButtonElement>("[data-archetype=list-foot] button") ?? card?.querySelector<HTMLButtonElement>("button");
       target?.focus();
     });
   }
@@ -67,44 +71,24 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
     const { shared, writers, total } = volumeWriters(volume, replicasOf);
     if (!shared) return null;
     const correction = writers.length === 1 ? writers[0]?.service : null;
-    return <RowWarning why={SHARED_VOLUME_WHY} action={correction ? (
+    return <SettingsRow label="Several writers" commit="none"><RowWarning why={SHARED_VOLUME_WHY} action={correction ? (
       <Button type="button" variant="outline" size="xs" onClick={() => writer.edit({ environment, changes: [{ op: "set", path: `${correction}.replicas`, value: 1 }] })}>Use 1 replica</Button>
     ) : null}>
       {total} containers write here: {writersText(writers)}. Can corrupt data.
-    </RowWarning>;
+    </RowWarning></SettingsRow>;
   }
 
+  const reason = !ownerActive ? "This resource is missing or being removed." : choices.length ? "Every service mounts it." : "Add a service to mount this volume.";
   return (
-    <SettingsSection id="mounts" title="Mounts" action={
-      ownerActive && available.length ? <Button variant="outline" size="sm" disabled={editor !== null}
-        onClick={(event) => { setEditor({ trigger: event.currentTarget, counterpart: "", directory: "/data", editing: false }); }}>Mount on a service</Button> : null
-    }>
-      <div ref={panel} className="flex flex-col gap-3">
-        {unmount.error ? <FieldError role="alert">{unmount.error}</FieldError> : null}
-        {unmount.pending.size ? <p role="status" className="text-sm text-muted-foreground">Saving unmount…</p> : null}
-        {fixedVolume ? warning(fixedVolume) : null}
-        {editor ? <MountEditor key={`${editor.editing}:${editor.counterpart}`}
-          choices={choices.filter((choice) => choice.id === editor.counterpart || available.some((one) => one.id === choice.id))} initial={editor}
-          onClose={closeEditor} submit={(id, directory) => {
-            const { volume, service } = resolve(id);
-            const current = volume.mounts.find((mount) => mount.service === service.name);
-            if (editor.editing && !current) throw new Error("This mount was removed. Cancel and mount it again.");
-            if (!editor.editing && current) throw new Error("This volume is already mounted on that service. Edit its directory instead.");
-            if (current?.path === directory) return null;
-            const refusal = mountRefusal(volume, service.name, replicasOf(service.name));
-            if (refusal) throw new Error(refusal);
-            if (volumes.some((other) => other.id !== volume.id && other.mounts.some((mount) => mount.service === service.name && mount.path === directory))) {
-              throw new Error(`Another volume is already mounted at ${directory}.`);
-            }
-            return writer.edit({ environment, changes: [mountChange(service.name, volume.name, directory)] });
-          }} /> : null}
+    <SettingsSection id="mounts" title="Mounts" description={!editor && !(ownerActive && available.length) ? reason : undefined}>
+      {fixedVolume ? warning(fixedVolume) : null}
+      {unmount.pending.size ? <SettingsRow label={<span role="status">Saving unmount…</span>} commit="none" /> : null}
+      {unmount.error ? <SettingsRow label="Couldn't unmount" commit="none"><FieldError role="alert">{unmount.error}</FieldError></SettingsRow> : null}
+      {rows.length || detached.length ? <SettingsList label="Mounts">
         {rows.map(({ service, directory, counterpart }) => (
-          <Item key={counterpart} size="xs">
-            <ItemContent className="min-w-0">
-              <ItemTitle className="line-clamp-none flex-wrap">{service.name} <span className="break-all font-mono font-normal text-muted-foreground">{directory}</span></ItemTitle>
-              {replicasOf(service.name) > 1 ? <ItemDescription>{replicasOf(service.name)} replicas</ItemDescription> : null}
-            </ItemContent>
-            <ItemActions>
+          <SettingsListItem key={counterpart} media={<BoxIcon />} label={service.name} commit="change"
+            hint={<><span className="break-all font-mono">{directory}</span>{replicasOf(service.name) > 1 ? ` · ${replicasOf(service.name)} replicas` : null}</>}
+            actions={(
               <DropdownMenu>
                 <DropdownMenuTrigger disabled={unmount.pending.has(counterpart)}
                   onFocus={(event) => { trigger.current = event.currentTarget; }}
@@ -117,15 +101,34 @@ export function StoreVolumeMounts({ resourceId, organizationSlug, environment, s
                   <DropdownMenuItem disabled={unmount.pending.has(counterpart)} onClick={() => detach(counterpart)}>Unmount</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
-            </ItemActions>
-          </Item>
+            )} />
         ))}
-        {detached.map((mount) => <Item key={mount.service} variant="muted" size="xs"><ItemContent>
-          <ItemTitle>{mount.service}</ItemTitle>
-          <ItemDescription>Unmounts from <span className="break-all font-mono">{mount.path}</span> on your next deploy. The data stays in this volume.</ItemDescription>
-        </ItemContent></Item>)}
-        {!editor && !(ownerActive && available.length) ? <p className="text-sm text-muted-foreground">{!ownerActive ? "This resource is missing or being removed." : choices.length ? "Every service mounts it." : "Add a service to mount this volume."}</p> : null}
-      </div>
+        {detached.map((mount) => <SettingsListItem key={mount.service} media={<BoxIcon />} label={mount.service} tone="removed" commit="none"
+          hint={<>Unmounts from <span className="break-all font-mono">{mount.path}</span> on your next deploy. The data stays in this volume.</>} />)}
+      </SettingsList> : <SettingsEmpty title="No mounts" />}
+      {editor ? (
+        <SettingsRow label={<span ref={anchor}>{editor.editing ? "Edit directory" : "Mount on a service"}</span>} commit="form">
+          <MountEditor key={`${editor.editing}:${editor.counterpart}`}
+            choices={choices.filter((choice) => choice.id === editor.counterpart || available.some((one) => one.id === choice.id))} initial={editor}
+            onClose={closeEditor} submit={(id, directory) => {
+              const { volume, service } = resolve(id);
+              const current = volume.mounts.find((mount) => mount.service === service.name);
+              if (editor.editing && !current) throw new Error("This mount was removed. Cancel and mount it again.");
+              if (!editor.editing && current) throw new Error("This volume is already mounted on that service. Edit its directory instead.");
+              if (current?.path === directory) return null;
+              const refusal = mountRefusal(volume, service.name, replicasOf(service.name));
+              if (refusal) throw new Error(refusal);
+              if (volumes.some((other) => other.id !== volume.id && other.mounts.some((mount) => mount.service === service.name && mount.path === directory))) {
+                throw new Error(`Another volume is already mounted at ${directory}.`);
+              }
+              return writer.edit({ environment, changes: [mountChange(service.name, volume.name, directory)] });
+            }} />
+        </SettingsRow>
+      ) : ownerActive && available.length ? (
+        <SettingsFoot>
+          <SettingsAddButton onClick={() => setEditor({ trigger: null, counterpart: "", directory: "/data", editing: false })}>Mount on a service</SettingsAddButton>
+        </SettingsFoot>
+      ) : null}
     </SettingsSection>
   );
 }

@@ -16,9 +16,8 @@ import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runt
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
-import { RowWarning } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { RowWarning } from "#/components/settings/row-warning";
+import { SettingsDanger, SettingsSection } from "#/components/settings/settings-section";
 import { listNames, plural } from "#/lib/plural";
 import type { RemoveHint } from "#/modules/machines/server-drain-view";
 
@@ -83,9 +82,9 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
     <SettingsSection id="remove-server" title="Danger">
       {offline ? last
         ? <ForgetLastServerRow machine={machine} organizationSlug={organizationSlug} />
-        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <DangerRow
-        title={`Remove ${machine.name}`}
-        description={last
+        : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} /> : <SettingsDanger
+        label={`Remove ${machine.name}`}
+        hint={last
           ? "Resets it. It's your only server, so everything running here stops until you add another."
           : "Resets it and takes it out of the cluster. Services that run only here stop."}
         action={
@@ -96,7 +95,7 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         }
       >
         {hint}
-      </DangerRow>}
+      </SettingsDanger>}
     </SettingsSection>
       <DeletionDialog
         open={open}
@@ -150,9 +149,9 @@ function ForgetLastServerRow({ machine, organizationSlug }: { machine: RuntimeMa
   const [open, setOpen] = useState(false);
   return (
     <>
-      <DangerRow
-        title={`Forget ${machine.name}`}
-        description="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
+      <SettingsDanger
+        label={`Forget ${machine.name}`}
+        hint="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
         action={
           <Button variant="destructive" onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
@@ -192,9 +191,9 @@ function ForgetServerRow({ machine, organizationSlug }: { machine: RuntimeMachin
 
   return (
     <>
-      <DangerRow
-        title={`Forget ${machine.name}`}
-        description="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
+      <SettingsDanger
+        label={`Forget ${machine.name}`}
+        hint="It's gone. Ployz stops waiting for it; its volumes can't be recovered."
         action={
           <Button variant="destructive" onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />

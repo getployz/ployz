@@ -6,7 +6,7 @@ import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Spinner } from "#/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
-import { cn } from "#/lib/utils";
+import { SettingsListItem } from "#/components/settings/settings-list";
 import type { DnsRecord, DomainRow } from "@ployz/sdk";
 
 export function DomainTitle({
@@ -30,39 +30,6 @@ export function DomainTitle({
         <span className="truncate font-mono text-sm">{hostname}</span>
       )}
       <CopyButton value={hostname} label={copyLabel} size="icon-xs" />
-    </div>
-  );
-}
-
-export function DomainRowShell({
-  icon,
-  children,
-  changed,
-  pending = false,
-  actions,
-}: {
-  icon: ReactNode;
-  children: ReactNode;
-  changed?: boolean;
-  /** A write names this domain; the row waits for the Store's answer. */
-  pending?: boolean;
-  actions: ReactNode;
-}) {
-  return (
-    <div
-      aria-busy={pending}
-      className={cn(
-        // Flat like the rows around it; only a staged change takes a surface, the pink trail.
-        "flex items-center gap-3 rounded-lg border border-transparent py-1",
-        changed && "border-changed-border bg-changed-soft px-3 py-2",
-        pending && "opacity-60"
-      )}
-    >
-      <span className="text-muted-foreground">{icon}</span>
-      <div className="min-w-0 flex-1">{children}</div>
-      <div className="flex items-center gap-1">
-        {pending ? <PendingLabel /> : actions}
-      </div>
     </div>
   );
 }
@@ -121,6 +88,8 @@ function DnsRecords({ records }: { records: DnsRecord[] }) {
   );
 }
 
+const LINK = buttonVariants({ variant: "link", size: "sm", className: "h-auto p-0" });
+
 /** A public domain on a Service: the icon is its status, and one line says what's next. */
 export function PublicDomainRow({
   organizationSlug,
@@ -130,7 +99,7 @@ export function PublicDomainRow({
   view,
   dnsRecords = [],
   changed,
-  pending,
+  pending = false,
   onEdit,
   onDelete,
 }: {
@@ -144,6 +113,7 @@ export function PublicDomainRow({
   /** The records that point the domain here; only custom domains have them. */
   dnsRecords?: DnsRecord[];
   changed: boolean;
+  /** A write names this domain; the row waits for the Store's answer. */
   pending?: boolean;
   onEdit: () => void;
   onDelete: () => void;
@@ -151,55 +121,40 @@ export function PublicDomainRow({
   const [showDns, setShowDns] = useState(false);
   const action = view.action === "dns" && dnsRecords.length === 0 ? null : view.action;
   return (
-    <div className="flex flex-col gap-2">
-      <DomainRowShell
-        changed={changed}
-        pending={pending}
-        icon={view.icon}
-        actions={
-          <>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={`Edit ${label}`} onClick={onEdit}>
-              <PencilIcon />
-            </Button>
-            <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${label}`} onClick={onDelete}>
-              <Trash2Icon />
-            </Button>
-          </>
-        }
-      >
-        {title}
-        <div className="flex flex-wrap items-center gap-1 text-muted-foreground text-sm">
-          <span>
-            → {portLabel}
-            {view.phrase ? <> · {view.phrase}</> : null}
-          </span>
-          {action ? <span>·</span> : null}
+    <SettingsListItem
+      media={view.icon}
+      label={<span aria-busy={pending} className={pending ? "opacity-60" : undefined}>{title}</span>}
+      hint={
+        <>
+          → {portLabel}
+          {view.phrase ? <> · {view.phrase}</> : null}
+          {action ? " · " : null}
           {action === "dns" ? (
-            <Button type="button" variant="link" size="sm" onClick={() => setShowDns(!showDns)}>
+            <button type="button" className={LINK} onClick={() => setShowDns(!showDns)}>
               {showDns ? "Hide DNS records" : "Show DNS records"}
-            </Button>
+            </button>
           ) : null}
           {action === "organization_settings" ? (
-            <Link
-              to="/cloud/$organizationSlug/~/settings"
-              params={{ organizationSlug }}
-              className={buttonVariants({ variant: "link", size: "sm" })}
-            >
-              Organization › General
-            </Link>
+            <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} className={LINK}>Organization › General</Link>
           ) : null}
           {action === "servers" ? (
-            <Link
-              to="/cloud/$organizationSlug/~/servers"
-              params={{ organizationSlug }}
-              className={buttonVariants({ variant: "link", size: "sm" })}
-            >
-              Add a server
-            </Link>
+            <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug }} className={LINK}>Add a server</Link>
           ) : null}
-        </div>
-      </DomainRowShell>
+        </>
+      }
+      commit="change"
+      actions={pending ? <PendingLabel /> : (
+        <>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Edit ${label}`} data-changed={changed || undefined} onClick={onEdit}>
+            <PencilIcon />
+          </Button>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Remove ${label}`} onClick={onDelete}>
+            <Trash2Icon />
+          </Button>
+        </>
+      )}
+    >
       {action === "dns" && showDns ? <DnsRecords records={dnsRecords} /> : null}
-    </div>
+    </SettingsListItem>
   );
 }

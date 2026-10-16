@@ -5,7 +5,7 @@ import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
 import type { DeploymentStatus, EnvironmentListing, Removal } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -15,9 +15,6 @@ import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
-import { DangerRow } from "./danger-row";
-import { SettingsSection } from "./SettingsSection";
-import { FieldDescription } from "#/components/ui/field";
 
 /** How a removal that didn't apply ended, after "Deployment #N". */
 function ended(status: DeploymentStatus) {
@@ -103,10 +100,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
     <>
       <SettingsSection id={headingId} title="Danger">
           {left?.waiting_on.map((waiting) => (
-            <Alert key={waiting.server}>
-              <AlertTitle>Waiting on {waiting.server}</AlertTitle>
-              <AlertDescription>{waiting.why}</AlertDescription>
-            </Alert>
+            <SettingsRow key={waiting.server} label={`Waiting on ${waiting.server}`} hint={waiting.why} commit="none" />
           ))}
           {inScope.flatMap((environment) => {
             const removal = environment.removal;
@@ -115,30 +109,35 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
               className="underline underline-offset-4">Deployment #{removal.number}</Link>;
             // Applied, while the Store is deleting it: the next sweep finishes it.
             if (removing(environment) || (left !== null && removal.status === "applied")) return [
-              <Alert key={environment.id}>
-                <Spinner />
-                <AlertTitle>Deleting {environment.name}…</AlertTitle>
-                <AlertDescription><span>{deployment} takes it off your servers.</span></AlertDescription>
-              </Alert>,
+              <SettingsRow
+                key={environment.id}
+                label={<><Spinner />Deleting {environment.name}…</>}
+                hint={<>{deployment} takes it off your servers.</>}
+                commit="none"
+              />,
             ];
             if (removal.status === "applied") return [
-              <Alert key={environment.id}>
-                <AlertTitle>{environment.name} is off your servers</AlertTitle>
-                <AlertDescription><span>{deployment} removed it. Nothing is left to lose: finish deleting it.</span></AlertDescription>
-                <AlertAction><Button variant="outline" size="sm" onClick={() => setOpen(true)}>Finish deleting</Button></AlertAction>
-              </Alert>,
+              <SettingsRow
+                key={environment.id}
+                label={`${environment.name} is off your servers`}
+                hint={<>{deployment} removed it. Nothing is left to lose: finish deleting it.</>}
+                commit="none"
+                control={<Button variant="outline" onClick={() => setOpen(true)}>Finish deleting</Button>}
+              />,
             ];
             return [
-              <Alert key={environment.id} variant="destructive">
-                <AlertTitle>Deleting {environment.name} didn't finish</AlertTitle>
-                <AlertDescription><span>{deployment} {ended(removal.status)}. Some of it may still be on your servers.</span></AlertDescription>
-                <AlertAction><Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen(true)}>Try again</Button></AlertAction>
-              </Alert>,
+              <SettingsRow
+                key={environment.id}
+                label={`Deleting ${environment.name} didn't finish`}
+                hint={<span role="alert" className="text-destructive">{deployment} {ended(removal.status)}. Some of it may still be on your servers.</span>}
+                commit="none"
+                control={<Button variant="outline" disabled={busy} onClick={() => setOpen(true)}>Try again</Button>}
+              />,
             ];
           })}
-          <DangerRow
-            title={title}
-            description={description}
+          <SettingsDanger
+            label={title}
+            hint={description}
             action={
               <Button variant="destructive" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
@@ -146,8 +145,8 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
               </Button>
             }
           >
-            {disabledReason && <FieldDescription>{disabledReason}</FieldDescription>}
-          </DangerRow>
+            {disabledReason && <p className="text-sm text-muted-foreground">{disabledReason}</p>}
+          </SettingsDanger>
       </SettingsSection>
       <DeletionDialog open={open} onOpenChange={setOpen} title={`Delete ${name}?`} place={place} confirmLabel="Delete"
         callbacks={{ load, confirm }} />

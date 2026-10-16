@@ -1,17 +1,19 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useRouteContext } from "@tanstack/react-router";
+import { MonitorIcon, TerminalIcon } from "lucide-react";
 import { toast } from "sonner";
 import { prefetchRemote } from "#/collections/route-data";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsSection } from "#/components/settings/settings-section";
 import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/ui/field";
 import { accountSessionsRead, getAccountSessionsCollection, getLinkedAccountsCollection, linkedAccountsRead, revokeAccountSession, type AccountSessionRow } from "#/modules/account/account.collection";
 import { notificationSettingsQueryOptions, useSetNotificationChannel } from "#/modules/notifications/notifications.queries";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { formatRelativeTime } from "#/utils/relative-time";
 import { NotificationsSection } from "./notifications-section";
 
@@ -41,29 +43,29 @@ function ProfileSection() {
   const { user } = session;
   return (
     <SettingsSection id="profile" title="Profile">
-      <Field orientation="responsive">
-        <FieldContent>
-          <div className="flex items-center gap-3">
-            <Avatar className="size-10">
+      <SettingsList label="Profile">
+        <SettingsListItem
+          media={(
+            <Avatar>
               {user.image ? <AvatarImage src={user.image} alt="" /> : null}
               <AvatarFallback>{user.name.slice(0, 1).toUpperCase()}</AvatarFallback>
             </Avatar>
-            <div className="min-w-0">
-              <FieldTitle className="truncate">{user.name}</FieldTitle>
-              <FieldDescription className="truncate">{user.email}</FieldDescription>
-            </div>
-          </div>
-        </FieldContent>
-      </Field>
-      {linked.map((row) => (
-        <Field key={row.id} orientation="responsive">
-          <FieldContent>
-            <FieldTitle>{providerLabel(row.providerId)}</FieldTitle>
-            <FieldDescription>Linked {dateFormat.format(new Date(row.createdAt))}</FieldDescription>
-          </FieldContent>
-          <div><Badge variant="outline">Sign-in</Badge></div>
-        </Field>
-      ))}
+          )}
+          label={user.name}
+          hint={user.email}
+          commit="none"
+        />
+        {linked.map((row) => (
+          <SettingsListItem
+            key={row.id}
+            media={<GitHubMarkIcon />}
+            label={providerLabel(row.providerId)}
+            hint={`Linked ${dateFormat.format(new Date(row.createdAt))}`}
+            commit="none"
+            actions={<Badge variant="outline">Sign-in</Badge>}
+          />
+        ))}
+      </SettingsList>
     </SettingsSection>
   );
 }
@@ -76,18 +78,16 @@ function SessionsSection() {
   const sessions = [...data].sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt));
   return (
     <SettingsSection id="sessions" title="Sessions"
-      description={<>CLI devices sign out with <code className="font-mono text-xs">ployz logout</code>.</>}>
-      {sessions.map((row) => (
-        <Field key={row.id} orientation="responsive">
-          <FieldContent>
-            <FieldTitle>{deviceLabel(row)}</FieldTitle>
-            <FieldDescription>
-              {[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
-            </FieldDescription>
-          </FieldContent>
-          {/* A wrapper, so the stacked phone layout stretches it and not the badge. */}
-          <div>
-            {row.id === scope.sessionId
+      description={<>CLI devices sign out with <code className="font-mono">ployz logout</code>.</>}>
+      <SettingsList label="Sessions">
+        {sessions.map((row) => (
+          <SettingsListItem
+            key={row.id}
+            media={row.cli ? <TerminalIcon /> : <MonitorIcon />}
+            label={deviceLabel(row)}
+            hint={[row.ipAddress, `Active ${formatRelativeTime(new Date(row.lastActiveAt))}`].filter(Boolean).join(" · ")}
+            commit={row.id === scope.sessionId || row.cli ? "none" : "change"}
+            actions={row.id === scope.sessionId
               ? <Badge variant="success">This device</Badge>
               : row.cli
                 ? <Badge variant="outline">CLI</Badge>
@@ -98,9 +98,9 @@ function SessionsSection() {
                     Sign out
                   </Button>
                 )}
-          </div>
-        </Field>
-      ))}
+          />
+        ))}
+      </SettingsList>
     </SettingsSection>
   );
 }

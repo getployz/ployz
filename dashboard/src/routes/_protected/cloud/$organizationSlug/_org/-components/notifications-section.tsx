@@ -1,4 +1,3 @@
-import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import {
   NOTIFICATION_CHANNELS,
@@ -8,7 +7,7 @@ import {
   type NotificationSettings,
   type SetNotificationChannel,
 } from "#/modules/notifications/notification-types";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 
 export const EMAIL_SETUP_DOCS = "https://ployz.dev/docs/self-hosting#2-configure";
 
@@ -31,31 +30,33 @@ export function NotificationsSection({ settings, onChange }: {
         const channel = settings.channels[type];
         const { label, description } = NOTIFICATION_TYPES[type];
         return (
-          <Field key={type} orientation="responsive">
-            <FieldContent>
-              <FieldLabel>{label}</FieldLabel>
-              <FieldDescription>{description}</FieldDescription>
-            </FieldContent>
-            <Select
-              value={channel}
-              disabled={!settings.mailOn}
-              onValueChange={(next) => {
-                const chosen = NOTIFICATION_CHANNELS.find((candidate) => candidate === next);
-                if (chosen && chosen !== channel) onChange({ type, channel: chosen });
-              }}
-            >
-              <SelectTrigger aria-label={label} className="w-full @md/field-group:w-32">
-                <SelectValue>{CHANNEL_LABELS[channel]}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {NOTIFICATION_CHANNELS.map((option) => (
-                    <SelectItem key={option} value={option} label={CHANNEL_LABELS[option]}>{CHANNEL_LABELS[option]}</SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </Field>
+          <SettingsRow
+            key={type}
+            label={label}
+            hint={description}
+            commit="change"
+            control={(
+              <Select
+                value={channel}
+                disabled={!settings.mailOn}
+                onValueChange={(next) => {
+                  const chosen = NOTIFICATION_CHANNELS.find((candidate) => candidate === next);
+                  if (chosen && chosen !== channel) onChange({ type, channel: chosen });
+                }}
+              >
+                <SelectTrigger aria-label={label}>
+                  <SelectValue>{CHANNEL_LABELS[channel]}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {NOTIFICATION_CHANNELS.map((option) => (
+                      <SelectItem key={option} value={option} label={CHANNEL_LABELS[option]}>{CHANNEL_LABELS[option]}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            )}
+          />
         );
       })}
     </SettingsSection>

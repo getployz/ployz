@@ -22,12 +22,17 @@
     ".pi/**",
     ".roo/**",
     ".windsurf/**",
-    "tools/oxlint/anti-slop/**"
+    "tools/oxlint/anti-slop/**",
+    "tools/oxlint/settings-rows/**"
   ],
   "jsPlugins": [
     {
       "name": "anti-slop",
       "specifier": "./tools/oxlint/anti-slop/index.ts"
+    },
+    {
+      "name": "settings-rows",
+      "specifier": "./tools/oxlint/settings-rows/index.ts"
     }
   ],
   "rules": {
@@ -46,6 +51,9 @@
     "anti-slop/no-unsafe-dictionary-type": "error",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
+    "settings-rows/section-children-are-primitives": "error",
+    "settings-rows/no-hand-drawn-staged": "error",
+    "settings-rows/no-hand-drawn-tone": "error",
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",
     "typescript/no-unnecessary-type-assertion": "error",
@@ -67,7 +75,14 @@
       "files": ["src/components/ui/**"],
       "rules": {
         "typescript/consistent-type-assertions": "off",
-        "anti-slop/require-safety-comment-for-type-assertion": "off"
+        "anti-slop/require-safety-comment-for-type-assertion": "off",
+        "settings-rows/no-hand-drawn-staged": "off"
+      }
+    },
+    {
+      "files": ["src/components/settings/**"],
+      "rules": {
+        "settings-rows/no-hand-drawn-tone": "off"
       }
     },
     {

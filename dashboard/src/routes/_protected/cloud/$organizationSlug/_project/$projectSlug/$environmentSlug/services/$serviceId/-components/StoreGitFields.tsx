@@ -1,11 +1,10 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { GitBranchIcon, PencilIcon } from "lucide-react";
+import { GitBranchIcon } from "lucide-react";
 import type { EnvironmentRef, ServiceSettingChange } from "@ployz/sdk";
 import { GitBranchSelectorDialog } from "#/components/service-source-selector";
 import { Button } from "#/components/ui/button";
-import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { SettingsRow } from "#/components/settings/settings-section";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting } from "#/modules/config-store/catalog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
@@ -37,29 +36,24 @@ export function StoreBranchField({ organizationSlug, repository, gitRef, value, 
   const setting = serviceSetting("branch");
   const [picking, setPicking] = useState(false);
   const [shown, hold] = useCommitHold(value);
+  if (!gitRef) {
+    return (
+      <SettingsRow label={setting.title} hint={setting.description} commit="confirm"
+        control={<ServiceSettingInput ariaLabel={setting.title} placeholder="main" value={value} {...changedProps(change)} onCommit={(raw) => onSet(raw)} />} />
+    );
+  }
   return (
-    <Field>
-      <FieldLabel>{setting.title}</FieldLabel>
-      <FieldDescription>{setting.description}</FieldDescription>
-      {gitRef ? (
-        <>
-          <Item variant="muted" data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
-            <ItemMedia variant="icon"><GitBranchIcon /></ItemMedia>
-            <ItemContent><ItemTitle>{shown || "Default branch"}</ItemTitle></ItemContent>
-            <ItemActions>
-              <Button type="button" variant="ghost" size="icon" onClick={() => setPicking(true)}>
-                <PencilIcon /><span className="sr-only">Change branch</span>
-              </Button>
-            </ItemActions>
-          </Item>
-          <GitBranchSelectorDialog open={picking} onOpenChange={setPicking} organizationSlug={organizationSlug} repositoryFullName={repository}
-            repositoryId={gitRef.repositoryId} installationId={gitRef.installationId}
-            onSelectBranch={(branch) => { hold(branch, onSet(branch)); setPicking(false); }} />
-        </>
-      ) : (
-        <ServiceSettingInput ariaLabel={setting.title} placeholder="main" value={value} {...changedProps(change)} onCommit={(raw) => onSet(raw)} />
-      )}
-    </Field>
+    <>
+      <SettingsRow label={setting.title} hint={setting.description} commit="none" control={
+        <Button type="button" variant="outline" data-changed={change ? true : undefined}
+          title={change ? `Deployed: ${settingText(change.before)}` : undefined} onClick={() => setPicking(true)}>
+          <GitBranchIcon data-icon="inline-start" />{shown || "Default branch"}<span className="sr-only">Change branch</span>
+        </Button>
+      } />
+      <GitBranchSelectorDialog open={picking} onOpenChange={setPicking} organizationSlug={organizationSlug} repositoryFullName={repository}
+        repositoryId={gitRef.repositoryId} installationId={gitRef.installationId}
+        onSelectBranch={(branch) => { hold(branch, onSet(branch)); setPicking(false); }} />
+    </>
   );
 }
 
@@ -79,15 +73,13 @@ export function StoreDockerfileField({ organizationSlug, gitRef, branch, value, 
   const suggestions = (files.data?.paths ?? []).filter((path) => !path.endsWith(".dockerignore"))
     .sort((left, right) => left.split("/").length - right.split("/").length || left.localeCompare(right));
   return (
-    <Field>
-      <FieldLabel>{setting.title}</FieldLabel>
-      <FieldDescription>{setting.description}</FieldDescription>
+    <SettingsRow label={setting.title} hint={setting.description} commit="confirm" control={
       <ServiceSettingInput ariaLabel={setting.title} placeholder="Dockerfile" value={value} {...changedProps(change)}
         suggestions={gitRef ? suggestions : undefined} suggestionsLoading={files.isFetching}
         suggestionsMessage={files.isError ? "Couldn’t load suggestions. Enter a path." : undefined}
         suggestionsNotice={files.data?.truncated ? "Some files are omitted. You can enter a path manually." : undefined}
         onFocus={() => setSearch(true)} onCommit={onCommit} />
-    </Field>
+    } />
   );
 }
 
@@ -107,11 +99,9 @@ export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
       // Only an observed machine list can say the server is gone.
       ?? (status === "observed" ? "A removed server" : "Unknown server");
   return (
-    <Field>
-      <FieldLabel>{setting.title}</FieldLabel>
-      <FieldDescription>{setting.description}</FieldDescription>
+    <SettingsRow label={setting.title} hint={setting.description} commit="change" control={
       <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, onSet(next === "auto" ? null : next)); }}>
-        <SelectTrigger aria-label={setting.title} className="w-64"><SelectValue>{label}</SelectValue></SelectTrigger>
+        <SelectTrigger aria-label={setting.title}><SelectValue>{label}</SelectValue></SelectTrigger>
         <SelectContent>
           <SelectGroup><SelectItem value="auto" label="Auto">Auto</SelectItem></SelectGroup>
           <SelectSeparator />
@@ -120,6 +110,6 @@ export function StorePreferredBuilderField({ organizationSlug, value, onSet }: {
           </SelectGroup>
         </SelectContent>
       </Select>
-    </Field>
+    } />
   );
 }

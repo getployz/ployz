@@ -1,16 +1,21 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
 import { useNavigate } from "@tanstack/react-router";
+import { CodeIcon, EllipsisIcon } from "lucide-react";
+import { SettingsEmpty, SettingsForm, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
+import { Field, FieldLabel } from "#/components/ui/field";
+import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
+import type { SetupCommand as DraftCommand } from "#/modules/config-store/branch-picks";
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
-import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
+import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
-import { Input } from "#/components/ui/input";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
@@ -63,35 +68,109 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
   const setup = useSavedSetupCommands(saved.map((command) => ({ lineageId: command.service, command: command.command })),
     (whole) => writer.commit({ command: "set_branch_setup", environment,
       setup: whole.map((command) => ({ service: command.lineageId, command: command.command })) }));
+  const [editing, setEditing] = useState<number | null>(null);
+  const nameOf = (lineage: string) => services.find((service) => service.lineageId === lineage)?.name ?? "a service";
+  // A new command runs where the last one does.
+  const last = services.find((service) => service.lineageId === setup.commands.at(-1)?.lineageId) ?? services[0];
   return (
     <SettingsSection id="branch-setup" title={`Branches of ${environmentSlug}`}
       description="Runs once in each new branch.">
-      {services.length ? (
-        <SetupCommandsField id="environment-branch-setup" commands={setup.commands} services={services}
-          onChange={setup.onChange} onBlur={setup.onBlur} />
-      ) : <FieldDescription>Add a service first.</FieldDescription>}
+      {!last ? <SettingsEmpty title="Add a service first." /> : <>
+        {setup.commands.length === 0 ? <SettingsEmpty title="No setup commands" /> : (
+          <SettingsList label="Setup commands">
+            {setup.commands.map((command, index) => (
+              <SettingsListItem
+                key={index}
+                media={<CodeIcon />}
+                label={<span className="font-mono">{command.command}</span>}
+                hint={<>Runs in {nameOf(command.lineageId)}</>}
+                commit="change"
+                actions={(
+                  <DropdownMenu>
+                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label={`${command.command} actions`} />}>
+                      <EllipsisIcon />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => setEditing(index)}>Edit</DropdownMenuItem>
+                      <DropdownMenuItem variant="destructive" onClick={() => setup.onChange(setup.commands.filter((_, i) => i !== index))}>
+                        Remove
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              />
+            ))}
+          </SettingsList>
+        )}
+        {editing !== null && setup.commands[editing] ? (
+          <SetupCommandForm submitLabel="Save" services={services} initial={setup.commands[editing]} onCancel={() => setEditing(null)}
+            onSubmit={(next) => { setup.onChange(setup.commands.map((command, i) => i === editing ? next : command)); setEditing(null); }} />
+        ) : (
+          <SettingsListAdd label="Add command">
+            {(close) => (
+              <SetupCommandForm submitLabel="Add" services={services} initial={{ lineageId: last.lineageId, command: "" }} onCancel={close}
+                onSubmit={(next) => { setup.onChange([...setup.commands, next]); close(); }} />
+            )}
+          </SettingsListAdd>
+        )}
+      </>}
     </SettingsSection>
   );
 }
 
+/** One Setup Command as it's added or edited: what to run, and the service it runs in. */
+function SetupCommandForm({ submitLabel, services, initial, onSubmit, onCancel }: {
+  submitLabel: string;
+  services: Array<{ lineageId: string; name: string }>;
+  initial: DraftCommand;
+  onSubmit: (command: DraftCommand) => void;
+  onCancel: () => void;
+}) {
+  const [command, setCommand] = useState(initial.command);
+  const [lineageId, setLineageId] = useState(initial.lineageId);
+  return (
+    <SettingsForm submitLabel={submitLabel} disabled={!command.trim()} onCancel={onCancel}
+      onSubmit={() => onSubmit({ lineageId, command: command.trim() })}>
+      <Field>
+        <FieldLabel htmlFor="setup-command">Command</FieldLabel>
+        <Input id="setup-command" className="font-mono" placeholder="pnpm db:seed" spellCheck={false} autoComplete="off" autoFocus
+          value={command} onChange={(event) => setCommand(event.target.value)} />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="setup-runs-in">Runs in</FieldLabel>
+        <Select value={lineageId} onValueChange={(next) => { if (next) setLineageId(next); }}>
+          <SelectTrigger id="setup-runs-in">
+            <SelectValue>{services.find((service) => service.lineageId === lineageId)?.name}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {services.map((service) => (
+                <SelectItem key={service.lineageId} value={service.lineageId} label={service.name}>{service.name}</SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      </Field>
+    </SettingsForm>
+  );
+}
+
 /** A Project's name: one DNS label, as the Store checks it; renaming it changes its URLs. */
-function ProjectNameField({ project, onRename }: { project: string; onRename: (name: string) => void }) {
+function ProjectNameRow({ project, onRename }: { project: string; onRename: (name: string) => void }) {
   const [draft, setDraft] = useState(project);
   const name = draft.trim();
   const error = name === project ? null : dnsLabelError(name);
-  const rename = () => { if (name !== project && !error) onRename(name); };
   return (
-    <Field orientation="responsive" data-invalid={error ? true : undefined}>
-      <FieldContent>
-        <FieldLabel htmlFor="project-name">Name</FieldLabel>
-        {error ? <FieldError>{error}</FieldError> : <FieldDescription>Changes the project URL.</FieldDescription>}
-      </FieldContent>
-      <div className="flex gap-2 @md/field-group:shrink-0 @md/field-group:basis-80">
-        <Input id="project-name" value={draft} aria-invalid={error ? true : undefined} onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter") rename(); }} />
-        <Button variant="outline" disabled={name === project || error !== null} onClick={rename}>Rename</Button>
-      </div>
-    </Field>
+    <SettingsRow
+      label="Name"
+      hint="Changes the project URL."
+      commit="confirm"
+      control={(
+        <ConfirmableInput id="project-name" aria-label="Name" value={draft} onValueChange={setDraft} error={error}
+          isDirty={draft !== project} onCancel={() => setDraft(project)}
+          onConfirm={() => { if (name !== project && !error) onRename(name); }} />
+      )}
+    />
   );
 }
 
@@ -107,34 +186,35 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   return (
     <div className="flex flex-col gap-6">
       <SettingsSection id="project" title="Project">
-        <ProjectNameField project={projectSlug} onRename={(name) => {
+        <ProjectNameRow project={projectSlug} onRename={(name) => {
           // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
           void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
             navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
         }} />
-        <Field orientation="responsive">
-          <FieldContent>
-            <FieldLabel htmlFor="default-environment">Default environment</FieldLabel>
-            <FieldDescription>Opens by default.</FieldDescription>
-          </FieldContent>
-          <Select value={defaultEnvironment} onValueChange={(next) => {
-            // Shown at once; a refusal toasts and the saved one shows again.
-            if (next && next !== defaultEnvironment) {
-              holdDefault(next, writer.commit({ command: "set_default_environment", environment: { project: projectSlug, environment: next } }));
-            }
-          }}>
-            <SelectTrigger id="default-environment" className="w-full @md/field-group:w-80">
-              <SelectValue>{defaultEnvironment}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {environments.map((environment) => (
-                  <SelectItem key={environment.id} value={environment.name} label={environment.name}>{environment.name}</SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
+        <SettingsRow
+          label="Default environment"
+          hint="Opens by default."
+          commit="change"
+          control={(
+            <Select value={defaultEnvironment} onValueChange={(next) => {
+              // Shown at once; a refusal toasts and the saved one shows again.
+              if (next && next !== defaultEnvironment) {
+                holdDefault(next, writer.commit({ command: "set_default_environment", environment: { project: projectSlug, environment: next } }));
+              }
+            }}>
+              <SelectTrigger id="default-environment" aria-label="Default environment">
+                <SelectValue>{defaultEnvironment}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {environments.map((environment) => (
+                    <SelectItem key={environment.id} value={environment.name} label={environment.name}>{environment.name}</SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          )}
+        />
       </SettingsSection>
       <StorePrEnvironmentsSection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
       <StoreTeardownSection

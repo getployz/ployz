@@ -2,7 +2,7 @@ import { StoreRefused } from "#/modules/config-store/store.contract";
 import { Suspense, useState, type ComponentProps, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import { EllipsisIcon, PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow, VolumeListing } from "@ployz/sdk";
 import { effectiveVolumes } from "#/modules/config-store/store-volumes";
 import { replicaCap, replicaCount } from "#/modules/config-store/volume-sharing";
@@ -12,10 +12,9 @@ import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
-import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { FieldError } from "#/components/ui/field";
 import { Switch } from "#/components/ui/switch";
-import { Item, ItemContent, ItemTitle } from "#/components/ui/item";
-import { cn } from "#/lib/utils";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { sourceText } from "#/modules/config-store/store-branches";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
@@ -27,6 +26,11 @@ import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
+import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
+import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
+import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
+import { RowWarning, SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
@@ -34,10 +38,8 @@ import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
-import { HealthcheckField } from "./HealthcheckField";
+import { HealthcheckSettings } from "./HealthcheckField";
 import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
-import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
@@ -101,6 +103,11 @@ function nameSchema(service: ServiceListing, services: readonly ServiceListing[]
   return Schema.String.check(Schema.makeFilter<string>((name) =>
     dnsLabelError(name) ?? (taken(service, services, name) ? `A service here is already named ${name}.` : undefined)));
 }
+
+/**
+ * A Service's drawer over the Config Store: its name, source and scalar Settings, labelled by the catalog. Edits save
+ * through the Environment's queue; a rename or removal is staged like any other change.
+ */
 
 /**
  * A Service's drawer over the Config Store: its name, source and scalar Settings, labelled by the catalog. Edits save
@@ -170,29 +177,24 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
             ?? (taken(service, services, raw) ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
-    storage: database && !hasVolume ? (
-      <FieldGroup>
-        <Field data-invalid><FieldContent><FieldLabel>No volume</FieldLabel><FieldDescription>Data is lost on redeploy.</FieldDescription></FieldContent></Field>
-      </FieldGroup>
-    ) : null,
-    scale: <FieldGroup>{capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
-    build: state.source === "git" ? (
-      <FieldGroup>
-        {field("buildMethod")}
-        {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
-        <StorePreferredBuilderField organizationSlug={organizationSlug} value={policyText(state.rows.get("preferredBuilder")?.value)}
-          onSet={(builder) => state.set("preferredBuilder", builder)} />
-      </FieldGroup>
-    ) : null,
-    deploy: (
-      <FieldGroup>
-        {field("startCommand")}
-        {field("preDeployCommand")}
-        <HealthcheckField {...healthcheck} />
-        {field("restartPolicy")}
-        {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
-      </FieldGroup>
-    ),
+    storage: database && !hasVolume ? <SettingsRow label="Volume" commit="none"><RowWarning>No volume. Data is lost on redeploy.</RowWarning></SettingsRow> : null,
+    scale: <>
+      {capped ? <StoreReplicasCapped params={params} volume={capped} /> : field("replicas")}
+      <StoreResourceLimits state={state} />
+    </>,
+    build: state.source === "git" ? <>
+      {field("buildMethod")}
+      {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
+      <StorePreferredBuilderField organizationSlug={organizationSlug} value={policyText(state.rows.get("preferredBuilder")?.value)}
+        onSet={(builder) => state.set("preferredBuilder", builder)} />
+    </> : null,
+    deploy: <>
+      {field("startCommand")}
+      <StoreOptionalField state={state} name="preDeployCommand" addLabel="Pre-deploy command" />
+      <HealthcheckSettings {...healthcheck} />
+      {field("restartPolicy")}
+      {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
+    </>,
     danger: <StoreDangerSection state={state} />,
   } satisfies Record<ServiceSettingsSectionId, ReactNode>;
 
@@ -269,16 +271,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   );
 }
 
-/**
- * Optional Settings shown as a button until set: commands, and the root directory (whose `/` is the default). Pre-deploy
- * and the root directory are ones most Services never need.
- */
-const COMMANDS = new Map<ServiceSettingName, { placeholder: string; compact: boolean; addLabel?: string; unset?: string }>([
+/** Optional Settings a blank input leaves unset: commands, and the root directory (whose `/` is the default). */
+const COMMANDS = new Map<ServiceSettingName, { placeholder: string; unset?: string }>([
   // Placeholders say what happens while unset, never a guess at this Service's stack.
-  ["startCommand", { placeholder: "Image default", compact: false }],
-  ["preDeployCommand", { placeholder: "None", compact: true, addLabel: "Pre-deploy command" }],
-  ["buildCommand", { placeholder: "Detected by Railpack", compact: false }],
-  ["rootDir", { placeholder: "/apps/api", compact: true, addLabel: "Add root directory", unset: "/" }],
+  ["startCommand", { placeholder: "Image default" }],
+  ["preDeployCommand", { placeholder: "None" }],
+  ["buildCommand", { placeholder: "Detected by Railpack" }],
+  ["rootDir", { placeholder: "/apps/api", unset: "/" }],
 ]);
 
 /** One-line hints for rows whose catalog description runs long; the rest use the catalog's words. */
@@ -313,16 +312,10 @@ function ServiceMonitoring({ state, namespace, ...props }: Omit<ComponentProps<t
 /** A Deployment Policy value as text; null when unset. */
 const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
 
-/** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
-function StoreSettingField({ state, name, warning }: { state: StoreService; name: ServiceSettingName; warning?: ReactNode }) {
-  // A Store refusal (a rule the panel didn't foresee, or a change from elsewhere) shows on the row, not only in a toast.
+/** Saves one scalar Setting, and keeps a Store refusal (a rule the panel didn't foresee) to show on its row. */
+function useSettingEdit(state: StoreService, name: ServiceSettingName) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const setting = scalarSetting(name);
-  const row = state.rows.get(name);
-  const [current, hold] = useCommitHold(settingText(row?.value ?? row?.default));
-  // Settings that don't apply to this source (a Dockerfile path on an image) have no row.
-  if (!row) return null;
-  const change = state.changes.get(name);
   const edit = (raw: string) => {
     setRefusal(null);
     const transaction = state.edit(settingChange(state.path(name), setting, raw));
@@ -331,77 +324,149 @@ function StoreSettingField({ state, name, warning }: { state: StoreService; name
     });
     return transaction;
   };
+  return { setting, refusal, edit };
+}
+
+/** A number or text Setting's input, with its unit and what blank means. */
+function StoreSettingInput({ state, name, setting, row, onCommit }: {
+  state: StoreService; name: ServiceSettingName; setting: SettingSchema; row: SettingRow; onCommit: (raw: string) => Persistable;
+}) {
+  return (
+    <ServiceSettingInput
+      ariaLabel={setting.title}
+      inputMode={setting.type === "integer" ? "numeric" : setting.type === "number" ? "decimal" : "text"}
+      suffix={SUFFIXES.get(name)}
+      placeholder={UNSET.get(name) ?? (settingText(setting.default) || undefined)}
+      value={settingText(row.value)}
+      {...changedProps(state.changes.get(name))}
+      validate={(raw) => settingError(setting, raw)}
+      onCommit={onCommit}
+    />
+  );
+}
+
+/** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
+function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
+  const { setting, refusal, edit } = useSettingEdit(state, name);
+  const row = state.rows.get(name);
+  const [current, hold] = useCommitHold(settingText(row?.value ?? row?.default));
+  // Settings that don't apply to this source (a Dockerfile path on an image) have no row.
+  if (!row) return null;
+  const change = state.changes.get(name);
 
   if (setting.type === "boolean") {
     return (
-      <SwitchField id={`setting-${name}`} label={setting.title} description={hint(name, setting)} checked={current === "true"}
-        onChange={(next) => hold(String(next), state.set(name, next))} />
+      <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
+        <Switch id={`setting-${name}`} aria-label={setting.title} checked={current === "true"}
+          onCheckedChange={(next) => hold(String(next), state.set(name, next))} />
+      } />
     );
   }
   if (setting.type === "array") return <StoreListField state={state} name={name} setting={setting} row={row} />;
   const command = COMMANDS.get(name);
   if (command) {
     return (
-      <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={hint(name, setting)} placeholder={command.placeholder}
-        compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
+      <ServiceCommandField label={setting.title} description={hint(name, setting)} placeholder={command.placeholder}
+        value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
         {...changedProps(change)}
         validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
     );
   }
 
+  const refused = refusal ? <FieldError>{refusal}</FieldError> : null;
+  if (!setting.enum) {
+    return (
+      <SettingsRow label={setting.title} hint={hint(name, setting)} commit="confirm"
+        control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />}>
+        {refused}
+      </SettingsRow>
+    );
+  }
   return (
-    <Field orientation="responsive">
-      <FieldContent>
-        <FieldLabel>{setting.title}</FieldLabel>
-        <FieldDescription>{hint(name, setting)}</FieldDescription>
-        {warning}
-        {refusal ? <FieldError>{refusal}</FieldError> : null}
-      </FieldContent>
-      <div className="@md/field-group:basis-56 @md/field-group:shrink-0">
-      {setting.enum ? (
-        <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, edit(next)); }}>
-          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "w-full py-1.5 data-[size=default]:h-auto" : "w-full"} data-changed={change ? true : undefined}
-            title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
-            <SelectValue>
-              <span className="flex flex-col items-start">
-                <span>{OPTION_LABELS.get(current) ?? current}</span>
-                {OPTION_HELP.has(current) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(current)}</span> : null}
-              </span>
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectGroup>
-              {setting.enum.map((option) => (
-                <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>
-                  <span className="flex flex-col">
-                    <span>{OPTION_LABELS.get(option) ?? option}</span>
-                    {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-      ) : (
-        <ServiceSettingInput
-          ariaLabel={setting.title}
-          inputMode={setting.type === "integer" ? "numeric" : setting.type === "number" ? "decimal" : "text"}
-          suffix={SUFFIXES.get(name)}
-          placeholder={UNSET.get(name) ?? (settingText(setting.default) || undefined)}
-          value={settingText(row.value)}
-          {...changedProps(change)}
-          validate={(raw) => settingError(setting, raw)}
-          onCommit={edit}
-        />
-      )}
-      </div>
-    </Field>
+    <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
+      <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, edit(next)); }}>
+        <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
+          title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
+          <SelectValue>
+            <span className="flex flex-col items-start">
+              <span>{OPTION_LABELS.get(current) ?? current}</span>
+              {OPTION_HELP.has(current) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(current)}</span> : null}
+            </span>
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            {setting.enum.map((option) => (
+              <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>
+                <span className="flex flex-col">
+                  <span>{OPTION_LABELS.get(option) ?? option}</span>
+                  {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    }>
+      {refused}
+    </SettingsRow>
   );
 }
 
-/** The first staged change among `names`, as the drawer keys them. */
-const changeOf = (changes: Map<string, ServiceSettingChange>, ...names: string[]) =>
-  names.map((name) => changes.get(name)).find((change) => change !== undefined);
+/** Whether Setting `name` holds a value other than the one that means unset. */
+const isSet = (state: StoreService, name: ServiceSettingName, unset?: string) => {
+  const value = state.rows.get(name)?.value;
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return settingText(value) !== unset;
+};
+
+/** A Setting most Services never set, behind its `+ X` until it holds a value. */
+function StoreOptionalField({ state, name, addLabel, unset }: { state: StoreService; name: ServiceSettingName; addLabel: string; unset?: string }) {
+  if (!state.rows.get(name)) return null;
+  const setting = scalarSetting(name);
+  return (
+    <SettingsDisclosure label={setting.title} addLabel={addLabel} configured={isSet(state, name, unset)}>
+      {() => <StoreSettingField state={state} name={name} />}
+    </SettingsDisclosure>
+  );
+}
+
+/** CPU and memory limits: one setting most Services never set, both off by one X. */
+function StoreResourceLimits({ state }: { state: StoreService }) {
+  const configured = isSet(state, "cpuLimit") || isSet(state, "memLimit");
+  return (
+    <SettingsDisclosure label="Resource limits" addLabel="Resource limits" configured={configured}>
+      {(close) => (
+        <SettingsGroup label="Resource limits" hint="Blank means no limit." commit="change" control={
+          <Button type="button" variant="ghost" size="icon-sm" aria-label="Remove resource limits"
+            onClick={() => {
+              if (!configured) return close();
+              if (isSet(state, "cpuLimit")) state.set("cpuLimit", null);
+              if (isSet(state, "memLimit")) state.set("memLimit", null);
+            }}>
+            <XIcon />
+          </Button>
+        }>
+          <StoreLimitField state={state} name="cpuLimit" />
+          <StoreLimitField state={state} name="memLimit" />
+        </SettingsGroup>
+      )}
+    </SettingsDisclosure>
+  );
+}
+
+function StoreLimitField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
+  const { setting, refusal, edit } = useSettingEdit(state, name);
+  const row = state.rows.get(name);
+  if (!row) return null;
+  return (
+    <SettingsField label={setting.title} commit="confirm"
+      control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />}>
+      {refusal ? <FieldError>{refusal}</FieldError> : null}
+    </SettingsField>
+  );
+}
 
 /** A Git Service's Dockerfile, with the repository's Dockerfiles as suggestions. */
 function StoreDockerfile({ state }: { state: StoreService }) {
@@ -426,9 +491,15 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
     setAdding("");
   };
   return (
-    <Field>
-      <FieldLabel>{setting.title}</FieldLabel>
-      <FieldDescription>{setting.description}</FieldDescription>
+    <SettingsRow label={setting.title} hint={setting.description} commit="confirm" control={
+      <div className="flex items-center gap-2">
+        <Input aria-label={`New ${setting.title.toLowerCase()}`} placeholder="/src/**" value={adding}
+          data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before) || "none"}` : undefined}
+          onChange={(event) => setAdding(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(); } }} />
+        <Button type="button" variant="outline" onClick={add}><PlusIcon data-icon="inline-start" />Add</Button>
+      </div>
+    }>
       {list.length ? (
         <div className="flex flex-wrap gap-2">
           {list.map((entry) => (
@@ -442,24 +513,33 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
           ))}
         </div>
       ) : null}
-      <div className="flex items-center gap-2">
-        <Input aria-label={`New ${setting.title.toLowerCase()}`} placeholder="/src/**" className="flex-1" value={adding}
-          data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before) || "none"}` : undefined}
-          onChange={(event) => setAdding(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(); } }} />
-        <Button type="button" variant="outline" onClick={add}><PlusIcon data-icon="inline-start" />Add</Button>
-      </div>
-    </Field>
+    </SettingsRow>
+  );
+}
+
+type SourceKind = "image" | "repository";
+const SOURCES = {
+  repository: { label: "GitHub repository", icon: <GitHubMarkIcon /> },
+  image: { label: "Container image", icon: <PackageIcon /> },
+} satisfies Record<SourceKind, { label: string; icon: ReactNode }>;
+const other = (kind: SourceKind): SourceKind => kind === "image" ? "repository" : "image";
+
+/** A source the next deploy drops: what was deployed, struck through. */
+function RemovedSource({ state, kind }: { state: StoreService; kind: SourceKind }) {
+  const before = state.changes.get(kind)?.before;
+  if (before === null || before === undefined || isSet(state, kind)) return null;
+  return (
+    <SettingsListItem media={SOURCES[kind].icon} label={settingText(before)} hint="Removed on your next deploy." tone="removed" commit="none" />
   );
 }
 
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
 export function StoreSourceSection({ state }: { state: StoreService }) {
-  const [picking, setPicking] = useState<"image" | "repository" | null>(null);
+  const [picking, setPicking] = useState<{ kind: SourceKind; replacing: boolean } | null>(null);
   const githubWeb = useGithubWebOrigin();
-  const set = (name: "image" | "repository" | "branch", value: string) => state.set(name, value);
+  const set = (name: SourceKind | "branch", value: string | null) => state.set(name, value);
   const close = (open: boolean) => { if (!open) setPicking(null); };
-  const kind = state.source === "git" ? "repository" : "image";
+  const kind: SourceKind = state.source === "git" ? "repository" : "image";
   // Staged: the Service is empty again once deployed; its settings for this source stay until then.
   const disconnect = () => state.set(kind, null);
   const setting = serviceSetting(kind);
@@ -471,77 +551,91 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
 
   if (state.source === "uploaded") {
     return (
-      <Field>
-        <FieldDescription>Uploaded from a directory with <code>ployz up</code>; run it again there to ship new code.</FieldDescription>
-      </Field>
+      <SettingsRow label="Uploaded" commit="none"
+        hint={<>Uploaded from a directory with <code>ployz up</code>; run it again there to ship new code.</>} />
     );
   }
 
+  // A pick replaces the source, so switching kinds drops the old one in the same breath.
+  const pick = (picked: SourceKind, next: string) => {
+    const replacing = picking?.replacing === true;
+    setPicking(null);
+    if (picked === kind || state.source === "empty") hold(next, set(picked, next));
+    else set(picked, next);
+    if (replacing) set(other(picked), null);
+  };
   const dialogs = <>
-    <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { hold(image, set("image", image)); setPicking(null); }} />
-    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
-      onSelectRepo={({ fullName }) => { hold(fullName, set("repository", fullName)); setPicking(null); }} />
+    <ImageSelectorDialog open={picking?.kind === "image"} onOpenChange={close} onSelectImage={(image) => pick("image", image)} />
+    <GitRepoSelectorDialog open={picking?.kind === "repository"} onOpenChange={close} organizationSlug={state.organizationSlug}
+      onSelectRepo={({ fullName }) => pick("repository", fullName)} />
   </>;
 
   if (state.source === "empty") {
-    const change = changeOf(state.changes, "image", "repository");
-    return (
-      <FieldGroup>
-        {change ? (
-          <Item variant="muted" size="sm" data-changed title={deployed}>
-            <ItemContent>
-              <ItemTitle>No source after your next deploy</ItemTitle>
-            </ItemContent>
-          </Item>
-        ) : null}
-        <Field>
-          <FieldLabel>Add a source</FieldLabel>
-          <FieldDescription>Deploy from a GitHub repository, or run a container image.</FieldDescription>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={() => setPicking("repository")}><GitHubMarkIcon data-icon="inline-start" />Git repository</Button>
-            <Button type="button" variant="outline" onClick={() => setPicking("image")}><PackageIcon data-icon="inline-start" />Container image</Button>
-          </div>
-        </Field>
-        {dialogs}
-      </FieldGroup>
-    );
+    const removed = (["repository", "image"] as const).filter((candidate) => state.changes.get(candidate)?.before != null);
+    return <>
+      {removed.length ? (
+        <SettingsList label="Source">
+          {removed.map((candidate) => <RemovedSource key={candidate} state={state} kind={candidate} />)}
+        </SettingsList>
+      ) : null}
+      <SettingsEmpty title="No source">A deploy without a source fails.</SettingsEmpty>
+      <SettingsFoot>
+        {(["repository", "image"] as const).map((candidate) => (
+          <SettingsAddButton key={candidate} onClick={() => setPicking({ kind: candidate, replacing: false })}>{SOURCES[candidate].label}</SettingsAddButton>
+        ))}
+      </SettingsFoot>
+      {dialogs}
+    </>;
   }
 
-  return (
-    <FieldGroup>
-      <Field orientation="responsive">
-        <FieldContent>
-          <FieldLabel>{kind === "repository" ? "Repository" : "Image"}</FieldLabel>
-          {state.service.template ? <FieldDescription>From the {templateLabel(state.service.template)} template.</FieldDescription> : null}
-        </FieldContent>
-        <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <span className={cn("flex min-w-0 items-center gap-2 rounded-lg border border-transparent text-sm", change && "border-changed-border bg-changed-soft px-2 py-1")}
-            title={change ? deployed : undefined}>
-            {kind === "repository" ? <GitHubMarkIcon className="size-4 shrink-0" /> : <PackageIcon className="size-4 shrink-0 text-muted-foreground" />}
-            {kind === "repository"
-              ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer">{value}</a>
-              : <span className="truncate font-mono">{value}</span>}
-          </span>
-          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Change ${setting.title.toLowerCase()}`} onClick={() => setPicking(kind)}>
+  const connecting = change !== undefined && change.before === null;
+  return <>
+    <SettingsList label="Source">
+      <RemovedSource state={state} kind={other(kind)} />
+      <SettingsListItem media={SOURCES[kind].icon}
+        label={kind === "repository"
+          ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer">{value}</a>
+          : <span className="truncate font-mono">{value}</span>}
+        hint={connecting ? "Connects on your next deploy." : state.service.template ? `From the ${templateLabel(state.service.template)} template.` : undefined}
+        tone={connecting ? "new" : undefined}
+        commit="change"
+        actions={<>
+          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Change ${setting.title.toLowerCase()}`}
+            data-changed={change && !connecting ? true : undefined} title={change ? deployed : undefined}
+            onClick={() => setPicking({ kind, replacing: false })}>
             <PencilIcon />
           </Button>
-          <Button type="button" variant="ghost" size="sm" onClick={disconnect}>Disconnect</Button>
-        </div>
-      </Field>
-      {kind === "repository" ? (
-        <>
-          <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
-            change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
-          <StoreSettingField state={state} name="rootDir" />
-          {/* Its Deployment Policy: when a push to the branch deploys. */}
-          <StoreSettingField state={state} name="autoDeploy" />
-          <StoreSettingField state={state} name="waitForCi" />
-          <StoreSettingField state={state} name="watchPaths" />
-        </>
-      ) : <StoreRegistryCredentials state={state} image={value} />}
-      {dialogs}
-    </FieldGroup>
-  );
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button type="button" variant="ghost" size="icon-sm" aria-label="Source actions" />}>
+              <EllipsisIcon />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuGroup>
+                <DropdownMenuItem onClick={() => setPicking({ kind: other(kind), replacing: true })}>
+                  Switch to {SOURCES[other(kind)].label.toLowerCase()}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem variant="destructive" onClick={disconnect}>Disconnect</DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>} />
+    </SettingsList>
+    {kind === "repository" ? (
+      <>
+        <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
+          change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
+        <StoreOptionalField state={state} name="rootDir" addLabel="Root directory" unset="/" />
+        {/* Its Deployment Policy: when a push to the branch deploys. */}
+        <StoreSettingField state={state} name="autoDeploy" />
+        <StoreSettingField state={state} name="waitForCi" />
+        <StoreOptionalField state={state} name="watchPaths" addLabel="Watch paths" />
+      </>
+    ) : <StoreRegistryCredentials state={state} image={value} />}
+    {dialogs}
+  </>;
 }
 
 /**
@@ -576,7 +670,7 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
 function StoreDangerSection({ state }: { state: StoreService }) {
   const remove = useRemoveStoreService(state.environment, state.service);
   return (
-    <DangerRow title="Delete this service" description="Removed on next deploy."
+    <SettingsDanger label="Delete this service" hint="The service is removed on your next deploy."
       action={(
         <Button variant="destructive" onClick={remove}>
           <Trash2Icon data-icon="inline-start" />
@@ -592,31 +686,12 @@ function StoreReplicasCapped({ params, volume }: {
   volume: VolumeListing;
 }) {
   return (
-    <Field orientation="responsive" data-disabled>
-      <FieldContent>
-        <FieldLabel htmlFor="replicas-capped">Replicas</FieldLabel>
-        <FieldDescription>
-          Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
-          <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
-          <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
-        </FieldDescription>
-      </FieldContent>
-      <div className="@md/field-group:shrink-0 @md/field-group:basis-56">
-        <Input id="replicas-capped" value="1" disabled />
-      </div>
-    </Field>
-  );
-}
-
-function SwitchField({ id, label, description, checked, onChange }: {
-  id: string; label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void;
-}) {
-  return (
-    <FieldLabel htmlFor={id}>
-      <Field orientation="horizontal">
-        <FieldContent>{label}{description ? <FieldDescription>{description}</FieldDescription> : null}</FieldContent>
-        <Switch id={id} checked={checked} onCheckedChange={onChange} />
-      </Field>
-    </FieldLabel>
+    <SettingsRow label="Replicas" commit="none"
+      hint={<>
+        Limited to 1 while <strong>{volume.name}</strong> is attached.{" "}
+        <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>{" "}
+        <Link className="whitespace-nowrap" to={ENVIRONMENT_RESOURCE_ROUTE_TO} params={{ ...params, resourceId: volume.id }}>Allow shared writes</Link>
+      </>}
+      control={<Input id="replicas-capped" aria-label="Replicas" value="1" disabled />} />
   );
 }

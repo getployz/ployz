@@ -6,12 +6,11 @@ import { Trash2Icon } from "lucide-react";
 import type { DiffView, EnvironmentRef, EnvironmentView, MachineId, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Field, FieldContent, FieldDescription, FieldError, FieldLabel, FieldTitle } from "#/components/ui/field";
+import { FieldError } from "#/components/ui/field";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { DEFAULT_VOLUME_GB, effectiveVolumes, gigabytes, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
-import { VolumeAdvanced, VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { replicaCount } from "#/modules/config-store/volume-sharing";
 import { StoreRefused } from "#/modules/config-store/store.contract";
@@ -19,12 +18,13 @@ import { InfoHint } from "#/components/info-hint";
 import { Switch } from "#/components/ui/switch";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
-import { SettingsSection, SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
+import { SettingsEmpty } from "#/components/settings/settings-list";
+import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { useVolumeCopies, VolumeCopiesPanel } from "./StoreVolumeCopies";
 import { mirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { useStagedPlacements } from "#/modules/volume-placement/volume-placement.hooks";
 import { VOLUME_PAGES, volumePageSchema } from "./volume-pages";
-import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 import { ServiceSettingInput } from "../../../services/$serviceId/-components/ServiceSettingInput";
 import { CanvasInspectorNotFound, CanvasInspectorPending } from "../../../-components/CanvasInspectorRouteStates";
 import { useStorePendingName, useStorePendingNodes } from "#/modules/config-store/store-pending";
@@ -138,14 +138,10 @@ function VolumeDrawer({ params, environment, volume, volumes, services, settings
                   <StoreVolumeStorage key={`${volume.id}:${JSON.stringify(volume.storage)}`} state={state} removing={removing} />
                 </SettingsSection>
                 {removing ? <SettingsSection id="mounts" title="Mounts">
-                    <Empty variant="placeholder">
-                      <EmptyDescription>Removed on next deploy.</EmptyDescription>
-                    </Empty>
+                    <SettingsEmpty title="Removed on next deploy." />
                   </SettingsSection> : <StoreVolumeMounts key={volume.id} resourceId={volume.id} organizationSlug={organizationSlug} environment={environment}
                     services={services} volumes={volumes} diff={diff} replicasOf={replicasOf} />}
-                <SettingsSection id="danger" title="Danger">
-                  <StoreVolumeDanger state={state} params={params} version={diff.version} environmentId={diff.environment.id} volumes={volumes} />
-                </SettingsSection>
+                <StoreVolumeDanger state={state} params={params} version={diff.version} environmentId={diff.environment.id} volumes={volumes} />
               </div>
             </div>
           </TabsContent>
@@ -166,26 +162,27 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   if (storage_locked || removing) {
     return (
       <>
-      <Field orientation="responsive">
-        <FieldContent>
-          <FieldTitle>{managed ? "Managed volume" : "Docker volume"}</FieldTitle>
-          <FieldDescription>Fixed after the first deploy.</FieldDescription>
-        </FieldContent>
-        <span className="text-sm">{volumeStorageText(storage)}</span>
-      </Field>
-      {removing ? null : <VolumeAdvanced><StoreSharedWrites state={state} /></VolumeAdvanced>}
+        <SettingsRow label={managed ? "Managed volume" : "Docker volume"} hint="Fixed after the first deploy." commit="none"
+          control={<span className="text-sm">{volumeStorageText(storage)}</span>} />
+        {removing ? null : <StoreSharedWrites state={state} />}
       </>
     );
   }
   return (
-    <VolumeStorageFields managed={managed} sizeGB={sizeGB} onSizeChange={() => undefined} advanced={<StoreSharedWrites state={state} />}
-      onManagedChange={(next) => holdManaged(next, save(next ? { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 } : { kind: "docker" }))}
-      limitInput={(
-        <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB"
-          placeholder={DEFAULT_VOLUME_GB} value={sizeGB} isChanged={false}
-          validate={(raw) => volumeStorage(true, raw) ? null : "Enter at least 0.001 GB."}
-          onCommit={(raw) => save(volumeStorage(true, raw) ?? storage)} />
-      )} />
+    <>
+      {managed ? (
+        <SettingsRow label="Storage limit" commit="confirm" control={(
+          <ServiceSettingInput ariaLabel="Storage limit" inputMode="decimal" suffix="GB"
+            placeholder={DEFAULT_VOLUME_GB} value={sizeGB} isChanged={false}
+            validate={(raw) => volumeStorage(true, raw) ? null : "Enter at least 0.001 GB."}
+            onCommit={(raw) => save(volumeStorage(true, raw) ?? storage)} />
+        )} />
+      ) : null}
+      <SettingsRow label="Plain Docker volume" hint={managed ? "Not recommended." : "No size limit. Not recommended."} commit="change"
+        control={<Switch aria-label="Use a plain Docker volume (not recommended)" checked={!managed}
+          onCheckedChange={(docker) => holdManaged(!docker, save(docker ? { kind: "docker" } : { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1e9 }))} />} />
+      <StoreSharedWrites state={state} />
+    </>
   );
 }
 
@@ -210,34 +207,34 @@ function StoreVolumeDanger({ state, params, version, environmentId, volumes }: {
 
   return (
     <>
-      <DangerRow
-        title={removing && volume.deployed ? "Delete its data" : removing ? "Removed on next deploy" : "Delete this volume"}
-        description={removing && volume.deployed
-          ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
-          : removing
-          ? "Nothing of it is on your servers yet. Keep the volume to undo this."
-          : volume.deployed
-          ? "Its data on your servers goes with it. Deploy asks you to confirm first."
-          : mounts > 0 ? `Removed on next deploy, with ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Removed on next deploy."}
-        action={<>
-        {removing ? (
-          <>
-            {/* The staged removal goes; the Volume stays as deployed. */}
-            <Button variant="outline" onClick={() => actions.discard(`volumes.${volume.name}`)}>Keep volume</Button>
-            {volume.deployed ? (
-              <Button variant="destructive" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
-                <Trash2Icon data-icon="inline-start" />
-                Delete data
-              </Button>
-            ) : null}
-          </>
-        ) : (
-          <Button variant="destructive" onClick={remove}>
-            <Trash2Icon data-icon="inline-start" />
-            Delete volume
-          </Button>
-        )}
-        </>} />
+      <SettingsSection id="danger" title="Danger">
+        <SettingsDanger
+          label={removing && volume.deployed ? "Delete its data" : removing ? "Removed on next deploy" : "Delete this volume"}
+          hint={removing && volume.deployed
+            ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
+            : removing
+            ? "Nothing of it is on your servers yet. Keep the volume to undo this."
+            : volume.deployed
+            ? "Its data on your servers goes with it. Deploy asks you to confirm first."
+            : mounts > 0 ? `Removed on next deploy, with ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Removed on next deploy."}
+          action={removing ? (
+            <>
+              {/* The staged removal goes; the Volume stays as deployed. */}
+              <Button variant="outline" onClick={() => actions.discard(`volumes.${volume.name}`)}>Keep volume</Button>
+              {volume.deployed ? (
+                <Button variant="destructive" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete data
+                </Button>
+              ) : null}
+            </>
+          ) : (
+            <Button variant="destructive" onClick={remove}>
+              <Trash2Icon data-icon="inline-start" />
+              Delete volume
+            </Button>
+          )} />
+      </SettingsSection>
       {actions.dialog}
     </>
   );
@@ -252,22 +249,21 @@ function StoreSharedWrites({ state }: { state: StoreVolume }) {
   const [refusal, setRefusal] = useState<string | null>(null);
   const [shared, holdShared] = useCommitHold(state.volume.shared_writes);
   return (
-    <Field orientation="horizontal" data-invalid={refusal ? true : undefined}>
-      <FieldContent>
-        <FieldLabel htmlFor="volume-shared-writes">Allow shared writes</FieldLabel>
-        <FieldDescription>
-          Lets more than one container write here.{" "}
-          <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>
-        </FieldDescription>
-        {refusal ? <FieldError>{refusal}</FieldError> : null}
-      </FieldContent>
-      <Switch id="volume-shared-writes" checked={shared}
-        onCheckedChange={(sharedWrites) => {
-          setRefusal(null);
-          const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });
-          holdShared(sharedWrites, write);
-          write.isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
-        }} />
-    </Field>
+    <SettingsRow label="Allow shared writes" commit="change"
+      hint={<>
+        Lets more than one container write here. Applies at once.{" "}
+        <span className="inline-flex align-middle"><InfoHint>{SHARED_VOLUME_WHY}</InfoHint></span>
+      </>}
+      control={(
+        <Switch id="volume-shared-writes" aria-label="Allow shared writes" checked={shared}
+          onCheckedChange={(sharedWrites) => {
+            setRefusal(null);
+            const write = writer.commit({ command: "set_volume_shared_writes", environment: state.environment, volume: state.volume.name, shared_writes: sharedWrites });
+            holdShared(sharedWrites, write);
+            write.isPersisted.promise.catch((error: Error) => { if (error instanceof StoreRefused) setRefusal(error.message); });
+          }} />
+      )}>
+      {refusal ? <FieldError>{refusal}</FieldError> : null}
+    </SettingsRow>
   );
 }
