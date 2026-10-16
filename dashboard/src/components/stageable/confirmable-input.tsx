@@ -2,6 +2,7 @@ import * as React from "react"
 import { CheckIcon, XIcon } from "lucide-react"
 import { cn } from "#/lib/utils"
 import { FieldError } from "#/components/ui/field"
+import { Spinner } from "#/components/ui/spinner"
 import {
   InputGroup,
   InputGroupAddon,
@@ -10,6 +11,11 @@ import {
   InputGroupText,
   InputGroupTextarea,
 } from "#/components/ui/input-group"
+
+/** The last confirmed write: still running, or refused with why and a way to send it again. */
+export type ConfirmStatus =
+  | { phase: "saving" }
+  | { phase: "failed"; reason: React.ReactNode; onRetry: () => void }
 
 export type ConfirmableInputProps = Omit<
   React.ComponentProps<"input"> & React.ComponentProps<"textarea">,
@@ -24,6 +30,7 @@ export type ConfirmableInputProps = Omit<
   isChanged?: boolean
   suffix?: React.ReactNode
   error?: React.ReactNode
+  status?: ConfirmStatus
   multiline?: boolean
   startAddon?: React.ReactNode
   endAddon?: React.ReactNode
@@ -41,6 +48,7 @@ function ConfirmableInput({
   isChanged = false,
   suffix,
   error,
+  status,
   className,
   multiline = false,
   startAddon,
@@ -93,9 +101,12 @@ function ConfirmableInput({
     onKeyDown?.(e)
   }
 
+  const saving = status?.phase === "saving" && !isDirty
+  const failed = !error && status?.phase === "failed" ? status : undefined
+
   return (
     <div className={cn("flex flex-col gap-1", className)}>
-      <InputGroup data-changed={isChanged || undefined}>
+      <InputGroup data-changed={isChanged || undefined} aria-busy={saving || undefined}>
         {startAddon ? <InputGroupAddon>{startAddon}</InputGroupAddon> : null}
         {multiline ? (
           <InputGroupTextarea
@@ -123,10 +134,11 @@ function ConfirmableInput({
             onKeyDown={handleKeyDown}
           />
         )}
-        {suffix || endAddon || isDirty ? (
+        {suffix || endAddon || isDirty || saving ? (
           <InputGroupAddon align="inline-end">
             {suffix ? <InputGroupText>{suffix}</InputGroupText> : null}
             {endAddon}
+            {saving ? <Spinner aria-label="Saving" className="mx-1 size-3.5 text-muted-foreground" /> : null}
             {isDirty ? (
               <>
                 <InputGroupButton
@@ -151,6 +163,14 @@ function ConfirmableInput({
         ) : null}
       </InputGroup>
       {error ? <FieldError>{error}</FieldError> : null}
+      {failed ? (
+        <FieldError className="flex items-center gap-2">
+          <span>{failed.reason}</span>
+          <button type="button" onClick={failed.onRetry} className="font-medium underline underline-offset-2">
+            Retry
+          </button>
+        </FieldError>
+      ) : null}
     </div>
   )
 

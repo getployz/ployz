@@ -373,13 +373,11 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
     );
   }
 
-  const refused = refusal ? <FieldError>{refusal}</FieldError> : null;
+  // The input says a refused write itself, with Retry, so only the Select below needs the refusal here.
   if (!setting.enum) {
     return (
       <SettingsRow label={setting.title} hint={hint(name, setting)} commit="confirm"
-        control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />}>
-        {refused}
-      </SettingsRow>
+        control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />} />
     );
   }
   return (
@@ -408,7 +406,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
         </SelectContent>
       </Select>
     }>
-      {refused}
+      {refusal ? <FieldError>{refusal}</FieldError> : null}
     </SettingsRow>
   );
 }
@@ -457,14 +455,12 @@ function StoreResourceLimits({ state }: { state: StoreService }) {
 }
 
 function StoreLimitField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
-  const { setting, refusal, edit } = useSettingEdit(state, name);
+  const { setting, edit } = useSettingEdit(state, name);
   const row = state.rows.get(name);
   if (!row) return null;
   return (
     <SettingsField label={setting.title} commit="confirm"
-      control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />}>
-      {refusal ? <FieldError>{refusal}</FieldError> : null}
-    </SettingsField>
+      control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />} />
   );
 }
 

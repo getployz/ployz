@@ -77,12 +77,30 @@ describe("ServiceSettingInput commit", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     rerender(field("1"));
     expect(input.value).toBe("4");
+    expect(screen.getByRole("status", { name: "Saving" })).toBeTruthy();
 
     await act(async () => {
       fail(new Error("refused"));
       await write.promise.catch(() => {});
     });
     expect(input.value).toBe("1");
+    expect(screen.queryByRole("status", { name: "Saving" })).toBeNull();
+    expect(screen.getByRole("alert").textContent).toBe("refusedRetry");
+  });
+
+  it("sends a refused value again on Retry, and drops the refusal once the user types", async () => {
+    const onCommit = vi.fn(() => ({ isPersisted: { promise: Promise.reject(new Error("Replicas must be at most 50.")) } }));
+    render(<ServiceSettingInput ariaLabel="Replicas" value="1" isChanged={false} onCommit={onCommit} />);
+    const input = screen.getByLabelText<HTMLInputElement>("Replicas");
+    fireEvent.change(input, { target: { value: "60" } });
+    await act(async () => { fireEvent.keyDown(input, { key: "Enter" }); });
+    expect(screen.getByRole("alert").textContent).toBe("Replicas must be at most 50.Retry");
+
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Retry" })); });
+    expect(onCommit).toHaveBeenNthCalledWith(2, "60");
+
+    fireEvent.change(input, { target: { value: "6" } });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("holds the typed value over a reread, then follows the Store once the write lands", async () => {

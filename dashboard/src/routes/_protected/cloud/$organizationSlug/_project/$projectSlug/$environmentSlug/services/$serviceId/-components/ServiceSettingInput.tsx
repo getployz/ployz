@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
-import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { type ConfirmStatus, ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { SuggestibleConfirmableInput } from "#/components/stageable/suggestible-confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 
@@ -55,7 +55,7 @@ export function ServiceSettingInput({
   validate?: (raw: string) => string | null;
   onCommit: (raw: string) => PersistableTransaction;
 }) {
-  const [value, hold] = useCommitHold(stored);
+  const [value, hold, commit, dismiss] = useCommitHold(stored);
   const [draft, setDraft] = useState<DraftState>(() => freshDraft(value));
   // A new value from elsewhere (another tab, the CLI) replaces the field, unless the user is typing in it: then the
   // typing stays and says what it would replace.
@@ -78,6 +78,13 @@ export function ServiceSettingInput({
     setDraft(freshDraft(raw));
   }
 
+  const status: ConfirmStatus | undefined =
+    commit.phase === "saving"
+      ? { phase: "saving" }
+      : commit.phase === "failed"
+        ? { phase: "failed", reason: commit.reason, onRetry: () => confirm(commit.to) }
+        : undefined;
+
   const inputProps = {
     "aria-label": ariaLabel,
     "aria-invalid": active.error ? true : undefined,
@@ -87,6 +94,7 @@ export function ServiceSettingInput({
     isChanged,
     isDirty,
     error: active.error ?? notice,
+    status,
     placeholder,
     onFocus,
     title:
@@ -94,8 +102,10 @@ export function ServiceSettingInput({
         ? `${baselineLabel}: ${baselineValue}`
         : undefined,
     value: active.value,
-    onValueChange: (next: string) =>
-      setDraft({ source: value, value: next, error: null }),
+    onValueChange: (next: string) => {
+      dismiss();
+      setDraft({ source: value, value: next, error: null });
+    },
     onCancel: () => setDraft(freshDraft(value)),
     onConfirm: () => confirm(),
   };
