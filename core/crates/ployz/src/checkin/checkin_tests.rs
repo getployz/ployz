@@ -53,12 +53,14 @@ impl Host for FakeHost {
         "waiting-1".to_owned()
     }
 
-    async fn start_prepare(&self) -> Result<bool, String> {
-        if self.preparing.swap(true, Ordering::SeqCst) {
-            return Ok(false);
-        }
+    async fn prepare_running(&self) -> Result<bool, String> {
+        Ok(self.preparing.load(Ordering::SeqCst))
+    }
+
+    async fn start_prepare(&self) -> Result<(), String> {
+        self.preparing.store(true, Ordering::SeqCst);
         self.prepares.fetch_add(1, Ordering::SeqCst);
-        Ok(true)
+        Ok(())
     }
 
     async fn disable_loop(&self) -> Result<(), String> {
@@ -142,15 +144,24 @@ fn an_answer_this_cli_cannot_read_waits_a_minute() {
 }
 
 #[test]
-fn unauthorized_is_refused_not_revoked_and_rate_limits_wait() {
-    let Reply::Refused(why) = client::reply(StatusCode::UNAUTHORIZED, None, Some(4), b"") else {
-        panic!("401 must be refused, not stop the loop");
-    };
-    assert!(why.starts_with("Cloud refused this Fleet Token"), "{why}");
-    let Reply::Refused(why) = client::reply(StatusCode::UNAUTHORIZED, None, Some(-900), b"") else {
-        panic!("401 must be refused, not stop the loop");
+fn unauthorized_revokes_unless_the_clock_is_off_and_rate_limits_wait() {
+    for skew in [Some(4), Some(-300), None] {
+        assert!(matches!(
+            client::reply(StatusCode::UNAUTHORIZED, None, skew, b""),
+            Reply::Answer(Answer::Stop(StopReason::TokenRevoked, _))
+        ));
+    }
+    let Reply::ClockOff(why) = client::reply(StatusCode::UNAUTHORIZED, None, Some(-900), b"")
+    else {
+        panic!("a 401 from a skewed clock says nothing about the token");
     };
     assert!(why.starts_with("This server's clock is 900s off"), "{why}");
+    for status in [StatusCode::BAD_REQUEST, StatusCode::PAYLOAD_TOO_LARGE] {
+        assert!(matches!(
+            client::reply(status, None, None, b""),
+            Reply::Outdated(why) if why.ends_with("Install a newer ployz")
+        ));
+    }
     assert_eq!(
         client::reply(
             StatusCode::TOO_MANY_REQUESTS,
@@ -197,17 +208,39 @@ async fn stopping_cloud(
     reason: &'static str,
     stops: usize,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let body = format!(r#"{{"kind":"stop","reason":"{reason}","message":"Done."}}"#);
+    answering_cloud("200 OK".to_owned(), body, stops).await
+}
+
+/// Answers `times` check-ins with 401, dated `skew` seconds off this host's clock.
+async fn unauthorized_cloud(
+    skew: i64,
+    times: usize,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let date = (Utc::now() + TimeDelta::seconds(skew)).to_rfc2822();
+    answering_cloud(
+        format!("401 Unauthorized\r\nDate: {date}"),
+        r#"{"error":"unauthorized"}"#.to_owned(),
+        times,
+    )
+    .await
+}
+
+async fn answering_cloud(
+    status: String,
+    body: String,
+    times: usize,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
-        let body = format!(r#"{{"kind":"stop","reason":"{reason}","message":"Done."}}"#);
         let mut requests = Vec::new();
-        for _ in 0..stops {
+        for _ in 0..times {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buf = vec![0; 16384];
             let read = stream.read(&mut buf).await.unwrap();
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
@@ -289,16 +322,25 @@ fn the_preparation_unit_quotes_ployzd_and_refuses_paths_that_break_it() {
 fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
     let text = unit::checkin(
         Path::new("/opt/my tools/ployz"),
+        Path::new("/var/lib/ployz/checkin/ployzd"),
         Path::new("/etc/ployz/fleet-token"),
         "https://cloud.example/100%",
     )
     .unwrap();
     assert!(text.contains(
-        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\"\n"
+        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz/checkin/ployzd\"\n"
     ));
     assert!(text.contains("Environment=\"PLOYZ_CLOUD_URL=https://cloud.example/100%%\"\n"));
     for url in ["https://a\nExecStart=/bin/sh", "https://a\"", "https://a\\"] {
-        assert!(unit::checkin(Path::new("/usr/bin/ployz"), Path::new("/t"), url).is_err());
+        assert!(
+            unit::checkin(
+                Path::new("/usr/bin/ployz"),
+                Path::new("/d"),
+                Path::new("/t"),
+                url
+            )
+            .is_err()
+        );
     }
 }
 
@@ -408,41 +450,119 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
 }
 
 #[tokio::test]
-async fn a_refused_check_in_keeps_the_token_and_retries() {
+async fn a_401_with_a_sane_clock_stops_as_revoked_and_removes_the_token() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::write(&paths.token_file, "pflt_test\n").unwrap();
-    let (url, _server) = cloud("401 Unauthorized", r#"{"error":"unauthorized"}"#).await;
+    let (url, server) = unauthorized_cloud(4, 1).await;
+    let host = FakeHost::default();
+    let end = tokio::time::timeout(
+        Duration::from_secs(10),
+        run(&host, &mut client(&url), &key(), &paths),
+    )
+    .await
+    .expect("a revoked token ends the loop");
+    assert!(matches!(end, CheckinEnd::Stopped(StopReason::TokenRevoked)));
+    assert_eq!(server.await.unwrap().len(), 1);
+    assert!(!paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Token revoked",
+            ended: true
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_401_from_a_skewed_clock_keeps_the_token_and_says_the_clock_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "pflt_test\n").unwrap();
+    let (url, _server) = unauthorized_cloud(-900, 1).await;
     let host = FakeHost::default();
     let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    assert!(matches!(next, Next::Refused(_)), "{next:?}");
+    assert!(matches!(next, Next::ClockOff(_)), "{next:?}");
     assert!(paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(
         status.headline(),
         Headline {
-            title: "Cloud refused this server",
+            title: "Clock is off",
             ended: false
         }
     );
+    assert!(status.says_why());
 }
 
 #[tokio::test]
-async fn a_fixed_token_file_is_read_again_after_a_refusal() {
+async fn a_401_after_the_token_file_changed_checks_in_with_the_new_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "pflt_new\n").unwrap();
+    let (url, server) = unauthorized_cloud(0, 2).await;
+    let host = FakeHost::default();
+    let end = tokio::time::timeout(
+        Duration::from_secs(10),
+        run(&host, &mut client(&url), &key(), &paths),
+    )
+    .await
+    .expect("the new token is refused too, which ends the loop");
+    assert!(matches!(end, CheckinEnd::Stopped(StopReason::TokenRevoked)));
+    old_then_new(server).await;
+}
+
+#[tokio::test]
+async fn an_outdated_check_in_waits_an_hour_and_says_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, _server) = cloud("413 Payload Too Large", "").await;
+    let host = FakeHost::default();
+    let Next::Retry { after, .. } =
+        pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
+    else {
+        panic!("a check-in this Cloud can't read waits for a newer ployz");
+    };
+    assert_eq!(after, Duration::from_secs(3600));
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline().title, "Needs a newer ployz");
+}
+
+#[tokio::test]
+async fn a_missing_token_file_ends_the_loop_and_disables_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let host = FakeHost::default();
-    let (url, _server) = cloud("401 Unauthorized", r#"{"error":"unauthorized"}"#).await;
-    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    fs::write(&paths.token_file, "pflt_fixed\n").unwrap();
-    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":30}"#).await;
-    pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    let request = server.await.unwrap();
+    assert!(loop_token(&host, &paths).await.unwrap().is_none());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+    fs::write(&paths.token_file, "pflt_test\n").unwrap();
+    assert!(loop_token(&host, &paths).await.unwrap().is_some());
+    fs::write(&paths.token_file, "pmet_abc\n").unwrap();
+    assert!(matches!(
+        loop_token(&host, &paths).await,
+        Err(KeyError::NotAToken { .. })
+    ));
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_check_in_unit_gives_up_after_repeated_failed_starts() {
+    let text = unit::checkin(
+        Path::new("/usr/bin/ployz"),
+        Path::new("/d"),
+        Path::new("/t"),
+        "https://cloud.example",
+    )
+    .unwrap();
+    let unit_section = text.split("[Service]").next().unwrap();
     assert!(
-        request.contains("authorization: Bearer pflt_fixed"),
-        "{request}"
+        unit_section.contains("StartLimitIntervalSec=600\n"),
+        "{text}"
     );
+    assert!(unit_section.contains("StartLimitBurst=5\n"), "{text}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -632,38 +752,82 @@ fn state(json: &str) -> PrepState {
 }
 
 #[test]
-fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
+fn preparation_starts_when_missing_and_retries_when_it_ended_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    assert_eq!(prepare_due(None, 0, now), Some(PrepareRun::Start));
-    let installing = state(r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#);
-    assert_eq!(
-        prepare_due(Some(&installing), 3, now),
-        Some(PrepareRun::Start)
-    );
+    assert_eq!(prepare_due(None, None, 0, now), Some(PrepareRun::Start));
     let ready = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#);
-    assert_eq!(prepare_due(Some(&ready), 0, now), None);
+    assert_eq!(prepare_due(Some(&ready), Some(now), 0, now), None);
+
+    let installing = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"installing"}}"#);
+    let died =
+        |written: &str, retries| prepare_due(Some(&installing), Some(at(written)), retries, now);
+    assert_eq!(died("2026-10-16T00:55:00Z", 0), None);
+    assert_eq!(died("2026-10-16T00:50:00Z", 0), Some(PrepareRun::Retry));
+    assert_eq!(died("2026-10-16T00:50:00Z", PREPARE_TRIES), None);
 
     let failed = |finished: &str| {
         state(&format!(
             r#"{{"docker":{{"state":"ready"}},"zfs":{{"state":"failed","message":"dkms","finished_at":"{finished}"}}}}"#
         ))
     };
-    assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:55:00Z")), 0, now),
-        None
-    );
-    assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 0, now),
-        Some(PrepareRun::Retry)
-    );
-    assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 2, now),
-        Some(PrepareRun::Retry)
-    );
-    assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 3, now),
-        None
-    );
+    let after = |finished: &str, retries| prepare_due(Some(&failed(finished)), None, retries, now);
+    assert_eq!(after("2026-10-16T00:55:00Z", 0), None);
+    assert_eq!(after("2026-10-16T00:50:00Z", 0), Some(PrepareRun::Retry));
+    assert_eq!(after("2026-10-16T00:50:00Z", 2), Some(PrepareRun::Retry));
+    assert_eq!(after("2026-10-16T00:50:00Z", 3), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_preparation_that_died_mid_step_is_retried_up_to_the_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"installing"}}"#,
+    )
+    .unwrap();
+    let written = at("2026-10-16T00:00:00Z");
+    fs::File::options()
+        .write(true)
+        .open(&paths.prepare_state)
+        .unwrap()
+        .set_modified(written.into())
+        .unwrap();
+    let mut unused = client("http://127.0.0.1:9");
+    let mut prepares = 0;
+    for minute in 20..30 {
+        let rebooted = FakeHost {
+            probe_hangs: true,
+            ..FakeHost::default()
+        };
+        pass(
+            &rebooted,
+            &mut unused,
+            &key(),
+            &paths,
+            written + TimeDelta::minutes(minute),
+        )
+        .await;
+        prepares += rebooted.prepares.load(Ordering::SeqCst);
+    }
+    assert_eq!(prepares, PREPARE_TRIES);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, PREPARE_TRIES);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_running_preparation_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let host = FakeHost {
+        probe_hangs: true,
+        preparing: AtomicBool::new(true),
+        ..FakeHost::default()
+    };
+    let mut unused = client("http://127.0.0.1:9");
+    pass(&host, &mut unused, &key(), &paths, Utc::now()).await;
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 0);
 }
 
 #[test]

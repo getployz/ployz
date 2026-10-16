@@ -39,6 +39,12 @@ pub(crate) fn command(command: Command) -> Command {
                 .env(env::CLOUD_URL)
                 .help("Cloud to check in with [default: ployz.dev]"),
         )
+        .arg(
+            value("ployzd", None)
+                .value_parser(clap::value_parser!(PathBuf))
+                .hide(true)
+                .help("Probe and prepare with this ployzd, the one --install chose"),
+        )
 }
 
 pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
@@ -67,29 +73,40 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let runtime = runtime()?;
-    let installing = matches.get_flag("install");
-    if installing {
+    if matches.get_flag("install") {
         runtime.block_on(stop_old_loop())?;
+        let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
+        let (key, mut client) = connect(&paths, &cloud_url, token)?;
+        return runtime.block_on(install(&mut client, &key, &paths, &cloud_url));
     }
-    let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
+    let host = System {
+        ployzd: runtime.block_on(loop_ployzd(matches, &paths))?,
+    };
+    let Some(token) = runtime
+        .block_on(checkin::loop_token(&host, &paths))
+        .map_err(key_failure)?
+    else {
+        return Ok(());
+    };
+    let (key, mut client) = connect(&paths, &cloud_url, token)?;
+    let CheckinEnd::Stopped(_) = runtime.block_on(checkin::run(&host, &mut client, &key, &paths));
+    Ok(())
+}
+
+fn connect(
+    paths: &Paths,
+    cloud_url: &str,
+    token: FleetToken,
+) -> Result<(CheckinKey, CheckinClient), Error> {
     let key = CheckinKey::load_or_create(&paths.key()).map_err(key_failure)?;
-    let mut client = CheckinClient::new(&cloud_url, token).map_err(|error| {
+    let client = CheckinClient::new(cloud_url, token).map_err(|error| {
         Error::caused(
             RpcErrorCode::Internal,
             "Could not build the Cloud client.",
             error,
         )
     })?;
-    if installing {
-        runtime.block_on(install(&mut client, &key, &paths, &cloud_url))
-    } else {
-        let host = System {
-            ployzd: runtime.block_on(ployzd(&paths, false))?,
-        };
-        let CheckinEnd::Stopped(_) =
-            runtime.block_on(checkin::run(&host, &mut client, &key, &paths));
-        Ok(())
-    }
+    Ok((key, client))
 }
 
 async fn install(
@@ -110,7 +127,7 @@ async fn install(
         )
     })?;
     let skip_zfs = process_env::var_os(SKIP_ZFS).is_some_and(|value| value == "1");
-    let checkin_unit = unit::checkin(&ployz, &paths.token_file, cloud_url)
+    let checkin_unit = unit::checkin(&ployz, &host.ployzd, &paths.token_file, cloud_url)
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     let prepare_unit = unit::prepare(&host.ployzd, skip_zfs)
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
@@ -134,7 +151,7 @@ async fn install(
                 format!("{}. {message}", reason.title()),
             ));
         }
-        Next::Refused(why) => {
+        Next::ClockOff(why) => {
             return Err(Error::coded(
                 RpcErrorCode::Unauthenticated,
                 format!("{why}, then run this again."),
@@ -152,6 +169,13 @@ async fn stop_old_loop() -> Result<(), Error> {
     }
     // Disabled too, so an install that fails from here leaves no loop to start at boot.
     systemd(&["disable", "--now", unit::CHECKIN]).await
+}
+
+async fn loop_ployzd(matches: &ArgMatches, paths: &Paths) -> Result<PathBuf, Error> {
+    match matches.get_one::<PathBuf>("ployzd") {
+        Some(pinned) => Ok(pinned.clone()),
+        None => ployzd(paths, false).await,
+    }
 }
 
 async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {
@@ -237,3 +261,7 @@ fn key_failure(error: checkin::KeyError) -> Error {
         checkin::KeyError::Malformed { .. } => Error::coded(RpcErrorCode::Internal, message),
     }
 }
+
+#[cfg(test)]
+#[path = "checkin_tests.rs"]
+mod tests;

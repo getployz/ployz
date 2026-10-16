@@ -5,8 +5,15 @@ use std::path::Path;
 pub(crate) const CHECKIN: &str = "ployz-checkin.service";
 pub(crate) const PREPARE: &str = "ployz-prepare.service";
 
-pub(crate) fn checkin(ployz: &Path, token_file: &Path, cloud_url: &str) -> Result<String, String> {
+/// The loop runs the ployzd `--install` chose, not whatever PATH holds when it starts.
+pub(crate) fn checkin(
+    ployz: &Path,
+    ployzd: &Path,
+    token_file: &Path,
+    cloud_url: &str,
+) -> Result<String, String> {
     let ployz = exec_arg(&ployz.display().to_string())?;
+    let ployzd = exec_arg(&ployzd.display().to_string())?;
     let token_file = exec_arg(&token_file.display().to_string())?;
     let cloud_url = quotable(cloud_url)?.replace('%', "%%");
     Ok(format!(
@@ -14,11 +21,13 @@ pub(crate) fn checkin(ployz: &Path, token_file: &Path, cloud_url: &str) -> Resul
 Description=Ployz check-in: wait for approval in Ployz Cloud
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
 Environment=\"PLOYZ_CLOUD_URL={cloud_url}\"
-ExecStart=\"{ployz}\" server checkin --token-file \"{token_file}\"
+ExecStart=\"{ployz}\" server checkin --token-file \"{token_file}\" --ployzd \"{ployzd}\"
 Restart=on-failure
 RestartSec=10
 

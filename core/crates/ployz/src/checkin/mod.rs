@@ -28,6 +28,7 @@ const ENROLL_WAIT: Duration = Duration::from_secs(10);
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_SETTLE: Duration = Duration::from_secs(2);
 
 pub(crate) struct Paths {
@@ -65,8 +66,8 @@ pub(crate) enum CheckinEnd {
 pub(crate) trait Host {
     async fn probe(&self) -> Result<Probe, String>;
     fn hostname(&self) -> String;
-    /// Start preparation unless it is already running; true when it started.
-    async fn start_prepare(&self) -> Result<bool, String>;
+    async fn prepare_running(&self) -> Result<bool, String>;
+    async fn start_prepare(&self) -> Result<(), String>;
     async fn disable_loop(&self) -> Result<(), String>;
 }
 
@@ -86,8 +87,10 @@ impl Host for System {
             .kill_on_drop(true)
             .spawn()
             .map_err(run)?;
-        let _group = child.id().map(ProcessGroup);
+        let group = ProcessGroup(child.id());
         let output = child.wait_with_output().await.map_err(run)?;
+        // Reaped, so the id may already belong to someone else's group.
+        group.reaped();
         if !output.status.success() {
             return Err(format!(
                 "ployzd install --probe exited with {}: {}",
@@ -105,21 +108,17 @@ impl Host for System {
             .unwrap_or_default()
     }
 
-    async fn start_prepare(&self) -> Result<bool, String> {
-        let output = tokio::process::Command::new("systemctl")
-            .args(["show", "--property=ActiveState", "--value", unit::PREPARE])
-            .output()
-            .await
-            .map_err(|error| format!("run systemctl: {error}"))?;
-        let state = String::from_utf8_lossy(&output.stdout);
-        if matches!(
-            state.trim(),
+    async fn prepare_running(&self) -> Result<bool, String> {
+        let output =
+            systemctl_output(&["show", "--property=ActiveState", "--value", unit::PREPARE]).await?;
+        Ok(matches!(
+            String::from_utf8_lossy(&output.stdout).trim(),
             "active" | "activating" | "deactivating" | "reloading"
-        ) {
-            return Ok(false);
-        }
-        systemctl(&["start", "--no-block", unit::PREPARE]).await?;
-        Ok(true)
+        ))
+    }
+
+    async fn start_prepare(&self) -> Result<(), String> {
+        systemctl(&["start", "--no-block", unit::PREPARE]).await
     }
 
     async fn disable_loop(&self) -> Result<(), String> {
@@ -131,12 +130,19 @@ impl Host for System {
 
 /// Kills the probe's whole process group, so a hung `docker` or `lsblk` under
 /// `ployzd` goes with it.
-struct ProcessGroup(u32);
+struct ProcessGroup(Option<u32>);
+
+impl ProcessGroup {
+    fn reaped(mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
-        if let Some(group) = i32::try_from(self.0)
-            .ok()
+        if let Some(group) = self
+            .0
+            .and_then(|id| i32::try_from(id).ok())
             .and_then(rustix::process::Pid::from_raw)
         {
             let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
@@ -144,12 +150,25 @@ impl Drop for ProcessGroup {
     }
 }
 
-pub(crate) async fn systemctl(args: &[&str]) -> Result<(), String> {
+async fn systemctl_output(args: &[&str]) -> Result<std::process::Output, String> {
     let output = tokio::process::Command::new("systemctl")
         .args(args)
-        .output()
+        .kill_on_drop(true)
+        .output();
+    tokio::time::timeout(SYSTEMCTL_TIMEOUT, output)
         .await
-        .map_err(|error| format!("run systemctl: {error}"))?;
+        .map_err(|_| {
+            format!(
+                "systemctl {} did not finish in {}s",
+                args.join(" "),
+                SYSTEMCTL_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|error| format!("run systemctl: {error}"))
+}
+
+pub(crate) async fn systemctl(args: &[&str]) -> Result<(), String> {
+    let output = systemctl_output(args).await?;
     if output.status.success() {
         Ok(())
     } else {
@@ -173,7 +192,7 @@ pub(crate) enum Next {
         why: String,
     },
     Stop(StopReason, String),
-    Refused(String),
+    ClockOff(String),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -183,7 +202,8 @@ pub(crate) enum Seen {
     Enroll,
     Stop,
     Unreachable,
-    Refused,
+    ClockOff,
+    Outdated,
     ProbeFailed,
 }
 
@@ -235,11 +255,17 @@ impl LocalCheckin {
         }
     }
 
+    /// Whether `ployz status` should show the message: it says what ended the loop or what to fix.
+    pub(crate) fn says_why(&self) -> bool {
+        matches!(self.answer, Seen::Stop | Seen::ClockOff | Seen::Outdated)
+    }
+
     pub(crate) fn headline(&self) -> Headline {
         match self.answer {
             Seen::Stop => Headline::ended(self.reason.map_or("Stopped", StopReason::title)),
             Seen::Unreachable => Headline::open("Can't reach Cloud"),
-            Seen::Refused => Headline::open("Cloud refused this server"),
+            Seen::ClockOff => Headline::open("Clock is off"),
+            Seen::Outdated => Headline::open("Needs a newer ployz"),
             Seen::ProbeFailed => Headline::open("Can't inspect this host"),
             Seen::Enroll => Headline::open("Enroll needs a newer ployz"),
             Seen::Wait if !self.blockers.is_empty() => Headline::open("Blocked"),
@@ -304,7 +330,7 @@ pub(crate) async fn run<H: Host>(
                 stop(host, paths).await;
                 return CheckinEnd::Stopped(reason);
             }
-            Next::Refused(why) => {
+            Next::ClockOff(why) => {
                 last_log = None;
                 crate::ui::note(format!(
                     "{why}. Trying again in {}s.",
@@ -328,6 +354,27 @@ async fn replaced_token(client: &CheckinClient, path: &Path) -> Option<FleetToke
         Ok(token) => Some(token),
     };
     token.filter(|token| !client.sends(token))
+}
+
+/// The Fleet Token the loop checks in with. With the file gone there is nothing to check in
+/// with, so the loop disables itself and ends cleanly instead of failing at every restart.
+pub(crate) async fn loop_token<H: Host>(
+    host: &H,
+    paths: &Paths,
+) -> Result<Option<FleetToken>, KeyError> {
+    match FleetToken::read(&paths.token_file) {
+        Err(KeyError::Token { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            crate::ui::note(format!(
+                "No Fleet Token at {}. The check-in loop stops.",
+                paths.token_file.display()
+            ));
+            if let Err(why) = host.disable_loop().await {
+                crate::ui::note(format!("Could not disable {}: {why}", unit::CHECKIN));
+            }
+            Ok(None)
+        }
+        read => read.map(Some),
+    }
 }
 
 pub(crate) async fn stop<H: Host>(host: &H, paths: &Paths) {
@@ -375,32 +422,28 @@ async fn pass_from<H: Host>(
     installing: bool,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    if previous
-        .as_ref()
-        .is_some_and(|status| status.answer == Seen::Refused)
-        && let Ok(token) = FleetToken::read(&paths.token_file)
-    {
-        client.use_token(token);
-    }
     let mut prepare_retries = previous.map_or(0, |status| status.prepare_retries);
-    let state = read_prep_state(&paths.prepare_state);
-    let restart = installing
+    let (state, written) = read_prep_state(&paths.prepare_state).unzip();
+    let running = host.prepare_running().await.unwrap_or_else(|why| {
+        crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
+        true
+    });
+    let due = if running {
+        None
+    } else if installing
         && state
             .as_ref()
-            .is_some_and(|state| state.failed_at().is_some());
-    let due = if restart {
+            .is_some_and(|state| state.installing() || state.failed_at().is_some())
+    {
         prepare_retries = 0;
         Some(PrepareRun::Start)
     } else {
-        prepare_due(state.as_ref(), prepare_retries, now)
+        prepare_due(state.as_ref(), written.flatten(), prepare_retries, now)
     };
     if let Some(run) = due {
         match host.start_prepare().await {
-            Ok(started) => {
-                if started && run == PrepareRun::Retry {
-                    prepare_retries += 1;
-                }
-            }
+            Ok(()) if run == PrepareRun::Retry => prepare_retries += 1,
+            Ok(()) => {}
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
         }
     }
@@ -474,10 +517,18 @@ async fn pass_from<H: Host>(
                 why: format!("Could not reach Ployz Cloud: {why}."),
             }
         }
-        client::Reply::Refused(why) => {
-            status.answer = Seen::Refused;
+        client::Reply::ClockOff(why) => {
+            status.answer = Seen::ClockOff;
             status.message = Some(why.clone());
-            Next::Refused(why)
+            Next::ClockOff(why)
+        }
+        client::Reply::Outdated(why) => {
+            status.answer = Seen::Outdated;
+            status.message = Some(why.clone());
+            Next::Retry {
+                after: client::OUTDATED_BACKOFF,
+                why: format!("{why}."),
+            }
         }
     };
     record(&status, paths);
@@ -493,7 +544,8 @@ fn record(status: &LocalCheckin, paths: &Paths) {
     }
 }
 
-fn read_prep_state(path: &Path) -> Option<PrepState> {
+/// The preparation state and when ployzd last wrote it.
+fn read_prep_state(path: &Path) -> Option<(PrepState, Option<DateTime<Utc>>)> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
@@ -502,9 +554,14 @@ fn read_prep_state(path: &Path) -> Option<PrepState> {
             return None;
         }
     };
-    serde_json::from_slice(&bytes)
+    let state = serde_json::from_slice(&bytes)
         .inspect_err(|error| crate::ui::note(format!("Could not read {}: {error}", path.display())))
+        .ok()?;
+    let written = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
         .ok()
+        .map(DateTime::<Utc>::from);
+    Some((state, written))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -513,16 +570,25 @@ enum PrepareRun {
     Retry,
 }
 
-fn prepare_due(state: Option<&PrepState>, retries: u32, now: DateTime<Utc>) -> Option<PrepareRun> {
+/// What to do about a preparation that is not running.
+fn prepare_due(
+    state: Option<&PrepState>,
+    written: Option<DateTime<Utc>>,
+    retries: u32,
+    now: DateTime<Utc>,
+) -> Option<PrepareRun> {
     let Some(state) = state else {
         return Some(PrepareRun::Start);
     };
-    if state.installing() {
-        // Running, or cut short by a reboot; `start_prepare` leaves a running one alone.
-        return Some(PrepareRun::Start);
-    }
-    let failed_at = DateTime::parse_from_rfc3339(state.failed_at()?).ok()?;
-    let waited = now.signed_duration_since(failed_at).to_std().ok()?;
+    // A step still installing with no run behind it died mid-step, by a crash or a reboot.
+    let ended_at = if state.installing() {
+        written?
+    } else {
+        DateTime::parse_from_rfc3339(state.failed_at()?)
+            .ok()?
+            .to_utc()
+    };
+    let waited = now.signed_duration_since(ended_at).to_std().ok()?;
     (waited >= PREPARE_RETRY && retries < PREPARE_TRIES).then_some(PrepareRun::Retry)
 }
 

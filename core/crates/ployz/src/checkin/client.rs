@@ -17,7 +17,7 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::wire::{self, Answer, CheckinRequest};
+use super::wire::{self, Answer, CheckinRequest, StopReason};
 
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-checkin-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
@@ -25,6 +25,7 @@ const SIGNATURE_HEADER: &str = "Ployz-Signature";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
+pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
 const MAX_SKEW_SECONDS: i64 = 300;
 
@@ -152,7 +153,8 @@ pub(crate) struct CheckinClient {
 pub(super) enum Reply {
     Answer(Answer),
     Unreachable(Duration, String),
-    Refused(String),
+    ClockOff(String),
+    Outdated(String),
 }
 
 impl CheckinClient {
@@ -228,15 +230,25 @@ pub(super) fn reply(
         return Reply::Answer(wire::answer(body));
     }
     if status == StatusCode::UNAUTHORIZED {
-        return Reply::Refused(match skew {
-            Some(skew) if skew.abs() > MAX_SKEW_SECONDS => format!(
+        // A clock this far off fails the signature check, so the 401 says nothing about the token.
+        return match skew {
+            Some(skew) if skew.abs() > MAX_SKEW_SECONDS => Reply::ClockOff(format!(
                 "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
                 skew.abs()
-            ),
-            Some(_) | None => {
-                "Cloud refused this Fleet Token. Check the file holds the whole token".to_owned()
-            }
-        });
+            )),
+            Some(_) | None => Reply::Answer(Answer::Stop(
+                StopReason::TokenRevoked,
+                "Cloud no longer accepts this Fleet Token.".to_owned(),
+            )),
+        };
+    }
+    if matches!(
+        status,
+        StatusCode::BAD_REQUEST | StatusCode::PAYLOAD_TOO_LARGE
+    ) {
+        return Reply::Outdated(format!(
+            "Cloud answered {status} to this check-in. Install a newer ployz"
+        ));
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after
