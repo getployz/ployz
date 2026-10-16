@@ -155,12 +155,15 @@ async fn stop_old_loop() -> Result<(), Error> {
 }
 
 async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {
-    if let Some(found) = on_path("ployzd") {
+    // An install skips a ployzd older than this CLI, which may not know the flags this one uses.
+    let usable = async |path: &Path| !fetch || crate::provisioning::daemon_is_current(path).await;
+    if let Some(found) = on_path("ployzd")
+        && usable(&found).await
+    {
         return Ok(found);
     }
     let copy = paths.checkin_dir.join("ployzd");
-    // An install refreshes a copy left by an older CLI, which may not know the flags this one uses.
-    if copy.is_file() && (!fetch || crate::provisioning::daemon_is_current(&copy).await) {
+    if copy.is_file() && usable(&copy).await {
         return Ok(copy);
     }
     if !fetch {
