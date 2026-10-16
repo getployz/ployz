@@ -650,7 +650,7 @@ fn rpm_installed(package: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-fn owned_by_installed_package(package_manager: &str, build: &ZfsBuild) -> bool {
+fn package_ships_build_source(package_manager: &str, build: &ZfsBuild) -> bool {
     let owns_path = |command: &str, flag: &str, path: &Path| {
         Command::new(command)
             .arg(flag)
@@ -661,12 +661,44 @@ fn owned_by_installed_package(package_manager: &str, build: &ZfsBuild) -> bool {
     match build {
         ZfsBuild::Ubuntu { .. } => deb_installed("zfsutils-linux"),
         ZfsBuild::Dkms { source_dir, .. } if package_manager == "dnf" => {
-            rpm_installed("zfs-dkms") || owns_path("rpm", "-qf", source_dir)
+            owns_path("rpm", "-qf", source_dir)
         }
-        ZfsBuild::Dkms { source_dir, .. } => {
-            deb_installed("zfs-dkms") || owns_path("dpkg", "-S", source_dir)
-        }
+        ZfsBuild::Dkms { source_dir, .. } => owns_path("dpkg", "-S", source_dir),
     }
+}
+
+fn zfs_dkms_installed(package_manager: &str) -> bool {
+    if package_manager == "dnf" {
+        rpm_installed("zfs-dkms")
+    } else {
+        deb_installed("zfs-dkms")
+    }
+}
+
+fn remove_build(module: &str, version: &str, source_dir: &Path) -> Result<(), Error> {
+    if dkms_registered(version) {
+        run_host(
+            "remove the ZFS build",
+            "dkms",
+            ["remove", "-m", module, "-v", version, "--all"],
+        )?;
+    }
+    remove_dir(source_dir)
+}
+
+fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Option<ZfsBuild> {
+    let build = build.filter(|build| !package_ships_build_source(package_manager, build))?;
+    if let ZfsBuild::Dkms {
+        module,
+        version,
+        source_dir,
+    } = &build
+        && let Err(error) = remove_build(module, version, source_dir)
+    {
+        eprintln!("Couldn't remove the ZFS {version} build preparation made: {error}");
+        return Some(build);
+    }
+    None
 }
 
 pub(super) fn install_waiting_for_preparation(
@@ -677,25 +709,32 @@ pub(super) fn install_waiting_for_preparation(
     if !state_path(paths).exists() {
         return install();
     }
-    let _lock = lock(paths, Wait::Yes)?;
+    let _lock = match lock(paths, Wait::No)? {
+        Some(lock) => lock,
+        None => {
+            println!("Waiting for host preparation to finish");
+            lock(paths, Wait::Yes)?.expect("a waiting lock is always taken")
+        }
+    };
     install()?;
+    take_over_preparation(paths, package_manager);
+    Ok(())
+}
+
+fn take_over_preparation(paths: &InstallPaths, package_manager: &str) {
     let mut job = Job {
         path: state_path(paths),
         state: load(paths),
     };
-    if !job
-        .state
-        .zfs_build
-        .as_ref()
-        .is_some_and(|build| owned_by_installed_package(package_manager, build))
-    {
-        return Ok(());
-    }
-    remove_dir(&prepare_dir(paths).join("zfs"))?;
+    job.state.zfs_build = remove_unowned_build(package_manager, job.state.zfs_build.take());
     job.state.added_packages.clear();
-    job.state.zfs_build = None;
     job.state.added_contrib_source = false;
-    job.save()
+    if let Err(error) = remove_dir(&prepare_dir(paths).join("zfs")) {
+        eprintln!("Couldn't remove the ZFS build files preparation downloaded: {error}");
+    }
+    if let Err(error) = job.save() {
+        eprintln!("Couldn't record that ZFS is installed from packages: {error}");
+    }
 }
 
 fn remove_dir(dir: &Path) -> Result<(), Error> {
@@ -723,7 +762,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         .state
         .zfs_build
         .as_ref()
-        .is_some_and(|build| owned_by_installed_package(package_manager, build))
+        .is_some_and(|build| package_ships_build_source(package_manager, build))
     {
         println!("ZFS is installed from packages, so there is no build to discard");
         return Ok(());
@@ -734,16 +773,16 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         source_dir,
     }) = &job.state.zfs_build
     {
-        if dkms_registered(version) {
-            run_host(
-                "remove the ZFS build",
-                "dkms",
-                ["remove", "-m", module, "-v", version, "--all"],
-            )?;
-        }
-        remove_dir(source_dir)?;
+        remove_build(module, version, source_dir)?;
     }
     remove_dir(&prepare_dir(paths).join("zfs"))?;
+    if (!job.state.added_packages.is_empty() || job.state.added_contrib_source)
+        && zfs_dkms_installed(package_manager)
+    {
+        println!("Keeping the packages ZFS was built with, which the installed zfs-dkms needs");
+        job.state.added_packages.clear();
+        job.state.added_contrib_source = false;
+    }
     if job.state.added_contrib_source {
         match fs::remove_file(debian_contrib_source(&paths.apt_dir)) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => {

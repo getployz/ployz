@@ -389,7 +389,7 @@ esac"#,
 
 #[test]
 fn zfs_install_takes_over_a_prepared_build_contract() {
-    use crate::installer::prepare::{PrepState, ZfsBuild};
+    use crate::installer::prepare::{PrepState, ZfsBuild, discard_at};
 
     const CASE: &str = "PLOYZ_ZFS_TAKEOVER_CONTRACT";
     const KERNEL: &str = "6.12.43+deb13-cloud-amd64";
@@ -401,11 +401,21 @@ fn zfs_install_takes_over_a_prepared_build_contract() {
             .unwrap()
             .install(&paths, &os, KERNEL)
             .unwrap();
+        if name == "no-build" {
+            discard_at(&paths).unwrap();
+        }
         fs::write(root.join("child-completed"), name).unwrap();
         return;
     }
 
-    for name in ["owned", "not-owned", "unprepared"] {
+    for name in [
+        "owned",
+        "mismatch",
+        "no-build",
+        "stuck-cleanup",
+        "contended",
+        "unprepared",
+    ] {
         let fixture = fixture(name);
         let root = fixture.path();
         let commands = root.join("commands");
@@ -420,35 +430,64 @@ echo "$held $*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/apt.log"
 case "$*" in
   *zfs-dkms*)
     : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module"
-    [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" = not-owned ] || : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ;;
+    : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ;;
 esac"#,
         );
         write_script(
             &commands.join("dpkg-query"),
             r#"[ "$3" = zfs-dkms ] && [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && printf 'install ok installed'"#,
         );
+        write_script(
+            &commands.join("dpkg"),
+            r#"[ "$1" = -S ] && [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != mismatch ]"#,
+        );
+        write_script(
+            &commands.join("dkms"),
+            r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
+if [ "$1" = status ]; then echo "zfs/2.3.2: added"; fi"#,
+        );
         symlink("/usr/bin/flock", commands.join("flock")).unwrap();
         write_zfs_probes(&commands);
         let prepare = root.join("data/prepare");
+        let source = root.join("usr/src/zfs-2.3.2");
+        fs::create_dir_all(&source).unwrap();
         let claim = PrepState {
             added_packages: vec!["dkms".into(), "lsb-release".into()],
-            zfs_build: Some(ZfsBuild::Dkms {
+            zfs_build: (name != "no-build").then(|| ZfsBuild::Dkms {
                 module: "zfs".into(),
                 version: "2.3.2".into(),
-                source_dir: root.join("usr/src/zfs-2.3.2"),
+                source_dir: source.clone(),
             }),
             added_contrib_source: true,
             ..PrepState::default()
         };
         if name != "unprepared" {
-            fs::create_dir_all(prepare.join("zfs/build")).unwrap();
+            fs::create_dir_all(&prepare).unwrap();
+            if name == "stuck-cleanup" {
+                fs::write(prepare.join("zfs"), b"not a directory").unwrap();
+            } else {
+                fs::create_dir_all(prepare.join("zfs/build")).unwrap();
+            }
             fs::write(
                 prepare.join("state.json"),
                 serde_json::to_vec(&claim).unwrap(),
             )
             .unwrap();
         }
-        run_contract_child_with_environment(
+        let holder = (name == "contended").then(|| {
+            let held = root.join("held");
+            let holder = Command::new("/usr/bin/flock")
+                .arg(prepare.join("lock"))
+                .args(["sh", "-c", "touch \"$0\"; sleep 1"])
+                .arg(&held)
+                .spawn()
+                .unwrap();
+            while !held.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            holder
+        });
+        let output = run_contract_child_with_environment(
             "installer::storage::tests::zfs_install_takes_over_a_prepared_build_contract",
             root,
             OsString::from(CASE),
@@ -456,7 +495,16 @@ esac"#,
             name,
             [],
         );
+        if let Some(mut holder) = holder {
+            holder.wait().unwrap();
+        }
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(
+            stdout.contains("Waiting for host preparation to finish"),
+            name == "contended",
+            "{name}: {stdout}"
+        );
         let apt = read_log(root, "apt.log");
         let held = if name == "unprepared" {
             "unlocked"
@@ -467,20 +515,34 @@ esac"#,
             !apt.is_empty() && apt.lines().all(|line| line.starts_with(held)),
             "{name}: {apt}"
         );
+        assert!(
+            !apt.lines().any(|line| line.contains(" remove ")),
+            "{name}: {apt}"
+        );
         if name == "unprepared" {
             assert!(!prepare.exists(), "{name}");
             continue;
         }
         let state: PrepState =
             serde_json::from_slice(&fs::read(prepare.join("state.json")).unwrap()).unwrap();
-        if name == "owned" {
-            assert_eq!(state.zfs_build, None);
-            assert!(state.added_packages.is_empty());
-            assert!(!state.added_contrib_source);
-            assert!(!prepare.join("zfs").exists());
+        assert_eq!(state.zfs_build, None, "{name}");
+        assert!(state.added_packages.is_empty(), "{name}");
+        assert!(!state.added_contrib_source, "{name}");
+        let dkms = read_log(root, "dkms.log");
+        if name == "mismatch" {
+            assert!(
+                dkms.contains("remove -m zfs -v 2.3.2 --all"),
+                "{name}: {dkms}"
+            );
+            assert!(!source.exists(), "{name}");
         } else {
-            assert_eq!(state, claim);
-            assert!(prepare.join("zfs/build").exists());
+            assert!(!dkms.contains("remove"), "{name}: {dkms}");
+            assert!(source.exists(), "{name}");
+        }
+        if name == "stuck-cleanup" {
+            assert!(prepare.join("zfs").is_file(), "{name}");
+        } else {
+            assert!(!prepare.join("zfs").exists(), "{name}");
         }
     }
 }

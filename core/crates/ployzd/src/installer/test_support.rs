@@ -1,6 +1,13 @@
 //! Fixtures for installer contract tests that re-run the test binary against fake host commands.
 
-use std::{env, ffi::OsString, fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+use std::{
+    env,
+    ffi::OsString,
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    process::{Command, Output},
+};
 
 use tempfile::TempDir;
 
@@ -13,7 +20,7 @@ pub(super) fn run_contract_child_with_environment<const N: usize>(
     value: OsString,
     completion: &str,
     extra: [(OsString, OsString); N],
-) {
+) -> Output {
     let mut command = Command::new(env::current_exe().unwrap());
     command
         .args(["--exact", test, "--nocapture"])
@@ -35,6 +42,7 @@ pub(super) fn run_contract_child_with_environment<const N: usize>(
         completion,
         "contract child {test} did not complete its fixture",
     );
+    output
 }
 
 pub(super) fn write_script(path: &Path, body: &str) {

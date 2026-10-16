@@ -528,33 +528,84 @@ fn claimed_build(paths: &InstallPaths, source_dir: &Path) -> Job {
 }
 
 #[test]
-fn discard_leaves_an_installed_zfs_package_alone() {
-    const CASE: &str = "PLOYZ_PREPARE_DISCARD_INSTALLED_CONTRACT";
+fn discard_leaves_a_build_its_package_ships_alone() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_OWNED_CONTRACT";
     if let Ok(name) = env::var(CASE) {
-        let root = contract_root();
-        discard_at(&InstallPaths::at(&root)).unwrap();
-        fs::write(root.join("child-completed"), name).unwrap();
+        discard_in_child(&name);
         return;
     }
 
-    for (name, installed, dpkg) in [
-        ("zfs-dkms-installed", &["zfs-dkms", "dkms"][..], "exit 1"),
-        (
-            "source-owned",
-            &["dkms"][..],
-            "[ \"$1\" = -S ] && echo \"zfs-dkms: $2\"",
-        ),
-    ] {
-        discard_leaves_an_installed_zfs_package_alone_case(CASE, name, installed, dpkg);
-    }
+    let (fixture, source_dir) = discard_beside_installed_zfs(
+        "installer::prepare::tests::discard_leaves_a_build_its_package_ships_alone",
+        CASE,
+        "source-owned",
+        &["dkms"],
+        "[ \"$1\" = -S ] && echo \"zfs-dkms: $2\"",
+    );
+    let root = fixture.path();
+    assert!(host_changes(root).is_empty(), "{}", read_log(root));
+    assert!(source_dir.exists());
+    assert_eq!(
+        read_state(root).zfs_build,
+        claimed_build(&InstallPaths::at(root), &source_dir)
+            .state
+            .zfs_build
+    );
 }
 
-fn discard_leaves_an_installed_zfs_package_alone_case(
+#[test]
+fn discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_OTHER_VERSION_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        discard_in_child(&name);
+        return;
+    }
+
+    let (fixture, source_dir) = discard_beside_installed_zfs(
+        "installer::prepare::tests::discard_removes_another_versions_build_but_keeps_the_packages_zfs_dkms_needs",
+        CASE,
+        "other-version-installed",
+        &["zfs-dkms", "dkms"],
+        "exit 1",
+    );
+    let root = fixture.path();
+    assert_eq!(
+        host_changes(root),
+        ["dkms remove -m zfs -v 2.1.11 --all"],
+        "{}",
+        read_log(root)
+    );
+    assert!(!source_dir.exists());
+    let state = read_state(root);
+    assert_eq!(state.zfs_build, None);
+    assert!(state.added_packages.is_empty());
+}
+
+fn discard_in_child(name: &str) {
+    let root = contract_root();
+    discard_at(&InstallPaths::at(&root)).unwrap();
+    fs::write(root.join("child-completed"), name).unwrap();
+}
+
+fn host_changes(root: &Path) -> Vec<String> {
+    read_log(root)
+        .lines()
+        .filter(|line| {
+            !line.starts_with("dkms status")
+                && !line.starts_with("dpkg-query")
+                && !line.starts_with("dpkg -S")
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+fn discard_beside_installed_zfs(
+    test: &str,
     case: &str,
     name: &str,
     installed: &[&str],
     dpkg: &str,
-) {
+) -> (tempfile::TempDir, PathBuf) {
     let fixture = host(
         name,
         DEBIAN_12,
@@ -575,29 +626,14 @@ fn discard_leaves_an_installed_zfs_package_alone_case(
     fs::create_dir_all(prepare_dir(&paths)).unwrap();
     claimed_build(&paths, &source_dir).save().unwrap();
     run_contract_child_with_environment(
-        "installer::prepare::tests::discard_leaves_an_installed_zfs_package_alone",
+        test,
         root,
         OsString::from(case),
         OsString::from(name),
         name,
         [],
     );
-
-    let log = read_log(root);
-    let changes: Vec<&str> = log
-        .lines()
-        .filter(|line| {
-            !line.starts_with("dkms status")
-                && !line.starts_with("dpkg-query")
-                && !line.starts_with("dpkg -S")
-        })
-        .collect();
-    assert!(changes.is_empty(), "{name}: {log}");
-    assert!(source_dir.exists(), "{name}");
-    assert_eq!(
-        read_state(root).zfs_build,
-        claimed_build(&paths, &source_dir).state.zfs_build
-    );
+    (fixture, source_dir)
 }
 
 /// Discard removes the contrib source only when preparation wrote it; one a full install left
