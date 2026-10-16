@@ -550,6 +550,17 @@ async fn leave_resent_to_a_resetting_machine_answers_left() {
 }
 
 #[test]
+fn directory_holding_only_host_preparation_is_claimed() {
+    let dir = TestDir::new("ployzd-state");
+    let prepare = dir.0.join(ployzd::machine::PREPARE_DIR_NAME);
+    fs::create_dir_all(&prepare).unwrap();
+    fs::write(prepare.join("state.json"), b"{}").unwrap();
+
+    LocalMachineStore::open(&dir.0).unwrap();
+    assert_eq!(fs::read(prepare.join("state.json")).unwrap(), b"{}");
+}
+
+#[test]
 fn nonempty_directory_without_a_machine_record_is_not_claimed() {
     let dir = TestDir::new("ployzd-state");
     fs::create_dir_all(&dir.0).unwrap();

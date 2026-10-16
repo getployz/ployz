@@ -107,7 +107,7 @@ pub fn discard_zfs_build() -> Result<(), Error> {
 }
 
 pub(super) fn prepare_dir(paths: &InstallPaths) -> PathBuf {
-    paths.data_dir.join("prepare")
+    paths.data_dir.join(crate::machine::PREPARE_DIR_NAME)
 }
 
 pub(super) fn state_path(paths: &InstallPaths) -> PathBuf {
@@ -476,12 +476,25 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
         .to_owned();
     let version = name.trim_start_matches("zfs-").to_owned();
     let source_dir = paths.usr_src.join(&name);
+    let registered = dkms_registered(&version);
+    let ours = matches!(
+        &job.state.zfs_build,
+        Some(ZfsBuild::Dkms { version: built, .. }) if *built == version
+    );
+    if registered && !ours {
+        run_host(
+            "build ZFS with DKMS",
+            "dkms",
+            ["build", "-m", "zfs", "-v", &version, "-k", kernel],
+        )?;
+        return Ok(());
+    }
     job.set_build(ZfsBuild::Dkms {
         module: "zfs".into(),
         version: version.clone(),
         source_dir: source_dir.clone(),
     })?;
-    if dkms_registered(&version) {
+    if registered {
         run_host(
             "remove the earlier ZFS build",
             "dkms",

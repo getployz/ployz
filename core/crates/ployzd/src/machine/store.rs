@@ -574,9 +574,11 @@ fn claim_data_dir(data_dir: &Path) -> Result<(), StoreError> {
                 .map(|entry| Ok(entry?.file_name()))
                 .collect::<io::Result<Vec<_>>>()?;
             let owns_directory = names.iter().any(|name| name == STATE_FILE_NAME)
-                || names
-                    .iter()
-                    .all(|name| name == TEMPORARY_FILE_NAME || name == LOCK_FILE_NAME);
+                || names.iter().all(|name| {
+                    name == TEMPORARY_FILE_NAME
+                        || name == LOCK_FILE_NAME
+                        || name == super::PREPARE_DIR_NAME
+                });
             if owns_directory {
                 Ok(())
             } else {
