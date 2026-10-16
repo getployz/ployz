@@ -93,10 +93,6 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
   }));
 });
 
-/**
- * Revokes a Fleet Token by id, or by the name of a live one, and removes the hosts waiting on it. Revoking a revoked
- * token changes nothing more.
- */
 export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string } & ({ readonly id: string } | { readonly name: string }),

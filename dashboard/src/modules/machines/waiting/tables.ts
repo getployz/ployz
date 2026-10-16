@@ -31,7 +31,6 @@ export const fleetToken = pgTable(
   ],
 );
 
-/** A host waiting to be enrolled, keyed by its Check-in Key. Sole writer: POST /api/checkin. Facts are the host's own. */
 export const waitingServer = pgTable(
   "waiting_server",
   {
@@ -44,12 +43,10 @@ export const waitingServer = pgTable(
       .references(() => fleetToken.id, { onDelete: "cascade" }),
     checkinKey: text("checkin_key").notNull(),
     report: jsonb("report").notNull().$type<StoredReport>(),
-    /** The address Cloud saw the check-in come from, not one the host claims. */
     observedIp: text("observed_ip").notNull(),
     probe: jsonb("probe").$type<unknown>(),
     firstSeenAt: timestamp("first_seen_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
     lastCheckInAt: timestamp("last_check_in_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
-    /** Tombstone: the same key under the same token is told to stop. */
     rejectedAt: timestamp("rejected_at", { mode: "date", withTimezone: true }),
   },
   (table) => [
@@ -58,7 +55,6 @@ export const waitingServer = pgTable(
   ],
 );
 
-/** Fixed one-second windows of check-in counts, one row per token or source address. */
 export const checkinRateLimit = pgTable("checkin_rate_limit", {
   key: text("key").primaryKey(),
   windowStart: timestamp("window_start", { mode: "date", withTimezone: true }).notNull(),

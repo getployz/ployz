@@ -23,7 +23,6 @@ async function readCappedBody(request: Request) {
   return Buffer.concat(chunks);
 }
 
-/** The address the check-in came from: the first valid entry of the proxy's client header, else the socket peer. */
 export function observedIp(headers: Headers, clientIpHeaders: ReadonlyArray<string> | undefined, peer: string | undefined) {
   for (const name of clientIpHeaders ?? ["x-forwarded-for"]) {
     const value = headers.get(name)?.split(",")[0]?.trim();

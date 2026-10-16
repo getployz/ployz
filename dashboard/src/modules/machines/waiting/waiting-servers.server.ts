@@ -10,7 +10,6 @@ import { NotFound } from "#/server/public-error";
 
 const OFFLINE_AFTER_MS = 3 * CHECKIN_WAIT_SECONDS * 1000;
 
-/** Read at display time, never stored. Rejected rows are tombstones and never listed. */
 export type WaitingServerStatus = "offline" | "blocked" | "preparing" | "waiting";
 
 export type WaitingServerView = {
@@ -58,7 +57,6 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
   }));
 });
 
-/** The Organization's Waiting Servers, oldest first, so new arrivals append. */
 export const listWaitingServers = Effect.fn("WaitingServer.list")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },

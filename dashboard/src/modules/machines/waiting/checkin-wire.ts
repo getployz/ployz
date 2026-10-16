@@ -45,7 +45,6 @@ export const HostReport = Schema.Struct({
 });
 export type HostReport = typeof HostReport.Type;
 
-/** How far the host's background preparation has got. A host that sends none reads as ready. */
 export const Prep = Schema.Struct({
   docker: Schema.Literals(["installing", "ready", "failed"]),
   zfs: Schema.Literals(["installing", "ready", "failed", "skipped", "off"]),
@@ -71,7 +70,6 @@ export const CheckinRequest = Schema.Struct({
 });
 export type CheckinRequest = typeof CheckinRequest.Type;
 
-/** What `waiting_server.report` holds: the host's report with its preparation progress, when it sent one. */
 export type StoredReport = HostReport & { readonly prep?: Prep };
 
 export type CheckinStopReason = "rejected" | "token_expired" | "token_revoked";

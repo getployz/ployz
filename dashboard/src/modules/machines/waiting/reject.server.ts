@@ -6,7 +6,6 @@ import { waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 
-/** Tombstones the rows: their hosts are told to stop, and the same key under the same Fleet Token can't come back. */
 export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly ids: ReadonlyArray<string> },

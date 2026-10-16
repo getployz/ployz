@@ -6,11 +6,7 @@ import { Database } from "#/server/database.server";
 
 const thisSecond = sql`date_trunc('second', now())`;
 
-/**
- * Counts one request against `key` in the current one-second window and says whether it is within `limit`. Each call
- * commits on its own, so a refused request still counts and the row lock lasts one statement.
- */
-export const takeRateLimitSlot = Effect.fn("Checkin.rateLimit")(function* (key: string, limit: number) {
+export const countWithinRateLimit = Effect.fn("Checkin.rateLimit")(function* (key: string, limit: number) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle
     .insert(checkinRateLimit)

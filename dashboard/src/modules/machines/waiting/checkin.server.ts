@@ -9,13 +9,13 @@ import {
   type CheckinStopReason,
 } from "#/modules/machines/waiting/checkin-wire";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
-import { takeRateLimitSlot } from "#/modules/machines/waiting/rate-limit.server";
+import { countWithinRateLimit } from "#/modules/machines/waiting/rate-limit.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 
 export const WAITING_PER_TOKEN = 1000;
-const EXCLUSIVE_NEAR_CAP = 100;
+const LAST_SLOTS = 100;
 const PER_TOKEN_PER_SECOND = 300;
 const PER_IP_PER_SECOND = 50;
 
@@ -25,7 +25,6 @@ const SIGNATURE = /^v1=([A-Za-z0-9_-]{86})$/;
 const BEARER = /^Bearer (pflt_\S+)$/u;
 const DOMAIN = Buffer.from("ployz-checkin-v1\0", "ascii");
 
-/** A check-in Cloud won't take, with the HTTP status the host sees. */
 export class CheckinRefused extends Data.TaggedError("CheckinRefused")<{
   readonly status: 400 | 429;
   readonly message: string;
@@ -71,6 +70,19 @@ function parseRequest(body: Uint8Array) {
   }
 }
 
+const lockTokenAgainstRevoke = Effect.fn("Checkin.lockToken")(function* (id: string, mode: "share" | "update") {
+  const { drizzle } = yield* Database;
+  const [live] = yield* drizzle
+    .select({
+      revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
+    })
+    .from(fleetToken)
+    .where(eq(fleetToken.id, id))
+    .for(mode);
+  return live;
+});
+
 const heldByToken = Effect.fn("Checkin.heldByToken")(function* (fleetTokenId: string) {
   const { drizzle } = yield* Database;
   const [held] = yield* drizzle
@@ -80,10 +92,6 @@ const heldByToken = Effect.fn("Checkin.heldByToken")(function* (fleetTokenId: st
   return held?.rows ?? 0;
 });
 
-/**
- * The only writer of `waiting_server`. Authenticates a host's signed check-in by its Fleet Token and Check-in Key,
- * records what it reports, and answers wait or stop.
- */
 export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   readonly headers: Headers;
   readonly body: Uint8Array;
@@ -113,8 +121,8 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
     return yield* new Unauthorized();
   }
 
-  const withinToken = yield* takeRateLimitSlot(`token:${token.id}`, PER_TOKEN_PER_SECOND);
-  const withinIp = yield* takeRateLimitSlot(`ip:${input.observedIp}`, PER_IP_PER_SECOND);
+  const withinToken = yield* countWithinRateLimit(`token:${token.id}`, PER_TOKEN_PER_SECOND);
+  const withinIp = yield* countWithinRateLimit(`ip:${input.observedIp}`, PER_IP_PER_SECOND);
   if (!withinToken || !withinIp) return yield* new CheckinRefused({ status: 429, message: "Too many check-ins." });
 
   return yield* database.transaction(
@@ -130,25 +138,15 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
         .where(key);
       const newToToken = existing?.fleetTokenId !== token.id;
       const heldBefore = newToToken ? yield* heldByToken(token.id) : 0;
-      // Every check-in shares the token row lock, so a concurrent revoke waits and then deletes the row it wrote. Only a
-      // new key near the cap locks it exclusively and recounts, so two hosts can't both take the last slot; far from the
-      // cap, a fleet's first check-ins don't queue behind each other.
-      const nearCap = heldBefore >= WAITING_PER_TOKEN - EXCLUSIVE_NEAR_CAP;
-      const [live] = yield* drizzle
-        .select({
-          revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
-          expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
-        })
-        .from(fleetToken)
-        .where(eq(fleetToken.id, token.id))
-        .for(nearCap ? "update" : "share");
+      const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;
+      const live = yield* lockTokenAgainstRevoke(token.id, takingLastSlots ? "update" : "share");
       const ended = live === undefined || live.revoked ? "token_revoked" : live.expired ? "token_expired" : null;
       if (ended !== null) {
         yield* drizzle.delete(waitingServer).where(and(key, eq(waitingServer.fleetTokenId, token.id)));
         return stop(ended);
       }
       if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
-      if (nearCap && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
+      if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
         return yield* new CheckinRefused({
           status: 429,
           message: `This Fleet Token already has ${WAITING_PER_TOKEN} waiting servers.`,
