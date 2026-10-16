@@ -70,7 +70,7 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
   }, [log, following]);
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col @max-5xl:h-96 @max-5xl:flex-none">
       <pre ref={element} aria-label={`${service} build output`} tabIndex={0}
         onScroll={({ currentTarget: pre }) => setFollowing(pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 48)}
         className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
