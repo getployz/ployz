@@ -1,13 +1,11 @@
 import { SchemaFieldInput } from "#/components/stageable/schema-field-input";
 import { Button } from "#/components/ui/button";
-import { FieldDescription } from "#/components/ui/field";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 import type { StringSchema } from "#/lib/schema";
 
 type ServiceRegistryCredentialSingleFieldEditorProps = {
   schema: StringSchema;
   secretLabel: string;
-  description: string;
   baselineLabel?: string;
   baselineValue?: string;
   isChanged?: boolean;
@@ -20,7 +18,6 @@ type ServiceRegistryCredentialSingleFieldEditorProps = {
 export function ServiceRegistryCredentialSingleFieldEditor({
   schema,
   secretLabel,
-  description,
   baselineLabel,
   baselineValue,
   isChanged = false,
@@ -44,7 +41,6 @@ export function ServiceRegistryCredentialSingleFieldEditor({
         type={multiline ? undefined : "password"}
         onCommit={onCommit}
       />
-      <FieldDescription>{description}</FieldDescription>
       <div>
         <Button type="button" variant="ghost" onClick={onClose}>
           Cancel

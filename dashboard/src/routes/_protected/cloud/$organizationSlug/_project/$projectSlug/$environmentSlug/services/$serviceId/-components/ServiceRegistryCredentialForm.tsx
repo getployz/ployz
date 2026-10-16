@@ -1,6 +1,8 @@
 import { Schema } from "effect";
 import { Button } from "#/components/ui/button";
-import { FieldGroup } from "#/components/ui/field";
+import { SettingsFormField } from "#/components/settings/settings-list";
+import { FieldError } from "#/components/ui/field";
+import { Input } from "#/components/ui/input";
 import {
   appFormOptions,
   showErrorsAfterBlurOrSubmit,
@@ -30,7 +32,6 @@ const registryCredentialFormOptions = appFormOptions.strictSchema({
 type ServiceRegistryCredentialFormProps = {
   usernameLabel: string;
   secretLabel: string;
-  description: string;
   initialUsername: string;
   baselineLabel?: string;
   baselineValue?: string;
@@ -42,7 +43,6 @@ type ServiceRegistryCredentialFormProps = {
 export function ServiceRegistryCredentialForm({
   usernameLabel,
   secretLabel,
-  description,
   initialUsername,
   baselineLabel = "Deployed",
   baselineValue,
@@ -70,40 +70,28 @@ export function ServiceRegistryCredentialForm({
   return (
     <form.AppForm>
       <form.Form className="mt-4">
-        <FieldGroup>
-          <form.Field name="username">
-            {(field) => (
-              <field.Text
-                label={usernameLabel}
-                data-changed={isChanged || undefined}
-                placeholder={usernameLabel}
-                title={
-                  isChanged && baselineValue != null
-                    ? `${baselineLabel}: ${baselineValue}`
-                    : undefined
-                }
-              />
-            )}
-          </form.Field>
-
-          <form.Field name="secret">
-            {(field) => (
-              <field.Text
-                label={secretLabel}
-                description={description}
-                data-changed={isChanged || undefined}
-                placeholder={secretLabel}
-                title={
-                  isChanged && baselineValue != null
-                    ? `${baselineLabel}: ${baselineValue}`
-                    : undefined
-                }
-                type="password"
-              />
-            )}
-          </form.Field>
-
-
+        <div className="flex flex-col gap-4">
+          {(["username", "secret"] as const).map((name) => (
+            <form.Field key={name} name={name}>
+              {(field) => (
+                <SettingsFormField label={name === "username" ? usernameLabel : secretLabel} htmlFor={`registry-${name}`}>
+                  <Input
+                    id={`registry-${name}`}
+                    name={name}
+                    type={name === "secret" ? "password" : undefined}
+                    placeholder={name === "username" ? usernameLabel : secretLabel}
+                    value={field.value}
+                    data-changed={isChanged || undefined}
+                    title={isChanged && baselineValue != null ? `${baselineLabel}: ${baselineValue}` : undefined}
+                    aria-invalid={field.meta.isInvalid || undefined}
+                    onBlur={field.handleBlur}
+                    onChange={(event) => field.handleChange(event.target.value)}
+                  />
+                  <FieldError errors={field.errors} />
+                </SettingsFormField>
+              )}
+            </form.Field>
+          ))}
           <div className="flex items-center gap-2">
             <form.SubmitButton>Save</form.SubmitButton>
             <Button type="button" variant="outline" onClick={resetForm}>
@@ -113,7 +101,7 @@ export function ServiceRegistryCredentialForm({
               Cancel
             </Button>
           </div>
-        </FieldGroup>
+        </div>
       </form.Form>
     </form.AppForm>
   );

@@ -93,12 +93,11 @@ export function RegistryCredentialsField({
   }
 
   return (
-    <SettingsWorkspace label={label} hint="Private registry credentials used to pull your image.">
+    <SettingsWorkspace label={label} hint={provider.description}>
       {usesSingleFieldUpdater ? (
         <ServiceRegistryCredentialSingleFieldEditor
           schema={registryCredentialSecretSchema}
           secretLabel={provider.secretLabel}
-          description={provider.description}
           baselineLabel={baselineLabel}
           baselineValue={baselineValue}
           isChanged={changed}
@@ -119,7 +118,6 @@ export function RegistryCredentialsField({
           key={`${mode}:${username ?? ""}`}
           usernameLabel={provider.usernameLabel ?? "Username"}
           secretLabel={provider.secretLabel}
-          description={provider.description}
           initialUsername={username ?? ""}
           baselineLabel={baselineLabel}
           baselineValue={baselineValue}
