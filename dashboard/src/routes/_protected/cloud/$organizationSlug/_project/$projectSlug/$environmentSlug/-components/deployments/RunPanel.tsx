@@ -1,4 +1,4 @@
-import { Suspense, useLayoutEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import type { DeploymentView, ServerRow } from "@ployz/sdk";
 import { ContainerLogs } from "#/components/container-logs";
@@ -15,7 +15,7 @@ import { RunTime, runNodeIcons, runNodeKinds } from "./RunCanvas";
 /** The picked node: its status, each Server's row as reported, then its logs. */
 export function RunPanel({ deployment, node }: { deployment: DeploymentView; node: RunNode | undefined }) {
   return (
-    <aside aria-label="Run node" className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm max-lg:min-h-full max-lg:shrink-0 lg:w-md lg:shrink-0">
+    <aside aria-label="Run node" className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm @max-5xl:min-h-full @max-5xl:shrink-0 @5xl:w-md @5xl:shrink-0">
       {node ? <RunNodeDetail key={node.id} deployment={deployment} node={node} /> : (
         <LogEmpty title="Nothing in this deployment" />
       )}
@@ -68,9 +68,17 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
   useLayoutEffect(() => {
     if (following && element.current) element.current.scrollTop = element.current.scrollHeight;
   }, [log, following]);
+  useEffect(() => {
+    const pre = element.current;
+    if (!following || !pre) return;
+    // The log keeps its end in view when the panel around it shrinks.
+    const observer = new ResizeObserver(() => { pre.scrollTop = pre.scrollHeight; });
+    observer.observe(pre);
+    return () => observer.disconnect();
+  }, [following, result.ok]);
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col @max-5xl:h-96 @max-5xl:flex-none">
       <pre ref={element} aria-label={`${service} build output`} tabIndex={0}
         onScroll={({ currentTarget: pre }) => setFollowing(pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 48)}
         className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
@@ -94,8 +102,8 @@ function OutcomeDetail({ deployment, node }: { deployment: DeploymentView; node:
         <div className="p-4"><LogEmpty title={missing ?? "No servers"} /></div>
       )}
       {node.type === "service" ? (
-        // Stacked on a phone, the logs get a fixed height so they scroll and follow new lines themselves.
-        <div className="flex min-h-0 flex-1 flex-col p-4 max-lg:h-96 max-lg:flex-none">
+        // Stacked, the logs get a fixed height so they scroll and follow new lines themselves.
+        <div className="flex min-h-0 flex-1 flex-col p-4 @max-5xl:h-96 @max-5xl:flex-none">
           {missing ? <LogEmpty title={missing} />
             : <ContainerLogs selection={{ organizationSlug, deploymentId: deployment.id, serviceId: node.id }} />}
         </div>

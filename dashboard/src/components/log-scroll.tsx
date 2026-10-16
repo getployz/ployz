@@ -5,7 +5,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import { useTimeZone, zoneLabel } from "#/utils/time-zone";
 import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
+import { observeElementRect, useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
 
 export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange">) {
   const element = useRef<HTMLDivElement>(null);
@@ -17,6 +17,17 @@ export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HT
     anchorTo: "end",
     followOnAppend: true,
     scrollEndThreshold: 48,
+    // A view that shrinks while it shows the newest line keeps showing it, rather than reading as scrolled away.
+    // The DOM already has the new size here, so whether it was at the end is read from the size it had, and the
+    // view moves to the end before the virtualizer hears of the new size, so its readers never see it scrolled up.
+    observeElementRect: (instance, cb) => observeElementRect(instance, (rect) => {
+      const was = instance.scrollRect, view = instance.scrollElement;
+      if (view && was && rect.height < was.height && instance.getTotalSize() - was.height - (instance.scrollOffset ?? 0) <= instance.options.scrollEndThreshold) {
+        view.scrollTop = view.scrollHeight;
+        instance.scrollOffset = view.scrollTop;
+      }
+      cb(rect);
+    }),
   });
   useLayoutEffect(() => { virtual.scrollToEnd(); }, [virtual]);
   return { element, virtual };
