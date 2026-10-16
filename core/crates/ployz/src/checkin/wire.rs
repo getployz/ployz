@@ -9,9 +9,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub(super) const PROTOCOL_VERSION: u8 = 1;
-/// What Cloud steers a host with when it can't read the answer.
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
-/// The longest wait the host honors, so a bad answer can't park it for days.
 const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Serialize)]
@@ -96,14 +94,12 @@ pub(super) enum ReportTarget {
     },
 }
 
-/// A stable `code` for machines and an English `message` for people.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Issue {
     pub(crate) code: String,
     pub(crate) message: String,
 }
 
-/// How far host preparation has got, as Cloud reads it.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Prep {
     pub(crate) docker: DockerPrep,
@@ -128,16 +124,13 @@ pub(crate) enum ZfsPrep {
     Off,
 }
 
-/// Cloud's answer to one check-in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Answer {
     Wait(Duration),
-    /// An enroll instruction. This CLI can't run one yet.
     Enroll,
     Stop(StopReason, String),
 }
 
-/// Why Cloud told the loop to stop for good.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
@@ -157,8 +150,6 @@ impl StopReason {
     }
 }
 
-/// Reads a 2xx body. An unknown `kind`, or a body this CLI can't parse, reads as
-/// `wait{60}`, so Cloud can add verbs without stranding older hosts.
 pub(super) fn answer(body: &[u8]) -> Answer {
     #[derive(Deserialize)]
     #[serde(tag = "kind", rename_all = "lowercase")]
@@ -190,7 +181,6 @@ fn wait_for(seconds: f64) -> Duration {
     }
 }
 
-/// `ployzd install --probe --json`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Probe {
     facts: Facts,
@@ -279,7 +269,6 @@ enum ProbeTarget {
     Disk { by_id: String },
 }
 
-/// `/var/lib/ployz/prepare/state.json`, as `ployzd install --prepare` writes it.
 #[derive(Debug, Deserialize)]
 pub(super) struct PrepState {
     pub(super) docker: Step<DockerStep>,
@@ -329,7 +318,6 @@ impl PrepState {
         }
     }
 
-    /// When the step that failed ended, or `None` when nothing failed.
     pub(super) fn failed_at(&self) -> Option<&str> {
         let docker = matches!(self.docker.step, DockerStep::Failed { .. })
             .then_some(self.docker.finished_at.as_deref())
@@ -347,9 +335,6 @@ impl PrepState {
 }
 
 impl Probe {
-    /// The report Cloud stores, with preparation's failures folded into the lists:
-    /// a failed Docker install blocks, and a ZFS build that failed or was skipped
-    /// leaves the host ineligible for ZFS with a warning.
     pub(super) fn report(self, hostname: String, prep: Option<&PrepState>) -> HostReport {
         let Self { facts, assessment } = self;
         let Assessment {
@@ -442,8 +427,6 @@ impl Probe {
                     ReportDocker::Absent
                 }
             },
-            // The wire requires a value; a host whose cgroup the probe couldn't read
-            // reports the oldest, and its blockers say why.
             cgroup: match facts.cgroup {
                 Some(Cgroup::V2) => "v2",
                 Some(Cgroup::Hybrid) => "hybrid",

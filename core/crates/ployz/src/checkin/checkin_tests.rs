@@ -75,7 +75,6 @@ fn at(text: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(text).unwrap().to_utc()
 }
 
-/// Cloud answers one request with `status` and `body`, and hands back what it read.
 async fn cloud(
     status: &'static str,
     body: &'static str,
@@ -102,7 +101,6 @@ fn client(url: &str) -> CheckinClient {
 
 #[test]
 fn the_signature_matches_what_cloud_verifies() {
-    // Computed in Node with the dashboard's `checkinMessage`, from the seed [7; 32].
     let key = key();
     assert_eq!(
         key.public_hex(),
@@ -267,7 +265,13 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
         )
     );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.headline(), ("Rejected", true));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Rejected",
+            ended: true
+        }
+    );
 }
 
 #[tokio::test]
@@ -284,7 +288,13 @@ async fn a_cloud_that_does_not_answer_is_retried_in_a_minute() {
     };
     assert_eq!(after, Duration::from_secs(60));
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.headline(), ("Can't reach Cloud", false));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Can't reach Cloud",
+            ended: false
+        }
+    );
 }
 
 fn state(json: &str) -> PrepState {
@@ -294,9 +304,12 @@ fn state(json: &str) -> PrepState {
 #[test]
 fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    assert_eq!(prepare_due(None, 0, now), Some(false));
+    assert_eq!(prepare_due(None, 0, now), Some(PrepareRun::Start));
     let installing = state(r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#);
-    assert_eq!(prepare_due(Some(&installing), 3, now), Some(false));
+    assert_eq!(
+        prepare_due(Some(&installing), 3, now),
+        Some(PrepareRun::Start)
+    );
     let ready = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#);
     assert_eq!(prepare_due(Some(&ready), 0, now), None);
 
@@ -311,11 +324,11 @@ fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
     );
     assert_eq!(
         prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 0, now),
-        Some(true)
+        Some(PrepareRun::Retry)
     );
     assert_eq!(
         prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 2, now),
-        Some(true)
+        Some(PrepareRun::Retry)
     );
     assert_eq!(
         prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 3, now),
@@ -335,27 +348,57 @@ fn the_headline_says_where_the_host_stands() {
             zfs: ZfsPrep::Installing,
         }),
         blockers: Vec::new(),
-        prepare_starts: 0,
+        prepare_retries: 0,
     };
-    assert_eq!(status.headline(), ("Installing Docker", false));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Installing Docker",
+            ended: false
+        }
+    );
     status.prep = Some(Prep {
         docker: DockerPrep::Ready,
         zfs: ZfsPrep::Installing,
     });
-    assert_eq!(status.headline(), ("Building ZFS", false));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Building ZFS",
+            ended: false
+        }
+    );
     status.prep = Some(Prep {
         docker: DockerPrep::Ready,
         zfs: ZfsPrep::Ready,
     });
-    assert_eq!(status.headline(), ("Waiting for approval", false));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Waiting for approval",
+            ended: false
+        }
+    );
     status.blockers = vec![Issue {
         code: "docker_stopped".into(),
         message: "Docker is installed but not running.".into(),
     }];
-    assert_eq!(status.headline(), ("Blocked", false));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Blocked",
+            ended: false
+        }
+    );
     status.answer = Seen::Stop;
     status.reason = Some(StopReason::TokenExpired);
-    assert_eq!(status.headline(), ("Token expired", true));
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Token expired",
+            ended: true
+        }
+    );
 }
 
 #[test]

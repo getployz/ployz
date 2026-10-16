@@ -5,7 +5,6 @@ use std::path::Path;
 pub(crate) const CHECKIN: &str = "ployz-checkin.service";
 pub(crate) const PREPARE: &str = "ployz-prepare.service";
 
-/// `ployz-checkin.service`: the loop, started at boot until Cloud says stop.
 pub(crate) fn checkin(ployz: &Path, token_file: &Path, cloud_url: &str) -> String {
     format!(
         "[Unit]
@@ -28,8 +27,6 @@ WantedBy=multi-user.target
     )
 }
 
-/// `ployz-prepare.service`: one run of host preparation, which ends on its own.
-/// The loop starts it; it is never enabled.
 pub(crate) fn prepare(ployzd: &Path, skip_zfs: bool) -> String {
     let skip = if skip_zfs { " --skip-zfs" } else { "" };
     format!(

@@ -453,10 +453,8 @@ struct Attention {
 
 #[derive(Serialize)]
 struct Status {
-    /// This host's last check-in, when it waits for approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     this_server: Option<LocalCheckin>,
-    /// Who acts; none when signed out.
     identity: Option<Identity>,
     scope: Scope,
     /// The Environment the scope resolves to; none when it doesn't resolve.
@@ -478,20 +476,17 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let identity = store.as_ref().map(identity).transpose()?;
     let scope = scope(matches)?;
     let mut attention = Vec::new();
-    // Signed out, say what this host knows and nothing about a scope.
     let diff = match &store {
         None => None,
         Some(store) => match store.try_read(&DiffQuery {
             environment: scope.at(),
         }) {
             Ok(diff) => Some(diff),
-            // The scope doesn't resolve: say so, and still say who and where.
             Err(StoreCallError::Refused(error))
                 if matches!(error.code, RpcErrorCode::NotFound | RpcErrorCode::Ambiguous) =>
             {
                 let next = match error.details.get("next").and_then(|next| next.as_str()) {
                     Some(next) => next.to_owned(),
-                    // Ambiguous, or the linked Project is gone: pick one to act in.
                     None => "ployz link --project PROJECT".to_owned(),
                 };
                 let next = Some(next);
@@ -580,7 +575,6 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// The last check-in this host recorded, when it runs `ployz server checkin`.
 fn this_server() -> Option<LocalCheckin> {
     let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
     LocalCheckin::read(&path)
@@ -594,7 +588,10 @@ fn this_server() -> Option<LocalCheckin> {
 fn status_record(status: &Status) -> Fields {
     let mut record = Fields::new();
     if let Some(checkin) = &status.this_server {
-        let (headline, ended) = checkin.headline();
+        let crate::checkin::Headline {
+            title: headline,
+            ended,
+        } = checkin.headline();
         let tone = if ended { Tone::Bad } else { Tone::Change };
         record.push("this server", Cell::status(headline, tone));
         for blocker in &checkin.blockers {

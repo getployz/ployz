@@ -24,7 +24,6 @@ const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
 const SIGNATURE_HEADER: &str = "Ployz-Signature";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long the loop waits after Cloud didn't answer.
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
 
@@ -42,16 +41,12 @@ pub enum KeyError {
     NotAToken { path: PathBuf },
 }
 
-/// The ed25519 key a waiting host signs every check-in with. It names the host
-/// to Cloud until it enrolls, and is never its Management Identity.
 pub(crate) struct CheckinKey {
     secret: SecretKey,
     public_hex: String,
 }
 
 impl CheckinKey {
-    /// Reads the key at `path`, or creates it with mode 0600 when there is none,
-    /// so every rerun on this host keeps the same identity.
     pub(crate) fn load_or_create(path: &Path) -> Result<Self, KeyError> {
         match fs::read(path) {
             Ok(bytes) => Self::from_file(path, &bytes),
@@ -80,7 +75,6 @@ impl CheckinKey {
             .open(path)
         {
             Ok(file) => file,
-            // Another run made it first; its key is the one this host keeps.
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let bytes = fs::read(path).map_err(|source| KeyError::Read {
                     path: path.to_owned(),
@@ -108,12 +102,10 @@ impl CheckinKey {
         Self { secret, public_hex }
     }
 
-    /// The public key as Cloud stores it: 64 lowercase hex characters.
     pub(crate) fn public_hex(&self) -> &str {
         &self.public_hex
     }
 
-    /// `v1=` signature over the context, the key, the timestamp and the body's sha256.
     pub(super) fn sign(&self, ts: i64, body: &[u8]) -> String {
         let mut message = SIGNATURE_CONTEXT.to_vec();
         message.extend_from_slice(self.public_hex.as_bytes());
@@ -124,7 +116,6 @@ impl CheckinKey {
     }
 }
 
-/// A `pflt_` token, read from its file and never printed.
 pub(crate) struct FleetToken(String);
 
 impl FleetToken {
@@ -149,18 +140,15 @@ impl FleetToken {
     }
 }
 
-/// Posts signed check-ins to one Cloud.
 pub(crate) struct CheckinClient {
     http: reqwest::Client,
     url: String,
     token: FleetToken,
 }
 
-/// What came back from one post, read so the loop never has to look at HTTP.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Reply {
     Answer(Answer),
-    /// Cloud didn't answer, or answered with an error; try again after the wait.
     Unreachable(Duration, String),
 }
 
@@ -218,8 +206,6 @@ pub(super) fn reply(status: StatusCode, retry_after: Option<Duration>, body: &[u
         return Reply::Answer(wire::answer(body));
     }
     if status == StatusCode::UNAUTHORIZED {
-        // Cloud says only "unauthorized" for an unknown, revoked or misused token,
-        // and none of them gets better by asking again.
         return Reply::Answer(Answer::Stop(
             StopReason::TokenRevoked,
             "Cloud no longer accepts this Fleet Token.".to_owned(),

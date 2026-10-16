@@ -123,8 +123,6 @@ async fn install(
     Ok(())
 }
 
-/// The `ployzd` that probes and prepares: the one on `PATH`, else this release's copy
-/// in the check-in directory, fetched when `fetch` allows.
 async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {
     if let Some(found) = on_path("ployzd") {
         return Ok(found);

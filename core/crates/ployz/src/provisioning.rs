@@ -602,7 +602,6 @@ async fn install_local(
     )
 }
 
-/// Download this release's verified daemon to `path`, for a host that doesn't have one.
 pub(crate) async fn fetch_daemon(path: &Path) -> Result<(), ProvisionError> {
     if env::consts::OS != "linux" {
         return Err(ProvisionError::UnsupportedOs);
