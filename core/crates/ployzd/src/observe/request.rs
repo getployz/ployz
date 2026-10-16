@@ -23,6 +23,8 @@ const READ_CHUNK: usize = 64 * 1024;
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_PATH: usize = 1024;
 const MAX_HOST: usize = 253;
+const MAX_METHOD: usize = 32;
+const MAX_REQUEST_ID: usize = 256;
 const MAX_QUERY_VALUE: usize = 256;
 const MAX_HEADER: usize = 512;
 const QUERY_KEYS: [&str; 6] = [
@@ -216,14 +218,14 @@ impl Line {
             namespace,
             service: &self.service,
             host,
-            method: &self.request.method,
+            method: cut(&self.request.method, MAX_METHOD),
             path: cut(path, MAX_PATH),
             query: allowed_query(query),
             status: self.status,
             duration_us: self.duration_us(),
             bytes_in: self.bytes_read,
             bytes_out: self.size,
-            request_id: &self.request_id,
+            request_id: cut(&self.request_id, MAX_REQUEST_ID),
             ua: cut(ua, MAX_HEADER),
             referrer_host,
             language: first(headers.accept_language.as_ref()).and_then(primary_language),
