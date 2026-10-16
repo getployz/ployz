@@ -143,7 +143,7 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
         assert_eq!(
             commands,
             [
-                "dpkg --configure -a".to_owned(),
+                "dpkg --configure -a --force-confdef --force-confold".to_owned(),
                 "apt-get -o DPkg::Lock::Timeout=300 update -qq".to_owned(),
                 format!(
                     "apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends {headers} file libc6-dev lsb-release"
@@ -233,7 +233,7 @@ async fn ubuntu_prepare_downloads_zfs_without_installing_it() {
     assert_eq!(
         apt,
         [
-            "dpkg --configure -a",
+            "dpkg --configure -a --force-confdef --force-confold",
             "apt-get -o DPkg::Lock::Timeout=300 update -qq",
             "apt-get -o DPkg::Lock::Timeout=300 install --download-only -y -qq zfsutils-linux",
         ]
@@ -384,7 +384,10 @@ async fn a_refused_host_records_zfs_skipped() {
         "refused",
         [],
     );
-    assert_eq!(read_log(root), "dpkg --configure -a\n");
+    assert_eq!(
+        read_log(root),
+        "dpkg --configure -a --force-confdef --force-confold\n"
+    );
     let state = read_state(root);
     assert_eq!(state.docker.step, DockerStep::Ready);
     assert_eq!(
@@ -424,11 +427,21 @@ fn discard_removes_only_what_preparation_added() {
         return;
     }
 
+    for (name, installed) in [
+        ("discard", &[][..]),
+        ("tools-only", &["zfsutils-linux"][..]),
+    ] {
+        discard_removes_only_what_preparation_added_case(CASE, name, installed);
+    }
+}
+
+fn discard_removes_only_what_preparation_added_case(case: &str, name: &str, installed: &[&str]) {
     let fixture = host(
-        "discard",
+        name,
         DEBIAN_12,
         &[
             ("apt-get", ""),
+            ("dpkg-query", &dpkg_query(installed)),
             (
                 "dkms",
                 "case \"$1\" in status) echo 'zfs/2.1.11: added' ;; esac",
@@ -470,16 +483,16 @@ fn discard_removes_only_what_preparation_added() {
     run_contract_child_with_environment(
         "installer::prepare::tests::discard_removes_only_what_preparation_added",
         root,
-        OsString::from(CASE),
-        OsString::from("discard"),
-        "discard",
+        OsString::from(case),
+        OsString::from(name),
+        name,
         [],
     );
 
     let log = read_log(root);
     let changes: Vec<&str> = log
         .lines()
-        .filter(|line| !line.starts_with("dkms status"))
+        .filter(|line| !line.starts_with("dkms status") && !line.starts_with("dpkg-query"))
         .collect();
     assert_eq!(
         changes,
@@ -514,8 +527,6 @@ fn claimed_build(paths: &InstallPaths, source_dir: &Path) -> Job {
     }
 }
 
-/// A full install that put zfs-dkms in place owns the module, so a discard that still finds the
-/// build claimed leaves it, its source and its packages alone.
 #[test]
 fn discard_leaves_an_installed_zfs_package_alone() {
     const CASE: &str = "PLOYZ_PREPARE_DISCARD_INSTALLED_CONTRACT";
@@ -526,12 +537,31 @@ fn discard_leaves_an_installed_zfs_package_alone() {
         return;
     }
 
+    for (name, installed, dpkg) in [
+        ("zfs-dkms-installed", &["zfs-dkms", "dkms"][..], "exit 1"),
+        (
+            "source-owned",
+            &["dkms"][..],
+            "[ \"$1\" = -S ] && echo \"zfs-dkms: $2\"",
+        ),
+    ] {
+        discard_leaves_an_installed_zfs_package_alone_case(CASE, name, installed, dpkg);
+    }
+}
+
+fn discard_leaves_an_installed_zfs_package_alone_case(
+    case: &str,
+    name: &str,
+    installed: &[&str],
+    dpkg: &str,
+) {
     let fixture = host(
-        "discard-installed",
+        name,
         DEBIAN_12,
         &[
             ("apt-get", ""),
-            ("dpkg-query", &dpkg_query(&["zfs-dkms", "dkms"])),
+            ("dpkg-query", &dpkg_query(installed)),
+            ("dpkg", dpkg),
             (
                 "dkms",
                 "case \"$1\" in status) echo 'zfs/2.1.11, 6.1.0-28-amd64, x86_64: installed' ;; esac",
@@ -547,32 +577,59 @@ fn discard_leaves_an_installed_zfs_package_alone() {
     run_contract_child_with_environment(
         "installer::prepare::tests::discard_leaves_an_installed_zfs_package_alone",
         root,
-        OsString::from(CASE),
-        OsString::from("discard-installed"),
-        "discard-installed",
+        OsString::from(case),
+        OsString::from(name),
+        name,
         [],
     );
 
     let log = read_log(root);
     let changes: Vec<&str> = log
         .lines()
-        .filter(|line| !line.starts_with("dkms status") && !line.starts_with("dpkg-query"))
+        .filter(|line| {
+            !line.starts_with("dkms status")
+                && !line.starts_with("dpkg-query")
+                && !line.starts_with("dpkg -S")
+        })
         .collect();
-    assert!(changes.is_empty(), "{log}");
-    assert!(source_dir.exists());
+    assert!(changes.is_empty(), "{name}: {log}");
+    assert!(source_dir.exists(), "{name}");
+    assert_eq!(
+        read_state(root).zfs_build,
+        claimed_build(&paths, &source_dir).state.zfs_build
+    );
 }
 
 /// Discard removes the contrib source only when preparation wrote it; one a full install left
 /// stays.
 #[test]
 fn discard_keeps_a_contrib_source_preparation_did_not_add() {
-    let fixture = fixture("discard-foreign-contrib");
-    let paths = InstallPaths::at(fixture.path());
-    fs::create_dir_all(paths.apt_dir.join("sources.list.d")).unwrap();
-    let contrib = debian_contrib_source(&paths.apt_dir);
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_FOREIGN_CONTRIB_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        discard_at(&InstallPaths::at(&root)).unwrap();
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "discard-foreign-contrib",
+        DEBIAN_12,
+        &[("apt-get", ""), ("dpkg-query", &dpkg_query(&[]))],
+    );
+    let root = fixture.path();
+    let contrib = debian_contrib_source(&InstallPaths::at(root).apt_dir);
     fs::write(&contrib, "Components: contrib\n").unwrap();
-    discard_at(&paths).unwrap();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::discard_keeps_a_contrib_source_preparation_did_not_add",
+        root,
+        OsString::from(CASE),
+        OsString::from("discard-foreign-contrib"),
+        "discard-foreign-contrib",
+        [],
+    );
     assert!(contrib.exists());
+    assert_eq!(read_log(root), "");
 }
 
 /// A child that outlives its preparation run keeps the lock, so a retry can't start a second
@@ -672,24 +729,4 @@ async fn a_step_left_installing_is_redone_and_recorded() {
     assert_eq!(state.interrupted, ["docker", "zfs"]);
     assert_eq!(state.docker.step, DockerStep::Ready);
     assert_eq!(state.zfs.step, ZfsStep::Off);
-}
-
-#[test]
-fn a_package_install_takes_over_the_build_preparation_claimed() {
-    let fixture = fixture("forget");
-    let paths = InstallPaths::at(fixture.path());
-    forget_zfs_build(&paths).unwrap();
-    assert!(!prepare_dir(&paths).exists());
-
-    fs::create_dir_all(prepare_dir(&paths)).unwrap();
-    let mut job = claimed_build(&paths, &fixture.path().join("usr/src/zfs-2.1.11"));
-    job.state.added_contrib_source = true;
-    job.state.zfs.step = ZfsStep::Ready;
-    job.save().unwrap();
-    forget_zfs_build(&paths).unwrap();
-    let state = read_state(fixture.path());
-    assert!(state.added_packages.is_empty());
-    assert_eq!(state.zfs_build, None);
-    assert!(!state.added_contrib_source);
-    assert_eq!(state.zfs.step, ZfsStep::Ready);
 }

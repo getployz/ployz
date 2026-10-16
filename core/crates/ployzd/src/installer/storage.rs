@@ -87,15 +87,19 @@ impl ZfsRoute {
     }
 
     fn install(self, paths: &InstallPaths, os: &OsRelease, kernel: &str) -> Result<(), Error> {
-        match self {
-            Self::Ubuntu => install_zfs_packages(kernel),
-            Self::Debian { codename, keyring } => {
-                prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
-            }
-            Self::AmazonLinux => {
-                prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
-            }
-        }
+        super::prepare::install_waiting_for_preparation(
+            paths,
+            self.package_manager(),
+            || match self {
+                Self::Ubuntu => install_zfs_packages(kernel),
+                Self::Debian { codename, keyring } => {
+                    prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
+                }
+                Self::AmazonLinux => {
+                    prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
+                }
+            },
+        )
     }
 }
 
@@ -118,7 +122,6 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
     set_and_verify_zfs_arc_max(cap)?;
     validate_zfs()?;
-    super::prepare::forget_zfs_build(paths)?;
     println!("ZFS storage preparation validated; no Machine Pool was created");
     Ok(())
 }

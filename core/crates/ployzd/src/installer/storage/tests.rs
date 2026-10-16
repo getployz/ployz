@@ -387,6 +387,104 @@ esac"#,
     }
 }
 
+#[test]
+fn zfs_install_takes_over_a_prepared_build_contract() {
+    use crate::installer::prepare::{PrepState, ZfsBuild};
+
+    const CASE: &str = "PLOYZ_ZFS_TAKEOVER_CONTRACT";
+    const KERNEL: &str = "6.12.43+deb13-cloud-amd64";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let os = OsRelease::read(&paths.os_release).unwrap();
+        ZfsRoute::for_os(&os)
+            .unwrap()
+            .install(&paths, &os, KERNEL)
+            .unwrap();
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    for name in ["owned", "not-owned", "unprepared"] {
+        let fixture = fixture(name);
+        let root = fixture.path();
+        let commands = root.join("commands");
+        fs::create_dir_all(&commands).unwrap();
+        fs::create_dir_all(root.join("apt/sources.list.d")).unwrap();
+        fs::write(root.join("os-release"), DEBIAN_13).unwrap();
+        write_script(
+            &commands.join("apt-get"),
+            r#"lock="$PLOYZ_INSTALLER_CONTRACT_ROOT/data/prepare/lock"
+if [ -e "$lock" ] && ! flock -n "$lock" true; then held=locked; else held=unlocked; fi
+echo "$held $*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/apt.log"
+case "$*" in
+  *zfs-dkms*)
+    : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module"
+    [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" = not-owned ] || : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ;;
+esac"#,
+        );
+        write_script(
+            &commands.join("dpkg-query"),
+            r#"[ "$3" = zfs-dkms ] && [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/zfs-dkms" ] && printf 'install ok installed'"#,
+        );
+        symlink("/usr/bin/flock", commands.join("flock")).unwrap();
+        write_zfs_probes(&commands);
+        let prepare = root.join("data/prepare");
+        let claim = PrepState {
+            added_packages: vec!["dkms".into(), "lsb-release".into()],
+            zfs_build: Some(ZfsBuild::Dkms {
+                module: "zfs".into(),
+                version: "2.3.2".into(),
+                source_dir: root.join("usr/src/zfs-2.3.2"),
+            }),
+            added_contrib_source: true,
+            ..PrepState::default()
+        };
+        if name != "unprepared" {
+            fs::create_dir_all(prepare.join("zfs/build")).unwrap();
+            fs::write(
+                prepare.join("state.json"),
+                serde_json::to_vec(&claim).unwrap(),
+            )
+            .unwrap();
+        }
+        run_contract_child_with_environment(
+            "installer::storage::tests::zfs_install_takes_over_a_prepared_build_contract",
+            root,
+            OsString::from(CASE),
+            OsString::from(name),
+            name,
+            [],
+        );
+
+        let apt = read_log(root, "apt.log");
+        let held = if name == "unprepared" {
+            "unlocked"
+        } else {
+            "locked"
+        };
+        assert!(
+            !apt.is_empty() && apt.lines().all(|line| line.starts_with(held)),
+            "{name}: {apt}"
+        );
+        if name == "unprepared" {
+            assert!(!prepare.exists(), "{name}");
+            continue;
+        }
+        let state: PrepState =
+            serde_json::from_slice(&fs::read(prepare.join("state.json")).unwrap()).unwrap();
+        if name == "owned" {
+            assert_eq!(state.zfs_build, None);
+            assert!(state.added_packages.is_empty());
+            assert!(!state.added_contrib_source);
+            assert!(!prepare.join("zfs").exists());
+        } else {
+            assert_eq!(state, claim);
+            assert!(prepare.join("zfs/build").exists());
+        }
+    }
+}
+
 const AMAZON_KERNEL: &str = "6.1.186-228.376.amzn2023.x86_64";
 
 struct AmazonCase {

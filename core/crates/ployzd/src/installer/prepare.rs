@@ -229,7 +229,7 @@ fn debian_family(paths: &InstallPaths) -> bool {
 fn finish_interrupted_package_installs() {
     let mut configure = Command::new("dpkg");
     configure
-        .args(["--configure", "-a"])
+        .args(["--configure", "-a", "--force-confdef", "--force-confold"])
         .env("DEBIAN_FRONTEND", "noninteractive");
     if let Err(error) = run_command("finish interrupted package installs", &mut configure) {
         eprintln!("{}", ployz_core::error_chain::inline(&error));
@@ -650,17 +650,48 @@ fn rpm_installed(package: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
-/// Hands what preparation built to the full install that just put ZFS in place from packages,
-/// so a later discard can't take the installed module or its dependencies.
-pub(super) fn forget_zfs_build(paths: &InstallPaths) -> Result<(), Error> {
+fn owned_by_installed_package(package_manager: &str, build: &ZfsBuild) -> bool {
+    let owns_path = |command: &str, flag: &str, path: &Path| {
+        Command::new(command)
+            .arg(flag)
+            .arg(path)
+            .output()
+            .is_ok_and(|output| output.status.success())
+    };
+    match build {
+        ZfsBuild::Ubuntu { .. } => deb_installed("zfsutils-linux"),
+        ZfsBuild::Dkms { source_dir, .. } if package_manager == "dnf" => {
+            rpm_installed("zfs-dkms") || owns_path("rpm", "-qf", source_dir)
+        }
+        ZfsBuild::Dkms { source_dir, .. } => {
+            deb_installed("zfs-dkms") || owns_path("dpkg", "-S", source_dir)
+        }
+    }
+}
+
+pub(super) fn install_waiting_for_preparation(
+    paths: &InstallPaths,
+    package_manager: &str,
+    install: impl FnOnce() -> Result<(), Error>,
+) -> Result<(), Error> {
     if !state_path(paths).exists() {
-        return Ok(());
+        return install();
     }
     let _lock = lock(paths, Wait::Yes)?;
+    install()?;
     let mut job = Job {
         path: state_path(paths),
         state: load(paths),
     };
+    if !job
+        .state
+        .zfs_build
+        .as_ref()
+        .is_some_and(|build| owned_by_installed_package(package_manager, build))
+    {
+        return Ok(());
+    }
+    remove_dir(&prepare_dir(paths).join("zfs"))?;
     job.state.added_packages.clear();
     job.state.zfs_build = None;
     job.state.added_contrib_source = false;
@@ -688,14 +719,12 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         .as_ref()
         .and_then(ZfsRoute::for_os)
         .map_or("apt-get", ZfsRoute::package_manager);
-    let zfs_packages = if package_manager == "dnf" {
-        ["zfs-dkms", "zfs"].into_iter().any(rpm_installed)
-    } else {
-        ["zfs-dkms", "zfsutils-linux"]
-            .into_iter()
-            .any(deb_installed)
-    };
-    if zfs_packages {
+    if job
+        .state
+        .zfs_build
+        .as_ref()
+        .is_some_and(|build| owned_by_installed_package(package_manager, build))
+    {
         println!("ZFS is installed from packages, so there is no build to discard");
         return Ok(());
     }
