@@ -141,8 +141,10 @@ export const analyticsClickhouseSite = analytics.table("clickhouse_site", {
   dirty: date("dirty", { mode: "string" }).array().default(sql`'{}'::date[]`).notNull(),
   reads: boolean("reads").default(false).notNull(),
   backfilledAt: timestamptz("backfilled_at"),
-  copy: bigint("copy", { mode: "number" }).default(0).notNull(),
   floor: bigint("floor", { mode: "number" }).default(0).notNull(),
-  generation: bigint("generation", { mode: "number" }).default(0).notNull(),
+  below: bigint("below", { mode: "number" }).default(0).notNull(),
+  pending: bigint("pending", { mode: "number" }).array().default(sql`'{}'::bigint[]`).notNull(),
+  days: jsonb("days").$type<Record<string, number>>().default(sql`'{}'::jsonb`).notNull(),
+  fence: bigint("fence", { mode: "number" }).default(0).notNull(),
   updatedAt: timestamptz("updated_at").defaultNow().notNull(),
 });

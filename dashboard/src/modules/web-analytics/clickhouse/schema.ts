@@ -4,12 +4,10 @@ import type { ClickHouseService } from "./client";
 
 export const TTL_DAYS = LONGEST_RETENTION_MONTHS * 31;
 
-export const DEDUPLICATION_WINDOW = 10_000;
-
 const DDL = [
   `CREATE TABLE IF NOT EXISTS pageview (
     environment_id String,
-    copy UInt64,
+    attempt UInt64,
     ts DateTime64(3, 'UTC') CODEC(Delta, ZSTD(1)),
     visitor_id Int64,
     host LowCardinality(String),
@@ -28,13 +26,13 @@ const DDL = [
   )
   ENGINE = MergeTree
   PARTITION BY (retention_days, toYYYYMM(ts))
-  ORDER BY (environment_id, copy, toDate(ts), visitor_id, ts)
+  ORDER BY (environment_id, attempt, toDate(ts), visitor_id, ts)
   TTL toDateTime(ts) + toIntervalDay(retention_days)
-  SETTINGS ttl_only_drop_parts = 1, non_replicated_deduplication_window = ${DEDUPLICATION_WINDOW}`,
+  SETTINGS ttl_only_drop_parts = 1`,
   `CREATE TABLE IF NOT EXISTS daily (
     environment_id String,
     day Date,
-    generation UInt64,
+    attempt UInt64,
     dim LowCardinality(String),
     value String,
     pageviews UInt64,
@@ -51,7 +49,7 @@ const DDL = [
   `CREATE TABLE IF NOT EXISTS session_hourly (
     environment_id String,
     day Date,
-    generation UInt64,
+    attempt UInt64,
     hour DateTime('UTC'),
     pageviews UInt64,
     visitors UInt64,
@@ -64,16 +62,6 @@ const DDL = [
   ORDER BY (environment_id, hour)
   TTL hour + toIntervalDay(${TTL_DAYS})
   SETTINGS ttl_only_drop_parts = 1`,
-  `CREATE TABLE IF NOT EXISTS complete_day (
-    environment_id String,
-    day Date,
-    generation UInt64
-  )
-  ENGINE = MergeTree
-  PARTITION BY toYYYYMM(day)
-  ORDER BY (environment_id, day, generation)
-  TTL day + toIntervalDay(${TTL_DAYS})
-  SETTINGS ttl_only_drop_parts = 1`,
 ];
 
-export const ensureSchema = (clickhouse: ClickHouseService) => Effect.forEach(DDL, (ddl) => clickhouse.command(ddl), { discard: true });
+export const ensureSchema = (clickhouse: ClickHouseService) => Effect.forEach(DDL, (ddl) => clickhouse.unchecked.command(ddl), { discard: true });

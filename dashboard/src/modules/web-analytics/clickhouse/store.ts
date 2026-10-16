@@ -1,31 +1,29 @@
 import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { Database } from "#/server/database.server";
-import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, localDay, SESSION_GAP_SECONDS } from "../local-time";
+import { dayEnd, dayStart, ENTRY_LOOKBACK_SECONDS, SESSION_GAP_SECONDS } from "../local-time";
 import { type BucketRow, type EntryRow, type Filter, type FilterKey, type GoalRow, type Range, SESSION_DIMS, type SessionDim, type SessionRow, type ValueRow } from "../model";
 import { COLUMN, pageFilters, type Plan, readPlan, SESSION_KEYS, sessionFilters, type StoreQuery, totalsKey } from "../postgres/store";
-import { ClickHouse } from "./client";
-
-type Params = Record<string, string | number | ReadonlyArray<string>>;
-
-export type Pin = { readonly copy: number; readonly floor: number; readonly generation: number };
+import { type Published, PUBLISHED_COLUMNS, publishedOf, visibility } from "./attempt";
+import { ClickHouse, type Params } from "./client";
 
 export type Binder = {
   readonly params: Params;
   readonly env: string;
-  readonly copy: string;
-  readonly floor: string;
-  readonly generation: string;
+  /** Pageview rows whose attempt Postgres published. */
+  readonly visible: string;
+  /** Rollup rows whose (day, attempt) Postgres published. */
+  readonly publishedDay: string;
   readonly tz: string;
   readonly text: (value: string) => string;
   readonly texts: (values: ReadonlyArray<string>) => string;
   readonly at: (instant: Date) => string;
 };
 
-export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">, pin: Pin): Binder {
-  const params: Params = {};
+export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">, published: Published): Binder {
+  const params: Record<string, Params[string]> = {};
   let next = 0;
-  const bind = (type: string, value: string | number | ReadonlyArray<string>) => {
+  const bind = (type: string, value: Params[string]) => {
     const name = `p${next++}`;
     params[name] = value;
     return `{${name}:${type}}`;
@@ -34,9 +32,7 @@ export function binder(query: Pick<StoreQuery, "environmentId" | "timezone">, pi
   return {
     params,
     env: text(query.environmentId),
-    copy: bind("UInt64", pin.copy),
-    floor: bind("UInt64", pin.floor),
-    generation: bind("UInt64", pin.generation),
+    ...visibility(published, bind),
     tz: text(query.timezone),
     text,
     texts: (values) => bind("Array(String)", values),
@@ -50,7 +46,7 @@ const ORDER = "ORDER BY ts, pathname, host";
 const plus = (instant: Date, seconds: number) => new Date(instant.getTime() + seconds * 1000);
 
 const pageviewsIn = (b: Binder, start: Date, end: Date) =>
-  `environment_id = ${b.env} AND copy = ${b.copy} AND ts >= ${b.at(start)} AND ts < ${b.at(end)} AND ${RETAINED}`;
+  `environment_id = ${b.env} AND ${b.visible} AND ts >= ${b.at(start)} AND ts < ${b.at(end)} AND ${RETAINED}`;
 
 const localDate = (b: Binder) => `toString(toDate(ts, ${b.tz}))`;
 
@@ -120,19 +116,15 @@ const rowsIn = (b: Binder, query: StoreQuery, range: Range, needsVisit = false) 
 
 const published = Effect.fn("WebAnalytics.clickHousePublished")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ day: string | null; dirty: string[]; copy: string; floor: string; generation: string }>(sql`
-    select rolled_up_to::text as day, dirty::text[] as dirty, copy::text as copy, floor::text as floor, generation::text as generation
+  const [row] = yield* drizzle.execute<{ day: string | null; dirty: string[]; floor: string; below: string; pending: string[]; days: Record<string, number> }>(sql`
+    select rolled_up_to::text as day, dirty::text[] as dirty, ${PUBLISHED_COLUMNS}
     from analytics.clickhouse_site where environment_id = ${environmentId}::text`, "objects");
-  return {
-    rolledUpTo: row?.day ?? null,
-    dirty: row?.dirty ?? [],
-    pin: { copy: Number(row?.copy ?? 0), floor: Number(row?.floor ?? 0), generation: Number(row?.generation ?? 0) },
-  };
+  return { rolledUpTo: row?.day ?? null, dirty: row?.dirty ?? [], published: publishedOf(row) };
 });
 
 const planned = Effect.fn("WebAnalytics.clickHousePlan")(function* (query: StoreQuery, rolled?: boolean) {
   const marker = yield* published(query.environmentId);
-  return { ...readPlan(query, marker.rolledUpTo, rolled), pin: marker.pin };
+  return { ...readPlan(query, marker.rolledUpTo, rolled), published: marker.published };
 });
 
 export const requiredClickHouse = Effect.gen(function* () {
@@ -141,30 +133,23 @@ export const requiredClickHouse = Effect.gen(function* () {
   return clickhouse;
 });
 
-const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQuery, pin: Pin, build: (b: Binder) => string) {
+const run = Effect.fn("WebAnalytics.clickHouseRead")(function* <A>(query: StoreQuery, published: Published, build: (b: Binder) => string) {
   const clickhouse = yield* requiredClickHouse;
-  const b = binder(query, pin);
+  const b = binder(query, published);
   return yield* clickhouse.query<A>(build(b), b.params);
 });
-
-export const newestPublished = (b: Binder, days: string) => `(day, generation) IN (
-  SELECT day, max(generation) FROM complete_day
-  WHERE environment_id = ${b.env} AND generation > ${b.floor} AND generation <= ${b.generation}${days} GROUP BY day)`;
-
-const publishedIn = (b: Binder, first: string, last: string) =>
-  newestPublished(b, ` AND day BETWEEN toDate(${b.text(first)}) AND toDate(${b.text(last)})`);
 
 const dailyRows = (b: Binder, days: NonNullable<Plan["days"]>, dim: string, value?: string) => `
   FROM daily
   WHERE environment_id = ${b.env} AND dim = ${b.text(dim)}${value === undefined ? "" : ` AND value = ${b.text(value)}`}
-    AND day BETWEEN toDate(${b.text(days.first)}) AND toDate(${b.text(days.last)}) AND ${publishedIn(b, days.first, days.last)}`;
+    AND day BETWEEN toDate(${b.text(days.first)}) AND toDate(${b.text(days.last)}) AND ${b.publishedDay}`;
 
 const ZERO = "toUInt64(0)";
 
 /** Parts name their counts `pv vi vs bo td`, never a column name: an alias would shadow the column it counts. */
 const unionTotals = (key: string, parts: ReadonlyArray<string>) => `
   SELECT ${key}, sum(pv) AS pageviews, sum(vi) AS visitors, sum(vs) AS visits, sum(bo) AS bounces, sum(td) AS total_duration
-  FROM (${parts.join(" UNION ALL ")}) GROUP BY ${key}`;
+  FROM (${parts.join(" UNION ALL ")}) GROUP BY ${key} ORDER BY ${key}`;
 
 export const pageCounts = `count() AS pv, uniqExact(visitor_id) AS vi, ${ZERO} AS vs, ${ZERO} AS bo, ${ZERO} AS td`;
 export const sessionCounts = `${ZERO} AS pv, ${ZERO} AS vi, count() AS vs, countIf(pageviews = 1) AS bo, sum(duration) AS td`;
@@ -181,7 +166,7 @@ const totalsOf = (row: Totals) => ({
 export const dailyTotals = Effect.fn("WebAnalytics.clickHouseDailyTotals")(function* (query: StoreQuery) {
   const key = totalsKey(query.filters);
   const plan = yield* planned(query, key !== null);
-  const rows = yield* run<Totals & { local_day: string }>(query, plan.pin, (b) => {
+  const rows = yield* run<Totals & { local_day: string }>(query, plan.published, (b) => {
     const parts: string[] = [];
     if (plan.days !== null && key !== null) {
       parts.push(`SELECT toString(day) AS local_day, pageviews AS pv, visitors AS vi, visits AS vs, bounces AS bo, total_duration AS td
@@ -207,7 +192,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(fun
   const marker = yield* published(query.environmentId);
   const closedUntil = query.filters.length > 0 ? null : marker.rolledUpTo;
   const rolledEnd = closedUntil === null ? range.start : new Date(Math.min(Math.max(dayEnd(timezone, closedUntil).getTime(), range.start.getTime()), range.end.getTime()));
-  const rows = yield* run<Totals & { bucket: number }>(query, marker.pin, (b) => {
+  const rows = yield* run<Totals & { bucket: number }>(query, marker.published, (b) => {
     const parts: string[] = [];
     if (rolledEnd > range.start) {
       const dirty = staleVisitHours(timezone, marker.dirty, { start: range.start, end: rolledEnd });
@@ -216,7 +201,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(fun
         SELECT toInt64(toUnixTimestamp(hour)) * 1000 AS bucket, if(${inDirty}, 0, pageviews) AS pv, if(${inDirty}, 0, visitors) AS vi,
           visits AS vs, bounces AS bo, total_duration AS td
         FROM session_hourly WHERE environment_id = ${b.env} AND hour >= ${b.at(range.start)} AND hour < ${b.at(rolledEnd)}
-          AND ${publishedIn(b, localDay(timezone, range.start), localDay(timezone, rolledEnd.getTime() - 1))}`);
+          AND ${b.publishedDay}`);
       for (const part of dirty) parts.push(`SELECT ${localHour(b)} AS bucket, ${pageCounts} ${rowsIn(b, query, part)} GROUP BY bucket`);
     }
     if (rolledEnd < range.end) {
@@ -232,7 +217,7 @@ export const hourlyTotals = Effect.fn("WebAnalytics.clickHouseHourlyTotals")(fun
 export const breakdown = Effect.fn("WebAnalytics.clickHouseBreakdown")(function* (query: StoreQuery, dim: FilterKey) {
   const plan = yield* planned(query);
   const column = COLUMN[dim];
-  const rows = yield* run<{ value: string; pageviews: number; visitors: number }>(query, plan.pin, (b) => {
+  const rows = yield* run<{ value: string; pageviews: number; visitors: number }>(query, plan.published, (b) => {
     const parts: string[] = [];
     if (plan.days !== null) parts.push(`SELECT value, pageviews AS pv, visitors AS vi ${dailyRows(b, plan.days, dim)}`);
     for (const edge of plan.edges) {
@@ -246,7 +231,7 @@ export const breakdown = Effect.fn("WebAnalytics.clickHouseBreakdown")(function*
 
 export const sessionsBy = Effect.fn("WebAnalytics.clickHouseSessionsBy")(function* (query: StoreQuery, dim: SessionDim) {
   const plan = yield* planned(query);
-  const rows = yield* run<Totals & { value: string }>(query, plan.pin, (b) => {
+  const rows = yield* run<Totals & { value: string }>(query, plan.published, (b) => {
     const parts: string[] = [];
     if (plan.days !== null) {
       parts.push(`SELECT value, ${ZERO} AS pv, ${ZERO} AS vi, visits AS vs, bounces AS bo, total_duration AS td
@@ -262,7 +247,7 @@ export const sessionsBy = Effect.fn("WebAnalytics.clickHouseSessionsBy")(functio
 
 export const entryPages = Effect.fn("WebAnalytics.clickHouseEntryPages")(function* (query: StoreQuery) {
   const plan = yield* planned(query);
-  const rows = yield* run<Totals & { value: string }>(query, plan.pin, (b) => {
+  const rows = yield* run<Totals & { value: string }>(query, plan.published, (b) => {
     const parts: string[] = [];
     if (plan.days !== null) {
       parts.push(`SELECT value, ${ZERO} AS pv, visitors AS vi, visits AS vs, bounces AS bo, total_duration AS td
@@ -285,8 +270,8 @@ export const goalConversions = Effect.fn("WebAnalytics.clickHouseGoalConversions
   const goals = yield* drizzle.execute<{ id: string; name: string; path_pattern: string }>(sql`
     select id, name, path_pattern from analytics.goal where environment_id = ${query.environmentId}::text`, "objects");
   if (goals.length === 0) return [];
-  const { pin } = yield* published(query.environmentId);
-  const rows = yield* run<{ goal: number; visitors: number; conversions: number }>(query, pin, (b) => `
+  const marker = yield* published(query.environmentId);
+  const rows = yield* run<{ goal: number; visitors: number; conversions: number }>(query, marker.published, (b) => `
     WITH range_rows AS (SELECT pathname, ts, visitor_id ${rowsIn(b, query, query.range)}),
     goals AS (
       SELECT goal, replaceAll(replaceAll(replaceAll(replaceAll(path_pattern, '\\\\', '\\\\\\\\'), '%', '\\\\%'), '_', '\\\\_'), '*', '%') AS pattern

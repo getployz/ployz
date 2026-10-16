@@ -4,16 +4,17 @@ import { AppConfig } from "#/server/config.server";
 
 export class ClickHouseFailure extends Data.TaggedError("ClickHouseFailure")<{ readonly message: string; readonly cause: unknown }> {}
 
-type Params = Readonly<Record<string, string | number | boolean | ReadonlyArray<string>>>;
+export type Params = Readonly<Record<string, string | number | boolean | ReadonlyArray<string> | ReadonlyArray<number>>>;
+
+/** Writes that bypass attempt identities. Only `attempt.ts` and the schema DDL may call them; a static test enforces it. */
+export type UncheckedWrites = {
+  readonly command: (query: string, params?: Params) => Effect.Effect<void, ClickHouseFailure>;
+  readonly insert: (table: string, rows: ReadonlyArray<object>) => Effect.Effect<void, ClickHouseFailure>;
+};
 
 export type ClickHouseService = {
   readonly query: <A>(query: string, params?: Params) => Effect.Effect<ReadonlyArray<A>, ClickHouseFailure>;
-  readonly command: (query: string, params?: Params) => Effect.Effect<void, ClickHouseFailure>;
-  /**
-   * A retry with the same `token` is dropped by the table's deduplication window, so a replayed batch lands once.
-   * A null token inserts outside the window. It takes no slot, so it cannot evict a live token before its replay.
-   */
-  readonly insert: (table: string, rows: ReadonlyArray<object>, token: string | null) => Effect.Effect<void, ClickHouseFailure>;
+  readonly unchecked: UncheckedWrites;
 };
 
 export const ClickHouse = Context.Reference<ClickHouseService | null>("ployz/ClickHouse", { defaultValue: () => null });
@@ -25,15 +26,12 @@ export const makeClickHouse = (client: ClickHouseClient): ClickHouseService => (
   query: <A>(query: string, params?: Params) =>
     attempt("ClickHouse query failed.", async () =>
       (await client.query({ query, query_params: params, format: "JSONEachRow" })).json<A>()),
-  command: (query, params) =>
-    attempt("ClickHouse command failed.", () => client.command({ query, query_params: params })).pipe(Effect.asVoid),
-  insert: (table, rows, token) =>
-    rows.length === 0 ? Effect.void : attempt("ClickHouse insert failed.", () => client.insert({
-      table,
-      values: rows,
-      format: "JSONEachRow",
-      clickhouse_settings: token === null ? { deduplicate_insert: "disable" } : { insert_deduplication_token: token },
-    })).pipe(Effect.asVoid),
+  unchecked: {
+    command: (query, params) =>
+      attempt("ClickHouse command failed.", () => client.command({ query, query_params: params })).pipe(Effect.asVoid),
+    insert: (table, rows) =>
+      rows.length === 0 ? Effect.void : attempt("ClickHouse insert failed.", () => client.insert({ table, values: rows, format: "JSONEachRow" })).pipe(Effect.asVoid),
+  },
 });
 
 const STATEMENT_DEADLINE_SECONDS = 25;

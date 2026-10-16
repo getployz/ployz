@@ -5,9 +5,11 @@ CREATE TABLE "analytics"."clickhouse_site" (
 	"dirty" date[] DEFAULT '{}'::date[] NOT NULL,
 	"reads" boolean DEFAULT false NOT NULL,
 	"backfilled_at" timestamp with time zone,
-	"copy" bigint DEFAULT 0 NOT NULL,
 	"floor" bigint DEFAULT 0 NOT NULL,
-	"generation" bigint DEFAULT 0 NOT NULL,
+	"below" bigint DEFAULT 0 NOT NULL,
+	"pending" bigint[] DEFAULT '{}'::bigint[] NOT NULL,
+	"days" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"fence" bigint DEFAULT 0 NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint

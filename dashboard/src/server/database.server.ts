@@ -19,6 +19,8 @@ import { AppConfig } from "#/server/config.server";
 
 export interface DatabaseService {
   readonly drizzle: EffectPgDatabase;
+  /** True inside `transaction`, where a nested `transaction` joins the outer one instead of committing on its own. */
+  readonly inTransaction: boolean;
   readonly afterCommit: <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.Effect<void, E, R>;
   readonly transaction: <A, E, R>(
     program: Effect.Effect<A, E, R>,
@@ -77,6 +79,7 @@ export function makeDatabaseService(
   function transactionDatabase(drizzle: EffectPgDatabase, pending?: Effect.Effect<void, unknown>[]): DatabaseService {
     return {
       drizzle,
+      inTransaction: pending !== undefined,
       afterCommit: <A, E, R>(program: Effect.Effect<A, E, R>) => Effect.gen(function* () {
         if (!pending) return yield* Effect.asVoid(program);
         const context = yield* Effect.context<R>();

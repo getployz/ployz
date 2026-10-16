@@ -3,18 +3,17 @@ import { Effect, Schedule } from "effect";
 import { Database } from "#/server/database.server";
 import { ENTRY_LOOKBACK_SECONDS, localDays, SESSION_GAP_SECONDS } from "../local-time";
 import { analyticsOutbox, analyticsPageview } from "../tables";
+import { deleteSite, insertRows, mint, publish, PublishRefused, SiteUnavailable } from "./attempt";
 import type { ClickHouseService } from "./client";
 import { TTL_DAYS } from "./schema";
-import { binder, newestPublished, type Pin } from "./store";
 
 type Pageview = typeof analyticsPageview.$inferSelect;
 type ClickHouseRow = ReturnType<typeof clickHouseRow>;
+type Batch = { id: string; environment_id: string; rows: ReadonlyArray<ClickHouseRow> };
 
 export const DRAIN_BATCHES = 200;
 export const DRAINS_PER_RUN = 30;
 const BACKFILL_PAGE = 50_000;
-
-const deduplicationToken = (outboxId: string) => `outbox-${outboxId}`;
 
 export const clickHouseRow = (row: Pageview) => ({
   environment_id: row.environmentId,
@@ -38,13 +37,6 @@ export const clickHouseRow = (row: Pageview) => ({
 export const rollupDaysChangedBy = (timezone: string, ts: Date) =>
   localDays(timezone, new Date(ts.getTime() - SESSION_GAP_SECONDS * 1000), new Date(ts.getTime() + ENTRY_LOOKBACK_SECONDS * 1000 + 1));
 
-export const nextAttempt = Effect.gen(function* () {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.execute<{ n: string }>(sql`select nextval('analytics.clickhouse_attempt')::text as n`, "objects");
-  if (row === undefined) return yield* Effect.die("nextval returned no row.");
-  return Number(row.n);
-});
-
 export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse")(function* (rows: ReadonlyArray<Pageview>) {
   const byEnvironment = new Map<string, Array<ClickHouseRow>>();
   for (const row of rows) {
@@ -57,48 +49,61 @@ export const enqueueForClickHouse = Effect.fn("WebAnalytics.enqueueForClickHouse
   yield* drizzle.insert(analyticsOutbox).values([...byEnvironment].map(([environmentId, batch]) => ({ environmentId, rows: batch })));
 });
 
-export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clickhouse: ClickHouseService) {
+/**
+ * Inserts one site's batches under a fresh attempt, then publishes them in the transaction that consumes the outbox rows.
+ * The outbox rows go first so a backfill that already consumed them refuses this publication instead of double counting.
+ */
+const drainSite = Effect.fn("WebAnalytics.drainSite")(function* (clickhouse: ClickHouseService, environmentId: string, batches: ReadonlyArray<Batch>) {
+  const attempts = yield* mint([environmentId]);
+  const attempt = attempts.get(environmentId);
+  if (attempt === undefined) return false;
+  const ids = batches.map((batch) => batch.id);
+  const rows = batches.flatMap((batch) => batch.rows);
+  const proof = yield* insertRows(clickhouse, "pageview", rows, attempt);
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const batches = yield* drizzle.execute<{ id: string; environment_id: string; rows: ReadonlyArray<ClickHouseRow> }>(sql`
-      select id::text as id, environment_id, rows from analytics.outbox order by id limit ${DRAIN_BATCHES} for update skip locked`, "objects");
-    if (batches.length === 0) return 0;
-    const environments = [...new Set(batches.map((batch) => batch.environment_id))].sort();
-    yield* drizzle.execute(sql`
-      insert into analytics.clickhouse_site (environment_id)
-      select environment_id from analytics.site where environment_id = any(${sql.param(environments)}::text[])
-      on conflict do nothing`);
-    const sites = yield* drizzle.execute<{ environment_id: string; timezone: string; rolled_up_to: string | null; copy: string }>(sql`
-      select c.environment_id, s.timezone, c.rolled_up_to::text as rolled_up_to, c.copy::text as copy
+    const consumed = yield* drizzle.execute<{ id: string }>(sql`
+      delete from analytics.outbox where id = any(${sql.param(ids)}::bigint[]) returning id::text as id`, "objects");
+    if (consumed.length !== ids.length) return yield* new PublishRefused({ environmentId, attempt });
+    const [site] = yield* drizzle.execute<{ timezone: string; rolled_up_to: string | null }>(sql`
+      select s.timezone, c.rolled_up_to::text as rolled_up_to
       from analytics.clickhouse_site c join analytics.site s using (environment_id)
-      where c.environment_id = any(${sql.param(environments)}::text[])
-      order by c.environment_id for update of c`, "objects");
-    const byEnvironment = new Map(sites.map((site) => [site.environment_id, site]));
-    const dirty = new Map<string, Set<string>>();
-    for (const batch of batches) {
-      const site = byEnvironment.get(batch.environment_id);
-      if (site === undefined) continue;
-      const copy = Number(site.copy);
-      yield* clickhouse.insert("pageview", batch.rows.map((row) => ({ ...row, copy })), deduplicationToken(batch.id));
-      const closed = site.rolled_up_to;
-      if (closed === null) continue;
-      const days = dirty.get(site.environment_id) ?? new Set<string>();
-      for (const row of batch.rows) {
+      where c.environment_id = ${environmentId}::text for update of c`, "objects");
+    if (site === undefined) return yield* new PublishRefused({ environmentId, attempt });
+    const closed = site.rolled_up_to;
+    if (closed !== null) {
+      const days = new Set<string>();
+      for (const row of rows) {
         for (const day of rollupDaysChangedBy(site.timezone, new Date(`${row.ts.replace(" ", "T")}Z`))) if (day <= closed) days.add(day);
       }
-      dirty.set(site.environment_id, days);
+      if (days.size > 0) {
+        yield* drizzle.execute(sql`
+          update analytics.clickhouse_site
+          set dirty = array(select distinct d from unnest(dirty || ${sql.param([...days])}::date[]) d order by d), updated_at = now()
+          where environment_id = ${environmentId}::text`);
+      }
     }
-    for (const [environmentId, days] of dirty) {
-      if (days.size === 0) continue;
-      yield* drizzle.execute(sql`
-        update analytics.clickhouse_site
-        set dirty = array(select distinct d from unnest(dirty || ${sql.param([...days])}::date[]) d order by d), updated_at = now()
-        where environment_id = ${environmentId}::text`);
-    }
-    yield* drizzle.execute(sql`delete from analytics.outbox where id = any(${sql.param(batches.map((batch) => batch.id))}::bigint[])`);
-    return batches.length;
-  }));
+    yield* publish(proof, environmentId, sql`below = greatest(below, ${attempt}::bigint + 1)`);
+    return true;
+  })).pipe(Effect.catchTag("PublishRefused", () => Effect.succeed(false)));
+});
+
+export const drainOutbox = Effect.fn("WebAnalytics.drainOutbox")(function* (clickhouse: ClickHouseService) {
+  const { drizzle } = yield* Database;
+  const batches = yield* drizzle.execute<Batch>(sql`
+    select id::text as id, environment_id, rows from analytics.outbox order by id limit ${DRAIN_BATCHES}`, "objects");
+  if (batches.length === 0) return 0;
+  const byEnvironment = new Map<string, Array<Batch>>();
+  for (const batch of batches) byEnvironment.set(batch.environment_id, [...(byEnvironment.get(batch.environment_id) ?? []), batch]);
+  let drained = 0;
+  for (const [environmentId, group] of [...byEnvironment].sort(([a], [b]) => a.localeCompare(b))) {
+    if (yield* drainSite(clickhouse, environmentId, group)) drained += group.length;
+  }
+  yield* drizzle.execute(sql`
+    delete from analytics.outbox o where o.id = any(${sql.param(batches.map((batch) => batch.id))}::bigint[])
+      and not exists (select 1 from analytics.site s where s.environment_id = o.environment_id)`);
+  return drained;
 });
 
 const demoteReads = Effect.fn("WebAnalytics.demoteReads")(function* (environmentId: string) {
@@ -119,35 +124,39 @@ export const backfillSite = Effect.fn("WebAnalytics.backfillSite")(function* (cl
   const database = yield* Database;
   const demoted = yield* demoteReads(environmentId);
   if (demoted.length === 0) return 0;
-  const copy = database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const queued = yield* drizzle.execute<{ id: string }>(sql`
-      select id::text as id from analytics.outbox where environment_id = ${environmentId}::text order by id for update`, "objects");
-    const [site] = yield* drizzle.execute<{ copy: string }>(sql`
-      select copy::text as copy from analytics.clickhouse_site where environment_id = ${environmentId}::text for update`, "objects");
-    if (site === undefined) return 0;
-    yield* drizzle.execute(sql`delete from analytics.outbox where id = any(${sql.param(queued.map((row) => row.id))}::bigint[])`);
-    const copy = yield* nextAttempt;
-    let copied = 0;
-    let after: Pageview | undefined;
-    for (;;) {
-      const page: ReadonlyArray<Pageview> = yield* drizzle.select().from(analyticsPageview)
-        .where(after === undefined
-          ? sql`${analyticsPageview.environmentId} = ${environmentId}`
-          : sql`${analyticsPageview.environmentId} = ${environmentId} and (${analyticsPageview.ts}, ${analyticsPageview.visitorId}, ${analyticsPageview.host}, ${analyticsPageview.pathname}) > (${after.ts.toISOString()}::timestamptz, ${after.visitorId.toString()}::bigint, ${after.host}, ${after.pathname})`)
-        .orderBy(analyticsPageview.ts, analyticsPageview.visitorId, analyticsPageview.host, analyticsPageview.pathname)
-        .limit(BACKFILL_PAGE);
-      yield* clickhouse.insert("pageview", page.map((row) => ({ ...clickHouseRow(row), copy })), null);
-      copied += page.length;
-      after = page[page.length - 1];
-      if (page.length < BACKFILL_PAGE) break;
-    }
-    yield* drizzle.execute(sql`
-      update analytics.clickhouse_site
-      set copy = ${copy}, floor = ${copy}, rolled_up_to = null, dirty = '{}', reads = false, backfilled_at = now(), updated_at = now()
-      where environment_id = ${environmentId}::text`);
-    return copied;
-  }), { isolationLevel: "repeatable read" });
+  const copy = Effect.gen(function* () {
+    const attempt = (yield* mint([environmentId])).get(environmentId);
+    if (attempt === undefined) return yield* new SiteUnavailable({ environmentId });
+    return yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const queued = yield* drizzle.execute<{ id: string }>(sql`
+        select id::text as id from analytics.outbox where environment_id = ${environmentId}::text order by id for update`, "objects");
+      const [site] = yield* drizzle.execute<{ environment_id: string }>(sql`
+        select environment_id from analytics.clickhouse_site where environment_id = ${environmentId}::text for update`, "objects");
+      if (site === undefined) return 0;
+      yield* drizzle.execute(sql`delete from analytics.outbox where id = any(${sql.param(queued.map((row) => row.id))}::bigint[])`);
+      let copied = 0;
+      let after: Pageview | undefined;
+      let proof = yield* insertRows(clickhouse, "pageview", [], attempt);
+      for (;;) {
+        const page: ReadonlyArray<Pageview> = yield* drizzle.select().from(analyticsPageview)
+          .where(after === undefined
+            ? sql`${analyticsPageview.environmentId} = ${environmentId}`
+            : sql`${analyticsPageview.environmentId} = ${environmentId} and (${analyticsPageview.ts}, ${analyticsPageview.visitorId}, ${analyticsPageview.host}, ${analyticsPageview.pathname}) > (${after.ts.toISOString()}::timestamptz, ${after.visitorId.toString()}::bigint, ${after.host}, ${after.pathname})`)
+          .orderBy(analyticsPageview.ts, analyticsPageview.visitorId, analyticsPageview.host, analyticsPageview.pathname)
+          .limit(BACKFILL_PAGE);
+        if (page.length === 0) break;
+        proof = yield* insertRows(clickhouse, "pageview", page.map(clickHouseRow), attempt);
+        copied += page.length;
+        after = page[page.length - 1];
+        if (page.length < BACKFILL_PAGE) break;
+      }
+      yield* publish(proof, environmentId, sql`
+        floor = ${attempt}::bigint, below = ${attempt}::bigint + 1, days = '{}'::jsonb,
+        rolled_up_to = null, dirty = '{}', reads = false, backfilled_at = now()`);
+      return copied;
+    }), { isolationLevel: "repeatable read" });
+  });
   return yield* copy.pipe(Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }));
 });
 
@@ -167,56 +176,9 @@ export const forgetDeletedSites = Effect.fn("WebAnalytics.forgetDeletedSites")(f
       select environment_id from analytics.clickhouse_site c
       where not exists (select 1 from analytics.site s where s.environment_id = c.environment_id)
       order by environment_id for update skip locked`, "objects");
-    for (const { environment_id: environmentId } of gone) {
-      for (const table of ["pageview", "daily", "session_hourly", "complete_day"]) {
-        yield* clickhouse.command(`DELETE FROM ${table} WHERE environment_id = {environmentId:String}`, { environmentId });
-      }
-    }
+    for (const { environment_id: environmentId } of gone) yield* deleteSite(clickhouse, environmentId);
     yield* drizzle.execute(sql`
       delete from analytics.clickhouse_site where environment_id = any(${sql.param(gone.map((row) => row.environment_id))}::text[])`);
     return gone.length;
   }));
-});
-
-export type Pinned = { readonly environmentId: string; readonly timezone: string; readonly settledBelow: number } & Pin;
-
-export const publishedPins = Effect.fn("WebAnalytics.publishedPins")(function* () {
-  const database = yield* Database;
-  return yield* database.transaction(Effect.gen(function* () {
-    const { drizzle } = yield* Database;
-    const rows = yield* drizzle.execute<{ environment_id: string; timezone: string; copy: string; floor: string; generation: string }>(sql`
-      select c.environment_id, s.timezone, c.copy::text as copy, c.floor::text as floor, c.generation::text as generation
-      from analytics.clickhouse_site c join analytics.site s using (environment_id) order by c.environment_id for update of c skip locked`, "objects");
-    const settledBelow = yield* nextAttempt;
-    return rows.map((row): Pinned => ({
-      environmentId: row.environment_id,
-      timezone: row.timezone,
-      copy: Number(row.copy),
-      floor: Number(row.floor),
-      generation: Number(row.generation),
-      settledBelow,
-    }));
-  }));
-});
-
-export const collectGarbage = Effect.fn("WebAnalytics.collectGarbage")(function* (clickhouse: ClickHouseService, pins: ReadonlyArray<Pinned>) {
-  let collected = 0;
-  for (const pin of pins) {
-    const b = binder(pin, pin);
-    const settledBelow = "{settledBelow:UInt64}";
-    const params = { ...b.params, settledBelow: pin.settledBelow };
-    const unread = `environment_id = ${b.env} AND generation < ${settledBelow} AND NOT (generation > ${b.floor} AND ${newestPublished(b, "")})`;
-    for (const [table, where] of [
-      ["pageview", `environment_id = ${b.env} AND copy < ${settledBelow} AND copy != ${b.copy}`],
-      ["complete_day", unread],
-      ["daily", unread],
-      ["session_hourly", unread],
-    ] as const) {
-      const [row] = yield* clickhouse.query<{ n: number }>(`SELECT count() AS n FROM ${table} WHERE ${where}`, params);
-      if (row === undefined || row.n === 0) continue;
-      yield* clickhouse.command(`DELETE FROM ${table} WHERE ${where}`, params);
-      collected += row.n;
-    }
-  }
-  return collected;
 });

@@ -28,10 +28,11 @@ export const sameRowSet = (expected: ReadonlyArray<object>, actual: ReadonlyArra
 export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const [site] = yield* drizzle.execute<{
-    timezone: string; rolled_up_to: string | null; dirty: string[]; reads: boolean; backfilled: boolean; copy: string; generation: string;
+    timezone: string; rolled_up_to: string | null; dirty: string[]; reads: boolean; backfilled: boolean;
+    floor: string; below: string; pending: string[]; days: Record<string, number>;
   }>(sql`
     select s.timezone, c.rolled_up_to::text as rolled_up_to, c.dirty::text[] as dirty, c.reads, c.backfilled_at is not null as backfilled,
-      c.copy::text as copy, c.generation::text as generation
+      c.floor::text as floor, c.below::text as below, c.pending::text[] as pending, c.days
     from analytics.clickhouse_site c join analytics.site s using (environment_id)
     where c.environment_id = ${environmentId}::text`, "objects");
   if (site === undefined || site.reads || !site.backfilled) return false;
@@ -54,7 +55,7 @@ export const promoteReads = Effect.fn("WebAnalytics.promoteReads")(function* (en
   const flipped = yield* drizzle.execute(sql`
     update analytics.clickhouse_site set reads = true, updated_at = now()
     where environment_id = ${environmentId}::text and rolled_up_to = ${site.rolled_up_to}::date and dirty = '{}' and backfilled_at is not null
-      and copy = ${site.copy}::bigint and generation = ${site.generation}::bigint
+      and floor = ${site.floor}::bigint and below = ${site.below}::bigint and pending = ${sql.param(site.pending)}::bigint[] and days = ${JSON.stringify(site.days)}::jsonb
     returning environment_id`, "objects");
   return flipped.length > 0;
 });
