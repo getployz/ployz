@@ -550,9 +550,9 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
     .await;
     assert_eq!(spent.prepares.load(Ordering::SeqCst), 0);
 
-    restart_failed_preparation(&paths);
+    let state = fs::read_to_string(&paths.prepare_state).unwrap();
     let reinstalled = hangs();
-    pass(
+    install_pass(
         &reinstalled,
         &mut unused,
         &key(),
@@ -563,6 +563,8 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
     assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.prepare_retries, 0);
+    // ployzd records what it added in the state file, so the restart leaves it alone.
+    assert_eq!(fs::read_to_string(&paths.prepare_state).unwrap(), state);
 }
 
 #[tokio::test]

@@ -117,9 +117,8 @@ async fn install(
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
     systemd(&["daemon-reload"]).await?;
-    checkin::restart_failed_preparation(paths);
     crate::ui::stream("Checking in");
-    match checkin::pass(&host, client, key, paths, Utc::now()).await {
+    match checkin::install_pass(&host, client, key, paths, Utc::now()).await {
         Next::Wait { log, .. } => {
             if let Some(line) = log {
                 crate::ui::note(line);

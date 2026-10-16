@@ -351,6 +351,29 @@ pub(crate) async fn pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
+    pass_from(host, client, key, paths, now, false).await
+}
+
+/// The pass an explicit `--install` makes: a failed preparation starts over at once, with its
+/// automatic retries restored. Its state file stays, since ployzd records there what it added.
+pub(crate) async fn install_pass<H: Host>(
+    host: &H,
+    client: &mut CheckinClient,
+    key: &CheckinKey,
+    paths: &Paths,
+    now: DateTime<Utc>,
+) -> Next {
+    pass_from(host, client, key, paths, now, true).await
+}
+
+async fn pass_from<H: Host>(
+    host: &H,
+    client: &mut CheckinClient,
+    key: &CheckinKey,
+    paths: &Paths,
+    now: DateTime<Utc>,
+    installing: bool,
+) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     if previous
         .as_ref()
@@ -361,7 +384,17 @@ pub(crate) async fn pass<H: Host>(
     }
     let mut prepare_retries = previous.map_or(0, |status| status.prepare_retries);
     let state = read_prep_state(&paths.prepare_state);
-    if let Some(run) = prepare_due(state.as_ref(), prepare_retries, now) {
+    let restart = installing
+        && state
+            .as_ref()
+            .is_some_and(|state| state.failed_at().is_some());
+    let due = if restart {
+        prepare_retries = 0;
+        Some(PrepareRun::Start)
+    } else {
+        prepare_due(state.as_ref(), prepare_retries, now)
+    };
+    if let Some(run) = due {
         match host.start_prepare().await {
             Ok(started) => {
                 if started && run == PrepareRun::Retry {
@@ -457,30 +490,6 @@ fn record(status: &LocalCheckin, paths: &Paths) {
             "Could not write {}: {error}",
             paths.status().display()
         ));
-    }
-}
-
-/// An explicit `--install` is a fresh preparation attempt: a failed preparation starts again at
-/// once, with its automatic retries restored.
-pub(crate) fn restart_failed_preparation(paths: &Paths) {
-    if read_prep_state(&paths.prepare_state).is_none_or(|state| state.failed_at().is_none()) {
-        return;
-    }
-    if let Err(error) = fs::remove_file(&paths.prepare_state) {
-        crate::ui::note(format!(
-            "Could not clear {}: {error}",
-            paths.prepare_state.display()
-        ));
-        return;
-    }
-    if let Ok(Some(mut status)) = LocalCheckin::read(&paths.status()) {
-        status.prepare_retries = 0;
-        if let Err(error) = status.write(&paths.status()) {
-            crate::ui::note(format!(
-                "Could not write {}: {error}",
-                paths.status().display()
-            ));
-        }
     }
 }
 
