@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Server enrollment · prototype</title>
+<style>
+:root {
+  --background: #fff; --foreground: #171717; --card: #fff; --popover: #fff; --primary: #171717; --primary-foreground: #fafafa;
+  --muted: #f4f4f4; --muted-foreground: #6b6b6b; --border: #e3e3e3; --changed: #d0268c; --radius: 0.75rem;
+  --success: #3d8a5f; --warning: #b26a00; --destructive: #c42b2b; --info: #2f6fd6;
+  --shadow: 0 1px 3px hsl(0 0% 0% / .1), 0 8px 24px -4px hsl(0 0% 0% / .12);
+}
+.dark { --background: #0a0a0a; --foreground: #ededed; --card: #121212; --popover: #161616; --primary: #ededed; --primary-foreground: #0a0a0a;
+  --muted: #222; --muted-foreground: #a1a1a1; --border: #2e2e2e; --changed: hsl(324 69% 60%);
+  --success: #4fb37a; --warning: #e0a03a; --destructive: #ef5b5b; --info: #6a9df0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 14px/1.45 "Geist", ui-sans-serif, system-ui, sans-serif; background: var(--background); color: var(--foreground); }
+button, input, select { font: inherit; color: inherit; }
+.mono { font-family: "Geist Mono", ui-monospace, monospace; }
+.app { display: flex; height: 100vh; min-height: 600px; }
+.rail { width: 224px; flex: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--changed); margin: 4px 8px 22px; }
+.place { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--muted-foreground); }
+.place.on { background: var(--muted); color: var(--foreground); }
+.place svg { width: 18px; height: 18px; }
+.spacer { flex: 1; }
+.me { display: flex; gap: 10px; align-items: center; padding: 6px; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border); display: grid; place-items: center; font-size: 12px; color: var(--muted-foreground); }
+.sub { font-size: 12px; color: var(--muted-foreground); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.top { height: 48px; flex: none; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; font-weight: 500; }
+.content { flex: 1; overflow: auto; padding: 32px 40px 120px; }
+.wrap { max-width: 1040px; margin: 0 auto; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 16px; align-items: center; }
+.btn { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover { background: var(--muted); }
+.btn.ink { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn.ink:hover { opacity: .9; }
+.btn.ghost { border-color: transparent; background: none; }
+.btn:disabled { opacity: .4; cursor: default; }
+.list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.srow { display: grid; grid-template-columns: 8px 140px minmax(0,1fr) 220px 110px 16px; gap: 16px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--border); }
+.srow:first-child { border-top: 0; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+.dot.off { background: var(--destructive); }
+.dot.q { background: var(--border); }
+.dot.pulse { background: var(--info); animation: pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity: .3; } }
+.chips { display: flex; gap: 4px; overflow: hidden; }
+.chip { background: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; white-space: nowrap; }
+.chip.out { background: none; border: 1px solid var(--border); }
+.meter { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
+.bar { width: 56px; height: 4px; border-radius: 4px; background: var(--muted); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--muted-foreground); }
+.bar.wide { width: 100%; }
+.bar.wide > i { background: var(--info); transition: width .3s; }
+.right { text-align: right; white-space: nowrap; }
+.t-off { color: var(--destructive); }
+.t-info { color: var(--info); }
+.t-warn { color: var(--warning); }
+.t-muted { color: var(--muted-foreground); }
+.chev { color: var(--muted-foreground); }
+.section { margin-top: 36px; }
+.shead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.shead h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.count { font-size: 12px; color: var(--muted-foreground); }
+.filters { display: flex; gap: 4px; margin-left: auto; }
+.filter { height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.filter.on { border-color: var(--border); background: var(--card); color: var(--foreground); }
+.search { height: 28px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); padding: 0 10px; width: 160px; outline: none; font-size: 13px; }
+.wtable { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.wrow { display: grid; grid-template-columns: 20px minmax(0,1fr) 120px 130px 92px 130px 130px 150px; gap: 12px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+.wrow:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.wrow.sel { background: color-mix(in srgb, var(--changed) 7%, transparent); }
+.wrow.head { border-top: 0; color: var(--muted-foreground); font-size: 12px; cursor: default; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.wrow.head:hover { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.wbody { max-height: 520px; overflow: auto; }
+.wrow .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extra { color: var(--success); }
+input[type=checkbox] { accent-color: var(--changed); width: 15px; height: 15px; margin: 0; cursor: pointer; }
+.state { display: flex; flex-direction: column; line-height: 1.25; }
+.state b { font-weight: 500; }
+.state span { font-size: 12px; color: var(--muted-foreground); }
+.ok b { color: var(--success); }
+.nozfs b { color: var(--foreground); }
+.fix b { color: var(--warning); }
+.empty { border: 1px dashed var(--border); border-radius: 10px; padding: 40px; text-align: center; color: var(--muted-foreground); }
+.empty strong { color: var(--foreground); display: block; margin-bottom: 4px; font-weight: 500; }
+/* bulk bar */
+.bulk { position: fixed; left: calc(224px + (100% - 224px) / 2); transform: translateX(-50%); bottom: 24px; z-index: 15; display: flex; align-items: center; gap: 12px; background: var(--primary); color: var(--primary-foreground); border-radius: 12px; padding: 8px 8px 8px 16px; box-shadow: var(--shadow); }
+.bulk[hidden] { display: none; }
+.bulk .btn { height: 30px; }
+.bulk .btn.light { background: var(--primary-foreground); color: var(--primary); border-color: var(--primary-foreground); }
+.bulk .btn.clear { background: none; color: var(--primary-foreground); border-color: transparent; opacity: .7; }
+/* dialog */
+.overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .5); display: grid; place-items: center; z-index: 30; }
+.overlay[hidden] { display: none; }
+.dialog { width: 580px; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 18px 20px 16px; }
+.dhead { display: flex; align-items: center; margin-bottom: 14px; }
+.dhead h3 { font-size: 16px; margin: 0; font-weight: 600; }
+.x { margin-left: auto; border: 0; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 18px; }
+.tabs { display: flex; gap: 2px; margin-bottom: 8px; }
+.tab { border: 0; background: none; padding: 4px 10px; border-radius: 7px; cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.tab.on { background: var(--muted); color: var(--foreground); }
+.code { position: relative; background: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 12px 84px 12px 14px; font: 12.5px/1.6 "Geist Mono", ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+.code .btn { position: absolute; right: 8px; top: 8px; height: 28px; font-size: 12px; }
+.hint { font-size: 13px; color: var(--muted-foreground); margin: 10px 0 0; }
+.live { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; }
+.spin { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--foreground); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.live .btn { margin-left: auto; }
+.toggle-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.switch { width: 32px; height: 18px; border-radius: 10px; background: var(--border); position: relative; border: 0; cursor: pointer; flex: none; }
+.switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch.on { background: var(--changed); }
+.switch.on::after { left: 16px; }
+.foot-link { margin-left: auto; font-size: 13px; color: var(--muted-foreground); }
+/* sheet */
+.sheet-wrap { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .35); }
+.sheet-wrap[hidden] { display: none; }
+.sheet { position: absolute; right: 0; top: 0; bottom: 0; width: 440px; background: var(--popover); border-left: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.sheet .sbody { flex: 1; overflow: auto; padding: 20px; }
+.sheet h3 { margin: 0 0 2px; font-size: 16px; }
+.group { margin-top: 22px; }
+.glabel { font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+.opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; margin-bottom: 6px; }
+.opt.on { border-color: var(--foreground); }
+.opt input { margin-top: 3px; }
+.opt .d { font-size: 12px; color: var(--muted-foreground); }
+.breakdown { font-size: 13px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.breakdown div { display: flex; justify-content: space-between; padding: 7px 12px; border-top: 1px solid var(--border); }
+.breakdown div:first-child { border-top: 0; }
+.input { height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); padding: 0 10px; outline: none; width: 100%; }
+.input:focus { border-color: var(--changed); }
+.check-line { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.sfoot { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+select.input { appearance: auto; }
+/* proto chrome */
+.switcher { position: fixed; left: 236px; bottom: 16px; z-index: 50; display: flex; gap: 4px; padding: 4px; border-radius: 10px; background: #000; border: 1px solid #333; font-size: 12px; }
+.switcher button { border: 0; background: none; color: #aaa; padding: 6px 10px; border-radius: 7px; cursor: pointer; }
+.switcher button.on { background: #262626; color: #fff; }
+.toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); z-index: 60; background: var(--primary); color: var(--primary-foreground); padding: 8px 14px; border-radius: 10px; font-size: 13px; box-shadow: var(--shadow); }
+.toast[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <div class="logo"></div>
+    <div class="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Projects</div>
+    <div class="place on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/></svg>Servers</div>
+    <div class="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20V8l8-4 8 4v12M9 20v-6h6v6"/></svg>Organization</div>
+    <div class="spacer"></div>
+    <div class="me"><div class="avatar">AL</div><div><div style="font-weight:500">Ada Lovelace</div><div class="sub">Ada Lovelace's Projects</div></div></div>
+  </nav>
+  <div class="main">
+    <div class="top">Servers</div>
+    <div class="content"><div class="wrap">
+      <div class="actions">
+        <button class="btn ink" id="add-btn">+ Add servers</button>
+      </div>
+      <div id="servers"></div>
+      <div class="section" id="waiting-section"></div>
+    </div></div>
+  </div>
+</div>
+
+<div class="bulk" id="bulk" hidden>
+  <span id="bulk-count"></span>
+  <button class="btn clear" id="bulk-clear">Clear</button>
+  <button class="btn light" id="bulk-enroll">Enroll</button>
+</div>
+
+<!-- Add servers dialog -->
+<div class="overlay" id="add" hidden>
+  <div class="dialog" role="dialog" aria-label="Add servers">
+    <div class="dhead"><h3>Add servers</h3><button class="x" data-close>×</button></div>
+    <div class="tabs">
+      <button class="tab on" data-tab="shell">Shell</button>
+      <button class="tab" data-tab="cloud">cloud-init</button>
+    </div>
+    <div class="code" id="cmd"><button class="btn" id="copy">Copy</button><span id="cmd-text"></span></div>
+    <p class="hint">Run it on each server. They show up below, ready to enroll.</p>
+    <div class="live"><div class="spin"></div><span id="live-text">Waiting for servers…</span><button class="btn" id="live-go" hidden>Show</button></div>
+    <div class="toggle-row">
+      <button class="switch" id="auto" aria-label="Enroll on arrival"></button>
+      <div><div style="font-weight:500">Enroll on arrival</div><div class="sub" id="auto-sub">Off: you pick which servers join.</div></div>
+      <a class="foot-link" href="#" id="revoke">Revoke command</a>
+    </div>
+  </div>
+</div>
+
+<!-- Enroll sheet -->
+<div class="sheet-wrap" id="sheet" hidden>
+  <div class="sheet">
+    <div class="sbody">
+      <div class="dhead" style="margin:0"><h3 id="sheet-title">Enroll servers</h3><button class="x" data-close>×</button></div>
+      <div class="sub" id="sheet-sub"></div>
+
+      <div class="group" id="founder-group" hidden>
+        <div class="glabel">First server</div>
+        <select class="input" id="founder"></select>
+      </div>
+
+      <div class="group">
+        <div class="glabel">Volumes</div>
+        <label class="opt on" data-storage="zfs"><input type="radio" name="st" checked><div><div>ZFS</div><div class="d">Size limits on every volume.</div></div></label>
+        <div id="disk-choice" style="margin:4px 0 8px 34px">
+          <label class="check-line"><input type="checkbox" id="empty-disk" checked><span>Use an empty disk when there is one <span class="t-muted" id="empty-count"></span></span></label>
+        </div>
+        <label class="opt" data-storage="none"><input type="radio" name="st"><div><div>Docker only</div><div class="d">No size limits.</div></div></label>
+        <div class="breakdown" id="breakdown"></div>
+      </div>
+
+      <div class="group">
+        <div class="glabel">Names</div>
+        <label class="check-line"><input type="radio" name="nm" value="host" checked> Hostnames</label>
+        <label class="check-line"><input type="radio" name="nm" value="pattern"> Pattern <input class="input mono" id="pattern" value="web-{n}" style="width:140px;height:30px;margin-left:6px"></label>
+        <div class="sub" id="name-preview" style="margin-left:25px"></div>
+      </div>
+
+      <div class="group">
+        <div class="glabel">Runs</div>
+        <label class="check-line"><input type="checkbox" checked> Web traffic</label>
+        <label class="check-line"><input type="checkbox" checked> Builds</label>
+      </div>
+    </div>
+    <div class="sfoot"><button class="btn" data-close>Cancel</button><button class="btn ink" id="go">Enroll</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<div class="switcher" id="switcher">
+  <button data-scene="fleet" class="on">Fleet · 200</button>
+  <button data-scene="first">First server</button>
+  <button data-scene="add">Add dialog</button>
+  <button id="theme">Dark</button>
+</div>
+
+<script>
+// ---------- data ----------
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const pick = (a) => a[Math.floor(rnd() * a.length)];
+
+const OSES = [
+  { os: "Ubuntu 24.04", zfs: "ok", w: 9 },
+  { os: "Ubuntu 22.04", zfs: "ok", w: 3 },
+  { os: "Debian 12", zfs: "build", mins: 4, w: 4 },
+  { os: "Amazon Linux 2023", zfs: "build", mins: 18, w: 2 },
+  { os: "Rocky Linux 9", zfs: "no", why: "Rocky Linux", w: 1 },
+];
+const weighted = () => { const t = OSES.reduce((s, o) => s + o.w, 0); let r = rnd() * t; for (const o of OSES) { if ((r -= o.w) < 0) return o; } return OSES[0]; };
+const PLACES = [
+  { where: "Hetzner fsn1", p: "hz-fsn1", ip: "5.9." }, { where: "Hetzner nbg1", p: "hz-nbg1", ip: "49.12." },
+  { where: "DigitalOcean ams3", p: "do-ams3", ip: "164.92." }, { where: "AWS eu-central-1", p: "ip-10-0", ip: "3.120." },
+];
+const SIZES = [["4 vCPU", "16 GB"], ["8 vCPU", "32 GB"], ["16 vCPU", "64 GB"], ["32 vCPU", "128 GB"]];
+
+function makeServer(i) {
+  const o = weighted(), pl = pick(PLACES), sz = pick(SIZES);
+  const s = {
+    id: "w" + i, host: `${pl.p}-${String(i + 1).padStart(3, "0")}`, ip: pl.ip + Math.floor(rnd() * 250) + "." + Math.floor(rnd() * 250),
+    where: pl.where, cpu: sz[0], ram: sz[1], disk: pick(["80 GB", "160 GB", "240 GB", "480 GB"]), extra: rnd() < .3 ? pick(["1.9 TB", "3.8 TB"]) : null,
+    os: o.os, zfs: o.zfs, mins: o.mins || 1, why: o.why || null, block: null, docker: "29.4",
+  };
+  const r = rnd();
+  if (s.zfs !== "no") {
+    if (r < .05) { s.zfs = "no"; s.why = "Secure Boot"; }
+    else if (r < .08) { s.zfs = "no"; s.why = "LXC container"; }
+  }
+  const b = rnd();
+  if (b < .03) { s.block = "Disk 20 GB"; s.blockWhy = "Needs 30 GB"; s.disk = "20 GB"; }
+  else if (b < .05) { s.block = "UDP 51820 closed"; s.blockWhy = "Open it to other servers"; }
+  else if (b < .065) { s.block = "Docker 24.0"; s.blockWhy = "Needs 29.2 or newer"; s.docker = "24.0"; }
+  return s;
+}
+const FLEET = Array.from({ length: 200 }, (_, i) => makeServer(i));
+const EXISTING = [
+  { name: "fra-2", chips: ["postgres", "web"], state: "off" },
+  { name: "ams-1", runs: "Only runs builds" },
+  { name: "fra-1", chips: ["api", "cron", "postgres"], more: 3, cpu: 47, mem: 44 },
+  { name: "syd-1", chips: ["api"] },
+];
+
+// ---------- state ----------
+const st = { scene: "fleet", servers: [], waiting: [], sel: new Set(), filter: "all", q: "", enrolling: new Map(), storage: "zfs", emptyDisk: true, auto: false };
+
+function setScene(scene) {
+  st.scene = scene; st.sel.clear(); st.enrolling.clear(); st.filter = "all"; st.q = "";
+  clearInterval(arrivalTimer);
+  document.querySelectorAll("#switcher [data-scene]").forEach((b) => b.classList.toggle("on", b.dataset.scene === scene));
+  closeAll();
+  if (scene === "fleet") { st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = FLEET.map((s) => ({ ...s })); }
+  if (scene === "first") { st.servers = []; st.waiting = []; render(); openAdd(true); return; }
+  if (scene === "add") { st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = []; render(); openAdd(true); return; }
+  render();
+}
+
+// ---------- render ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function classify(s) {
+  if (s.block) return "fix";
+  if (s.zfs === "no") return "nozfs";
+  return "ok";
+}
+
+function serverRow(s, e) {
+  let mid = "", right = "", dot = "dot";
+  if (e) {
+    dot = e.stage === "Queued" ? "dot" : "dot pulse";
+    if (e.stage === "Queued") dot += " q";
+    mid = `<div class="bar wide"><i style="width:${e.pct}%"></i></div>`;
+    right = `<span class="${e.stage === "Queued" ? "t-muted" : "t-info"}">${e.stage}</span>`;
+  } else if (s.runs) mid = `<span class="t-muted">${s.runs}</span>`;
+  else if (s.chips || s.dockerOnly) mid = `<div class="chips">${(s.chips || []).map((c) => `<span class="chip">${c}</span>`).join("")}${s.more ? `<span class="chip out">+${s.more}</span>` : ""}${s.dockerOnly ? `<span class="chip out">Docker only</span>` : ""}</div>`;
+  if (s.state === "off") { dot = "dot off"; right = `<span class="t-off">Offline</span>`; }
+  const meters = s.cpu ? `<div style="display:flex;gap:14px"><span class="meter">CPU <span class="bar"><i style="width:${s.cpu}%"></i></span>${s.cpu}%</span><span class="meter">Memory <span class="bar"><i style="width:${s.mem}%"></i></span>${s.mem}%</span></div>` : "<div></div>";
+  return `<div class="srow"><span class="${dot}"></span><span style="font-weight:500" class="trunc">${esc(s.name)}</span><div style="min-width:0">${mid}</div>${meters}<div class="right">${right}</div><span class="chev">›</span></div>`;
+}
+
+function renderServers() {
+  const el = $("servers");
+  const live = (s) => { const e = s.wid && st.enrolling.get(s.wid); return e && e.stage !== "done" ? e : null; };
+  const settled = st.servers.filter((s) => !live(s));
+  const going = st.servers.filter(live);
+  let html = "";
+  if (going.length) {
+    const total = st.enrolling.size, done = total - going.length;
+    const act = new Set(activeSet());
+    const active = going.filter((s) => act.has(live(s)));
+    const queued = going.length - active.length;
+    html += `<div class="shead"><h2>Enrolling</h2><span class="count">${done} of ${total} online</span>
+      <div class="bar wide" style="width:160px;margin-left:auto"><i style="width:${(done / total) * 100}%"></i></div></div>
+      <div class="list" style="margin-bottom:28px">${active.map((s) => serverRow(s, live(s))).join("")}${queued ? `<div class="srow"><span class="dot q"></span><span class="t-muted">${queued} queued</span><div></div><div></div><div></div><span></span></div>` : ""}</div>`;
+  }
+  if (settled.length) html += `<div class="list">${settled.map((s) => serverRow(s, null)).join("")}</div>`;
+  else if (!going.length && !st.waiting.length) html = `<div class="empty"><strong>No servers yet</strong>Run the command on one or more servers. They wait here until you enroll them.</div>`;
+  el.innerHTML = html;
+}
+
+function visibleWaiting() {
+  const q = st.q.toLowerCase();
+  return st.waiting.filter((s) => (st.filter === "all" || classify(s) === st.filter) && (!q || (s.host + s.ip + s.where + s.os).toLowerCase().includes(q)));
+}
+
+function stateCell(s) {
+  const c = classify(s);
+  if (c === "fix") return `<div class="state fix"><b>${esc(s.block)}</b><span>${esc(s.blockWhy)}</span></div>`;
+  if (c === "nozfs") return `<div class="state nozfs"><b>Docker only</b><span>${esc(s.why)}</span></div>`;
+  return `<div class="state ok"><b>Ready</b>${s.zfs === "build" ? `<span>ZFS builds ~${s.mins} min</span>` : ""}</div>`;
+}
+
+function renderWaiting() {
+  const el = $("waiting-section");
+  if (!st.waiting.length) { el.innerHTML = ""; return; }
+  const counts = { all: st.waiting.length, ok: 0, nozfs: 0, fix: 0 };
+  st.waiting.forEach((s) => counts[classify(s)]++);
+  const rows = visibleWaiting();
+  const selectable = rows.filter((s) => classify(s) !== "fix");
+  const allOn = selectable.length && selectable.every((s) => st.sel.has(s.id));
+  const f = (k, label) => `<button class="filter ${st.filter === k ? "on" : ""}" data-filter="${k}">${label} <span class="t-muted">${counts[k]}</span></button>`;
+  el.innerHTML = `
+    <div class="shead"><h2>Waiting</h2><span class="count">${st.waiting.length}</span>
+      <div class="filters">${f("all", "All")}${f("ok", "Ready")}${f("nozfs", "Docker only")}${f("fix", "To fix")}
+      <input class="search" id="q" placeholder="Filter" value="${esc(st.q)}"></div></div>
+    <div class="wtable">
+      <div class="wrow head"><input type="checkbox" id="all" ${allOn ? "checked" : ""}><span>Name</span><span>IP</span><span>Where</span><span>Size</span><span>Disk</span><span>OS</span><span>State</span></div>
+      <div class="wbody">${rows.map((s) => {
+        const fix = classify(s) === "fix";
+        return `<div class="wrow ${st.sel.has(s.id) ? "sel" : ""}" data-id="${s.id}">
+          <input type="checkbox" ${st.sel.has(s.id) ? "checked" : ""} ${fix ? "disabled" : ""}>
+          <span class="name">${esc(s.host)}</span><span class="mono t-muted trunc">${s.ip}</span><span class="trunc">${s.where}</span>
+          <span class="t-muted trunc">${s.cpu.replace(" vCPU", "")} · ${s.ram}</span>
+          <span class="trunc">${s.disk}${s.extra ? ` <span class="extra" title="Empty disk">+${s.extra}</span>` : ""}</span>
+          <span class="trunc">${s.os}</span>${stateCell(s)}</div>`;
+      }).join("") || `<div class="wrow" style="cursor:default"><span></span><span class="t-muted">Nothing here</span></div>`}</div>
+    </div>`;
+}
+
+function renderBulk() {
+  const n = st.sel.size;
+  $("bulk").hidden = n === 0;
+  $("bulk-count").textContent = `${n} selected`;
+  $("bulk-enroll").textContent = `Enroll ${n}`;
+}
+
+function render() { renderServers(); renderWaiting(); renderBulk(); }
+
+// ---------- waiting interactions ----------
+document.addEventListener("click", (e) => {
+  const f = e.target.closest("[data-filter]");
+  if (f) { st.filter = f.dataset.filter; render(); return; }
+  if (e.target.id === "all") {
+    const sel = visibleWaiting().filter((s) => classify(s) !== "fix");
+    const on = e.target.checked;
+    sel.forEach((s) => on ? st.sel.add(s.id) : st.sel.delete(s.id));
+    render(); return;
+  }
+  const row = e.target.closest(".wrow[data-id]");
+  if (row) {
+    const s = st.waiting.find((x) => x.id === row.dataset.id);
+    if (classify(s) === "fix") return;
+    st.sel.has(s.id) ? st.sel.delete(s.id) : st.sel.add(s.id);
+    render();
+  }
+});
+document.addEventListener("input", (e) => {
+  if (e.target.id === "q") { st.q = e.target.value; const pos = e.target.selectionStart; render(); const q = $("q"); q.focus(); q.setSelectionRange(pos, pos); }
+});
+$("bulk-clear").onclick = () => { st.sel.clear(); render(); };
+$("bulk-enroll").onclick = () => openSheet();
+
+// ---------- add dialog ----------
+const TOKEN = "pzw_7Hq2kV9xLmR4tN8b";
+const CMDS = {
+  shell: `curl -fsSL https://ployz.sh/ | sh -s -- --join ${TOKEN}`,
+  cloud: `#cloud-config\nruncmd:\n  - curl -fsSL https://ployz.sh/ | sh -s -- --join ${TOKEN}`,
+};
+let arrivalTimer = null;
+function openAdd(simulate) {
+  $("add").hidden = false;
+  setTab("shell");
+  $("live-go").hidden = true;
+  $("live-text").textContent = "Waiting for servers…";
+  if (!simulate) return;
+  const n = st.scene === "first" ? 3 : 12;
+  let i = 0;
+  const src = FLEET.slice(0, 40).filter((s) => !s.block);
+  arrivalTimer = setInterval(() => {
+    if (i >= n) { clearInterval(arrivalTimer); return; }
+    const s = { ...src[i], id: "a" + i };
+    if (st.scene === "first") s.extra = i === 0 ? null : s.extra;
+    if (st.auto) autoEnroll(s); else st.waiting.unshift(s);
+    i++;
+    $("live-text").innerHTML = `<b>${i}</b> waiting${st.auto ? " · enrolling" : ""}`;
+    $("live-go").hidden = false;
+    render();
+  }, 900);
+}
+function setTab(t) { document.querySelectorAll(".tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === t)); $("cmd-text").textContent = CMDS[t]; }
+document.querySelectorAll(".tab").forEach((b) => b.onclick = () => setTab(b.dataset.tab));
+$("copy").onclick = () => { $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1200); };
+$("add-btn").onclick = () => openAdd(false);
+$("live-go").onclick = () => { $("add").hidden = true; if (st.scene === "first" && st.waiting.length && !st.auto) { st.waiting.forEach((s) => st.sel.add(s.id)); render(); openSheet(); } };
+$("auto").onclick = () => { st.auto = !st.auto; $("auto").classList.toggle("on", st.auto); $("auto-sub").textContent = st.auto ? "On: ZFS where it runs, Docker only elsewhere." : "Off: you pick which servers join."; };
+$("revoke").onclick = (e) => { e.preventDefault(); toast("Command revoked. Waiting servers stay."); };
+
+// ---------- enroll sheet ----------
+function selected() { return st.waiting.filter((s) => st.sel.has(s.id)); }
+function openSheet() {
+  const sel = selected(); if (!sel.length) return;
+  $("sheet").hidden = false;
+  $("sheet-title").textContent = `Enroll ${sel.length} server${sel.length > 1 ? "s" : ""}`;
+  const first = st.servers.length === 0;
+  $("founder-group").hidden = !first;
+  if (first) $("founder").innerHTML = sel.map((s) => `<option value="${s.id}">${s.host} · ${s.ip}</option>`).join("");
+  $("sheet-sub").textContent = first ? "The first server starts your cluster. The rest join it." : `Joins your ${st.servers.length} servers.`;
+  renderSheet();
+}
+function renderSheet() {
+  const sel = selected();
+  document.querySelectorAll("[data-storage]").forEach((o) => { const on = o.dataset.storage === st.storage; o.classList.toggle("on", on); o.querySelector("input").checked = on; });
+  const zfsable = sel.filter((s) => s.zfs !== "no");
+  const empties = zfsable.filter((s) => s.extra).length;
+  $("empty-count").textContent = `· ${empties}`;
+  $("disk-choice").style.display = st.storage === "zfs" && empties ? "" : "none";
+  const lines = [];
+  if (st.storage === "zfs") {
+    const onEmpty = st.emptyDisk ? empties : 0;
+    if (onEmpty) lines.push([`ZFS on empty disk`, onEmpty]);
+    if (zfsable.length - onEmpty) lines.push([`ZFS on main disk`, zfsable.length - onEmpty]);
+    const why = {};
+    sel.filter((s) => s.zfs === "no").forEach((s) => why[s.why] = (why[s.why] || 0) + 1);
+    Object.entries(why).forEach(([w, n]) => lines.push([`Docker only <span class="t-muted">· ${w}</span>`, n]));
+    const slow = sel.filter((s) => s.zfs === "build" && s.mins > 10).length;
+    if (slow) lines.push([`<span class="t-warn">ZFS builds ~18 min</span>`, slow]);
+  } else lines.push(["Docker only", sel.length]);
+  $("breakdown").innerHTML = lines.map(([l, n]) => `<div><span>${l}</span><span>${n}</span></div>`).join("");
+  const pat = document.querySelector("input[name=nm]:checked").value === "pattern";
+  const names = sel.slice(0, 3).map((s, i) => pat ? $("pattern").value.replace("{n}", i + 1) : s.host);
+  $("name-preview").textContent = names.join(", ") + (sel.length > 3 ? ", …" : "");
+  $("go").textContent = `Enroll ${sel.length}`;
+}
+document.querySelectorAll("[data-storage]").forEach((o) => o.onclick = () => { st.storage = o.dataset.storage; renderSheet(); });
+$("empty-disk").onchange = (e) => { st.emptyDisk = e.target.checked; renderSheet(); };
+document.querySelectorAll("input[name=nm]").forEach((r) => r.onchange = renderSheet);
+$("pattern").oninput = renderSheet;
+$("go").onclick = () => {
+  const sel = selected();
+  const pat = document.querySelector("input[name=nm]:checked").value === "pattern";
+  const founderId = st.servers.length === 0 ? $("founder").value : null;
+  const ordered = founderId ? [sel.find((s) => s.id === founderId), ...sel.filter((s) => s.id !== founderId)] : sel;
+  ordered.forEach((s, i) => {
+    const name = pat ? $("pattern").value.replace("{n}", i + 1) : s.host;
+    const zfs = st.storage === "zfs" && s.zfs !== "no";
+    st.servers.push({ name, wid: s.id, dockerOnly: !zfs });
+    st.enrolling.set(s.id, { stage: "Queued", pct: 0, zfs, mins: s.mins, founder: !!founderId && i === 0 });
+  });
+  st.waiting = st.waiting.filter((s) => !st.sel.has(s.id));
+  st.sel.clear();
+  closeAll(); render(); runEnrollment();
+  toast(founderId ? `Starting your cluster on ${ordered[0].host}` : `Enrolling ${ordered.length}`);
+};
+function autoEnroll(s) {
+  const zfs = s.zfs !== "no";
+  st.servers.push({ name: s.host, wid: s.id, dockerOnly: !zfs });
+  st.enrolling.set(s.id, { stage: "Queued", pct: 0, zfs, mins: s.mins });
+  runEnrollment();
+}
+
+// ---------- enrollment simulation: first server alone, then 10 at a time ----------
+let ticker = null;
+function activeSet() {
+  const live = [...st.enrolling.values()].filter((e) => e.stage !== "done");
+  const founder = live.find((e) => e.founder);
+  return founder ? [founder] : live.slice(0, 10);
+}
+function runEnrollment() {
+  if (ticker) return;
+  ticker = setInterval(() => {
+    const live = [...st.enrolling.values()].filter((e) => e.stage !== "done");
+    if (!live.length) { clearInterval(ticker); ticker = null; render(); return; }
+    activeSet().forEach((e) => {
+      const speed = e.zfs ? (e.mins > 10 ? 2 : e.mins > 2 ? 5 : 9) : 14;
+      e.pct = Math.min(100, e.pct + speed * (0.6 + rnd() * 0.8));
+      e.stage = e.pct >= 100 ? "done" : e.zfs && e.pct < 55 ? "Setting up ZFS" : "Joining";
+    });
+    render();
+  }, 250);
+}
+
+// ---------- chrome ----------
+function closeAll() { $("add").hidden = true; $("sheet").hidden = true; }
+document.querySelectorAll("[data-close]").forEach((b) => b.onclick = closeAll);
+$("add").onclick = (e) => { if (e.target.id === "add") closeAll(); };
+$("sheet").onclick = (e) => { if (e.target.id === "sheet") closeAll(); };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAll(); });
+document.querySelectorAll("#switcher [data-scene]").forEach((b) => b.onclick = () => setScene(b.dataset.scene));
+$("theme").onclick = () => { const d = document.documentElement.classList.toggle("dark"); $("theme").textContent = d ? "Light" : "Dark"; };
+let toastT;
+function toast(m) { $("toast").textContent = m; $("toast").hidden = false; clearTimeout(toastT); toastT = setTimeout(() => $("toast").hidden = true, 2200); }
+
+setScene(location.hash.slice(1) || "fleet");
+</script>
+</body>
+</html>

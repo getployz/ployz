@@ -1,0 +1,1142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waiting servers · full prototype</title>
+<style>
+:root {
+  --background: #fff; --foreground: #171717; --card: #fff; --popover: #fff; --primary: #171717; --primary-foreground: #fafafa;
+  --muted: #f4f4f4; --muted-foreground: #6b6b6b; --border: #e3e3e3; --changed: #d0268c;
+  --success: #3d8a5f; --warning: #b26a00; --destructive: #c42b2b; --info: #2f6fd6;
+  --warn-surface: #fdf4e3; --shadow: 0 1px 3px hsl(0 0% 0% / .1), 0 8px 24px -4px hsl(0 0% 0% / .12);
+}
+.dark { --background: #0a0a0a; --foreground: #ededed; --card: #121212; --popover: #161616; --primary: #ededed; --primary-foreground: #0a0a0a;
+  --muted: #222; --muted-foreground: #a1a1a1; --border: #2e2e2e; --changed: hsl(324 69% 60%);
+  --success: #4fb37a; --warning: #e0a03a; --destructive: #ef5b5b; --info: #6a9df0; --warn-surface: #2a2010; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 14px/1.45 "Geist", ui-sans-serif, system-ui, sans-serif; background: var(--background); color: var(--foreground); }
+button, input, select { font: inherit; color: inherit; }
+.mono { font-family: "Geist Mono", ui-monospace, monospace; }
+.app { display: flex; height: 100vh; min-height: 600px; }
+.rail { width: 224px; flex: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--changed); margin: 4px 8px 22px; }
+.place { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--muted-foreground); }
+.place.on { background: var(--muted); color: var(--foreground); }
+.place svg { width: 18px; height: 18px; }
+.spacer { flex: 1; }
+.me { display: flex; gap: 10px; align-items: center; padding: 6px; }
+.avatar { width: 30px; height: 30px; border-radius: 50%; border: 1px solid var(--border); display: grid; place-items: center; font-size: 12px; color: var(--muted-foreground); }
+.sub { font-size: 12px; color: var(--muted-foreground); }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.top { height: 48px; flex: none; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 18px; font-weight: 500; }
+.ptab { height: 48px; display: flex; align-items: center; border-bottom: 2px solid transparent; color: var(--muted-foreground); cursor: pointer; background: none; border-top: 0; border-left: 0; border-right: 0; padding: 0 2px; font-weight: 500; }
+.ptab.on { color: var(--foreground); border-bottom-color: var(--foreground); }
+.content { flex: 1; overflow: auto; padding: 28px 40px 120px; }
+.wrap { max-width: 1060px; margin: 0 auto; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 16px; align-items: center; }
+.btn { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn:hover { background: var(--muted); }
+.btn.ink { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn.ink:hover { opacity: .9; }
+.btn.ghost { border-color: transparent; background: none; }
+.btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
+.btn.danger { color: var(--destructive); }
+.btn:disabled { opacity: .4; cursor: default; }
+.list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.srow { display: grid; grid-template-columns: 8px 150px minmax(0,1fr) 110px 130px 150px 16px; gap: 16px; align-items: center; height: 45px; padding: 0 12px; border-top: 1px solid var(--border); }
+.srow:first-child { border-top: 0; }
+.srow .chips { flex-wrap: nowrap; }
+.erow { display: grid; grid-template-columns: 8px 150px 120px minmax(0,1fr) 150px 60px; gap: 16px; align-items: center; height: 39px; padding: 0 12px; border-top: 1px solid var(--border); font-size: 13px; }
+.erow.done { color: var(--muted-foreground); }
+.ebox { max-height: calc(39px * 10); overflow: auto; }
+.ebox .erow:first-child { border-top: 0; }
+.fresh { animation: fresh 2.4s ease-out; }
+@keyframes fresh { from { background: color-mix(in srgb, var(--success) 12%, transparent); } }
+.namefield { border: 1px solid transparent; background: none; font: inherit; font-weight: 600; font-size: 16px; padding: 2px 6px; margin-left: -7px; border-radius: 7px; outline: none; width: 260px; }
+.namefield:hover { border-color: var(--border); }
+.namefield:focus { border-color: var(--changed); background: var(--background); }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; width: max-content; justify-self: start; }
+.seg button { border: 0; background: none; padding: 4px 10px; border-radius: 6px; cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.seg button.on { background: var(--muted); color: var(--foreground); }
+.erow:first-child { border-top: 0; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
+.dot.off { background: var(--destructive); }
+.dot.q { background: var(--border); }
+.dot.warn { background: var(--warning); }
+.dot.pulse { background: var(--info); animation: pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity: .3; } }
+.chips { display: flex; gap: 4px; overflow: hidden; }
+.chip { background: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; white-space: nowrap; }
+.chip.out { background: none; border: 1px solid var(--border); }
+.chip.new { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+.chip.auto { background: color-mix(in srgb, var(--changed) 12%, transparent); color: var(--changed); font-weight: 500; }
+.meter { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); }
+.bar { width: 56px; height: 4px; border-radius: 4px; background: var(--muted); overflow: hidden; }
+.meter .num { width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+.srow .meter .bar { width: 44px; }
+.bar > i { display: block; height: 100%; background: var(--muted-foreground); }
+.bar.wide { width: 100%; }
+.bar.wide > i { background: var(--info); transition: width .3s; }
+.steps { display: flex; gap: 3px; align-items: center; }
+.steps i { width: 18px; height: 4px; border-radius: 3px; background: var(--muted); }
+.steps i.done { background: var(--success); }
+.steps i.now { background: var(--info); animation: pulse .8s infinite alternate; }
+.steps i.wait { background: var(--muted-foreground); opacity: .5; }
+.right { text-align: right; white-space: nowrap; }
+.t-off { color: var(--destructive); }
+.t-info { color: var(--info); }
+.t-warn { color: var(--warning); }
+.t-ok { color: var(--success); }
+.t-muted { color: var(--muted-foreground); }
+.chev { color: var(--muted-foreground); }
+.section { margin-top: 36px; }
+.shead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.shead h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.count { font-size: 12px; color: var(--muted-foreground); }
+.filters { display: flex; gap: 4px; margin-left: auto; align-items: center; }
+.filter { height: 28px; padding: 0 10px; border-radius: 7px; border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.filter.on { border-color: var(--border); background: var(--card); color: var(--foreground); }
+.search { height: 28px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); padding: 0 10px; width: 150px; outline: none; font-size: 13px; }
+select.search { width: auto; }
+.stagebar { display: grid; grid-template-columns: repeat(6, 1fr); font-size: 12px; color: var(--muted-foreground); margin: -2px 0 10px; border: 1px solid var(--border); border-radius: 10px; }
+.stagebar > span { padding: 7px 12px; border-left: 1px solid var(--border); white-space: nowrap; display: flex; justify-content: space-between; }
+.stagebar > span:first-child { border-left: 0; }
+.stagebar b { color: var(--foreground); font-weight: 500; font-variant-numeric: tabular-nums; }
+.stagebar b.zero { color: var(--muted-foreground); font-weight: 400; opacity: .6; }
+.wtable { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.wrow { display: grid; grid-template-columns: 20px minmax(0,1fr) 130px 92px 150px 150px 160px; gap: 12px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+.wrow:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.wrow.sel { background: color-mix(in srgb, var(--changed) 7%, transparent); }
+.wrow.head { border-top: 0; color: var(--muted-foreground); font-size: 12px; cursor: default; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.wrow.head:hover { background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.wbody { max-height: 520px; overflow: auto; }
+.two { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.two > :first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.two > span:last-child:not(:first-child) { font-size: 12px; color: var(--muted-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.extra { color: var(--success); }
+.cbcell { display: grid; place-items: center; height: 100%; }
+input[type=checkbox] { accent-color: var(--changed); width: 15px; height: 15px; margin: 0; cursor: pointer; }
+input[type=radio] { accent-color: var(--changed); margin: 0; }
+.status b { font-weight: 500; }
+.empty { border: 1px dashed var(--border); border-radius: 10px; padding: 48px 40px; text-align: center; color: var(--muted-foreground); }
+.empty strong { color: var(--foreground); display: block; margin-bottom: 4px; font-weight: 500; }
+.footline { margin-top: 10px; font-size: 12px; color: var(--muted-foreground); }
+/* bulk bar */
+.bulk { position: fixed; left: calc(224px + (100% - 224px) / 2); transform: translateX(-50%); bottom: 72px; z-index: 15; display: flex; align-items: center; gap: 8px; background: var(--primary); color: var(--primary-foreground); border-radius: 12px; padding: 8px 8px 8px 16px; box-shadow: var(--shadow); }
+.bulk[hidden] { display: none; }
+.bulk .btn { height: 30px; }
+.bulk .btn.light { background: var(--primary-foreground); color: var(--primary); border-color: var(--primary-foreground); }
+.bulk .btn.clear { background: none; color: var(--primary-foreground); border-color: transparent; opacity: .7; }
+.bulk .count-txt { margin-right: 6px; }
+/* dialog */
+.overlay { position: fixed; inset: 0; background: rgb(0 0 0 / .5); display: grid; place-items: center; z-index: 30; }
+.overlay[hidden] { display: none; }
+.dialog { width: 600px; max-height: calc(100vh - 60px); overflow: auto; background: var(--popover); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); padding: 18px 20px 16px; }
+.dhead { display: flex; align-items: center; margin-bottom: 14px; gap: 8px; }
+.dhead h3 { font-size: 16px; margin: 0; font-weight: 600; }
+.x { margin-left: auto; border: 0; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 18px; }
+.tabs { display: flex; gap: 2px; margin-bottom: 8px; }
+.tab { border: 0; background: none; padding: 4px 10px; border-radius: 7px; cursor: pointer; color: var(--muted-foreground); font-size: 13px; }
+.tab.on { background: var(--muted); color: var(--foreground); }
+.code { position: relative; background: var(--muted); border: 1px solid var(--border); border-radius: 10px; padding: 12px 84px 12px 14px; font: 12.5px/1.6 "Geist Mono", ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; }
+.code .btn { position: absolute; right: 8px; top: 8px; height: 28px; font-size: 12px; }
+.secret { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border: 1px solid var(--changed); border-radius: 10px; font: 14px "Geist Mono", ui-monospace, monospace; }
+.secret span { flex: 1; word-break: break-all; }
+.hint { font-size: 13px; color: var(--muted-foreground); margin: 10px 0 0; }
+.live { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; }
+.spin { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--foreground); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.live .btn { margin-left: auto; }
+.toggle-row { display: flex; align-items: center; gap: 10px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.switch { width: 32px; height: 18px; border-radius: 10px; background: var(--border); position: relative; border: 0; cursor: pointer; flex: none; }
+.switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch.on { background: var(--changed); }
+.switch.on::after { left: 16px; }
+.field { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: center; margin-top: 10px; }
+.field label { font-size: 13px; color: var(--muted-foreground); }
+.rule { margin: 10px 0 0 42px; }
+.banner { display: flex; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--warn-surface); border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent); font-size: 13px; margin-top: 16px; }
+.banner b { font-weight: 500; }
+.banner .ico { color: var(--warning); font-weight: 700; }
+.netlist { margin-top: 6px; font-size: 12px; }
+.netlist div { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+/* sheet */
+.sheet-wrap { position: fixed; inset: 0; z-index: 30; background: rgb(0 0 0 / .35); }
+.sheet-wrap[hidden] { display: none; }
+.sheet { position: absolute; right: 0; top: 0; bottom: 0; width: 460px; background: var(--popover); border-left: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.sheet .sbody { flex: 1; overflow: auto; padding: 20px; }
+.sheet h3 { margin: 0 0 2px; font-size: 16px; }
+.group { margin-top: 22px; }
+.glabel { font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+.opt { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; margin-bottom: 6px; }
+.opt.on { border-color: var(--foreground); }
+.opt input { margin-top: 3px; }
+.opt .d { font-size: 12px; color: var(--muted-foreground); }
+.breakdown { font-size: 13px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin-top: 8px; }
+.breakdown div { display: flex; justify-content: space-between; padding: 7px 12px; border-top: 1px solid var(--border); }
+.breakdown div:first-child { border-top: 0; }
+.input { height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); padding: 0 10px; outline: none; width: 100%; }
+.input:focus { border-color: var(--changed); }
+.check-line { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+.sfoot { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+.sfoot .sub { margin-right: auto; }
+select.input { appearance: auto; }
+/* detail */
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; font-size: 13px; }
+.kv > span:nth-child(odd) { color: var(--muted-foreground); }
+.dlabel { font-size: 12px; font-weight: 600; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin: 22px 0 8px; }
+.mini { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 13px; }
+.mini > div { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 7px 12px; border-top: 1px solid var(--border); }
+.mini > div:first-child { border-top: 0; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 2px 8px; border-radius: 6px; background: var(--muted); }
+.badge.ok { color: var(--success); background: color-mix(in srgb, var(--success) 12%, transparent); }
+.badge.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, transparent); }
+.badge.off { color: var(--destructive); background: color-mix(in srgb, var(--destructive) 12%, transparent); }
+/* tokens */
+.trow { display: grid; grid-template-columns: minmax(0,1fr) 150px 200px 130px 110px 90px; gap: 16px; align-items: center; padding: 11px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.trow.head { border-top: 0; color: var(--muted-foreground); font-size: 12px; padding: 8px 14px; background: color-mix(in srgb, var(--muted) 45%, transparent); }
+.trow.revoked { color: var(--muted-foreground); }
+/* terminal */
+.term-page { position: fixed; inset: 0; z-index: 40; background: #0b0b0c; color: #d6d6d6; display: flex; }
+.term-page[hidden] { display: none; }
+.term-nav { width: 300px; flex: none; border-right: 1px solid #222; padding: 18px 10px; overflow: auto; }
+.term-nav h4 { color: #888; font: 600 11px/1 "Geist", sans-serif; text-transform: uppercase; letter-spacing: .06em; margin: 18px 10px 8px; }
+.term-nav h4:first-child { margin-top: 4px; }
+.term-nav button { display: block; width: 100%; text-align: left; border: 0; background: none; color: #aaa; padding: 7px 10px; border-radius: 7px; cursor: pointer; font-size: 13px; }
+.term-nav button.on { background: #1d1d20; color: #fff; }
+.term-nav button span { display: block; font: 11px "Geist Mono", monospace; color: #666; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-main { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 18px 22px 80px; }
+.term-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.term-bar .lights { display: flex; gap: 6px; }
+.term-bar .lights i { width: 11px; height: 11px; border-radius: 50%; background: #333; }
+.term-bar .who { font: 12px "Geist Mono", monospace; color: #888; margin-left: 8px; }
+.term-bar .btn { margin-left: auto; background: #1a1a1c; border-color: #2c2c2f; color: #ddd; height: 28px; font-size: 12px; }
+.term { flex: 1; overflow: auto; background: #111113; border: 1px solid #222; border-radius: 12px; padding: 16px 18px; font: 13px/1.6 "Geist Mono", ui-monospace, monospace; white-space: pre; }
+.term .p { color: #6a9df0; }
+.term .cmd { color: #fff; }
+.term .g { color: #4fb37a; } .term .y { color: #e0a03a; } .term .r { color: #ef5b5b; } .term .d { color: #777; } .term .b { color: #fff; font-weight: 600; } .term .c { color: #6bc6d6; } .term .m { color: #e070b0; }
+.cursor { display: inline-block; width: 8px; height: 15px; background: #ddd; vertical-align: -2px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+/* proto chrome */
+.switcher { position: fixed; left: 236px; bottom: 16px; z-index: 50; display: flex; gap: 2px; padding: 4px; border-radius: 10px; background: #000; border: 1px solid #333; font-size: 12px; }
+.switcher button { border: 0; background: none; color: #aaa; padding: 6px 9px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.switcher button.on { background: #262626; color: #fff; }
+.switcher .sep { width: 1px; background: #333; margin: 4px 3px; }
+.term-page ~ .switcher { left: 312px; }
+.toast { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); z-index: 60; background: var(--primary); color: var(--primary-foreground); padding: 8px 14px; border-radius: 10px; font-size: 13px; box-shadow: var(--shadow); max-width: 620px; }
+.toast[hidden] { display: none; }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail">
+    <div class="logo"></div>
+    <div class="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Projects</div>
+    <div class="place on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/></svg>Servers</div>
+    <div class="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 20V8l8-4 8 4v12M9 20v-6h6v6"/></svg>Organization</div>
+    <div class="spacer"></div>
+    <div class="me"><div class="avatar">AL</div><div><div style="font-weight:500">Ada Lovelace</div><div class="sub">Acme</div></div></div>
+  </nav>
+  <div class="main">
+    <div class="top">
+      <button class="ptab on" data-page="servers">Servers</button>
+      <button class="ptab" data-page="tokens">Tokens</button>
+    </div>
+    <div class="content"><div class="wrap" id="page"></div></div>
+  </div>
+</div>
+
+<div class="bulk" id="bulk" hidden>
+  <span class="count-txt" id="bulk-count"></span>
+  <button class="btn clear" id="bulk-clear">Clear</button>
+  <button class="btn clear" id="bulk-reject">Reject</button>
+  <button class="btn light" id="bulk-enroll">Enroll</button>
+</div>
+
+<!-- New fleet token -->
+<div class="overlay" id="mint" hidden>
+  <div class="dialog" role="dialog" aria-label="New fleet token">
+    <div id="mint-form">
+      <div class="dhead"><input class="namefield mono" id="mint-name" aria-label="Token name" spellcheck="false"><button class="x" data-close>×</button></div>
+      <div class="sub" style="margin:-8px 0 14px">Run it on as many servers as you like. They show up here.</div>
+      <div class="field" style="margin-top:0"><label>Expires</label>
+        <div class="seg" id="mint-exp"><button data-exp="1 day" class="on">1 day</button><button data-exp="7 days">7 days</button><button data-exp="30 days">30 days</button></div>
+      </div>
+      <div class="toggle-row">
+        <button class="switch" id="mint-auto" aria-label="Enroll on arrival"></button>
+        <div><div style="font-weight:500">Enroll on arrival</div><div class="sub">Skip the review. They join as they arrive.</div></div>
+      </div>
+      <div class="rule" id="mint-rule" hidden>
+        <div style="display:flex;align-items:center;gap:8px;margin:10px 0 0 0"><span class="sub">Up to</span><input class="input" id="r-max" value="10" inputmode="numeric" style="width:64px"><span class="sub">servers</span></div>
+      </div>
+      <div class="sfoot" style="padding:16px 0 0;border:0"><button class="btn" data-close>Cancel</button><button class="btn ink" id="mint-go">Create</button></div>
+    </div>
+    <div id="mint-done" hidden>
+      <div class="dhead"><h3 id="done-title">amber-falcon</h3><span class="chip auto" id="done-auto" hidden>Auto-enroll</span><button class="x" data-close>×</button></div>
+      <div class="secret" style="display:none"><span id="done-token"></span><button class="btn sm" id="copy-tok">Copy</button></div>
+      <div class="tabs" style="margin-top:4px">
+        <button class="tab on" data-tab="shell">Shell</button>
+        <button class="tab" data-tab="cloud">cloud-init</button>
+        <button class="tab" data-tab="tf">Terraform</button>
+      </div>
+      <div class="code"><button class="btn" id="copy">Copy</button><span id="cmd-text"></span></div>
+      <p class="hint" id="done-hint">Installs Docker and Ployz. Nothing joins until you say so.</p>
+      <p class="hint t-warn" style="margin-top:2px" id="done-exp">Shown once. Expires in 24 hours.</p>
+      <div class="live"><div class="spin" id="live-spin"></div><span id="live-text">Listening for servers…</span><button class="btn" id="live-go" hidden>Show</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- Enroll sheet -->
+<div class="sheet-wrap" id="sheet" hidden>
+  <div class="sheet">
+    <div class="sbody">
+      <div class="dhead" style="margin:0"><h3 id="sheet-title">Enroll servers</h3><button class="x" data-close>×</button></div>
+      <div class="sub" id="sheet-sub"></div>
+      <div id="spread"></div>
+
+      <div class="group" id="founder-group" hidden>
+        <div class="glabel">First server</div>
+        <select class="input" id="founder"></select>
+        <div class="sub" style="margin-top:6px">Everything else joins once this one's up.</div>
+      </div>
+
+      <div class="group">
+        <div class="glabel">Volumes</div>
+        <label class="opt on" data-storage="zfs"><input type="radio" name="st" checked><div><div>ZFS</div><div class="d">Volumes get size limits.</div></div></label>
+        <div id="zfs-more" style="margin:2px 0 8px 34px">
+          <label class="check-line"><input type="checkbox" id="empty-disk" checked><span>Use a spare disk if there is one</span></label>
+          <label class="check-line"><input type="checkbox" id="fallback" checked><span>Fall back to Docker where ZFS can't run</span></label>
+        </div>
+        <label class="opt" data-storage="none"><input type="radio" name="st"><div><div>Docker only</div><div class="d">Simpler. No size limits.</div></div></label>
+        <div class="breakdown" id="breakdown"></div>
+      </div>
+
+      <div class="group">
+        <div class="glabel">Names</div>
+        <label class="check-line"><input type="radio" name="nm" value="host" checked> Hostnames</label>
+        <label class="check-line"><input type="radio" name="nm" value="pattern"> Pattern <input class="input mono" id="pattern" value="web-{n}" style="width:140px;height:30px;margin-left:6px"></label>
+        <div class="sub" id="name-preview" style="margin-left:25px"></div>
+      </div>
+
+      <div class="group">
+        <div class="glabel">Runs</div>
+        <label class="check-line"><input type="checkbox" checked> Services</label>
+        <label class="check-line"><input type="checkbox" checked> Web traffic</label>
+        <label class="check-line"><input type="checkbox" checked> Builds</label>
+      </div>
+    </div>
+    <div class="sfoot"><span class="sub" id="sheet-foot"></span><button class="btn" data-close>Cancel</button><button class="btn ink" id="go">Enroll</button></div>
+  </div>
+</div>
+
+<!-- Waiting server detail -->
+<div class="sheet-wrap" id="detail" hidden>
+  <div class="sheet">
+    <div class="sbody" id="detail-body"></div>
+    <div class="sfoot"><button class="btn danger" id="d-reject">Reject</button><button class="btn ink" id="d-enroll">Enroll</button></div>
+  </div>
+</div>
+
+<!-- Terminals -->
+<div class="term-page" id="term" hidden>
+  <div class="term-nav" id="term-nav"></div>
+  <div class="term-main">
+    <div class="term-bar"><div class="lights"><i></i><i></i><i></i></div><span class="who" id="term-who"></span><button class="btn" id="term-replay">Replay</button></div>
+    <div class="term" id="term-out"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<div class="switcher" id="switcher">
+  <button data-scene="fleet" class="on">Servers · 200 waiting</button>
+  <button data-scene="enrolling">Enrolling</button>
+  <button data-scene="neworg">New org · 200</button>
+  <button data-scene="first">First server</button>
+  <button data-scene="tokens">Tokens</button>
+  <button data-scene="mint">New token</button>
+  <span class="sep"></span>
+  <button data-scene="cli">Operator CLI</button>
+  <button data-scene="host">Server CLI</button>
+  <span class="sep"></span>
+  <button id="theme">Dark</button>
+</div>
+
+<script>
+// ---------- data ----------
+let seed = 7;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const pick = (a) => a[Math.floor(rnd() * a.length)];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+const OSES = [
+  { os: "Ubuntu 24.04", kernel: "6.8.0-47", w: 9, build: 0 },
+  { os: "Ubuntu 22.04", kernel: "5.15.0-122", w: 3, build: 0 },
+  { os: "Debian 12", kernel: "6.1.0-26", w: 4, build: 4 },
+  { os: "Amazon Linux 2023", kernel: "6.1.112", w: 2, build: 18 },
+  { os: "Rocky Linux 9", kernel: "5.14.0-427", w: 1, build: -1 },
+];
+const weighted = () => { const t = OSES.reduce((s, o) => s + o.w, 0); let r = rnd() * t; for (const o of OSES) { if ((r -= o.w) < 0) return o; } return OSES[0]; };
+const PLACES = [
+  { where: "Hetzner fsn1", prov: "Hetzner", p: "hz-fsn1", ip: [5, 9], token: "amber-falcon" },
+  { where: "Hetzner nbg1", prov: "Hetzner", p: "hz-nbg1", ip: [49, 12], token: "amber-falcon" },
+  { where: "AWS eu-central-1", prov: "AWS", p: "ip-10-0", ip: [3, 120], token: "aws-asg" },
+  { where: "DigitalOcean ams3", prov: "DigitalOcean", p: "do-ams3", ip: [164, 92], token: "amber-falcon" },
+];
+const SIZES = [[4, 16], [8, 32], [16, 64], [32, 128]];
+const DISKS = [80, 160, 240, 480];
+
+function makeServer(i) {
+  const o = weighted(), pl = rnd() < .6 ? PLACES[0] : pick(PLACES), sz = pick(SIZES);
+  const ip = `${pl.ip[0]}.${pl.ip[1]}.${Math.floor(rnd() * 250)}.${Math.floor(rnd() * 250)}`;
+  const s = {
+    id: "w" + i, host: `${pl.p}-${String(i + 1).padStart(3, "0")}`, ip, reportedIp: pl.prov === "AWS" ? `10.0.${Math.floor(rnd() * 9)}.${Math.floor(rnd() * 250)}` : ip,
+    where: pl.where, prov: pl.prov, token: pl.token, cpu: sz[0], ram: sz[1], disk: pick(DISKS), empty: rnd() < .3 ? pick([1.9, 3.8]) : null,
+    os: o.os, kernel: o.kernel, build: o.build, zfsWhy: o.build < 0 ? "Rocky Linux" : null,
+    docker: rnd() < .7 ? "29.4.1" : null, cgroup: "v2", virt: pl.prov === "Hetzner" && rnd() < .3 ? "bare metal" : "kvm",
+    block: null, warn: null, offline: false, failed: null,
+    firstSeen: 2 + Math.floor(rnd() * 40), lastSeen: Math.floor(rnd() * 9) + 1,
+    key: Array.from({ length: 4 }, () => Math.floor(rnd() * 65535).toString(16).padStart(4, "0")).join(""),
+  };
+  s.dockerInstalled = true; // check-in pre-installs Docker
+  const r = rnd();
+  if (!s.zfsWhy) { if (r < .05) s.zfsWhy = "Secure Boot"; else if (r < .08) { s.zfsWhy = "LXC container"; s.virt = "lxc"; } }
+  const b = rnd();
+  if (b < .015) { s.block = "Disk 20 GB"; s.blockWhy = "Needs 30 GB"; s.disk = 20; }
+  else if (b < .025) { s.block = "Docker 24.0"; s.blockWhy = "Needs 29.2 or newer"; s.docker = "24.0.7"; }
+  else if (b < .03) { s.block = "No systemd"; s.blockWhy = "Needs systemd"; }
+  if (rnd() < .04) { s.warn = "cgroup v1"; s.cgroup = "v1"; }
+  if (rnd() < .02) { s.offline = true; s.lastSeen = 40 + Math.floor(rnd() * 200); }
+  s.probe = { udp: rnd() < .93 ? "open" : rnd() < .5 ? "closed" : "unknown", tcp80: rnd() < .96 ? "open" : "unknown", tcp443: rnd() < .96 ? "open" : "unknown", ago: 1 + Math.floor(rnd() * 6) };
+  return s;
+}
+const FLEET = Array.from({ length: 200 }, (_, i) => makeServer(i));
+FLEET[7].failed = { stage: "storage", msg: "zpool create: /dev/nvme1n1 is busy" };
+[23, 141].forEach((i) => { FLEET[i].offline = true; FLEET[i].lastSeen = 41 + i; FLEET[i].block = null; });
+[2, 30].forEach((i) => { FLEET[i].warn = "cgroup v1"; FLEET[i].cgroup = "v1"; FLEET[i].block = null; });
+const EXISTING = [
+  { name: "fra-2", chips: ["postgres", "web"], state: "off" },
+  { name: "ams-1", runs: "Builds only", cpu: 12, mem: 31 },
+  { name: "fra-1", chips: ["api", "cron", "postgres"], more: 3, cpu: 47, mem: 44 },
+  { name: "syd-1", chips: ["api"], cpu: 8, mem: 22 },
+];
+const TOKENS0 = [
+  { name: "amber-falcon", by: "Ada", created: "2h ago", used: "4s ago", expires: "in 22h", waiting: 0, joined: 0 },
+  { name: "aws-asg", by: "Ada", created: "5h ago", used: "1m ago", expires: "in 6 days", waiting: 0, joined: 12, max: 50 },
+  { name: "quiet-moss", by: "Grace", created: "7d ago", used: "6d ago", expires: "6d ago", waiting: 0, joined: 3, expired: true },
+];
+
+// ---------- state ----------
+const st = { scene: "fleet", page: "servers", servers: [], waiting: [], sel: new Set(), filter: "all", tokenFilter: "", q: "",
+  enr: [], storage: "zfs", emptyDisk: true, fallback: true, rejected: 0, founded: true, tokens: [], showAllEnr: false, detail: null, spreadOpen: false };
+
+function closeAll() { ["mint", "sheet", "detail"].forEach((id) => $(id).hidden = true); }
+let arrivalTimer = null;
+
+function setScene(scene) {
+  st.scene = scene; st.sel.clear(); st.enr = []; st.filter = "all"; st.tokenFilter = ""; st.q = ""; st.rejected = 0; st.showAllEnr = false;
+  clearInterval(arrivalTimer); stopTerm(); closeAll();
+  st.tokens = TOKENS0.map((t) => ({ ...t }));
+  $("term").hidden = true;
+  document.querySelectorAll("#switcher [data-scene]").forEach((b) => b.classList.toggle("on", b.dataset.scene === scene));
+  history.replaceState(null, "", "#" + scene);
+  st.page = "servers"; st.founded = true;
+  const fleet = () => FLEET.map((s) => ({ ...s }));
+  if (scene === "fleet") { st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = fleet(); }
+  if (scene === "enrolling") {
+    st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = fleet();
+    const go = st.waiting.filter((s) => s.prov !== "AWS" && !s.block && !s.offline && !s.failed).slice(0, 64);
+    startEnroll(go, { pattern: "web-{n}", storage: "zfs", emptyDisk: true, fallback: true, founderId: null }, false);
+    st.enr.forEach((e, i) => warm(e, i));
+  }
+  if (scene === "neworg") { st.servers = []; st.founded = false; st.waiting = fleet(); }
+  if (scene === "first") { st.servers = []; st.founded = false; st.waiting = []; render(); simulateArrivals(1, () => { st.sel.add(st.waiting[0].id); openSheet(); }); return; }
+  if (scene === "tokens") { st.page = "tokens"; st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = fleet(); }
+  if (scene === "mint") { st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = []; render(); openMint(); return; }
+  if (scene === "cli" || scene === "host") { st.servers = EXISTING.map((s) => ({ ...s })); st.waiting = fleet(); render(); openTerm(scene); return; }
+  render();
+}
+
+// ---------- status ----------
+function classify(s) {
+  if (s.offline) return "offline";
+  if (s.block) return "blocked";
+  return "ready";
+}
+function volumeCell(s) {
+  if (s.zfsWhy) return `<div class="two"><span>Docker only</span><span>${esc(s.zfsWhy)}</span></div>`;
+  const where = s.empty ? `Main or empty disk` : `Main disk`;
+  return `<div class="two"><span>ZFS${s.build > 10 ? ` <span class="t-muted">· ~${s.build} min</span>` : ""}</span><span>${where}</span></div>`;
+}
+function statusCell(s) {
+  if (s.offline) return `<div class="two status"><b class="t-off">Offline</b><span>${s.lastSeen} min ago</span></div>`;
+  if (s.block) return `<div class="two status"><b class="t-warn">${esc(s.block)}</b><span>${esc(s.blockWhy)}</span></div>`;
+  if (s.failed) return `<div class="two status"><b class="t-off">Failed at ${s.failed.stage}</b><span title="${esc(s.failed.msg)}">${esc(s.failed.msg)}</span></div>`;
+  return `<div class="two status"><b class="t-ok">Ready</b><span>${s.warn ? `<span class="t-warn">${s.warn}</span> · ` : ""}${s.lastSeen}s ago</span></div>`;
+}
+
+// ---------- servers page ----------
+function serverRow(s) {
+  const off = s.state === "off";
+  let mid;
+  if (s.runs) mid = `<span class="t-muted">${s.runs}</span>`;
+  else if (!s.chips?.length) mid = `<span class="t-muted">No services yet</span>`;
+  else mid = `<div class="chips">${s.chips.map((c) => `<span class="chip">${c}</span>`).join("")}${s.more ? `<span class="chip out">+${s.more}</span>` : ""}</div>`;
+  const note = off ? `<span class="t-off">Offline</span>` : s.fresh ? `<span class="chip new">New</span>` : s.dockerOnly ? `<span class="t-muted">Docker only</span>` : "";
+  const meter = (label, v) => off || v == null ? `<span class="meter t-muted">${label} —</span>` : `<span class="meter">${label} <span class="bar"><i style="width:${v}%"></i></span><span class="num">${v}%</span></span>`;
+  return `<div class="srow"><span class="dot${off ? " off" : ""}"></span><span style="font-weight:500" class="trunc">${esc(s.name)}</span><div style="min-width:0;overflow:hidden">${mid}</div><div>${note}</div>${meter("CPU", s.cpu)}${meter("Memory", s.mem)}<span class="chev">›</span></div>`;
+}
+
+const STAGES = ["installing", "storage", "enrolling", "queued", "joining", "publishing"];
+const STAGE_LABEL = { awaiting_founder: "Waiting on first", instructed: "Starting", installing: "Installing", storage: "Setting up ZFS", enrolling: "Enrolling", queued: "In line", joining: "Joining", publishing: "Going live" };
+function stepDots(e, all) {
+  const seq = e.zfs ? STAGES : STAGES.filter((x) => x !== "storage");
+  const idx = all ? seq.length : seq.indexOf(e.stage);
+  return `<div class="steps" title="${seq.join(" → ")}">${seq.map((x, i) => {
+    let c = "";
+    if (idx > i) c = "done";
+    else if (idx === i) c = e.stage === "queued" ? "wait" : "now";
+    return `<i class="${c}"></i>`;
+  }).join("")}</div>`;
+}
+function enrRow(e) {
+  if (e.end === "joined") return `<div class="erow done"><span class="dot"></span>
+    <span class="trunc" style="font-weight:500">${esc(e.name)}</span>
+    <span class="mono trunc">${e.ip}</span>
+    ${stepDots({ ...e, stage: "done" }, true)}
+    <span class="t-ok trunc">Joined</span><span></span></div>`;
+  const waitish = e.stage === "awaiting_founder" || e.stage === "queued" || e.stage === "instructed";
+  return `<div class="erow"><span class="dot ${waitish ? "q" : "pulse"}"></span>
+    <span class="trunc" style="font-weight:500">${esc(e.name)}${e.founder ? ` <span class="t-muted" style="font-weight:400">· first</span>` : ""}</span>
+    <span class="mono t-muted trunc">${e.ip}</span>
+    ${stepDots(e)}
+    <span class="${waitish ? "t-muted" : "t-info"} trunc">${STAGE_LABEL[e.stage]}</span>
+    <button class="btn ghost sm" data-cancel="${e.id}">Cancel</button></div>`;
+}
+
+// Fixed buckets, fixed order: counts change, the layout never does.
+const BUCKETS = [
+  ["Starting", ["awaiting_founder", "instructed"]],
+  ["Installing", ["installing"]],
+  ["Setting up ZFS", ["storage"]],
+  ["Enrolling", ["enrolling"]],
+  ["In line", ["queued"]],
+  ["Joining", ["joining", "publishing"]],
+];
+function renderEnrolling() {
+  const rows = st.enr.filter((e) => e.end !== "cancelled" && e.end !== "failed");
+  if (!rows.some((e) => !e.end)) return "";
+  const joined = rows.filter((e) => e.end === "joined").length;
+  const live = rows.filter((e) => !e.end);
+  const bucket = ([label, keys]) => {
+    const n = live.filter((e) => keys.includes(e.stage)).length;
+    return `<span>${label}<b class="${n ? "" : "zero"}">${n}${keys[0] === "joining" ? `<span class="t-muted" style="font-weight:400"> / 8</span>` : ""}</b></span>`;
+  };
+  return `<div class="shead"><h2>Enrolling</h2><span class="count" style="font-variant-numeric:tabular-nums">${joined} of ${rows.length} live</span>
+      <div class="bar wide" style="width:180px;margin-left:auto"><i style="width:${(joined / rows.length) * 100}%"></i></div>
+      <button class="btn sm" id="cancel-all">Cancel all</button></div>
+    <div class="stagebar">${BUCKETS.map(bucket).join("")}</div>
+    <div class="list ebox" style="margin-bottom:28px">${rows.map(enrRow).join("")}</div>`;
+}
+
+function visibleWaiting() {
+  const q = st.q.toLowerCase();
+  const re = q.includes("*") ? new RegExp("^" + q.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$") : null;
+  return st.waiting.filter((s) => (st.filter === "all" || classify(s) === st.filter)
+    && (!st.tokenFilter || s.token === st.tokenFilter)
+    && (!q || (re ? re.test(s.host) || re.test(s.ip) : (s.host + s.ip + s.where + s.os).toLowerCase().includes(q))));
+}
+
+function renderWaiting() {
+  if (!st.waiting.length) return "";
+  const counts = { all: st.waiting.length, ready: 0, blocked: 0, offline: 0 };
+  st.waiting.forEach((s) => counts[classify(s)]++);
+  const rows = visibleWaiting();
+  const selectable = rows.filter((s) => classify(s) === "ready");
+  const allOn = selectable.length && selectable.every((s) => st.sel.has(s.id));
+  const f = (k, label) => `<button class="filter ${st.filter === k ? "on" : ""}" data-filter="${k}">${label} <span class="t-muted">${counts[k]}</span></button>`;
+  const toks = [...new Set(st.waiting.map((s) => s.token))];
+  return `
+    <div class="section"><div class="shead"><h2>Waiting</h2><span class="count">${st.waiting.length}</span>
+      <div class="filters">${f("all", "All")}${f("ready", "Ready")}${f("blocked", "Blocked")}${f("offline", "Offline")}
+      <select class="search" id="tok-filter"><option value="">All tokens</option>${toks.map((t) => `<option ${st.tokenFilter === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+      <input class="search" id="q" placeholder="Filter, or hz-fsn1-*" value="${esc(st.q)}"></div></div>
+    <div class="wtable">
+      <div class="wrow head"><span class="cbcell"><input type="checkbox" id="all" ${allOn ? "checked" : ""}></span><span>Name</span><span>Source IP</span><span>Size</span><span>Disks</span><span>Volumes</span><span>Status</span></div>
+      <div class="wbody">${rows.map((s) => {
+        const ok = classify(s) === "ready";
+        return `<div class="wrow ${st.sel.has(s.id) ? "sel" : ""}" data-id="${s.id}">
+          <span class="cbcell" data-cb><input type="checkbox" ${st.sel.has(s.id) ? "checked" : ""} ${ok ? "" : "disabled"}></span>
+          <div class="two"><span style="font-weight:500">${esc(s.host)}</span><span>${s.os}</span></div>
+          <div class="two"><span class="mono">${s.ip}</span><span>${s.where}</span></div>
+          <span class="t-muted trunc">${s.cpu} · ${s.ram} GB</span>
+          <span class="trunc">${s.disk} GB${s.empty ? ` <span class="extra">+${s.empty} TB</span>` : ""}</span>
+          ${volumeCell(s)}${statusCell(s)}</div>`;
+      }).join("") || `<div class="wrow" style="cursor:default"><span></span><span class="t-muted">Nothing matches</span></div>`}</div>
+    </div>
+    ${st.rejected ? `<div class="footline">${st.rejected} rejected. They won't come back.</div>` : ""}</div>`;
+}
+
+function renderServersPage() {
+  const settled = st.servers;
+  let html = `<div class="actions"><button class="btn ink" id="add-btn">+ Add servers</button></div>`;
+  html += renderEnrolling();
+  if (settled.length) html += `<div class="list">${settled.map(serverRow).join("")}</div>`;
+  else if (!st.enr.length && !st.waiting.length) html += `<div class="empty"><strong>No servers yet</strong>Paste one line into your servers. They'll show up here, ready to go.<div style="margin-top:16px"><button class="btn ink" id="add-btn2">Add servers</button></div></div>`;
+  else if (!st.enr.length) html += `<div class="empty" style="padding:24px"><strong>Pick a server to start with</strong>The rest join once it's up.</div>`;
+  html += renderWaiting();
+  return html;
+}
+
+// ---------- tokens page ----------
+function renderTokensPage() {
+  st.tokens.forEach((t) => { t.waiting = st.waiting.filter((s) => s.token === t.name).length; });
+  const dead = (t) => t.revoked || t.expired;
+  return `<div class="actions"><span class="sub" style="margin-right:auto">Paste one into any server and it shows up here.</span><button class="btn ink" id="new-token">New token</button></div>
+  <div class="list">
+    <div class="trow head"><span>Name</span><span>Joins</span><span>Servers</span><span>Expires</span><span>Last used</span><span></span></div>
+    ${st.tokens.map((t) => `<div class="trow ${dead(t) ? "revoked" : ""}">
+      <div class="two"><span class="mono" style="font-weight:500">${esc(t.name)}</span><span>${t.created} · ${t.by}</span></div>
+      <span class="trunc">${t.max ? `<span class="chip auto">Auto</span> <span class="t-muted">up to ${t.max}</span>` : `<span class="t-muted">When you say</span>`}</span>
+      <span style="white-space:nowrap">${dead(t) || t.max ? `${t.joined}${t.max && !dead(t) ? `/${t.max}` : ""} joined` : `<a href="#" data-show-token="${t.name}" style="color:inherit">${t.waiting} waiting</a><span class="t-muted"> · ${t.joined} joined</span>`}</span>
+      <span class="${dead(t) ? "" : "t-muted"}">${t.revoked ? `Revoked ${t.revoked}` : t.expired ? `Expired ${t.expires}` : t.expires.replace(/^in /, "In ")}</span>
+      <span class="t-muted">${t.used}</span>
+      <span class="right">${dead(t) ? "" : `<button class="btn ghost sm danger" data-revoke="${t.name}">Revoke</button>`}</span></div>`).join("")}
+  </div>
+  <div class="footline">Expired or revoked tokens stop new servers. Ones already in stay.</div>`;
+}
+
+function renderBulk() {
+  const n = st.sel.size;
+  $("bulk").hidden = n === 0 || st.page !== "servers";
+  $("bulk-count").textContent = `${n} selected`;
+  $("bulk-enroll").textContent = `Enroll ${n}`;
+}
+
+function render() {
+  document.querySelectorAll(".ptab").forEach((b) => b.classList.toggle("on", b.dataset.page === st.page));
+  const page = $("page");
+  const keep = [".wbody", ".ebox"].map((sel) => page.querySelector(sel)?.scrollTop);
+  page.innerHTML = st.page === "tokens" ? renderTokensPage() : renderServersPage();
+  [".wbody", ".ebox"].forEach((sel, i) => { const el = page.querySelector(sel); if (el && keep[i]) el.scrollTop = keep[i]; });
+  renderBulk();
+}
+
+// ---------- interactions ----------
+document.addEventListener("click", (e) => {
+  const t = e.target;
+  const pt = t.closest(".ptab"); if (pt) { st.page = pt.dataset.page; render(); return; }
+  const f = t.closest("[data-filter]"); if (f) { st.filter = f.dataset.filter; render(); return; }
+  if (t.id === "add-btn" || t.id === "add-btn2" || t.id === "new-token") { openMint(); return; }
+  if (t.id === "cancel-all") { cancelEnr(st.enr.filter((x) => !x.end).map((x) => x.id)); return; }
+  const c = t.closest("[data-cancel]"); if (c) { cancelEnr([c.dataset.cancel]); return; }
+  const rv = t.closest("[data-revoke]"); if (rv) { revoke(rv.dataset.revoke); return; }
+  const sh = t.closest("[data-show-token]"); if (sh) { e.preventDefault(); st.page = "servers"; st.tokenFilter = sh.dataset.showToken; render(); return; }
+  if (t.id === "all") {
+    const on = t.checked;
+    visibleWaiting().filter((s) => classify(s) === "ready").forEach((s) => on ? st.sel.add(s.id) : st.sel.delete(s.id));
+    render(); return;
+  }
+  const row = t.closest(".wrow[data-id]");
+  if (row) {
+    const s = st.waiting.find((x) => x.id === row.dataset.id);
+    if (t.closest("[data-cb]")) { if (classify(s) === "ready") { st.sel.has(s.id) ? st.sel.delete(s.id) : st.sel.add(s.id); render(); } return; }
+    openDetail(s);
+  }
+  if (t.id === "spread-toggle") { st.spreadOpen = !st.spreadOpen; renderSheet(); }
+});
+document.addEventListener("input", (e) => {
+  if (e.target.id === "q") { st.q = e.target.value; const pos = e.target.selectionStart; render(); const q = $("q"); q.focus(); q.setSelectionRange(pos, pos); }
+});
+document.addEventListener("change", (e) => { if (e.target.id === "tok-filter") { st.tokenFilter = e.target.value; render(); } });
+$("bulk-clear").onclick = () => { st.sel.clear(); render(); };
+$("bulk-enroll").onclick = () => openSheet();
+$("bulk-reject").onclick = () => reject([...st.sel]);
+
+function reject(ids) {
+  const n = ids.length;
+  st.waiting = st.waiting.filter((s) => !ids.includes(s.id));
+  ids.forEach((id) => st.sel.delete(id));
+  st.rejected += n; closeAll(); render();
+  toast(`Rejected ${n} server${n > 1 ? "s" : ""}`);
+}
+function revoke(name) {
+  const t = st.tokens.find((x) => x.name === name);
+  t.revoked = "just now";
+  const n = st.waiting.filter((s) => s.token === name).length;
+  st.waiting.forEach((s) => { if (s.token === name) { s.offline = true; s.lastSeen = 0; } });
+  render();
+  toast(`Revoked ${name}${n ? ` · ${n} waiting removed` : ""}`);
+}
+
+// ---------- detail ----------
+function probeRow(label, v, who) {
+  const cls = v === "open" ? "t-ok" : v === "closed" ? "t-off" : "t-muted";
+  const txt = v === "open" ? "Open" : v === "closed" ? "Closed" : "Unknown · port busy";
+  return `<div><span>${label} <span class="t-muted">· ${who}</span></span><span class="${cls}">${txt}</span></div>`;
+}
+function openDetail(s) {
+  st.detail = s;
+  const c = classify(s);
+  const badge = c === "offline" ? `<span class="badge off">Offline</span>` : c === "blocked" ? `<span class="badge warn">${esc(s.block)}</span>` : s.failed ? `<span class="badge off">Failed</span>` : `<span class="badge ok">Ready</span>`;
+  const blockers = [s.block && [`<b class="t-warn">${esc(s.block)}</b>`, s.blockWhy], s.warn && [`<span class="t-warn">cgroup v1</span>`, "Works, with looser memory limits."], s.failed && [`<b class="t-off">Failed at ${s.failed.stage}</b>`, s.failed.msg]].filter(Boolean);
+  $("detail-body").innerHTML = `
+    <div class="dhead" style="margin:0"><h3>${esc(s.host)}</h3>${badge}<button class="x" data-close>×</button></div>
+    <div class="sub">${c === "offline" ? `Last seen ${s.lastSeen} min ago` : `Seen ${s.lastSeen}s ago`}</div>
+    ${blockers.length ? `<div class="dlabel">Needs attention</div><div class="mini">${blockers.map(([a, b]) => `<div><span>${a}<div class="sub">${esc(b)}</div></span><span></span></div>`).join("")}</div>
+      ${s.block ? `<div class="sub" style="margin-top:6px">Fix it on the server and it clears itself.</div>` : ""}` : ""}
+    <div class="dlabel">Where it came from</div>
+    <div class="kv">
+      <span>Source IP</span><span class="mono">${s.ip}</span>
+      ${s.reportedIp !== s.ip ? `<span>Reports</span><span class="mono">${s.reportedIp}</span>` : ""}
+      <span>Provider</span><span>${s.where}</span>
+      <span>Token</span><span class="mono">${s.token}</span>
+      <span>First seen</span><span>${s.firstSeen} min ago</span>
+      <span>Key</span><span class="mono t-muted">ed25519:${s.key}</span>
+    </div>
+    <div class="dlabel">Host</div>
+    <div class="kv">
+      <span>OS</span><span>${s.os} · ${s.kernel}</span>
+      <span>Machine</span><span>${s.cpu} vCPU · ${s.ram} GB · x86_64 · ${s.virt}</span>
+      <span>Docker</span><span>${s.docker ? `${s.docker}${s.block?.startsWith("Docker") ? ` <span class="t-warn">· too old</span>` : ""}` : "29.4.1 · installed at check-in"}</span>
+      <span>cgroup</span><span>${s.cgroup}</span>
+    </div>
+    <div class="dlabel">Disks</div>
+    <div class="mini">
+      <div><span class="mono">/dev/sda <span class="t-muted">· root</span></span><span>${s.disk} GB <span class="t-muted">· ${Math.round(s.disk * .78)} GB free</span></span></div>
+      ${s.empty ? `<div><span class="mono">/dev/nvme1n1 <span class="t-muted">· empty</span></span><span class="extra">${s.empty} TB</span></div>` : ""}
+    </div>
+    <div class="dlabel">Volumes</div>
+    <div class="mini">${s.zfsWhy ? `<div><span>ZFS can't run <div class="sub">${esc(s.zfsWhy)}</div></span><span>Docker only</span></div>`
+      : `<div><span>ZFS on main disk${s.build > 0 ? `<div class="sub">Builds the module, ~${s.build} min</div>` : ""}</span><span class="t-ok">Yes</span></div>${s.empty ? `<div><span>ZFS on /dev/nvme1n1</span><span class="t-ok">Yes</span></div>` : ""}`}</div>
+    <div class="dlabel">Network <span style="text-transform:none;letter-spacing:0;font-weight:400">· checked ${s.probe.ago} min ago</span></div>
+    <div class="mini">
+      ${probeRow("UDP 51820", s.probe.udp, "other servers")}
+      ${probeRow("TCP 80", s.probe.tcp80, "Cloud")}
+      ${probeRow("TCP 443", s.probe.tcp443, "Cloud")}
+    </div>
+    ${s.probe.udp === "closed" ? `<div class="sub t-warn" style="margin-top:6px">Open UDP 51820 so servers can reach each other.</div>` : ""}`;
+  $("d-enroll").disabled = c !== "ready";
+  $("detail").hidden = false;
+  $("detail-body").querySelector("[data-close]").onclick = closeAll;
+}
+$("d-reject").onclick = () => reject([st.detail.id]);
+$("d-enroll").onclick = () => { st.sel.clear(); st.sel.add(st.detail.id); closeAll(); openSheet(); };
+
+// ---------- mint ----------
+const TOKEN = "pflt_Kq7v2HxR9mLt4Wn8bZ3cYp6D";
+function cmds(tok) {
+  return {
+    shell: `curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=${tok} sh`,
+    cloud: `#cloud-config\nruncmd:\n  - curl -fsSL https://ployz.sh | PLOYZ_TOKEN=${tok} sh`,
+    tf: `resource "hcloud_server" "web" {\n  count       = 200\n  server_type = "cpx41"\n  image       = "ubuntu-24.04"\n  user_data   = <<-EOT\n    #cloud-config\n    runcmd:\n      - curl -fsSL https://ployz.sh | PLOYZ_TOKEN=\${var.ployz_token} sh\n  EOT\n}`,
+  };
+}
+let mintAuto = false, mintExp = "1 day";
+const NAMES = ["swift-heron", "calm-otter", "bright-fern", "bold-lynx"];
+const EXP_IN = { "1 day": "in 24h", "7 days": "in 7 days", "30 days": "in 30 days" };
+function openMint() {
+  closeAll(); clearInterval(arrivalTimer);
+  mintAuto = false; $("mint-auto").classList.remove("on"); $("mint-rule").hidden = true;
+  $("r-max").value = "10"; setExp("1 day");
+  $("mint-name").value = NAMES.find((n) => !st.tokens.some((t) => t.name === n));
+  $("mint-form").hidden = false; $("mint-done").hidden = true; $("mint").hidden = false;
+  mintValid();
+}
+function setExp(v) { mintExp = v; document.querySelectorAll("#mint-exp button").forEach((b) => b.classList.toggle("on", b.dataset.exp === v)); }
+document.querySelectorAll("#mint-exp button").forEach((b) => b.onclick = () => setExp(b.dataset.exp));
+function mintValid() {
+  const max = parseInt($("r-max").value, 10);
+  $("mint-go").disabled = !$("mint-name").value.trim() || (mintAuto && !(max > 0));
+}
+["r-max", "mint-name"].forEach((id) => $(id).oninput = mintValid);
+$("mint-auto").onclick = () => { mintAuto = !mintAuto; $("mint-auto").classList.toggle("on", mintAuto); $("mint-rule").hidden = !mintAuto; mintValid(); };
+$("mint-go").onclick = () => {
+  const name = $("mint-name").value.trim();
+  const max = mintAuto ? parseInt($("r-max").value, 10) : null;
+  st.tokens.unshift({ name, by: "Ada", created: "just now", used: "never", expires: EXP_IN[mintExp], waiting: 0, joined: 0, max });
+  $("done-title").textContent = name; $("done-auto").hidden = !mintAuto;
+  $("done-exp").textContent = `Shown once. Expires ${EXP_IN[mintExp]}.`;
+  $("done-hint").textContent = mintAuto ? `Installs Docker and Ployz, then joins. Stops after ${max}.` : "Installs Docker and Ployz. Nothing joins until you say so.";
+  $("done-token").textContent = TOKEN;
+  $("mint-form").hidden = true; $("mint-done").hidden = false;
+  setTab("shell"); $("live-go").hidden = true; $("live-spin").style.display = ""; $("live-text").textContent = "Listening for servers…";
+  render();
+  simulateArrivals(st.founded ? 14 : 3, null, name);
+};
+function setTab(t) { document.querySelectorAll("#mint .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === t)); $("cmd-text").textContent = cmds(TOKEN)[t]; }
+document.querySelectorAll("#mint .tab").forEach((b) => b.onclick = () => setTab(b.dataset.tab));
+$("copy").onclick = () => { $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy", 1200); };
+$("copy-tok").onclick = () => { $("copy-tok").textContent = "Copied"; setTimeout(() => $("copy-tok").textContent = "Copy", 1200); };
+$("live-go").onclick = () => { closeAll(); st.page = "servers"; render(); };
+
+function simulateArrivals(n, done, tokenName) {
+  let i = 0;
+  const src = FLEET.filter((s) => !s.block && !s.offline && !s.failed).slice(60, 60 + n);
+  const auto = tokenName && mintAuto && st.founded;
+  clearInterval(arrivalTimer);
+  arrivalTimer = setInterval(() => {
+    if (i >= n) { clearInterval(arrivalTimer); if (done) done(); return; }
+    const s = { ...src[i], id: "a" + i + Math.floor(rnd() * 1e6), token: tokenName || "amber-falcon", firstSeen: 0, lastSeen: 1 };
+    if (n === 1) { s.host = "hz-fsn1-001"; s.empty = 3.8; s.zfsWhy = null; s.build = 0; s.os = "Ubuntu 24.04"; }
+    if (auto) startEnroll([s], { storage: "zfs", emptyDisk: true, fallback: true }, true);
+    else st.waiting.push(s);
+    i++;
+    if (!$("mint").hidden) {
+      $("live-text").innerHTML = auto ? `<b>${i}</b> joining` : `<b>${i}</b> ${i === 1 ? "server is" : "servers are"} here`;
+      $("live-go").hidden = false;
+    }
+    render();
+  }, n === 1 ? 1400 : 700);
+}
+
+// ---------- enroll sheet ----------
+function selected() { return st.waiting.filter((s) => st.sel.has(s.id)); }
+function openSheet() {
+  const sel = selected(); if (!sel.length) return;
+  closeAll(); st.spreadOpen = false;
+  $("sheet").hidden = false;
+  $("sheet-title").textContent = `Enroll ${sel.length} server${sel.length > 1 ? "s" : ""}`;
+  const first = !st.founded;
+  $("founder-group").hidden = !first || sel.length === 1;
+  if (first) $("founder").innerHTML = sel.map((s) => `<option value="${s.id}">${s.host} · ${s.ip}</option>`).join("");
+  $("sheet-sub").textContent = first ? (sel.length === 1 ? `${sel[0].host} starts your cluster.` : "One goes first. The rest follow.") : `Joining ${st.servers.length} servers you already have.`;
+  renderSheet();
+}
+function nets(sel) {
+  const m = new Map();
+  sel.forEach((s) => { const k = s.ip.split(".").slice(0, 2).join(".") + ".0.0/16"; const v = m.get(k) || { prov: s.prov, n: 0 }; v.n++; m.set(k, v); });
+  return [...m.entries()].sort((a, b) => b[1].n - a[1].n);
+}
+function plan(sel, opt) {
+  return sel.map((s) => {
+    if (opt.storage === "none") return { s, vol: "none" };
+    if (s.zfsWhy) return opt.fallback ? { s, vol: "none", why: s.zfsWhy } : { s, skip: `ZFS can't run · ${s.zfsWhy}` };
+    if (opt.emptyDisk && s.empty) return { s, vol: "zfs:/dev/nvme1n1" };
+    return { s, vol: "zfs" };
+  });
+}
+function opts() {
+  const pat = document.querySelector("input[name=nm]:checked").value === "pattern";
+  return { storage: st.storage, emptyDisk: st.emptyDisk, fallback: st.fallback, pattern: pat ? $("pattern").value : null, founderId: !st.founded ? (selected().length === 1 ? selected()[0].id : $("founder").value) : null };
+}
+function renderSheet() {
+  const sel = selected();
+  document.querySelectorAll("[data-storage]").forEach((o) => { const on = o.dataset.storage === st.storage; o.classList.toggle("on", on); o.querySelector("input").checked = on; });
+  $("zfs-more").style.display = st.storage === "zfs" ? "" : "none";
+  const p = plan(sel, opts());
+  const lines = {};
+  const add = (k, n = 1) => lines[k] = (lines[k] || 0) + n;
+  p.forEach((r) => {
+    if (r.skip) add(`<span class="t-warn">Skip · ${esc(r.skip)}</span>`);
+    else if (r.vol === "zfs:/dev/nvme1n1") add("ZFS on empty disk");
+    else if (r.vol === "zfs") add("ZFS on main disk");
+    else add(r.why ? `Docker only <span class="t-muted">· ${esc(r.why)}</span>` : "Docker only");
+  });
+  const slow = p.filter((r) => !r.skip && r.vol !== "none" && r.s.build > 10).length;
+  if (slow) add(`<span class="t-muted">ZFS module builds ~18 min</span>`, slow);
+  $("breakdown").innerHTML = Object.entries(lines).map(([l, n]) => `<div><span>${l}</span><span>${n}</span></div>`).join("");
+  const o = opts();
+  const go = p.filter((r) => !r.skip);
+  const ordered = o.founderId ? [...go.filter((r) => r.s.id === o.founderId), ...go.filter((r) => r.s.id !== o.founderId)] : go;
+  $("name-preview").textContent = ordered.slice(0, 3).map((r, i) => o.pattern ? o.pattern.replace("{n}", i + 1) : r.s.host).join(", ") + (ordered.length > 3 ? ", …" : "");
+  // source spread warning
+  const ns = nets(sel), provs = new Set(sel.map((s) => s.prov));
+  $("spread").innerHTML = (provs.size > 1 || ns.length > 3) ? `<div class="banner"><span class="ico">!</span><div style="flex:1">
+      <b>${ns.length} networks, ${provs.size} provider${provs.size > 1 ? "s" : ""}.</b> Make sure they're all yours. <a href="#" id="spread-toggle" style="color:inherit">${st.spreadOpen ? "Hide" : "Show"}</a>
+      ${st.spreadOpen ? `<div class="netlist">${ns.map(([k, v]) => `<div><span class="mono">${k}</span><span class="t-muted">${v.prov} · ${v.n}</span></div>`).join("")}</div>` : ""}</div></div>` : "";
+  $("sheet-foot").textContent = !st.founded && ordered.length > 1 ? "First one, then 8 at a time." : ordered.length > 8 ? "Joins 8 at a time." : "";
+  $("go").textContent = `Enroll ${ordered.length}`;
+  $("go").disabled = !ordered.length;
+}
+document.querySelectorAll("[data-storage]").forEach((o) => o.onclick = () => { st.storage = o.dataset.storage; renderSheet(); });
+$("empty-disk").onchange = (e) => { st.emptyDisk = e.target.checked; renderSheet(); };
+$("fallback").onchange = (e) => { st.fallback = e.target.checked; renderSheet(); };
+$("founder").onchange = renderSheet;
+document.querySelectorAll("input[name=nm]").forEach((r) => r.onchange = renderSheet);
+$("pattern").oninput = renderSheet;
+$("spread").addEventListener("click", (e) => { if (e.target.id === "spread-toggle") e.preventDefault(); });
+$("go").onclick = () => {
+  const sel = selected(), o = opts();
+  const n = startEnroll(sel, o, false);
+  closeAll(); render();
+  toast(o.founderId ? `Starting with ${sel.find((s) => s.id === o.founderId).host}` : `Enrolling ${n}`);
+};
+
+// ---------- enrollment simulation ----------
+let ticker = null;
+const JOIN_SLOTS = 8;
+function startEnroll(sel, o, isAuto) {
+  const p = plan(sel, { storage: o.storage || "zfs", emptyDisk: o.emptyDisk !== false, fallback: o.fallback !== false }).filter((r) => !r.skip);
+  const ordered = o.founderId ? [...p.filter((r) => r.s.id === o.founderId), ...p.filter((r) => r.s.id !== o.founderId)] : p;
+  const base = st.enr.length;
+  ordered.forEach((r, i) => {
+    const founder = !!o.founderId && i === 0;
+    st.enr.push({
+      id: r.s.id, w: r.s, name: o.pattern ? o.pattern.replace("{n}", base + i + 1) : r.s.host, ip: r.s.ip, zfs: r.vol !== "none", founder, auto: isAuto,
+      stage: !st.founded && !founder ? "awaiting_founder" : "instructed", t: 1 + Math.floor(rnd() * 8),
+      install: 10 + Math.floor(rnd() * 14), store: r.s.build > 10 ? 70 + Math.floor(rnd() * 20) : r.s.build > 0 ? 25 : 6, end: null,
+    });
+  });
+  const ids = new Set(ordered.map((r) => r.s.id));
+  st.waiting = st.waiting.filter((s) => !ids.has(s.id));
+  ids.forEach((id) => st.sel.delete(id));
+  run();
+  return ordered.length;
+}
+function warm(e, i) { // pre-advance the Enrolling scene so it opens mid-run
+  if (i < 6) { e.end = "joined"; st.servers.push({ name: e.name, chips: [], fresh: true, dockerOnly: !e.zfs, cpu: 2 + Math.floor(rnd() * 4), mem: 6 + Math.floor(rnd() * 5) }); return; }
+  if (i < 14) { e.stage = "joining"; e.t = 2 + (i % 5); return; }
+  if (i < 22) { e.stage = "queued"; return; }
+  if (i < 30) { e.stage = "enrolling"; e.t = 1 + (i % 3); return; }
+  if (i < 48) { e.stage = e.zfs ? "storage" : "installing"; e.t = 4 + (i % 30); return; }
+  e.stage = "installing"; e.t = i % 12;
+}
+function next(e) {
+  const seq = ["instructed", "installing", ...(e.zfs ? ["storage"] : []), "enrolling", "queued", "joining", "publishing"];
+  return seq[seq.indexOf(e.stage) + 1];
+}
+function tick() {
+  const live = st.enr.filter((e) => !e.end);
+  if (!live.length) { clearInterval(ticker); ticker = null; render(); return; }
+  let joining = live.filter((e) => e.stage === "joining").length;
+  const founderLive = live.some((e) => e.founder);
+  for (const e of live) {
+    if (e.stage === "awaiting_founder") { if (st.founded) { e.stage = "instructed"; e.t = 1 + Math.floor(rnd() * 4); } continue; }
+    if (e.stage === "queued") {
+      if (joining < JOIN_SLOTS && !founderLive) { e.stage = "joining"; e.t = 6 + Math.floor(rnd() * 6); joining++; }
+      continue;
+    }
+    if (--e.t > 0) continue;
+    if (e.stage === "storage" && rnd() < .015) { fail(e, "storage", "zpool create: /dev/nvme1n1 is busy"); continue; }
+    if (e.stage === "publishing") {
+      e.end = "joined";
+      if (e.founder) st.founded = true;
+      st.servers.push({ name: e.name, chips: [], fresh: true, dockerOnly: !e.zfs, cpu: 2 + Math.floor(rnd() * 4), mem: 6 + Math.floor(rnd() * 5) });
+      continue;
+    }
+    let n = next(e);
+    if (n === "queued" && e.founder) n = "joining";
+    e.stage = n;
+    e.t = { installing: e.install, storage: e.store, enrolling: 3, joining: 6 + Math.floor(rnd() * 6), publishing: 3 }[n] || 1;
+    if (n === "joining" && !e.founder) { if (joining >= JOIN_SLOTS || founderLive) e.stage = "queued"; else joining++; }
+  }
+  render();
+}
+function run() { if (!ticker) ticker = setInterval(tick, 260); }
+function fail(e, stage, msg) {
+  e.end = "failed";
+  st.waiting.push({ ...e.w, failed: { stage, msg }, lastSeen: 2 });
+}
+function cancelEnr(ids) {
+  let n = 0;
+  st.enr.forEach((e) => { if (ids.includes(e.id) && !e.end) { e.end = "cancelled"; st.waiting.push({ ...e.w, lastSeen: 1 }); n++; } });
+  render(); toast(`Cancelled ${n} · back in Waiting`);
+}
+
+// ---------- terminals ----------
+const OP = "ada@laptop ~ $";
+const HOST = "root@hz-fsn1-001:~#";
+const SCRIPTS = {
+  cli: [
+    { group: "Tokens" },
+    { id: "tok-create", title: "Create a token", cmd: "ployz server token create", out: [
+      "@400 [g]✓[/] Created [b]amber-falcon[/] [d]· expires in 24h[/]", "",
+      "  Run this on every server you want to add:", "",
+      "  [m]curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_Kq7v2HxR9mLt4Wn8bZ3cYp6D sh[/]", "",
+      "[d]Shown once. They'll show up at[/] cloud.ployz.dev/acme/servers"] },
+    { id: "tok-auto", title: "Join on arrival", cmd: "ployz server token create --auto --max 50 --expires 7d", out: [
+      "@400 [g]✓[/] Created [b]swift-heron[/] [d]· expires in 7 days[/]", "",
+      "  Servers join on their own, up to 50.", "",
+      "  [m]curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_Wb4nT8xQ2vLc9Rk3mZ7hJp1F sh[/]", "",
+      "[y]Anyone with this token can add servers. Keep it secret.[/]"] },
+    { id: "tok-ls", title: "List tokens", cmd: "ployz server token ls", out: [
+      "@200 [d]NAME           JOINS           SERVERS              EXPIRES[/]",
+      "amber-falcon   when you say    182 waiting          in 22h",
+      "aws-asg        [m]auto[/], up to 50  12/50 joined         in 6 days",
+      "[d]quiet-moss     when you say    3 joined             expired[/]"] },
+    { id: "tok-revoke", title: "Revoke a token", cmd: "ployz server token revoke amber-falcon", out: [
+      "@400 [g]✓[/] Revoked [b]amber-falcon[/]",
+      "  [d]182 waiting servers removed. Servers already in stay.[/]"] },
+    { group: "Waiting" },
+    { id: "ls", title: "See who's here", cmd: "ployz server ls --waiting", out: [
+      "@300 [d]NAME          CPU  MEMORY  DISK               [/]",
+      "hz-fsn1-001   8    32 GB   3.8 TB spare       [g]Ready[/]",
+      "hz-fsn1-002   8    32 GB   160 GB             [g]Ready[/]",
+      "hz-fsn1-003   16   64 GB   1.9 TB spare       [g]Ready[/]",
+      "hz-nbg1-004   4    16 GB   80 GB              [g]Ready[/]",
+      "hz-fsn1-005   4    16 GB   20 GB              [y]Needs 30 GB disk[/]",
+      "ip-10-0-1-5   2    4 GB    80 GB              [g]Ready[/] [d]· Docker only[/]",
+      "do-ams3-008   8    32 GB   160 GB             [r]Offline 41m[/]",
+      "hz-fsn1-009   8    32 GB   3.8 TB spare       [r]Failed · disk busy[/]",
+      "[d]… 192 more[/]", "",
+      "200 waiting · [g]187 ready[/]"] },
+    { id: "show", title: "Look at one", cmd: "ployz server show hz-fsn1-001", out: [
+      "@300 [b]hz-fsn1-001[/]  [g]Ready[/] [d]· seen 6s ago[/]", "",
+      "  [d]Machine[/]   Ubuntu 24.04 · 8 vCPU · 32 GB",
+      "  [d]Disks[/]     80 GB root · 3.8 TB spare",
+      "  [d]Storage[/]   ZFS",
+      "  [d]Network[/]   [g]✓[/] reaches 3 servers",
+      "  [d]From[/]      5.9.12.41 [d]· Hetzner · amber-falcon[/]"] },
+    { id: "reject", title: "Turn some away", cmd: "ployz server reject 'ip-10-0-9-*'", out: [
+      "@300 Reject 3 servers? [d]ip-10-0-9-1, ip-10-0-9-2, ip-10-0-9-7[/] (y/N) y",
+      "@400 [g]✓[/] Rejected 3. They won't come back."] },
+    { group: "Add" },
+    { id: "founder", title: "Start with one", cmd: "ployz server enroll hz-fsn1-001", out: [
+      "@300 [d]Your first server. Everything else joins it.[/]", "",
+      "@500 [c]⠋[/] Installing Ployz",
+      "~@1000 [c]⠙[/] Setting up ZFS",
+      "~@900 [c]⠹[/] Joining",
+      "~@800 [c]⠸[/] Going live",
+      "~@600 [g]✓[/] [b]hz-fsn1-001[/] is live [d](1m 52s)[/]"] },
+    { id: "enroll", title: "Add a batch", cmd: "ployz server enroll 'hz-fsn1-*' --name 'web-{n}'", out: [
+      "@300 48 servers match. 3 can't join yet:",
+      "  [y]hz-fsn1-005[/]  needs 30 GB disk",
+      "  [y]hz-fsn1-019[/]  no spare disk",
+      "  [y]hz-fsn1-024[/]  no spare disk", "",
+      "@400 Add 45 as web-1 … web-45? (Y/n) y", "",
+      "@500 [c]⠋[/] 45 installing",
+      "~@700 [c]⠙[/] 14 setting up ZFS · 31 installing",
+      "~@700 [c]⠹[/] 8 joining · 10 in line · 27 setting up",
+      "~@700 [c]⠸[/] [g]8 live[/] · 8 joining · 29 to go",
+      "~@700 [c]⠼[/] [g]19 live[/] · 8 joining · 18 to go",
+      "~@700 [c]⠴[/] [g]30 live[/] · 8 joining · 6 to go · [r]1 failed[/]",
+      "~@700 [c]⠦[/] [g]41 live[/] · 3 joining · [r]1 failed[/]",
+      "~@600 [g]✓[/] [g]44 live[/] in 6m 12s", "",
+      "[r]✗[/] web-27 [d]· disk busy. It's back in waiting.[/]"] },
+    { id: "spread", title: "From all over", cmd: "ployz server enroll --all", out: [
+      "@300 187 servers from 3 providers:",
+      "  Hetzner        143",
+      "  AWS            25",
+      "  DigitalOcean   18",
+      "  [y]Unknown        1[/]   [d]ip-185-199-4-2[/]", "",
+      "[y]One doesn't look like yours.[/] Add all 187 anyway? (y/N) n",
+      "[d]Turn it away with[/] ployz server reject ip-185-199-4-2"] },
+    { id: "status", title: "Check progress", cmd: "ployz server enroll --status", out: [
+      "@300 [g]11 of 45 live[/] · 8 joining · 6 in line · 20 setting up", "",
+      "  web-12   [c]Joining[/]         14s",
+      "  web-13   [c]Joining[/]         9s",
+      "  web-14   [d]In line[/]         31s",
+      "  web-15   [c]Setting up ZFS[/]  2m",
+      "  [d]… 31 more[/]"] },
+  ],
+  host: [
+    { group: "Install" },
+    { id: "install", title: "Paste the line", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_… sh", out: [
+      "@500 [g]✓[/] Ployz 0.4.2",
+      "@500 [c]⠋[/] Installing Docker",
+      "~@1600 [g]✓[/] Docker 29.4.1 [d](38s)[/]",
+      "@500 [g]✓[/] 8 vCPU · 32 GB · 3.8 TB spare disk",
+      "@600 [g]✓[/] Connected to [b]Acme[/] as hz-fsn1-001", "",
+      "Waiting for approval in Ployz Cloud…",
+      "[d]cloud.ployz.dev/acme/servers[/]"] },
+    { id: "auto", title: "With an auto token", who: HOST, cmd: "curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_… sh", out: [
+      "@500 [g]✓[/] Ployz 0.4.2",
+      "@500 [g]✓[/] Docker 29.4.1 [d](already installed)[/]",
+      "@500 [g]✓[/] Connected to [b]Acme[/] as ip-10-0-1-4", "",
+      "@400 [c]⠋[/] Setting up ZFS",
+      "~@1100 [c]⠙[/] Joining",
+      "~@900 [c]⠹[/] Going live",
+      "~@600 [g]✓[/] Live [d](1m 21s)[/]"] },
+    { id: "blocked", title: "On a server that's too small", who: "root@hz-fsn1-005:~#", cmd: "curl -fsSL https://ployz.sh | sudo PLOYZ_TOKEN=pflt_… sh", out: [
+      "@500 [g]✓[/] Ployz 0.4.2",
+      "@500 [c]⠋[/] Installing Docker",
+      "~@1200 [g]✓[/] Docker 29.4.1 [d](41s)[/]",
+      "@500 [y]![/] Disk is 20 GB. Ployz needs 30 GB.",
+      "@600 [g]✓[/] Connected to [b]Acme[/] as hz-fsn1-005", "",
+      "[d]Grow the disk and it clears on its own.[/]"] },
+    { group: "While it waits" },
+    { id: "status", title: "Check status", who: HOST, cmd: "ployz status", out: [
+      "@300 Waiting for approval [d]· 14m[/]",
+      "", "$ ployz status", "@300 [c]⠋[/] Setting up ZFS",
+      "", "$ ployz status", "@300 [d]In line · 8 servers ahead[/]",
+      "", "$ ployz status", "@300 [g]✓[/] Live as [b]web-1[/] in Acme"] },
+    { id: "loop", title: "Logs, approved", who: HOST, cmd: "journalctl -fu ployz-checkin", out: [
+      "@300 [d]10:02:11[/] Waiting for approval",
+      "@900 [d]10:02:31[/] [b]Approved[/] as web-1 by ada@acme.dev",
+      "@1100 [d]10:03:10[/] [g]✓[/] ZFS on 3.8 TB disk",
+      "@700 [d]10:03:23[/] In line · 8 joining",
+      "@1000 [d]10:03:44[/] Joining",
+      "@900 [d]10:04:02[/] [g]✓[/] Live as web-1",
+      "@400 [d]10:04:02[/] [d]Removed the token. Done here.[/]"] },
+    { id: "fail", title: "Logs, failed", who: "root@hz-fsn1-031:~#", cmd: "journalctl -fu ployz-checkin", out: [
+      "@300 [d]10:02:31[/] [b]Approved[/] as web-27 by ada@acme.dev",
+      "@1100 [d]10:03:10[/] [r]✗[/] Couldn't set up ZFS: /dev/nvme1n1 is busy",
+      "@500 [d]10:03:10[/] Back to waiting. Free the disk and try again."] },
+    { id: "rejected", title: "Logs, rejected", who: "root@ip-10-0-9-1:~#", cmd: "journalctl -fu ployz-checkin", out: [
+      "@300 [d]10:02:11[/] Waiting for approval",
+      "@800 [d]10:02:21[/] [r]✗[/] Rejected by Acme",
+      "@400 [d]10:02:21[/] [d]Removed the token. Done here.[/]"] },
+    { id: "revoked", title: "Logs, token gone", who: HOST, cmd: "journalctl -fu ployz-checkin", out: [
+      "@300 [d]10:02:11[/] Waiting for approval",
+      "@800 [d]10:02:21[/] [r]✗[/] Token expired",
+      "@400 [d]10:02:21[/] Run the install again with a new token."] },
+  ],
+};
+let termScene = "cli", termTimers = [];
+function stopTerm() { termTimers.forEach(clearTimeout); termTimers = []; }
+function openTerm(scene) {
+  termScene = scene; $("term").hidden = false;
+  const items = SCRIPTS[scene];
+  $("term-nav").innerHTML = items.map((it) => it.group ? `<h4>${it.group}</h4>` : `<button data-script="${it.id}">${esc(it.title)}<span>${esc(it.cmd)}</span></button>`).join("");
+  $("term-nav").querySelectorAll("[data-script]").forEach((b) => b.onclick = () => play(b.dataset.script));
+  play(items.find((x) => !x.group).id);
+}
+function markup(s) {
+  return esc(s).replace(/\[(g|y|r|d|b|c|m)\]/g, '<span class="$1">').replace(/\[\/\]/g, "</span>");
+}
+let current = null;
+function play(id) {
+  stopTerm();
+  const it = SCRIPTS[termScene].find((x) => x.id === id); current = id;
+  $("term-nav").querySelectorAll("[data-script]").forEach((b) => b.classList.toggle("on", b.dataset.script === id));
+  const who = it.who || OP;
+  $("term-who").textContent = termScene === "cli" ? "ada@laptop · signed in to Acme" : who.replace(/:~#$/, "") + " · root";
+  const out = $("term-out"); out.innerHTML = "";
+  const prompt = (cmd) => `<span class="p">${esc(who)}</span> <span class="cmd">${esc(cmd)}</span>`;
+  let t = 200, lastLine = null;
+  const lineEl = () => { const d = document.createElement("div"); out.appendChild(d); return d; };
+  const at = (ms, fn) => termTimers.push(setTimeout(fn, ms));
+  const typeCmd = (cmd) => {
+    const el = { node: null };
+    at(t, () => { el.node = lineEl(); el.node.innerHTML = `<span class="p">${esc(who)}</span> <span class="cursor"></span>`; });
+    for (let i = 1; i <= cmd.length; i++) { const k = i; at(t + 40 + k * 14, () => { el.node.innerHTML = prompt(cmd.slice(0, k)) + '<span class="cursor"></span>'; }); }
+    t += 40 + cmd.length * 14 + 250;
+    at(t, () => { el.node.innerHTML = prompt(cmd); });
+  };
+  typeCmd(it.cmd);
+  for (let raw of it.out) {
+    let replace = false, delay = 55;
+    if (raw.startsWith("~")) { replace = true; raw = raw.slice(1); }
+    const m = raw.match(/^@(\d+) /); if (m) { delay = +m[1]; raw = raw.slice(m[0].length); }
+    if (raw.startsWith("$ ")) { t += 500; typeCmd(raw.slice(2)); continue; }
+    t += delay;
+    const text = raw;
+    at(t, () => {
+      if (!(replace && lastLine)) lastLine = lineEl();
+      lastLine.innerHTML = markup(text) || " ";
+      out.scrollTop = out.scrollHeight;
+    });
+  }
+  at(t + 300, () => { const d = lineEl(); d.innerHTML = `<span class="p">${esc(who)}</span> <span class="cursor"></span>`; out.scrollTop = out.scrollHeight; });
+}
+$("term-replay").onclick = () => play(current);
+
+// ---------- chrome ----------
+document.querySelectorAll("[data-close]").forEach((b) => b.onclick = closeAll);
+["mint", "sheet", "detail"].forEach((id) => $(id).addEventListener("click", (e) => { if (e.target.id === id) closeAll(); }));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAll(); });
+document.querySelectorAll("#switcher [data-scene]").forEach((b) => b.onclick = () => setScene(b.dataset.scene));
+$("theme").onclick = () => { const d = document.documentElement.classList.toggle("dark"); $("theme").textContent = d ? "Light" : "Dark"; };
+let toastT;
+function toast(m) { $("toast").textContent = m; $("toast").hidden = false; clearTimeout(toastT); toastT = setTimeout(() => $("toast").hidden = true, 2600); }
+
+setScene(location.hash.slice(1) || "fleet");
+</script>
+</body>
+</html>
