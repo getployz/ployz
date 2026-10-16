@@ -161,19 +161,17 @@ fn every_site_answers_failures_with_the_error_page() {
         snippet.find("handle @json").unwrap() < snippet.find("handle @html").unwrap(),
         "a client that accepts JSON at all gets JSON"
     );
-    for address in [
-        "http://",
-        "https://",
-        "http://empty.example.com",
-        "http://example.com",
-        "https://secure.example.com",
+    let error_page = format!("import error_page {}", "a".repeat(32));
+    for (address, tail) in [
+        ("http://", " import ployz_log"),
+        ("https://", " import ployz_log"),
+        ("http://empty.example.com", ""),
+        ("http://example.com", ""),
+        ("https://secure.example.com", ""),
     ] {
         let site = automatic_site_block(&caddyfile, address);
         assert!(
-            site.ends_with(&format!(
-                "import error_page {} import ployz_log",
-                "a".repeat(32)
-            )),
+            site.ends_with(&format!("{error_page}{tail}")),
             "{address}: {site}"
         );
     }
@@ -214,7 +212,7 @@ fn only_cloudflare_peers_may_set_the_client_address() {
 }
 
 #[test]
-fn only_the_pageview_file_names_the_visitor() {
+fn only_the_request_file_names_the_visitor() {
     let caddyfile = render_caddyfile(&renderer_projection(), "TIMESTAMP");
     let deletes = |block: &str, fields: &[&str]| {
         for field in fields {
@@ -241,10 +239,10 @@ fn only_the_pageview_file_names_the_visitor() {
         &super::VISITOR_FIELDS,
     );
     assert_eq!(
-        automatic_site_block(&caddyfile, "(ployz_pageviews)"),
-        "log_append namespace {args[0]} log ployz_pageviews { output file \
-         /run/ingress/pageviews/access.log { roll_size 10MiB roll_keep 1 roll_uncompressed \
-         mode 0600 } }"
+        automatic_site_block(&caddyfile, "(ployz_requests)"),
+        "log_append namespace {args[0]} log_append service {args[1]} log ployz_requests { \
+         output file /run/ingress/requests/access.log { roll_size 10MiB roll_keep 1 \
+         roll_uncompressed mode 0600 } }"
     );
     assert_eq!(
         caddyfile.matches("\tlog\n").count(),
@@ -252,7 +250,7 @@ fn only_the_pageview_file_names_the_visitor() {
         "every site log is filtered"
     );
 
-    for (address, imports) in [
+    for (address, published) in [
         ("http://example.com", true),
         ("http://empty.example.com", true),
         ("https://secure.example.com", true),
@@ -260,11 +258,15 @@ fn only_the_pageview_file_names_the_visitor() {
         ("https://", false),
     ] {
         let site = automatic_site_block(&caddyfile, address);
-        assert!(site.ends_with("import ployz_log"), "{address}: {site}");
         assert_eq!(
-            site.contains("import ployz_pageviews app "),
-            imports,
+            site.contains("import ployz_requests app "),
+            published,
             "{address}: {site}"
+        );
+        assert_eq!(
+            site.contains("import ployz_log"),
+            !published,
+            "a request lands in exactly one log: {address}: {site}"
         );
     }
 }

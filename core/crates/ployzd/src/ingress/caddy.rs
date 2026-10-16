@@ -261,9 +261,10 @@ https:// {{\n\
                 .as_ref()
                 .expect("a routed site has a publication");
             format!(
-                "{}\timport ployz_pageviews {}\n",
+                "{}\timport ployz_requests {} {}\n",
                 trace::published_import(local_machine, &publication.trace, endpoints),
-                publication.owner.namespace
+                publication.owner.namespace,
+                publication.owner.name
             )
         };
         // An https-only hostname redirects http to https; the challenge and verify probe stay on http.
@@ -274,9 +275,12 @@ https:// {{\n\
             (None, Some((_, endpoints))) => {
                 Some((published(endpoints), REDIRECT_TO_HTTPS.to_owned()))
             }
-            (None, None) => site
-                .challenge()
-                .map(|_| (unpublished.clone(), "\terror NOT_DEPLOYED 404\n".to_owned())),
+            (None, None) => site.challenge().map(|_| {
+                (
+                    format!("{unpublished}\timport ployz_log\n"),
+                    "\terror NOT_DEPLOYED 404\n".to_owned(),
+                )
+            }),
         };
         if let Some((trace, answer)) = http {
             // The hostname's own site shadows the catch-all, so it answers the verify probe too.
@@ -342,9 +346,10 @@ fn write_log_snippets(output: &mut String) {
     let _ = write!(
         output,
         "(ployz_log) {{\n\tlog {{\n{}\t}}\n}}\n\n\
-(ployz_pageviews) {{\n\
+(ployz_requests) {{\n\
 \tlog_append namespace {{args[0]}}\n\
-\tlog ployz_pageviews {{\n\
+\tlog_append service {{args[1]}}\n\
+\tlog ployz_requests {{\n\
 \t\toutput file {CONTAINER_RUNTIME_DIR}/{} {{\n\
 \t\t\troll_size 10MiB\n\
 \t\t\troll_keep 1\n\
@@ -488,7 +493,7 @@ fn write_site(
         .unwrap_or_default();
     let _ = write!(
         output,
-        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page {machine}\n\timport ployz_log\n}}\n"
+        "\n{protocol}://{hostname} {{\n{directives}{handle}{answer}\timport error_page {machine}\n}}\n"
     );
 }
 

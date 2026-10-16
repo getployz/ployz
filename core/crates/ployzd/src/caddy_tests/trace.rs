@@ -234,7 +234,7 @@ fn sites_import_the_trace_page_with_their_facts() {
             "http://example.com {{
 \timport ployz_headers {a}
 \timport ployz_trace {a} dep_7 {a}:2,{b}:1 ok
-\timport ployz_pageviews app
+\timport ployz_requests app api
 \thandle /.well-known/acme-challenge/ployz-verify {{
 \t\trespond \"{a}\" 200
 \t}}
@@ -246,7 +246,6 @@ fn sites_import_the_trace_page_with_their_facts() {
 \t}}
 \tlog_append upstream {{http.reverse_proxy.upstream.hostport}}
 \timport error_page {a}
-\timport ployz_log
 }}
 "
         )
@@ -257,13 +256,12 @@ fn sites_import_the_trace_page_with_their_facts() {
             "http://empty.example.com {{
 \timport ployz_headers {a}
 \timport ployz_trace {a} dep_7 {a}:2,{b}:1 NOT_RUNNING
-\timport ployz_pageviews app
+\timport ployz_requests app api
 \thandle /.well-known/acme-challenge/ployz-verify {{
 \t\trespond \"{a}\" 200
 \t}}
 \terror NOT_RUNNING 503
 \timport error_page {a}
-\timport ployz_log
 }}
 "
         )

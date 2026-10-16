@@ -27,7 +27,7 @@ use crate::{
 };
 
 const CERTS_DIR: &str = "certs";
-pub(crate) const ACCESS_LOG: &str = "pageviews/access.log";
+pub(crate) const ACCESS_LOG: &str = "requests/access.log";
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const WATCH_RETRY: Duration = Duration::from_secs(1);
 const WATCH_RESNAPSHOT: Duration = Duration::from_secs(5);
