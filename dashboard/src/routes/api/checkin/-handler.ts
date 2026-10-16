@@ -34,14 +34,28 @@ function fromProxy(peer: string) {
   return proxyPeers.check(address, isIP(address) === 4 ? "ipv4" : "ipv6");
 }
 
+/** Proxies append, so only the right end of the chain is trustworthy: the first hop that isn't a proxy is the client. */
+function clientFromForwardedFor(value: string | null, peer: string) {
+  let client = peer;
+  for (const hop of (value ?? "").split(",").map((entry) => entry.trim()).reverse()) {
+    if (isIP(hop) === 0) break;
+    client = hop;
+    if (!fromProxy(hop)) break;
+  }
+  return client;
+}
+
 export function observedIp(headers: Headers, clientIpHeaders: ReadonlyArray<string> | undefined, peer: string | undefined) {
   const validPeer = peer !== undefined && isIP(peer) !== 0 ? peer : undefined;
-  const trusted = clientIpHeaders ?? (validPeer !== undefined && fromProxy(validPeer) ? ["x-forwarded-for"] : []);
-  for (const name of trusted) {
-    const value = headers.get(name)?.split(",")[0]?.trim();
-    if (value !== undefined && isIP(value) !== 0) return value;
+  if (clientIpHeaders !== undefined) {
+    for (const name of clientIpHeaders) {
+      const value = headers.get(name)?.split(",")[0]?.trim();
+      if (value !== undefined && isIP(value) !== 0) return value;
+    }
+    return validPeer ?? "unknown";
   }
-  return validPeer ?? "unknown";
+  if (validPeer === undefined) return "unknown";
+  return fromProxy(validPeer) ? clientFromForwardedFor(headers.get("x-forwarded-for"), validPeer) : validPeer;
 }
 
 const refused = (status: number, error: string, headers: Record<string, string> = {}) =>

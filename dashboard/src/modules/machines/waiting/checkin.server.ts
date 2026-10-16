@@ -4,12 +4,13 @@ import { and, count, eq, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import {
   CHECKIN_WAIT_SECONDS,
+  CheckinKey,
   CheckinRequest,
   type CheckinResponse,
   type CheckinStopReason,
 } from "#/modules/machines/waiting/checkin-wire";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
-import { countWithinRateLimit } from "#/modules/machines/waiting/rate-limit.server";
+import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -61,10 +62,13 @@ function verifyCheckin(checkinKey: string, message: Uint8Array, signature: Uint8
 }
 
 const decodeRequest = Schema.decodeUnknownOption(CheckinRequest);
+const decodeClaimedKey = Schema.decodeUnknownOption(Schema.Struct({ checkinKey: CheckinKey }));
 
-function parseRequest(body: Uint8Array) {
+/** The signature covers the raw body, so only the Check-in Key is read before it is checked. */
+function claimedKey(body: Uint8Array) {
   try {
-    return decodeRequest(JSON.parse(new TextDecoder().decode(body)));
+    const json: unknown = JSON.parse(new TextDecoder().decode(body));
+    return Option.map(decodeClaimedKey(json), ({ checkinKey }) => ({ json, checkinKey }));
   } catch {
     return Option.none();
   }
@@ -92,6 +96,83 @@ const heldByToken = Effect.fn("Checkin.heldByToken")(function* (fleetTokenId: st
   return held?.rows ?? 0;
 });
 
+const OWNERSHIP_CHANGED = Symbol("ownershipChanged");
+
+const endedBy = (live: { readonly revoked: boolean; readonly expired: boolean } | undefined) =>
+  live === undefined || live.revoked ? "token_revoked" : live.expired ? "token_expired" : null;
+
+const endWaiting = Effect.fn("Checkin.endWaiting")(function* (
+  token: { readonly id: string; readonly organizationId: string },
+  checkinKey: string,
+  reason: CheckinStopReason,
+) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.delete(waitingServer).where(and(
+    eq(waitingServer.organizationId, token.organizationId),
+    eq(waitingServer.checkinKey, checkinKey),
+    eq(waitingServer.fleetTokenId, token.id),
+  ));
+  return stop(reason);
+});
+
+const admit = Effect.fn("Checkin.admit")(function* (
+  token: { readonly id: string; readonly organizationId: string },
+  request: CheckinRequest,
+  observedIp: string,
+) {
+  const { drizzle } = yield* Database;
+  const key = and(
+    eq(waitingServer.organizationId, token.organizationId),
+    eq(waitingServer.checkinKey, request.checkinKey),
+  );
+  const [existing] = yield* drizzle
+    .select({ fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
+    .from(waitingServer)
+    .where(key);
+  const newToToken = existing?.fleetTokenId !== token.id;
+  const heldBefore = newToToken ? yield* heldByToken(token.id) : 0;
+  const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;
+  const live = yield* lockTokenAgainstRevoke(token.id, takingLastSlots ? "update" : "share");
+  const ended = endedBy(live);
+  if (ended !== null) return yield* endWaiting(token, request.checkinKey, ended);
+  if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
+  if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
+    return yield* new CheckinRefused({
+      status: 429,
+      message: `This Fleet Token already has ${WAITING_PER_TOKEN} waiting servers.`,
+    });
+  }
+  const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
+  const [row] = yield* drizzle
+    .insert(waitingServer)
+    .values({
+      organizationId: token.organizationId,
+      fleetTokenId: token.id,
+      checkinKey: request.checkinKey,
+      report,
+      observedIp,
+      probe: request.probe ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [waitingServer.organizationId, waitingServer.checkinKey],
+      set: {
+        fleetTokenId: token.id,
+        report,
+        observedIp,
+        probe: sql`coalesce(excluded.probe, ${waitingServer.probe})`,
+        lastCheckInAt: sql`now()`,
+        rejectedAt: null,
+      },
+      // The capacity decision above holds only while the row is as it was read.
+      setWhere: existing === undefined
+        ? sql`false`
+        : sql`${waitingServer.fleetTokenId} = ${existing.fleetTokenId} and (${waitingServer.rejectedAt} is null or ${waitingServer.fleetTokenId} <> excluded.fleet_token_id)`,
+    })
+    .returning({ id: waitingServer.id });
+  if (row === undefined) return OWNERSHIP_CHANGED;
+  return { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS } satisfies CheckinResponse;
+});
+
 export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   readonly headers: Headers;
   readonly body: Uint8Array;
@@ -107,77 +188,37 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
 
   const database = yield* Database;
   const [token] = yield* database.drizzle
-    .select({ id: fleetToken.id, organizationId: fleetToken.organizationId })
+    .select({
+      id: fleetToken.id,
+      organizationId: fleetToken.organizationId,
+      revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
+    })
     .from(fleetToken)
     .where(eq(fleetToken.tokenHash, hashFleetToken(bearer)))
     .limit(1);
   if (token === undefined) return yield* new Unauthorized();
 
-  const parsed = parseRequest(input.body);
+  const claim = claimedKey(input.body);
+  if (Option.isNone(claim)) return yield* new Unauthorized();
+  const claimed = claim.value;
+  const message = checkinMessage(claimed.checkinKey, timestamp, input.body);
+  if (!verifyCheckin(claimed.checkinKey, message, Buffer.from(signature, "base64url"))) return yield* new Unauthorized();
+  const parsed = decodeRequest(claimed.json);
   if (Option.isNone(parsed)) return yield* new CheckinRefused({ status: 400, message: "Invalid check-in." });
   const request = parsed.value;
-  const message = checkinMessage(request.checkinKey, timestamp, input.body);
-  if (!verifyCheckin(request.checkinKey, message, Buffer.from(signature, "base64url"))) {
-    return yield* new Unauthorized();
+
+  const ended = endedBy(token);
+  if (ended !== null) return yield* endWaiting(token, request.checkinKey, ended);
+
+  yield* sometimesPruneStaleRateLimits;
+  const tooMany = new CheckinRefused({ status: 429, message: "Too many check-ins." });
+  if (!(yield* countWithinRateLimit(`token:${token.id}`, PER_TOKEN_PER_SECOND))) return yield* tooMany;
+  if (!(yield* countWithinRateLimit(`ip:${input.observedIp}`, PER_IP_PER_SECOND))) return yield* tooMany;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const answer = yield* database.transaction(admit(token, request, input.observedIp));
+    if (answer !== OWNERSHIP_CHANGED) return answer;
   }
-
-  const withinToken = yield* countWithinRateLimit(`token:${token.id}`, PER_TOKEN_PER_SECOND);
-  const withinIp = yield* countWithinRateLimit(`ip:${input.observedIp}`, PER_IP_PER_SECOND);
-  if (!withinToken || !withinIp) return yield* new CheckinRefused({ status: 429, message: "Too many check-ins." });
-
-  return yield* database.transaction(
-    Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      const key = and(
-        eq(waitingServer.organizationId, token.organizationId),
-        eq(waitingServer.checkinKey, request.checkinKey),
-      );
-      const [existing] = yield* drizzle
-        .select({ fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
-        .from(waitingServer)
-        .where(key);
-      const newToToken = existing?.fleetTokenId !== token.id;
-      const heldBefore = newToToken ? yield* heldByToken(token.id) : 0;
-      const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;
-      const live = yield* lockTokenAgainstRevoke(token.id, takingLastSlots ? "update" : "share");
-      const ended = live === undefined || live.revoked ? "token_revoked" : live.expired ? "token_expired" : null;
-      if (ended !== null) {
-        yield* drizzle.delete(waitingServer).where(and(key, eq(waitingServer.fleetTokenId, token.id)));
-        return stop(ended);
-      }
-      if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
-      if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
-        return yield* new CheckinRefused({
-          status: 429,
-          message: `This Fleet Token already has ${WAITING_PER_TOKEN} waiting servers.`,
-        });
-      }
-      const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-      const [row] = yield* drizzle
-        .insert(waitingServer)
-        .values({
-          organizationId: token.organizationId,
-          fleetTokenId: token.id,
-          checkinKey: request.checkinKey,
-          report,
-          observedIp: input.observedIp,
-          probe: request.probe ?? null,
-        })
-        .onConflictDoUpdate({
-          target: [waitingServer.organizationId, waitingServer.checkinKey],
-          set: {
-            fleetTokenId: token.id,
-            report,
-            observedIp: input.observedIp,
-            probe: sql`coalesce(excluded.probe, ${waitingServer.probe})`,
-            lastCheckInAt: sql`now()`,
-            rejectedAt: null,
-          },
-          setWhere: sql`${waitingServer.rejectedAt} is null or ${waitingServer.fleetTokenId} <> excluded.fleet_token_id`,
-        })
-        .returning({ id: waitingServer.id });
-      if (row === undefined) return stop("rejected");
-      return { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS } satisfies CheckinResponse;
-    }),
-  );
+  return yield* tooMany;
 });

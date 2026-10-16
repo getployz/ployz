@@ -87,10 +87,11 @@ it("answers an unknown token with 401 and writes nothing", async () => {
   expect(await count()).toBe(0);
 });
 
-it("answers a malformed check-in with 400", async () => {
+it("answers a body its signature doesn't cover with 401, and a signed malformed one with 400", async () => {
   const { json, headers } = signed(token, checkin);
-  const response = await post(json.subarray(0, -1), headers);
-  expect(response.status).toBe(400);
+  expect((await post(json.subarray(0, -1), headers)).status).toBe(401);
+  const malformed = signed(token, Buffer.from(JSON.stringify({ protocolVersion: 1 })));
+  expect((await post(malformed.json, malformed.headers)).status).toBe(400);
   expect(await count()).toBe(0);
 });
 
@@ -103,7 +104,7 @@ it("refuses a body over 64 KiB with 413 before reading it all", async () => {
 });
 
 it("takes the observed address from the proxy header, else the socket peer", () => {
-  const headers = new Headers({ "x-forwarded-for": "198.51.100.4, 10.0.0.1", "x-real-ip": "198.51.100.5" });
+  const headers = new Headers({ "x-forwarded-for": "198.51.100.9, 198.51.100.4, 10.0.0.1", "x-real-ip": "198.51.100.5" });
   expect(observedIp(headers, undefined, "10.0.0.2")).toBe("198.51.100.4");
   expect(observedIp(headers, ["x-real-ip"], "10.0.0.2")).toBe("198.51.100.5");
   expect(observedIp(new Headers({ "x-forwarded-for": "not-an-ip" }), undefined, "10.0.0.2")).toBe("10.0.0.2");
@@ -115,4 +116,11 @@ it("ignores a forwarded address that did not come through a proxy", () => {
   expect(observedIp(headers, undefined, "203.0.113.7")).toBe("203.0.113.7");
   expect(observedIp(headers, undefined, "::ffff:127.0.0.1")).toBe("198.51.100.4");
   expect(observedIp(headers, undefined, "::1")).toBe("198.51.100.4");
+});
+
+it("takes the client from the trusted end of an appended forwarded chain", () => {
+  const appended = new Headers({ "x-forwarded-for": "198.51.100.99, 203.0.113.7" });
+  expect(observedIp(appended, undefined, "127.0.0.1")).toBe("203.0.113.7");
+  expect(observedIp(appended, undefined, "172.17.0.1")).toBe("203.0.113.7");
+  expect(observedIp(new Headers({ "x-forwarded-for": "10.0.0.5, 10.0.0.1" }), undefined, "10.0.0.2")).toBe("10.0.0.5");
 });

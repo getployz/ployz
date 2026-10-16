@@ -51,9 +51,11 @@ export const Prep = Schema.Struct({
 });
 export type Prep = typeof Prep.Type;
 
+export const CheckinKey = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/));
+
 export const CheckinRequest = Schema.Struct({
   protocolVersion: Schema.Literal(CHECKIN_PROTOCOL_VERSION),
-  checkinKey: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/)),
+  checkinKey: CheckinKey,
   cliVersion: Schema.String,
   report: HostReport,
   attempt: Schema.optionalKey(Schema.Struct({

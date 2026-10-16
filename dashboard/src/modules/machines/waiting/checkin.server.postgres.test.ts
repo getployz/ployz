@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { pruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import {
   listWaitingServers,
@@ -161,11 +162,18 @@ it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothin
   expect(await rows()).toEqual([]);
 });
 
-it("refuses a body that isn't a check-in with 400", async () => {
+it("refuses a signed body that isn't a check-in with 400, and an unsigned one with 401", async () => {
   const { token } = await fleetToken("rack-1");
-  const signed = request(token, newHost());
-  const body = Buffer.from(JSON.stringify({ protocolVersion: 2 }));
-  expect(await failure(checkIn({ ...signed, body }))).toMatchObject({ _tag: "CheckinRefused", status: 400 });
+  const host = newHost();
+  const signed = request(token, host);
+  const body = Buffer.from(JSON.stringify({ protocolVersion: 2, checkinKey: host.key }));
+  const timestamp = BigInt(signed.headers.get("ployz-timestamp") ?? "");
+  const signature = sign(null, checkinMessage(host.key, timestamp, body), host.privateKey).toString("base64url");
+  const headers = new Headers(signed.headers);
+  headers.set("ployz-signature", `v1=${signature}`);
+  expect(await failure(checkIn({ ...signed, headers, body }))).toMatchObject({ _tag: "CheckinRefused", status: 400 });
+  expect(await failure(checkIn({ ...signed, body: Buffer.from("not json") }))).toMatchObject({ _tag: "Unauthorized" });
+  expect(await failure(checkIn({ ...signed, body }))).toMatchObject({ _tag: "Unauthorized" });
   expect(await rows()).toEqual([]);
 });
 
@@ -179,8 +187,30 @@ it("tells hosts on an expired or revoked token to stop, and removes their rows",
   await harness.pool.query("update fleet_token set expires_at = now() - interval '1 second' where id = $1", [expiring.id]);
   expect(await send(expiring.token, first)).toEqual({ kind: "stop", reason: "token_expired", message: "The Fleet Token expired." });
   await harness.pool.query("update fleet_token set revoked_at = now() where id = $1", [revoking.id]);
-  expect(await send(revoking.token, second)).toEqual({ kind: "stop", reason: "token_revoked", message: "The Fleet Token was revoked." });
+  await harness.pool.query("truncate checkin_rate_limit");
+  expect(await send(revoking.token, second, { ip: "198.51.100.77" })).toEqual({ kind: "stop", reason: "token_revoked", message: "The Fleet Token was revoked." });
+  expect(await send(expiring.token, first, { ip: "198.51.100.78" })).toMatchObject({ kind: "stop", reason: "token_expired" });
   expect(await rows()).toEqual([]);
+  expect((await harness.pool.query("select key from checkin_rate_limit")).rows).toEqual([]);
+});
+
+it("prunes rate-limit windows that have passed", async () => {
+  await harness.pool.query(`
+    insert into checkin_rate_limit (key, window_start, count) values
+      ('ip:198.51.100.1', now() - interval '1 hour', 3),
+      ('ip:198.51.100.2', date_trunc('second', now()), 1)`);
+  await harness.runEffect(pruneStaleRateLimits());
+  expect((await harness.pool.query("select key from checkin_rate_limit")).rows).toEqual([{ key: "ip:198.51.100.2" }]);
+});
+
+it("doesn't spend the source address's budget on a check-in the token's budget refused", async () => {
+  const { token, id } = await fleetToken("rack-1");
+  await harness.pool.query(
+    "insert into checkin_rate_limit (key, window_start, count) values ($1, date_trunc('second', now()), 10000)",
+    [`token:${id}`],
+  );
+  expect(await failure(checkIn(request(token, newHost(), { ip: "198.51.100.40" })))).toMatchObject({ status: 429 });
+  expect((await harness.pool.query("select key from checkin_rate_limit where key like 'ip:%'")).rows).toEqual([]);
 });
 
 it("keeps a rejected host stopped under its token, and lets a new token admit it again", async () => {
@@ -228,6 +258,45 @@ it("lets only as many concurrent new hosts in as the cap has room for", async ()
   );
   expect(outcomes.filter((exit) => Exit.isSuccess(exit))).toHaveLength(2);
   expect(await rows()).toHaveLength(WAITING_PER_TOKEN);
+});
+
+it("holds a token at the cap when a host it refreshes moves to another token mid check-in", async () => {
+  const a = await fleetToken("rack-1");
+  const b = await fleetToken("rack-2");
+  const moving = newHost();
+  await send(a.token, moving);
+  await harness.pool.query(
+    `insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+     select $1, $2, lpad(to_hex(n), 64, '0'), $3::jsonb, '203.0.113.9' from generate_series(1, $4::int) n`,
+    [adaOrg, a.id, JSON.stringify(report), WAITING_PER_TOKEN - 1],
+  );
+  const held = async () =>
+    Number((await harness.pool.query("select count(*) from waiting_server where fleet_token_id = $1", [a.id])).rows[0]?.count);
+
+  const holder = await harness.pool.connect();
+  try {
+    await holder.query("begin");
+    await holder.query("select 1 from fleet_token where id = $1 for update", [a.id]);
+    const refresh = harness.runEffect(Effect.exit(checkIn(request(a.token, moving, { ip: "198.51.100.50" }))));
+    for (let waited = 0; ; waited += 10) {
+      const blocked = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
+      if (blocked.rowCount !== 0) break;
+      if (waited > 5000) throw new Error("the refresh never blocked on the token lock");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(await send(b.token, moving, { ip: "198.51.100.51" })).toEqual(wait);
+    await holder.query(
+      `insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+       values ($1, $2, repeat('f', 64), $3::jsonb, '203.0.113.9')`,
+      [adaOrg, a.id, JSON.stringify(report)],
+    );
+    await holder.query("commit");
+    const outcome = await refresh;
+    expect(Exit.isFailure(outcome) && Cause.squash(outcome.cause)).toMatchObject({ _tag: "CheckinRefused", status: 429 });
+  } finally {
+    holder.release();
+  }
+  expect(await held()).toBe(WAITING_PER_TOKEN);
 });
 
 it("rate limits one source address and keeps what it already wrote", async () => {
