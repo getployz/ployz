@@ -118,6 +118,7 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
     set_and_verify_zfs_arc_max(cap)?;
     validate_zfs()?;
+    super::prepare::forget_zfs_build(paths)?;
     println!("ZFS storage preparation validated; no Machine Pool was created");
     Ok(())
 }

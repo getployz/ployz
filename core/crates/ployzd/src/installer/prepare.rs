@@ -1,15 +1,17 @@
 use std::{
     fs::{self, File, OpenOptions},
     io,
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use chrono::{SecondsFormat, Utc};
+use nix::fcntl::{FcntlArg, FdFlag};
 use serde::{Deserialize, Serialize};
 
 use super::assess::{assess, read_facts};
-use super::host::install_docker;
+use super::host::{install_docker, verify_docker};
 use super::os_release::OsRelease;
 use super::storage::{
     self, BuildFailure, OPENZFS_BUILD_DEPENDENCIES, OPENZFS_SHA256, ZfsRoute,
@@ -32,6 +34,12 @@ pub(super) struct PrepState {
     pub(super) zfs: Timed<ZfsStep>,
     pub(super) added_packages: Vec<String>,
     pub(super) zfs_build: Option<ZfsBuild>,
+    /// Preparation wrote the Debian contrib source, so discard may remove it.
+    #[serde(default)]
+    pub(super) added_contrib_source: bool,
+    /// Steps an earlier run left `installing` when it died, which this run redid.
+    #[serde(default)]
+    pub(super) interrupted: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -124,14 +132,37 @@ pub(super) async fn prepare_at(
         return Ok(());
     };
     let previous = load(paths);
+    // The lock is free, so a step an earlier run began and left `installing` died with it.
+    let interrupted: Vec<String> = [
+        (
+            "docker",
+            previous.docker.started_at.is_some() && previous.docker.step == DockerStep::Installing,
+        ),
+        (
+            "zfs",
+            previous.zfs.started_at.is_some() && previous.zfs.step == ZfsStep::Installing,
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, unfinished)| *unfinished)
+    .map(|(step, _)| step.to_owned())
+    .collect();
+    for step in &interrupted {
+        println!("Redoing the {step} step an earlier run left unfinished");
+    }
     let mut job = Job {
         path: state_path(paths),
         state: PrepState {
             added_packages: previous.added_packages,
             zfs_build: previous.zfs_build,
+            added_contrib_source: previous.added_contrib_source,
+            interrupted,
             ..PrepState::default()
         },
     };
+    if debian_family(paths) {
+        finish_interrupted_package_installs();
+    }
     job.begin_docker()?;
     let docker = match docker().await {
         Ok(()) => DockerStep::Ready,
@@ -184,7 +215,25 @@ async fn docker_step(paths: &InstallPaths) -> Result<(), String> {
     if let Some(blocker) = assess(&facts).blockers.into_iter().next() {
         return Err(blocker.message);
     }
-    install_docker(paths).await.map_err(message)
+    install_docker(paths).await.map_err(message)?;
+    // install_docker keeps a Docker that already exists; only asking it proves it answers.
+    verify_docker().map_err(message)
+}
+
+fn debian_family(paths: &InstallPaths) -> bool {
+    OsRelease::read(&paths.os_release).is_ok_and(|os| matches!(os.id.as_str(), "debian" | "ubuntu"))
+}
+
+/// Configures packages a killed run left unpacked, which would stop every apt call after it.
+/// Best effort: dpkg won't wait for a lock apt holds, and the apt calls that follow do.
+fn finish_interrupted_package_installs() {
+    let mut configure = Command::new("dpkg");
+    configure
+        .args(["--configure", "-a"])
+        .env("DEBIAN_FRONTEND", "noninteractive");
+    if let Err(error) = run_command("finish interrupted package installs", &mut configure) {
+        eprintln!("{}", ployz_core::error_chain::inline(&error));
+    }
 }
 
 pub(super) fn load(paths: &InstallPaths) -> PrepState {
@@ -214,6 +263,9 @@ fn lock(paths: &InstallPaths, wait: Wait) -> Result<Option<File>, Error> {
         .write(true)
         .open(dir.join("lock"))
         .map_err(io)?;
+    // Children inherit the descriptor, so a DKMS build keeps the lock if this process is killed.
+    nix::fcntl::fcntl(file.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::empty()))
+        .map_err(|errno| io(errno.into()))?;
     match wait {
         Wait::Yes => fs2::FileExt::lock_exclusive(&file).map_err(io)?,
         Wait::No => match fs2::FileExt::try_lock_exclusive(&file) {
@@ -342,6 +394,10 @@ fn build_debian_zfs(
         return Ok(());
     }
     let flavour = debian_kernel_flavour_step(kernel).map_err(build_error)?;
+    if !debian_contrib_source(&paths.apt_dir).exists() {
+        job.state.added_contrib_source = true;
+        job.save()?;
+    }
     enable_debian_contrib(&paths.apt_dir, codename, keyring).map_err(build_error)?;
     let wanted = [
         format!("linux-headers-{kernel}"),
@@ -505,6 +561,7 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
     let mut copy = Command::new("cp");
     copy.arg("-a").arg(&unpacked).arg(&source_dir);
     run_command("copy the ZFS source", &mut copy)?;
+    turn_off_autoinstall(&source_dir.join("dkms.conf"))?;
     run_host(
         "register ZFS with DKMS",
         "dkms",
@@ -515,6 +572,28 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
         "dkms",
         ["build", "-m", "zfs", "-v", &version, "-k", kernel],
     )?;
+    Ok(())
+}
+
+/// Stops DKMS's kernel hooks from installing the module this build registered when a new kernel
+/// lands; only install puts ZFS in place. The package install replaces this file.
+fn turn_off_autoinstall(conf: &Path) -> Result<(), Error> {
+    let stage = "turn off DKMS autoinstall for ZFS";
+    let io = |source| Error::Io { stage, source };
+    let text = fs::read_to_string(conf).map_err(io)?;
+    let edited: String = text
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("AUTOINSTALL=") {
+                "AUTOINSTALL=\"no\"\n".to_owned()
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    if edited != text {
+        crate::filesystem::atomic_write(conf, edited.as_bytes(), 0o644).map_err(io)?;
+    }
     Ok(())
 }
 
@@ -564,6 +643,30 @@ fn rpm_provided(capability: &str) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+fn rpm_installed(package: &str) -> bool {
+    Command::new("rpm")
+        .args(["-q", package])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Hands what preparation built to the full install that just put ZFS in place from packages,
+/// so a later discard can't take the installed module or its dependencies.
+pub(super) fn forget_zfs_build(paths: &InstallPaths) -> Result<(), Error> {
+    if !state_path(paths).exists() {
+        return Ok(());
+    }
+    let _lock = lock(paths, Wait::Yes)?;
+    let mut job = Job {
+        path: state_path(paths),
+        state: load(paths),
+    };
+    job.state.added_packages.clear();
+    job.state.zfs_build = None;
+    job.state.added_contrib_source = false;
+    job.save()
+}
+
 fn remove_dir(dir: &Path) -> Result<(), Error> {
     match fs::remove_dir_all(dir) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error::Io {
@@ -580,6 +683,22 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         path: state_path(paths),
         state: load(paths),
     };
+    let package_manager = OsRelease::read(&paths.os_release)
+        .ok()
+        .as_ref()
+        .and_then(ZfsRoute::for_os)
+        .map_or("apt-get", ZfsRoute::package_manager);
+    let zfs_packages = if package_manager == "dnf" {
+        ["zfs-dkms", "zfs"].into_iter().any(rpm_installed)
+    } else {
+        ["zfs-dkms", "zfsutils-linux"]
+            .into_iter()
+            .any(deb_installed)
+    };
+    if zfs_packages {
+        println!("ZFS is installed from packages, so there is no build to discard");
+        return Ok(());
+    }
     if let Some(ZfsBuild::Dkms {
         module,
         version,
@@ -596,20 +715,17 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
         remove_dir(source_dir)?;
     }
     remove_dir(&prepare_dir(paths).join("zfs"))?;
-    match fs::remove_file(debian_contrib_source(&paths.apt_dir)) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            return Err(Error::Io {
-                stage: "remove the contrib source",
-                source: error,
-            });
+    if job.state.added_contrib_source {
+        match fs::remove_file(debian_contrib_source(&paths.apt_dir)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(Error::Io {
+                    stage: "remove the contrib source",
+                    source: error,
+                });
+            }
+            _ => {}
         }
-        _ => {}
     }
-    let package_manager = OsRelease::read(&paths.os_release)
-        .ok()
-        .as_ref()
-        .and_then(ZfsRoute::for_os)
-        .map_or("apt-get", ZfsRoute::package_manager);
     if !job.state.added_packages.is_empty() {
         let mut remove = if package_manager == "dnf" {
             let mut dnf = Command::new("dnf");
@@ -628,6 +744,7 @@ pub(super) fn discard_at(paths: &InstallPaths) -> Result<(), Error> {
     }
     job.state.added_packages.clear();
     job.state.zfs_build = None;
+    job.state.added_contrib_source = false;
     job.state.zfs = Timed {
         step: ZfsStep::Off,
         started_at: None,

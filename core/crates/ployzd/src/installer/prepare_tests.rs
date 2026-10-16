@@ -75,19 +75,26 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
         return;
     }
 
-    for case in ["fresh", "already-built"] {
-        let built = if case == "already-built" {
-            format!("echo 'zfs/2.1.11, {DEBIAN_KERNEL}, x86_64: built'")
-        } else {
-            String::new()
+    for case in ["fresh", "already-built", "foreign"] {
+        let dkms = match case {
+            "already-built" => {
+                format!(
+                    "case \"$1\" in status) echo 'zfs/2.1.11, {DEBIAN_KERNEL}, x86_64: built' ;; esac"
+                )
+            }
+            "foreign" => {
+                "case \"$*\" in 'status -m zfs -v 2.1.11') echo 'zfs/2.1.11: added' ;; esac"
+                    .to_owned()
+            }
+            _ => String::new(),
         };
-        let dkms = format!("case \"$1\" in status) {built} ;; esac");
         let fixture = host(
             case,
             DEBIAN_12,
             &[
                 ("uname", &format!("echo {DEBIAN_KERNEL}")),
                 ("modinfo", "exit 1"),
+                ("dpkg", ""),
                 ("dpkg-query", &dpkg_query(&["dkms", "perl"])),
                 (
                     "apt-get",
@@ -95,7 +102,7 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
                 ),
                 (
                     "dpkg-deb",
-                    "mkdir -p \"$3/usr/src/zfs-2.1.11\"; : > \"$3/usr/src/zfs-2.1.11/dkms.conf\"",
+                    "mkdir -p \"$3/usr/src/zfs-2.1.11\"; printf 'PACKAGE_NAME=\"zfs\"\\nAUTOINSTALL=\"yes\"\\n' > \"$3/usr/src/zfs-2.1.11/dkms.conf\"",
                 ),
                 ("dkms", &dkms),
             ],
@@ -127,9 +134,16 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
             .filter(|line| !line.starts_with("dpkg-query") && !line.starts_with("dkms status"))
             .collect();
         let headers = format!("linux-headers-{DEBIAN_KERNEL} linux-headers-amd64");
+        // A registration this Machine did not make is only built, never removed or replaced.
+        let register = if case == "foreign" {
+            vec![]
+        } else {
+            vec!["dkms add -m zfs -v 2.1.11".to_owned()]
+        };
         assert_eq!(
             commands,
             [
+                "dpkg --configure -a".to_owned(),
                 "apt-get -o DPkg::Lock::Timeout=300 update -qq".to_owned(),
                 format!(
                     "apt-get -o DPkg::Lock::Timeout=300 install -y -qq --no-install-recommends {headers} file libc6-dev lsb-release"
@@ -139,9 +153,12 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
                     "dpkg-deb -x {0}/data/prepare/zfs/zfs-dkms_2.1.11-1_all.deb {0}/data/prepare/zfs/root",
                     root.display()
                 ),
-                "dkms add -m zfs -v 2.1.11".to_owned(),
-                format!("dkms build -m zfs -v 2.1.11 -k {DEBIAN_KERNEL}"),
-            ],
+            ]
+            .into_iter()
+            .chain(register)
+            .chain([format!("dkms build -m zfs -v 2.1.11 -k {DEBIAN_KERNEL}")])
+            .collect::<Vec<_>>(),
+            "{case}"
         );
         assert_eq!(
             state.added_packages,
@@ -153,6 +170,12 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
                 "lsb-release".into(),
             ]
         );
+        assert!(state.added_contrib_source);
+        if case == "foreign" {
+            assert_eq!(state.zfs_build, None);
+            assert!(!root.join("usr/src/zfs-2.1.11").exists());
+            continue;
+        }
         assert_eq!(
             state.zfs_build,
             Some(ZfsBuild::Dkms {
@@ -161,7 +184,10 @@ async fn debian_prepare_builds_the_module_without_installing_it() {
                 source_dir: root.join("usr/src/zfs-2.1.11"),
             })
         );
-        assert!(root.join("usr/src/zfs-2.1.11/dkms.conf").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("usr/src/zfs-2.1.11/dkms.conf")).unwrap(),
+            "PACKAGE_NAME=\"zfs\"\nAUTOINSTALL=\"no\"\n"
+        );
         assert!(!root.join("data/machine.json").exists());
     }
 }
@@ -184,6 +210,7 @@ async fn ubuntu_prepare_downloads_zfs_without_installing_it() {
         &[
             ("uname", "echo 6.8.0-45-generic"),
             ("modinfo", "exit 0"),
+            ("dpkg", ""),
             ("apt-get", ""),
         ],
     );
@@ -201,11 +228,12 @@ async fn ubuntu_prepare_downloads_zfs_without_installing_it() {
     assert_nothing_installed_or_loaded(&log);
     let apt: Vec<&str> = log
         .lines()
-        .filter(|line| line.starts_with("apt-get"))
+        .filter(|line| line.starts_with("apt-get") || line.starts_with("dpkg "))
         .collect();
     assert_eq!(
         apt,
         [
+            "dpkg --configure -a",
             "apt-get -o DPkg::Lock::Timeout=300 update -qq",
             "apt-get -o DPkg::Lock::Timeout=300 install --download-only -y -qq zfsutils-linux",
         ]
@@ -259,7 +287,10 @@ fn amazon_linux_build_stops_at_dkms_build() {
                 "for package in zfs-2.4.4-1.x86_64 zfs-dkms-2.4.4-1.noarch libzfs7-2.4.4-1.x86_64 libzpool7-2.4.4-1.x86_64 libnvpair3-2.4.4-1.x86_64 libuutil3-2.4.4-1.x86_64; do : > \"$package.rpm\"; done",
             ),
             ("rpm2cpio", "echo archive"),
-            ("cpio", "cat > /dev/null\nmkdir -p \"$3/usr/src/zfs-2.4.4\""),
+            (
+                "cpio",
+                "cat > /dev/null\nmkdir -p \"$3/usr/src/zfs-2.4.4\"\n: > \"$3/usr/src/zfs-2.4.4/dkms.conf\"",
+            ),
             ("dkms", ""),
         ],
     );
@@ -329,15 +360,31 @@ async fn a_held_lock_exits_without_doing_anything() {
 
 #[tokio::test]
 async fn a_refused_host_records_zfs_skipped() {
-    let fixture = fixture("refused");
-    let root = fixture.path();
-    fs::write(
-        root.join("os-release"),
+    const CASE: &str = "PLOYZ_PREPARE_REFUSED_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        prepare_at(&InstallPaths::at(&root), false, async || Ok(()))
+            .await
+            .unwrap();
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "refused",
         "PRETTY_NAME=\"Debian GNU/Linux 11 (bullseye)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"11\"\nID=debian\n",
-    )
-    .unwrap();
-    let paths = InstallPaths::at(root);
-    prepare_at(&paths, false, async || Ok(())).await.unwrap();
+        &[("dpkg", "")],
+    );
+    let root = fixture.path();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::a_refused_host_records_zfs_skipped",
+        root,
+        OsString::from(CASE),
+        OsString::from("refused"),
+        "refused",
+        [],
+    );
+    assert_eq!(read_log(root), "dpkg --configure -a\n");
     let state = read_state(root);
     assert_eq!(state.docker.step, DockerStep::Ready);
     assert_eq!(
@@ -415,6 +462,8 @@ fn discard_removes_only_what_preparation_added() {
                 version: "2.1.11".into(),
                 source_dir: source_dir.clone(),
             }),
+            added_contrib_source: true,
+            interrupted: vec![],
         },
     };
     job.save().unwrap();
@@ -448,4 +497,199 @@ fn discard_removes_only_what_preparation_added() {
     assert_eq!(state.zfs.step, ZfsStep::Off);
     assert!(state.added_packages.is_empty());
     assert_eq!(state.zfs_build, None);
+}
+
+fn claimed_build(paths: &InstallPaths, source_dir: &Path) -> Job {
+    Job {
+        path: state_path(paths),
+        state: PrepState {
+            added_packages: vec!["dkms".into(), "lsb-release".into()],
+            zfs_build: Some(ZfsBuild::Dkms {
+                module: "zfs".into(),
+                version: "2.1.11".into(),
+                source_dir: source_dir.to_owned(),
+            }),
+            ..PrepState::default()
+        },
+    }
+}
+
+/// A full install that put zfs-dkms in place owns the module, so a discard that still finds the
+/// build claimed leaves it, its source and its packages alone.
+#[test]
+fn discard_leaves_an_installed_zfs_package_alone() {
+    const CASE: &str = "PLOYZ_PREPARE_DISCARD_INSTALLED_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        discard_at(&InstallPaths::at(&root)).unwrap();
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "discard-installed",
+        DEBIAN_12,
+        &[
+            ("apt-get", ""),
+            ("dpkg-query", &dpkg_query(&["zfs-dkms", "dkms"])),
+            (
+                "dkms",
+                "case \"$1\" in status) echo 'zfs/2.1.11, 6.1.0-28-amd64, x86_64: installed' ;; esac",
+            ),
+        ],
+    );
+    let root = fixture.path();
+    let paths = InstallPaths::at(root);
+    let source_dir = root.join("usr/src/zfs-2.1.11");
+    fs::create_dir_all(&source_dir).unwrap();
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    claimed_build(&paths, &source_dir).save().unwrap();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::discard_leaves_an_installed_zfs_package_alone",
+        root,
+        OsString::from(CASE),
+        OsString::from("discard-installed"),
+        "discard-installed",
+        [],
+    );
+
+    let log = read_log(root);
+    let changes: Vec<&str> = log
+        .lines()
+        .filter(|line| !line.starts_with("dkms status") && !line.starts_with("dpkg-query"))
+        .collect();
+    assert!(changes.is_empty(), "{log}");
+    assert!(source_dir.exists());
+}
+
+/// Discard removes the contrib source only when preparation wrote it; one a full install left
+/// stays.
+#[test]
+fn discard_keeps_a_contrib_source_preparation_did_not_add() {
+    let fixture = fixture("discard-foreign-contrib");
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(paths.apt_dir.join("sources.list.d")).unwrap();
+    let contrib = debian_contrib_source(&paths.apt_dir);
+    fs::write(&contrib, "Components: contrib\n").unwrap();
+    discard_at(&paths).unwrap();
+    assert!(contrib.exists());
+}
+
+/// A child that outlives its preparation run keeps the lock, so a retry can't start a second
+/// build beside it.
+#[test]
+fn the_lock_outlives_its_holder_in_a_child() {
+    let fixture = fixture("lock-child");
+    let paths = InstallPaths::at(fixture.path());
+    let held = lock(&paths, Wait::No).unwrap().unwrap();
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    drop(held);
+    let contended = lock(&paths, Wait::No).unwrap().is_none();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(contended, "the lock fell with its holder while a child ran");
+    assert!(lock(&paths, Wait::No).unwrap().is_some());
+}
+
+/// A Docker that `docker.socket` would start but that doesn't answer isn't ready: the step asks
+/// it the way install does.
+#[tokio::test]
+async fn docker_step_asks_a_socket_activated_docker() {
+    const CASE: &str = "PLOYZ_PREPARE_DOCKER_SOCKET_CONTRACT";
+    if let Ok(name) = env::var(CASE) {
+        let root = contract_root();
+        let result = docker_step(&InstallPaths::at(&root)).await;
+        assert_eq!(
+            result,
+            Err("checking Docker: Docker is installed but not running. Start it (systemctl start docker) and run this again.".into())
+        );
+        fs::write(root.join("child-completed"), name).unwrap();
+        return;
+    }
+
+    let fixture = host(
+        "docker-socket",
+        UBUNTU_24,
+        &[
+            ("dockerd", "exit 0"),
+            ("docker", "exit 1"),
+            // docker.socket listens; docker.service failed the last time it ran.
+            (
+                "systemctl",
+                "case \"$1 $2 $3\" in \"is-active --quiet docker.socket\"|\"is-failed --quiet docker.service\") exit 0 ;; *) exit 3 ;; esac",
+            ),
+        ],
+    );
+    let root = fixture.path();
+    run_contract_child_with_environment(
+        "installer::prepare::tests::docker_step_asks_a_socket_activated_docker",
+        root,
+        OsString::from(CASE),
+        OsString::from("docker-socket"),
+        "docker-socket",
+        [],
+    );
+    assert!(
+        read_log(root).contains("docker version"),
+        "{}",
+        read_log(root)
+    );
+}
+
+#[tokio::test]
+async fn a_step_left_installing_is_redone_and_recorded() {
+    let fixture = fixture("interrupted");
+    let paths = InstallPaths::at(fixture.path());
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    let started = Some(now());
+    Job {
+        path: state_path(&paths),
+        state: PrepState {
+            docker: Timed {
+                step: DockerStep::Installing,
+                started_at: started.clone(),
+                finished_at: None,
+            },
+            zfs: Timed {
+                step: ZfsStep::Installing,
+                started_at: started,
+                finished_at: None,
+            },
+            ..PrepState::default()
+        },
+    }
+    .save()
+    .unwrap();
+    let ran = Cell::new(false);
+    prepare_at(&paths, true, async || {
+        ran.set(true);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(ran.get());
+    let state = read_state(fixture.path());
+    assert_eq!(state.interrupted, ["docker", "zfs"]);
+    assert_eq!(state.docker.step, DockerStep::Ready);
+    assert_eq!(state.zfs.step, ZfsStep::Off);
+}
+
+#[test]
+fn a_package_install_takes_over_the_build_preparation_claimed() {
+    let fixture = fixture("forget");
+    let paths = InstallPaths::at(fixture.path());
+    forget_zfs_build(&paths).unwrap();
+    assert!(!prepare_dir(&paths).exists());
+
+    fs::create_dir_all(prepare_dir(&paths)).unwrap();
+    let mut job = claimed_build(&paths, &fixture.path().join("usr/src/zfs-2.1.11"));
+    job.state.added_contrib_source = true;
+    job.state.zfs.step = ZfsStep::Ready;
+    job.save().unwrap();
+    forget_zfs_build(&paths).unwrap();
+    let state = read_state(fixture.path());
+    assert!(state.added_packages.is_empty());
+    assert_eq!(state.zfs_build, None);
+    assert!(!state.added_contrib_source);
+    assert_eq!(state.zfs.step, ZfsStep::Ready);
 }
