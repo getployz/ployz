@@ -128,7 +128,9 @@ Docker. `assessment.blockers` lists what stops Ployz, each with a `code` and a `
 with the disks managed volumes can use, or `Ineligible` with the reason the ZFS install stops on.
 A value Ployz couldn't read shows as `null`, and `facts.unread` says why. When Ployz can't read
 whether an LXC container is privileged, `assessment.zfs` is `Ineligible` with
-`lxc_privilege_unknown`.
+`lxc_privilege_unknown`. When a Docker command fails partway, the `docker_unreadable` blocker
+carries the error the install would stop on. The probe never starts Docker: a stopped
+`docker.service` behind a listening `docker.socket` shows as `docker_stopped`.
 
 ## Managed volumes are missing after a kernel update
 

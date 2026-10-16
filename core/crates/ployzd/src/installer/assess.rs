@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::os_release::OsRelease;
 use super::storage::ZfsRoute;
-use super::{Error, InstallPaths, command_exists, run_host};
+use super::{Error, InstallPaths, command_exists, run_command, run_host};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const MINIMUM_DISK_BYTES: u64 = 30 * GIB;
@@ -19,6 +19,7 @@ pub(super) const ZFS_SMOKE_BYTES: u64 = 128 * 1024 * 1024;
 const ROOT_RESERVE: &str = "root_reserve";
 const DOCKER_STAGE: &str = "checking Docker";
 const ROOT_STAGE: &str = "inspect host-root capacity for ZFS storage preparation";
+const DISKS_STAGE: &str = "list disks";
 
 #[derive(Debug, Serialize)]
 pub(super) struct HostFacts {
@@ -26,7 +27,7 @@ pub(super) struct HostFacts {
     pub(super) kernel: String,
     pub(super) arch: String,
     pub(super) virt: Virtualization,
-    /// `None` when neither the EFI variable nor `mokutil` could say.
+    /// `None` when the EFI variable couldn't be read.
     pub(super) secure_boot: Option<bool>,
     pub(super) cgroup: Option<CgroupVersion>,
     pub(super) systemd: bool,
@@ -111,6 +112,8 @@ pub(super) enum DockerFacts {
         api: String,
         buildx: Option<String>,
         containerd_store: Option<bool>,
+        /// The failed command that stopped reading, as the installer would refuse with it.
+        error: Option<String>,
     },
 }
 
@@ -165,18 +168,27 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
     let mut keep = |error: Option<Error>| unread.extend(error.map(|error| error.to_string()));
     let (virt, error) = read_virtualization(&paths.proc_dir);
     keep(error);
+    // Install reads only this variable, so the probe agrees with it rather than asking mokutil.
     let secure_boot = match read_secure_boot_variable(&paths.secure_boot) {
         Ok(enabled) => Some(enabled),
         Err(error) => {
-            let state = read_mokutil_secure_boot();
-            if state.is_none() {
-                keep(Some(error));
-            }
-            state
+            keep(Some(error));
+            None
         }
     };
-    let (docker, error) = read_docker();
-    keep(error);
+    let cgroup = keep_ok(&mut keep, read_cgroup(&paths.proc_dir));
+    let cpu_count = keep_ok(&mut keep, read_cpu_count(&paths.proc_dir));
+    let memory_total_bytes = keep_ok(&mut keep, read_memory_total(&paths.proc_dir));
+    let (disks, errors) = read_disks(root_filesystem);
+    for error in errors {
+        keep(Some(error));
+    }
+    // The Docker error lives in `docker.error` and becomes a blocker there.
+    let docker = if docker_waits_on_its_socket() {
+        DockerFacts::Stopped
+    } else {
+        read_docker().0
+    };
     let (zpool_present, error) = read_zpool_present(Path::new("/sys/module/zfs"));
     keep(error);
     Ok(HostFacts {
@@ -185,38 +197,78 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
         arch: uts.machine().to_string_lossy().into_owned(),
         virt,
         secure_boot,
-        cgroup: fs::read_to_string(paths.proc_dir.join("self/mounts"))
-            .ok()
-            .and_then(|mounts| cgroup_version(&mounts)),
+        cgroup,
         systemd: Path::new("/run/systemd/system").is_dir(),
-        cpu_count: fs::read_to_string(paths.proc_dir.join("cpuinfo"))
-            .ok()
-            .map(|cpuinfo| {
-                cpuinfo
-                    .lines()
-                    .filter(|line| line.split(':').next().map(str::trim) == Some("processor"))
-                    .count()
-            })
-            .filter(|count| *count > 0)
-            .and_then(|count| u32::try_from(count).ok()),
-        memory_total_bytes: fs::read_to_string(paths.proc_dir.join("meminfo"))
-            .ok()
-            .and_then(|meminfo| {
-                meminfo.lines().find_map(|line| {
-                    line.strip_prefix("MemTotal:")?
-                        .split_whitespace()
-                        .next()?
-                        .parse::<u64>()
-                        .ok()
-                })
-            })
-            .map(|kib| kib.saturating_mul(1024)),
-        disks: read_disks(root_filesystem),
+        cpu_count,
+        memory_total_bytes,
         root_filesystem,
+        disks,
         docker,
         zpool_present,
         unread,
     })
+}
+
+fn keep_ok<T>(keep: &mut impl FnMut(Option<Error>), result: Result<T, Error>) -> Option<T> {
+    result.map_err(|error| keep(Some(error))).ok()
+}
+
+/// Whether `docker.service` is stopped while `docker.socket` listens, so any `docker` command
+/// would start the daemon, and with it every container whose restart policy brings it back.
+fn docker_waits_on_its_socket() -> bool {
+    let active = |unit| {
+        Command::new("systemctl")
+            .args(["is-active", "--quiet", unit])
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    command_exists("dockerd") && active("docker.socket") && !active("docker.service")
+}
+
+fn unreadable(stage: &str, message: impl Into<String>) -> Error {
+    Error::Command {
+        stage: stage.into(),
+        message: message.into(),
+    }
+}
+
+fn read_proc(proc_dir: &Path, file: &str, stage: &'static str) -> Result<String, Error> {
+    fs::read_to_string(proc_dir.join(file)).map_err(|source| Error::Io { stage, source })
+}
+
+fn read_cgroup(proc_dir: &Path) -> Result<CgroupVersion, Error> {
+    const STAGE: &str = "read cgroup layout";
+    let mounts = read_proc(proc_dir, "self/mounts", STAGE)?;
+    cgroup_version(&mounts).ok_or_else(|| unreadable(STAGE, "no cgroup mount at /sys/fs/cgroup"))
+}
+
+fn read_cpu_count(proc_dir: &Path) -> Result<u32, Error> {
+    const STAGE: &str = "read CPU count";
+    let cpuinfo = read_proc(proc_dir, "cpuinfo", STAGE)?;
+    let count = cpuinfo
+        .lines()
+        .filter(|line| line.split(':').next().map(str::trim) == Some("processor"))
+        .count();
+    u32::try_from(count)
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or_else(|| unreadable(STAGE, "no processor lines in cpuinfo"))
+}
+
+fn read_memory_total(proc_dir: &Path) -> Result<u64, Error> {
+    const STAGE: &str = "read memory size";
+    let meminfo = read_proc(proc_dir, "meminfo", STAGE)?;
+    meminfo
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .map(|kib| kib.saturating_mul(1024))
+        .ok_or_else(|| unreadable(STAGE, "no MemTotal line in meminfo"))
 }
 
 /// Whether any pool is imported. `zpool` loads the ZFS module when it isn't loaded, so it runs
@@ -302,21 +354,6 @@ pub(super) fn read_secure_boot_variable(variable: &Path) -> Result<bool, Error> 
     }
 }
 
-fn read_mokutil_secure_boot() -> Option<bool> {
-    if !command_exists("mokutil") {
-        return None;
-    }
-    let output = Command::new("mokutil").arg("--sb-state").output().ok()?;
-    let state = String::from_utf8_lossy(&output.stdout);
-    if state.contains("SecureBoot enabled") {
-        Some(true)
-    } else if state.contains("SecureBoot disabled") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
 pub(super) fn cgroup_version(mounts: &str) -> Option<CgroupVersion> {
     // A later mount over the same target hides the earlier ones.
     let fstype = |target: &str| {
@@ -335,36 +372,48 @@ pub(super) fn cgroup_version(mounts: &str) -> Option<CgroupVersion> {
     }
 }
 
-fn read_disks(root: Filesystem) -> Option<Vec<Disk>> {
+/// The disks `lsblk` lists, and why a disk or the whole listing couldn't be read.
+fn read_disks(root: Filesystem) -> (Option<Vec<Disk>>, Vec<Error>) {
     // util-linux before 2.37 has only MOUNTPOINT, one mount per device.
+    let mut failure = None;
     let output = ["MOUNTPOINTS", "MOUNTPOINT"]
         .into_iter()
         .find_map(|mounts| {
-            Command::new("lsblk")
-                .args([
-                    "-J",
-                    "-b",
-                    "-o",
-                    &format!("NAME,PATH,SIZE,TYPE,FSTYPE,{mounts},PKNAME"),
-                ])
-                .output()
+            let mut command = Command::new("lsblk");
+            command.args([
+                "-J",
+                "-b",
+                "-o",
+                &format!("NAME,PATH,SIZE,TYPE,FSTYPE,PTTYPE,{mounts},PKNAME"),
+            ]);
+            run_command(DISKS_STAGE, &mut command)
+                .map_err(|error| failure = Some(error))
                 .ok()
-                .filter(|output| output.status.success())
-        })?;
-    let listing: Value = serde_json::from_slice(&output.stdout).ok()?;
+        });
+    let Some(output) = output else {
+        return (None, failure.into_iter().collect());
+    };
+    let listing: Value = match serde_json::from_slice(&output.stdout) {
+        Ok(listing) => listing,
+        Err(error) => return (None, vec![unreadable(DISKS_STAGE, error.to_string())]),
+    };
     let by_id = disk_ids(Path::new("/dev/disk/by-id"));
-    Some(disks_from_lsblk(&listing, root, &by_id))
+    let (disks, errors) = disks_from_lsblk(&listing, root, &by_id);
+    (Some(disks), errors)
 }
 
+/// The root disk and every empty whole disk, and an error for each such disk whose size didn't
+/// parse.
 pub(super) fn disks_from_lsblk(
     listing: &Value,
     root: Filesystem,
     by_id: &[(PathBuf, String)],
-) -> Vec<Disk> {
+) -> (Vec<Disk>, Vec<Error>) {
     let devices = listing["blockdevices"]
         .as_array()
         .map_or(&[][..], Vec::as_slice);
-    devices
+    let mut errors = Vec::new();
+    let disks = devices
         .iter()
         .filter(|device| device["type"] == "disk")
         .filter_map(|device| {
@@ -374,11 +423,24 @@ pub(super) fn disks_from_lsblk(
                     available: root.available_bytes,
                 }
             } else if device["fstype"].is_null()
+                && device["pttype"].is_null()
                 && device["children"].as_array().is_none_or(Vec::is_empty)
                 && mounts(device).all(Value::is_null)
             {
                 DiskRole::Empty
             } else {
+                return None;
+            };
+            let size_bytes = match &device["size"] {
+                Value::String(size) => size.parse().ok(),
+                Value::Number(size) => size.as_u64(),
+                Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
+            };
+            let Some(size_bytes) = size_bytes else {
+                errors.push(unreadable(
+                    DISKS_STAGE,
+                    format!("{path} has size {}", device["size"]),
+                ));
                 return None;
             };
             Some(Disk {
@@ -387,17 +449,12 @@ pub(super) fn disks_from_lsblk(
                     .iter()
                     .find(|(target, _)| target == Path::new(path))
                     .map(|(_, name)| name.clone()),
-                size_bytes: match &device["size"] {
-                    Value::String(size) => size.parse().ok()?,
-                    Value::Number(size) => size.as_u64()?,
-                    Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
-                        return None;
-                    }
-                },
+                size_bytes,
                 role,
             })
         })
-        .collect()
+        .collect();
+    (disks, errors)
 }
 
 /// `mountpoints` from util-linux 2.37 on, `mountpoint` before it.
@@ -451,19 +508,20 @@ pub(super) fn read_docker() -> (DockerFacts, Option<Error>) {
         return (DockerFacts::Stopped, None);
     };
     let (version, api) = output.split_once(' ').unwrap_or((&output, ""));
-    let present = |buildx, containerd_store| DockerFacts::Present {
+    let present = |buildx, containerd_store, error: Option<&Error>| DockerFacts::Present {
         version: version.to_owned(),
         api: api.to_owned(),
         buildx,
         containerd_store,
+        error: error.map(Error::to_string),
     };
     if !at_least(api, MINIMUM_DOCKER_API) {
-        return (present(None, None), None);
+        return (present(None, None, None), None);
     }
     // e.g. `github.com/docker/buildx v0.37.1 c8d4ec2`
     let output = match docker_output(["buildx", "version"]) {
         Ok(output) => output,
-        Err(error) => return (present(None, None), Some(error)),
+        Err(error) => return (present(None, None, Some(&error)), Some(error)),
     };
     let buildx = output
         .split_whitespace()
@@ -471,14 +529,14 @@ pub(super) fn read_docker() -> (DockerFacts, Option<Error>) {
         .unwrap_or(&output)
         .to_owned();
     if !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX) {
-        return (present(Some(buildx), None), None);
+        return (present(Some(buildx), None, None), None);
     }
     match docker_output(["info", "-f", "{{.DriverStatus}}"]) {
         Ok(status) => {
             let containerd_store = status.contains("io.containerd.snapshotter.v1");
-            (present(Some(buildx), Some(containerd_store)), None)
+            (present(Some(buildx), Some(containerd_store), None), None)
         }
-        Err(error) => (present(Some(buildx), None), Some(error)),
+        Err(error) => (present(Some(buildx), None, Some(&error)), Some(error)),
     }
 }
 
@@ -544,6 +602,7 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
         api,
         buildx,
         containerd_store,
+        error,
     } = docker
     else {
         return matches!(docker, DockerFacts::Stopped).then(|| {
@@ -560,6 +619,9 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
                 "Docker {version} is too old: Ployz needs Docker {MINIMUM_DOCKER_RELEASE} or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one."
             ),
         ));
+    }
+    if let Some(error) = error {
+        return Some(Blocker::new("docker_unreadable", error.clone()));
     }
     if let Some(buildx) = buildx.as_deref()
         && !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX)

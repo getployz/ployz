@@ -125,8 +125,10 @@ fn assert_refused(result: Result<(), Error>, expected: &str) {
     );
 }
 
-/// Fakes that let `zfs_installed` see a module once `root/module` exists.
+/// Fakes that let `zfs_installed` see a module once `root/module` exists, on a VM whatever the
+/// test runner itself is.
 fn write_zfs_probes(commands: &Path) {
+    write_script(&commands.join("systemd-detect-virt"), "echo kvm");
     write_script(
         &commands.join("modinfo"),
         r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/modinfo.log"; [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]"#,

@@ -1,10 +1,10 @@
-use std::{fs, io, path::PathBuf};
+use std::{env, ffi::OsString, fs, io, path::PathBuf};
 
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API};
 use serde_json::json;
 
 use super::*;
-use crate::installer::test_support::fixture;
+use crate::installer::test_support::{fixture, run_contract_child_with_environment, write_script};
 
 fn host() -> HostFacts {
     let root_filesystem = Filesystem {
@@ -47,6 +47,7 @@ fn host() -> HostFacts {
             api: "1.53".into(),
             buildx: Some("v0.37.1".into()),
             containerd_store: Some(true),
+            error: None,
         },
         zpool_present: Some(false),
         unread: Vec::new(),
@@ -120,6 +121,7 @@ fn an_old_docker_engine_blocks() {
         api: "1.44".into(),
         buildx: None,
         containerd_store: None,
+        error: None,
     };
     let blockers = assess(&facts).blockers;
     let [blocker] = blockers.as_slice() else {
@@ -143,6 +145,7 @@ fn an_old_buildx_blocks() {
         api: "1.53".into(),
         buildx: Some("v0.17.1".into()),
         containerd_store: None,
+        error: None,
     };
     let blockers = assess(&facts).blockers;
     let [blocker] = blockers.as_slice() else {
@@ -167,11 +170,32 @@ fn docker_without_the_containerd_store_blocks() {
         api: "1.53".into(),
         buildx: Some("v0.37.1".into()),
         containerd_store: Some(false),
+        error: None,
     };
     assert_eq!(
         codes(&assess(&facts).blockers),
         ["docker_containerd_store_off"]
     );
+}
+
+#[test]
+fn a_docker_that_stopped_answering_blocks_with_its_error() {
+    let mut facts = host();
+    facts.docker = DockerFacts::Present {
+        version: "29.2.0".into(),
+        api: "1.53".into(),
+        buildx: None,
+        containerd_store: None,
+        error: Some("checking Docker: docker: 'buildx' is not a docker command.".into()),
+    };
+    assert_eq!(
+        assess(&facts).blockers,
+        [Blocker::new(
+            "docker_unreadable",
+            "checking Docker: docker: 'buildx' is not a docker command."
+        )]
+    );
+    assert_eq!(zfs_refusal(&facts), None);
 }
 
 #[test]
@@ -387,6 +411,10 @@ fn lsblk_keeps_the_root_disk_and_empty_disks() {
             {"name": "vdd1", "path": "/dev/vdd1", "size": 1_072_693_248, "type": "part",
              "fstype": null, "mountpoints": [null], "pkname": "vdd"}
         ]},
+        {"name": "vde", "path": "/dev/vde", "size": 1_073_741_824, "type": "disk", "fstype": null,
+         "pttype": "gpt", "mountpoints": [null], "pkname": null},
+        {"name": "vdf", "path": "/dev/vdf", "size": "1.5T", "type": "disk", "fstype": null,
+         "mountpoints": [null], "pkname": null},
         {"name": "sr0", "path": "/dev/sr0", "size": 1_048_576, "type": "rom", "fstype": null,
          "mountpoints": [null], "pkname": null}
     ]});
@@ -395,7 +423,7 @@ fn lsblk_keeps_the_root_disk_and_empty_disks() {
         available_bytes: 60 * GIB,
     };
     let by_id = [(PathBuf::from("/dev/vdb"), "virtio-data".to_owned())];
-    let disks = disks_from_lsblk(&listing, root, &by_id);
+    let (disks, errors) = disks_from_lsblk(&listing, root, &by_id);
     let summary: Vec<_> = disks
         .iter()
         .map(|disk| {
@@ -417,6 +445,8 @@ fn lsblk_keeps_the_root_disk_and_empty_disks() {
             ("/dev/vdb", Some("virtio-data"), 214_748_364_800, None),
         ]
     );
+    let errors: Vec<_> = errors.iter().map(ToString::to_string).collect();
+    assert_eq!(errors, [r#"list disks: /dev/vdf has size "1.5T""#]);
 }
 
 #[test]
@@ -436,7 +466,7 @@ fn lsblk_before_util_linux_2_37_reports_one_mountpoint() {
         size_bytes: 100 * GIB,
         available_bytes: 60 * GIB,
     };
-    let disks = disks_from_lsblk(&listing, root, &[]);
+    let (disks, _) = disks_from_lsblk(&listing, root, &[]);
     let roles: Vec<_> = disks
         .iter()
         .map(|disk| {
@@ -503,4 +533,98 @@ fn an_unreadable_secure_boot_variable_is_an_error_not_off() {
             if source.kind() != io::ErrorKind::NotFound),
         "{error:?}"
     );
+}
+
+#[test]
+fn missing_proc_files_say_why_their_facts_are_null() {
+    let fixture = fixture("proc-missing");
+    let proc_dir = fixture.path();
+    let stages = [
+        read_cgroup(proc_dir).unwrap_err(),
+        read_cpu_count(proc_dir).unwrap_err(),
+        read_memory_total(proc_dir).unwrap_err(),
+    ]
+    .map(|error| error.to_string());
+    assert_eq!(
+        stages,
+        ["read cgroup layout", "read CPU count", "read memory size"]
+    );
+    fs::create_dir_all(proc_dir.join("self")).unwrap();
+    fs::write(proc_dir.join("self/mounts"), "proc /proc proc rw 0 0\n").unwrap();
+    fs::write(proc_dir.join("cpuinfo"), "").unwrap();
+    fs::write(proc_dir.join("meminfo"), "MemFree: 1 kB\n").unwrap();
+    let messages = [
+        read_cgroup(proc_dir).unwrap_err(),
+        read_cpu_count(proc_dir).unwrap_err(),
+        read_memory_total(proc_dir).unwrap_err(),
+    ]
+    .map(|error| error.to_string());
+    assert_eq!(
+        messages,
+        [
+            "read cgroup layout: no cgroup mount at /sys/fs/cgroup",
+            "read CPU count: no processor lines in cpuinfo",
+            "read memory size: no MemTotal line in meminfo",
+        ]
+    );
+}
+
+/// The probe reads a stopped Docker without touching its socket, which would start it, and keeps
+/// reading when `lsblk` is missing.
+#[test]
+fn probe_contract() {
+    const CASE: &str = "PLOYZ_PROBE_CONTRACT";
+    if env::var(CASE).is_ok() {
+        let root = PathBuf::from(env::var_os("PLOYZ_INSTALLER_CONTRACT_ROOT").unwrap());
+        let facts = read_facts(&InstallPaths::at(&root)).unwrap();
+        assert!(matches!(facts.docker, DockerFacts::Stopped), "{facts:?}");
+        assert!(facts.disks.is_none(), "{facts:?}");
+        for stage in [
+            "start host command",
+            "read cgroup layout",
+            "read CPU count",
+            "read memory size",
+        ] {
+            assert!(
+                facts.unread.iter().any(|reason| reason.starts_with(stage)),
+                "{stage}: {:?}",
+                facts.unread
+            );
+        }
+        assert_eq!(
+            codes(&assess(&facts).blockers).first(),
+            Some(&"docker_stopped")
+        );
+        fs::write(root.join("child-completed"), "probe").unwrap();
+        return;
+    }
+
+    let fixture = fixture("probe");
+    let root = fixture.path();
+    let commands = root.join("commands");
+    fs::create_dir_all(&commands).unwrap();
+    fs::write(
+        root.join("os-release"),
+        "NAME=\"Ubuntu\"\nID=ubuntu\nVERSION_ID=\"24.04\"\n",
+    )
+    .unwrap();
+    write_script(&commands.join("dockerd"), "exit 0");
+    write_script(
+        &commands.join("docker"),
+        r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/docker.log""#,
+    );
+    // docker.socket listens; docker.service is stopped.
+    write_script(
+        &commands.join("systemctl"),
+        r#"[ "$1 $2 $3" = "is-active --quiet docker.socket" ]"#,
+    );
+    run_contract_child_with_environment(
+        "installer::assess::tests::probe_contract",
+        root,
+        OsString::from(CASE),
+        OsString::from("probe"),
+        "probe",
+        [],
+    );
+    assert!(!root.join("docker.log").exists());
 }
