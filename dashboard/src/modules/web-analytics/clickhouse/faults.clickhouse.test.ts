@@ -151,6 +151,8 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
   type Snapshot = Effect.Success<ReturnType<typeof reads>>;
   const noLoss = (label: string, later: Snapshot, earlier: Snapshot) =>
     later.forEach((component, i) => expect(total(component), label).toBeGreaterThanOrEqual(total(earlier[i] ?? [])));
+  const noPhantom = (label: string, seen: Snapshot, truth: Snapshot) =>
+    seen.forEach((component, i) => expect(total(component), label).toBeLessThanOrEqual(total(truth[i] ?? [])));
   const marker = provide(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.execute<{ dirty: string[]; demoted: boolean; pending: number; floor: string }>(sql`
@@ -260,6 +262,7 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
       expect({ pageviews: day.pageviews, visits: day.visits }, label()).toEqual({ pageviews: total(hours), visits: hours.reduce((sum, { visits }) => sum + visits, 0) });
     }
     noLoss(label(), current, previous);
+    noPhantom(label(), current, yield* reads(postgresStore));
     if (kind === "collect") expect(current, label()).toEqual(previous);
     expect(after.floor, label()).toBeGreaterThanOrEqual(before.floor);
     expect(after.pending, label()).toBeLessThanOrEqual(PENDING_CAP);
