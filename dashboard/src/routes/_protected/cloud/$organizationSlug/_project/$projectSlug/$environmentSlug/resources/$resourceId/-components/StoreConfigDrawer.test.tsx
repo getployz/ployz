@@ -267,7 +267,7 @@ it("keeps unsaved text and new files through a successful Config rename", async 
   test.edit("keep unsaved text");
   fireEvent.click(screen.getByRole("button", { name: "Add file" }));
   fireEvent.change(screen.getByRole("textbox", { name: "File name" }), { target: { value: "new.yml" } });
-  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
   await screen.findByRole("textbox", { name: "new.yml contents" });
   test.edit("new unsaved text");
   fireEvent.click(screen.getByTitle("Edit config name"));
@@ -316,7 +316,7 @@ it("adds a nested filename and submits its contents", async () => {
   test.write.mockImplementationOnce(() => new Promise(() => {}));
   fireEvent.click(screen.getByRole("button", { name: "Add file" }));
   fireEvent.change(screen.getByRole("textbox", { name: "File name" }), { target: { value: "conf.d/site.yml" } });
-  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
   await screen.findByRole("textbox", { name: "conf.d/site.yml contents" });
   test.edit("listen: 8080");
   fireEvent.click(screen.getByRole("button", { name: "Save" }));

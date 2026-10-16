@@ -56,6 +56,112 @@ const sectionChildrenArePrimitives = defineRule({
   },
 });
 
+/** The old field shape: a label stacked on a control, with its own spacing. Never right anywhere in a settings card. */
+const RAW_FIELDS = new Set(["Field", "FieldGroup", "FieldSet", "FieldLabel", "FieldContent", "FieldDescription", "FieldTitle"]);
+/** Bare controls. Right only inside a primitive that lays them out and labels them. */
+const RAW_INPUTS = new Set(["Input", "Textarea", "InputGroup"]);
+/** Primitives built to hold a control: inside one, a bare control is laid out and labelled for the card. */
+const CONTROL_HOMES = new Set(["SettingsRow", "SettingsField", "SettingsForm", "SettingsFormField", "SettingsListItem", "SettingsWorkspace"]);
+/** Surfaces that float above the card and draw their own layout, so the card's rules stop at them. */
+const SURFACES = new Set(["Dialog", "DialogContent", "AlertDialog", "AlertDialogContent", "Sheet", "SheetContent", "Popover", "PopoverContent", "DropdownMenuContent"]);
+
+type Body = ESTree.Node;
+
+function isNode(value: unknown): value is ESTree.Node {
+  return typeof value === "object" && value !== null && typeof (value as { type?: unknown }).type === "string";
+}
+
+/** The file's own components and helpers by name, so a section that renders `<Rows />` is checked through `Rows`. */
+function localBodies(program: ESTree.Program): Map<string, Body> {
+  const bodies = new Map<string, Body>();
+  const visit = (statement: ESTree.Node) => {
+    if (statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration") {
+      if (statement.declaration && isNode(statement.declaration)) visit(statement.declaration);
+      return;
+    }
+    if (statement.type === "FunctionDeclaration" && statement.id) bodies.set(statement.id.name, statement.body ?? statement);
+    if (statement.type === "VariableDeclaration") {
+      for (const declarator of statement.declarations) {
+        const init = declarator.init;
+        if (declarator.id.type === "Identifier" && init && (init.type === "ArrowFunctionExpression" || init.type === "FunctionExpression")) {
+          bodies.set(declarator.id.name, init.body);
+        }
+      }
+    }
+  };
+  for (const statement of program.body) visit(statement);
+  return bodies;
+}
+
+/**
+ * A raw Field anywhere under a SettingsSection, or a raw Input outside a primitive built to hold it, draws its own
+ * label and spacing inside the card. Follows the file's own components and helpers, and stops at floating surfaces.
+ */
+const noRawFieldInSection = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Disallow raw Field and unhoused Input anywhere under a SettingsSection." },
+    messages: {
+      field: "`<{{name}}>` is the old field shape inside a SettingsSection. Use SettingsRow, SettingsField or SettingsFormField.",
+      input: "`<{{name}}>` sits bare inside a SettingsSection. Put it in a SettingsRow, SettingsField or SettingsForm, or use ConfirmableInput there.",
+    },
+  },
+  createOnce(context) {
+    return {
+      Program(program) {
+        const bodies = localBodies(program);
+        const reported = new Set<ESTree.Node>();
+        const report = (node: ESTree.JSXElement, messageId: "field" | "input", name: string) => {
+          if (reported.has(node)) return;
+          reported.add(node);
+          context.report({ node, messageId, data: { name } });
+        };
+        const followed = new Set<string>();
+        const follow = (name: string, housed: boolean) => {
+          const body = bodies.get(name);
+          const key = `${name}:${housed}`;
+          if (!body || followed.has(key)) return;
+          followed.add(key);
+          walk(body, housed);
+        };
+        const walk = (node: ESTree.Node, housed: boolean): void => {
+          let inside = housed;
+          if (node.type === "JSXElement") {
+            const name = elementName(node);
+            if (name !== null) {
+              if (SURFACES.has(name)) return;
+              if (RAW_FIELDS.has(name)) report(node, "field", name);
+              else if (RAW_INPUTS.has(name) && !housed) report(node, "input", name);
+              if (CONTROL_HOMES.has(name)) inside = true;
+              follow(name, inside);
+            }
+          }
+          if (node.type === "CallExpression" && node.callee.type === "Identifier") follow(node.callee.name, inside);
+          for (const [key, value] of Object.entries(node)) {
+            if (key === "parent") continue;
+            if (Array.isArray(value)) {
+              for (const item of value) if (isNode(item)) walk(item, inside);
+            } else if (isNode(value)) walk(value, inside);
+          }
+        };
+        const findSections = (node: ESTree.Node): void => {
+          if (node.type === "JSXElement" && elementName(node) === "SettingsSection") {
+            for (const child of node.children) walk(child, false);
+            for (const attribute of node.openingElement.attributes) walk(attribute, false);
+          }
+          for (const [key, value] of Object.entries(node)) {
+            if (key === "parent") continue;
+            if (Array.isArray(value)) {
+              for (const item of value) if (isNode(item)) findSections(item);
+            } else if (isNode(value)) findSections(value);
+          }
+        };
+        findSections(program);
+      },
+    };
+  },
+});
+
 /** Visits each class token in the file's string literals and template literals' static parts. */
 function onClassTokens(report: (node: ESTree.Node, token: string) => void) {
   const check = (node: ESTree.Node, text: string) => {
@@ -120,6 +226,7 @@ const settingsRowsPlugin = eslintCompatPlugin({
     "section-children-are-primitives": sectionChildrenArePrimitives,
     "no-hand-drawn-staged": noHandDrawnStaged,
     "no-hand-drawn-tone": noHandDrawnTone,
+    "no-raw-field-in-section": noRawFieldInSection,
   },
 });
 

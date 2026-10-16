@@ -2,13 +2,12 @@ import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
 import { useNavigate } from "@tanstack/react-router";
 import { CodeIcon, EllipsisIcon } from "lucide-react";
-import { SettingsEmpty, SettingsForm, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
-import { Field, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { SetupCommand as DraftCommand } from "#/modules/config-store/branch-picks";
@@ -131,13 +130,11 @@ function SetupCommandForm({ submitLabel, services, initial, onSubmit, onCancel }
   return (
     <SettingsForm submitLabel={submitLabel} disabled={!command.trim()} onCancel={onCancel}
       onSubmit={() => onSubmit({ lineageId, command: command.trim() })}>
-      <Field>
-        <FieldLabel htmlFor="setup-command">Command</FieldLabel>
+      <SettingsFormField label="Command" htmlFor="setup-command">
         <Input id="setup-command" className="font-mono" placeholder="pnpm db:seed" spellCheck={false} autoComplete="off" autoFocus
           value={command} onChange={(event) => setCommand(event.target.value)} />
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="setup-runs-in">Runs in</FieldLabel>
+      </SettingsFormField>
+      <SettingsFormField label="Runs in" htmlFor="setup-runs-in">
         <Select value={lineageId} onValueChange={(next) => { if (next) setLineageId(next); }}>
           <SelectTrigger id="setup-runs-in">
             <SelectValue>{services.find((service) => service.lineageId === lineageId)?.name}</SelectValue>
@@ -150,7 +147,7 @@ function SetupCommandForm({ submitLabel, services, initial, onSubmit, onCancel }
             </SelectGroup>
           </SelectContent>
         </Select>
-      </Field>
+      </SettingsFormField>
     </SettingsForm>
   );
 }

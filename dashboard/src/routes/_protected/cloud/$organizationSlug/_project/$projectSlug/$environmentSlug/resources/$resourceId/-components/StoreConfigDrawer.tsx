@@ -13,8 +13,8 @@ import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Field, FieldError, FieldLabel } from "#/components/ui/field";
-import { Input } from "#/components/ui/input";
+import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { FieldError } from "#/components/ui/field";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
@@ -288,18 +288,9 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
         )}
       </div>
       {adding ? (
-        <Field data-invalid={adding.error ? true : undefined}>
-          <FieldLabel htmlFor="config-new-file">File name</FieldLabel>
-          <div className="flex gap-2">
-            <Input id="config-new-file" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus autoComplete="off"
-              aria-invalid={adding.error ? true : undefined}
-              onChange={(event) => setAdding({ name: event.target.value, error: null })}
-              onKeyDown={(event) => { if (event.key === "Enter") add(); if (event.key === "Escape") setAdding(null); }} />
-            <Button variant="outline" onClick={() => setAdding(null)}>Cancel</Button>
-            <Button onClick={add}>Add</Button>
-          </div>
-          {adding.error ? <FieldError>{adding.error}</FieldError> : null}
-        </Field>
+        <ConfirmableInput aria-label="File name" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
+          autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
+          onConfirm={add} onCancel={() => setAdding(null)} />
       ) : null}
       {current === null ? (
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>

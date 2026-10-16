@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { RelativeTime } from "#/components/relative-time";
-import { SettingsEmpty, SettingsForm, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import {
   AlertDialog,
@@ -19,7 +19,6 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldLabel } from "#/components/ui/field";
 import { toErrorMessage } from "#/lib/error-message";
 import type { ConnectNotice } from "#/modules/github/github-connect";
 import { acceptGithubOfferServerFn, disconnectGithubAccountServerFn } from "#/modules/github/github-connect.functions";
@@ -202,7 +201,7 @@ function OfferPicker({ organizationSlug, offer, clearConnectSearch }: { organiza
         disabled={picked.length === 0}
       >
         {accounts.data.map((account) => (
-          <Field key={account.installationId} orientation="horizontal">
+          <SettingsFormField key={account.installationId} label={account.login} htmlFor={`github-offer-${account.installationId}`} inline>
             <Checkbox
               id={`github-offer-${account.installationId}`}
               checked={!unpicked.has(account.installationId)}
@@ -213,8 +212,7 @@ function OfferPicker({ organizationSlug, offer, clearConnectSearch }: { organiza
                 return next;
               })}
             />
-            <FieldLabel htmlFor={`github-offer-${account.installationId}`}>{account.login}</FieldLabel>
-          </Field>
+          </SettingsFormField>
         ))}
       </SettingsForm>
     </>

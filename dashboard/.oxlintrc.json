@@ -54,6 +54,7 @@
     "settings-rows/section-children-are-primitives": "error",
     "settings-rows/no-hand-drawn-staged": "error",
     "settings-rows/no-hand-drawn-tone": "error",
+    "settings-rows/no-raw-field-in-section": "error",
     "typescript/no-explicit-any": "error",
     "typescript/no-non-null-assertion": "error",
     "typescript/no-unnecessary-type-assertion": "error",

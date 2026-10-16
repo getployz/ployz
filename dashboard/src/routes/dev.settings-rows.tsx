@@ -1,12 +1,14 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { createFileRoute, notFound } from "@tanstack/react-router";
 import { GlobeIcon, LockIcon, XIcon } from "lucide-react";
 import { RowWarning } from "#/components/settings/row-warning";
 import { SettingsDisclosure } from "#/components/settings/settings-disclosure";
 import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
-import { SettingsEmpty, SettingsForm, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsDanger, SettingsFoot, SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
+import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { Button } from "#/components/ui/button";
+import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
@@ -33,6 +35,8 @@ const REGIONS = ["Falkenstein", "Helsinki", "Ashburn"];
 
 function Gallery() {
   const [name, setName] = useState("api");
+  const [draft, setDraft] = useState(name);
+  const id = useId();
   const [region, setRegion] = useState("Falkenstein");
   const [sleep, setSleep] = useState(false);
   return (
@@ -42,13 +46,16 @@ function Gallery() {
           label="Service name"
           hint="Shown on the canvas and in logs."
           commit="confirm"
-          control={<Input aria-label="Service name" value={name} onChange={(event) => setName(event.target.value)} />}
+          control={(
+            <ConfirmableInput aria-label="Service name" value={draft} isDirty={draft !== name} onValueChange={setDraft}
+              onConfirm={() => setName(draft)} onCancel={() => setDraft(name)} />
+          )}
         />
         <SettingsRow
           label="Start command"
           hint="Staged for the next deploy."
           commit="confirm"
-          control={<Input aria-label="Start command" data-changed defaultValue="node server.js" />}
+          control={<ConfirmableInput aria-label="Start command" isChanged value="node server.js" onValueChange={() => {}} />}
         />
         <SettingsRow
           label="Region"
@@ -79,6 +86,22 @@ function Gallery() {
         <SettingsRow label="Private address" hint="api.internal" commit="none" control={<Button variant="outline" size="sm">Copy</Button>} />
       </SettingsSection>
 
+      <SettingsSection id="confirm" title="Confirm states" description="One confirm row through its write: idle, edited, saving, staged, refused.">
+        <SettingsRow label="Idle" hint="Stored value, nothing typed." commit="confirm"
+          control={<ConfirmableInput aria-label="Idle" value="3" onValueChange={() => {}} />} />
+        <SettingsRow label="Editing" hint="Enter or ✓ writes, Escape or ✕ reverts." commit="confirm"
+          control={<ConfirmableInput aria-label="Editing" value="4" isDirty onValueChange={() => {}} />} />
+        <SettingsRow label="Saving" hint="The write is on its way." commit="confirm"
+          control={<ConfirmableInput aria-label="Saving" value="4" status={{ phase: "saving" }} onValueChange={() => {}} />} />
+        <SettingsRow label="Staged" hint="Saved, waits for the next deploy." commit="confirm"
+          control={<ConfirmableInput aria-label="Staged" value="4" isChanged onValueChange={() => {}} />} />
+        <SettingsRow label="Failed" hint="Refused: the stored value is back." commit="confirm"
+          control={(
+            <ConfirmableInput aria-label="Failed" value="3" onValueChange={() => {}}
+              status={{ phase: "failed", reason: "Replicas must be at most 50.", onRetry: () => {} }} />
+          )} />
+      </SettingsSection>
+
       <SettingsSection id="list" title="Lists" action={<Button variant="outline" size="sm">Section action</Button>}>
         <SettingsList label="Domains">
           <SettingsListItem media={<GlobeIcon />} label="api.example.com" hint="→ 8080 · Live" commit="change" actions={<Button variant="ghost" size="sm">Remove</Button>} />
@@ -96,7 +119,9 @@ function Gallery() {
         <SettingsListAdd label="Add member">
           {(close) => (
             <SettingsForm submitLabel="Invite" onSubmit={close} onCancel={close}>
-              <Input aria-label="Email" placeholder="name@example.com" />
+              <SettingsFormField label="Email" htmlFor={`${id}-email`}>
+                <Input id={`${id}-email`} placeholder="name@example.com" />
+              </SettingsFormField>
             </SettingsForm>
           )}
         </SettingsListAdd>
@@ -104,8 +129,9 @@ function Gallery() {
 
       <SettingsSection id="form" title="Form">
         <SettingsForm submitLabel="Save" onSubmit={() => {}} onCancel={() => {}} error="That name is taken.">
-          <Input aria-label="Key" placeholder="KEY" />
-          <Input aria-label="Value" placeholder="value" />
+          <SettingsFormField label="Key" htmlFor={`${id}-key`}><Input id={`${id}-key`} placeholder="KEY" /></SettingsFormField>
+          <SettingsFormField label="Value" htmlFor={`${id}-value`}><Input id={`${id}-value`} placeholder="value" /></SettingsFormField>
+          <SettingsFormField label="Secret" htmlFor={`${id}-secret`} inline><Checkbox id={`${id}-secret`} /></SettingsFormField>
         </SettingsForm>
       </SettingsSection>
 

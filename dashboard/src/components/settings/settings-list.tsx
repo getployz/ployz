@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Item, ItemActions, ItemMedia } from "#/components/ui/item";
+import { Label } from "#/components/ui/label";
 import { Spinner } from "#/components/ui/spinner";
 import { CARD_CHILD, SettingsAddButton, SettingsFoot, SettingsText, type SettingsCommit, type SettingsTone } from "./settings-section";
 
@@ -89,6 +90,31 @@ export function SettingsForm({ submitLabel, onSubmit, onCancel, pending, disable
       </div>
       {error ? <div role="alert" className="basis-full text-sm text-destructive">{error}</div> : null}
     </Item>
+  );
+}
+
+/**
+ * One entry of a SettingsForm: its label over its control, or after it when `inline` (a checkbox reads as one line).
+ */
+export function SettingsFormField({ label, htmlFor, inline, children }: {
+  label: ReactNode;
+  htmlFor: string;
+  inline?: boolean;
+  children: ReactNode;
+}) {
+  if (inline) {
+    return (
+      <div data-slot="settings-form-field" className="flex items-center gap-2">
+        {children}
+        <Label htmlFor={htmlFor} className="font-normal">{label}</Label>
+      </div>
+    );
+  }
+  return (
+    <div data-slot="settings-form-field" className="flex flex-col gap-1.5">
+      <Label htmlFor={htmlFor}>{label}</Label>
+      {children}
+    </div>
   );
 }
 
