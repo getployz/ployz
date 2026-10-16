@@ -48,6 +48,7 @@ const SPINNER_FILES = {
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "components/settings/settings-list.tsx": "a settings form's Save in flight",
+  "components/stageable/confirmable-input.tsx": "a confirm row's save in flight",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "removal in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceActions.tsx": "a restart, stop or start moving the Service's containers",
