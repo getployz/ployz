@@ -37,10 +37,14 @@ const PROBE: &str = r#"{
 struct FakeHost {
     prepares: AtomicU32,
     disables: AtomicU32,
+    probe_hangs: bool,
 }
 
 impl Host for FakeHost {
     async fn probe(&self) -> Result<Probe, String> {
+        if self.probe_hangs {
+            std::future::pending::<()>().await;
+        }
         Ok(serde_json::from_str(PROBE).unwrap())
     }
 
@@ -132,26 +136,30 @@ fn an_answer_this_cli_cannot_read_waits_a_minute() {
 }
 
 #[test]
-fn unauthorized_stops_as_revoked_and_rate_limits_wait() {
-    let Reply::Answer(Answer::Stop(reason, _)) = client::reply(StatusCode::UNAUTHORIZED, None, b"")
-    else {
-        panic!("401 must stop the loop");
+fn unauthorized_is_refused_not_revoked_and_rate_limits_wait() {
+    let Reply::Refused(why) = client::reply(StatusCode::UNAUTHORIZED, None, Some(4), b"") else {
+        panic!("401 must be refused, not stop the loop");
     };
-    assert_eq!(reason, StopReason::TokenRevoked);
+    assert!(why.starts_with("Cloud refused this Fleet Token"), "{why}");
+    let Reply::Refused(why) = client::reply(StatusCode::UNAUTHORIZED, None, Some(-900), b"") else {
+        panic!("401 must be refused, not stop the loop");
+    };
+    assert!(why.starts_with("This server's clock is 900s off"), "{why}");
     assert_eq!(
         client::reply(
             StatusCode::TOO_MANY_REQUESTS,
             Some(Duration::from_secs(9)),
+            None,
             b""
         ),
         Reply::Answer(Answer::Wait(Duration::from_secs(9)))
     );
     assert_eq!(
-        client::reply(StatusCode::TOO_MANY_REQUESTS, None, b""),
+        client::reply(StatusCode::TOO_MANY_REQUESTS, None, None, b""),
         Reply::Answer(Answer::Wait(Duration::from_secs(1)))
     );
     assert!(matches!(
-        client::reply(StatusCode::BAD_GATEWAY, None, b""),
+        client::reply(StatusCode::BAD_GATEWAY, None, None, b""),
         Reply::Unreachable(after, _) if after == Duration::from_secs(60)
     ));
 }
@@ -275,6 +283,80 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
 }
 
 #[tokio::test]
+async fn a_refused_check_in_keeps_the_token_and_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "pflt_test\n").unwrap();
+    let (url, _server) = cloud("401 Unauthorized", r#"{"error":"unauthorized"}"#).await;
+    let host = FakeHost::default();
+    let next = pass(&host, &client(&url), &key(), &paths, Utc::now()).await;
+    assert!(matches!(next, Next::Refused(_)), "{next:?}");
+    assert!(paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 0);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(
+        status.headline(),
+        Headline {
+            title: "Cloud refused this server",
+            ended: false
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_probe_that_never_finishes_is_cut_off_and_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let host = FakeHost {
+        probe_hangs: true,
+        ..FakeHost::default()
+    };
+    let Next::Retry { after, why } = pass(
+        &host,
+        &client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await
+    else {
+        panic!("a hung probe must retry");
+    };
+    assert_eq!(after, Duration::from_secs(60));
+    assert!(why.contains("did not finish in 60s"), "{why}");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.answer, Seen::ProbeFailed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_failed_preparation_is_retried_once_however_often_the_loop_polls() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}}"#,
+    )
+    .unwrap();
+    let host = FakeHost {
+        probe_hangs: true,
+        ..FakeHost::default()
+    };
+    let unused = client("http://127.0.0.1:9");
+    for minute in 20..24 {
+        let now = at("2026-10-16T00:00:00Z") + TimeDelta::minutes(minute);
+        pass(&host, &unused, &key(), &paths, now).await;
+    }
+    assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.prepare_retries, 1);
+    assert_eq!(
+        status.prepare_retried.as_deref(),
+        Some("2026-10-16T00:00:00Z")
+    );
+}
+
+#[tokio::test]
 async fn a_cloud_that_does_not_answer_is_retried_in_a_minute() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
@@ -304,14 +386,14 @@ fn state(json: &str) -> PrepState {
 #[test]
 fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
     let now = at("2026-10-16T01:00:00Z");
-    assert_eq!(prepare_due(None, 0, now), Some(PrepareRun::Start));
+    assert_eq!(prepare_due(None, 0, None, now), Some(PrepareRun::Start));
     let installing = state(r#"{"docker":{"state":"installing"},"zfs":{"state":"installing"}}"#);
     assert_eq!(
-        prepare_due(Some(&installing), 3, now),
+        prepare_due(Some(&installing), 3, None, now),
         Some(PrepareRun::Start)
     );
     let ready = state(r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#);
-    assert_eq!(prepare_due(Some(&ready), 0, now), None);
+    assert_eq!(prepare_due(Some(&ready), 0, None, now), None);
 
     let failed = |finished: &str| {
         state(&format!(
@@ -319,19 +401,28 @@ fn preparation_starts_when_missing_running_or_failed_long_enough_ago() {
         ))
     };
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:55:00Z")), 0, now),
+        prepare_due(Some(&failed("2026-10-16T00:55:00Z")), 0, None, now),
         None
     );
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 0, now),
+        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 0, None, now),
         Some(PrepareRun::Retry)
     );
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 2, now),
+        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 2, None, now),
         Some(PrepareRun::Retry)
     );
     assert_eq!(
-        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 3, now),
+        prepare_due(Some(&failed("2026-10-16T00:50:00Z")), 3, None, now),
+        None
+    );
+    assert_eq!(
+        prepare_due(
+            Some(&failed("2026-10-16T00:50:00Z")),
+            1,
+            Some("2026-10-16T00:50:00Z"),
+            now
+        ),
         None
     );
 }
@@ -349,6 +440,7 @@ fn the_headline_says_where_the_host_stands() {
         }),
         blockers: Vec::new(),
         prepare_retries: 0,
+        prepare_retried: None,
     };
     assert_eq!(
         status.headline(),

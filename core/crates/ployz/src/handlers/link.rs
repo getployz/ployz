@@ -597,7 +597,11 @@ fn status_record(status: &Status) -> Fields {
         for blocker in &checkin.blockers {
             record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
         }
-        if let Some(message) = checkin.message.as_deref().filter(|_| ended) {
+        if let Some(message) = checkin
+            .message
+            .as_deref()
+            .filter(|_| ended || checkin.answer == crate::checkin::Seen::Refused)
+        {
             record.push("reason", message);
         }
         record.push(

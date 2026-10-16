@@ -12,12 +12,12 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use iroh::SecretKey;
 use reqwest::{
     StatusCode,
-    header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER},
+    header::{AUTHORIZATION, CONTENT_TYPE, DATE, RETRY_AFTER},
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use super::wire::{self, Answer, CheckinRequest, StopReason};
+use super::wire::{self, Answer, CheckinRequest};
 
 const SIGNATURE_CONTEXT: &[u8] = b"ployz-checkin-v1\0";
 const TIMESTAMP_HEADER: &str = "Ployz-Timestamp";
@@ -26,6 +26,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
+const MAX_SKEW_SECONDS: i64 = 300;
 
 #[derive(Debug, Error)]
 pub enum KeyError {
@@ -150,6 +151,7 @@ pub(crate) struct CheckinClient {
 pub(super) enum Reply {
     Answer(Answer),
     Unreachable(Duration, String),
+    Refused(String),
 }
 
 impl CheckinClient {
@@ -196,20 +198,36 @@ impl CheckinClient {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(|seconds| Duration::from_secs(seconds.max(1)));
+        let skew = response
+            .headers()
+            .get(DATE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok())
+            .map(|cloud| cloud.timestamp() - unix_seconds());
         let body = response.bytes().await.unwrap_or_default();
-        reply(status, retry_after, &body)
+        reply(status, retry_after, skew, &body)
     }
 }
 
-pub(super) fn reply(status: StatusCode, retry_after: Option<Duration>, body: &[u8]) -> Reply {
+pub(super) fn reply(
+    status: StatusCode,
+    retry_after: Option<Duration>,
+    skew: Option<i64>,
+    body: &[u8],
+) -> Reply {
     if status.is_success() {
         return Reply::Answer(wire::answer(body));
     }
     if status == StatusCode::UNAUTHORIZED {
-        return Reply::Answer(Answer::Stop(
-            StopReason::TokenRevoked,
-            "Cloud no longer accepts this Fleet Token.".to_owned(),
-        ));
+        return Reply::Refused(match skew {
+            Some(skew) if skew.abs() > MAX_SKEW_SECONDS => format!(
+                "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
+                skew.abs()
+            ),
+            Some(_) | None => {
+                "Cloud refused this Fleet Token. Check the file holds the whole token".to_owned()
+            }
+        });
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
         return Reply::Answer(Answer::Wait(retry_after.unwrap_or(Duration::from_secs(1))));

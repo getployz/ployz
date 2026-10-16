@@ -14,7 +14,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=PLOYZ_CLOUD_URL={cloud_url}
+Environment=\"PLOYZ_CLOUD_URL={cloud_url}\"
 ExecStart={ployz} server checkin --token-file {token_file}
 Restart=on-failure
 RestartSec=10
@@ -24,6 +24,7 @@ WantedBy=multi-user.target
 ",
         ployz = ployz.display(),
         token_file = token_file.display(),
+        cloud_url = cloud_url.replace('%', "%%"),
     )
 }
 

@@ -27,6 +27,7 @@ pub(crate) const ENROLL_LINE: &str = "Enroll needs a newer ployz. Waiting.";
 const ENROLL_WAIT: Duration = Duration::from_secs(10);
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 const PREPARE_TRIES: u32 = 3;
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) struct Paths {
     pub(crate) checkin_dir: PathBuf,
@@ -75,6 +76,7 @@ impl Host for System {
     async fn probe(&self) -> Result<Probe, String> {
         let output = tokio::process::Command::new(&self.ployzd)
             .args(["install", "--probe", "--json"])
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|error| format!("run {}: {error}", self.ployzd.display()))?;
@@ -135,6 +137,7 @@ pub(crate) enum Next {
         why: String,
     },
     Stop(StopReason, String),
+    Refused(String),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -144,6 +147,7 @@ pub(crate) enum Seen {
     Enroll,
     Stop,
     Unreachable,
+    Refused,
     ProbeFailed,
 }
 
@@ -161,6 +165,8 @@ pub(crate) struct LocalCheckin {
     pub(crate) blockers: Vec<Issue>,
     #[serde(default)]
     pub(crate) prepare_retries: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) prepare_retried: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,6 +205,7 @@ impl LocalCheckin {
         match self.answer {
             Seen::Stop => Headline::ended(self.reason.map_or("Stopped", StopReason::title)),
             Seen::Unreachable => Headline::open("Can't reach Cloud"),
+            Seen::Refused => Headline::open("Cloud refused this server"),
             Seen::ProbeFailed => Headline::open("Can't inspect this host"),
             Seen::Enroll => Headline::open("Enroll needs a newer ployz"),
             Seen::Wait if !self.blockers.is_empty() => Headline::open("Blocked"),
@@ -219,6 +226,7 @@ impl LocalCheckin {
         serde_json::to_writer_pretty(&mut file, self)?;
         file.as_file()
             .set_permissions(fs::Permissions::from_mode(STATUS_READABLE_BY_ALL))?;
+        file.as_file().sync_all()?;
         file.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
@@ -250,6 +258,14 @@ pub(crate) async fn run<H: Host>(
                 stop(host, paths).await;
                 return CheckinEnd::Stopped(reason);
             }
+            Next::Refused(why) => {
+                last_log = None;
+                crate::ui::note(format!(
+                    "{why}. Trying again in {}s.",
+                    client::BACKOFF.as_secs()
+                ));
+                tokio::time::sleep(client::BACKOFF).await;
+            }
         }
     }
 }
@@ -276,11 +292,26 @@ pub(crate) async fn pass<H: Host>(
     now: DateTime<Utc>,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    let mut prepare_retries = previous.map_or(0, |status| status.prepare_retries);
+    let (mut prepare_retries, mut prepare_retried) = previous.map_or((0, None), |status| {
+        (status.prepare_retries, status.prepare_retried)
+    });
     let state = read_prep_state(&paths.prepare_state);
-    if let Some(run) = prepare_due(state.as_ref(), prepare_retries, now) {
+    if let Some(run) = prepare_due(
+        state.as_ref(),
+        prepare_retries,
+        prepare_retried.as_deref(),
+        now,
+    ) {
         match host.start_prepare().await {
-            Ok(()) => prepare_retries += u32::from(run == PrepareRun::Retry),
+            Ok(()) => {
+                if run == PrepareRun::Retry {
+                    prepare_retries += 1;
+                    prepare_retried = state
+                        .as_ref()
+                        .and_then(PrepState::failed_at)
+                        .map(str::to_owned);
+                }
+            }
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
         }
     }
@@ -299,8 +330,17 @@ pub(crate) async fn pass<H: Host>(
         prep: Some(prep),
         blockers: Vec::new(),
         prepare_retries,
+        prepare_retried,
     };
-    let probe = match host.probe().await {
+    let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "ployzd install --probe did not finish in {}s",
+                PROBE_TIMEOUT.as_secs()
+            ))
+        });
+    let probe = match probed {
         Ok(probe) => probe,
         Err(why) => {
             status.message = Some(why.clone());
@@ -346,6 +386,11 @@ pub(crate) async fn pass<H: Host>(
                 why: format!("Could not reach Ployz Cloud: {why}."),
             }
         }
+        client::Reply::Refused(why) => {
+            status.answer = Seen::Refused;
+            status.message = Some(why.clone());
+            Next::Refused(why)
+        }
     };
     record(&status, paths);
     next
@@ -380,7 +425,12 @@ enum PrepareRun {
     Retry,
 }
 
-fn prepare_due(state: Option<&PrepState>, retries: u32, now: DateTime<Utc>) -> Option<PrepareRun> {
+fn prepare_due(
+    state: Option<&PrepState>,
+    retries: u32,
+    retried: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<PrepareRun> {
     let Some(state) = state else {
         return Some(PrepareRun::Start);
     };
@@ -388,7 +438,11 @@ fn prepare_due(state: Option<&PrepState>, retries: u32, now: DateTime<Utc>) -> O
         // Running, or cut short by a reboot; `systemctl start` is a no-op while it runs.
         return Some(PrepareRun::Start);
     }
-    let failed_at = DateTime::parse_from_rfc3339(state.failed_at()?).ok()?;
+    let failed = state.failed_at()?;
+    if retried == Some(failed) {
+        return None;
+    }
+    let failed_at = DateTime::parse_from_rfc3339(failed).ok()?;
     let waited = now.signed_duration_since(failed_at).to_std().ok()?;
     (waited >= PREPARE_RETRY && retries < PREPARE_TRIES).then_some(PrepareRun::Retry)
 }

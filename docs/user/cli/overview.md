@@ -229,8 +229,8 @@ A single record, such as
 
 `ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
 server waiting for approval, it leads with a **this server** line: `Installing Docker`,
-`Building ZFS`, `Waiting for approval`, `Rejected`, `Token expired`, `Token revoked` or
-`Can't reach Cloud`. Then it says when the server last checked in and lists anything that blocks
+`Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
+`Can't reach Cloud` or `Cloud refused this server`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container

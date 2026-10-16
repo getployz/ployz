@@ -204,7 +204,11 @@ prepares Docker and ZFS meanwhile.
    `sudo journalctl -u ployz-prepare -n 200`.
 3. `Can't reach Cloud` means the server can't reach Ployz Cloud over HTTPS. It keeps trying every
    minute.
-4. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
+4. `Cloud refused this server` means Ployz Cloud didn't accept the check-in. Either the server's
+   clock is more than 5 minutes off, and the `reason` line says by how much, or
+   `/etc/ployz/fleet-token` doesn't hold the whole token. Fix that and it checks in again within a
+   minute. The loop keeps the token.
+5. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
    `/etc/ployz/fleet-token` and won't start again at boot. Put a new Fleet Token in that file and
    run `sudo ployz server checkin --install` again. A rejected server stays rejected.
 

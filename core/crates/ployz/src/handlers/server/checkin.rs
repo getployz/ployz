@@ -5,6 +5,7 @@
 
 use std::{
     env as process_env, fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -21,6 +22,7 @@ use crate::cloud_login::DEFAULT_CLOUD;
 
 const UNIT_DIR: &str = "/etc/systemd/system";
 const SKIP_ZFS: &str = "PLOYZ_SKIP_ZFS";
+const TOKEN_MODE: u32 = 0o600;
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Check in with Cloud until this host is approved")
@@ -100,6 +102,8 @@ async fn install(
     )?;
     write_unit(unit::PREPARE, &unit::prepare(&host.ployzd, skip_zfs))?;
     systemd(&["daemon-reload"]).await?;
+    systemd(&["stop", unit::CHECKIN]).await?;
+    keep_token_private(&paths.token_file)?;
     crate::ui::stream("Checking in");
     match checkin::pass(&host, client, key, paths, Utc::now()).await {
         Next::Wait { log, .. } => {
@@ -115,6 +119,12 @@ async fn install(
             return Err(Error::coded(
                 RpcErrorCode::Unauthenticated,
                 format!("{}. {message}", reason.title()),
+            ));
+        }
+        Next::Refused(why) => {
+            return Err(Error::coded(
+                RpcErrorCode::Unauthenticated,
+                format!("{why}."),
             ));
         }
     }
@@ -146,6 +156,23 @@ async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {
             Error::caused(RpcErrorCode::Unavailable, "Could not fetch ployzd.", error)
         })?;
     Ok(copy)
+}
+
+fn keep_token_private(path: &Path) -> Result<(), Error> {
+    let failed = |error| {
+        Error::caused(
+            RpcErrorCode::Internal,
+            format!("Could not make {} readable by root only.", path.display()),
+            error,
+        )
+    };
+    let mode = fs::metadata(path).map_err(failed)?.permissions().mode();
+    if mode & 0o077 == 0 {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(TOKEN_MODE)).map_err(failed)?;
+    crate::ui::note(format!("Made {} readable by root only.", path.display()));
+    Ok(())
 }
 
 fn on_path(name: &str) -> Option<PathBuf> {
