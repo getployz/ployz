@@ -27,6 +27,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "modules/operations/outbox.server.ts",
   "modules/organization/organization-state.server.ts",
   "routes/api/agent/$organizationSlug/-chat.handler.ts",
+  "routes/api/checkin/-handler.ts",
   "routes/api/cli/-cli.handler.ts",
   "routes/api/cli/agent/-agent.handler.ts",
   "routes/api/cli/-handlers.ts",
