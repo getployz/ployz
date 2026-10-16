@@ -82,7 +82,7 @@ export const crashPushInput = (push: CrashPush): Option.Option<CrashPushInput> =
 
 const QueryValue = Schema.optionalKey(Schema.String.check(Schema.isMaxLength(1024)));
 const Count = Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
-const Header = Schema.NullOr(Schema.String.check(Schema.isMaxLength(256)));
+const Header = Schema.NullOr(Schema.String.check(Schema.isMaxLength(512)));
 
 const RequestRow = Schema.Struct({
   ts: Schema.Finite.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: MAX_TS / 1e6 })),
