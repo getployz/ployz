@@ -140,7 +140,7 @@ function ConfirmableInput({
             {endAddon}
             {saving ? <Spinner aria-label="Saving" className="mx-1 size-3.5 text-muted-foreground" /> : null}
             {isDirty ? (
-              <>
+              <span className={cn("-mr-1 flex items-center gap-0.5", (suffix || endAddon) && "border-l pl-1.5")}>
                 <InputGroupButton
                   size="icon-xs"
                   variant="ghost"
@@ -157,7 +157,7 @@ function ConfirmableInput({
                 >
                   <CheckIcon />
                 </InputGroupButton>
-              </>
+              </span>
             ) : null}
           </InputGroupAddon>
         ) : null}
