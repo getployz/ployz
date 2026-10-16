@@ -7,8 +7,12 @@ export type FleetTokenLifetime = (typeof FLEET_TOKEN_LIFETIMES)[number];
 
 const OrganizationSlug = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty());
 
-/** Lowercase letters, digits and hyphens, so a name reads the same in a shell as in the dashboard. */
-export const FleetTokenName = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/));
+/**
+ * Lowercase letters, digits and hyphens, so a name reads the same in a shell as in the dashboard. A UUID-shaped name
+ * is refused, because revoke reads a UUID as the token's id.
+ */
+export const FleetTokenName = Schema.String.check(
+  Schema.isPattern(/^(?![0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$)[a-z0-9][a-z0-9-]{0,62}$/));
 
 export const CreateFleetTokenInput = Schema.Struct({
   organizationSlug: OrganizationSlug,

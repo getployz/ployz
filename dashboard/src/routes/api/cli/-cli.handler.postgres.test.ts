@@ -332,6 +332,8 @@ it.live(
 
         assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { expires_in: "2d" })).status, 422);
         assert.strictEqual((yield* cli("POST", "fleet-tokens", alice, { name: "Bad Name", expires_in: "1d" })).status, 422);
+        assert.strictEqual((yield* cli("POST", "fleet-tokens", alice,
+          { name: "00000000-0000-4000-8000-000000000001", expires_in: "1d" })).status, 422);
 
         const made = yield* cli("POST", "fleet-tokens", alice, { expires_in: "7d" });
         assert.strictEqual(made.status, 200);
