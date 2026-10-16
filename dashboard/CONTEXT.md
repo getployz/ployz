@@ -8,14 +8,6 @@ Ployz Cloud is the product and workflow context around creating, connecting, and
 Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting for CI counts check suites from other GitHub Apps, never Ployz's own. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
 _Avoid_: Staged source settings, runtime configuration
 
-**Cloud Bootstrap Invite**:
-A time-limited Cloud permission that can issue one or more single-redemption Cloud Bootstrap Tokens for an Organization Cluster. A valid token redeem request is the approval boundary for each tokenized machine use; an invite grants bootstrap permission, not cluster truth.
-_Avoid_: One-time bootstrap token, join token, cluster token, cluster intent
-
-**Cloud Bootstrap Session**:
-A short-lived Cloud session for interactive bootstrap from a target machine. The session lets a browser user choose the Cloud organization without putting a Cloud Bootstrap Token in the copied command; Cloud derives founder, joiner, or wait behavior from that organization's Organization Cluster state. A session that expires before approval creates no Cloud Bootstrap Redemption.
-_Avoid_: Invite, localhost callback, browser-owned machine session
-
 **Organization Cluster**:
 The single runtime cluster owned by an organization. Adding machines expands the organization's cluster rather than selecting a separate cluster target.
 _Avoid_: Project cluster, environment cluster, cluster draft
@@ -48,14 +40,6 @@ _Avoid_: Replication, backup, job, sync job
 The roles (accepts builds, services, ingress) and labels of one Server, mirroring the runtime's Machine Role and Machine Label. Cloud requests a policy change as a queued operation and reads the resulting policy back from machine observation; it keeps no separate desired-policy record and policy is not part of any Environment's Saved State.
 _Avoid_: Server settings draft, machine config, cluster-wide roles
 
-**Cloud Bootstrap Token**:
-The single-redemption bearer secret embedded in a copied Cloud Bootstrap Invite command. The token is not the org, cluster, machine identity, join token, or callback credential.
-_Avoid_: Bootstrap token, server bootstrap token, callback token
-
-**Cloud Bootstrap Redemption**:
-One machine's approved use of a Cloud Bootstrap Session or Cloud Bootstrap Token. For interactive bootstrap, browser approval creates the redemption by binding the session to an organization. An unapproved session and an unredeemed invite are not redemptions; the redemption is machine-local evidence that Cloud can turn into founder or joiner bootstrap material.
-_Avoid_: Token use, bootstrap report, machine acceptance
-
 **Founding Claim**:
 The Organization-scoped assignment of one Server to found its Organization Cluster. It has no automatic expiry or transfer; the matching Server resumes it until completion or an operator performs a Manual Founding Reset.
 _Avoid_: Token claim, founder election, leader election, founder failover
@@ -84,16 +68,8 @@ _Avoid_: Automatic reclaim, founder failover, token reset
 An owner's or admin's explicit statement, in the dashboard or with `ployz server forget`, that the Organization's Servers were deleted, after which Cloud forgets its Cluster: the Config Store first cancels what might still run and lets go of Applied State, Namespaces and fixed Volume storage, then Cloud drops the Cloud Pairing (a stuck removal too), Connection Candidates, allocations, enrollment tokens and Server removals. Authored configuration, Deployment history and the Cluster Domain stay; the next Server founds a new Cluster. The user's statement is the authority: Cloud tries every Server first and refuses while any answers or a fresh Founding Claim may still complete, so a failed connection only permits it, never triggers it, and Cloud never forgets on its own.
 _Avoid_: Cluster reset, automatic cleanup, removing a dead Server
 
-**Waiting Cloud Bootstrap Redemption**:
-A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Founding Claim but no Cloud Connection. It has its own post-approval expiry separate from Cloud Bootstrap Session expiry, waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire, and does not preissue runtime join authority, perform local machine mutation, or become founder automatically. Once expired, it is terminal and cannot later receive join material.
-_Avoid_: Founder candidate, standby founder, pending machine join
-
-**Abandon Founder Attempt**:
-A Cloud-side operator action for the interactive Cloud Bootstrap workflow. It does not clean up, revoke, or mutate the already-formed local machine and is distinct from a Manual Founding Reset.
-_Avoid_: Founder failover, automatic promotion, Cloud cleanup, machine removal
-
 **Cloud Connection**:
-Cloud's durable product-side relationship to an Organization Cluster after Cloud has confirmed access to the intended Server. A Cloud Connection exists only after reachability succeeds; a Cloud Bootstrap Redemption may establish one, but they are separate concepts and a connection is not cluster truth, machine membership, or recovery authority.
+Cloud's durable product-side relationship to an Organization Cluster after Cloud has confirmed access to the intended Server. A Cloud Connection exists only after reachability succeeds, and it is not cluster truth, machine membership, or recovery authority.
 _Avoid_: Runtime authority, machine membership, Cloud control plane, recovery authority
 
 **Accepted Machine Evidence**:
@@ -117,12 +93,16 @@ A user who belongs to an Organization, with one role: owner, admin or member. Ow
 _Avoid_: Seat, collaborator, team member, user
 
 **Invite**:
-A single-use link an owner or admin makes to bring someone into an Organization with the role it names, admin or member. Whoever opens it signed in and clicks Join becomes a Member; the optional email is a label, not a check. It lasts 7 days and can be revoked; only its hash is stored. Not a Cloud Bootstrap Invite.
+A single-use link an owner or admin makes to bring someone into an Organization with the role it names, admin or member. Whoever opens it signed in and clicks Join becomes a Member; the optional email is a label, not a check. It lasts 7 days and can be revoked; only its hash is stored.
 _Avoid_: Invitation email, join code, share link
 
 **Organization Token**:
 A Cloud-owned bearer (`PLOYZ_TOKEN`) made by a member with `ployz token new`. It acts as that member in the one Organization it was made in, until it expires, is revoked, or the member leaves. Only its hash is stored; the secret is shown once.
 _Avoid_: API key, personal access token, CLI token
+
+**Fleet Token**:
+A `pflt_` secret a member makes for one Organization so many hosts can carry it and ask to join. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls.
+_Avoid_: Enrollment token, join token, bootstrap token
 
 **Signed-in Device**:
 A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations. Logout or `ployz token rm` ends it at once.
