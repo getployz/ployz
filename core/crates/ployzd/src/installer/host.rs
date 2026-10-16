@@ -443,7 +443,11 @@ const STAGE: &str = "checking Docker";
 /// Refuses a Docker Ployz can't use: too old an Engine API or buildx, or no containerd image
 /// store. A Machine without Docker passes.
 pub(super) fn verify_docker() -> Result<(), Error> {
-    match docker_blocker(&read_docker()?) {
+    let (docker, unread) = read_docker();
+    if let Some(error) = unread {
+        return Err(error);
+    }
+    match docker_blocker(&docker) {
         Some(blocker) => Err(refuse(STAGE, blocker.message)),
         None => Ok(()),
     }
@@ -649,7 +653,7 @@ mod tests {
 
     const STORE: &str = "[[driver-type io.containerd.snapshotter.v1]]";
 
-    const DOCKER_CASES: [DockerCase; 6] = [
+    const DOCKER_CASES: [DockerCase; 8] = [
         DockerCase {
             name: "amazon-fresh",
             retained: false,
@@ -677,6 +681,24 @@ mod tests {
             refusal: Some(
                 "Docker 25.0.16 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
             ),
+        },
+        DockerCase {
+            name: "retained-debian-20.10",
+            retained: true,
+            server: "20.10.24+dfsg1 1.41",
+            buildx: "",
+            driver_status: "[[Backing Filesystem extfs]]",
+            refusal: Some(
+                "Docker 20.10.24+dfsg1 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
+            ),
+        },
+        DockerCase {
+            name: "retained-without-buildx",
+            retained: true,
+            server: "29.2.0 1.53",
+            buildx: "",
+            driver_status: STORE,
+            refusal: Some("docker: 'buildx' is not a docker command."),
         },
         DockerCase {
             name: "retained-old-buildx",
@@ -755,12 +777,11 @@ mod tests {
             if case.retained {
                 write_script(&commands.join("dockerd"), "exit 0");
             }
-            let (server_version, server_api) = case.server.split_once(' ').unwrap_or_default();
             write_script(
                 &commands.join("docker"),
                 &format!(
-                    "case \"$1\" in\nversion) [ \"$2 $3\" = '--format json' ] || exit 2; [ -n '{0}' ] || {{ echo '{{\"Server\":null}}'; exit 1; }}; echo '{{\"Server\":{{\"Version\":\"{1}\",\"ApiVersion\":\"{2}\"}}}}' ;;\nbuildx) echo 'github.com/docker/buildx {3} 0000000' ;;\ninfo) echo '{4}' ;;\nesac",
-                    case.server, server_version, server_api, case.buildx, case.driver_status
+                    "case \"$1\" in\nversion) [ \"$2 $3\" = '--format {{{{.Server.Version}}}} {{{{.Server.APIVersion}}}}' ] || exit 2; [ -n '{0}' ] || exit 1; echo '{0}' ;;\nbuildx) [ -n '{1}' ] || {{ echo \"docker: 'buildx' is not a docker command.\" >&2; exit 1; }}; echo 'github.com/docker/buildx {1} 0000000' ;;\ninfo) echo '{2}' ;;\nesac",
+                    case.server, case.buildx, case.driver_status
                 ),
             );
             // Installing Docker puts `dockerd` on the PATH.

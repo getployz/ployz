@@ -122,10 +122,13 @@ sudo ployzd install --probe --json
 ```
 
 `facts` holds the distribution, kernel, virtualization, cgroup version, CPUs, memory, disks and
-Docker. `assessment.blockers` lists what stops Ployz, each with a `code` and the message the
-install shows, and `assessment.warnings` lists what may misbehave. `assessment.zfs` is `Eligible`
+Docker. `assessment.blockers` lists what stops Ployz, each with a `code` and a `message`, and
+`assessment.warnings` lists what may misbehave. A root disk under 30 GiB shows as the
+`disk_too_small` blocker, but the install doesn't refuse it yet. `assessment.zfs` is `Eligible`
 with the disks managed volumes can use, or `Ineligible` with the reason the ZFS install stops on.
-A value Ployz couldn't read shows as `null`.
+A value Ployz couldn't read shows as `null`, and `facts.unread` says why. When Ployz can't read
+whether an LXC container is privileged, `assessment.zfs` is `Ineligible` with
+`lxc_privilege_unknown`.
 
 ## Managed volumes are missing after a kernel update
 

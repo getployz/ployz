@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, io, path::PathBuf};
 
 use ployz_build::{MINIMUM_BUILDX, MINIMUM_DOCKER_API};
 use serde_json::json;
@@ -48,7 +48,8 @@ fn host() -> HostFacts {
             buildx: Some("v0.37.1".into()),
             containerd_store: Some(true),
         },
-        zpool_present: false,
+        zpool_present: Some(false),
+        unread: Vec::new(),
     }
 }
 
@@ -57,9 +58,13 @@ fn codes(blockers: &[Blocker]) -> Vec<&'static str> {
 }
 
 fn zfs_refusal(facts: &HostFacts) -> Option<&'static str> {
+    zfs_reason(facts).map(|reason| reason.code)
+}
+
+fn zfs_reason(facts: &HostFacts) -> Option<Blocker> {
     match assess(facts).zfs {
         ZfsEligibility::Eligible { .. } => None,
-        ZfsEligibility::Ineligible { reason } => Some(reason.code),
+        ZfsEligibility::Ineligible { reason } => Some(reason),
     }
 }
 
@@ -175,10 +180,7 @@ fn no_systemd_blocks() {
     facts.systemd = false;
     assert_eq!(
         assess(&facts).blockers,
-        [Blocker::new(
-            "no_systemd",
-            "This Server doesn't run systemd. Ployz needs systemd to run its daemon."
-        )]
+        [Blocker::new("no_systemd", "Ployz requires systemd")]
     );
 }
 
@@ -195,7 +197,7 @@ fn a_root_disk_under_30_gib_blocks() {
                 blockers,
                 [Blocker::new(
                     "disk_too_small",
-                    "Disk is 29 GB. Ployz needs 30 GB."
+                    "Disk is 29 GiB. Ployz needs 30 GiB."
                 )]
             );
         } else {
@@ -231,26 +233,60 @@ fn cgroup_v1_and_hybrid_warn_without_blocking() {
 fn openvz_cannot_prepare_zfs() {
     let mut facts = host();
     facts.virt = Virtualization::OpenVz;
-    assert_eq!(zfs_refusal(&facts), Some("openvz"));
+    assert_eq!(
+        zfs_reason(&facts),
+        Some(Blocker::new(
+            "openvz",
+            "OpenVZ does not allow this Machine to load the host ZFS kernel module"
+        ))
+    );
     assert!(assess(&facts).blockers.is_empty());
+}
+
+#[test]
+fn an_openvz_container_is_read_from_proc() {
+    let fixture = fixture("openvz");
+    fs::create_dir_all(fixture.path().join("vz")).unwrap();
+    let (virt, unread) = read_virtualization(fixture.path());
+    assert!(matches!(virt, Virtualization::OpenVz), "{virt:?}");
+    assert!(unread.is_none());
 }
 
 #[test]
 fn only_unprivileged_lxc_cannot_prepare_zfs() {
     let mut facts = host();
-    facts.virt = Virtualization::Lxc { privileged: false };
-    assert_eq!(zfs_refusal(&facts), Some("unprivileged_lxc"));
-    facts.virt = Virtualization::Lxc { privileged: true };
+    facts.virt = Virtualization::Lxc {
+        privileged: Some(false),
+    };
+    assert_eq!(
+        zfs_reason(&facts),
+        Some(Blocker::new(
+            "unprivileged_lxc",
+            "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module"
+        ))
+    );
+    facts.virt = Virtualization::Lxc {
+        privileged: Some(true),
+    };
     assert_eq!(zfs_refusal(&facts), None);
+    facts.virt = Virtualization::Lxc { privileged: None };
+    assert_eq!(zfs_refusal(&facts), Some("lxc_privilege_unknown"));
+}
+
+#[test]
+fn zpool_does_not_run_while_the_zfs_module_is_unloaded() {
+    let fixture = fixture("no-zfs-module");
+    let (present, unread) = read_zpool_present(&fixture.path().join("sys/module/zfs"));
+    assert_eq!(present, Some(false));
+    assert!(unread.is_none());
 }
 
 #[test]
 fn an_existing_zpool_neither_blocks_nor_stops_zfs() {
     let mut facts = host();
-    facts.zpool_present = true;
-    let assessment = assess(&facts);
-    assert!(assessment.blockers.is_empty());
-    assert!(matches!(assessment.zfs, ZfsEligibility::Eligible { .. }));
+    facts.zpool_present = Some(true);
+    assert!(assess(&facts).blockers.is_empty());
+    assert_eq!(zfs_refusal(&facts), None);
 }
 
 #[test]
@@ -281,8 +317,20 @@ fn secure_boot_stops_zfs_only_where_the_module_is_built() {
     };
     for (secure_boot, refusal) in [
         (Some(false), None),
-        (Some(true), Some("secure_boot")),
-        (None, Some("secure_boot_unknown")),
+        (
+            Some(true),
+            Some(Blocker::new(
+                "secure_boot",
+                "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for Debian. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+            )),
+        ),
+        (
+            None,
+            Some(Blocker::new(
+                "secure_boot_unknown",
+                "Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for Debian. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+            )),
+        ),
     ] {
         let mut facts = host();
         facts.secure_boot = secure_boot;
@@ -292,7 +340,7 @@ fn secure_boot_stops_zfs_only_where_the_module_is_built() {
             name: debian.name.clone(),
             version_id: debian.version_id.clone(),
         };
-        assert_eq!(zfs_refusal(&facts), refusal, "Debian, {secure_boot:?}");
+        assert_eq!(zfs_reason(&facts), refusal, "Debian, {secure_boot:?}");
     }
 }
 
@@ -372,6 +420,36 @@ fn lsblk_keeps_the_root_disk_and_empty_disks() {
 }
 
 #[test]
+fn lsblk_before_util_linux_2_37_reports_one_mountpoint() {
+    let listing = json!({"blockdevices": [
+        {"name": "sda", "path": "/dev/sda", "size": 107_374_182_400_u64, "type": "disk", "fstype": null,
+         "mountpoint": null, "pkname": null, "children": [
+            {"name": "sda1", "path": "/dev/sda1", "size": 107_373_133_824_u64, "type": "part",
+             "fstype": "ext4", "mountpoint": "/", "pkname": "sda"}
+        ]},
+        {"name": "sdb", "path": "/dev/sdb", "size": 214_748_364_800_u64, "type": "disk", "fstype": null,
+         "mountpoint": null, "pkname": null},
+        {"name": "sdc", "path": "/dev/sdc", "size": 214_748_364_800_u64, "type": "disk", "fstype": null,
+         "mountpoint": "/srv", "pkname": null}
+    ]});
+    let root = Filesystem {
+        size_bytes: 100 * GIB,
+        available_bytes: 60 * GIB,
+    };
+    let disks = disks_from_lsblk(&listing, root, &[]);
+    let roles: Vec<_> = disks
+        .iter()
+        .map(|disk| {
+            (
+                disk.path.as_str(),
+                matches!(disk.role, DiskRole::Root { .. }),
+            )
+        })
+        .collect();
+    assert_eq!(roles, [("/dev/sda", true), ("/dev/sdb", false)]);
+}
+
+#[test]
 fn cgroup_layout_comes_from_the_mount_table() {
     let v2 = "cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid 0 0\n";
     let v1 =
@@ -382,6 +460,8 @@ fn cgroup_layout_comes_from_the_mount_table() {
     assert_eq!(cgroup_version(v1), Some(CgroupVersion::V1));
     assert_eq!(cgroup_version(hybrid), Some(CgroupVersion::Hybrid));
     assert_eq!(cgroup_version("proc /proc proc rw 0 0\n"), None);
+    let remounted = "tmpfs /sys/fs/cgroup tmpfs ro 0 0\ncgroup2 /sys/fs/cgroup cgroup2 rw 0 0\n";
+    assert_eq!(cgroup_version(remounted), Some(CgroupVersion::V2));
 }
 
 #[test]
@@ -404,10 +484,23 @@ fn docker_and_buildx_must_be_at_least_the_minimum() {
 fn secure_boot_reading_follows_test_root() {
     let fixture = fixture("secure-boot");
     let variable = fixture.path().join("efivars/SecureBoot");
-    assert_eq!(read_secure_boot(&variable), Some(false));
+    assert!(!read_secure_boot_variable(&variable).unwrap());
     fs::create_dir_all(fixture.path().join("efivars")).unwrap();
     for (bytes, enabled) in [([6, 0, 0, 0, 1], true), ([6, 0, 0, 0, 0], false)] {
         fs::write(&variable, bytes).unwrap();
-        assert_eq!(read_secure_boot(&variable), Some(enabled));
+        assert_eq!(read_secure_boot_variable(&variable).unwrap(), enabled);
     }
+}
+
+#[test]
+fn an_unreadable_secure_boot_variable_is_an_error_not_off() {
+    let fixture = fixture("secure-boot-unreadable");
+    let variable = fixture.path().join("efivars/SecureBoot");
+    fs::create_dir_all(&variable).unwrap();
+    let error = read_secure_boot_variable(&variable).unwrap_err();
+    assert!(
+        matches!(&error, Error::Io { stage: "read Secure Boot state", source }
+            if source.kind() != io::ErrorKind::NotFound),
+        "{error:?}"
+    );
 }

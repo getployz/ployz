@@ -205,25 +205,16 @@ fn zfs_unsupported_os_contract() {
             "dpkg-deb",
             "dnf",
             "curl",
+            "systemd-detect-virt",
             "uname",
             "modprobe",
             "fallocate",
+            "zpool",
             "zfs",
         ] {
             write_script(
                 &commands.join(command),
                 "echo \"$0\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97",
-            );
-        }
-        for (command, allowed, answer) in [
-            ("systemd-detect-virt", "", "echo none; exit 1"),
-            ("zpool", "list -H", "exit 0"),
-        ] {
-            write_script(
-                &commands.join(command),
-                &format!(
-                    "[ \"$*\" = '{allowed}' ] || {{ echo \"$0 $*\" >> \"$PLOYZ_INSTALLER_FORBIDDEN\"; exit 97; }}\n{answer}"
-                ),
             );
         }
         let forbidden = fixture.path().join("forbidden-invocation");

@@ -36,16 +36,26 @@ pub(super) struct HostFacts {
     /// The root disk and every whole disk with nothing on it; `None` when `lsblk` failed.
     pub(super) disks: Option<Vec<Disk>>,
     pub(super) docker: DockerFacts,
-    pub(super) zpool_present: bool,
+    /// `None` when the ZFS module is loaded but `zpool list` failed.
+    pub(super) zpool_present: Option<bool>,
+    /// Why a fact above that could have been read is `null` or cut short.
+    pub(super) unread: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) enum Virtualization {
     BareMetal,
-    Vm { kind: String },
+    Vm {
+        kind: String,
+    },
     OpenVz,
-    Lxc { privileged: bool },
-    Container { kind: String },
+    /// `privileged` is `None` when the container's user namespace map couldn't be read.
+    Lxc {
+        privileged: Option<bool>,
+    },
+    Container {
+        kind: String,
+    },
     Unknown,
 }
 
@@ -90,8 +100,8 @@ pub(super) enum DiskRole {
     Empty,
 }
 
-/// Docker as the installer sees it. Reading stops at the first check Docker fails, so a later
-/// field stays `None` exactly when the installer never asked for it.
+/// Docker as the installer sees it. Reading stops at the first check Docker fails or can't
+/// answer, so a later field stays `None` exactly when the installer never got to ask.
 #[derive(Debug, Serialize)]
 pub(super) enum DockerFacts {
     Absent,
@@ -151,13 +161,30 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
         source: io::Error::from(errno),
     })?;
     let root_filesystem = Filesystem::read_root()?;
-    let disks = read_disks(root_filesystem);
+    let mut unread = Vec::new();
+    let mut keep = |error: Option<Error>| unread.extend(error.map(|error| error.to_string()));
+    let (virt, error) = read_virtualization(&paths.proc_dir);
+    keep(error);
+    let secure_boot = match read_secure_boot_variable(&paths.secure_boot) {
+        Ok(enabled) => Some(enabled),
+        Err(error) => {
+            let state = read_mokutil_secure_boot();
+            if state.is_none() {
+                keep(Some(error));
+            }
+            state
+        }
+    };
+    let (docker, error) = read_docker();
+    keep(error);
+    let (zpool_present, error) = read_zpool_present(Path::new("/sys/module/zfs"));
+    keep(error);
     Ok(HostFacts {
         os,
         kernel: uts.release().to_string_lossy().into_owned(),
         arch: uts.machine().to_string_lossy().into_owned(),
-        virt: read_virtualization(&paths.proc_dir)?,
-        secure_boot: read_secure_boot(&paths.secure_boot),
+        virt,
+        secure_boot,
         cgroup: fs::read_to_string(paths.proc_dir.join("self/mounts"))
             .ok()
             .and_then(|mounts| cgroup_version(&mounts)),
@@ -184,21 +211,28 @@ pub(super) fn read_facts(paths: &InstallPaths) -> Result<HostFacts, Error> {
                 })
             })
             .map(|kib| kib.saturating_mul(1024)),
+        disks: read_disks(root_filesystem),
         root_filesystem,
-        disks,
-        docker: read_docker()?,
-        zpool_present: command_exists("zpool")
-            && Command::new("zpool")
-                .args(["list", "-H"])
-                .output()
-                .is_ok_and(|output| {
-                    output.status.success() && !output.stdout.trim_ascii().is_empty()
-                }),
+        docker,
+        zpool_present,
+        unread,
     })
 }
 
+/// Whether any pool is imported. `zpool` loads the ZFS module when it isn't loaded, so it runs
+/// only once the module is, and an unloaded module means no pool.
+pub(super) fn read_zpool_present(module: &Path) -> (Option<bool>, Option<Error>) {
+    if !module.is_dir() {
+        return (Some(false), None);
+    }
+    match run_host("list ZFS pools", "zpool", ["list", "-H"]) {
+        Ok(output) => (Some(!output.stdout.trim_ascii().is_empty()), None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
 /// Container kinds `systemd-detect-virt` names; anything else it names is a VM.
-const CONTAINERS: [&str; 8] = [
+const CONTAINERS: [&str; 9] = [
     "docker",
     "podman",
     "rkt",
@@ -207,28 +241,39 @@ const CONTAINERS: [&str; 8] = [
     "proot",
     "pouch",
     "wsl",
+    "container-other",
 ];
 
-fn read_virtualization(proc_dir: &Path) -> Result<Virtualization, Error> {
+/// The virtualization this Machine runs under, and why an LXC container's privilege is unknown.
+pub(super) fn read_virtualization(proc_dir: &Path) -> (Virtualization, Option<Error>) {
     // OpenVZ hosts expose /proc/bc; its containers have only /proc/vz.
     if proc_dir.join("vz").is_dir() && !proc_dir.join("bc").is_dir() {
-        return Ok(Virtualization::OpenVz);
+        return (Virtualization::OpenVz, None);
     }
     // It exits 1 when it prints `none`, so its output is the answer either way.
     let kind = Command::new("systemd-detect-virt")
         .output()
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
         .unwrap_or_default();
-    Ok(match kind.as_str() {
+    let virt = match kind.as_str() {
         "" => Virtualization::Unknown,
         "none" => Virtualization::BareMetal,
         "openvz" => Virtualization::OpenVz,
-        "lxc" => Virtualization::Lxc {
-            privileged: !lxc_is_unprivileged(proc_dir)?,
-        },
+        "lxc" => {
+            return match lxc_is_unprivileged(proc_dir) {
+                Ok(unprivileged) => (
+                    Virtualization::Lxc {
+                        privileged: Some(!unprivileged),
+                    },
+                    None,
+                ),
+                Err(error) => (Virtualization::Lxc { privileged: None }, Some(error)),
+            };
+        }
         kind if CONTAINERS.contains(&kind) => Virtualization::Container { kind: kind.into() },
         kind => Virtualization::Vm { kind: kind.into() },
-    })
+    };
+    (virt, None)
 }
 
 fn lxc_is_unprivileged(proc_dir: &Path) -> Result<bool, Error> {
@@ -243,30 +288,39 @@ fn lxc_is_unprivileged(proc_dir: &Path) -> Result<bool, Error> {
     ))
 }
 
-fn read_secure_boot(variable: &Path) -> Option<bool> {
+/// Firmware Secure Boot state from its EFI variable. A Machine without EFI variables boots with
+/// it off.
+pub(super) fn read_secure_boot_variable(variable: &Path) -> Result<bool, Error> {
     match fs::read(variable) {
         // The variable is 4 attribute bytes followed by one data byte; 1 means on.
-        Ok(variable) => Some(variable.last() == Some(&1)),
-        // A Machine without EFI variables boots with Secure Boot off.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Some(false),
-        Err(_) if command_exists("mokutil") => {
-            let output = Command::new("mokutil").arg("--sb-state").output().ok()?;
-            let state = String::from_utf8_lossy(&output.stdout);
-            if state.contains("SecureBoot enabled") {
-                Some(true)
-            } else if state.contains("SecureBoot disabled") {
-                Some(false)
-            } else {
-                None
-            }
-        }
-        Err(_) => None,
+        Ok(variable) => Ok(variable.last() == Some(&1)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(Error::Io {
+            stage: "read Secure Boot state",
+            source,
+        }),
     }
 }
 
-fn cgroup_version(mounts: &str) -> Option<CgroupVersion> {
+fn read_mokutil_secure_boot() -> Option<bool> {
+    if !command_exists("mokutil") {
+        return None;
+    }
+    let output = Command::new("mokutil").arg("--sb-state").output().ok()?;
+    let state = String::from_utf8_lossy(&output.stdout);
+    if state.contains("SecureBoot enabled") {
+        Some(true)
+    } else if state.contains("SecureBoot disabled") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub(super) fn cgroup_version(mounts: &str) -> Option<CgroupVersion> {
+    // A later mount over the same target hides the earlier ones.
     let fstype = |target: &str| {
-        mounts.lines().find_map(|line| {
+        mounts.lines().rev().find_map(|line| {
             let mut fields = line.split_whitespace().skip(1);
             (fields.next()? == target).then(|| fields.next()).flatten()
         })
@@ -282,16 +336,21 @@ fn cgroup_version(mounts: &str) -> Option<CgroupVersion> {
 }
 
 fn read_disks(root: Filesystem) -> Option<Vec<Disk>> {
-    let output = Command::new("lsblk")
-        .args([
-            "-J",
-            "-b",
-            "-o",
-            "NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINTS,PKNAME",
-        ])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())?;
+    // util-linux before 2.37 has only MOUNTPOINT, one mount per device.
+    let output = ["MOUNTPOINTS", "MOUNTPOINT"]
+        .into_iter()
+        .find_map(|mounts| {
+            Command::new("lsblk")
+                .args([
+                    "-J",
+                    "-b",
+                    "-o",
+                    &format!("NAME,PATH,SIZE,TYPE,FSTYPE,{mounts},PKNAME"),
+                ])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+        })?;
     let listing: Value = serde_json::from_slice(&output.stdout).ok()?;
     let by_id = disk_ids(Path::new("/dev/disk/by-id"));
     Some(disks_from_lsblk(&listing, root, &by_id))
@@ -316,9 +375,7 @@ pub(super) fn disks_from_lsblk(
                 }
             } else if device["fstype"].is_null()
                 && device["children"].as_array().is_none_or(Vec::is_empty)
-                && device["mountpoints"]
-                    .as_array()
-                    .is_none_or(|mounts| mounts.iter().all(Value::is_null))
+                && mounts(device).all(Value::is_null)
             {
                 DiskRole::Empty
             } else {
@@ -343,10 +400,16 @@ pub(super) fn disks_from_lsblk(
         .collect()
 }
 
+/// `mountpoints` from util-linux 2.37 on, `mountpoint` before it.
+fn mounts(device: &Value) -> impl Iterator<Item = &Value> {
+    match device["mountpoints"].as_array() {
+        Some(mounts) => mounts.iter(),
+        None => std::slice::from_ref(&device["mountpoint"]).iter(),
+    }
+}
+
 fn mounts_root(device: &Value) -> bool {
-    device["mountpoints"]
-        .as_array()
-        .is_some_and(|mounts| mounts.iter().any(|mount| mount == "/"))
+    mounts(device).any(|mount| mount == "/")
         || device["children"]
             .as_array()
             .is_some_and(|children| children.iter().any(mounts_root))
@@ -374,53 +437,49 @@ fn is_hex_serial_id(name: &str) -> bool {
     name.starts_with("wwn-") || name.starts_with("nvme-eui.")
 }
 
-pub(super) fn read_docker() -> Result<DockerFacts, Error> {
+/// Docker's facts, and the failed command that stopped reading them.
+pub(super) fn read_docker() -> (DockerFacts, Option<Error>) {
     if !command_exists("dockerd") {
-        return Ok(DockerFacts::Absent);
+        return (DockerFacts::Absent, None);
     }
     // The CLI can't read the server's version only when it can't reach the daemon.
-    let Ok(output) = docker_output(["version", "--format", "json"]) else {
-        return Ok(DockerFacts::Stopped);
+    let Ok(output) = docker_output([
+        "version",
+        "--format",
+        "{{.Server.Version}} {{.Server.APIVersion}}",
+    ]) else {
+        return (DockerFacts::Stopped, None);
     };
-    let Ok(version) = serde_json::from_str::<Value>(&output) else {
-        return Ok(DockerFacts::Stopped);
+    let (version, api) = output.split_once(' ').unwrap_or((&output, ""));
+    let present = |buildx, containerd_store| DockerFacts::Present {
+        version: version.to_owned(),
+        api: api.to_owned(),
+        buildx,
+        containerd_store,
     };
-    let Some(server) = version.get("Server").filter(|server| server.is_object()) else {
-        return Ok(DockerFacts::Stopped);
-    };
-    let field = |name: &str| server[name].as_str().unwrap_or_default().to_owned();
-    let (version, api) = (field("Version"), field("ApiVersion"));
-    if !at_least(&api, MINIMUM_DOCKER_API) {
-        return Ok(DockerFacts::Present {
-            version,
-            api,
-            buildx: None,
-            containerd_store: None,
-        });
+    if !at_least(api, MINIMUM_DOCKER_API) {
+        return (present(None, None), None);
     }
     // e.g. `github.com/docker/buildx v0.37.1 c8d4ec2`
-    let output = docker_output(["buildx", "version"])?;
+    let output = match docker_output(["buildx", "version"]) {
+        Ok(output) => output,
+        Err(error) => return (present(None, None), Some(error)),
+    };
     let buildx = output
         .split_whitespace()
         .nth(1)
         .unwrap_or(&output)
         .to_owned();
     if !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX) {
-        return Ok(DockerFacts::Present {
-            version,
-            api,
-            buildx: Some(buildx),
-            containerd_store: None,
-        });
+        return (present(Some(buildx), None), None);
     }
-    let containerd_store = docker_output(["info", "-f", "{{.DriverStatus}}"])?
-        .contains("io.containerd.snapshotter.v1");
-    Ok(DockerFacts::Present {
-        version,
-        api,
-        buildx: Some(buildx),
-        containerd_store: Some(containerd_store),
-    })
+    match docker_output(["info", "-f", "{{.DriverStatus}}"]) {
+        Ok(status) => {
+            let containerd_store = status.contains("io.containerd.snapshotter.v1");
+            (present(Some(buildx), Some(containerd_store)), None)
+        }
+        Err(error) => (present(Some(buildx), None), Some(error)),
+    }
 }
 
 fn docker_output<const N: usize>(args: [&str; N]) -> Result<String, Error> {
@@ -444,7 +503,7 @@ pub(super) fn assess(facts: &HostFacts) -> Assessment {
     if !facts.systemd {
         blockers.push(Blocker::new(
             "no_systemd",
-            "This Server doesn't run systemd. Ployz needs systemd to run its daemon.",
+            Error::SystemdRequired.to_string(),
         ));
     }
     let root_disk = facts
@@ -456,7 +515,7 @@ pub(super) fn assess(facts: &HostFacts) -> Assessment {
         blockers.push(Blocker::new(
             "disk_too_small",
             format!(
-                "Disk is {} GB. Ployz needs {} GB.",
+                "Disk is {} GiB. Ployz needs {} GiB.",
                 disk.size_bytes / GIB,
                 MINIMUM_DISK_BYTES / GIB
             ),
@@ -545,62 +604,79 @@ fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
     }
 }
 
+/// The ZFS route for this Machine, or the first reason it has none, in the installer's order.
 pub(super) fn zfs_route(facts: &HostFacts) -> Result<ZfsRoute, Blocker> {
-    let ineligible = |code, message: String| Err(Blocker::new(code, message));
-    let os = &facts.os;
-    let Some(route) = ZfsRoute::for_os(os) else {
-        return ineligible(
+    let route = zfs_os_route(&facts.os)?;
+    if let Some(reason) = secure_boot_blocker(route, &facts.os, facts.secure_boot) {
+        return Err(reason);
+    }
+    virtualization_blocker(&facts.virt).map_or(Ok(route), Err)
+}
+
+pub(super) fn zfs_os_route(os: &OsRelease) -> Result<ZfsRoute, Blocker> {
+    ZfsRoute::for_os(os).ok_or_else(|| {
+        Blocker::new(
             "unsupported_os",
             format!(
                 "Managed volumes need Ubuntu LTS, Debian 12–13 or Amazon Linux 2023; this Server runs {}. Use one of those, or add `--storage none`.",
                 os.display()
             ),
-        );
-    };
-    if route.builds_module() {
-        match facts.secure_boot {
-            Some(false) => {}
-            Some(true) => {
-                return ineligible(
-                    "secure_boot",
-                    format!(
-                        "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
-                        os.name
-                    ),
-                );
-            }
-            None => {
-                return ineligible(
-                    "secure_boot_unknown",
-                    format!(
-                        "Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
-                        os.name
-                    ),
-                );
-            }
-        }
+        )
+    })
+}
+
+/// Secure Boot stops only routes that build their own, unsigned module.
+pub(super) fn secure_boot_blocker(
+    route: ZfsRoute,
+    os: &OsRelease,
+    secure_boot: Option<bool>,
+) -> Option<Blocker> {
+    if !route.builds_module() {
+        return None;
     }
-    match facts.virt {
-        Virtualization::OpenVz => {
-            return ineligible(
-                "openvz",
-                "OpenVZ does not allow this Machine to load the host ZFS kernel module".into(),
-            );
-        }
-        Virtualization::Lxc { privileged: false } => {
-            return ineligible(
-                "unprivileged_lxc",
-                "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module"
-                    .into(),
-            );
-        }
+    match secure_boot {
+        Some(false) => None,
+        Some(true) => Some(Blocker::new(
+            "secure_boot",
+            format!(
+                "Secure Boot is on, so this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+                os.name
+            ),
+        )),
+        None => Some(Blocker::new(
+            "secure_boot_unknown",
+            format!(
+                "Couldn't tell whether Secure Boot is on, and under it this Server can't load the ZFS module Ployz builds for {}. Turn Secure Boot off, use Ubuntu, or add `--storage none`.",
+                os.name
+            ),
+        )),
+    }
+}
+
+pub(super) fn virtualization_blocker(virt: &Virtualization) -> Option<Blocker> {
+    match virt {
+        Virtualization::OpenVz => Some(Blocker::new(
+            "openvz",
+            "OpenVZ does not allow this Machine to load the host ZFS kernel module",
+        )),
+        Virtualization::Lxc {
+            privileged: Some(false),
+        } => Some(Blocker::new(
+            "unprivileged_lxc",
+            "Unprivileged LXC does not allow this Machine to load the host ZFS kernel module",
+        )),
+        Virtualization::Lxc { privileged: None } => Some(Blocker::new(
+            "lxc_privilege_unknown",
+            "Couldn't read this LXC container's user namespace, so Ployz can't tell whether it may load the host ZFS kernel module",
+        )),
         Virtualization::BareMetal
         | Virtualization::Vm { .. }
-        | Virtualization::Lxc { privileged: true }
+        | Virtualization::Lxc {
+            privileged: Some(true),
+        }
         | Virtualization::Container { .. }
-        | Virtualization::Unknown => {}
+        | Virtualization::Unknown => None,
     }
-    Ok(route)
 }
 
 pub(super) fn root_reserve_blocker(root: Filesystem) -> Option<Blocker> {

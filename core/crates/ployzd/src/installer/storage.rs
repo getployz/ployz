@@ -11,7 +11,10 @@ use std::{
 
 use ployz_core::StorageChoice;
 
-use super::assess::{Filesystem, ZFS_SMOKE_BYTES, read_facts, root_reserve_blocker, zfs_route};
+use super::assess::{
+    Filesystem, ZFS_SMOKE_BYTES, read_secure_boot_variable, read_virtualization,
+    root_reserve_blocker, secure_boot_blocker, virtualization_blocker, zfs_os_route,
+};
 use super::os_release::OsRelease;
 use super::{Error, InstallPaths, command_exists, refuse, run_apt, run_command, run_host};
 use super::{
@@ -97,9 +100,22 @@ impl ZfsRoute {
 }
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
-    let facts = read_facts(paths)?;
-    let route = zfs_route(&facts).map_err(|reason| refuse(STAGE, reason.message))?;
-    let os = facts.os;
+    let refusal = |reason: super::assess::Blocker| refuse(STAGE, reason.message);
+    let os = OsRelease::read(&paths.os_release)?;
+    let route = zfs_os_route(&os).map_err(refusal)?;
+    if route.builds_module() {
+        let secure_boot = read_secure_boot_variable(&paths.secure_boot)?;
+        if let Some(reason) = secure_boot_blocker(route, &os, Some(secure_boot)) {
+            return Err(refusal(reason));
+        }
+    }
+    let (virt, unread) = read_virtualization(&paths.proc_dir);
+    if let Some(error) = unread {
+        return Err(error);
+    }
+    if let Some(reason) = virtualization_blocker(&virt) {
+        return Err(refusal(reason));
+    }
     let package_manager = route.package_manager();
     if !command_exists(package_manager) {
         return Err(refuse(
