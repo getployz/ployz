@@ -98,6 +98,7 @@ async fn install(
     paths: &Paths,
     cloud_url: &str,
 ) -> Result<(), Error> {
+    keep_token_private(&paths.token_file)?;
     let host = System {
         ployzd: ployzd(paths, true).await?,
     };
@@ -111,10 +112,11 @@ async fn install(
     let skip_zfs = process_env::var_os(SKIP_ZFS).is_some_and(|value| value == "1");
     let checkin_unit = unit::checkin(&ployz, &paths.token_file, cloud_url)
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
+    let prepare_unit = unit::prepare(&host.ployzd, skip_zfs)
+        .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
-    write_unit(unit::PREPARE, &unit::prepare(&host.ployzd, skip_zfs))?;
+    write_unit(unit::PREPARE, &prepare_unit)?;
     systemd(&["daemon-reload"]).await?;
-    keep_token_private(&paths.token_file)?;
     crate::ui::stream("Checking in");
     match checkin::pass(&host, client, key, paths, Utc::now()).await {
         Next::Wait { log, .. } => {
@@ -148,7 +150,8 @@ async fn stop_old_loop() -> Result<(), Error> {
     if !Path::new(UNIT_DIR).join(unit::CHECKIN).exists() {
         return Ok(());
     }
-    systemd(&["stop", unit::CHECKIN]).await
+    // Disabled too, so an install that fails from here leaves no loop to start at boot.
+    systemd(&["disable", "--now", unit::CHECKIN]).await
 }
 
 async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {

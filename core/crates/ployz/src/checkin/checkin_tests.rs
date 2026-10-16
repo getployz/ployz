@@ -279,6 +279,13 @@ async fn a_rejection_stops_even_when_the_token_was_replaced() {
 }
 
 #[test]
+fn the_preparation_unit_quotes_ployzd_and_refuses_paths_that_break_it() {
+    let text = unit::prepare(Path::new("/opt/my tools/ployzd"), true).unwrap();
+    assert!(text.contains("ExecStart=\"/opt/my tools/ployzd\" install --prepare --skip-zfs\n"));
+    assert!(unit::prepare(Path::new("/opt/a\nExecStart=/bin/sh"), false).is_err());
+}
+
+#[test]
 fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
     let text = unit::checkin(
         Path::new("/opt/my tools/ployz"),

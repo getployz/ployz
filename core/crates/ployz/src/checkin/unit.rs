@@ -41,9 +41,10 @@ fn exec_arg(value: &str) -> Result<String, String> {
     Ok(quotable(value)?.replace('%', "%%").replace('$', "$$"))
 }
 
-pub(crate) fn prepare(ployzd: &Path, skip_zfs: bool) -> String {
+pub(crate) fn prepare(ployzd: &Path, skip_zfs: bool) -> Result<String, String> {
+    let ployzd = exec_arg(&ployzd.display().to_string())?;
     let skip = if skip_zfs { " --skip-zfs" } else { "" };
-    format!(
+    Ok(format!(
         "[Unit]
 Description=Ployz host preparation: install Docker and build ZFS ahead of enroll
 After=network-online.target
@@ -51,9 +52,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart={ployzd} install --prepare{skip}
+ExecStart=\"{ployzd}\" install --prepare{skip}
 TimeoutStartSec=infinity
-",
-        ployzd = ployzd.display(),
-    )
+"
+    ))
 }
