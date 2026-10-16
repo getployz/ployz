@@ -200,20 +200,22 @@ function OfferPicker({ organizationSlug, offer, clearConnectSearch }: { organiza
         pending={busy}
         disabled={picked.length === 0}
       >
-        {accounts.data.map((account) => (
-          <SettingsFormField key={account.installationId} label={account.login} htmlFor={`github-offer-${account.installationId}`} inline>
-            <Checkbox
-              id={`github-offer-${account.installationId}`}
-              checked={!unpicked.has(account.installationId)}
-              onCheckedChange={(on) => setUnpicked((current) => {
-                const next = new Set(current);
-                if (on) next.delete(account.installationId);
-                else next.add(account.installationId);
-                return next;
-              })}
-            />
-          </SettingsFormField>
-        ))}
+        <div className="flex flex-col gap-2">
+          {accounts.data.map((account) => (
+            <SettingsFormField key={account.installationId} label={account.login} htmlFor={`github-offer-${account.installationId}`} inline>
+              <Checkbox
+                id={`github-offer-${account.installationId}`}
+                checked={!unpicked.has(account.installationId)}
+                onCheckedChange={(on) => setUnpicked((current) => {
+                  const next = new Set(current);
+                  if (on) next.delete(account.installationId);
+                  else next.add(account.installationId);
+                  return next;
+                })}
+              />
+            </SettingsFormField>
+          ))}
+        </div>
       </SettingsForm>
     </>
   );
