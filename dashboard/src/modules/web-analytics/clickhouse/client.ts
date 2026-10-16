@@ -25,7 +25,7 @@ const attempt = <A>(message: string, run: () => Promise<A>) =>
 
 const STATEMENT_DEADLINE_SECONDS = 25;
 /** The server deadline, plus the same again for a statement to travel from its fence check to the server. */
-export const WRITE_LIFETIME_SECONDS = STATEMENT_DEADLINE_SECONDS * 2;
+const WRITE_LIFETIME_SECONDS = STATEMENT_DEADLINE_SECONDS * 2;
 
 export const makeClickHouse = (client: ClickHouseClient, writeLifetimeSeconds = WRITE_LIFETIME_SECONDS): ClickHouseService => ({
   writeLifetimeSeconds,
