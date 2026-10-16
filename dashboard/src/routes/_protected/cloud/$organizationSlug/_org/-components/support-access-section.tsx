@@ -1,16 +1,16 @@
 import { useId } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { SettingsField, SettingsGroup } from "#/components/settings/settings-group";
+import { SettingsSection } from "#/components/settings/settings-section";
 import { Switch } from "#/components/ui/switch";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { useSupportAccess } from "#/modules/support-access/support-access.hooks";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 const SHOWS = [
-  { setting: "variables", label: "Variables", description: "Values of variables that aren't sealed." },
-  { setting: "configs", label: "Config files", description: "What's in each config file." },
-  { setting: "logs", label: "Container logs", description: "What your containers print." },
+  { setting: "variables", label: "Variables" },
+  { setting: "configs", label: "Config files" },
+  { setting: "logs", label: "Container logs" },
 ] as const;
 
 /** "Allow support access": whether Ployz support may open this Organization and act in it, and what it may read there. */
@@ -21,46 +21,46 @@ export function SupportAccessSection({ organizationSlug }: { organizationSlug: s
   const locked = yourRole !== "owner" && yourRole !== "admin";
   return (
     <SettingsSection id="support-access" title="Support">
-      <SupportSwitch
+      <SettingsGroup
         label="Allow support access"
-        description="Let Ployz support open this Organization and act in it."
-        checked={row.allowed}
-        disabled={locked}
-        onChange={(on) => change({ setting: "allowed", on })}
-      />
-      {row.allowed ? (
-        <FieldGroup className="border-l pl-4">
-          {SHOWS.map(({ setting, label, description }) => (
-            <SupportSwitch
-              key={setting}
-              label={label}
-              description={description}
-              checked={row[setting]}
-              disabled={locked}
-              onChange={(on) => change({ setting, on } satisfies SupportAccessChange)}
-            />
-          ))}
-        </FieldGroup>
-      ) : null}
+        hint={row.allowed ? "Let Ployz support open this Organization and act in it, and read what's on below. Sealed variables stay hidden." : "Let Ployz support open this Organization and act in it."}
+        commit="change"
+        control={(
+          <Switch
+            aria-label="Allow support access"
+            checked={row.allowed}
+            disabled={locked}
+            onCheckedChange={(on) => change({ setting: "allowed", on })}
+          />
+        )}
+      >
+        {row.allowed ? SHOWS.map(({ setting, label }) => (
+          <SupportField
+            key={setting}
+            label={label}
+            checked={row[setting]}
+            disabled={locked}
+            onChange={(on) => change({ setting, on } satisfies SupportAccessChange)}
+          />
+        )) : null}
+      </SettingsGroup>
     </SettingsSection>
   );
 }
 
-function SupportSwitch({ label, description, checked, disabled, onChange }: {
+function SupportField({ label, checked, disabled, onChange }: {
   label: string;
-  description: string;
   checked: boolean;
   disabled: boolean;
   onChange: (on: boolean) => void;
 }) {
   const switchId = useId();
   return (
-    <Field orientation="horizontal">
-      <FieldContent>
-        <FieldLabel htmlFor={switchId}>{label}</FieldLabel>
-        <FieldDescription>{description}</FieldDescription>
-      </FieldContent>
-      <Switch id={switchId} aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
-    </Field>
+    <SettingsField
+      label={label}
+      htmlFor={switchId}
+      commit="change"
+      control={<Switch id={switchId} aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />}
+    />
   );
 }

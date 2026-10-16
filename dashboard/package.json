@@ -140,6 +140,7 @@
     "jsdom": "^29.0.2",
     "nanostores": "1.5.4",
     "nitro": "3.0.260610-beta",
+    "oxc-parser": "0.120.0",
     "oxlint": "1.78.0",
     "oxlint-tsgolint": "0.24.0",
     "portless": "^0.15.6",

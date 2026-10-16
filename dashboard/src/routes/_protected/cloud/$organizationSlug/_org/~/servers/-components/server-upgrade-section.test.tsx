@@ -62,7 +62,7 @@ it("drops Nothing changed and Try again while the Server is offline, and shows t
 
 it("says an offline Server behind upgrades when it's back, while automatic upgrades are on", () => {
   row({ status: "offline" });
-  expect(description()).toBe("0.2.1Upgrades to 0.2.2 when it’s back");
+  expect(description()).toBe("0.2.1 · Upgrades to 0.2.2 when it’s back");
   expect(screen.queryByRole("button")).toBeNull();
 });
 

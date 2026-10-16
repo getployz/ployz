@@ -1,12 +1,8 @@
-import { useId } from "react";
-import { TriangleAlertIcon } from "lucide-react";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
+import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { webTrafficBusy, webTrafficChecked, type WebTrafficView } from "#/modules/machines/server-web-traffic-view";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 /**
  * Whether this Server takes web traffic. On starts the web server here, so your domains point at it; off asks first
@@ -20,32 +16,30 @@ export function ServerWebTrafficSection({ view, onTurnOn, onAskOff, unavailable 
   /** Why the switch can't move now (the Server is offline, or the page can't see it); null when it can. */
   unavailable: string | null;
 }) {
-  const switchId = useId();
   const busy = webTrafficBusy(view);
   return (
     <SettingsSection id="server-web-traffic" title="Web traffic">
       {view.kind === "failed" ? (
-        <Alert variant="destructive">
-          <TriangleAlertIcon />
-          <AlertTitle>Couldn’t {view.want === "on" ? "start" : "stop"} web traffic</AlertTitle>
-          <AlertDescription>{view.reason}</AlertDescription>
-          <AlertAction>
-            <Button variant="outline" size="sm" disabled={unavailable !== null} onClick={view.want === "on" ? onTurnOn : onAskOff}>Retry</Button>
-          </AlertAction>
-        </Alert>
-      ) : null}
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel htmlFor={switchId}>Takes web traffic</FieldLabel>
-          <FieldDescription>{unavailable ?? <WebTrafficLine view={view} />}</FieldDescription>
-        </FieldContent>
-        <Switch
-          id={switchId}
-          checked={webTrafficChecked(view)}
-          disabled={busy || unavailable !== null}
-          onCheckedChange={(checked) => (checked ? onTurnOn() : onAskOff())}
+        <SettingsRow
+          label={<>Couldn’t {view.want === "on" ? "start" : "stop"} web traffic</>}
+          hint={<span role="alert" className="text-destructive">{view.reason}</span>}
+          commit="none"
+          control={<Button variant="outline" disabled={unavailable !== null} onClick={view.want === "on" ? onTurnOn : onAskOff}>Retry</Button>}
         />
-      </Field>
+      ) : null}
+      <SettingsRow
+        label="Takes web traffic"
+        hint={unavailable ?? <WebTrafficLine view={view} />}
+        commit="change"
+        control={(
+          <Switch
+            aria-label="Takes web traffic"
+            checked={webTrafficChecked(view)}
+            disabled={busy || unavailable !== null}
+            onCheckedChange={(checked) => (checked ? onTurnOn() : onAskOff())}
+          />
+        )}
+      />
     </SettingsSection>
   );
 }

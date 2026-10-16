@@ -1,13 +1,12 @@
 import { useState } from "react";
 import { CopyButton } from "#/components/copy-button";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
+import { SettingsRow, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import type { ServerStatus } from "#/modules/machines/server-status";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { releaseLine, rolloutRunning, serverUpgradeLine, type ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 import { useNow, useRequestUpgrade, useServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.hooks";
 import { useChannelRelease, useServerUpgrades } from "#/modules/server-upgrade/server-upgrade.queries";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 /** The Ployz release this Server runs, and its one Upgrade line. */
 export function ServerUpgradeSection({ machine, status, organizationSlug }: {
@@ -49,11 +48,13 @@ export function ServerUpgradeRow({ version, line, onUpgrade }: {
   const [showDetails, setShowDetails] = useState(false);
   return (
     <SettingsSection id="server-ployz" title="Ployz">
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel className="font-mono">{version || "Version unknown"}</FieldLabel>
+      <SettingsRow
+        label="Version"
+        hint={<>
+          {version ? <span className="font-mono">{version}</span> : "Unknown"}
           {line === null ? null : (
-            <FieldDescription>
+            <>
+              {" · "}
               {line.kind === "behind" ? (
                 <><span className="font-mono">{line.release}</span> is out</>
               ) : line.kind === "when-back" ? (
@@ -74,20 +75,20 @@ export function ServerUpgradeRow({ version, line, onUpgrade }: {
                   )}
                 </>
               )}
-            </FieldDescription>
+            </>
           )}
-        </FieldContent>
-        {line?.kind === "behind" && line.canUpgrade ? (
+        </>}
+        commit="none"
+        control={line?.kind === "behind" && line.canUpgrade ? (
           <Button variant="outline" onClick={onUpgrade}>Upgrade</Button>
         ) : line?.kind === "failed" && line.canRetry ? (
           <Button variant="outline" onClick={() => { setShowDetails(false); onUpgrade(); }}>Try again</Button>
         ) : null}
-      </Field>
+      />
       {line?.kind === "failed" && line.details !== null && showDetails ? (
-        <Field orientation="horizontal">
+        <SettingsWorkspace label="Last upgrade" tools={<CopyButton value={line.details} label="Copy" showLabel variant="outline" />}>
           <pre className="min-w-0 flex-1 font-mono text-sm whitespace-pre-wrap text-muted-foreground">{line.details}</pre>
-          <CopyButton value={line.details} label="Copy" showLabel variant="outline" />
-        </Field>
+        </SettingsWorkspace>
       ) : null}
     </SettingsSection>
   );

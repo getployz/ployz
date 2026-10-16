@@ -112,11 +112,11 @@ it.each(["Config", "Volume"])("returns focus to Add when cancelling a new %s mou
   } else {
     render(<StoreVolumeMounts {...common} resourceId={volume.id} volumes={[{ ...volume, mounts: [] }]} replicasOf={() => 1} />);
   }
-  const action = screen.getByRole("button", { name: "Mount on a service" });
-  fireEvent.click(action);
+  fireEvent.click(screen.getByRole("button", { name: "Mount on a service" }));
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
-  expect(document.activeElement).toBe(action);
+  // The foot becomes the form, so Add is a new button once it closes.
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Mount on a service" }));
 });
 
 
@@ -144,5 +144,5 @@ it.each(["Config", "Volume"].flatMap((entry) =>
   if (origin === "Add") fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   else fireEvent.keyDown(directory, { key: "Escape" });
   await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
-  expect(document.activeElement).toBe(openingButton);
+  expect(document.activeElement).toBe(origin === "Add" ? screen.getByRole("button", { name: "Mount on a service" }) : openingButton);
 });

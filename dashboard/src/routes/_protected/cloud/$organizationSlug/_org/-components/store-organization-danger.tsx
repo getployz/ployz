@@ -6,14 +6,11 @@ import { useServerFn } from "@tanstack/react-start";
 import { ServerOffIcon, Trash2Icon } from "lucide-react";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { FieldDescription } from "#/components/ui/field";
-import { DangerRow } from "../../-components/danger-row";
+import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { ForgetServersDialog } from "./forget-servers-dialog";
 
 /**
@@ -62,37 +59,34 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
   return (
     <>
       <SettingsSection id="organization-teardown" title="Danger">
-          {unconfirmed && (
-            <Alert variant="destructive">
-              <AlertTitle>Deleting {organizationSlug} didn't finish</AlertTitle>
-              <AlertDescription>
-                <span>Some servers didn't confirm they let go of it ({unconfirmed.join(", ")}). It stays, disabled, until they do.</span>
-              </AlertDescription>
-              <AlertAction><Button variant="outline" size="sm" disabled={retrying} onClick={() => void retry()}>Try again</Button></AlertAction>
-            </Alert>
-          )}
-          <DangerRow
-            title="Forget all servers"
-            description="Use this when your servers were deleted. Your projects and settings stay."
-            action={
-              <Button variant="destructive" onClick={() => setForgetting(true)}>
-                <ServerOffIcon data-icon="inline-start" />
-                Forget servers
-              </Button>
-            }
+        {unconfirmed && (
+          <SettingsRow
+            label={`Deleting ${organizationSlug} didn't finish`}
+            hint={`Some servers didn't confirm they let go of it (${unconfirmed.join(", ")}). It stays, disabled, until they do.`}
+            commit="change"
+            control={<Button variant="outline" size="sm" disabled={retrying} onClick={() => void retry()}>Try again</Button>}
           />
-          <DangerRow
-            title="Delete this organization"
-            description="Its servers are unpaired from it."
-            action={
-              <Button variant="destructive" disabled={disabledReason !== undefined} onClick={() => setOpen(true)}>
-                <Trash2Icon data-icon="inline-start" />
-                Delete organization
-              </Button>
-            }
-          >
-            {disabledReason && <FieldDescription>{disabledReason}</FieldDescription>}
-          </DangerRow>
+        )}
+        <SettingsDanger
+          label="Forget all servers"
+          hint="Use this when your servers were deleted. Your projects and settings stay."
+          action={
+            <Button variant="destructive" onClick={() => setForgetting(true)}>
+              <ServerOffIcon data-icon="inline-start" />
+              Forget servers
+            </Button>
+          }
+        />
+        <SettingsDanger
+          label="Delete this organization"
+          hint={disabledReason ? `Its servers are unpaired from it. ${disabledReason}` : "Its servers are unpaired from it."}
+          action={
+            <Button variant="destructive" disabled={disabledReason !== undefined} onClick={() => setOpen(true)}>
+              <Trash2Icon data-icon="inline-start" />
+              Delete organization
+            </Button>
+          }
+        />
       </SettingsSection>
       <DeletionDialog open={open} onOpenChange={setOpen} title={`Delete ${organizationSlug}?`} place={organizationSlug}
         confirmLabel="Delete" sentence={<>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{organizationSlug}</span>, and unpairing its servers from it.</>}

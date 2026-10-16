@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Trash2Icon } from "lucide-react";
+import { PackageXIcon, Trash2Icon } from "lucide-react";
+import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { plural } from "#/lib/plural";
 import { loadNamespaceDataLossServerFn, removeNamespaceServerFn } from "#/modules/machines/namespace-cleanup.functions";
 import { useStrayNamespaces } from "#/modules/machines/namespace-cleanup.queries";
@@ -28,20 +28,23 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
 
   return (
     <>
-      {[...strays].map((namespace) => (
-        <Item key={namespace} variant="outline">
-          <ItemContent>
-            <ItemTitle>{namespace}</ItemTitle>
-            <ItemDescription>Not in any Project · {plural(servicesOf(namespace).length, "service")}</ItemDescription>
-          </ItemContent>
-          <ItemActions>
-            <Button variant="outline" size="sm" onClick={() => setRemoving(namespace)}>
-              <Trash2Icon data-icon="inline-start" />
-              Remove
-            </Button>
-          </ItemActions>
-        </Item>
-      ))}
+      <SettingsList label="Namespaces no Project owns">
+        {[...strays].map((namespace) => (
+          <SettingsListItem
+            key={namespace}
+            media={<PackageXIcon />}
+            label={namespace}
+            hint={`Not in any Project · ${plural(servicesOf(namespace).length, "service")}`}
+            commit="none"
+            actions={(
+              <Button variant="outline" size="sm" onClick={() => setRemoving(namespace)}>
+                <Trash2Icon data-icon="inline-start" />
+                Remove
+              </Button>
+            )}
+          />
+        ))}
+      </SettingsList>
       <DeletionDialog
         open={removing !== null}
         onOpenChange={(open) => { if (!open) setRemoving(null); }}

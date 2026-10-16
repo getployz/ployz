@@ -36,3 +36,26 @@ it("shows the Store's value once the write settles", async () => {
   rerender({ value: "a" });
   expect(result.current[0]).toBe("a");
 });
+
+it("keeps a refused write as failed, with what it tried and the refusal's words, until dismissed", async () => {
+  const { result } = renderHook(() => useCommitHold("a"));
+  let refuse!: (error: Error) => void;
+  const promise = new Promise<void>((_resolve, reject) => { refuse = reject; });
+  act(() => result.current[1]("b", { isPersisted: { promise } }));
+  expect(result.current[2]).toEqual({ phase: "saving", to: "b" });
+
+  await act(async () => { refuse(new Error("Replicas must be at most 50.")); await promise.catch(() => {}); });
+  expect(result.current[0]).toBe("a");
+  expect(result.current[2]).toEqual({ phase: "failed", to: "b", reason: "Replicas must be at most 50." });
+
+  act(() => result.current[3]());
+  expect(result.current[2]).toEqual({ phase: "idle" });
+});
+
+it("says Cloud was unreachable when the request never got an answer", async () => {
+  const { result } = renderHook(() => useCommitHold("a"));
+  const promise = Promise.reject(new TypeError("Failed to fetch"));
+  act(() => result.current[1]("b", { isPersisted: { promise } }));
+  await act(async () => { await promise.catch(() => {}); });
+  expect(result.current[2]).toEqual({ phase: "failed", to: "b", reason: "Couldn't reach Ployz Cloud." });
+});

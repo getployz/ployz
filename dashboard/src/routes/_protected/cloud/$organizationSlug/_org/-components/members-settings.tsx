@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
-import { UserPlusIcon } from "lucide-react";
+import { LinkIcon, MailIcon, UserIcon } from "lucide-react";
 import { toast } from "sonner";
 import { CopyButton } from "#/components/copy-button";
+import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsAddButton, SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,7 +22,6 @@ import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Spinner } from "#/components/ui/spinner";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { toErrorMessage } from "#/lib/error-message";
 import {
   inviteMemberServerFn,
@@ -30,7 +31,6 @@ import {
   setMemberRoleServerFn,
 } from "#/modules/organization/members.functions";
 import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 type Role = "owner" | "admin" | "member";
 type InviteRole = Exclude<Role, "owner">;
@@ -38,9 +38,6 @@ type InviteRole = Exclude<Role, "owner">;
 const ROLE_LABELS = { owner: "Owner", admin: "Admin", member: "Member" } satisfies Record<Role, string>;
 
 const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
-
-/** Both tables share these widths so their columns line up. */
-const WIDTHS = { role: "w-28 sm:w-32", date: "hidden w-32 sm:table-cell", actions: "w-20 sm:w-24" };
 
 const formatDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 
@@ -103,41 +100,23 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
 
   return (
     <div className="flex flex-col gap-6">
-      <SettingsSection
-        id="members"
-        title="Members"
-        action={manager ? (
-          <Button variant="outline" onClick={() => setInviting(true)}>
-            <UserPlusIcon data-icon="inline-start" />
-            Invite
-          </Button>
-        ) : null}
-      >
-        <Table className="table-fixed">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead className={WIDTHS.role}>Role</TableHead>
-              <TableHead className={WIDTHS.date}>Joined</TableHead>
-              <TableHead className={WIDTHS.actions}><span className="sr-only">Actions</span></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {data.members.map((row) => {
-              const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
-              return (
-                <TableRow key={row.email}>
-                  <TableCell className="whitespace-normal wrap-anywhere">
-                    <div className="flex flex-col">
-                      <span>{row.name}{row.you ? <span className="text-muted-foreground"> (you)</span> : null}</span>
-                      <span className="text-xs text-muted-foreground">{row.email}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
+      <SettingsSection id="members" title="Members">
+        <SettingsList label="Members">
+          {data.members.map((row) => {
+            const editable = manager && !row.you && (yourRole === "owner" || row.role !== "owner");
+            return (
+              <SettingsListItem
+                key={row.email}
+                media={<UserIcon />}
+                label={<>{row.name}{row.you ? <span className="text-muted-foreground"> (you)</span> : null}</>}
+                hint={`${row.email} · Joined ${formatDate(row.joined_at)}`}
+                commit={editable ? "change" : "none"}
+                actions={(
+                  <>
                     {editable ? (
                       <NativeSelect
                         size="sm"
-                        className="w-24 sm:w-28"
+                        className="w-32"
                         aria-label={`Role of ${row.name}`}
                         value={row.role}
                         onChange={(event) => {
@@ -147,57 +126,44 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
                       >
                         {roles.map((role) => <NativeSelectOption key={role} value={role}>{ROLE_LABELS[role]}</NativeSelectOption>)}
                       </NativeSelect>
-                    ) : ROLE_LABELS[row.role]}
-                  </TableCell>
-                  <TableCell className="hidden text-muted-foreground sm:table-cell">{formatDate(row.joined_at)}</TableCell>
-                  <TableCell className="text-right">
+                    ) : <span className="text-sm text-muted-foreground">{ROLE_LABELS[row.role]}</span>}
                     {row.you ? (
                       <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "leave" })}>Leave</Button>
                     ) : editable ? (
                       <Button variant="ghost" size="sm" onClick={() => setConfirming({ kind: "remove", email: row.email, name: row.name })}>Remove</Button>
                     ) : null}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+                  </>
+                )}
+              />
+            );
+          })}
+        </SettingsList>
       </SettingsSection>
-      {data.invites.length > 0 ? (
-        <SettingsSection id="invites" title="Pending invites">
-          <Table className="table-fixed">
-            <TableHeader>
-              <TableRow>
-                <TableHead>For</TableHead>
-                <TableHead className={WIDTHS.role}>Role</TableHead>
-                <TableHead className={WIDTHS.date}>Expires</TableHead>
-                <TableHead className={WIDTHS.actions}><span className="sr-only">Actions</span></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.invites.map((invite) => (
-                <TableRow key={invite.id}>
-                  <TableCell>
-                    <div className="flex min-w-0 flex-col">
-                      <span className="truncate" title={invite.email ?? undefined}>{invite.email ?? <span className="text-muted-foreground">Anyone with the link</span>}</span>
-                      <span className="text-xs whitespace-normal text-muted-foreground">
-                        From {invite.invited_by}<span className="sm:hidden"> · expires {formatDate(invite.expires_at)}</span>
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell>{ROLE_LABELS[invite.role]}</TableCell>
-                  <TableCell className="hidden text-muted-foreground sm:table-cell">{formatDate(invite.expires_at)}</TableCell>
-                  <TableCell className="text-right">
-                    {manager ? (
-                      <Button variant="ghost" size="sm" onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
-                    ) : null}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </SettingsSection>
-      ) : null}
+      <SettingsSection id="invites" title="Pending invites">
+        {data.invites.length > 0 ? (
+          <SettingsList label="Pending invites">
+            {data.invites.map((invite) => (
+              <SettingsListItem
+                key={invite.id}
+                media={invite.email ? <MailIcon /> : <LinkIcon />}
+                label={invite.email ?? "Anyone with the link"}
+                hint={`From ${invite.invited_by} · ${ROLE_LABELS[invite.role]} · expires ${formatDate(invite.expires_at)}`}
+                commit="change"
+                actions={manager ? (
+                  <Button variant="ghost" size="sm" onClick={() => revoke.mutate(invite.id)}>Revoke</Button>
+                ) : undefined}
+              />
+            ))}
+          </SettingsList>
+        ) : (
+          <SettingsEmpty title="No pending invites">An invite is a link that lets one person join.</SettingsEmpty>
+        )}
+        {manager ? (
+          <SettingsFoot>
+            <SettingsAddButton onClick={() => setInviting(true)}>Invite</SettingsAddButton>
+          </SettingsFoot>
+        ) : null}
+      </SettingsSection>
       {inviting ? <InviteDialog organizationName={organizationName} mail={data.mail} invite={(input) => inviteMemberServerFn({ data: { organizationSlug, ...input } })} onInvited={refresh} onOpenChange={setInviting} /> : null}
       <AlertDialog
         open={confirming !== null}

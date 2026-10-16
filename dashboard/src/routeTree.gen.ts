@@ -24,6 +24,7 @@ import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
+import { Route as DevSettingsRowsRouteImport } from './routes/dev.settings-rows'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
 import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
@@ -156,6 +157,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
 const AuthGithubRoute = AuthGithubRouteImport.update({
   id: '/auth/github',
   path: '/auth/github',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DevSettingsRowsRoute = DevSettingsRowsRouteImport.update({
+  id: '/dev/settings-rows',
+  path: '/dev/settings-rows',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InviteTokenRoute = InviteTokenRouteImport.update({
@@ -548,6 +554,7 @@ export interface FileRoutesByFullPath {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
@@ -618,6 +625,7 @@ export interface FileRoutesByTo {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
@@ -689,6 +697,7 @@ export interface FileRoutesById {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
@@ -765,6 +774,7 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
@@ -835,6 +845,7 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
@@ -905,6 +916,7 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/dev/settings-rows'
     | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
@@ -979,6 +991,7 @@ export interface RootRouteChildren {
   ApiSplatRoute: typeof ApiSplatRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
+  DevSettingsRowsRoute: typeof DevSettingsRowsRoute
   InviteTokenRoute: typeof InviteTokenRoute
   DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
@@ -1115,6 +1128,13 @@ declare module '@tanstack/react-router' {
       path: '/auth/github'
       fullPath: '/auth/github'
       preLoaderRoute: typeof AuthGithubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dev/settings-rows': {
+      id: '/dev/settings-rows'
+      path: '/dev/settings-rows'
+      fullPath: '/dev/settings-rows'
+      preLoaderRoute: typeof DevSettingsRowsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/invite/$token': {
@@ -1753,6 +1773,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSplatRoute: ApiSplatRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
+  DevSettingsRowsRoute: DevSettingsRowsRoute,
   InviteTokenRoute: InviteTokenRoute,
   DotwellKnownOauthProtectedResourceMcpRoute:
     DotwellKnownOauthProtectedResourceMcpRoute,

@@ -1,16 +1,15 @@
-import { useId } from "react";
+import { BoxIcon, CircleCheckIcon, CircleDashedIcon, CircleMinusIcon, CircleStopIcon, CircleXIcon, GlobeIcon, type LucideIcon } from "lucide-react";
 import { plural } from "#/lib/plural";
 import { RelativeTime } from "#/components/relative-time";
+import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldLabel, FieldTitle } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { drainBusy, drainButtonLabel, type DrainRow, type DrainView } from "#/modules/machines/server-drain-view";
+import { drainBusy, drainButtonLabel, type DrainRow, type DrainTone, type DrainView } from "#/modules/machines/server-drain-view";
 import { useServerPolicy } from "#/modules/machines/server-policy.hooks";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { useStagedOffServer } from "#/modules/volume-placement/volume-placement.hooks";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { DrainResultList } from "./drain-result";
 
 /** Whether this Server takes Services, and Drain. Off alone is a cordon: nothing new lands here, nothing moves. */
 export function ServerServicesSection({ machine, organizationSlug, view, left, onDrain, unavailable }: {
@@ -54,33 +53,73 @@ export function ServerServicesRows({ acceptsServices, onAcceptsServices, view, l
   /** Volume primaries here staged to move off. */
   staged: number;
 }) {
-  const switchId = useId();
   const busy = drainBusy(view);
   return (
     <SettingsSection id="server-services" title="Services">
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel htmlFor={switchId}>Run services here</FieldLabel>
-          {acceptsServices ? null : (
-            <FieldDescription>Nothing new starts here. What runs here stays until you drain.</FieldDescription>
-          )}
-        </FieldContent>
-        {/* Turning it on mid-drain would leave the rest of the Drain nothing to move: it waits for the Drain. */}
-        <Switch id={switchId} checked={acceptsServices} disabled={busy} onCheckedChange={(checked) => onAcceptsServices(checked)} />
-      </Field>
-      <Field orientation="responsive">
-        <FieldContent>
-          <FieldTitle>Drain</FieldTitle>
-          <FieldDescription>{unavailable ?? <DrainLine view={view} left={left.length} />}</FieldDescription>
-          {view.kind === "finished" && view.stoppedEarly !== null ? (
-            <FieldDescription className="text-warning">It stopped early: {view.stoppedEarly}.</FieldDescription>
-          ) : null}
-          {staged > 0 ? <FieldDescription>Next deploy moves {plural(staged, "volume")}</FieldDescription> : null}
-        </FieldContent>
-        <DrainButton view={view} onClick={onDrain} disabled={unavailable !== null} />
-      </Field>
-      {busy ? <DrainResultList rows={left} label="Left to move" /> : view.kind === "finished" ? <DrainResultList rows={view.rows} /> : null}
+      <SettingsRow
+        label="Run services here"
+        hint={acceptsServices ? undefined : "Nothing new starts here. What runs here stays until you drain."}
+        commit="change"
+        control={(
+          // Turning it on mid-drain would leave the rest of the Drain nothing to move: it waits for the Drain.
+          <Switch aria-label="Run services here" checked={acceptsServices} disabled={busy} onCheckedChange={(checked) => onAcceptsServices(checked)} />
+        )}
+      />
+      <SettingsRow
+        label="Drain"
+        hint={unavailable ?? <DrainLine view={view} left={left.length} />}
+        commit="none"
+        control={<DrainButton view={view} onClick={onDrain} disabled={unavailable !== null} />}
+      >
+        {view.kind === "finished" && view.stoppedEarly !== null ? (
+          <p className="text-sm text-warning">It stopped early: {view.stoppedEarly}.</p>
+        ) : null}
+        {staged > 0 ? <p className="text-sm text-muted-foreground">Next deploy moves {plural(staged, "volume")}</p> : null}
+      </SettingsRow>
+      {busy ? <DrainRows rows={left} label="Left to move" /> : view.kind === "finished" ? <DrainRows rows={view.rows} label="Drain result" /> : null}
     </SettingsSection>
+  );
+}
+
+const TONE_CLASS = {
+  moved: "text-success",
+  stopped: "text-muted-foreground",
+  stayed: "text-warning",
+  failed: "text-destructive",
+  neutral: "text-muted-foreground",
+} satisfies Record<DrainTone, string>;
+const TONE_ICON = {
+  moved: CircleCheckIcon,
+  stopped: CircleStopIcon,
+  stayed: CircleMinusIcon,
+  failed: CircleXIcon,
+  neutral: CircleDashedIcon,
+} satisfies Record<DrainTone, LucideIcon>;
+
+/** Each Service and what the latest Drain did with it, or what the one under way still has to move. */
+function DrainRows({ rows, label }: { rows: readonly DrainRow[]; label: string }) {
+  if (rows.length === 0) return null;
+  return (
+    <SettingsList label={label}>
+      {rows.map((row) => {
+        const Icon = TONE_ICON[row.tone];
+        return (
+          <SettingsListItem
+            key={row.key}
+            media={row.global ? <GlobeIcon /> : <BoxIcon />}
+            label={row.name}
+            hint={<span className={row.tone === "failed" ? "text-destructive" : undefined}>{row.reason ?? row.namespace}</span>}
+            commit="none"
+            actions={(
+              <span className={`flex items-center gap-2 ${TONE_CLASS[row.tone]}`}>
+                <Icon aria-hidden className="size-4 shrink-0" />
+                {row.label}
+              </span>
+            )}
+          />
+        );
+      })}
+    </SettingsList>
   );
 }
 

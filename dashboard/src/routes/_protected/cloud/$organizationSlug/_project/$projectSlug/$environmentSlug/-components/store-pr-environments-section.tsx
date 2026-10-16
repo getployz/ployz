@@ -1,9 +1,11 @@
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { Link } from "@tanstack/react-router";
 import type { PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { RowWarning } from "#/components/settings/row-warning";
+import { SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsSection } from "#/components/settings/settings-section";
+import { Button } from "#/components/ui/button";
 import { planSummary, prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { useMissingStorePrGrant } from "#/modules/config-store/store-pr-grants.queries";
 import { useStoreView } from "#/modules/config-store/store-view.queries";
@@ -20,9 +22,9 @@ export function StorePrEnvironmentsSection(place: Place) {
   if (!plans.ok || plans.value.plans.length === 0) return null;
   return (
     <SettingsSection id="pr-environments" title="PR environments">
-      <ItemGroup className="gap-2">
+      <SettingsList label="PR environments">
         {plans.value.plans.map((plan) => <PlanRow key={plan.repository_id} place={place} plan={plan} />)}
-      </ItemGroup>
+      </SettingsList>
     </SettingsSection>
   );
 }
@@ -31,17 +33,20 @@ function PlanRow({ place, plan }: { place: Place; plan: PrPlan }) {
   const approve = useMissingStorePrGrant(place.organizationSlug, place.projectSlug, plan.installation_id);
   const params = { ...place, environmentSlug: plan.start_from ?? place.environmentSlug, repositoryId: String(plan.repository_id) };
   return (
-    <Item variant="outline" size="sm" render={<Link to={ENVIRONMENT_PR_PLAN_ROUTE_TO} params={params} />}>
-      <ItemMedia><GitHubMarkIcon aria-hidden="true" className="size-4" /></ItemMedia>
-      <ItemContent className="min-w-0">
-        <ItemTitle className="min-w-0"><span className="truncate">{plan.repository}</span></ItemTitle>
-        <ItemDescription>{planSummary(plan)}</ItemDescription>
-        {approve && <ItemDescription className="text-warning">Needs permissions approved on GitHub</ItemDescription>}
-      </ItemContent>
-      <ItemActions>
+    <SettingsListItem
+      media={<GitHubMarkIcon aria-hidden="true" />}
+      label={plan.repository}
+      hint={planSummary(plan)}
+      commit="none"
+      actions={<>
         {plan.open.length > 0 && <span className="text-sm text-muted-foreground">{plan.open.length} open</span>}
-        <ChevronRightIcon className="size-4 text-muted-foreground" />
-      </ItemActions>
-    </Item>
+        <Button variant="ghost" size="icon" aria-label={`Open ${plan.repository}`}
+          render={<Link to={ENVIRONMENT_PR_PLAN_ROUTE_TO} params={params} />}>
+          <ChevronRightIcon />
+        </Button>
+      </>}
+    >
+      {approve && <RowWarning>Needs permissions approved on GitHub</RowWarning>}
+    </SettingsListItem>
   );
 }

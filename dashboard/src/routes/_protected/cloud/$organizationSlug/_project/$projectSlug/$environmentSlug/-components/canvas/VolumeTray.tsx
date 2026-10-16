@@ -13,7 +13,7 @@ import { usePlacementStaged } from "#/modules/volume-placement/volume-placement.
 import { traySpeech } from "#/modules/volume-copies/volume-copies";
 import { Spinner } from "#/components/ui/spinner";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
-import { SHARED_VOLUME_WHY } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
+import { SHARED_VOLUME_WHY } from "#/components/settings/row-warning";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
 const LitVolume = createContext<[string | null, (id: string | null) => void]>([null, () => {}]);

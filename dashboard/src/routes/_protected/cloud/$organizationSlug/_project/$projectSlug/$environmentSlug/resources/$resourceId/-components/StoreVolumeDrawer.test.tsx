@@ -111,7 +111,7 @@ it("locks a Volume's mounts while a Service they name is renaming, so Unmount ne
 });
 
 it.each([
-  ["the Docker volume checkbox", "checkbox", "Use a plain Docker volume (not recommended)", "false"],
+  ["the Docker volume switch", "switch", "Use a plain Docker volume (not recommended)", "false"],
   ["the shared writes switch", "switch", "Allow shared writes", "true"],
 ] as const)("holds %s at the submitted value while its write runs", async (_, role, name, submitted) => {
   await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings", {});

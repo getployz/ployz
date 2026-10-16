@@ -4,7 +4,8 @@ import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { RelativeTime } from "#/components/relative-time";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import { SettingsEmpty, SettingsForm, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
+import { SettingsFoot, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -18,14 +19,11 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "#/components/ui/avatar";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldLabel } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { toErrorMessage } from "#/lib/error-message";
 import type { ConnectNotice } from "#/modules/github/github-connect";
 import { acceptGithubOfferServerFn, disconnectGithubAccountServerFn } from "#/modules/github/github-connect.functions";
 import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modules/github/github-connect.queries";
 import { githubKeys } from "#/modules/github/github.queries";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 
 const NOTICES = {
   linked: { title: "GitHub connected", description: "Repositories appear in a moment.", tone: "default" },
@@ -49,46 +47,68 @@ export function GithubSettings({ organizationSlug, notice, offer, clearConnectSe
   clearConnectSearch: () => void;
 }) {
   const { data } = useSuspenseQuery(organizationGithubQueryOptions(organizationSlug));
+  const offered = useQuery({ ...githubOfferQueryOptions(organizationSlug, offer ?? ""), enabled: offer !== undefined && data.canManage });
   const shown = notice === undefined ? null : NOTICES[notice];
+  if (offer !== undefined && data.canManage && !offered.isError) {
+    return (
+      <SettingsSection id="github" title="GitHub" description="Accounts this organization builds from.">
+        <OfferPicker organizationSlug={organizationSlug} offer={offer} accounts={offered.data} clearConnectSearch={clearConnectSearch} />
+      </SettingsSection>
+    );
+  }
   return (
-    <SettingsSection
-      id="github"
-      title="GitHub"
-      description="Accounts this organization builds from."
-      action={data.canManage ? (
-        <>
-          <Button variant="outline" nativeButton={false} render={<a href={connectHref(organizationSlug, true)} />}>
-            Use existing installation
-          </Button>
-          <Button nativeButton={false} render={<a href={connectHref(organizationSlug, false)} />}>
-            <GitHubMarkIcon data-icon="inline-start" />
-            Connect GitHub
-          </Button>
-        </>
+    <SettingsSection id="github" title="GitHub" description="Accounts this organization builds from.">
+      {offered.isError ? (
+        <SettingsRow
+          label="This link expired"
+          hint={<span className="text-destructive">Connect GitHub again.</span>}
+          commit="none"
+          control={<Button variant="ghost" size="sm" onClick={clearConnectSearch}>Dismiss</Button>}
+        />
       ) : null}
-    >
       {shown && offer === undefined ? (
-        <Alert variant={shown.tone}>
-          <AlertTitle>{shown.title}</AlertTitle>
-          <AlertDescription>{shown.description}</AlertDescription>
-          <AlertAction><Button variant="ghost" size="sm" onClick={clearConnectSearch}>Dismiss</Button></AlertAction>
-        </Alert>
-      ) : null}
-      {offer !== undefined && data.canManage ? (
-        <OfferPicker organizationSlug={organizationSlug} offer={offer} clearConnectSearch={clearConnectSearch} />
+        <SettingsRow
+          label={shown.title}
+          hint={shown.tone === "destructive" ? <span className="text-destructive">{shown.description}</span> : shown.description}
+          commit="none"
+          control={<Button variant="ghost" size="sm" onClick={clearConnectSearch}>Dismiss</Button>}
+        />
       ) : null}
       {data.accounts.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {data.canManage ? "No GitHub accounts yet." : "No GitHub accounts yet. An owner or admin can connect one."}
-        </p>
+        <SettingsEmpty
+          title="No GitHub accounts yet"
+          actions={data.canManage ? <ConnectButtons organizationSlug={organizationSlug} primary /> : undefined}
+        >
+          {data.canManage ? "Connect one to build from its repositories." : "An owner or admin can connect one."}
+        </SettingsEmpty>
       ) : (
-        <ItemGroup className="gap-2">
+        <SettingsList label="GitHub accounts">
           {data.accounts.map((account) => (
             <AccountRow key={account.login} organizationSlug={organizationSlug} account={account} canManage={data.canManage} />
           ))}
-        </ItemGroup>
+        </SettingsList>
       )}
+      {data.canManage && data.accounts.length > 0 ? (
+        <SettingsFoot>
+          <ConnectButtons organizationSlug={organizationSlug} />
+        </SettingsFoot>
+      ) : null}
     </SettingsSection>
+  );
+}
+
+/** Connect is the empty card's one call to action; beside a list of accounts it steps back to the foot's outline. */
+function ConnectButtons({ organizationSlug, primary }: { organizationSlug: string; primary?: boolean }) {
+  return (
+    <>
+      <Button variant={primary ? "default" : "outline"} size="sm" nativeButton={false} render={<a href={connectHref(organizationSlug, false)} />}>
+        <GitHubMarkIcon data-icon="inline-start" />
+        Connect GitHub
+      </Button>
+      <Button variant="ghost" size="sm" nativeButton={false} render={<a href={connectHref(organizationSlug, true)} />}>
+        Use existing installation
+      </Button>
+    </>
   );
 }
 
@@ -99,6 +119,15 @@ type Account = {
   connectedBy: string | null;
   connectedAt: string;
 };
+
+function AccountAvatar({ login, avatarUrl }: { login: string; avatarUrl: string | null }) {
+  return (
+    <Avatar size="sm" aria-hidden>
+      {avatarUrl ? <AvatarImage src={avatarUrl} alt="" /> : null}
+      <AvatarFallback>{login.slice(0, 2).toUpperCase()}</AvatarFallback>
+    </Avatar>
+  );
+}
 
 function AccountRow({ organizationSlug, account, canManage }: { organizationSlug: string; account: Account; canManage: boolean }) {
   const queryClient = useQueryClient();
@@ -123,23 +152,19 @@ function AccountRow({ organizationSlug, account, canManage }: { organizationSlug
   }
 
   return (
-    <Item variant="outline" size="sm">
-      <ItemMedia>
-        <Avatar>
-          {account.avatarUrl ? <AvatarImage src={account.avatarUrl} alt="" /> : null}
-          <AvatarFallback>{account.login.slice(0, 2).toUpperCase()}</AvatarFallback>
-        </Avatar>
-      </ItemMedia>
-      <ItemContent className="min-w-0">
-        <ItemTitle className="truncate">{account.login}</ItemTitle>
-        <ItemDescription>
+    <SettingsListItem
+      media={<AccountAvatar login={account.login} avatarUrl={account.avatarUrl} />}
+      label={account.login}
+      hint={(
+        <>
           {account.repositories === 1 ? "1 repository" : `${account.repositories} repositories`}
           {account.connectedBy ? <>, connected by {account.connectedBy}</> : null}
           {" "}<RelativeTime date={new Date(account.connectedAt)} />
-        </ItemDescription>
-      </ItemContent>
-      {canManage ? (
-        <ItemActions>
+        </>
+      )}
+      commit="none"
+      actions={canManage ? (
+        <>
           <Button variant="outline" size="sm" onClick={() => setOpen(true)}>Disconnect</Button>
           <AlertDialog open={open} onOpenChange={(next) => { if (!busy) setOpen(next); }}>
             <AlertDialogContent>
@@ -155,30 +180,25 @@ function AccountRow({ organizationSlug, account, canManage }: { organizationSlug
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
-        </ItemActions>
-      ) : null}
-    </Item>
+        </>
+      ) : undefined}
+    />
   );
 }
 
-function OfferPicker({ organizationSlug, offer, clearConnectSearch }: { organizationSlug: string; offer: string; clearConnectSearch: () => void }) {
+type OfferAccount = { installationId: number; login: string; avatarUrl: string | null };
+
+function OfferPicker({ organizationSlug, offer, accounts, clearConnectSearch }: {
+  organizationSlug: string;
+  offer: string;
+  accounts: ReadonlyArray<OfferAccount> | undefined;
+  clearConnectSearch: () => void;
+}) {
   const queryClient = useQueryClient();
   const accept = useServerFn(acceptGithubOfferServerFn);
-  const accounts = useQuery(githubOfferQueryOptions(organizationSlug, offer));
   const [unpicked, setUnpicked] = useState<ReadonlySet<number>>(new Set());
   const [busy, setBusy] = useState(false);
-
-  if (accounts.isPending) return null;
-  if (accounts.isError) {
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>This link expired</AlertTitle>
-        <AlertDescription>Connect GitHub again.</AlertDescription>
-        <AlertAction><Button variant="ghost" size="sm" onClick={clearConnectSearch}>Dismiss</Button></AlertAction>
-      </Alert>
-    );
-  }
-  const picked = accounts.data.filter((account) => !unpicked.has(account.installationId));
+  const picked = (accounts ?? []).filter((account) => !unpicked.has(account.installationId));
 
   async function connect() {
     setBusy(true);
@@ -194,31 +214,41 @@ function OfferPicker({ organizationSlug, offer, clearConnectSearch }: { organiza
   }
 
   return (
-    <Item variant="outline" state="info" className="flex-col items-stretch">
-      <ItemContent>
-        <ItemTitle>Connect which accounts?</ItemTitle>
-      </ItemContent>
-      {accounts.data.map((account) => (
-        <Field key={account.installationId} orientation="horizontal">
-          <Checkbox
-            id={`github-offer-${account.installationId}`}
-            checked={!unpicked.has(account.installationId)}
-            onCheckedChange={(on) => setUnpicked((current) => {
-              const next = new Set(current);
-              if (on) next.delete(account.installationId);
-              else next.add(account.installationId);
-              return next;
-            })}
-          />
-          <FieldLabel htmlFor={`github-offer-${account.installationId}`}>{account.login}</FieldLabel>
-        </Field>
-      ))}
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" disabled={busy} onClick={clearConnectSearch}>Cancel</Button>
-        <Button disabled={busy || picked.length === 0} onClick={() => void connect()}>
-          {picked.length === 1 ? "Connect 1 account" : `Connect ${picked.length} accounts`}
-        </Button>
-      </div>
-    </Item>
+    <>
+      <SettingsRow label="Connect which accounts?" hint="GitHub lists these installations for you." commit="none" />
+      {accounts ? (
+        <SettingsList label="GitHub accounts to connect">
+          {accounts.map((account) => (
+            <SettingsListItem
+              key={account.installationId}
+              pick
+              media={<AccountAvatar login={account.login} avatarUrl={account.avatarUrl} />}
+              label={account.login}
+              commit="form"
+              actions={(
+                <Checkbox
+                  checked={!unpicked.has(account.installationId)}
+                  onCheckedChange={(on) => setUnpicked((current) => {
+                    const next = new Set(current);
+                    if (on) next.delete(account.installationId);
+                    else next.add(account.installationId);
+                    return next;
+                  })}
+                />
+              )}
+            />
+          ))}
+        </SettingsList>
+      ) : null}
+      <SettingsForm
+        submitLabel={picked.length === 1 ? "Connect 1 account" : `Connect ${picked.length} accounts`}
+        onSubmit={() => void connect()}
+        onCancel={clearConnectSearch}
+        pending={busy}
+        disabled={picked.length === 0}
+      >
+        {null}
+      </SettingsForm>
+    </>
   );
 }

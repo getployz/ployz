@@ -13,8 +13,8 @@ import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Field, FieldError, FieldLabel } from "#/components/ui/field";
-import { Input } from "#/components/ui/input";
+import { ConfirmableInput } from "#/components/stageable/confirmable-input";
+import { FieldError } from "#/components/ui/field";
 import { Skeleton } from "#/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
@@ -31,8 +31,8 @@ import { useStorePendingName } from "#/modules/config-store/store-pending";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
-import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
+import { SettingsEmpty, SettingsFormField } from "#/components/settings/settings-list";
+import { SettingsDanger, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
@@ -168,6 +168,7 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-4 pb-8">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <SettingsSection id="files" title="Files">
+          <SettingsWorkspace label="Files" hint="Saved files reach each mount on your next deploy.">
           <ConfigFiles fileNames={fileNames} current={current} onSelect={setSelected} item={item} drafts={drafts} dirty={dirty}
             textOf={textOf} hidden={hidden} targets={targets} serviceNames={serviceNames} values={values} readOnly={removing}
             onDraft={draft} onSave={save} onRemove={removeFile}
@@ -182,14 +183,13 @@ function ConfigBody({ state, item, services, targets, serviceNames, values, remo
                 {pendingSaves.size > 0 ? <span role="status" className="text-sm text-muted-foreground">Saving…</span> : null}
               </div>
             )} />
+          </SettingsWorkspace>
         </SettingsSection>
         {removing ? <SettingsSection id="mounts" title="Mounts">
-            <Empty variant="placeholder"><EmptyDescription>Removed on next deploy.</EmptyDescription></Empty>
+            <SettingsEmpty title="Removed on next deploy." />
           </SettingsSection> : <StoreConfigMounts key={state.config.id} resourceId={state.config.id} organizationSlug={state.organizationSlug}
             environment={state.environment} configs={configs} services={services} diff={diff} />}
-        <SettingsSection id="danger" title="Danger">
-          <ConfigDanger state={state} params={params} version={version} />
-        </SettingsSection>
+        <ConfigDanger state={state} params={params} version={version} />
       </div>
       <AlertDialog open={blocker.status === "blocked"} onOpenChange={(open) => { if (!open) blocker.reset?.(); }}>
         <AlertDialogContent>
@@ -232,7 +232,7 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex w-full flex-col gap-3">
       <div className="flex items-center gap-2">
         <div role="tablist" aria-label="Files" className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
           {fileNames.map((file) => {
@@ -288,18 +288,11 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
         )}
       </div>
       {adding ? (
-        <Field data-invalid={adding.error ? true : undefined}>
-          <FieldLabel htmlFor="config-new-file">File name</FieldLabel>
-          <div className="flex gap-2">
-            <Input id="config-new-file" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus autoComplete="off"
-              aria-invalid={adding.error ? true : undefined}
-              onChange={(event) => setAdding({ name: event.target.value, error: null })}
-              onKeyDown={(event) => { if (event.key === "Enter") add(); if (event.key === "Escape") setAdding(null); }} />
-            <Button variant="outline" onClick={() => setAdding(null)}>Cancel</Button>
-            <Button onClick={add}>Add</Button>
-          </div>
-          {adding.error ? <FieldError>{adding.error}</FieldError> : null}
-        </Field>
+        <SettingsFormField label="File name" htmlFor="config-new-file">
+          <ConfirmableInput id="config-new-file" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
+            autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
+            onConfirm={add} onCancel={() => setAdding(null)} />
+        </SettingsFormField>
       ) : null}
       {current === null ? (
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>
@@ -354,9 +347,10 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
 
   return (
     <>
-      <DangerRow
-        title={removing ? "Removed on next deploy" : "Delete this config"}
-        description={removing ? "Keep the config to undo this."
+      <SettingsSection id="danger" title="Danger">
+        <SettingsDanger
+        label={removing ? "Removed on next deploy" : "Delete this config"}
+        hint={removing ? "Keep the config to undo this."
           : mounts > 0 ? `Unmounts from ${mounts} service${mounts === 1 ? "" : "s"} on next deploy.` : "Removed on next deploy."}
         action={removing ? (
           <Button variant="outline" onClick={() => actions.discard(`configs.@${config.id}`)}>Keep config</Button>
@@ -366,6 +360,7 @@ function ConfigDanger({ state, params, version }: { state: StoreConfig; params: 
             Delete config
           </Button>
         )} />
+      </SettingsSection>
       {actions.dialog}
     </>
   );

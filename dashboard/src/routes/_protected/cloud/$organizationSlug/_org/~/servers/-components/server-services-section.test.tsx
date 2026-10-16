@@ -47,7 +47,7 @@ const rows = (input: { view: DrainView; left?: DrainRow[]; acceptsServices?: boo
   );
   return { onDrain, onAcceptsServices };
 };
-const resultRow = (key: string) => document.querySelector(`[data-row="${key}"]`) as HTMLElement;
+const resultRow = (key: string) => screen.getByText(key.split("/")[1] ?? key).closest('[role="listitem"]') as HTMLElement;
 
 const moved: ServiceDrain = { service: "shop/api", result: "moved", moves: [{ from: web2, to: web1 }] };
 const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason: { kind: "volume", server: web2 } };

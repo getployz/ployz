@@ -1,14 +1,13 @@
 "use client";
 
-import { SettingsSection } from "#/routes/_protected/cloud/$organizationSlug/-components/SettingsSection";
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { CopyButton } from "#/components/copy-button";
+import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { cn } from "#/lib/utils";
@@ -82,37 +81,37 @@ export function ClusterDomainSection({ organizationSlug, domain, onCheck }: {
 
   return (
     <SettingsSection id="cluster-domain" title="Domain" description="Your services get free addresses under this domain.">
-        <Item size="sm">
-          <ItemContent>
-            {domain === null ? null : (
-              <ItemTitle className="font-mono">
-                {domain.name}
-                <CopyButton value={domain.name} label="Copy domain" size="icon-xs" />
-              </ItemTitle>
-            )}
-            {copy.message === null ? null : <ItemDescription>{copy.message}</ItemDescription>}
-            {excluded === "" ? null : <ItemDescription>{excluded}</ItemDescription>}
-          </ItemContent>
-          {status === null ? null : (
-            <ItemActions>
-              <StatusBadge status={status.state} />
-              {copy.action === "check" || excluded !== "" ? (
-                <Button type="button" variant="outline" size="sm" disabled={checking} onClick={handleCheck}>
-                  {checking ? <Spinner data-icon="inline-start" /> : null}
-                  Check again
-                </Button>
-              ) : copy.action === "servers" ? (
-                <Link
-                  to="/cloud/$organizationSlug/~/servers"
-                  params={{ organizationSlug }}
-                  className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-                >
-                  View servers
-                </Link>
-              ) : null}
-            </ItemActions>
-          )}
-        </Item>
+      <SettingsRow
+        label={domain === null ? "No domain yet" : <span className="font-mono">{domain.name}</span>}
+        hint={copy.message === null && excluded === "" ? undefined : (
+          <>
+            {copy.message === null ? null : <span>{copy.message}</span>}
+            {copy.message !== null && excluded !== "" ? " " : null}
+            {excluded === "" ? null : <span>{excluded}</span>}
+          </>
+        )}
+        commit="none"
+        control={domain === null || status === null ? undefined : (
+          <>
+            <CopyButton value={domain.name} label="Copy domain" size="icon-xs" />
+            <StatusBadge status={status.state} />
+            {copy.action === "check" || excluded !== "" ? (
+              <Button type="button" variant="outline" size="sm" disabled={checking} onClick={handleCheck}>
+                {checking ? <Spinner data-icon="inline-start" /> : null}
+                Check again
+              </Button>
+            ) : copy.action === "servers" ? (
+              <Link
+                to="/cloud/$organizationSlug/~/servers"
+                params={{ organizationSlug }}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                View servers
+              </Link>
+            ) : null}
+          </>
+        )}
+      />
     </SettingsSection>
   );
 }
