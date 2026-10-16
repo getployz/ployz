@@ -7,10 +7,17 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use chrono::Utc;
 use clap::{ArgMatches, Command};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{LoopPloyzd, command, loop_ployzd, loop_start};
-use crate::checkin::{Host, LocalCheckin, Paths, Probe, Seen, unit};
+use crate::checkin::{
+    self, CheckinClient, CheckinKey, FleetToken, Host, LocalCheckin, Paths, Probe, Seen, System,
+    unit,
+};
+
+const PROBE: &str = r#"{"facts":{"os":{"id":"ubuntu","version_id":"24.04"},"kernel":"6.8.0","arch":"x86_64","virt":"BareMetal","cgroup":"V2","cpu_count":4,"memory_total_bytes":8589934592,"disks":[],"docker":"Absent"},"assessment":{"blockers":[],"warnings":[],"zfs":{"Ineligible":{"reason":{"code":"zfs_off","message":"Off."}}}}}"#;
 
 fn exec_start(text: &str) -> Vec<String> {
     let line = text
@@ -33,6 +40,19 @@ fn exec_start(text: &str) -> Vec<String> {
 fn daemon(path: &Path, version: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, format!("#!/bin/sh\necho {version}\n")).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// A ployzd that answers `version` with `version` and the host probe with a probe.
+fn probing_daemon(path: &Path, version: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = install ]; then echo '{PROBE}'; else echo {version}; fi\n"
+        ),
+    )
+    .unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -147,6 +167,99 @@ async fn with_no_current_ployzd_the_loop_runs_an_older_one_and_says_to_reinstall
     assert!(!dir.path().join("gone").exists(), "the loop never fetches");
 }
 
+/// The chosen ployzd, probed for real, on a host whose preparation must not start.
+struct Chosen(System);
+
+impl Host for Chosen {
+    async fn probe(&self) -> Result<Probe, String> {
+        self.0.probe().await
+    }
+
+    fn hostname(&self) -> String {
+        "waiting-1".to_owned()
+    }
+
+    async fn prepare_running(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    async fn start_prepare(&self) -> Result<(), String> {
+        panic!("an older ployzd never prepares")
+    }
+
+    async fn disable_loop(&self) -> Result<(), String> {
+        unreachable!("the check-in waits")
+    }
+
+    fn stale_ployzd(&self) -> Option<String> {
+        self.0.stale_ployzd()
+    }
+}
+
+#[tokio::test]
+async fn a_stale_pin_that_fails_its_probe_gives_way_to_an_older_ployzd_that_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    let bin = dir.path().join("bin");
+    let search = bin.clone().into_os_string();
+    let pin = dir.path().join("old/ployzd");
+    let on_path = bin.join("ployzd");
+    daemon(&pin, "0.0.1");
+    probing_daemon(&on_path, "0.0.2");
+
+    let found = loop_ployzd(&pinned(&pin), &paths, Some(&search))
+        .await
+        .unwrap();
+    assert_eq!(found.path, on_path);
+    let host = Chosen(System {
+        ployzd: found.path,
+        stale: found.stale,
+    });
+
+    fs::write(
+        &paths.token_file,
+        "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = vec![0; 16384];
+        loop {
+            let read = stream.read(&mut buf).await.unwrap();
+            request.extend_from_slice(buf.get(..read).unwrap());
+            let text = String::from_utf8_lossy(&request).to_lowercase();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|length| length.trim().parse::<usize>().ok())
+                .unwrap_or_default();
+            if read == 0 || body.len() >= length {
+                break;
+            }
+        }
+        let body = r#"{"kind":"wait","retryAfter":30}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    let token = FleetToken::read(&paths.token_file).unwrap();
+    let key = CheckinKey::load_or_create(&paths.key()).unwrap();
+    let mut client = CheckinClient::new(&url, token).unwrap();
+    checkin::pass(&host, &mut client, &key, &paths, Utc::now()).await;
+    let request = server.await.unwrap();
+    assert!(request.contains(r#""code":"ployzd_outdated""#), "{request}");
+    assert!(request.contains(r#""kernel":"6.8.0""#), "{request}");
+}
+
 #[derive(Default)]
 struct Stopper {
     disables: AtomicU32,
@@ -225,7 +338,8 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
         "systemd retries it"
     );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::ProbeFailed);
+    assert_eq!(status.answer, Seen::NoPloyzd);
+    assert_eq!(status.headline().title, "No ployzd");
     assert!(status.says_why());
     assert!(
         status

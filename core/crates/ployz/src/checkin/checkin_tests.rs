@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, SubsecRound, TimeDelta, Utc};
 use iroh::SecretKey;
 use reqwest::StatusCode;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -159,9 +159,11 @@ fn an_answer_this_cli_cannot_read_waits_a_minute() {
 
 #[test]
 fn only_cloud_refusing_with_agreeing_clocks_counts_against_the_token() {
-    let refused = |skew| client::reply(StatusCode::UNAUTHORIZED, None, skew, REFUSAL.as_bytes());
-    for skew in [4, 240, -240] {
-        assert_eq!(refused(Some(skew)), Reply::Refused, "skew {skew}");
+    let dated = |skew| Some(Utc::now() + TimeDelta::seconds(skew));
+    let refused = |date| client::reply(StatusCode::UNAUTHORIZED, None, date, REFUSAL.as_bytes());
+    for skew in [4, 239, -239] {
+        let date = dated(skew);
+        assert_eq!(refused(date), Reply::Refused(date.unwrap()), "skew {skew}");
     }
     for (skew, why) in [
         (
@@ -175,12 +177,12 @@ fn only_cloud_refusing_with_agreeing_clocks_counts_against_the_token() {
         (-301, "This server's clock is 301s off"),
         (-900, "This server's clock is 900s off"),
     ] {
-        let Reply::ClockOff(said) = refused(Some(skew)) else {
+        let Reply::ClockOff(said) = refused(dated(skew)) else {
             panic!("a 401 {skew}s off says nothing about the token");
         };
         assert!(said.starts_with(why), "{said}");
     }
-    let Reply::ClockOff(near) = refused(Some(250)) else {
+    let Reply::ClockOff(near) = refused(dated(250)) else {
         unreachable!()
     };
     assert!(near.ends_with("so the refusal can be confirmed"), "{near}");
@@ -194,7 +196,7 @@ fn only_cloud_refusing_with_agreeing_clocks_counts_against_the_token() {
         br#"{"error":"Unauthorized."}"#,
     ] {
         assert!(matches!(
-            client::reply(StatusCode::UNAUTHORIZED, None, Some(0), body),
+            client::reply(StatusCode::UNAUTHORIZED, None, Some(Utc::now()), body),
             Reply::Unreachable(after, _) if after == Duration::from_secs(60)
         ));
     }
@@ -568,7 +570,8 @@ fn sending(token: &str) -> CheckinClient {
     CheckinClient::new("http://127.0.0.1:9", FleetToken::literal(token)).unwrap()
 }
 
-/// Leaves a status as if the last check-in was Cloud's first refusal of `token`, `ago` back.
+/// Leaves a status as if the last check-in was Cloud's first refusal of `token`, dated `ago` back
+/// on Cloud's clock.
 fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
     let at = Utc::now() - ago;
     record(
@@ -583,16 +586,33 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
             prepare_started: None,
             refused: Some(Refusal {
                 token: sending(token).fingerprint(),
-                at,
+                date: at,
             }),
         },
         paths,
     );
 }
 
-/// One check-in Cloud refuses with agreeing clocks, made at `now` by a fresh process sending `token`.
-async fn refused_pass(paths: &Paths, token: &str, now: DateTime<Utc>, installing: bool) -> Next {
-    let (url, _server) = unauthorized_cloud(0, 1).await;
+/// Now on Cloud's clock, to the second its `Date` header carries.
+fn cloud_now() -> DateTime<Utc> {
+    Utc::now().trunc_subsecs(0)
+}
+
+/// One check-in Cloud refuses, dating it `date`, made at `now` on this host's clock by a fresh
+/// process sending `token`.
+async fn refused_pass(
+    paths: &Paths,
+    token: &str,
+    now: DateTime<Utc>,
+    date: DateTime<Utc>,
+    installing: bool,
+) -> Next {
+    let (url, _server) = answering_cloud(
+        format!("401 Unauthorized\r\nDate: {}", date.to_rfc2822()),
+        REFUSAL.to_owned(),
+        1,
+    )
+    .await;
     let mut client = CheckinClient::new(&url, FleetToken::literal(token)).unwrap();
     let host = FakeHost::default();
     if installing {
@@ -614,14 +634,15 @@ async fn a_restart_after_one_refusal_waits_out_the_minute_before_confirming_it()
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     fs::write(&paths.token_file, format!("{OLD}\n")).unwrap();
-    let first = Utc::now();
-    retries_after(&refused_pass(&paths, OLD, first, false).await, 60);
-    let early = refused_pass(&paths, OLD, first + TimeDelta::seconds(15), false).await;
+    let first = cloud_now();
+    let now = Utc::now();
+    retries_after(&refused_pass(&paths, OLD, now, first, false).await, 60);
+    let early = refused_pass(&paths, OLD, now, first + TimeDelta::seconds(15), false).await;
     retries_after(&early, 45);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Token refused");
-    assert_eq!(status.refused.unwrap().at, first);
-    let late = refused_pass(&paths, OLD, first + TimeDelta::seconds(60), false).await;
+    assert_eq!(status.refused.unwrap().date, first);
+    let late = refused_pass(&paths, OLD, now, first + TimeDelta::seconds(60), false).await;
     assert_eq!(
         late,
         Next::Stop(StopReason::TokenRevoked, REVOKED.to_owned())
@@ -632,21 +653,22 @@ async fn a_restart_after_one_refusal_waits_out_the_minute_before_confirming_it()
 async fn a_token_swapped_in_after_a_refusal_gets_its_own_two_refusals_across_restarts() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let first = Utc::now();
-    retries_after(&refused_pass(&paths, OLD, first, false).await, 60);
+    let first = cloud_now() - TimeDelta::seconds(120);
+    let now = Utc::now();
+    retries_after(&refused_pass(&paths, OLD, now, first, false).await, 60);
     let swapped = first + TimeDelta::seconds(120);
-    retries_after(&refused_pass(&paths, NEW, swapped, false).await, 60);
+    retries_after(&refused_pass(&paths, NEW, now, swapped, false).await, 60);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(
         status.refused,
         Some(Refusal {
             token: sending(NEW).fingerprint(),
-            at: swapped
+            date: swapped
         })
     );
-    let early = refused_pass(&paths, NEW, swapped + TimeDelta::seconds(10), false).await;
+    let early = refused_pass(&paths, NEW, now, swapped + TimeDelta::seconds(10), false).await;
     retries_after(&early, 50);
-    let late = refused_pass(&paths, NEW, swapped + TimeDelta::seconds(60), false).await;
+    let late = refused_pass(&paths, NEW, now, swapped + TimeDelta::seconds(60), false).await;
     assert!(
         matches!(late, Next::Stop(StopReason::TokenRevoked, _)),
         "{late:?}"
@@ -657,10 +679,103 @@ async fn a_token_swapped_in_after_a_refusal_gets_its_own_two_refusals_across_res
 async fn the_loop_starting_right_after_an_install_refusal_does_not_confirm_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let installed = Utc::now();
-    retries_after(&refused_pass(&paths, OLD, installed, true).await, 60);
-    let looped = refused_pass(&paths, OLD, installed + TimeDelta::seconds(3), false).await;
+    let installed = cloud_now();
+    let now = Utc::now();
+    retries_after(&refused_pass(&paths, OLD, now, installed, true).await, 60);
+    let looped = refused_pass(&paths, OLD, now, installed + TimeDelta::seconds(3), false).await;
     retries_after(&looped, 57);
+}
+
+#[tokio::test]
+async fn a_pass_slow_on_this_host_does_not_stretch_the_gap_between_two_refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, format!("{OLD}\n")).unwrap();
+    let date = cloud_now();
+    let now = Utc::now();
+    let slow = refused_pass(&paths, OLD, now - TimeDelta::seconds(62), date, false).await;
+    retries_after(&slow, 60);
+    retries_after(&refused_pass(&paths, OLD, now, date, false).await, 60);
+    assert!(paths.token_file.exists());
+}
+
+#[tokio::test]
+async fn this_hosts_clock_jumping_forward_does_not_confirm_a_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, format!("{OLD}\n")).unwrap();
+    let date = cloud_now();
+    let now = Utc::now();
+    retries_after(&refused_pass(&paths, OLD, now, date, false).await, 60);
+    let jumped = refused_pass(&paths, OLD, now + TimeDelta::seconds(120), date, false).await;
+    retries_after(&jumped, 60);
+    assert!(paths.token_file.exists());
+}
+
+#[tokio::test]
+async fn this_hosts_clock_jumping_back_still_confirms_a_minute_of_clouds_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, format!("{OLD}\n")).unwrap();
+    let date = cloud_now() - TimeDelta::seconds(60);
+    let now = Utc::now();
+    retries_after(&refused_pass(&paths, OLD, now, date, false).await, 60);
+    let jumped = refused_pass(
+        &paths,
+        OLD,
+        now - TimeDelta::seconds(100),
+        date + TimeDelta::seconds(60),
+        false,
+    )
+    .await;
+    assert_eq!(
+        jumped,
+        Next::Stop(StopReason::TokenRevoked, REVOKED.to_owned())
+    );
+}
+
+#[tokio::test]
+async fn a_first_refusal_dated_ahead_of_cloud_starts_over_instead_of_confirming_or_stalling() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, format!("{OLD}\n")).unwrap();
+    refused_once(&paths, OLD, TimeDelta::seconds(-3600));
+    let date = cloud_now();
+    retries_after(
+        &refused_pass(&paths, OLD, Utc::now(), date, false).await,
+        60,
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.refused.unwrap().date, date);
+    assert!(paths.token_file.exists());
+    let late = refused_pass(
+        &paths,
+        OLD,
+        Utc::now(),
+        date + TimeDelta::seconds(60),
+        false,
+    )
+    .await;
+    assert!(
+        matches!(late, Next::Stop(StopReason::TokenRevoked, _)),
+        "{late:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_first_refusal_dated_too_long_ago_starts_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, format!("{OLD}\n")).unwrap();
+    refused_once(&paths, OLD, TimeDelta::seconds(2 * 3600));
+    let date = cloud_now();
+    retries_after(
+        &refused_pass(&paths, OLD, Utc::now(), date, false).await,
+        60,
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.refused.unwrap().date, date);
+    assert!(paths.token_file.exists());
 }
 
 #[test]
@@ -1325,6 +1440,11 @@ async fn an_older_ployzd_blocks_the_server_in_cloud_and_in_status() {
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline().title, "Blocked");
     assert!(status.blockers.iter().any(|issue| issue.message == stale));
+    assert_eq!(
+        host.prepares.load(Ordering::SeqCst),
+        0,
+        "an older ployzd never prepares"
+    );
 
     let host = FakeHost {
         stale: Some(stale.to_owned()),

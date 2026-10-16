@@ -212,8 +212,9 @@ async fn loop_start<H: checkin::Host>(
 }
 
 /// The ployzd `--install` pinned, else one on PATH, else the copy install fetched, preferring one
-/// as new as this CLI. An older one still runs the loop, which reports it, since a loop that
-/// exits leaves systemd to give up on it. Only an install fetches.
+/// as new as this CLI, then an older one that answers the probe, in the same order. An older one
+/// still runs the loop, which reports it, since a loop that exits leaves systemd to give up on
+/// it. Only an install fetches.
 async fn loop_ployzd(
     matches: &ArgMatches,
     paths: &Paths,
@@ -234,7 +235,14 @@ async fn loop_ployzd(
             });
         }
     }
-    let Some(path) = found.into_iter().next() else {
+    let mut probing = None;
+    for path in &found {
+        if System::probes(path).await {
+            probing = Some(path.clone());
+            break;
+        }
+    }
+    let Some(path) = probing.or_else(|| found.into_iter().next()) else {
         return Err(format!(
             "No ployzd on PATH or at {}. Run sudo ployz server checkin --install",
             paths.checkin_dir.join("ployzd").display()

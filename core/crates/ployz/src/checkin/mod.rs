@@ -30,6 +30,9 @@ const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_SETTLE: Duration = Duration::from_secs(2);
+/// The widest gap, on Cloud's clock, one refused pass to the next can explain. A wider one, or a
+/// second refusal dated before the first, starts the confirmation over.
+const REFUSAL_SPAN: Duration = Duration::from_secs(60 * 60);
 const REVOKED: &str = "Cloud no longer accepts this Fleet Token.";
 const REFUSED_ONCE: &str =
     "Cloud refused this Fleet Token. It is checked once more before the loop removes it";
@@ -91,6 +94,15 @@ impl System {
             ployzd,
             stale: None,
         }
+    }
+}
+
+impl System {
+    /// Whether this ployzd answers the host probe in time, so the loop can run with it.
+    pub(crate) async fn probes(ployzd: &Path) -> bool {
+        tokio::time::timeout(PROBE_TIMEOUT, Self::with(ployzd.to_owned()).probe())
+            .await
+            .is_ok_and(|probed| probed.is_ok())
     }
 }
 
@@ -229,6 +241,7 @@ pub(crate) enum Seen {
     ClockOff,
     Outdated,
     ProbeFailed,
+    NoPloyzd,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -251,12 +264,12 @@ pub(crate) struct LocalCheckin {
     pub(crate) refused: Option<Refusal>,
 }
 
-/// Cloud's first refusal of a token, which a second refusal of the same token confirms once
-/// BACKOFF has passed, across restarts.
+/// Cloud's first refusal of a token, dated by Cloud's clock. A second refusal of the same token
+/// confirms it once Cloud dates that one BACKOFF later, across restarts.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) struct Refusal {
     pub(crate) token: String,
-    pub(crate) at: DateTime<Utc>,
+    pub(crate) date: DateTime<Utc>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,7 +308,12 @@ impl LocalCheckin {
     pub(crate) fn says_why(&self) -> bool {
         matches!(
             self.answer,
-            Seen::Stop | Seen::Refused | Seen::ClockOff | Seen::Outdated | Seen::ProbeFailed
+            Seen::Stop
+                | Seen::Refused
+                | Seen::ClockOff
+                | Seen::Outdated
+                | Seen::ProbeFailed
+                | Seen::NoPloyzd
         )
     }
 
@@ -307,6 +325,7 @@ impl LocalCheckin {
             Seen::ClockOff => Headline::open("Clock is off"),
             Seen::Outdated => Headline::open("Needs a newer ployz"),
             Seen::ProbeFailed => Headline::open("Can't inspect this host"),
+            Seen::NoPloyzd => Headline::open("No ployzd"),
             Seen::Enroll => Headline::open("Enroll needs a newer ployz"),
             Seen::Wait if !self.blockers.is_empty() => Headline::open("Blocked"),
             Seen::Wait => match self.prep {
@@ -485,13 +504,18 @@ async fn pass_from<H: Host>(
         .filter(|refusal| refusal.token == client.fingerprint());
     let mut prepare_retries = previous.as_ref().map_or(0, |status| status.prepare_retries);
     let mut prepare_started = previous.and_then(|status| status.prepare_started);
+    let stale = host.stale_ployzd().map(|message| Issue {
+        code: STALE_PLOYZD.to_owned(),
+        message,
+    });
     let running = host.prepare_running().await.unwrap_or_else(|why| {
         crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
         true
     });
     // Read after the unit is seen stopped, so a run that finished in between reads as finished.
     let (mut state, written) = read_prep_state(&paths.prepare_state).unzip();
-    let due = if running {
+    // An older ployzd may not know how to prepare, and its blocker already says what to do.
+    let due = if running || stale.is_some() {
         None
     } else if installing
         && state
@@ -539,10 +563,6 @@ async fn pass_from<H: Host>(
         prepare_started,
         refused: None,
     };
-    let stale = host.stale_ployzd().map(|message| Issue {
-        code: STALE_PLOYZD.to_owned(),
-        message,
-    });
     status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
         .await
@@ -591,11 +611,16 @@ async fn pass_from<H: Host>(
             status.message = Some(message.clone());
             Next::Stop(reason, message)
         }
-        client::Reply::Refused => {
-            let waited = refusal
-                .as_ref()
-                .and_then(|refusal| now.signed_duration_since(refusal.at).to_std().ok());
-            if waited.is_some_and(|waited| waited >= client::BACKOFF) {
+        client::Reply::Refused(date) => {
+            let since = |first: &Refusal| date.signed_duration_since(first.date).to_std();
+            let first = refusal
+                .filter(|first| since(first).is_ok_and(|gap| gap <= REFUSAL_SPAN))
+                .unwrap_or_else(|| Refusal {
+                    token: client.fingerprint(),
+                    date,
+                });
+            let waited = since(&first).unwrap_or_default();
+            if waited >= client::BACKOFF {
                 status.answer = Seen::Stop;
                 status.reason = Some(StopReason::TokenRevoked);
                 status.message = Some(REVOKED.to_owned());
@@ -603,13 +628,10 @@ async fn pass_from<H: Host>(
             } else {
                 status.answer = Seen::Refused;
                 status.message = Some(REFUSED_ONCE.to_owned());
-                status.refused = Some(refusal.unwrap_or_else(|| Refusal {
-                    token: client.fingerprint(),
-                    at: now,
-                }));
+                status.refused = Some(first);
                 Next::Retry {
                     after: client::BACKOFF
-                        .saturating_sub(waited.unwrap_or_default())
+                        .saturating_sub(waited)
                         .max(Duration::from_secs(1)),
                     why: format!("{REFUSED_ONCE}."),
                 }
@@ -645,7 +667,7 @@ async fn pass_from<H: Host>(
 pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     let status = LocalCheckin {
-        answer: Seen::ProbeFailed,
+        answer: Seen::NoPloyzd,
         reason: None,
         message: Some(why.to_owned()),
         at: now,

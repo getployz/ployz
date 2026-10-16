@@ -9,6 +9,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Utc};
 use iroh::SecretKey;
 use reqwest::{
     StatusCode,
@@ -160,7 +161,8 @@ pub(crate) struct CheckinClient {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Reply {
     Answer(Answer),
-    Refused,
+    /// Cloud refused the token, at the time its `Date` header gives.
+    Refused(DateTime<Utc>),
     Unreachable(Duration, String),
     ClockOff(String),
     Outdated(String),
@@ -227,28 +229,28 @@ impl CheckinClient {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.trim().parse::<u64>().ok())
             .map(|seconds| Duration::from_secs(seconds.max(1)));
-        let skew = response
+        let cloud = response
             .headers()
             .get(DATE)
             .and_then(|value| value.to_str().ok())
-            .and_then(|value| chrono::DateTime::parse_from_rfc2822(value).ok())
-            .map(|cloud| cloud.timestamp() - unix_seconds());
+            .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
+            .map(|cloud| cloud.to_utc());
         let body = response.bytes().await.unwrap_or_default();
-        reply(status, retry_after, skew, &body)
+        reply(status, retry_after, cloud, &body)
     }
 }
 
 pub(super) fn reply(
     status: StatusCode,
     retry_after: Option<Duration>,
-    skew: Option<i64>,
+    cloud: Option<DateTime<Utc>>,
     body: &[u8],
 ) -> Reply {
     if status.is_success() {
         return Reply::Answer(wire::answer(body));
     }
     if status == StatusCode::UNAUTHORIZED {
-        return unauthorized(skew, body);
+        return unauthorized(cloud, body);
     }
     if status == StatusCode::BAD_REQUEST {
         return Reply::Outdated(format!(
@@ -269,7 +271,7 @@ pub(super) fn reply(
 
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well
 /// inside Cloud's window. Anything else may be a proxy or a clock, and says nothing about it.
-fn unauthorized(skew: Option<i64>, body: &[u8]) -> Reply {
+fn unauthorized(cloud: Option<DateTime<Utc>>, body: &[u8]) -> Reply {
     let refused = serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|body| {
         body.get("error").and_then(serde_json::Value::as_str) == Some(CLOUD_REFUSAL)
     });
@@ -279,21 +281,23 @@ fn unauthorized(skew: Option<i64>, body: &[u8]) -> Reply {
             format!("Cloud answered {}", StatusCode::UNAUTHORIZED),
         );
     }
-    match skew {
-        Some(skew) if skew.abs() <= TRUSTED_SKEW_SECONDS => Reply::Refused,
-        Some(skew) if skew.abs() <= MAX_SKEW_SECONDS => Reply::ClockOff(format!(
-            "Cloud refused this Fleet Token, and this server's clock is {}s off from Cloud's. Set the clock right (timedatectl) so the refusal can be confirmed",
-            skew.abs()
-        )),
-        Some(skew) => Reply::ClockOff(format!(
-            "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
-            skew.abs()
-        )),
-        None => Reply::Unreachable(
+    let Some(cloud) = cloud else {
+        return Reply::Unreachable(
             BACKOFF,
             "Cloud refused this check-in without a readable Date, so the clock can't be checked"
                 .to_owned(),
-        ),
+        );
+    };
+    match cloud.timestamp() - unix_seconds() {
+        skew if skew.abs() <= TRUSTED_SKEW_SECONDS => Reply::Refused(cloud),
+        skew if skew.abs() <= MAX_SKEW_SECONDS => Reply::ClockOff(format!(
+            "Cloud refused this Fleet Token, and this server's clock is {}s off from Cloud's. Set the clock right (timedatectl) so the refusal can be confirmed",
+            skew.abs()
+        )),
+        skew => Reply::ClockOff(format!(
+            "This server's clock is {}s off from Cloud's. Set the clock right (timedatectl)",
+            skew.abs()
+        )),
     }
 }
 
