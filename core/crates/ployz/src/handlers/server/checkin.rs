@@ -159,7 +159,8 @@ async fn ployzd(paths: &Paths, fetch: bool) -> Result<PathBuf, Error> {
         return Ok(found);
     }
     let copy = paths.checkin_dir.join("ployzd");
-    if copy.is_file() {
+    // An install refreshes a copy left by an older CLI, which may not know the flags this one uses.
+    if copy.is_file() && (!fetch || crate::provisioning::daemon_is_current(&copy).await) {
         return Ok(copy);
     }
     if !fetch {

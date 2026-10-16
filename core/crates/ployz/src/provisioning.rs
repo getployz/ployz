@@ -619,6 +619,15 @@ pub(crate) async fn fetch_daemon(path: &Path) -> Result<(), ProvisionError> {
     std::fs::rename(&staged, path).map_err(io("install the daemon"))
 }
 
+/// Whether the daemon at `path` reports exactly this CLI's version.
+pub(crate) async fn daemon_is_current(path: &Path) -> bool {
+    let mut command = Command::new(path);
+    command.arg("version");
+    bootstrap::verify_command_version("check the daemon version", command)
+        .await
+        .is_ok()
+}
+
 pub(crate) fn process_is_root() -> bool {
     Command::new("id")
         .arg("-u")
@@ -631,6 +640,20 @@ pub(crate) fn process_is_root() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_a_daemon_reporting_this_version_is_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = |name: &str, version: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho {version}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        assert!(daemon_is_current(&daemon("current", env!("CARGO_PKG_VERSION"))).await);
+        assert!(!daemon_is_current(&daemon("older", "0.0.1")).await);
+        assert!(!daemon_is_current(&dir.path().join("missing")).await);
+    }
 
     #[test]
     fn provisioning_ssh_allows_interactive_authentication_with_shared_options() {
