@@ -1,30 +1,43 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChartLineIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import { type ReactNode, Suspense, useDeferredValue } from "react";
 import { MetricChart, useMetricCursor } from "#/components/metrics/metric-chart";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card } from "#/components/ui/card";
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
+import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
 import { localDay } from "../local-time";
 import type { Filter } from "../model";
+import { ClosedGateView, Gate } from "./analytics-gates";
 import {
+  ANALYTICS_VIEWS,
+  type AnalyticsViewKind,
   formatCount,
   formatDuration,
   formatPercent,
+  isAnalyticsView,
   pageFilterParam,
   parsePageFilter,
   type RangeSpec,
+  type RequestWindow,
   viewsPerVisit,
 } from "./analytics-model";
-import { type AnalyticsScope, type AnalyticsView, analyticsViewQueryOptions, useAnalyticsView, useTurnOnAnalytics } from "./analytics.queries";
+import { type AnalyticsScope, type AnalyticsView, analyticsViewQueryOptions, type RequestRead, useAnalyticsView } from "./analytics.queries";
 import { AnalyticsGoals } from "./analytics-goals";
+import { ApiView } from "./api-view";
+import { ErrorsView } from "./errors-view";
 import { RangePicker } from "./range-picker";
 
-export type AnalyticsSearch = { readonly range: RangeSpec; readonly page?: string };
+export type AnalyticsSearch = {
+  readonly view: AnalyticsViewKind;
+  readonly range: RangeSpec;
+  readonly page?: string;
+  readonly window: RequestWindow;
+  readonly service?: string;
+};
 
 type AnalyticsPageProps = {
   scope: AnalyticsScope;
@@ -32,21 +45,40 @@ type AnalyticsPageProps = {
   onSearch: (search: AnalyticsSearch) => void;
 };
 
-/**
- * The Analytics place: the plan and the Environment's switch decide whether it reads anything. The controls show at
- * once and each card waits for its own figures. A new range or filter keeps the figures shown, dimmed, until its own
- * arrive.
- */
+const VIEW_LABELS = { web: "Web", api: "API", errors: "Errors" } as const satisfies Record<AnalyticsViewKind, string>;
+
+/** Visits, routes, or failures: each view keeps its own controls, and the plan and the Environment's switch gate all three. */
 export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
+  const toggle = (
+    <ToggleGroup variant="outline" size="sm" spacing={0} value={[search.view]} aria-label="View"
+      onValueChange={([next]) => { if (next !== undefined && isAnalyticsView(next)) onSearch({ ...search, view: next }); }}>
+      {ANALYTICS_VIEWS.map((view) => <ToggleGroupItem key={view} value={view}>{VIEW_LABELS[view]}</ToggleGroupItem>)}
+    </ToggleGroup>
+  );
+  const read = { window: search.window, service: search.service };
+  const onRead = (next: RequestRead) => {
+    const { service: _service, ...rest } = search;
+    onSearch({ ...rest, window: next.window, ...(next.service !== undefined && { service: next.service }) });
+  };
+  if (search.view === "api") return <ApiView scope={scope} read={read} onRead={onRead} toggle={toggle} />;
+  if (search.view === "errors") return <ErrorsView scope={scope} read={read} onRead={onRead} toggle={toggle} />;
+  return <WebView scope={scope} search={search} onSearch={onSearch} toggle={toggle} />;
+}
+
+/**
+ * Visits to the Environment's pages. The controls show at once and each card waits for its own figures. A new range or
+ * filter keeps the figures shown, dimmed, until its own arrive.
+ */
+function WebView({ scope, search, onSearch, toggle }: AnalyticsPageProps & { toggle: ReactNode }) {
   const shownRange = useDeferredValue(search.range);
   const shownPage = useDeferredValue(search.page);
   const view = useQuery(analyticsViewQueryOptions(scope, shownRange, shownPage)).data;
-  if (view?.gate === "self-host-off") return <SelfHostOff />;
-  if (view?.gate === "site-off") return <SiteOff scope={scope} />;
+  if (view !== undefined && view.gate !== "on") return <ClosedGateView gate={view.gate} scope={scope} />;
   if (view?.empty) {
     return (
       <div className="flex min-w-0 flex-col gap-4">
-        {view.lostDays.length > 0 ? <VisitsLost /> : <NoVisitsYet />}
+        <div className="flex flex-wrap items-center gap-2">{toggle}</div>
+        {view.lostDays.length > 0 ? <Gate title="No visits counted" /> : <NoVisitsYet />}
         <AnalyticsGoals scope={scope} goals={view.goals} visitors={0} />
       </div>
     );
@@ -56,8 +88,12 @@ export function AnalyticsPage({ scope, search, onSearch }: AnalyticsPageProps) {
   return (
     <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
+        {toggle}
         <RangePicker range={search.range} timezone={view?.timezone} onRange={(range) => onSearch({ ...search, range })} />
-        {filter ? <PageFilterChip filter={filter} onFilter={(page) => onSearch({ range: search.range, ...(page && { page }) })} /> : null}
+        {filter ? <PageFilterChip filter={filter} onFilter={(page) => {
+          const { page: _page, ...rest } = search;
+          onSearch({ ...rest, ...(page && { page }) });
+        }} /> : null}
         {view?.clamped ? <span className="text-xs text-muted-foreground">Starts at the oldest day kept</span> : null}
       </div>
       <div className={cn("flex min-w-0 flex-col gap-4 transition-opacity", (shownRange !== search.range || shownPage !== search.page) && "opacity-50")}>
@@ -271,41 +307,6 @@ function PageFilterChip({ filter, onFilter }: { filter: Filter; onFilter: (page:
       <Button variant="ghost" size="icon-xs" aria-label="Clear the page filter" onClick={() => onFilter(undefined)}><XIcon /></Button>
     </Badge>
   );
-}
-
-function Gate({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
-  return (
-    <Empty className="border" data-analytics-gate={title}>
-      <EmptyHeader>
-        <EmptyMedia variant="icon"><ChartLineIcon /></EmptyMedia>
-        <EmptyTitle>{title}</EmptyTitle>
-        {children ? <EmptyDescription>{children}</EmptyDescription> : null}
-      </EmptyHeader>
-      {action ? <EmptyContent>{action}</EmptyContent> : null}
-    </Empty>
-  );
-}
-
-function SelfHostOff() {
-  return (
-    <Gate title="Analytics is off">
-      Set <code className="font-mono">ANALYTICS_ENABLED=true</code> on this Cloud and restart it to count visits.
-    </Gate>
-  );
-}
-
-function SiteOff({ scope }: { scope: AnalyticsScope }) {
-  const turnOn = useTurnOnAnalytics(scope);
-  return (
-    <Gate title="Analytics is off for this Environment"
-      action={<Button disabled={turnOn.isPending} onClick={() => turnOn.mutate()}>Turn on</Button>}>
-      Counts visits to this Environment&apos;s domains from the moment it is on, without cookies.
-    </Gate>
-  );
-}
-
-function VisitsLost() {
-  return <Gate title="No visits counted" />;
 }
 
 function NoVisitsYet() {

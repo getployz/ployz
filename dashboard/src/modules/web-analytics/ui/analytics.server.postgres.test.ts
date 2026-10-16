@@ -10,7 +10,7 @@ import { dayOf, ensurePartitions, forgetPartitions } from "#/modules/web-analyti
 import { analyticsGoal, analyticsRequest } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
 import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
-import { createGoal, deleteGoal, readAnalyticsView } from "./analytics.server";
+import { createGoal, deleteGoal, readAnalyticsView, readApiView, readErrorsView } from "./analytics.server";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000f501";
 const PROJECT = "00000000-0000-4000-8000-00000000f502";
@@ -107,4 +107,45 @@ it.live("a day with pageviews no salt could count is partial, and so is today", 
   const view = yield* provide(readAnalyticsView(actor, { ...scope, range: "30d" }));
   if (view.gate !== "on" || view.empty) return expect.unreachable("the site has a pageview");
   expect(view.partialDays).toEqual([{ day: day(-5), reason: "no-salt" }, { day: today, reason: "today" }]);
+}).pipe(Effect.scoped));
+
+type RequestSeed = { ts: Date; service: string; path: string; status: number; durationMs: number; kind: "other" | "bot" };
+
+const insertRequests = (rows: ReadonlyArray<RequestSeed>) => Effect.gen(function* () {
+  yield* ensurePartitions(rows.map((row) => dayOf(row.ts)));
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(analyticsRequest).values(rows.map((row, index) => ({
+    ...row, environmentId: PRODUCTION, requestId: `q${index}`, host: "shop.test", method: "GET", bytesIn: 0, bytesOut: 0, source: "direct",
+  })));
+}).pipe(Effect.orDie);
+
+for (const { name, plan, siteEnabled } of refusals) {
+  it.live(`the API and Errors views read nothing on ${name}`, () => Effect.gen(function* () {
+    const { provide, actor } = yield* setup(plan, siteEnabled);
+    const closed = plan.analyticsEnabled ? "site-off" : "self-host-off";
+    const api = yield* provide(readApiView(actor, { ...scope, window: "24h" }));
+    const errors = yield* provide(readErrorsView(actor, { ...scope, window: "24h" }));
+    expect([api, errors]).toEqual([{ gate: closed }, { gate: closed }]);
+  }).pipe(Effect.scoped));
+}
+
+it.live("the Errors view draws every hour of the window, quiet ones as zero, and lists the services that served people", () => Effect.gen(function* () {
+  const { provide, actor } = yield* setup({ analyticsEnabled: true }, true);
+  const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+  yield* provide(insertRequests([
+    { ts: ago(90), service: "api", path: "/checkout", status: 502, durationMs: 40, kind: "other" },
+    { ts: ago(150), service: "web", path: "/missing", status: 404, durationMs: 3, kind: "other" },
+    { ts: ago(10), service: "web", path: "/", status: 200, durationMs: 5, kind: "other" },
+    { ts: ago(20), service: "crawler", path: "/", status: 200, durationMs: 5, kind: "bot" },
+  ]));
+  const errors = yield* provide(readErrorsView(actor, { ...scope, window: "6h" }));
+  if (errors.gate !== "on") return expect.unreachable("analytics is on");
+  expect(errors.hourly).toHaveLength(7);
+  expect(errors.hourly.filter((hour) => hour.clientErrors + hour.serverErrors > 0)).toHaveLength(2);
+  expect(errors.services).toEqual(["api", "web"]);
+  expect(errors.byRoute).toEqual([{ route: "/checkout", status: 502, requests: 1 }, { route: "/missing", status: 404, requests: 1 }]);
+  const api = yield* provide(readApiView(actor, { ...scope, window: "6h", service: "api" }));
+  if (api.gate !== "on") return expect.unreachable("analytics is on");
+  expect(api.routes.map((route) => [route.route, route.requests, route.errors])).toEqual([["/checkout", 1, 1]]);
+  expect(api.slowest.map((sample) => sample.requestId)).toEqual(["q0"]);
 }).pipe(Effect.scoped));

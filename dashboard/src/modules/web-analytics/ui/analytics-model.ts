@@ -1,6 +1,7 @@
 import { Schema } from "effect";
-import { addDays, dayStart, hourStart, localDay } from "../local-time";
+import { addDays, dayStart, HOUR_MS, hourStart, localDay } from "../local-time";
 import type { Filter, Interval, Range } from "../model";
+import type { RouteRow } from "../postgres/routes";
 
 /** `today`, `7d`, `30d`, or `YYYY-MM-DD..YYYY-MM-DD`: site-local days, both ends included. */
 export type RangeSpec = string;
@@ -55,6 +56,47 @@ export function resolveRange(spec: RangeSpec, timezone: string, now: number): Re
   }
   const days = spec === "today" ? 1 : spec === "7d" ? 7 : 30;
   return { range: { start: dayStart(timezone, addDays(timezone, today, 1 - days)), end }, interval: days === 1 ? "hour" : "day" };
+}
+
+export const ANALYTICS_VIEWS = ["web", "api", "errors"] as const;
+export type AnalyticsViewKind = (typeof ANALYTICS_VIEWS)[number];
+export const isAnalyticsView = (view: string): view is AnalyticsViewKind => ANALYTICS_VIEWS.some((known) => known === view);
+
+/** How far back the API and Errors views read. */
+export const REQUEST_WINDOWS = [
+  { spec: "1h", hours: 1 },
+  { spec: "6h", hours: 6 },
+  { spec: "24h", hours: 24 },
+  { spec: "7d", hours: 168 },
+  { spec: "30d", hours: 720 },
+] as const;
+export type RequestWindow = (typeof REQUEST_WINDOWS)[number]["spec"];
+export const DEFAULT_WINDOW: RequestWindow = "24h";
+
+export const isRequestWindow = (spec: string): spec is RequestWindow => REQUEST_WINDOWS.some((window) => window.spec === spec);
+
+/**
+ * At least the last `window` of requests, in whole site-local hours through the end of the current one: at 10:05, `1h`
+ * reads 09:00 to 11:00.
+ */
+export function resolveWindow(window: RequestWindow, timezone: string, now: number): Range {
+  const hours = REQUEST_WINDOWS.find((option) => option.spec === window)?.hours ?? 24;
+  return { start: hourStart(timezone, new Date(now - hours * HOUR_MS)), end: nextHourStart(timezone, now) };
+}
+
+export type RouteSortKey = "route" | "requests" | "errorRate" | "p50" | "p95" | "p99";
+export type RouteSort = { readonly key: RouteSortKey; readonly descending: boolean };
+export const DEFAULT_ROUTE_SORT: RouteSort = { key: "requests", descending: true };
+
+/** Routes in the asked order; ties keep the busier route first, then the name. */
+export function sortRoutes<R extends RouteRow>(routes: ReadonlyArray<R>, sort: RouteSort): R[] {
+  const { key } = sort;
+  const value = (row: R) => key === "route" ? 0 : key === "errorRate" ? (row.requests === 0 ? 0 : row.errors / row.requests) : row[key];
+  const sign = sort.descending ? -1 : 1;
+  return [...routes].sort((a, b) => {
+    const order = key === "route" ? a.route.localeCompare(b.route) : value(a) - value(b);
+    return order * sign || b.requests - a.requests || a.route.localeCompare(b.route);
+  });
 }
 
 /** Why a day's numbers are short: some visits could not be counted, or the day is today. */
@@ -112,6 +154,15 @@ export function formatDuration(seconds: number) {
   return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
 }
 
+export const formatMs = (ms: number) => ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
+
+/** A share of requests: tenths below 10%, so a rare failure never reads as none. */
+export function formatRate(part: number, whole: number) {
+  if (whole === 0 || part === 0) return "0%";
+  const percent = (part / whole) * 100;
+  return percent < 10 ? `${percent.toFixed(1)}%` : `${Math.round(percent)}%`;
+}
+
 /** The share of the range's visitors who reached the goal, or null before anyone visited. */
 export const goalRate = (goalVisitors: number, visitors: number) => visitors === 0 ? null : (goalVisitors / visitors) * 100;
 
@@ -121,6 +172,13 @@ const EnvironmentScope = { organizationSlug: Schema.NonEmptyString, environmentI
 
 export const ReadAnalyticsViewInput = Schema.Struct({ ...EnvironmentScope, range: Schema.String, page: Schema.optional(Schema.String) });
 export type ReadAnalyticsViewInput = typeof ReadAnalyticsViewInput.Type;
+
+export const ReadRequestViewInput = Schema.Struct({
+  ...EnvironmentScope,
+  window: Schema.String,
+  service: Schema.optional(Schema.NonEmptyString),
+});
+export type ReadRequestViewInput = typeof ReadRequestViewInput.Type;
 
 export const TurnOnAnalyticsInput = Schema.Struct({ ...EnvironmentScope, timezone: Schema.NonEmptyString });
 export type TurnOnAnalyticsInput = typeof TurnOnAnalyticsInput.Type;
