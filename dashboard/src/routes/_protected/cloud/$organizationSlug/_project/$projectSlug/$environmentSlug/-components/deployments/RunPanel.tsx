@@ -1,9 +1,9 @@
-import { Suspense } from "react";
+import { Suspense, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import type { DeploymentView, ServerRow } from "@ployz/sdk";
 import { ContainerLogs } from "#/components/container-logs";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { LogEmpty } from "#/components/log-scroll";
+import { LatestButton, LogEmpty } from "#/components/log-scroll";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
 import { missingDeployLogs, nodeStatusLabels, outcomeReason } from "#/modules/config-store/store-deployments";
@@ -62,11 +62,22 @@ function BuildDetail({ deployment, build }: { deployment: DeploymentView; build:
 function StoreBuildLog({ deploymentId, service }: { deploymentId: string; service: string }) {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const result = useStoreView(organizationSlug, buildLogQuery(deploymentId, service));
+  const element = useRef<HTMLPreElement>(null);
+  const [following, setFollowing] = useState(true);
+  const log = result.ok ? result.value.log : "";
+  useLayoutEffect(() => {
+    if (following && element.current) element.current.scrollTop = element.current.scrollHeight;
+  }, [log, following]);
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
   return (
-    <pre aria-label={`${service} build output`} tabIndex={0} className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
-      {result.value.log || "No output yet."}
-    </pre>
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <pre ref={element} aria-label={`${service} build output`} tabIndex={0}
+        onScroll={({ currentTarget: pre }) => setFollowing(pre.scrollHeight - pre.scrollTop - pre.clientHeight <= 48)}
+        className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
+        {log || "No output yet."}
+      </pre>
+      {following ? null : <LatestButton onClick={() => setFollowing(true)} />}
+    </div>
   );
 }
 
