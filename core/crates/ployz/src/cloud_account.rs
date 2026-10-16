@@ -582,11 +582,6 @@ async fn store_answer<T: DeserializeOwned>(
     credential: &Credential,
     response: reqwest::Response,
 ) -> Result<T, StoreCallError> {
-    #[derive(Deserialize)]
-    #[serde(tag = "_tag")]
-    enum Public {
-        PublicError { code: String, message: String },
-    }
     let status = response.status();
     notice_revision(&response);
     let bytes = response
@@ -598,20 +593,9 @@ async fn store_answer<T: DeserializeOwned>(
             return Err(StoreCallError::Refused(refused));
         }
         if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-            && let Ok(Public::PublicError { code, message }) = serde_json::from_slice(&bytes)
+            && let Some(refused) = public_error(&bytes)
         {
-            let code = match code.as_str() {
-                "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
-                "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
-                "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
-                _ => ployz_core::RpcErrorCode::Internal,
-            };
-            return Err(StoreCallError::Refused(RpcError {
-                code,
-                message,
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }));
+            return Err(StoreCallError::Refused(refused));
         }
         if status == StatusCode::NOT_FOUND {
             return Err(LoginError::Unsupported(credential.cloud().to_owned()).into());
@@ -943,6 +927,28 @@ pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     serde_json::from_slice::<Refusal>(body)
         .ok()
         .map(|refusal| refusal.error)
+}
+
+/// A Cloud route's `PublicError`, as the refusal it stands for.
+pub(crate) fn public_error(body: &[u8]) -> Option<RpcError> {
+    #[derive(Deserialize)]
+    #[serde(tag = "_tag")]
+    enum Public {
+        PublicError { code: String, message: String },
+    }
+    let Public::PublicError { code, message } = serde_json::from_slice(body).ok()?;
+    let code = match code.as_str() {
+        "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
+        "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
+        "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
+        _ => ployz_core::RpcErrorCode::Internal,
+    };
+    Some(RpcError {
+        code,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    })
 }
 
 async fn send(

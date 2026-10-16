@@ -1205,7 +1205,7 @@ fn server_token_create_prints_the_secret_once_with_its_install_line() {
         serde_json::json!({ "name": "blue-heron", "expires_in": "7d", "auto_enroll_max": 5 })
     );
     for line in [
-        "Created blue-heron · expires in 7d",
+        "Created blue-heron\n",
         "Anyone with this token can add servers. Keep it secret.",
         &format!(
             "curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL='{cloud}' PLOYZ_ENROLL_TOKEN=pflt_secret sh"
@@ -1227,7 +1227,7 @@ fn server_token_create_defaults_to_a_day_without_auto() {
     assert_eq!(stdout, "pflt_secret\n");
     assert_eq!(
         sent_body(&request.recv().unwrap()),
-        serde_json::json!({ "name": null, "expires_in": "1d", "auto_enroll_max": null })
+        serde_json::json!({ "expires_in": "1d" })
     );
     assert!(stderr.contains("Shown once. Expires in 24h."), "{stderr}");
     assert!(!stderr.contains("Keep it secret"), "{stderr}");
@@ -1295,7 +1295,7 @@ fn server_token_revoke_reports_the_waiting_servers_it_removed() {
 fn server_token_revoke_of_an_unknown_name_names_it() {
     let (cloud, _) = token_cloud(
         404,
-        r#"{"error":{"code":"not_found","message":"No such Fleet Token."}}"#,
+        r#"{"_tag":"PublicError","code":"NOT_FOUND","message":"No such Fleet Token."}"#,
     );
     let (code, json, stderr) = run_json_with(
         &["server", "token", "revoke", "ghost", "--json"],
@@ -1317,8 +1317,8 @@ fn server_token_revoke_of_an_unknown_name_names_it() {
 #[test]
 fn server_token_refusals_reach_the_reader_as_cloud_sent_them() {
     let (cloud, _) = token_cloud(
-        400,
-        r#"{"error":{"code":"invalid_argument","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}}"#,
+        422,
+        r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#,
     );
     let (code, json, stderr) = run_json_with(
         &["server", "token", "create", "--json"],

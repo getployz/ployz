@@ -95,11 +95,15 @@ pub(crate) fn create(root: &ArgMatches) -> Result<(), Error> {
     let expires = matches
         .get_one::<String>("expires")
         .expect("expires has a default");
-    let body = json!({
-        "name": matches.get_one::<String>("name"),
-        "expires_in": expires,
-        "auto_enroll_max": matches.get_one::<u16>("max"),
-    });
+    let mut body = serde_json::Map::new();
+    body.insert("expires_in".into(), json!(expires));
+    if let Some(name) = matches.get_one::<String>("name") {
+        body.insert("name".into(), json!(name));
+    }
+    if let Some(max) = matches.get_one::<u16>("max") {
+        body.insert("auto_enroll_max".into(), json!(max));
+    }
+    let body = serde_json::Value::Object(body);
     let (cloud, reply) = in_cloud(root, async |_, credential| {
         let reply =
             ask::<CreatedReply>(credential, Method::POST, "fleet-tokens", Some(&body)).await?;
@@ -111,10 +115,7 @@ pub(crate) fn create(root: &ArgMatches) -> Result<(), Error> {
     ui::finish(
         &json!({ "fleet_token": created, "install": install }),
         || {
-            ui::note(format_args!(
-                "Created {} · expires in {lasts}",
-                created.name
-            ));
+            ui::note(format_args!("Created {}", created.name));
             if matches.get_flag("auto") {
                 ui::warn("Anyone with this token can add servers. Keep it secret.");
             }
@@ -214,7 +215,8 @@ async fn ask<T: DeserializeOwned>(
 ) -> Result<Result<T, RpcError>, LoginError> {
     match cloud_account::call(credential, method, path, body).await {
         Err(LoginError::Status { body, .. })
-            if let Some(refused) = cloud_account::refusal(body.as_bytes()) =>
+            if let Some(refused) = cloud_account::refusal(body.as_bytes())
+                .or_else(|| cloud_account::public_error(body.as_bytes())) =>
         {
             Ok(Err(refused))
         }
