@@ -92,11 +92,15 @@ const garbageCollectedBetween = (before: SiteRow, after: SiteRow) => after.gener
 
 const sealed = <A, E, R>(clickhouse: ClickHouseService, site: SiteRow, body: (reader: Reader) => Effect.Effect<A, E, R>) => {
   let open = true;
+  const stillOpen = Effect.suspend(() => open ? Effect.void : Effect.die("A Reader answers only inside the read or locked callback that made it."));
   const reader: Reader = {
     snapshot: snapshotOf(site),
-    select: (query, params) => Effect.suspend(() => open
-      ? clickhouse.unchecked.select(query, params)
-      : Effect.die("A Reader answers only inside the read or locked callback that made it.")),
+    select: <A>(query: string, params?: Params) => Effect.gen(function* () {
+      yield* stillOpen;
+      const rows = yield* clickhouse.unchecked.select<A>(query, params);
+      yield* stillOpen;
+      return rows;
+    }),
   };
   return body(reader).pipe(Effect.ensuring(Effect.sync(() => { open = false; })));
 };
@@ -243,15 +247,17 @@ export const collectGarbage = Effect.fn("WebAnalytics.collectGarbage")(function*
   for (const { environment_id: environmentId } of sites) {
     const fenced = yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      const [held] = yield* drizzle.execute<{ fence: string }>(sql`
-        select fence::text as fence from analytics.clickhouse_site where environment_id = ${environmentId}::text for update skip locked`, "objects");
+      const [held] = yield* drizzle.execute<{ fence: string; settled: boolean }>(sql`
+        select fence::text as fence, fenced_at <= now() - make_interval(secs => ${clickhouse.writeLifetimeSeconds}::double precision) as settled
+        from analytics.clickhouse_site where environment_id = ${environmentId}::text for update skip locked`, "objects");
       if (held === undefined) return undefined;
       const [row] = yield* drizzle.execute<SiteRow & { fence: string }>(sql`
         update analytics.clickhouse_site
-        set fence = greatest(fence, ${pin}::bigint), generation = generation + 1, updated_at = now()
+        set fence = greatest(fence, ${pin}::bigint), fenced_at = case when ${pin}::bigint > fence then now() else fenced_at end,
+          generation = generation + 1, updated_at = now()
         where environment_id = ${environmentId}::text
         returning ${SITE_COLUMNS}, fence::text as fence`, "objects");
-      return row === undefined ? undefined : { ...row, previous: held.fence };
+      return row === undefined ? undefined : { ...row, settledBelow: held.settled ? held.fence : undefined };
     }));
     if (fenced === undefined) continue;
     const bound: Array<[string, Params[string]]> = [];
@@ -268,9 +274,10 @@ export const collectGarbage = Effect.fn("WebAnalytics.collectGarbage")(function*
       yield* clickhouse.unchecked.command(`DELETE FROM ${table} WHERE ${where}`, params);
       collected += n;
     }
+    if (fenced.settledBelow === undefined) continue;
     yield* database.drizzle.execute(sql`
       update analytics.clickhouse_site
-      set pending = array(select p from unnest(pending) p where p >= ${fenced.previous}::bigint order by p), updated_at = now()
+      set pending = array(select p from unnest(pending) p where p >= ${fenced.settledBelow}::bigint order by p), updated_at = now()
       where environment_id in (
         select environment_id from analytics.clickhouse_site where environment_id = ${environmentId}::text for update skip locked)`);
   }

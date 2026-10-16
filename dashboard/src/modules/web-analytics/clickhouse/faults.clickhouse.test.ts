@@ -164,7 +164,7 @@ const run = (seed: number, profile: Profile) => Effect.gen(function* () {
     const captured = yield* Deferred.make<void>();
     const resume = yield* Deferred.make<void>();
     const gate = Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(resume)));
-    const stalled: ClickHouseService = { unchecked: { ...clickhouse.unchecked, select: <A>(text: string, params?: Params) => gate.pipe(Effect.andThen(clickhouse.unchecked.select<A>(text, params))) } };
+    const stalled: ClickHouseService = { ...clickhouse, unchecked: { ...clickhouse.unchecked, select: <A>(text: string, params?: Params) => gate.pipe(Effect.andThen(clickhouse.unchecked.select<A>(text, params))) } };
     const result = yield* Effect.forkChild(reads(clickHouseStore, stalled));
     yield* Effect.raceFirst(Deferred.await(captured), Fiber.await(result));
     paused.push({ result, resume, since: snapshots.length - 1 });

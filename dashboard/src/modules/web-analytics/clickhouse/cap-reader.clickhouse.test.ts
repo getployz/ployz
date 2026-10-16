@@ -56,6 +56,7 @@ const setup = Effect.gen(function* () {
 });
 
 const losesEveryAck = (real: ClickHouseService): ClickHouseService => ({
+  ...real,
   unchecked: {
     ...real.unchecked,
     insert: (table, rows) => real.unchecked.insert(table, rows).pipe(Effect.andThen(rows.length === 0
@@ -65,6 +66,7 @@ const losesEveryAck = (real: ClickHouseService): ClickHouseService => ({
 });
 
 const stallsFirstQuery = (real: ClickHouseService, captured: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): ClickHouseService => ({
+  ...real,
   unchecked: {
     ...real.unchecked,
     select: <A>(query: string, params?: Params) =>

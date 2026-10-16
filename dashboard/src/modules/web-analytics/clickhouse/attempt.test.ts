@@ -109,7 +109,7 @@ it.effect("a writer whose write failed is refused publication, so unacknowledged
   Effect.gen(function* () {
     const database = answering(publishRow);
     const lost = new ClickHouseFailure({ message: "socket hang up", cause: null });
-    const writer = yield* minted({ unchecked: { ...silent.unchecked, insert: () => Effect.fail(lost) } }, database);
+    const writer = yield* minted({ ...silent, unchecked: { ...silent.unchecked, insert: () => Effect.fail(lost) } }, database);
     expect(yield* Effect.flip(writer.rows("pageview", [{}]))).toBe(lost);
     expect(yield* Effect.flip(database.transaction(writer.publish({ kind: "append", dirty: [] })))).toBeInstanceOf(PublishRefused);
   }));
@@ -119,7 +119,7 @@ it.effect("a writer with a write still in flight cannot publish, and the write t
     const database = answering(publishRow);
     const started = yield* Deferred.make<void>();
     const release = yield* Deferred.make<void>();
-    const slow: ClickHouseService = { unchecked: { ...silent.unchecked, insert: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))) } };
+    const slow: ClickHouseService = { ...silent, unchecked: { ...silent.unchecked, insert: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))) } };
     const writer = yield* minted(slow, database);
     const write = yield* Effect.forkChild(writer.rows("pageview", [{}]));
     yield* Deferred.await(started);
@@ -132,7 +132,7 @@ it.effect("Writer.select takes only inserts that stamp the attempt column, so ro
   Effect.gen(function* () {
     const database = answering(publishRow);
     const commands: string[] = [];
-    const recording: ClickHouseService = { unchecked: { ...silent.unchecked, command: (query) => Effect.sync(() => { commands.push(query); }) } };
+    const recording: ClickHouseService = { ...silent, unchecked: { ...silent.unchecked, command: (query) => Effect.sync(() => { commands.push(query); }) } };
     const writer = yield* minted(recording, database);
     const stamped = "INSERT INTO daily (environment_id, day, attempt, dim) SELECT environment_id, day, {attempt:UInt64}, dim FROM pageview";
     yield* writer.select([{ query: stamped, params: {} }]);

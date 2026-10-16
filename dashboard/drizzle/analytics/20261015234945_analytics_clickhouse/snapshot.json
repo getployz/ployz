@@ -259,6 +259,19 @@
       "table": "clickhouse_site"
     },
     {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "fenced_at",
+      "entityType": "columns",
+      "schema": "analytics",
+      "table": "clickhouse_site"
+    },
+    {
       "type": "bigint",
       "typeSchema": null,
       "notNull": true,

@@ -60,6 +60,7 @@ const losesEveryAck = (real: ClickHouseService): ClickHouseService => ({
 });
 
 const stallsFirstQuery = (real: ClickHouseService, captured: Deferred.Deferred<void>, resume: Deferred.Deferred<void>): ClickHouseService => ({
+  ...real,
   unchecked: {
     ...real.unchecked,
     select: <A>(query: string, params?: Params) => Deferred.succeed(captured, undefined).pipe(Effect.andThen(Deferred.await(resume)), Effect.andThen(real.unchecked.select<A>(query, params))),
