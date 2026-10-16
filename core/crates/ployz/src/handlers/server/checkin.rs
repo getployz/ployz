@@ -101,10 +101,9 @@ async fn install(
         )
     })?;
     let skip_zfs = process_env::var_os(SKIP_ZFS).is_some_and(|value| value == "1");
-    write_unit(
-        unit::CHECKIN,
-        &unit::checkin(&ployz, &paths.token_file, cloud_url),
-    )?;
+    let checkin_unit = unit::checkin(&ployz, &paths.token_file, cloud_url)
+        .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
+    write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &unit::prepare(&host.ployzd, skip_zfs))?;
     systemd(&["daemon-reload"]).await?;
     keep_token_private(&paths.token_file)?;

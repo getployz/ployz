@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Answer every POST /api/checkin with one fixed kind, for live check-in lanes.
 
-    python3 core/scripts/checkin-stub.py --answer enroll --port 8787
+    python3 core/scripts/checkin-stub.py --answer enroll --port 8787 --bind 0.0.0.0
 
 Point a waiting host at it with PLOYZ_CLOUD_URL=http://<this host>:8787 in a
 ployz-checkin drop-in. It checks nothing, so never expose it beyond a lab.
@@ -57,7 +57,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--answer", choices=sorted(ANSWERS), required=True)
     parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--bind", default="127.0.0.1")
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.bind, args.port), handler(ANSWERS[args.answer]))
     print(f"answering {args.answer} on {args.bind}:{args.port}", file=sys.stderr, flush=True)

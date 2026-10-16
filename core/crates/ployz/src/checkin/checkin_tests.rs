@@ -133,10 +133,12 @@ fn an_answer_this_cli_cannot_read_waits_a_minute() {
         wire::answer(br#"{"kind":"wait","retryAfter":30}"#),
         Answer::Wait(Duration::from_secs(30))
     );
-    assert_eq!(
-        wire::answer(br#"{"kind":"wait","retryAfter":999999}"#),
-        Answer::Wait(Duration::from_secs(3600))
-    );
+    for huge in [
+        &br#"{"kind":"wait","retryAfter":999999}"#[..],
+        br#"{"kind":"wait","retryAfter":1e300}"#,
+    ] {
+        assert_eq!(wire::answer(huge), Answer::Wait(Duration::from_secs(3600)));
+    }
 }
 
 #[test]
@@ -179,6 +181,59 @@ async fn stop_removes_the_token_and_disables_the_loop() {
     assert_eq!(host.disables.load(Ordering::SeqCst), 1);
     stop(&host, &paths).await;
     assert_eq!(host.disables.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_stop_for_a_replaced_token_checks_in_with_the_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::write(&paths.token_file, "pflt_new\n").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let body = r#"{"kind":"stop","reason":"token_revoked","message":"Revoked."}"#;
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0; 16384];
+            let read = stream.read(&mut buf).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            requests.push(String::from_utf8_lossy(buf.get(..read).unwrap()).into_owned());
+        }
+        requests
+    });
+    let host = FakeHost::default();
+    let end = run(&host, &mut client(&url), &key(), &paths).await;
+    assert!(matches!(end, CheckinEnd::Stopped(StopReason::TokenRevoked)));
+    let requests = tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("the new token checks in once more");
+    let [old, new]: [String; 2] = requests.unwrap().try_into().unwrap();
+    assert!(old.contains("authorization: Bearer pflt_test"), "{old}");
+    assert!(new.contains("authorization: Bearer pflt_new"), "{new}");
+    assert!(!paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
+    let text = unit::checkin(
+        Path::new("/opt/my tools/ployz"),
+        Path::new("/etc/ployz/fleet-token"),
+        "https://cloud.example/100%",
+    )
+    .unwrap();
+    assert!(text.contains(
+        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\"\n"
+    ));
+    assert!(text.contains("Environment=\"PLOYZ_CLOUD_URL=https://cloud.example/100%%\"\n"));
+    for url in ["https://a\nExecStart=/bin/sh", "https://a\"", "https://a\\"] {
+        assert!(unit::checkin(Path::new("/usr/bin/ployz"), Path::new("/t"), url).is_err());
+    }
 }
 
 #[test]

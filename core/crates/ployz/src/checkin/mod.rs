@@ -287,6 +287,17 @@ pub(crate) async fn run<H: Host>(
                 tokio::time::sleep(after).await;
             }
             Next::Stop(reason, message) => {
+                // The answer is about the token that was sent, not one written since.
+                if let Ok(token) = FleetToken::read(&paths.token_file)
+                    && !client.sends(&token)
+                {
+                    crate::ui::note(format!(
+                        "{}. Checking in with the new Fleet Token.",
+                        reason.title()
+                    ));
+                    client.use_token(token);
+                    continue;
+                }
                 crate::ui::note(format!("{}. {message}", reason.title()));
                 stop(host, paths).await;
                 return CheckinEnd::Stopped(reason);

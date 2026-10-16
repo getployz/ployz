@@ -175,7 +175,7 @@ pub(super) fn answer(body: &[u8]) -> Answer {
 
 fn wait_for(seconds: f64) -> Duration {
     if seconds.is_finite() && seconds >= 1.0 {
-        Duration::from_secs_f64(seconds).min(WAIT_CAP)
+        Duration::from_secs_f64(seconds.min(WAIT_CAP.as_secs_f64()))
     } else {
         Duration::from_secs(1)
     }

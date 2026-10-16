@@ -117,6 +117,7 @@ impl CheckinKey {
     }
 }
 
+#[derive(PartialEq, Eq)]
 pub(crate) struct FleetToken(String);
 
 impl FleetToken {
@@ -173,6 +174,10 @@ impl CheckinClient {
 
     pub(super) fn use_token(&mut self, token: FleetToken) {
         self.token = token;
+    }
+
+    pub(super) fn sends(&self, token: &FleetToken) -> bool {
+        self.token == *token
     }
 
     pub(super) async fn post(&self, key: &CheckinKey, request: &CheckinRequest<'_>) -> Reply {
