@@ -31,7 +31,7 @@ import { useStorePendingName } from "#/modules/config-store/store-pending";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
-import { SettingsEmpty } from "#/components/settings/settings-list";
+import { SettingsEmpty, SettingsFormField } from "#/components/settings/settings-list";
 import { SettingsDanger, SettingsSection, SettingsWorkspace } from "#/components/settings/settings-section";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
@@ -288,9 +288,11 @@ function ConfigFiles({ fileNames, current, onSelect, item, drafts, dirty, textOf
         )}
       </div>
       {adding ? (
-        <ConfirmableInput aria-label="File name" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
-          autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
-          onConfirm={add} onCancel={() => setAdding(null)} />
+        <SettingsFormField label="File name" htmlFor="config-new-file">
+          <ConfirmableInput id="config-new-file" className="font-mono" value={adding.name} placeholder="config.yml" autoFocus
+            autoComplete="off" isDirty error={adding.error} onValueChange={(name) => setAdding({ name, error: null })}
+            onConfirm={add} onCancel={() => setAdding(null)} />
+        </SettingsFormField>
       ) : null}
       {current === null ? (
         <Empty variant="placeholder"><EmptyDescription>No files.</EmptyDescription></Empty>
