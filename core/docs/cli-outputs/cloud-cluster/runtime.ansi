@@ -613,7 +613,7 @@ ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DO
   ]
 }
 
-=== server inspect :: $ ployz server inspect machine-1
+=== server show :: $ ployz server show machine-1
 {
   "server": {
     "advertised_endpoints": [
@@ -685,7 +685,7 @@ ID	NAME	MEMBERSHIP	STORAGE	SUBNET	GATEWAY	PUBLIC IP	ENDPOINTS	HOSTNAME	DAEMON	DO
   "upgrade": null
 }
 
-=== server inspect --json :: $ ployz --json server inspect machine-1
+=== server show --json :: $ ployz --json server show machine-1
 {
   "server": {
     "advertised_endpoints": [

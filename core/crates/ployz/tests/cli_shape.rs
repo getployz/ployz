@@ -588,6 +588,189 @@ fn server_clean_signed_in_refuses_another_clusters_servers() {
     }
 }
 
+/// Cloud's waiting-server routes for web-1, web-2 and db-1. Records each route, with
+/// the body of a reject, and answers anything else with 404.
+fn waiting_cloud(routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {
+    use std::io::{BufRead, Read, Write};
+    let row = |id: &str, name: &str, status: &str| {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": status,
+            "observed_ip": "203.0.113.9",
+            "fleet_token": "amber-falcon",
+            "report": {
+                "hostname": name,
+                "provider": "hetzner",
+                "os": { "id": "ubuntu", "version": "24.04" },
+                "kernel": "6.8.0",
+                "arch": "x86_64",
+                "virt": "kvm",
+                "cpuCount": 4,
+                "memoryTotalBytes": 8_000_000_000_u64,
+                "disks": [{ "path": "/dev/sda", "sizeBytes": 40_000_000_000_u64, "role": "root" }],
+                "docker": { "kind": "absent" },
+                "cgroup": "v2",
+                "zfs": { "kind": "ineligible", "code": "no_disk", "message": "no spare disk" },
+                "blockers": [{ "code": "port_in_use", "message": "port 443 is in use" }],
+                "warnings": [],
+            },
+            "first_seen_at": "2026-10-16T00:00:00.000Z",
+            "last_check_in_at": "2026-10-16T00:05:00.000Z",
+        })
+    };
+    let listed = serde_json::json!({ "waiting_servers": [
+        row("00000000-0000-4000-8000-000000000001", "web-1", "blocked"),
+        row("00000000-0000-4000-8000-000000000002", "web-2", "waiting"),
+        row("00000000-0000-4000-8000-000000000003", "db-1", "waiting"),
+    ]});
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
+            let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
+            let (status, body) = match route.as_str() {
+                "GET /api/cli/waiting-servers" => ("200 OK", listed.clone()),
+                "POST /api/cli/reject-servers" => {
+                    let sent: serde_json::Value = serde_json::from_slice(&sent).unwrap();
+                    let ids = sent
+                        .get("ids")
+                        .and_then(serde_json::Value::as_array)
+                        .unwrap()
+                        .len();
+                    ("200 OK", serde_json::json!({ "rejected": ids }))
+                }
+                _ => ("404 Not Found", serde_json::json!({ "error": "not found" })),
+            };
+            let recorded = match route.starts_with("POST") {
+                true => format!("{route} {}", String::from_utf8_lossy(&sent)),
+                false => route,
+            };
+            routes.lock().unwrap().push(recorded);
+            let body = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+#[test]
+fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone());
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+    let posted = || -> Vec<String> {
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|route| route.starts_with("POST /api/cli/reject-servers"))
+            .cloned()
+            .collect()
+    };
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--waiting", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    let names: Vec<_> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].clone())
+        .collect();
+    assert_eq!(names, ["web-1", "web-2", "db-1"], "{json}");
+
+    let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web-1");
+    assert_eq!(
+        json.pointer("/waiting_server/fleet_token").unwrap(),
+        "amber-falcon"
+    );
+
+    let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+
+    let (code, json, _) = run_json_with(&["server", "reject", "web-*", "--json"], &token);
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "confirmation_required"
+    );
+    assert_eq!(
+        json.pointer("/error/details/waiting_servers").unwrap(),
+        &serde_json::json!(["web-1", "web-2"])
+    );
+    assert!(posted().is_empty(), "{:?}", posted());
+
+    let (code, json, _) = run_json_with(&["server", "reject", "web-*", "--yes", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.get("rejected"), Some(&serde_json::json!(2)), "{json}");
+    assert_eq!(
+        posted(),
+        [concat!(
+            r#"POST /api/cli/reject-servers {"ids":["#,
+            r#""00000000-0000-4000-8000-000000000001","#,
+            r#""00000000-0000-4000-8000-000000000002"]}"#
+        )]
+    );
+
+    let (code, json, _) =
+        run_json_with(&["server", "reject", "nomatch", "--yes", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found");
+    assert_eq!(
+        message(&json),
+        "No waiting server matches nomatch. Nothing rejected."
+    );
+    assert_eq!(posted().len(), 1);
+
+    let (code, json, _) = run_json_with(
+        &[
+            "server",
+            "ls",
+            "--waiting",
+            "--context",
+            "staging",
+            "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(2), "{json}");
+}
+
+#[test]
+fn server_inspect_is_gone_and_show_takes_its_place() {
+    let (code, json, _) = run_json(&["server", "inspect", "web-1", "--json"]);
+    assert_eq!(code, Some(2), "{json}");
+    let command = ployz::cli::command();
+    assert!(
+        command
+            .try_get_matches_from(["ployz", "server", "show", "web-1"])
+            .is_ok()
+    );
+}
+
 #[test]
 fn root_help_ends_with_the_catalog_pointer() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))

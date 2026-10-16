@@ -158,7 +158,7 @@ d7bb999f0d454dbcacc63d085021de34	alpha	up	Docker only	10.210.0.0/24	10.210.0.1	2
   ]
 }
 
-=== server inspect :: $ ployz server inspect alpha
+=== server show :: $ ployz server show alpha
 {
   "server": {
     "advertised_endpoints": [
@@ -251,7 +251,7 @@ d7bb999f0d454dbcacc63d085021de34	alpha	up	Docker only	10.210.0.0/24	10.210.0.1	2
   "upgrade": null
 }
 
-=== server inspect --json :: $ ployz server inspect alpha --json
+=== server show --json :: $ ployz server show alpha --json
 {
   "server": {
     "advertised_endpoints": [

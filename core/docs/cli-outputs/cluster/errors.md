@@ -1,7 +1,7 @@
-### server inspect unknown
+### server show unknown
 
 ```console
-$ ployz server inspect nope
+$ ployz server show nope
 # exit 1
 ```
 
@@ -186,10 +186,10 @@ stdout:
 }
 ```
 
-### server inspect gamma (stopped)
+### server show gamma (stopped)
 
 ```console
-$ ployz server inspect gamma
+$ ployz server show gamma
 # exit 1
 ```
 

@@ -216,10 +216,10 @@ No such domain in Environment production
 valid: acme.com, web.ada.ployz.test
 ```
 
-### server inspect of an unknown Server 
+### server show of an unknown Server 
 
 ```console
-$ ployz server inspect nosuch
+$ ployz server show nosuch
 # exit 1
 ```
 
@@ -503,10 +503,10 @@ stdout:
 {"error":{"code":"not_found","details":{"valid_children":["acme.com","web.ada.ployz.test"]},"message":"No such domain in Environment production"}}
 ```
 
-### server inspect of an unknown Server --json
+### server show of an unknown Server --json
 
 ```console
-$ ployz --json server inspect nosuch
+$ ployz --json server show nosuch
 # exit 1
 ```
 

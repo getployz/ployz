@@ -572,7 +572,7 @@ fn uncertain(
     Error::caused(
         ployz_core::RpcErrorCode::Unavailable,
         format!(
-            "Cannot tell whether Server {} finished upgrade {attempt_id}. Reconnect and compare it with the upgrade attempt `ployz server inspect {}` shows.",
+            "Cannot tell whether Server {} finished upgrade {attempt_id}. Reconnect and compare it with the upgrade attempt `ployz server show {}` shows.",
             machine.name, machine.name,
         ),
         error,
@@ -582,7 +582,7 @@ fn uncertain(
 
 fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> Error {
     Error::unavailable(format!(
-        "Cannot tell whether Server {} finished upgrade {attempt_id} after {} minutes. Reconnect and compare it with the upgrade attempt `ployz server inspect {}` shows.",
+        "Cannot tell whether Server {} finished upgrade {attempt_id} after {} minutes. Reconnect and compare it with the upgrade attempt `ployz server show {}` shows.",
         machine.name,
         OBSERVATION_TIMEOUT.as_secs() / 60,
         machine.name,
@@ -808,7 +808,7 @@ mod tests {
 
         assert!(error.contains("Cannot tell whether"), "{error}");
         assert!(error.contains(attempt_id.as_str()), "{error}");
-        assert!(error.contains("ployz server inspect"), "{error}");
+        assert!(error.contains("ployz server show"), "{error}");
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
     }
 

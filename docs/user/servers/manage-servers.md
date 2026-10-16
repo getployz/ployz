@@ -35,6 +35,41 @@ A server that can hold [managed volumes](../services/volumes.md) shows nothing a
 If the page shows **Can't reach your servers right now**, see
 [Troubleshooting servers](../troubleshooting/servers.md#cant-reach-your-servers-right-now).
 
+## Servers waiting to join
+
+A server you installed Ployz on checks in with Ployz Cloud and waits until you let it join. To list
+the ones waiting:
+
+```sh
+ployz server ls --waiting
+```
+
+Each row shows the server's name, its provider, its IP address, its status and how long ago it
+first checked in. **Ready** means it can join now. **Installing Docker** and **Building ZFS** mean
+it is still getting ready. **Blocked** means something on the server stops it from joining, and
+**Offline** means it stopped checking in.
+
+To see one in full, with its CPU, memory, disks, Docker, the storage it would get and anything
+blocking it:
+
+```sh
+ployz server show web-3
+```
+
+`ployz server show` shows a server in your cluster the same way, so one command covers both.
+
+To turn away servers you don't want, name them or give a pattern. Ployz lists what matches and asks
+before it does anything:
+
+```sh
+ployz server reject 'web-*'
+```
+
+Answer `y` and it prints `2 rejected. They won't come back.` A rejected server stops checking in,
+and the same install never asks to join again. Add `--yes` to skip the question, for example in a
+script. Without `--yes` outside a terminal it fails with `confirmation_required` and rejects
+nothing.
+
 ## See what runs on a server
 
 Click a server. Its page shows its status and public IP address, then:

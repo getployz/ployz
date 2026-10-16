@@ -479,12 +479,6 @@ pub(crate) const SERVER_FORGET: Verb = Verb::cloud(
 )
 .docs("servers/manage-servers.md")
 .tool(ToolId::ServerForget);
-pub(crate) const SERVER_INSPECT: Verb = Verb::cloud(
-    "server inspect",
-    Never,
-    server::inspect_command,
-    server::inspect,
-);
 pub(crate) const SERVER_LOGS: Verb = Verb::cloud(
     "server logs",
     Never,
@@ -493,7 +487,15 @@ pub(crate) const SERVER_LOGS: Verb = Verb::cloud(
 )
 .keeps_running(KeepsRunning::With("--follow"));
 pub(crate) const SERVER_LS: Verb =
-    Verb::cloud("server ls", Never, server::list_command, server::list);
+    Verb::cloud("server ls", Never, server::list_command, server::list)
+        .docs("servers/manage-servers.md");
+pub(crate) const SERVER_REJECT: Verb = Verb::cloud(
+    "server reject",
+    Always,
+    server::reject::command,
+    server::reject::reject,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const SERVER_RM: Verb =
     Verb::cloud("server rm", Always, server::remove_command, server::remove)
         .docs("servers/manage-servers.md")
@@ -502,6 +504,9 @@ pub(crate) const SERVER_SET: Verb =
     Verb::cloud("server set", Depends, server::set_command, server::set)
         .docs("servers/manage-servers.md")
         .tool(ToolId::ServerSet);
+pub(crate) const SERVER_SHOW: Verb =
+    Verb::cloud("server show", Never, server::show_command, server::show)
+        .docs("servers/manage-servers.md");
 pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
     "server upgrade",
     Depends,
@@ -766,11 +771,12 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_CLEAN,
     SERVER_DRAIN,
     SERVER_FORGET,
-    SERVER_INSPECT,
     SERVER_LOGS,
     SERVER_LS,
+    SERVER_REJECT,
     SERVER_RM,
     SERVER_SET,
+    SERVER_SHOW,
     SERVER_UPGRADE,
     SERVICE_ADD,
     SERVICE_INSPECT,

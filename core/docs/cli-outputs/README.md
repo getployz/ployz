@@ -222,13 +222,13 @@ Captured with gamma stopped ([cluster/errors.md](cluster/errors.md)) unless note
 | server ls | 3 | No warning; gamma row says `up` with STORAGE `Volume support unknown` |
 | service restart | 3 | `WARNING: the Service selection came from a partial Live Observation`, printed twice |
 | logs, server logs | 0 | Nothing; gamma's lines are just missing |
-| server inspect gamma | 1 | `target Machine RPC timed out` |
+| server show gamma | 1 | `target Machine RPC timed out` |
 
 A failed Deployment also exits 3, with the result on stdout and nothing on stderr: `Deployment #1 of shop/production: failed` / `  No Server is enrolled in this Organization` ([store/errors.md](store/errors.md)).
 
 ## 10. Human output that is really JSON
 
-- server inspect prints the same pretty JSON with or without `--json` ([cluster/server.md](cluster/server.md)).
+- server show prints the same pretty JSON with or without `--json` ([cluster/server.md](cluster/server.md)).
 - schema prints a 3132-line JSON Schema ([store/help.md](store/help.md) points to it).
 - JSON inside human lines: `web.healthcheck = {"path":"/healthz","timeoutSeconds":300}` and `web.env.API_KEY = {"secret":true}` ([store/settings.md](store/settings.md)), `web.source: {…} → {…}` ([store/env.md](store/env.md)), `env={"GREETING":"hello"}` in service inspect ([cluster/service.md](cluster/service.md)).
 
@@ -288,7 +288,7 @@ Each item was checked against the captures. Its status after the output PRs foll
 16. service restart prints the partial Live Observation warning twice. [cluster/errors.md](cluster/errors.md) **Fixed by an earlier output PR.**
 17. logs and server logs exit 0 with no warning when a Machine is down. [cluster/errors.md](cluster/errors.md) **Fixed in P7.**
 18. server drain `--json` prints `public_key` as a byte array; other commands print a base64 string. [cluster/server.md](cluster/server.md) **Fixed in P7.**
-19. `server inspect nope --json` uses code `invalid_argument`, not `not_found`. [cloud-cluster/errors.md](cloud-cluster/errors.md) **Fixed in P7: the code is `not_found`. The message is `No Server named "nope"`, followed by `inspect: ployz server ls`.**
+19. `server show nope --json` uses code `invalid_argument`, not `not_found`. [cloud-cluster/errors.md](cloud-cluster/errors.md) **Fixed in P7: the code is `not_found`. The message is `No Server named "nope"`, followed by `inspect: ployz server ls`.**
 20. A registry error's embedded newline (`denied` / `denied`) breaks the indented Deployment result. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed in P7.**
 21. up prints `  build workspace from the upload: built ` with an empty detail. [cloud-cluster/deploy.md](cloud-cluster/deploy.md) **Fixed by an earlier output PR.**
 22. Clap Usage lines expose the hidden global: `Usage: ployz service add --image <REF> --project <project> --ployz-config <ployz-config> <name>`. [store/service.md](store/service.md) **Fixed in P7.**

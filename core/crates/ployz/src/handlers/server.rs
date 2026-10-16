@@ -36,9 +36,11 @@ pub(super) mod enroll;
 pub(super) mod forget;
 mod helpers;
 mod init;
-mod inspect;
+pub(super) mod reject;
 mod remove;
+mod show;
 mod upgrade;
+mod waiting;
 
 use add::add;
 pub(super) use enroll::{enroll_token, requested_storage};
@@ -47,8 +49,8 @@ pub(super) use helpers::{
     readiness_timeout_message,
 };
 use init::init;
-pub(super) use inspect::{inspect, list};
 pub(super) use remove::remove;
+pub(super) use show::{list, show};
 pub(super) use upgrade::upgrade;
 
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
@@ -231,7 +233,7 @@ pub(super) fn machine_json(machine: &Machine) -> Value {
 }
 
 /// A Server as `server add`, `init`, `set` and `rm` print it: the `server ls` and
-/// `server inspect` shape, its Machine under `machine`.
+/// `server show` shape, its Machine under `machine`.
 pub(super) fn server_json(machine: &Machine) -> Value {
     json!({ "machine": machine_json(machine) })
 }
@@ -454,10 +456,10 @@ pub(super) fn drain_command(command: Command) -> Command {
                 .arg(crate::cli::approval())
 }
 
-pub(super) fn inspect_command(command: Command) -> Command {
+pub(super) fn show_command(command: Command) -> Command {
     base(
         command,
-        "Inspect a Server: telemetry, round-trip times, and its latest upgrade attempt",
+        "Show a Server: telemetry, round-trip times and its latest upgrade attempt, or a server waiting to join",
     )
     .arg(positional("server", true))
 }
@@ -469,6 +471,11 @@ pub(super) fn machine_logs_command(command: Command) -> Command {
 
 pub(super) fn list_command(command: Command) -> Command {
     base(command, "List Servers")
+        .long_about(
+            "List the Cluster's Servers. With --waiting, list the servers waiting to join \
+             your Organization in Ployz Cloud instead: name, provider, IP, status and age.",
+        )
+        .arg(switch("waiting", None).help("List servers waiting to join instead"))
 }
 
 pub(super) fn remove_command(command: Command) -> Command {
