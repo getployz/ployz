@@ -3,6 +3,7 @@ import type { PersistableTransaction } from "#/components/stageable/collection-f
 import { type ConfirmStatus, ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { SuggestibleConfirmableInput } from "#/components/stageable/suggestible-confirmable-input";
 import { useCommitHold } from "#/components/stageable/use-commit-hold";
+import { showRefusalInline } from "#/modules/config-store/store-write";
 
 type DraftState = {
   source: string;
@@ -74,7 +75,9 @@ export function ServiceSettingInput({
       return;
     }
 
-    hold(raw, onCommit(raw));
+    const write = onCommit(raw);
+    showRefusalInline(write);
+    hold(raw, write);
     setDraft(freshDraft(raw));
   }
 

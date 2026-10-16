@@ -13,7 +13,7 @@ import {
   useStoreBusy, useStoreCancelling, useStoreMergeRowsPending, useStorePendingDomains, useStorePrPlanPending, useStoreRenamePending,
   withPendingChanges,
 } from "./store-pending";
-import { useStoreWriter, type StoreEdit } from "./store-write";
+import { showRefusalInline, useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -422,6 +422,22 @@ it("leaves a Deploy's confirmation_required to a caller that handles it, and toa
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
   await expect(writer.commit(deploy).isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required" });
   expect(error).toHaveBeenCalledWith("This Deploy permanently deletes the data of pg-data");
+});
+
+it("leaves a refusal its control shows beside the field untoasted, still undoing it, and still toasts a signed-out one", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "invalid", message: "Replicas must be at most 10", details: null } });
+  let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { edit = test.edit({ environment: ref, changes: replicas(30) }); showRefusalInline(edit); });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid" });
+  await waitFor(() => expect(test.replicas()).toBe(1));
+  expect(error).not.toHaveBeenCalled();
+
+  test.write.mockImplementationOnce(() => Promise.reject({ _tag: "PublicError", code: "UNAUTHORIZED", message: "Authentication is required." }));
+  act(() => { edit = test.edit({ environment: ref, changes: replicas(3) }); showRefusalInline(edit); });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  expect(error).toHaveBeenCalledWith("You're signed out. Nothing was saved.", expect.anything());
 });
 
 const into = { project: "shop", environment: "staging" };

@@ -41,6 +41,14 @@ const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the 
 const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
 const RENAMING = "A rename is still saving, so this change wasn't made. Try again once it lands.";
 
+/** Writes whose control shows a refusal itself, beside the field, so a toast would only say it twice. */
+const shownInline = new WeakSet<Promise<unknown>>();
+
+/** Leaves `write`'s refusal to the control that made it; being signed out still toasts, with its Sign in. */
+export function showRefusalInline(write: Persistable) {
+  shownInline.add(write.isPersisted.promise);
+}
+
 /**
  * The one way the dashboard writes to the Config Store.
  *
@@ -85,14 +93,16 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
 
   /**
    * Runs `work` in the Environment's queue, filed under `storeWriteKey` with its command, whose marks show until the
-   * write's answers land. Failure toasts, rereads the command's views (the rollback), and rejects. A command a pending
-   * rename blocks (`renameBlocks`) is never sent: the UI locks for the rename, and this catches a control it missed.
+   * write's answers land. Failure toasts unless its control shows it (`showRefusalInline`), rereads the command's
+   * views (the rollback), and rejects. A command a pending rename blocks (`renameBlocks`) is never sent: the UI locks
+   * for the rename, and this catches a control it missed.
    */
   function queued<T>(key: string, command: ConfigCommand, work: () => Promise<T>, expects: boolean, handled: readonly string[] = []) {
     if (renameBlocks(pendingMarks(queryClient, organizationSlug), command)) {
       toast.error(RENAMING);
       return Promise.reject(new StoreRefused({ code: "renaming", message: RENAMING, details: null }));
     }
+    let promise: Promise<T> | undefined;
     const observer = new MutationObserver<T, Error, { command: ConfigCommand }>(queryClient, {
       mutationKey: storeWriteKey(organizationSlug, key),
       scope: { id: `store:${organizationSlug}:${key}` },
@@ -103,14 +113,15 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
         if (isUnauthorized(error)) {
           toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign(signInHere()) } });
-        } else if (!(error instanceof StoreRefused && handled.includes(error.code))) {
+        } else if (!(promise && shownInline.has(promise)) && !(error instanceof StoreRefused && handled.includes(error.code))) {
           toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error.message);
         }
         // What the write was refused against shows: the rollback, or a Sync's fresh review.
         await invalidateViews(queryClient, organizationSlug, keysOf(command));
       },
     });
-    return observer.mutate({ command });
+    promise = observer.mutate({ command });
+    return promise;
   }
 
   return {
