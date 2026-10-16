@@ -39,8 +39,8 @@ const resolve = Effect.fn("WebAnalytics.resolve")(function* (q: Query) {
     }
   }
   if (q.range.start >= q.range.end) return yield* new Validation({ message: "Range start must be before its end.", field: "start" });
-  const floor = retentionFloor(timezone, yield* Clock.currentTimeMillis, q.site.retentionMonths);
-  const start = q.range.start < floor ? new Date(Math.min(floor.getTime(), q.range.end.getTime())) : q.range.start;
+  const retained = retentionFloor(timezone, yield* Clock.currentTimeMillis, q.site.retentionMonths);
+  const start = q.range.start < retained ? new Date(Math.min(retained.getTime(), q.range.end.getTime())) : q.range.start;
   const range: Range = { start, end: q.range.end };
   const stores: Stores = yield* storeFor(q.site.environmentId);
   return { range, clamped: start.getTime() !== q.range.start.getTime(), store: storeQuery(q, range), stores };
