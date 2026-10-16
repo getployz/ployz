@@ -252,8 +252,6 @@ export const mint = Effect.fn("WebAnalytics.mintAttempt")(function* (clickhouse:
   }));
 });
 
-/** A sequence value taken now. Every attempt minted before it is smaller. */
-/** Append mints refuse at the cap, so a capped site writes again only once a refloor publishes. */
 export const capped = Effect.fn("WebAnalytics.capped")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.execute<{ capped: boolean }>(sql`
@@ -261,6 +259,7 @@ export const capped = Effect.fn("WebAnalytics.capped")(function* (environmentId:
   return row?.capped ?? false;
 });
 
+/** A sequence value taken now. Every attempt minted before it is smaller. */
 export const pin = Effect.fn("WebAnalytics.pinAttempts")(function* () {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.execute<{ n: string }>(sql`select nextval('analytics.clickhouse_attempt')::text as n`, "objects");
