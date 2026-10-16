@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -81,6 +82,28 @@ INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/
 # Files a run replaces outside INSTALLED: a check may swap runc for a wrapper and keeps runc.<tag>-original.
 REPLACED = "usr/bin/runc"
 STASH = "/var/lib/ployz-verify-bake.tar"
+# `up --bare` hosts skip the bake: Boat's plain base is Ubuntu 24.04 with Docker, and Boat has no Debian base,
+# so a Debian 12 host is the Debian cloud image under KVM inside a plain sandbox, reached through it.
+DISTROS = ["ubuntu-24.04", "debian-12"]
+GUEST_PORT = 2222
+GUEST = f"""
+{SETTLE}
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null
+apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
+install -d /var/lib/ployz-verify-guest
+cd /var/lib/ployz-verify-guest
+curl -fsSL --retry 3 -o debian.qcow2 https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
+qemu-img resize -q debian.qcow2 40G
+{{ printf '#cloud-config\\ndisable_root: false\\nusers:\\n  - name: root\\n    ssh_authorized_keys:\\n'
+   for key in "$@"; do printf '      - %s\\n' "$key"; done; }} > user-data
+printf 'instance-id: ployz-verify\\nlocal-hostname: debian\\n' > meta-data
+cloud-localds seed.img user-data meta-data
+qemu-system-x86_64 -enable-kvm -cpu host -smp "$(nproc)" -m "$(( $(awk '/MemTotal/ {{print $2}}' /proc/meminfo) * 3 / 4 / 1024 ))" \\
+    -display none -daemonize -pidfile qemu.pid -serial file:serial.log \\
+    -drive file=debian.qcow2,if=virtio -drive file=seed.img,if=virtio,format=raw \\
+    -netdev user,id=net,hostfwd=tcp:127.0.0.1:{GUEST_PORT}-:22 -device virtio-net-pci,netdev=net
+"""
 
 
 def scratch(depth=""):
@@ -554,6 +577,15 @@ def boat_json(*args):
     return json.loads(result.stdout)
 
 
+def end_tunnel(pid):
+    try:
+        # The pid may have been reused since the tunnel exited.
+        if pid and b"ExitOnForwardFailure" in Path(f"/proc/{pid}/cmdline").read_bytes():
+            os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
 def status(state):
     return "Running" if state in UP_STATES else (state or "gone").capitalize()
 
@@ -700,7 +732,8 @@ class Provider:
     def launch(self, node):
         before = time.time()
         for attempt in range(10):
-            result = self.boat("new", "--from", self.run["image"], "--type", SIZE, "--ttl", TTL, check=False)
+            size = "default" if self.run.get("distro") == "debian-12" else SIZE
+            result = self.boat("new", *(["--from", self.run["image"]] if self.run["image"] else []), "--type", size, "--ttl", TTL, check=False)
             found = events(result)
             created = next((event["id"] for event in found if event.get("event") == "created"), None)
             if created:
@@ -751,9 +784,17 @@ class Provider:
         else:
             if not reused:
                 raise RuntimeError(f"{node['name']}: Boat kept placing the sandbox on a node another Machine uses")
-        if self.run["image"] == SNAPSHOT:
+        if self.run["image"] in (SNAPSHOT, None):
             self.install_key(node, sandbox)
         self.wait_agent(node)
+        if self.run.get("bare"):
+            if self.run.get("distro") == "debian-12":
+                key = (self.private / "id_ed25519.pub").read_text().strip()
+                self.exec(node, ["bash", "-ec", GUEST, "guest", key], timeout=900)
+                self.mark(node["name"], guest=True)
+                # The guest's first boot runs cloud-init before sshd answers.
+                self.wait_agent(node, 600)
+            return
         # A baked sandbox already holds BAKE's result; it keeps its own ployz install for reset to restore.
         bake = BAKE if self.run["image"] == SNAPSHOT else KEEP_INSTALL + (RECORD_IMAGES if POOL_SIZE else "")
         self.exec(node, ["bash", "-ec", f"""
@@ -841,8 +882,8 @@ systemctl enable --now {PLOYZ_UNITS} $observe
         else:
             self.record(lambda record: record.update(extended=int(now)), missing_ok=True)
 
-    def wait_agent(self, node):
-        deadline = time.monotonic() + 180
+    def wait_agent(self, node, seconds=180):
+        deadline = time.monotonic() + seconds
         while True:
             if not self.exec(node, ["true"], check=False, timeout=10).returncode:
                 return
@@ -850,7 +891,11 @@ systemctl enable --now {PLOYZ_UNITS} $observe
                 raise RuntimeError(f"{node['name']}: root SSH to the sandbox did not answer")
             time.sleep(1)
 
-    def options(self):
+    def options(self, control=True):
+        if not control:
+            return ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
+                    "-i", str(self.private / "id_ed25519"), "-o", "ControlMaster=no", "-o", "ControlPath=none"]
         self.control.mkdir(parents=True, exist_ok=True, mode=0o700)
         # /tmp is shared; a directory someone else planted could hand our ssh to their fake control master.
         found = os.lstat(self.control)
@@ -865,16 +910,31 @@ systemctl enable --now {PLOYZ_UNITS} $observe
     def control_path(self):
         return str(self.control / (hashlib.sha1(self.run["id"].encode()).hexdigest()[:8] + "-%C"))
 
-    def exec(self, node, args, **kwargs):
-        destination = ((self.record() or {}).get("sandboxes", {}).get(node["name"]) or {}).get("ssh")
-        if not destination:
+    def target(self, node, control=True):
+        entry = (self.record() or {}).get("sandboxes", {}).get(node["name"]) or {}
+        if not entry.get("ssh"):
             raise RuntimeError(f"{node['name']} has no SSH endpoint yet")
-        host, port = endpoint(destination)
-        return self.commands(["ssh", *self.options(), "-p", port, "root@" + host, shlex.join(args)], **kwargs)
+        host, port = endpoint(entry["ssh"])
+        sandbox = ["ssh", *self.options(control), "-p", str(port), "root@" + host]
+        if not entry.get("guest"):
+            return sandbox
+        # ssh expands % in a ProxyCommand; the sandbox's control path keeps its own %C.
+        jump = shlex.join([*sandbox, "-W", f"127.0.0.1:{GUEST_PORT}"]).replace("%", "%%")
+        return ["ssh", *self.options(False), "-o", "ProxyCommand=" + jump, "-p", str(GUEST_PORT), "root@127.0.0.1"]
+
+    def exec(self, node, args, **kwargs):
+        return self.commands([*self.target(node), shlex.join(args)], **kwargs)
+
+    def tunnel(self, node, port):
+        with (self.commands.evidence / f"tunnel-{node['name']}.log").open("ab") as log:
+            process = subprocess.Popen([*self.target(node, control=False), "-N", "-o", "ExitOnForwardFailure=yes",
+                                        "-R", f"{port}:localhost:{port}"],
+                                       stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        self.mark(node["name"], tunnel=process.pid)
 
     def push(self, node, source, destination):
         directory = os.path.dirname(destination)
-        if self.run["image"] == SNAPSHOT or os.path.getsize(source) < 1 << 20:
+        if self.run["image"] in (SNAPSHOT, None) or os.path.getsize(source) < 1 << 20:
             with open(source, "rb") as content:
                 self.exec(node, ["sh", "-ec", 'install -d "$1"; cat > "$2.push"; chmod 0755 "$2.push"; mv "$2.push" "$2"',
                                  "push", directory, destination], stdin=content, timeout=600)
@@ -899,6 +959,8 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             return
         if record["run"] != self.run["id"]:
             raise RuntimeError(f"Refusing to delete another run's sandboxes: {self.registry}")
+        for entry in record["sandboxes"].values():
+            end_tunnel(entry.get("tunnel"))
         if POOL_SIZE and self.run.get("image") not in (None, SNAPSHOT):
             each(self.park, [name for name, entry in record["sandboxes"].items()
                              if entry.get("state") == "running" and entry.get("ssh") and not entry.get("discarded")])
@@ -1021,6 +1083,9 @@ systemctl enable --now {PLOYZ_UNITS} $observe
             raise RuntimeError(f"Boat CLI not found: {cli()[0]}; install it or set BOAT_CLI")
         if not shutil.which("zstd"):
             raise RuntimeError("zstd not found; install it")
+        if self.run.get("bare"):
+            self.run["image"] = None
+            return
         self.run["bootstrap_release"] = SNAPSHOT_RELEASE
         self.run["corrosion"] = corrosion_image(self.core)
         self.run["image"] = bake_name(self.run["corrosion"])

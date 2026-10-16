@@ -31,7 +31,7 @@ pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> R
     }
 }
 
-const STAGE: &str = "prepare ZFS storage";
+pub(super) const STAGE: &str = "prepare ZFS storage";
 
 /// How the ZFS kernel module becomes loadable on the Machine's distro.
 #[derive(Clone, Copy)]
@@ -79,7 +79,7 @@ impl ZfsRoute {
         }
     }
 
-    fn package_manager(self) -> &'static str {
+    pub(super) fn package_manager(self) -> &'static str {
         match self {
             Self::Ubuntu | Self::Debian { .. } => "apt-get",
             Self::AmazonLinux => "dnf",
@@ -87,19 +87,46 @@ impl ZfsRoute {
     }
 
     fn install(self, paths: &InstallPaths, os: &OsRelease, kernel: &str) -> Result<(), Error> {
-        match self {
-            Self::Ubuntu => install_zfs_packages(kernel),
-            Self::Debian { codename, keyring } => {
-                prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
-            }
-            Self::AmazonLinux => {
-                prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
-            }
-        }
+        super::prepare::install_waiting_for_preparation(
+            paths,
+            self.package_manager(),
+            || match self {
+                Self::Ubuntu => install_zfs_packages(kernel),
+                Self::Debian { codename, keyring } => {
+                    prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
+                }
+                Self::AmazonLinux => {
+                    prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
+                }
+            },
+        )
     }
 }
 
 fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
+    let (os, route) = zfs_preflight(paths)?;
+    let kernel = uname("-r", "read running kernel")?;
+    // A module this Machine built earlier stays; Ubuntu's install checks its own package.
+    let install = !(route.builds_module() && zfs_installed(&kernel));
+    // Before the host-root reserve, which reads the real disk, so tests can reach this refusal.
+    if install && matches!(route, ZfsRoute::AmazonLinux) {
+        require_kernel_devel(&os, &kernel)?;
+    }
+    require_host_root_reserve()?;
+    let cap = zfs_arc_max()?;
+    if install {
+        route.install(paths, &os, &kernel)?;
+    }
+    // Written only once ZFS is in place, so every refusal above leaves the host untouched.
+    persist_zfs_arc_max(paths, cap)?;
+    run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
+    set_and_verify_zfs_arc_max(cap)?;
+    validate_zfs()?;
+    println!("ZFS storage preparation validated; no Machine Pool was created");
+    Ok(())
+}
+
+pub(super) fn zfs_preflight(paths: &InstallPaths) -> Result<(OsRelease, ZfsRoute), Error> {
     let refusal = |reason: super::assess::Blocker| refuse(STAGE, reason.message);
     let os = OsRelease::read(&paths.os_release)?;
     let route = zfs_os_route(&os).map_err(refusal)?;
@@ -127,31 +154,13 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
             ),
         ));
     }
-    let kernel = uname("-r", "read running kernel")?;
-    // A module this Machine built earlier stays; Ubuntu's install checks its own package.
-    let install = !(route.builds_module() && zfs_installed(&kernel));
-    // Before the host-root reserve, which reads the real disk, so tests can reach this refusal.
-    if install && matches!(route, ZfsRoute::AmazonLinux) {
-        require_kernel_devel(&os, &kernel)?;
-    }
-    require_host_root_reserve()?;
-    let cap = zfs_arc_max()?;
-    if install {
-        route.install(paths, &os, &kernel)?;
-    }
-    // Written only once ZFS is in place, so every refusal above leaves the host untouched.
-    persist_zfs_arc_max(paths, cap)?;
-    run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
-    set_and_verify_zfs_arc_max(cap)?;
-    validate_zfs()?;
-    println!("ZFS storage preparation validated; no Machine Pool was created");
-    Ok(())
+    Ok((os, route))
 }
 
 /// A build step that failed: its name, as the refusal shows it, and the cause for the log.
-struct BuildFailure {
-    step: &'static str,
-    cause: Error,
+pub(super) struct BuildFailure {
+    pub(super) step: &'static str,
+    pub(super) cause: Error,
 }
 
 /// Names `step` as the failure of whatever error it wraps.
@@ -199,7 +208,7 @@ fn build_zfs_module(
 }
 
 /// Whether `kernel` has a ZFS module and the userspace tools that drive it.
-fn zfs_installed(kernel: &str) -> bool {
+pub(super) fn zfs_installed(kernel: &str) -> bool {
     command_exists("zpool")
         && command_exists("zfs")
         && Command::new("modinfo")
@@ -218,21 +227,8 @@ fn prepare_debian_zfs(
     kernel: &str,
 ) -> Result<(), Error> {
     build_zfs_module(os, kernel, || {
-        let flavour = debian_kernel_flavour(kernel).ok_or_else(|| {
-            failed("reading the kernel flavour")(Error::Verification(format!(
-                "kernel {kernel} names no Debian flavour"
-            )))
-        })?;
-        write_file_atomically(
-            &apt_dir.join("sources.list.d/ployz-contrib.sources"),
-            &format!(
-                "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: {codename} {codename}-updates\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n\nTypes: deb\nURIs: http://security.debian.org/debian-security\nSuites: {codename}-security\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n"
-            ),
-            "turning on contrib",
-        )
-        .map_err(failed("turning on contrib"))?;
-        let step = "apt-get update";
-        run_apt(step, ["update", "-qq"], None).map_err(failed(step))?;
+        let flavour = debian_kernel_flavour_step(kernel)?;
+        enable_debian_contrib(apt_dir, codename, keyring)?;
         // The flavour's meta package pulls headers for future kernels, so DKMS can rebuild.
         let step = "installing kernel headers";
         run_apt(
@@ -267,11 +263,43 @@ fn prepare_debian_zfs(
     })
 }
 
+pub(super) fn debian_contrib_source(apt_dir: &Path) -> PathBuf {
+    apt_dir.join("sources.list.d/ployz-contrib.sources")
+}
+
+pub(super) fn debian_kernel_flavour_step(kernel: &str) -> Result<&str, BuildFailure> {
+    debian_kernel_flavour(kernel).ok_or_else(|| {
+        failed("reading the kernel flavour")(Error::Verification(format!(
+            "kernel {kernel} names no Debian flavour"
+        )))
+    })
+}
+
+pub(super) fn enable_debian_contrib(
+    apt_dir: &Path,
+    codename: &str,
+    keyring: &str,
+) -> Result<(), BuildFailure> {
+    write_file_atomically(
+        &debian_contrib_source(apt_dir),
+        &format!(
+            "Types: deb\nURIs: http://deb.debian.org/debian\nSuites: {codename} {codename}-updates\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n\nTypes: deb\nURIs: http://security.debian.org/debian-security\nSuites: {codename}-security\nComponents: contrib\nSigned-By: /usr/share/keyrings/{keyring}\n"
+        ),
+        "turning on contrib",
+    )
+    .map_err(failed("turning on contrib"))?;
+    let step = "apt-get update";
+    run_apt(step, ["update", "-qq"], None)
+        .map(drop)
+        .map_err(failed(step))
+}
+
 /// The OpenZFS release Amazon Linux builds. Its kernel range (4.18–7.2) covers AL2023's 6.1
 /// and 6.12; bumping it is a deliberate change, checksum and library packages included.
 const OPENZFS_VERSION: &str = "2.4.4";
 /// SHA-256 of the [`OPENZFS_VERSION`] release tarball, lowercase hex.
-const OPENZFS_SHA256: &str = "2a3c70d55a37cc71618a95a60e81ad66530201eb118d37741dc92efcf848c8b1";
+pub(super) const OPENZFS_SHA256: &str =
+    "2a3c70d55a37cc71618a95a60e81ad66530201eb118d37741dc92efcf848c8b1";
 /// The DKMS module, the userspace tools and the libraries they link.
 const OPENZFS_PACKAGES: [&str; 6] = [
     "zfs-dkms",
@@ -283,7 +311,7 @@ const OPENZFS_PACKAGES: [&str; 6] = [
 ];
 
 /// Build dependencies of the OpenZFS RPMs, besides the running kernel's `kernel-devel`.
-const OPENZFS_BUILD_DEPENDENCIES: [&str; 20] = [
+pub(super) const OPENZFS_BUILD_DEPENDENCIES: [&str; 20] = [
     "dkms",
     "gcc",
     "make",
@@ -308,12 +336,12 @@ const OPENZFS_BUILD_DEPENDENCIES: [&str; 20] = [
 
 /// The dnf capability of the headers for `kernel`; AL2023 names its provider kernel-devel or
 /// kernel6.12-devel.
-fn kernel_devel(kernel: &str) -> String {
+pub(super) fn kernel_devel(kernel: &str) -> String {
     format!("kernel-devel-uname-r = {kernel}")
 }
 
 /// Refuses when no repository offers `kernel-devel` for the running kernel.
-fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), Error> {
+pub(super) fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), Error> {
     let providers = command_stdout(
         "find kernel-devel for the running kernel",
         "dnf",
@@ -340,53 +368,15 @@ fn prepare_amazon_zfs(
     sha256: &str,
 ) -> Result<(), Error> {
     build_zfs_module(os, kernel, || {
-        let version = OPENZFS_VERSION;
         let scratch = staging_directory(Path::new("/var/tmp"))
             .map_err(failed("staging the OpenZFS build"))?;
-        let tarball = scratch.path().join(format!("zfs-{version}.tar.gz"));
-        let step = "downloading OpenZFS";
-        let mut download = Command::new("curl");
-        download
-            .args(["--proto", "=https", "--tlsv1.2", "-fsSL", "--retry", "3", "-o"])
-            .arg(&tarball)
-            .arg(format!(
-                "https://github.com/openzfs/zfs/releases/download/zfs-{version}/zfs-{version}.tar.gz"
-            ));
-        run_step(step, &mut download)?;
-        let bytes = fs::read(&tarball)
-            .map_err(|source| Error::Io {
-                stage: step,
-                source,
-            })
-            .map_err(failed(step))?;
-        // Checked before anything is installed, so a bad download leaves the Machine untouched.
-        verify_checksum(&bytes, &format!("zfs-{version}.tar.gz"), sha256)
-            .map_err(failed("the OpenZFS checksum check"))?;
+        let tarball = download_openzfs(scratch.path(), sha256)?;
         let mut dependencies = Command::new("dnf");
         dependencies
             .args(["install", "-y", &kernel_devel(kernel)])
             .args(OPENZFS_BUILD_DEPENDENCIES);
         run_step("installing build dependencies", &mut dependencies)?;
-        let mut unpack = Command::new("tar");
-        unpack
-            .args(["--no-same-owner", "-xzf"])
-            .arg(&tarball)
-            .arg("-C")
-            .arg(scratch.path());
-        run_step("unpacking OpenZFS", &mut unpack)?;
-        let source = scratch.path().join(format!("zfs-{version}"));
-        // The RPM specs configure their own builds; this only prepares `make dist`.
-        let mut configure = Command::new("./configure");
-        configure.arg("--with-config=user").current_dir(&source);
-        run_step("configuring OpenZFS", &mut configure)?;
-        // AL2023's kernel-devel carries Epoch 1, so zfs-dkms's Fedora-only kernel range pins
-        // conflict with every AL2023 kernel. Building it as non-Fedora drops them.
-        let step = "building the ZFS RPMs";
-        let mut make = Command::new("make");
-        make.args(["rpm-utils", "rpm-dkms", "RPM_DEFINE_DKMS=--undefine=fedora"])
-            .current_dir(&source);
-        run_step(step, &mut make)?;
-        let rpms = built_rpms(&source).map_err(failed(step))?;
+        let rpms = make_openzfs_rpms(scratch.path(), &tarball)?;
         // zfs-dkms's install builds and installs the module for the running kernel.
         let mut install = Command::new("dnf");
         install.args(["install", "-y"]).args(rpms);
@@ -405,6 +395,67 @@ fn prepare_amazon_zfs(
             })
             .map_err(failed(step))
     })
+}
+
+pub(super) fn download_openzfs(dir: &Path, sha256: &str) -> Result<PathBuf, BuildFailure> {
+    let version = OPENZFS_VERSION;
+    let name = format!("zfs-{version}.tar.gz");
+    let tarball = dir.join(&name);
+    let cached = fs::read(&tarball)
+        .ok()
+        .is_some_and(|bytes| verify_checksum(&bytes, &name, sha256).is_ok());
+    if cached {
+        return Ok(tarball);
+    }
+    let step = "downloading OpenZFS";
+    let mut download = Command::new("curl");
+    download
+        .args([
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "-fsSL",
+            "--retry",
+            "3",
+            "-o",
+        ])
+        .arg(&tarball)
+        .arg(format!(
+            "https://github.com/openzfs/zfs/releases/download/zfs-{version}/{name}"
+        ));
+    run_step(step, &mut download)?;
+    let bytes = fs::read(&tarball)
+        .map_err(|source| Error::Io {
+            stage: step,
+            source,
+        })
+        .map_err(failed(step))?;
+    // Checked before anything is installed, so a bad download leaves the Machine untouched.
+    verify_checksum(&bytes, &name, sha256).map_err(failed("the OpenZFS checksum check"))?;
+    Ok(tarball)
+}
+
+pub(super) fn make_openzfs_rpms(dir: &Path, tarball: &Path) -> Result<Vec<PathBuf>, BuildFailure> {
+    let mut unpack = Command::new("tar");
+    unpack
+        .args(["--no-same-owner", "-xzf"])
+        .arg(tarball)
+        .arg("-C")
+        .arg(dir);
+    run_step("unpacking OpenZFS", &mut unpack)?;
+    let source = dir.join(format!("zfs-{OPENZFS_VERSION}"));
+    // The RPM specs configure their own builds; this only prepares `make dist`.
+    let mut configure = Command::new("./configure");
+    configure.arg("--with-config=user").current_dir(&source);
+    run_step("configuring OpenZFS", &mut configure)?;
+    // AL2023's kernel-devel carries Epoch 1, so zfs-dkms's Fedora-only kernel range pins
+    // conflict with every AL2023 kernel. Building it as non-Fedora drops them.
+    let step = "building the ZFS RPMs";
+    let mut make = Command::new("make");
+    make.args(["rpm-utils", "rpm-dkms", "RPM_DEFINE_DKMS=--undefine=fedora"])
+        .current_dir(&source);
+    run_step(step, &mut make)?;
+    built_rpms(&source).map_err(failed(step))
 }
 
 /// The binary RPMs of [`OPENZFS_PACKAGES`] that `make` left in `source`.
@@ -447,7 +498,7 @@ fn debian_kernel_flavour(kernel: &str) -> Option<&str> {
         .filter(|flavour| !flavour.is_empty())
 }
 
-fn uname(arg: &str, stage: &str) -> Result<String, Error> {
+pub(super) fn uname(arg: &str, stage: &str) -> Result<String, Error> {
     let output = run_host(stage, "uname", [arg])?;
     let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     if value.is_empty() {
