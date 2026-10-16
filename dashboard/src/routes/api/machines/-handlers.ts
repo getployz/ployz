@@ -1,7 +1,7 @@
 import { Effect, Option, Result } from "effect";
 import { flow } from "effect/Function";
-import { crashPushInput, decodeCrashPush, decodePageviewPush, decodePushHeader, isObserveStream, pageviewPushInput } from "#/modules/observe-ingest/ingest";
-import { authenticateObservePush, ingestCrashPush, ingestPageviewPush, type ObservePusher, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
+import { crashPushInput, decodeCrashPush, decodePushHeader, decodeRequestPush, isObserveStream, requestPushInput } from "#/modules/observe-ingest/ingest";
+import { authenticateObservePush, ingestCrashPush, ingestRequestPush, type ObservePusher, observePushCredentials } from "#/modules/observe-ingest/ingest.server";
 import type { ObserveStream } from "#/modules/observe-ingest/tables";
 import { ackSalts } from "#/modules/web-analytics/salts.server";
 import { encodePublicError, NotFound, statusForPublicError, Validation } from "#/server/public-error";
@@ -9,14 +9,14 @@ import { encodePublicError, NotFound, statusForPublicError, Validation } from "#
 const noStore = { "cache-control": "no-store" };
 const MAX_PUSH_BYTES = 256 * 1024;
 
-type Ingest = ReturnType<typeof ingestCrashPush> | ReturnType<typeof ingestPageviewPush>;
+type Ingest = ReturnType<typeof ingestCrashPush> | ReturnType<typeof ingestRequestPush>;
 type IngestRun = Effect.Effect<void, Effect.Error<Ingest>, Effect.Services<Ingest>>;
 
 const ingestStream = {
   crash: (pusher: ObservePusher) =>
     flow(decodeCrashPush, Option.flatMap(crashPushInput), Option.map((push): IngestRun => ingestCrashPush(pusher, push))),
-  pageviews: (pusher: ObservePusher) =>
-    flow(decodePageviewPush, Option.flatMap(pageviewPushInput), Option.map((push): IngestRun => ingestPageviewPush(pusher, push))),
+  requests: (pusher: ObservePusher) =>
+    flow(decodeRequestPush, Option.flatMap(requestPushInput), Option.map((push): IngestRun => ingestRequestPush(pusher, push))),
 } satisfies Record<ObserveStream, (pusher: ObservePusher) => (json: Parameters<typeof decodeCrashPush>[0]) => Option.Option<IngestRun>>;
 
 function errorResponse(cause: unknown) {

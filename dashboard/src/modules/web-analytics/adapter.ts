@@ -2,11 +2,13 @@ import { Clock, Effect } from "effect";
 import { Validation } from "#/server/public-error";
 import * as compute from "./compute";
 import { isHourStart, retentionFloor } from "./local-time";
-import type { FilterKey, Interval, Query, Range, SessionDim } from "./model";
+import type { FilterKey, Interval, Query, Range, Site } from "./model";
+import * as routes from "./postgres/routes";
 import * as store from "./postgres/store";
 
 export * from "./model";
-export type { Bucket, EntryResult, Overview, SessionResult } from "./compute";
+export type { Bucket, EntryResult, Overview } from "./compute";
+export type { RequestSample, RouteRow, RouteStatus, StatusBucket } from "./postgres/routes";
 
 /** Every answer names the range it covers; `clamped` says retention cut the asked-for start. */
 export type Answered = { readonly range: Range; readonly clamped: boolean };
@@ -22,47 +24,13 @@ const resolve = Effect.fn("WebAnalytics.resolve")(function* (q: Query) {
     }
   }
   if (q.range.start >= q.range.end) return yield* new Validation({ message: "Range start must be before its end.", field: "start" });
-  const floor = retentionFloor(timezone, yield* Clock.currentTimeMillis, q.site.retentionMonths);
+  const floor = retentionFloor(timezone, yield* Clock.currentTimeMillis);
   const start = q.range.start < floor ? new Date(Math.min(floor.getTime(), q.range.end.getTime())) : q.range.start;
   const range: Range = { start, end: q.range.end };
   return { range, clamped: start.getTime() !== q.range.start.getTime(), store: storeQuery(q, range) };
 });
 
-export const overview = Effect.fn("WebAnalytics.overview")(function* (q: Query) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, totals: compute.overview(yield* store.dailyTotals(sq)) };
-});
-
-export const timeseries = Effect.fn("WebAnalytics.timeseries")(function* (q: Query, interval: Interval) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  const rows = interval === "hour" ? yield* store.hourlyTotals(sq) : yield* store.dailyTotals(sq);
-  return { range, clamped, buckets: compute.timeseries(rows, range, q.site.timezone, interval) };
-});
-
-export const breakdown = Effect.fn("WebAnalytics.breakdown")(function* (q: Query, dim: FilterKey) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, values: compute.breakdown(yield* store.breakdown(sq, dim), q.limit) };
-});
-
-export const topPages = (q: Query) => breakdown(q, "page");
-export const sources = (q: Query) => breakdown(q, "source");
-
-export const sessions = Effect.fn("WebAnalytics.sessions")(function* (q: Query, dim: SessionDim) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, values: compute.sessions(yield* store.sessionsBy(sq, dim), q.limit) };
-});
-
-export const entryPages = Effect.fn("WebAnalytics.entryPages")(function* (q: Query) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, values: compute.entryPages(yield* store.entryPages(sq), q.limit) };
-});
-
-export const goalConversions = Effect.fn("WebAnalytics.goalConversions")(function* (q: Query) {
-  const { range, clamped, store: sq } = yield* resolve(q);
-  return { range, clamped, goals: compute.goalConversions(yield* store.goalConversions(sq)) };
-});
-
-/** Every figure of one range the view shows, with a breakdown per dim; with filters, one sessionization serves them all. */
+/** Every figure of one range the Web view shows, with a breakdown per dim; one sessionization serves them all. */
 export const figures = Effect.fn("WebAnalytics.figures")(function* <Dim extends FilterKey>(q: Query, interval: Interval, dims: ReadonlyArray<Dim>) {
   const { range, clamped, store: sq } = yield* resolve(q);
   const rows = yield* store.figures(sq, interval, dims);
@@ -76,5 +44,18 @@ export const figures = Effect.fn("WebAnalytics.figures")(function* <Dim extends 
     values: (dim: Dim) => values.get(dim) ?? [],
     entryPages: compute.entryPages(rows.entries, q.limit),
     goals: compute.goalConversions(rows.goals),
+    noSaltDays: rows.noSaltDays,
   };
 });
+
+export const api = Effect.fn("WebAnalytics.api")(function* (q: Query, service?: string) {
+  const { range, clamped, store: sq } = yield* resolve(q);
+  return { range, clamped, ...(yield* routes.api({ ...sq, ...(service !== undefined && { service }) })) };
+});
+
+export const errors = Effect.fn("WebAnalytics.errors")(function* (q: Query, service?: string) {
+  const { range, clamped, store: sq } = yield* resolve(q);
+  return { range, clamped, ...(yield* routes.errors({ ...sq, ...(service !== undefined && { service }) })) };
+});
+
+export const request = (site: Site, requestId: string) => routes.request(site.environmentId, requestId);

@@ -84,8 +84,6 @@ describe("Inngest function policies", () => {
       { id: "uptime-rollup", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "uptime-prune", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "uptime-backfill", retries: 3, concurrency: [{ limit: 1 }] },
-      { id: "analytics-rollup", retries: 3, concurrency: [{ limit: 1 }] },
-      { id: "analytics-dirty", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "analytics-retention", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
@@ -95,10 +93,8 @@ describe("Inngest function policies", () => {
     expect(rollup?.opts).toMatchObject({ id: "uptime-rollup", triggers: [{ cron: "5 * * * *" }] });
   });
 
-  it("runs analytics rollup every 15 minutes, dirty rebuilds every 5, retention daily, all on UTC crons", () => {
-    const [rollup, dirty, retention] = createWebAnalyticsFunctions(new Inngest({ id: "analytics-contract" }));
-    expect(rollup?.opts).toMatchObject({ id: "analytics-rollup", triggers: [{ cron: "TZ=UTC */15 * * * *" }] });
-    expect(dirty?.opts).toMatchObject({ id: "analytics-dirty", triggers: [{ cron: "TZ=UTC */5 * * * *" }] });
+  it("runs analytics retention daily on a UTC cron", () => {
+    const [retention] = createWebAnalyticsFunctions(new Inngest({ id: "analytics-contract" }));
     expect(retention?.opts).toMatchObject({ id: "analytics-retention", triggers: [{ cron: "TZ=UTC 20 3 * * *" }] });
   });
 

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { Clock, Effect, Option, Schema } from "effect";
 import type { MachineId } from "#/db/tables";
 import { createObserveCrashReceivedEvent } from "#/modules/inngest/events";
@@ -8,14 +8,14 @@ import { decryptPairingSecret } from "#/modules/machines/connections.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { managementIdentity } from "#/modules/machines/management-identity";
 import { organizationMachine } from "#/modules/machines/tables";
-import type { BotsInput, CrashPushInput, GapInput, PageviewInput, PageviewPushInput } from "#/modules/observe-ingest/ingest";
+import type { CrashPushInput, RequestPushInput } from "#/modules/observe-ingest/ingest";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
-import { ENTRY_LOOKBACK_SECONDS, localDays, retentionCutoff, SESSION_GAP_SECONDS } from "#/modules/web-analytics/local-time";
-import type { Site } from "#/modules/web-analytics/model";
-import { ensurePartitions, monthOf } from "#/modules/web-analytics/postgres/partitions";
-import { namespacesByEnvironment, siteDay } from "#/modules/web-analytics/salts.server";
-import { analyticsBotDaily, analyticsGapDaily, analyticsPageview, analyticsRollupState, analyticsSite } from "#/modules/web-analytics/tables";
+import { classify } from "#/modules/web-analytics/classify";
+import { retentionCutoff } from "#/modules/web-analytics/local-time";
+import { dayOf, ensurePartitions } from "#/modules/web-analytics/postgres/partitions";
+import { namespacesByEnvironment } from "#/modules/web-analytics/salts.server";
+import { analyticsRequest, analyticsSite } from "#/modules/web-analytics/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -127,135 +127,43 @@ export const ingestCrashPush = Effect.fn("ObserveIngest.crash")(function* (pushe
 });
 
 const DAY_MS = 86_400_000;
-const NO_BATCH_YET = -1n;
 
-type IngestSite = Pick<Site, "environmentId" | "timezone">;
-
-const rollupDaysChangedBy = (timezone: string, ts: Date) =>
-  localDays(timezone, new Date(ts.getTime() - SESSION_GAP_SECONDS * 1000), new Date(ts.getTime() + ENTRY_LOOKBACK_SECONDS * 1000 + 1));
-
-export const ingestPageviewPush = Effect.fn("ObserveIngest.pageviews")(function* (pusher: ObservePusher, push: PageviewPushInput) {
+export const ingestRequestPush = Effect.fn("ObserveIngest.requests")(function* (pusher: ObservePusher, push: RequestPushInput) {
   if (push.dropped > 0) {
-    yield* Effect.logWarning("A Machine dropped pageviews it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
+    yield* Effect.logWarning("A Machine dropped requests it could not keep for Cloud.", { ...pusher, dropped: push.dropped });
   }
   if (!(yield* AppConfig).analyticsEnabled) return;
   const { drizzle } = yield* Database;
-  const enabled = yield* drizzle.select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone })
+  const enabled = yield* drizzle.select({ environmentId: analyticsSite.environmentId })
     .from(analyticsSite)
     .where(and(eq(analyticsSite.organizationId, pusher.organizationId), eq(analyticsSite.enabled, true)));
   if (enabled.length === 0) return;
   const namespaces = yield* namespacesByEnvironment(pusher.organizationId);
-  const sites = new Map<string, IngestSite>();
+  const environments = new Map<string, string>();
   for (const site of enabled) {
     const namespace = namespaces.get(site.environmentId);
-    if (namespace !== undefined) sites.set(namespace, site);
+    if (namespace !== undefined) environments.set(namespace, site.environmentId);
   }
 
   const now = yield* Clock.currentTimeMillis;
-  const floor = retentionCutoff(now);
-  const pageviews: Array<{ readonly site: IngestSite; readonly row: PageviewInput }> = [];
-  const bots = new Map<string, Omit<BotsInput, "kind" | "namespace"> & { readonly environmentId: string }>();
-  const gaps = new Map<string, Omit<GapInput, "kind" | "namespace"> & { readonly environmentId: string; readonly day: string }>();
-  for (const event of push.events) {
-    const site = sites.get(event.namespace);
-    if (site === undefined) continue;
-    if (event.kind === "pageview") {
-      if (event.ts < floor || event.ts.getTime() > now + DAY_MS) continue;
-      pageviews.push({ site, row: event });
-    } else if (event.kind === "bots") {
-      const key = JSON.stringify([site.environmentId, event.day, event.reason]);
-      bots.set(key, { environmentId: site.environmentId, day: event.day, reason: event.reason, count: (bots.get(key)?.count ?? 0) + event.count });
-    } else {
-      const day = event.day ?? siteDay(site.timezone, now);
-      const key = JSON.stringify([site.environmentId, day]);
-      gaps.set(key, { environmentId: site.environmentId, day, count: (gaps.get(key)?.count ?? 0) + event.count });
-    }
-  }
-  if (pageviews.length === 0 && bots.size === 0 && gaps.size === 0) return;
-  yield* ensurePartitions(pageviews.map(({ row }) => monthOf(row.ts)));
+  const cutoff = retentionCutoff(now);
+  const rows = push.rows.flatMap(({ namespace, ua, contentType, secPurpose, ...row }) => {
+    const environmentId = environments.get(namespace);
+    if (environmentId === undefined || row.ts < cutoff || row.ts.getTime() > now + DAY_MS) return [];
+    return [{ ...row, environmentId, ...classify({ method: row.method, status: row.status, ua, contentType, secPurpose }) }];
+  });
+  yield* ensurePartitions(rows.map((row) => dayOf(row.ts)));
 
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const cursorKey = and(
-      eq(observeIngestCursor.organizationId, pusher.organizationId),
-      eq(observeIngestCursor.machineId, pusher.machineId),
-      eq(observeIngestCursor.stream, "pageviews"),
-    );
     yield* drizzle.insert(observeIngestCursor)
-      .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "pageviews", seq: NO_BATCH_YET })
-      .onConflictDoNothing();
-    const [cursor] = yield* drizzle.select({ seq: observeIngestCursor.seq }).from(observeIngestCursor).where(cursorKey).for("update");
-    yield* drizzle.update(observeIngestCursor)
-      .set({ seq: sql`greatest(${observeIngestCursor.seq}, ${push.seq.toString()}::bigint)`, updatedAt: new Date(now) })
-      .where(cursorKey);
-
-    // Every write below waits on its environments' rollup_state rows, locked in id order, the order the rollup and the
-    // environment delete trigger take them, so a delete racing this batch waits for it or it for the delete.
-    const environmentIds = [...new Set([
-      ...pageviews.map(({ site }) => site.environmentId),
-      ...[...bots.values()].map((row) => row.environmentId),
-      ...[...gaps.values()].map((row) => row.environmentId),
-    ])].sort();
-    const rolledUpTo = new Map<string, string | null>();
-    for (const environmentId of environmentIds) {
-      yield* drizzle.insert(analyticsRollupState).values({ environmentId }).onConflictDoNothing();
-      const [state] = yield* drizzle.select({ rolledUpTo: analyticsRollupState.rolledUpTo }).from(analyticsRollupState)
-        .where(eq(analyticsRollupState.environmentId, environmentId))
-        .for("update");
-      rolledUpTo.set(environmentId, state?.rolledUpTo ?? null);
-    }
-    const sites = environmentIds.length === 0 ? [] : yield* drizzle
-      .select({ environmentId: analyticsSite.environmentId, timezone: analyticsSite.timezone, enabled: analyticsSite.enabled })
-      .from(analyticsSite)
-      .where(inArray(analyticsSite.environmentId, environmentIds));
-    const timezones = new Map(sites.filter((site) => site.enabled).map((site) => [site.environmentId, site.timezone]));
-    // An environment deleted before this batch has no site: drop the state row the lock above just made for it.
-    const gone = environmentIds.filter((id) => !sites.some((site) => site.environmentId === id));
-    if (gone.length > 0) yield* drizzle.delete(analyticsRollupState).where(inArray(analyticsRollupState.environmentId, gone));
-
-    if (push.seq > (cursor?.seq ?? NO_BATCH_YET)) {
-      const keptBots = [...bots.values()].filter((row) => timezones.has(row.environmentId));
-      if (keptBots.length > 0) {
-        yield* drizzle.insert(analyticsBotDaily).values(keptBots).onConflictDoUpdate({
-          target: [analyticsBotDaily.environmentId, analyticsBotDaily.day, analyticsBotDaily.reason],
-          set: { count: sql`${analyticsBotDaily.count} + excluded.count` },
-        });
-      }
-      const keptGaps = [...gaps.values()].filter((row) => timezones.has(row.environmentId));
-      if (keptGaps.length > 0) {
-        yield* drizzle.insert(analyticsGapDaily).values(keptGaps).onConflictDoUpdate({
-          target: [analyticsGapDaily.environmentId, analyticsGapDaily.day],
-          set: { count: sql`${analyticsGapDaily.count} + excluded.count` },
-        });
-      }
-    }
-
-    const admitted = pageviews.filter(({ site }) => timezones.has(site.environmentId));
-    if (admitted.length === 0) return;
-
-    const inserted = yield* drizzle.insert(analyticsPageview)
-      .values(admitted.map(({ site, row: { kind: _kind, namespace: _namespace, ...row } }) => ({ ...row, environmentId: site.environmentId })))
-      .onConflictDoNothing()
-      .returning({ environmentId: analyticsPageview.environmentId, ts: analyticsPageview.ts });
-    const dirty = new Map<string, Set<string>>();
-    for (const row of inserted) {
-      const timezone = timezones.get(row.environmentId);
-      const closed = rolledUpTo.get(row.environmentId);
-      if (timezone === undefined) throw new Error(`inserted a pageview for ${row.environmentId}, which has no enabled site`);
-      if (closed == null) continue;
-      const days = dirty.get(row.environmentId) ?? new Set<string>();
-      for (const day of rollupDaysChangedBy(timezone, row.ts)) if (day <= closed) days.add(day);
-      dirty.set(row.environmentId, days);
-    }
-    for (const [environmentId, days] of dirty) {
-      if (days.size === 0) continue;
-      yield* drizzle.update(analyticsRollupState)
-        .set({
-          dirty: sql`array(select distinct d from unnest(${analyticsRollupState.dirty} || ${sql.param([...days])}::date[]) d order by d)`,
-          updatedAt: new Date(now),
-        })
-        .where(eq(analyticsRollupState.environmentId, environmentId));
-    }
+      .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "requests", seq: push.seq })
+      .onConflictDoUpdate({
+        target: [observeIngestCursor.organizationId, observeIngestCursor.machineId, observeIngestCursor.stream],
+        set: { seq: sql`greatest(${observeIngestCursor.seq}, excluded.seq)`, updatedAt: new Date(now) },
+      });
+    if (rows.length > 0) yield* drizzle.insert(analyticsRequest).values(rows).onConflictDoNothing();
   }));
 });
+

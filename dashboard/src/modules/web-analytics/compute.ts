@@ -1,10 +1,9 @@
 import { dayStart, hourBuckets, localDays } from "./local-time";
-import type { BucketRow, EntryRow, GoalRow, Interval, Range, SessionRow, Totals, ValueRow } from "./model";
+import type { BucketRow, EntryRow, GoalRow, Interval, Range, Totals, ValueRow } from "./model";
 import { ZERO_TOTALS } from "./model";
 
 export type Overview = Totals & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
 export type Bucket = BucketRow & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
-export type SessionResult = SessionRow & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
 export type EntryResult = EntryRow & { readonly bounceRatePercent: number; readonly avgDurationSeconds: number };
 
 export function rates(row: { readonly visits: number; readonly bounces: number; readonly totalDuration: number }) {
@@ -32,33 +31,14 @@ export const overview = (rows: ReadonlyArray<Totals>): Overview => {
   return { ...totals, ...rates(totals) };
 };
 
-export function mergeValues<Row extends { readonly value: string }>(rows: ReadonlyArray<Row>, add: (a: Row, b: Row) => Row) {
-  const byValue = new Map<string, Row>();
-  for (const row of rows) {
-    const seen = byValue.get(row.value);
-    byValue.set(row.value, seen === undefined ? row : add(seen, row));
-  }
-  return [...byValue.values()];
-}
-
-const addValue = (a: ValueRow, b: ValueRow): ValueRow => ({ value: a.value, pageviews: a.pageviews + b.pageviews, visitors: a.visitors + b.visitors });
-const addSession = (a: SessionRow, b: SessionRow): SessionRow => ({
-  value: a.value, visits: a.visits + b.visits, bounces: a.bounces + b.bounces, totalDuration: a.totalDuration + b.totalDuration,
-});
-const addEntry = (a: EntryRow, b: EntryRow): EntryRow => ({ ...addSession(a, b), visitors: a.visitors + b.visitors });
-
 const byCountThenValue = <Row extends { readonly value: string }>(count: (row: Row) => number) =>
   (a: Row, b: Row) => count(b) - count(a) || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0);
 
 export const breakdown = (rows: ReadonlyArray<ValueRow>, limit: number): ValueRow[] =>
-  mergeValues(rows, addValue).sort(byCountThenValue<ValueRow>((row) => row.visitors)).slice(0, limit);
-
-export const sessions = (rows: ReadonlyArray<SessionRow>, limit: number): SessionResult[] =>
-  mergeValues(rows, addSession).sort(byCountThenValue<SessionRow>((row) => row.visits)).slice(0, limit)
-    .map((row) => ({ ...row, ...rates(row) }));
+  [...rows].sort(byCountThenValue<ValueRow>((row) => row.visitors)).slice(0, limit);
 
 export const entryPages = (rows: ReadonlyArray<EntryRow>, limit: number): EntryResult[] =>
-  mergeValues(rows, addEntry).sort(byCountThenValue<EntryRow>((row) => row.visitors)).slice(0, limit)
+  [...rows].sort(byCountThenValue<EntryRow>((row) => row.visitors)).slice(0, limit)
     .map((row) => ({ ...row, ...rates(row) }));
 
 export const goalConversions = (rows: ReadonlyArray<GoalRow>): GoalRow[] =>
