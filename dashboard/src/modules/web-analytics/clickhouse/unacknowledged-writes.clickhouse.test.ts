@@ -152,7 +152,8 @@ for (const supersedes of ["a rebuild", "a backfill"] as const) {
 
 it.live("losing every acknowledgement for longer than the pending cap parks the drain at the cap, keeps the published view, and resumes once garbage collection frees the dead slots", () =>
   Effect.gen(function* () {
-    const { clickhouse, provide, daily, enqueue, pendingCount } = yield* setup;
+    const { clickhouse: real, provide, daily, enqueue, pendingCount } = yield* setup;
+    const clickhouse: ClickHouseService = { ...real, writeLifetimeSeconds: 2 };
     const lossy = losesEveryAck(clickhouse);
     const lost = PENDING_CAP + 8;
     for (let n = 0; n < lost; n++) {
@@ -167,6 +168,9 @@ it.live("losing every acknowledgement for longer than the pending cap parks the 
     expect(yield* daily).toBe(2);
     yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
     expect(yield* pendingCount).toBe(PENDING_CAP);
+    yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
+    expect(yield* pendingCount).toBe(PENDING_CAP);
+    yield* Effect.sleep("2500 millis");
     yield* provide(collectGarbage(clickhouse, yield* provide(pin())));
     expect(yield* pendingCount).toBe(0);
     while ((yield* provide(drainOutbox(clickhouse))) > 0) {}
