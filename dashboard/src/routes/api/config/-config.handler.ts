@@ -6,8 +6,9 @@ import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
-import { callerPermissions } from "#/modules/identity/actor";
+import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { lacks } from "#/modules/organization/access.server";
 import { NotFound, Validation } from "#/server/public-error";
 
 /**
@@ -26,6 +27,9 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   yield* Effect.annotateCurrentSpan("ployz.agent", agent ?? "none");
   const caller = yield* resolveCaller(request.headers);
   if (upload !== undefined) {
+    // A blob lands in no Environment: unreferenced, it's released after a day, and the Deployment that names it meets the Store's Environment check.
+    const lacking = lacks(caller, "changes:deploy", "store");
+    if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: { permission: "changes:deploy" } });
     const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
     return refused === undefined
       ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })
@@ -46,7 +50,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
     : { ok: true, approval: "not_required" } as const;
   if (!approval.ok) return refusal(approval.refusal);
-  const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller) } as const;
+  const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller), environments: callerEnvironments(caller) } as const;
   const result = yield* callStore(caller.organization.id, caller.userId, call, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {

@@ -7,8 +7,10 @@ import { disconnectGithub, githubBranches, githubConnection, GithubRepositories 
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { TOKEN_PRESETS, type TokenPreset } from "#/modules/identity/token-grant";
 import {
   createOrganizationToken,
+  knownEnvironment,
   listCredentials,
   requireSignedIn,
   revokeCredential,
@@ -42,7 +44,8 @@ import { freshApproval, freshOperationDigest, planClean } from "#/modules/machin
 import { readCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { type Admission, REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, UpgradeServer } from "#/modules/operations/cli-wire";
-import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, upgradeServer } from "#/modules/operations/operations.server";
+import { OPERATIONS } from "#/modules/operations/operations";
+import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -53,7 +56,22 @@ const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
   kind: Schema.optional(Schema.Literals(TOKEN_KINDS)),
+  preset: Schema.optional(Schema.Literals(TOKEN_PRESETS)),
+  environment: Schema.optional(Schema.String.check(Schema.isMaxLength(253))),
 });
+
+const presetOf = (input: typeof NewToken.Type): Effect.Effect<TokenPreset, Validation> => {
+  const preset = input.preset ?? "full";
+  if (preset === "deploy") {
+    // Any other name is looked up, so one that isn't a DNS label hears that no Environment has it.
+    return input.environment === undefined || input.environment === ""
+      ? Effect.fail(new Validation({ message: "A Deploy token needs an Environment; pass `--environment`.", userFacing: true }))
+      : Effect.succeed({ preset, environment: input.environment });
+  }
+  return input.environment === undefined
+    ? Effect.succeed({ preset })
+    : Effect.fail(new Validation({ message: "Only a Deploy token takes an Environment.", userFacing: true }));
+};
 
 const NewFleetToken = Schema.Struct({
   name: Schema.optional(FleetTokenName),
@@ -112,7 +130,7 @@ function volumeRunInput(body: typeof NewVolumeRun.Type): VolumeRunInput {
 const missingRefusal = (message: string) => refusal({ code: "not_found", message, details: null });
 const noSuchServer = () => missingRefusal("No such Server.");
 
-const forgetter = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });
+const forgetter = (caller: Caller) => ({ userId: caller.userId, credential: caller.credential, organizationId: caller.organization.id });
 
 const approvalHeader = (request: Request) => request.headers.get("x-ployz-approval");
 
@@ -166,7 +184,8 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST tokens": {
       const input = yield* decodeBody(NewToken, request,
         "A token needs a name of 1 to 64 characters, an expiry of 1 to 365 days, and a kind of cli or agent.");
-      return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind }).pipe(
+      const preset = yield* knownEnvironment(caller, yield* presetOf(input));
+      return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind, preset }).pipe(
         Effect.map((token) => ({ token })),
         Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
       );
@@ -397,6 +416,8 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "POST volumes/:id/sync": {
       const body = yield* decodeBody(SyncVolume, request, "A volume sync takes its environment.");
+      const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, body.environment.environment);
+      if (unsynced !== null) return refusal(unsynced.refusal);
       return yield* refreshMirror({ userId: caller.userId, organizationId: caller.organization.id }, body.environment, id ?? "").pipe(
         Effect.map((synced) => synced.ok ? { lines: synced.lines } : refusal(synced.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),

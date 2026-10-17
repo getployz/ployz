@@ -10,7 +10,9 @@ Ployz creates one for you, named after you (like Ada's Projects).
 
 You can invite people to work in your organization with you. See
 [Invite people](#invite-people). To let a CI job act for you, make an
-[organization token](../cli/overview.md#make-an-organization-token).
+[organization token](../cli/overview.md#make-an-organization-token) under **Organization →
+Tokens**. Pick **Deploy** and an Environment for a token that can only deploy there, **Read only**
+for one that can't change anything, or **Full as you** for one that can do whatever you can.
 
 To make another organization, open the account menu and click **Switch organization → New
 organization**. Name it, change its URL if you like, and click **Create**. You land in the new

@@ -175,7 +175,7 @@ An entry marked **Not in any Project** is left over from a deleted project or en
 ## Reach a server from the CLI
 
 When the CLI reaches your servers through Ployz Cloud, only owners and admins can run these commands:
-`exec`, `logs`, `ps`, `metrics`, `service start`, `service stop`, `service restart`,
+`exec`, `service start`, `service stop`, `service restart`,
 `service port-forward`, `server ls`, `server show`, `server logs`, `server set`,
 `server drain`, `server upgrade`, `server rm`, `server forget <server>` and `server clean`
 without a namespace. A member who runs one gets this, and the command exits 1:
@@ -184,7 +184,9 @@ without a namespace. A member who runs one gets this, and the command exits 1:
 Server access needs an admin. Ask an owner or admin of acme.
 ```
 
-Members can still deploy, and still see logs and restart services on these pages. An admin
+Members can still deploy, and still see logs and restart services on these pages. `logs`, `ps`
+and `metrics` still work for them in the CLI: Ployz Cloud reads the servers for them and shows
+each server's newest 200 lines at most, so `logs --follow` needs an owner or admin. An admin
 moved to member loses this access within 5 minutes.
 
 ## Change what a server does

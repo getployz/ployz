@@ -197,10 +197,12 @@ macro_rules! commands {
                             let fits = |at: &mut Call<'_>, first: &$answer| {
                                 $($same)::+(&mut *at.tx, at.who, self, first)
                             };
-                            return replayable(at, self, &ids, fits, run);
+                            let answer = replayable(at, self, &ids, fits, run)?;
+                            return refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()));
                         }
                     )?
-                    run(at)
+                    let answer = run(at)?;
+                    refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()))
                 }
 
                 fn to_command(&self) -> Value {
@@ -766,6 +768,18 @@ pub enum Written {
     PrPlans(crate::PrPlansView),
     /// What each command of a Batch did.
     Batch(Batched),
+}
+
+fn refuse_outside_environments<A: Clone>(
+    at: &mut Call<'_>,
+    answer: A,
+    written: impl FnOnce(A) -> Written,
+) -> Result<A, RpcError> {
+    if at.trusted.environments.is_some() {
+        at.trusted
+            .refuse_written_outside_environments(&mut *at.tx, &written(answer.clone()))?;
+    }
+    Ok(answer)
 }
 
 /// Run `create` once for the caller-minted `ids`. Replaying the identical command

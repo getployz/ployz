@@ -14,6 +14,7 @@ import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fix
 import { callStore, callStoreAsMember, callStoreBy, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Access } from "#/modules/organization/access.server";
+import { permissionsOf } from "#/modules/organization/permissions";
 import * as ids from "#/test/ids";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
@@ -21,6 +22,7 @@ import { runStoreDeployment } from "#/modules/config-store/store-deployment.serv
 import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
@@ -857,6 +859,29 @@ it.live(
 );
 
 it.live(
+  "a Read token can't upload source, and nothing is kept",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
+        yield* request("write", alice, shop);
+        const { secret } = yield* createOrganizationToken(yield* resolveCaller(signedIn(alice)), {
+          name: "reader", expiresInDays: 1, preset: { preset: "read" },
+        });
+        const deploymentId = "00000000-0000-4000-8000-000000000204";
+        const refused = yield* upload(deploymentId, secret, yield* sourceArchive);
+        assert.strictEqual(refused.status, 403);
+        expect(refused.json.error).toMatchObject({ code: "forbidden", message: "This token's grant doesn't include changes:deploy." });
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a user's write carries what they hold: none named is a defect, and callStoreBy sends the role's set",
   () =>
     Effect.gen(function* () {
@@ -869,7 +894,7 @@ it.live(
         const memberId = linus?.id ?? assert.fail("no member");
         yield* drizzle.insert(member).values({ userId: memberId, organizationId, role: "member" });
         const organization = { id: organizationId, slug: "shop" };
-        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization });
+        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization, permissions: permissionsOf(role), environments: undefined });
         const buildOrder = write({ command: "set_build_order", build_order: "servers-then-github" });
 
         // A user's write with no permissions named is Cloud's defect, never a grant.
@@ -881,6 +906,38 @@ it.live(
         assert.isFalse(refused.ok);
         if (!refused.ok) assert.deepInclude(refused.refusal, { code: "forbidden", message: "Needs org:settings" });
         assert.isTrue((yield* callStoreBy(organizationId, by(owner, "owner"), buildOrder)).ok);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a Deploy staging token deploys staging, and the Store refuses it production without writing",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const staging = { project: "shop", environment: "staging" };
+        for (const command of [shop, web, { command: "create_environment", id: "00000000-0000-4000-8000-000000000004", project: "shop", name: "staging" } as const]) {
+          assert.strictEqual((yield* request("write", alice, command)).status, 200);
+        }
+        assert.strictEqual((yield* request("write", alice, { command: "create_service", id: "00000000-0000-4000-8000-000000000005", environment: staging, name: "web", image: "nginx:1" })).status, 200);
+        const { secret, scope } = yield* createOrganizationToken(yield* resolveCaller(signedIn(alice)), {
+          name: "ci", expiresInDays: 1, preset: { preset: "deploy", environment: "staging" },
+        });
+        assert.strictEqual(scope, "Deploy staging");
+        const replicas = (environment: typeof here | typeof staging) => request("read", alice, { query: "environment", environment, path: "web.replicas", all: false });
+        const before = (yield* replicas(here)).json;
+
+        const refused = yield* request("write", secret, { command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: "3" }] });
+        assert.strictEqual(refused.status, 403);
+        expect(refused.json.error).toMatchObject({ code: "forbidden", message: "This token can deploy only to staging." });
+        assert.deepStrictEqual((yield* replicas(here)).json, before);
+
+        const landed = yield* request("write", secret, { command: "edit", environment: staging, expect: null, changes: [{ op: "set", path: "web.replicas", value: "3" }] });
+        assert.strictEqual(landed.status, 200);
+        assert.deepStrictEqual(landed.json.staged, ["web.replicas"]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

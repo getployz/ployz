@@ -35,6 +35,7 @@ use crate::{
 
 use super::{
     Error, cancellation_on_ctrl_c, leaf_matches, store::scoped, string_values, with_client,
+    with_reader,
 };
 
 pub(super) fn exec_command(command: Command) -> Command {
@@ -104,6 +105,7 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
     };
     match store.try_read(&NamespaceQuery { environment }) {
         Ok(view) => Ok(Some(Scoped {
+            environment: view.environment,
             namespace: view.namespace,
             services: view.services,
         })),
@@ -116,9 +118,12 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
 
 /// The Namespace a live command acts in, and its Services' runtime names by the
 /// names they have now.
+#[derive(Clone)]
 pub(super) struct Scoped {
+    pub(super) environment: ployz_store::EnvironmentSummary,
     pub(super) namespace: Namespace,
-    services: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
+    pub(super) services:
+        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::ServiceName>,
 }
 
 /// `selector` in `scoped`: a bare Service Name becomes that Namespace's Service, by
@@ -241,6 +246,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         (Some(id), Some(store)) => {
             let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
             Some(Scoped {
+                environment: view.environment,
                 namespace: view.namespace,
                 services: view.runtime_names,
             })
@@ -259,7 +265,18 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
     let window = history_window(leaf, &options);
-    with_client(root, |client| {
+    let fallback = super::cloud_read::LogsAsked {
+        scoped: namespace.clone(),
+        named: &named,
+        deployment: deployment.clone(),
+        tail: options.tail,
+        since_nanos: options.since_nanos,
+        unservable: options.follow
+            || options.until_unix_seconds.is_some()
+            || !machines.is_empty()
+            || args.iter().any(|arg| !arg.containers.is_empty()),
+    };
+    let credential = with_reader(root, |client| {
         Box::pin(async move {
             let started = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
             let cancellation = cancellation_on_ctrl_c();
@@ -343,6 +360,9 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             }
             gaps.outcome()
         })
+    })?;
+    credential.map_or(Ok(()), |credential| {
+        super::cloud_read::logs(root, &credential, fallback)
     })
 }
 
@@ -1270,6 +1290,13 @@ mod scope_tests {
     fn a_renamed_service_is_found_by_its_runtime_name() {
         let name = |text: &str| ployz_core::ServiceName::parse(text).unwrap();
         let scoped = Scoped {
+            environment: ployz_store::EnvironmentSummary {
+                id: ployz_store::EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+                project: ployz_store::ProjectName::parse("shop").unwrap(),
+                name: ployz_store::EnvironmentName::parse("production").unwrap(),
+                revision: ployz_store::Revision(1),
+            },
             namespace: Namespace::parse("shop-production").unwrap(),
             services: [(name("api2"), name("api"))].into(),
         };

@@ -1,3 +1,4 @@
+import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { it } from "@effect/vitest";
 import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
@@ -72,7 +73,7 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
   const withApproval = (approval: Approval) => ({ ...acmeWeb(), approval });
   const refusal = Effect.flip(storeTry(() => store.write(ORGANIZATION, publish, withApproval("required"))))
     .pipe(Effect.map((refused) => refused.refusal));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1", grant: FULL_GRANT }, role: "owner", support: null, via: "cli" };
   const pending = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const rows = yield* drizzle.select({ id: operationApprovals.id }).from(operationApprovals)
@@ -80,8 +81,8 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
     return rows.map((row) => row.id);
   }));
   const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } }, { name: "agent", expiresInDays: 1 }));
-  const cli = (command: ConfigCommand, approval?: string, via?: "agent") => provided(Effect.gen(function* () {
-    const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${secret}` });
+  const cli = (command: ConfigCommand, approval?: string, via?: "agent", bearer = secret) => provided(Effect.gen(function* () {
+    const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${bearer}` });
     if (approval !== undefined) headers.set("x-ployz-approval", approval);
     if (via !== undefined) headers.set("x-ployz-via", via);
     const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", {
@@ -190,8 +191,8 @@ it.live("an agent answers no approval, and what it asked waits on a person in Cl
       ok: false,
       refusal: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this." },
     };
-    const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2" } };
-    const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp" }, via: "agent" };
+    const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2", grant: FULL_GRANT } };
+    const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp", grant: FULL_GRANT }, via: "agent" };
     const grant: Caller = { ...caller, credential: { kind: "oauth", id: "grant-1" }, via: "agent" };
     const sidebar: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "agent" };
     const colleague: Caller = { ...otherToken, userId: "00000000-0000-4000-8000-00000000a5aa", role: "member" };
@@ -365,7 +366,7 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
 it.live("`ployz mcp`'s Publish asks as an agent, which its person's `ployz` approves, unlike a request from before Cloud recorded who asked", () =>
   Effect.gen(function* () {
     const { provided, caller, cli } = yield* shopRemovingWeb();
-    const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2" } };
+    const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2", grant: FULL_GRANT } };
     const approve = (id: string, digest: string) => provided(decideApproval(otherToken, id, { approve: { digest } }));
     const setVia = (id: string, via: string | null) => provided(Effect.gen(function* () {
       const { drizzle } = yield* Database;
@@ -405,6 +406,19 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
     expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
+  }));
+
+it.live("a Deploy token for staging is refused a production Deploy before anyone is asked", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, pending } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } },
+      { name: "staging", expiresInDays: 1, preset: { preset: "deploy", environment: "staging" } }));
+
+    const refused = yield* cli(deploy(1), undefined, "agent", secret);
+    expect(refused.status).toBe(403);
+    expect(refused.json.error?.message).toBe("This token can deploy only to staging.");
+    expect(yield* pending).toEqual([]);
   }));
 
 it.live("an anonymous agent's Organization has no person to ask: its Deploys and destroys go through as not required", () =>
@@ -588,7 +602,7 @@ const operationCloud = Effect.fn(function* () {
   const services = yield* Layer.build(Layer.merge(AuthLive.pipe(Layer.provide(cloud)), cloud));
   const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
   const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
-  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
+  const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1", grant: FULL_GRANT }, role: "owner", support: null, via: "cli" };
   const rows = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     return yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status, subject: operationApprovals.subject })
@@ -680,8 +694,8 @@ it.live("a person who asks for what an agent asked approves it at their own prom
     const approveAs = (decider: Caller, id: string) =>
       provided(decideApproval(decider, id, { approve: { digest } }, answers(digest)));
     const refused = { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals." } };
-    const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp" }, via: "agent" };
-    const otherAgent: Caller = { ...caller, credential: { kind: "token", id: "token-other" }, via: "agent" };
+    const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp", grant: FULL_GRANT }, via: "agent" };
+    const otherAgent: Caller = { ...caller, credential: { kind: "token", id: "token-other", grant: FULL_GRANT }, via: "agent" };
 
     const fromAgent = yield* gateAs(mcp);
     expect((yield* gateAs(otherAgent)).approval_id).toBe(fromAgent.approval_id);

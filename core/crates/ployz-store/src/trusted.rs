@@ -10,8 +10,9 @@ use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
 use crate::git::AuthorizedRepository;
-use crate::id::{ApprovalDigest, GithubUserId};
+use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId};
 use crate::permission::Permission;
+use crate::storage::Tx;
 
 /// What Cloud checked for one write. Empty unless Cloud supplies it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -47,6 +48,11 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub permissions: Option<BTreeSet<Permission>>,
+    /// The Environments the caller's token may write, by name: a write to any other is
+    /// refused. None when its grant names none, so it may write any it has permission to.
+    #[serde(default)]
+    #[ts(optional)]
+    pub environments: Option<BTreeSet<EnvironmentName>>,
     /// Whether a human must approve a publication that destroys something, and what they
     /// approved.
     #[serde(default)]
@@ -125,6 +131,69 @@ impl Trusted {
             )),
             _ => Ok(()),
         }
+    }
+
+    pub(crate) fn refuse_written_outside_environments(
+        &self,
+        tx: &mut dyn Tx,
+        written: &crate::Written,
+    ) -> Result<(), RpcError> {
+        let Some(allowed) = &self.environments else {
+            return Ok(());
+        };
+        let mut names = Vec::new();
+        wrote(tx, written, &mut names)?;
+        if !names.is_empty() && names.iter().all(|name| allowed.contains(name)) {
+            return Ok(());
+        }
+        Err(outside(allowed))
+    }
+
+    /// Refuse a write to Environment `name` outside this token's Environments before
+    /// it asks a human to approve anything there.
+    pub(crate) fn writes(&self, name: &EnvironmentName) -> Result<(), RpcError> {
+        match &self.environments {
+            Some(allowed) if !allowed.contains(name) => Err(outside(allowed)),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn outside(allowed: &BTreeSet<EnvironmentName>) -> RpcError {
+    crate::error::forbidden(
+        format!("This token can deploy only to {}.", listed(allowed)),
+        serde_json::json!({ "environments": allowed }),
+    )
+}
+
+/// Every Environment `written` wrote, by name: each command's in a Batch, and the
+/// Branch a Sync closed as well as the one it staged into. A closed Branch may be gone
+/// already, so a Sync names both from what it answered.
+fn wrote(
+    tx: &mut dyn Tx,
+    written: &crate::Written,
+    names: &mut Vec<EnvironmentName>,
+) -> Result<(), RpcError> {
+    if let crate::Written::Batch(batched) = written {
+        for each in &batched.results {
+            wrote(tx, each, names)?;
+        }
+    } else if let crate::Written::Synced(synced) = written {
+        names.push(synced.into.name.clone());
+        if synced.closing {
+            names.push(synced.from.name.clone());
+        }
+    } else if let Some(id) = written.environment() {
+        names.push(crate::scope::load_by_id(tx, id)?.summary.name);
+    }
+    Ok(())
+}
+
+fn listed(names: &BTreeSet<EnvironmentName>) -> String {
+    let names: Vec<&str> = names.iter().map(EnvironmentName::as_str).collect();
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.concat(),
     }
 }
 

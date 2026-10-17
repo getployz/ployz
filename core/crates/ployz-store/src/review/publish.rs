@@ -103,6 +103,7 @@ pub(crate) fn publish(
     trusted: &Trusted,
 ) -> Result<Published, RpcError> {
     let mut environment = scope::lock(tx, who, &publish.environment)?;
+    trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, publish.version.as_deref())?;

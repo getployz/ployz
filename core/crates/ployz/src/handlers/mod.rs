@@ -11,6 +11,7 @@ pub(crate) mod account;
 pub(crate) mod build;
 pub(crate) mod catalog;
 pub(crate) mod cloud;
+mod cloud_read;
 pub(crate) mod config;
 pub(crate) mod config_item;
 pub(crate) mod context;
@@ -478,6 +479,27 @@ where
     runtime()?.block_on(async {
         let mut client = server::connect(leaf, context).await?;
         work(&mut client).await
+    })
+}
+
+/// [`with_client`] for a read Cloud also answers: `work` runs against the Servers, or the
+/// credential comes back when Cloud refuses it Server access, to ask Cloud instead.
+fn with_reader<F>(
+    root: &ArgMatches,
+    work: F,
+) -> Result<Option<crate::cloud_account::Credential>, Error>
+where
+    F: for<'a> FnOnce(
+        &'a mut crate::connect::Client,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'a>>,
+{
+    let leaf = leaf_matches(root);
+    let context = leaf.get_one::<String>("context").map(String::as_str);
+    runtime()?.block_on(async {
+        match server::reach(leaf, context).await? {
+            server::Reach::Dial(mut client) => work(&mut client).await.map(|()| None),
+            server::Reach::Ask(credential) => Ok(Some(credential)),
+        }
     })
 }
 

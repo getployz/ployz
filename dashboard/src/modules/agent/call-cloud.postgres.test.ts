@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { Act, CloudQuery, LogsAnswer, MachineId, RuntimeWatchView, ServerRef, ServiceVerb, VolumeId, VolumeRun } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
@@ -8,10 +8,12 @@ import { asTestDouble } from "#/lib/test-double";
 import { callCloud, NO_SERVERS_MESSAGE } from "#/modules/agent/call-cloud.server";
 import { decideApproval, operationDigest } from "#/modules/approvals/approvals.server";
 import type { Caller } from "#/modules/identity/actor";
+import { presetGrant } from "#/modules/identity/token-grant";
 import { freshApproval, freshOperationDigest, UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf } from "#/modules/operations/keyed.server";
 import { serviceAct } from "#/modules/service-act/tables";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -25,6 +27,7 @@ const SERVICE = "00000000-0000-4000-8000-00000000c106";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000c107";
 const MACHINE = "a".repeat(32) as MachineId;
 const OTHER_MACHINE = "e".repeat(32) as MachineId;
+const VOLUME = "00000000-0000-4000-8000-00000000c108" as VolumeId;
 const Asked = Schema.Struct({ approval: Schema.String, approval_id: Schema.String });
 
 describe("callCloud", () => {
@@ -133,6 +136,46 @@ describe("callCloud", () => {
       expect(allowed).toEqual({ ok: true, value: TAIL });
     }));
 
+  // Catches a read token kept from logs it may read, or a token held to staging reading production's logs, metrics or containers.
+  it.live("lets a Read only token read logs, and holds a Deploy token's logs, metrics and containers to its Environment", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const store = yield* cloudStore.pipe(Effect.provide(services));
+      const STAGING = "00000000-0000-4000-8000-00000000c109";
+      yield* Effect.promise(async () => {
+        await store.write(ORGANIZATION, { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+        await store.write(ORGANIZATION, { command: "create_environment", id: STAGING, project: "shop", name: "staging" });
+      });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        yield* drizzle.execute(sql`
+          insert into config_namespace (organization_id, namespace, environment_id)
+          values (${ORGANIZATION}, 'shop-prod', ${ENVIRONMENT}), (${ORGANIZATION}, 'shop-staging', ${STAGING})`);
+      }).pipe(Effect.provide(services), Effect.orDie);
+      const [production, staging] = ["shop-prod", "shop-staging"];
+      const token = (grant: ReturnType<typeof presetGrant>): Caller => ({ ...member, credential: { kind: "token", id: "t", grant } });
+      const reader = token(presetGrant({ preset: "read" }));
+      const deployer = token(presetGrant({ preset: "deploy", environment: "staging" }));
+      const logs = (namespace: string): CloudQuery => ({ ...LOGS, namespace });
+      const metrics = (namespace: string): CloudQuery => ({ query: "metrics", subject: { kind: "service", namespace, service: "web" }, since: { kind: "minutes_ago", minutes: 10 }, deployment: null });
+      const containers = (namespace: string): CloudQuery => ({ query: "containers", namespace, service: null });
+      const refused = { ok: false, refusal: { code: "forbidden", message: "This token can deploy only to staging.", details: { environments: ["staging"] } } };
+      const asked: Array<CloudQuery> = [];
+      const heard = (caller: Caller, query: CloudQuery) => callCloud(caller, { ask: query }).pipe(runtime(connected(asked), []), Effect.provide(services));
+
+      expect(yield* heard(reader, logs(production))).toEqual({ ok: true, value: TAIL });
+      expect(yield* heard(deployer, logs(staging))).toEqual({ ok: true, value: TAIL });
+      expect(asked).toEqual([logs(production), logs(staging)]);
+      for (const query of [logs(production), metrics(production), containers(production)]) {
+        expect(yield* heard(deployer, query)).toEqual(refused);
+      }
+      expect(yield* heard(deployer, { query: "server_logs", process: "ployz", server: null, lines: 100, since: null })).toEqual(refused);
+      expect(asked).toHaveLength(2);
+      expect(yield* heard(deployer, metrics(staging))).toEqual({ ok: true, value: TAIL });
+      expect(yield* heard(deployer, containers(staging))).toEqual({ ok: true, value: TAIL });
+    }));
+
   const REMOVE: Act = {
     attempt: "a".repeat(32),
     digest: "b".repeat(64),
@@ -151,6 +194,26 @@ describe("callCloud", () => {
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
         expect(yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
         expect(yield* callCloud(member, { act: REMOVE }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
+      }
+    }));
+
+  // Catches a token without the permission told the Servers are missing or down, before it hears it may not act.
+  it.live("refuses a token its grant before looking for Servers, for a volume move or mirror and a removal", () =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const deployer: Caller = { ...member, credential: { kind: "token", id: "t", grant: presetGrant({ preset: "deploy", environment: "staging" }) } };
+      const to: ServerRef = { machine: MACHINE, name: "web-2" };
+      const volume = (run: VolumeRun): Act => ({ attempt: "c".repeat(32), digest: "d".repeat(64), action: { action: "volume", volume: VOLUME, run } });
+      const lacking = (permission: string) =>
+        ({ ok: false, refusal: { code: "forbidden", message: `This token's grant doesn't include ${permission}.`, details: { permission } } });
+      for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
+        const opens: Array<string> = [];
+        for (const run of [{ run: "move", to }, { run: "mirror", to }] as const) {
+          expect(yield* callCloud(deployer, { act: volume(run) }).pipe(runtime(opened, opens), Effect.provide(services))).toEqual(lacking("services:control"));
+        }
+        expect(yield* callCloud(deployer, { act: REMOVE }).pipe(runtime(opened, opens), Effect.provide(services))).toEqual(lacking("servers:remove"));
+        expect(opens).toEqual([]);
       }
     }));
 
