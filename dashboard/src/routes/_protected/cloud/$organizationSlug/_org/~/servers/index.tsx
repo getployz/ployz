@@ -42,7 +42,7 @@ function RouteComponent() {
       {/* The top bar names the page; each row carries its own status, so this bar holds only actions. */}
       <div className="flex items-center justify-end gap-2">
         {upgrade === null ? null : <ServersUpgradeBar organizationSlug={organizationSlug} upgrade={upgrade} />}
-        <Button variant="ghost" render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
+        <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
           Tokens
         </Button>
         <AddServersDialog
@@ -50,6 +50,8 @@ function RouteComponent() {
           label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
         />
       </div>
+      {/* Above the list: the skeleton below is a guess at the list's height, and Waiting must not jump when it settles. */}
+      <WaitingSection organizationSlug={organizationSlug} token={token} />
       {state === "loading" ? (
         <ServersSkeleton />
       ) : state === "unreachable" ? (
@@ -59,7 +61,7 @@ function RouteComponent() {
           <EmptyHeader>
             <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
             <EmptyTitle>Add your first server</EmptyTitle>
-            <EmptyDescription>Run one line on any Linux servers. They wait below until you say they join.</EmptyDescription>
+            <EmptyDescription>Run one line on any Linux servers. They wait here until you say they join.</EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
@@ -78,7 +80,6 @@ function RouteComponent() {
           </nav>
         </>
       )}
-      <WaitingSection organizationSlug={organizationSlug} token={token} />
     </DashboardPage>
   );
 }

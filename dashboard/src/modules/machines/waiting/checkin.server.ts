@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, count, eq, isNull, sql } from "drizzle-orm";
+import { and, count, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import {
   CHECKIN_WAIT_SECONDS,
@@ -274,6 +274,15 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   const parsed = decodeRequest(claimed.json);
   if (Option.isNone(parsed)) return yield* new CheckinRefused({ status: 400, message: "Invalid check-in." });
   const request = parsed.value;
+
+  // Every check-in of a token shares this row, so a fresh stamp is left alone and the update locks nothing.
+  yield* database.drizzle
+    .update(fleetToken)
+    .set({ lastUsedAt: sql`now()` })
+    .where(and(
+      eq(fleetToken.id, token.id),
+      or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`now() - interval '1 minute'`)),
+    ));
 
   const ended = endedBy(token);
   const stopped = ended === null ? null : yield* database.transaction(endUnlessEnrolling(token, request.checkinKey, ended));

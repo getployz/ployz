@@ -41,7 +41,7 @@ You don't need Docker: Ployz installs it if it's missing.
 ![The Add servers dialog with its install line](../images/add-servers-dialog.png)
 
 Run the same line on as many servers as you like while the token works. Each one installs Docker
-and Ployz and shows up under **Waiting** on the **Servers** page within seconds, below your other
+and Ployz and shows up under **Waiting** on the **Servers** page within seconds, above your other
 servers. New ones join the bottom of the list, and the list never reorders while you look at it.
 
 Each row shows the server's name, the IP address Ployz Cloud saw it check in from, its provider,

@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useRef, useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
@@ -22,6 +23,7 @@ import {
 
 export const ROW_PX = 52;
 export const VISIBLE_ROWS = 10;
+const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
 const GRID = "grid grid-cols-[20px_minmax(0,1fr)_130px_92px_150px_150px_160px] items-center gap-3 px-3";
 
 export function WaitingSection({ organizationSlug, token }: { organizationSlug: string; token: string | undefined }) {
@@ -56,9 +58,25 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
     && (tokenFilter === "" || server.fleetToken === tokenFilter)
     && matches(server));
   const chosen = servers.filter((server) => picked.has(server.id) && selectable(server)).map((server) => server.id);
+  const pickedIds = new Set(chosen);
   const pickable = rows.filter(selectable);
   const allPicked = pickable.length > 0 && pickable.every((server) => picked.has(server.id));
   const open = servers.find((server) => server.id === openId) ?? null;
+  const scroller = useRef<HTMLDivElement>(null);
+  // Only the rows in view render, so a long wait list costs no more to draw than the box holds.
+  const virtual = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scroller.current,
+    getItemKey: (index) => rows[index]?.id ?? index,
+    estimateSize: () => ROW_PX,
+    // The box is ten rows tall by construction, so its height is known rather than measured.
+    initialRect: BOX_RECT,
+    observeElementRect: (_, report) => report(BOX_RECT),
+    overscan: 2,
+  });
+  const items = virtual.getVirtualItems();
+  const padTop = items[0]?.start ?? 0;
+  const padBottom = virtual.getTotalSize() - (items.at(-1)?.end ?? 0);
 
   const choose = (next: ReadonlySet<string>) => {
     setPicked(next);
@@ -134,22 +152,29 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
             <span role="columnheader">Volumes</span>
             <span role="columnheader">Status</span>
           </div>
-          <div role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: ROW_PX * VISIBLE_ROWS }}>
+          <div ref={scroller} role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: ROW_PX * VISIBLE_ROWS }}>
             {rows.length === 0 ? (
               <div role="row" className={cn(GRID, "border-t text-muted-foreground")} style={{ height: ROW_PX }}>
                 <span />
                 <span role="cell">Nothing matches</span>
               </div>
-            ) : rows.map((server) => (
-              <WaitingRow
-                key={server.id}
-                server={server}
-                now={now}
-                picked={chosen.includes(server.id)}
-                onPick={(on) => toggle(server.id, on)}
-                onOpen={() => show(server.id)}
-              />
-            ))}
+            ) : (
+              <div style={{ paddingTop: padTop, paddingBottom: padBottom }}>
+                {items.map((item) => {
+                  const server = rows[item.index];
+                  return server === undefined ? null : (
+                    <WaitingRow
+                      key={server.id}
+                      server={server}
+                      now={now}
+                      picked={pickedIds.has(server.id)}
+                      onPick={(on) => toggle(server.id, on)}
+                      onOpen={() => show(server.id)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>

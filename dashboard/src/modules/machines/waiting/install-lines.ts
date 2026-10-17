@@ -19,6 +19,7 @@ export function installLines(cloudOrigin: string, token: string): InstallLines {
       ``,
       `resource "hcloud_server" "web" {`,
       `  count       = 3`,
+      "  name        = \"web-${count.index + 1}\"",
       `  server_type = "cpx41"`,
       `  image       = "ubuntu-24.04"`,
       `  user_data   = <<-EOT`,

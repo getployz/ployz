@@ -131,5 +131,6 @@ describe("dashboard navigation model", () => {
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/")).toBe("projects");
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/billing")).toBe("billing");
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/servers/$serverId")).toBe("servers");
+    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/servers/tokens")).toBe("servers");
   });
 });

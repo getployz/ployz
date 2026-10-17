@@ -143,6 +143,25 @@ it("records a check-in, then updates the same row on the next one", async () => 
   expect(after[0]?.last_check_in_at.getTime()).toBeGreaterThan(first?.last_check_in_at.getTime() ?? Infinity);
 });
 
+it("stamps the token's last use at most once a minute", async () => {
+  const { token } = await fleetToken("rack-1");
+  const lastUsed = async () =>
+    (await harness.pool.query<{ last_used_at: Date | null }>("select last_used_at from fleet_token")).rows[0]?.last_used_at;
+  expect(await lastUsed()).toBeNull();
+
+  const host = newHost();
+  await send(token, host);
+  const first = await lastUsed();
+  expect(first).toBeInstanceOf(Date);
+  await send(token, host);
+  expect(await lastUsed()).toEqual(first);
+
+  await harness.pool.query("update fleet_token set last_used_at = now() - interval '2 minutes'");
+  const stale = await lastUsed();
+  await send(token, host);
+  expect((await lastUsed())?.getTime()).toBeGreaterThan(stale?.getTime() ?? Infinity);
+});
+
 it("stores prep while the host prepares, and reads a check-in without it as ready", async () => {
   const { token } = await fleetToken("rack-1");
   const host = newHost();

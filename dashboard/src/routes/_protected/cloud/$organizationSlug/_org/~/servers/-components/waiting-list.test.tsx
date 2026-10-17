@@ -115,3 +115,13 @@ it("holds the list in a box ten rows tall, every row the same height", () => {
   const heights = new Set(within(box()).getAllByRole("row").map((row) => row.style.height));
   expect([...heights]).toEqual([`${ROW_PX}px`]);
 });
+
+it("draws only the rows the box shows, not every waiting server", () => {
+  renderList(Array.from({ length: 200 }, (_, index) => host(`h${index}`)));
+
+  const drawn = rowNames();
+  expect(drawn[0]).toBe("h0");
+  expect(drawn.length).toBeGreaterThanOrEqual(VISIBLE_ROWS);
+  expect(drawn.length).toBeLessThan(20);
+  expect(screen.getAllByText("200").length).toBeGreaterThan(0);
+});
