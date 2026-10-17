@@ -12,6 +12,7 @@ import { type Invite, inviteQueryOptions } from "#/modules/organization/members.
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
 
 export const Route = createFileRoute("/invite/$token")({
+  staticData: { secret: true },
   loader: ({ params, context }) => prefetchRemote(context, inviteQueryOptions(params.token)),
   head: () => ({ meta: [{ title: "Join an organization on Ployz" }] }),
   component: InvitePage,

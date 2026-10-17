@@ -229,7 +229,7 @@ const setActiveOrganizationForSession = Effect.fn(
 
 export const handleUserCreated = Effect.fn("Organization.handleUserCreated")(
   function* (user: PersonalOrganizationUser) {
-    yield* ensurePersonalOrganizationForUser(user);
+    return yield* ensurePersonalOrganizationForUser(user);
   },
 );
 

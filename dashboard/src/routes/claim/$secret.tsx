@@ -13,6 +13,7 @@ import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
 import { ClaimSummary } from "#/routes/claim/-components/claim-summary";
 
 export const Route = createFileRoute("/claim/$secret")({
+  staticData: { secret: true },
   loader: async ({ params, context }) => {
     await prefetchRemote(context, claimQueryOptions(params.secret));
     const claim = context.queryClient.getQueryData(claimQueryOptions(params.secret).queryKey);

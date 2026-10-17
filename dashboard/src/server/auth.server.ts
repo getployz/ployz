@@ -4,7 +4,7 @@ import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth, type BetterAuthPlugin } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { addOAuthServerContext, createAuthMiddleware, getOAuthState } from "better-auth/api";
 import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
@@ -12,7 +12,7 @@ import {
   organization as organizationPlugin,
 } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
-import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
+import { Context, Data, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
@@ -51,6 +51,7 @@ import {
   handleUserCreated,
 } from "#/modules/organization/organization-state.server";
 import { Actor } from "#/modules/identity/actor";
+import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
 import { makePolarCore } from "#/modules/billing/polar-api";
@@ -183,6 +184,28 @@ const bearerSetsNoCookie = {
   },
 } satisfies BetterAuthPlugin;
 
+/**
+ * A GitHub sign-in the claim page started carries its claim secret's hash in the server-signed OAuth state, so the
+ * sign-up it ends in can bind the Organization it made to that claim. The callback URL alone is client-supplied.
+ */
+const decodeCallbackURL = Schema.decodeUnknownOption(Schema.Struct({ callbackURL: Schema.String }));
+const decodeClaimSignInContext = Schema.decodeUnknownOption(Schema.Struct({ claimSecretHash: Schema.NullOr(Schema.String) }));
+
+const claimSignInContext = {
+  id: "claim-sign-in-context",
+  hooks: {
+    before: [{
+      matcher: (context) => context.path === "/sign-in/social",
+      handler: createAuthMiddleware(async (context) => {
+        const callbackURL = Option.map(decodeCallbackURL(context.body), (body) => body.callbackURL);
+        // Written even when null: request state can outlive its request through Effect's scheduler, and a stale hash
+        // from another sign-in must not ride along.
+        await addOAuthServerContext({ claimSecretHash: Option.match(callbackURL, { onNone: () => null, onSome: claimSecretHashOf }) });
+      }),
+    }],
+  },
+} satisfies BetterAuthPlugin;
+
 // better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
 // so another signed-in user can neither approve nor deny it.
 const cliSignInPlugins = [
@@ -296,8 +319,18 @@ const makeAuth = Effect.gen(function* () {
     databaseHooks: {
       user: {
         create: {
-          after: (createdUser) =>
-            runHook(handleUserCreated(createdUser).pipe(Effect.andThen(recordSignUp(createdUser)))),
+          after: (createdUser, context) =>
+            runHook(handleUserCreated(createdUser).pipe(
+              // Only the OAuth callback has just read its state from the provider redirect; other sign-ups bind nothing.
+              Effect.tap((organizationId) => context?.path.startsWith("/callback/") !== true ? Effect.void : Effect.promise(getOAuthState).pipe(
+                Effect.flatMap((state) => bindClaimSignInOrganization(
+                  createdUser.id,
+                  organizationId,
+                  Option.match(decodeClaimSignInContext(state?.serverContext), { onNone: () => null, onSome: (claim) => claim.claimSecretHash }),
+                )),
+              )),
+              Effect.andThen(recordSignUp(createdUser)),
+            )),
         },
       },
       session: {
@@ -330,6 +363,7 @@ const makeAuth = Effect.gen(function* () {
     plugins: [
       organizations,
       ...cliSignInPlugins,
+      claimSignInContext,
       ...(polarPlugin === null ? [] : [polarPlugin]),
       ...(hosted ? hostedMcpPlugins(config.app.url) : []),
       tanstackStartCookies(),

@@ -75,7 +75,7 @@ export function getRouter() {
     },
     hydrate: (data: { authSession: AuthSession | null; posthog: PostHogBrowserConfig }) => {
       initializeAuthSession(data.authSession);
-      startPostHog(data.posthog, data.authSession);
+      startPostHog(data.posthog, data.authSession, router);
     },
     defaultPreload: "viewport",
     defaultPreloadStaleTime: 0,
@@ -102,5 +102,7 @@ declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
     /** An organization page's crumb, shown after its section's name in the top bar: Servers / hel-1 ⌄. Environment pages are named by EnvironmentCrumbs instead. */
     crumb?: ComponentType;
+    /** The page's URL is itself a secret, so analytics never sees it (see modules/analytics/posthog.ts). */
+    secret?: boolean;
   }
 }

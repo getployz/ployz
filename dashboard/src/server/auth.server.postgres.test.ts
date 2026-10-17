@@ -5,8 +5,10 @@ import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
-import { eq } from "drizzle-orm";
+import { member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { eq, like } from "drizzle-orm";
+import { vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -291,6 +293,61 @@ it.live(
 
         assert.strictEqual(yield* newUserURL("/invite/invite-token"), "/invite/invite-token");
         assert.strictEqual(yield* newUserURL("/cloud"), "/cloud?welcome=true");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** GitHub's side of the OAuth dance, answered locally so the real callback runs and signs a new person up. */
+const fakeGithub = (login: string, githubId: number) => {
+  const real = globalThis.fetch;
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.startsWith("https://github.com/login/oauth/access_token")) {
+      return Promise.resolve(Response.json({ access_token: `token-${login}`, token_type: "bearer", scope: "read:user,user:email" }));
+    }
+    if (url === "https://api.github.com/user") {
+      return Promise.resolve(Response.json({ id: githubId, login, name: login, email: `${login}@example.test`, avatar_url: null }));
+    }
+    if (url === "https://api.github.com/user/emails") {
+      return Promise.resolve(Response.json([{ email: `${login}@example.test`, primary: true, verified: true }]));
+    }
+    return real(input, init);
+  });
+};
+
+it.live(
+  "binds the Organization a claim page's GitHub sign-up made to that claim, and nothing for any other sign-up",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const signUpWithGithub = (login: string, githubId: number, callbackURL: string) => Effect.gen(function* () {
+          const github = fakeGithub(login, githubId);
+          try {
+            const started = yield* auth.signInGithub(new Headers({ origin }), callbackURL);
+            const state = new URL(String((yield* Effect.promise(() => started.json() as Promise<{ url: string }>)).url)).searchParams.get("state");
+            const cookie = started.headers.getSetCookie().map((line) => line.split(";", 1)[0]).join("; ");
+            const back = yield* auth.handler(new Request(`${origin}/api/auth/callback/github?code=code-${login}&state=${state}`, { headers: { cookie } }));
+            assert.strictEqual(back.status, 302, back.headers.get("location") ?? "");
+            const [person] = yield* drizzle.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, `${login}@example.test`));
+            const [own] = yield* drizzle.select({ organizationId: member.organizationId }).from(member).where(eq(member.userId, person?.id ?? ""));
+            return { userId: person?.id ?? assert.fail(`no user for ${login}`), organizationId: own?.organizationId };
+          } finally {
+            github.mockRestore();
+          }
+        });
+        const bindings = drizzle.select({ identifier: verification.identifier, value: verification.value }).from(verification)
+          .where(like(verification.identifier, "claim-sign-in:%"));
+
+        const ada = yield* signUpWithGithub("ada", 1001, "/claim/s3cret");
+        assert.deepStrictEqual(yield* bindings, [{ identifier: `claim-sign-in:${ada.userId}:${hashClaimSecret("s3cret")}`, value: ada.organizationId }]);
+
+        const bob = yield* signUpWithGithub("bob", 1002, "/cloud");
+        assert.notStrictEqual(bob.userId, ada.userId);
+        assert.strictEqual((yield* bindings).length, 1);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

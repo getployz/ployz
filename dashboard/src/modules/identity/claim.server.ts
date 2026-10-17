@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import { and, asc, eq, gte, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Actor } from "#/modules/identity/actor";
 import { claimSecretFor, hashClaimSecret } from "#/modules/identity/claim-required.server";
-import type { ClaimSignIn } from "#/modules/identity/claim-sign-in.server";
+import { takeClaimSignInOrganization } from "#/modules/identity/claim-sign-in.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { countOrganizationMachines } from "#/modules/machines/connections.server";
 import { machineEnrollmentToken, machineRemoveAttempt, serverAccess } from "#/modules/machines/tables";
@@ -99,10 +99,10 @@ export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: stri
 /**
  * The person keeps the Organization in one transaction: they become its sole owner, every row the anonymous agent
  * made now names them, the agent's token runs 90 more days, the anonymous user goes, and their sessions act in it.
- * When the claim page started their sign-in, the empty Organization that sign-in made goes too. The secret keeps
+ * When their account came from a sign-in this claim page started, the empty Organization that sign-in made goes too. The secret keeps
  * naming the Organization, so the owner claiming again changes nothing and anyone else hears it was kept.
  */
-export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: Actor, secret: string, signIn?: ClaimSignIn) {
+export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: Actor, secret: string) {
   // The Store makes its tables when it opens, and the cleanup reads them.
   yield* cloudStore;
   const database = yield* Database;
@@ -141,7 +141,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
       .where(inArray(serverEnrollment.requestedByUserId, anonymousIds));
     yield* drizzle.delete(user).where(inArray(user.id, anonymousIds));
     yield* updateActorSessionsOrganization(actor, id, found.slug);
-    if (signIn !== undefined) yield* removeSignInOrganization(actor, id, signIn);
+    yield* removeSignInOrganization(actor, id, secret);
     return { slug: found.slug };
   }));
 });
@@ -150,32 +150,29 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
  * Back from the GitHub sign-in the claim page started: the person keeps the sandbox without a second click. A claim
  * that cannot go through (taken, expired, unknown) leaves the page to say so.
  */
-export const finishClaimSignIn = Effect.fn("Identity.finishClaimSignIn")(function* (secret: string, actor: Actor, signIn: ClaimSignIn) {
-  yield* claimOrganization(actor, secret, signIn).pipe(
+export const finishClaimSignIn = Effect.fn("Identity.finishClaimSignIn")(function* (secret: string, actor: Actor) {
+  yield* claimOrganization(actor, secret).pipe(
     Effect.catchTags({ NotFound: () => Effect.void, Conflict: () => Effect.void }),
   );
   return yield* readClaim(secret, actor);
 });
 
 /**
- * The Organization the claim's own sign-in made, if nothing ever happened in it: the person's account and that
- * Organization both date from after the claim page started the sign-in, it is their only other Organization, and
- * no table that names an Organization holds a row for it beyond their membership.
+ * The Organization the claim's own sign-in made, if the auth hook bound one to this person and secret and nothing ever
+ * happened in it. Any other Organization of theirs stays, however new.
  */
-const removeSignInOrganization = Effect.fn("Identity.removeSignInOrganization")(function* (actor: Actor, sandboxId: string, signIn: ClaimSignIn) {
+const removeSignInOrganization = Effect.fn("Identity.removeSignInOrganization")(function* (actor: Actor, sandboxId: string, secret: string) {
+  const bound = yield* takeClaimSignInOrganization(actor.userId, secret);
+  if (bound === null || bound === sandboxId) return;
   const { drizzle } = yield* Database;
-  const [person] = yield* drizzle.select({ createdAt: user.createdAt }).from(user).where(eq(user.id, actor.userId));
-  if (person === undefined || person.createdAt < signIn.startedAt) return;
-  const others = yield* drizzle
-    .select({ id: organization.id, createdAt: organization.createdAt })
+  const [own] = yield* drizzle
+    .select({ id: organization.id })
     .from(member)
     .innerJoin(organization, eq(organization.id, member.organizationId))
-    .where(and(eq(member.userId, actor.userId), ne(organization.id, sandboxId)))
+    .where(and(eq(member.userId, actor.userId), eq(organization.id, bound)))
     .for("update", { of: organization });
-  const [only] = others;
-  if (others.length !== 1 || only === undefined || only.createdAt < signIn.startedAt) return;
-  if (!(yield* isUntouched(only.id))) return;
-  yield* drizzle.delete(organization).where(and(eq(organization.id, only.id), gte(organization.createdAt, signIn.startedAt)));
+  if (own === undefined || !(yield* isUntouched(own.id))) return;
+  yield* drizzle.delete(organization).where(eq(organization.id, own.id));
 });
 
 /**
