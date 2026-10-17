@@ -10,7 +10,7 @@ import {
   type CheckinStopReason,
 } from "#/modules/machines/waiting/checkin-wire";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
-import { decodeStoredProbe, handOutProbe, withHostReport } from "#/modules/machines/waiting/probe.server";
+import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
@@ -144,8 +144,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
     });
   }
   const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-  const storedProbe = request.probe === undefined ? sql`${waitingServer.probe}` : withHostReport(request.probe);
-  const fresh = { report, observedIp, probe: storedProbe, lastCheckInAt: sql`now()` };
+  const fresh = { report, observedIp, probe: probeAfterCheckIn(observedIp, request.probe), lastCheckInAt: sql`now()` };
   // The capacity decision above holds only while the row is as it was read, so a changed row goes back through it.
   const [row] = newToToken
     ? yield* drizzle

@@ -3,106 +3,142 @@ import { randomBytes } from "node:crypto";
 import { BlockList, connect, isIP } from "node:net";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
+import ipaddr from "ipaddr.js";
 import type { Actor } from "#/modules/identity/actor";
 import { type CheckinRequest, PROBE_WINDOW_MS, type ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
-import { type PortProbe, ProbeResults } from "#/modules/machines/waiting/probe";
+import { ProbeResults, type TcpObservation } from "#/modules/machines/waiting/probe";
 import { waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 
 const MAX_PEERS = 3;
 const READ_CAP_BYTES = 64;
-const CONNECT_DELAY = "1 second";
-const CONNECT_TIMEOUT_MS = 3_000;
-const GREETING_WAIT_MS = 500;
 
-const notPublic = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16], ["172.16.0.0", 12],
-  ["192.0.0.0", 24], ["192.0.2.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24],
-  ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
-] as const) notPublic.addSubnet(network, prefix, "ipv4");
-for (const [network, prefix] of [
-  ["::", 128], ["::1", 128], ["64:ff9b::", 96], ["64:ff9b:1::", 48], ["100::", 64],
-  ["2001:db8::", 32], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
-] as const) notPublic.addSubnet(network, prefix, "ipv6");
+export const WINDOW_SCHEDULE = { firstAfterMs: 1_000, everyMs: 1_500, timeoutMs: 3_000, greetingMs: 500 };
 
-const family = (ip: string) => (isIP(ip) === 4 ? "ipv4" : "ipv6");
-const unmapped = (ip: string) => (ip.toLowerCase().startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip);
+const ipv4Compatible = new BlockList();
+ipv4Compatible.addSubnet("::", 96, "ipv6");
 
 function devOnlyProbeAllowList() {
   const cidrs = import.meta.env.DEV ? process.env["PLOYZ_VERIFY_PROBE_ALLOW"] ?? "" : "";
   const allow = new BlockList();
-  for (const cidr of cidrs.split(",").map((entry) => entry.trim()).filter(Boolean)) {
-    const [network = "", prefix = ""] = cidr.split("/");
-    if (isIP(network) !== 0) allow.addSubnet(network, Number(prefix), family(network));
+  for (const cidr of cidrs.split(",").map((entry) => entry.trim()).filter(ipaddr.isValidCIDR)) {
+    const [network, prefix] = ipaddr.parseCIDR(cidr);
+    allow.addSubnet(network.toString(), prefix, network.kind() === "ipv4" ? "ipv4" : "ipv6");
   }
   return allow;
 }
 
+const probeAddress = (ip: string) => ipaddr.process(ip).toString();
+
 export function refusedTarget(ip: string, allow: BlockList = devOnlyProbeAllowList()): "no_address" | "private_range" | null {
   if (isIP(ip) === 0) return "no_address";
-  const address = unmapped(ip);
-  if (allow.check(address, family(address))) return null;
-  return notPublic.check(address, family(address)) ? "private_range" : null;
+  const address = ipaddr.process(ip);
+  if (allow.check(address.toString(), address.kind() === "ipv4" ? "ipv4" : "ipv6")) return null;
+  if (isIP(ip) === 6 && ipv4Compatible.check(ip, "ipv6")) return "private_range";
+  return address.range() === "unicast" ? null : "private_range";
 }
 
-export function connectOnce(host: string, port: number, options: { readonly timeoutMs?: number; readonly greetingMs?: number } = {}) {
-  return new Promise<{ readonly state: "open" | "closed" | "unknown"; readonly bytesRead: number }>((resolve) => {
+export type ConnectSeen = "answered" | "other_listener" | "refused" | "no_answer";
+
+export function connectOnce(
+  host: string,
+  port: number,
+  nonce: string,
+  options: { readonly timeoutMs?: number; readonly greetingMs?: number } = {},
+) {
+  const expected = Buffer.from(nonce);
+  return new Promise<{ readonly seen: ConnectSeen; readonly bytesRead: number }>((resolve) => {
+    const received = Buffer.alloc(READ_CAP_BYTES);
     let bytesRead = 0;
-    let state: "open" | "closed" | "unknown" = "unknown";
+    let connected = false;
+    let refused = false;
+    let done = false;
     const finish = () => {
+      if (done) return;
+      done = true;
       socket.destroy();
-      resolve({ state, bytesRead });
+      const answered = bytesRead >= expected.length && received.subarray(0, expected.length).equals(expected);
+      const seen = connected ? (answered ? "answered" : "other_listener") : refused ? "refused" : "no_answer";
+      resolve({ seen, bytesRead });
     };
     const socket = connect({
       host,
       port,
       onread: {
         buffer: Buffer.alloc(READ_CAP_BYTES),
-        callback: (read) => {
-          bytesRead = read;
-          finish();
-          return false;
+        callback: (read, chunk) => {
+          const take = Math.min(read, READ_CAP_BYTES - bytesRead);
+          received.set(chunk.subarray(0, take), bytesRead);
+          bytesRead += take;
+          if (bytesRead >= expected.length || bytesRead === READ_CAP_BYTES) finish();
+          return !done;
         },
       },
     });
-    socket.setTimeout(options.timeoutMs ?? CONNECT_TIMEOUT_MS, finish);
+    socket.setTimeout(options.timeoutMs ?? WINDOW_SCHEDULE.timeoutMs, finish);
     socket.once("error", (error: NodeJS.ErrnoException) => {
-      if (state === "unknown" && error.code === "ECONNREFUSED") state = "closed";
+      refused = !connected && error.code === "ECONNREFUSED";
       finish();
     });
     socket.once("close", finish);
     socket.once("connect", () => {
-      state = "open";
-      socket.setTimeout(options.greetingMs ?? GREETING_WAIT_MS, finish);
+      connected = true;
+      socket.setTimeout(options.greetingMs ?? WINDOW_SCHEDULE.greetingMs, finish);
     });
   });
 }
 
-const probePort = (ip: string, port: number) =>
-  Effect.promise(() => connectOnce(unmapped(ip), port)).pipe(
-    Effect.tap(({ state, bytesRead }) => Effect.logInfo(`Probe ${ip}:${port} ${state}, read ${bytesRead} bytes`)),
-    Effect.map(({ state }): PortProbe => (state === "unknown" ? { state, reason: "no_answer" } : { state })),
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function probeThroughWindow(
+  host: string,
+  port: number,
+  nonce: string,
+  windowMs: number,
+  schedule = WINDOW_SCHEDULE,
+): Promise<ConnectSeen> {
+  const start = Date.now();
+  let seen: "refused" | "no_answer" = "refused";
+  for (let at = schedule.firstAfterMs; at < windowMs; at += schedule.everyMs) {
+    const wait = start + at - Date.now();
+    if (wait < 0) continue;
+    await sleep(wait);
+    const timeoutMs = Math.min(schedule.timeoutMs, start + windowMs - Date.now());
+    const result = await connectOnce(host, port, nonce, { timeoutMs, greetingMs: schedule.greetingMs });
+    if (result.seen === "answered" || result.seen === "other_listener") return result.seen;
+    if (result.seen === "no_answer") seen = "no_answer";
+  }
+  return seen;
+}
+
+type Handout = { readonly nonce: string; readonly address: string; readonly handedAt: string };
+
+const probePort = (handout: Handout, request: ProbeRequest, port: number) =>
+  Effect.promise(() => probeThroughWindow(probeAddress(handout.address), port, handout.nonce, request.windowMs)).pipe(
+    Effect.tap((seen) => Effect.logInfo(`Probe ${handout.address}:${port} ${seen}`)),
+    Effect.map((seen): TcpObservation => ({ seen })),
   );
 
-const recordTcp = Effect.fn("Probe.recordTcp")(function* (id: string, nonce: string, tcp: ProbeResults["tcp"]) {
+const recordTcp = Effect.fn("Probe.recordTcp")(function* (id: string, handout: Handout, tcp: ProbeResults["tcp"]) {
   const { drizzle } = yield* Database;
   yield* drizzle
     .update(waitingServer)
     .set({ probe: sql`jsonb_set(${waitingServer.probe}, '{tcp}', ${JSON.stringify(tcp)}::jsonb)` })
-    .where(and(eq(waitingServer.id, id), sql`${waitingServer.probe}->'request'->>'nonce' = ${nonce}`));
+    .where(and(
+      eq(waitingServer.id, id),
+      sql`${waitingServer.probe}->'request'->>'nonce' = ${handout.nonce}`,
+      sql`${waitingServer.probe}->>'address' = ${handout.address}`,
+      sql`${waitingServer.probe}->>'handedAt' = ${handout.handedAt}`,
+    ));
 });
 
-const inboundProbe = Effect.fn("Probe.inbound")(function* (id: string, nonce: string, observedIp: string) {
-  const refused = refusedTarget(observedIp);
-  if (refused !== null) {
-    const unknown: PortProbe = { state: "unknown", reason: refused };
-    return yield* recordTcp(id, nonce, { "80": unknown, "443": unknown });
-  }
-  yield* Effect.sleep(CONNECT_DELAY);
-  const tcp = yield* Effect.all({ "80": probePort(observedIp, 80), "443": probePort(observedIp, 443) }, { concurrency: "unbounded" });
-  yield* recordTcp(id, nonce, tcp);
+const inboundProbe = Effect.fn("Probe.inbound")(function* (id: string, handout: Handout, request: ProbeRequest) {
+  const tcp = yield* Effect.all(
+    { "80": probePort(handout, request, 80), "443": probePort(handout, request, 443) },
+    { concurrency: "unbounded" },
+  );
+  yield* recordTcp(id, handout, tcp);
 });
 
 export const decodeStoredProbe = Schema.decodeUnknownOption(ProbeResults);
@@ -113,24 +149,38 @@ export const handOutProbe = Effect.fn("Probe.handOut")(function* (
   observedIp: string,
 ) {
   if (Option.isNone(pending) || pending.value.handedAt !== undefined) return null;
+  const refused = refusedTarget(observedIp);
+  const notProbed = refused === null ? null : JSON.stringify({ "80": { seen: "not_probed", reason: refused }, "443": { seen: "not_probed", reason: refused } });
   const { drizzle } = yield* Database;
+  const handedOut = sql`${waitingServer.probe} || jsonb_build_object('handedAt', now(), 'address', ${observedIp}::text)`;
   const [handed] = yield* drizzle
     .update(waitingServer)
-    .set({ probe: sql`jsonb_set(${waitingServer.probe}, '{handedAt}', to_jsonb(now()))` })
+    .set({ probe: notProbed === null ? handedOut : sql`jsonb_set(${handedOut}, '{tcp}', ${notProbed}::jsonb)` })
     .where(and(eq(waitingServer.id, id), sql`not ${waitingServer.probe} ? 'handedAt'`))
-    .returning({ id: waitingServer.id });
+    .returning({ handedAt: sql<string>`${waitingServer.probe}->>'handedAt'` });
   if (handed === undefined) return null;
   const request = pending.value.request;
-  yield* afterDatabaseCommit(Effect.forkDetach(inboundProbe(id, request.nonce, observedIp).pipe(
-    Effect.catchCause((cause) => Effect.logWarning("A waiting server's inbound probe failed.", cause)),
-  )));
+  if (refused === null) {
+    const handout = { nonce: request.nonce, address: observedIp, handedAt: handed.handedAt };
+    yield* afterDatabaseCommit(Effect.forkDetach(inboundProbe(id, handout, request).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("A waiting server's inbound probe failed.", cause)),
+    )));
+  }
   return request;
 });
 
-export const withHostReport = (report: NonNullable<CheckinRequest["probe"]>) => {
+const withHostReport = (report: NonNullable<CheckinRequest["probe"]>) => {
   const host = JSON.stringify({ heardFrom: report.heardFrom, bindFailed: report.bindFailed });
   return sql`case when ${waitingServer.probe}->'request'->>'nonce' = ${report.nonce}
     then jsonb_set(${waitingServer.probe}, '{host}', ${host}::jsonb) else ${waitingServer.probe} end`;
+};
+
+const PENDING_TCP = JSON.stringify({ "80": { seen: "pending" }, "443": { seen: "pending" } });
+
+export const probeAfterCheckIn = (observedIp: string, report: CheckinRequest["probe"]) => {
+  const reported = report === undefined ? sql`${waitingServer.probe}` : withHostReport(report);
+  return sql`case when ${waitingServer.probe}->>'address' <> ${observedIp}
+    then jsonb_set((${reported}) - 'handedAt' - 'address' - 'host', '{tcp}', ${PENDING_TCP}::jsonb) else ${reported} end`;
 };
 
 export function probePeers(hosts: ReadonlyArray<{ readonly id: string; readonly observedIp: string }>) {
@@ -161,7 +211,7 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
     .orderBy(waitingServer.firstSeenAt, waitingServer.id);
   const nonce = randomBytes(16).toString("base64url");
   if (hosts.length === 0) return { nonce, probing: 0 };
-  const pending: PortProbe = { state: "unknown", reason: "pending" };
+  const pending: TcpObservation = { seen: "pending" };
   const probes = Object.fromEntries([...probePeers(hosts)].map(([id, send]) => {
     const request: ProbeRequest = { nonce, windowMs: PROBE_WINDOW_MS, listen: ["udp:51820", "tcp:80", "tcp:443"], send };
     return [id, { request, tcp: { "80": pending, "443": pending } } satisfies ProbeResults];

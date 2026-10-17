@@ -153,13 +153,21 @@ const storedProbe = async (ip: string) =>
   (await harness.pool.query("select probe from waiting_server where observed_ip = $1", [ip])).rows[0]?.probe;
 
 const settledTcp = async (ip: string) => {
-  for (let waited = 0; waited < 5000; waited += 20) {
+  for (let waited = 0; waited < 8000; waited += 20) {
     const tcp = (await storedProbe(ip))?.tcp;
-    if (tcp !== undefined && tcp["80"].reason !== "pending") return tcp;
+    if (tcp !== undefined && tcp["80"].seen !== "pending" && tcp["443"].seen !== "pending") return tcp;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`the probe for ${ip} never settled`);
 };
+
+const shortenWindow = (ms: number) =>
+  harness.pool.query("update waiting_server set probe = jsonb_set(probe, '{request,windowMs}', to_jsonb($1::int))", [ms]);
+
+const handedLongAgo = () =>
+  harness.pool.query("update waiting_server set probe = jsonb_set(probe, '{handedAt}', to_jsonb(now() - interval '1 hour'))");
+
+const shownProbe = async () => (await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" })))[0]?.probe;
 
 const waitingIds = async () => (await rows()).map((row) => row.id);
 
@@ -203,25 +211,100 @@ it("records Unknown for a host at a private address without dialling it", async 
   const host = newHost();
   await send(token, host, { ip: "10.0.0.5" });
   await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
-  const pending = { state: "unknown", reason: "pending" };
+  const pending = { seen: "pending" };
   expect((await storedProbe("10.0.0.5"))?.tcp).toEqual({ "80": pending, "443": pending });
   await send(token, host, { ip: "10.0.0.5" });
-  const privateRange = { state: "unknown", reason: "private_range" };
-  expect(await settledTcp("10.0.0.5")).toEqual({ "80": privateRange, "443": privateRange });
+  const privateRange = { seen: "not_probed", reason: "private_range" };
+  expect((await storedProbe("10.0.0.5"))?.tcp).toEqual({ "80": privateRange, "443": privateRange });
+  expect(await shownProbe()).toEqual({
+    "80": { state: "unknown", reason: "private_range" },
+    "443": { state: "unknown", reason: "private_range" },
+  });
 });
 
-it("answers the check-in before Cloud's connects run, then records what they found", async () => {
+it("answers the check-in before Cloud's connects run, and shows refusals as Closed only once the host reports it listened", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.1/32");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const host = newHost();
+    await send(token, host, { ip: "127.0.0.1" });
+    const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    await shortenWindow(2_000);
+    const started = performance.now();
+    expect(await send(token, host, { ip: "127.0.0.1" })).toHaveProperty("probe");
+    expect(performance.now() - started).toBeLessThan(900);
+    expect(await settledTcp("127.0.0.1")).toEqual({ "80": { seen: "refused" }, "443": { seen: "refused" } });
+    expect(await shownProbe()).toEqual({ "80": { state: "unknown", reason: "pending" }, "443": { state: "unknown", reason: "pending" } });
+
+    await send(token, host, { ip: "127.0.0.1", probe: { nonce, heardFrom: [], bindFailed: ["tcp:443"] } });
+    expect(await shownProbe()).toEqual({ "80": { state: "closed" }, "443": { state: "unknown", reason: "port_busy" } });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("never reads Closed for a host that lost the request and never reported", async () => {
   vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.1/32");
   try {
     const { token } = await fleetToken("rack-1");
     const host = newHost();
     await send(token, host, { ip: "127.0.0.1" });
     await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
-    const started = performance.now();
-    expect(await send(token, host, { ip: "127.0.0.1" })).toHaveProperty("probe");
-    expect(performance.now() - started).toBeLessThan(900);
-    const tcp = await settledTcp("127.0.0.1");
-    expect([tcp["80"].state, tcp["443"].state]).toEqual(["closed", "closed"]);
+    await shortenWindow(2_000);
+    await send(token, host, { ip: "127.0.0.1" });
+    await settledTcp("127.0.0.1");
+    expect(await send(token, host, { ip: "127.0.0.1" })).toEqual(wait);
+    await handedLongAgo();
+    const noReport = { state: "unknown", reason: "no_host_report" };
+    expect(await shownProbe()).toEqual({ "80": noReport, "443": noReport });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("settles connects whose results were lost as no answer once the window has passed", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.41" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await harness.pool.query(
+    "update waiting_server set probe = probe || jsonb_build_object('handedAt', now(), 'address', '198.51.100.41')",
+  );
+  expect(await shownProbe()).toEqual({ "80": { state: "unknown", reason: "pending" }, "443": { state: "unknown", reason: "pending" } });
+  expect(await send(token, host, { ip: "198.51.100.41" })).toEqual(wait);
+  await handedLongAgo();
+  const noAnswer = { state: "unknown", reason: "no_answer" };
+  expect(await shownProbe()).toEqual({ "80": noAnswer, "443": noAnswer });
+});
+
+it("drops results measured at an address the host has moved off, and probes it again where it is", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "127.0.0.2" });
+  const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await harness.pool.query(`update waiting_server set probe = probe || jsonb_build_object(
+    'handedAt', now(), 'address', '127.0.0.2', 'tcp', '{"80":{"seen":"answered"},"443":{"seen":"answered"}}'::jsonb)`);
+  expect(await shownProbe()).toEqual({ "80": { state: "open" }, "443": { state: "open" } });
+
+  expect(await send(token, host, { ip: "127.0.0.3" })).toMatchObject({ probe: { nonce } });
+  const privateRange = { state: "unknown", reason: "private_range" };
+  expect(await shownProbe()).toEqual({ "80": privateRange, "443": privateRange });
+  expect(await storedProbe("127.0.0.3")).toMatchObject({ address: "127.0.0.3", request: { nonce } });
+});
+
+it("ignores a connect that finishes after the host moved to another address", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.2/32");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const host = newHost();
+    await send(token, host, { ip: "127.0.0.2" });
+    await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    await shortenWindow(1_500);
+    expect(await send(token, host, { ip: "127.0.0.2" })).toHaveProperty("probe");
+    expect(await send(token, host, { ip: "127.0.0.3" })).toHaveProperty("probe");
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const privateRange = { seen: "not_probed", reason: "private_range" };
+    expect((await storedProbe("127.0.0.3"))?.tcp).toEqual({ "80": privateRange, "443": privateRange });
   } finally {
     vi.unstubAllEnvs();
   }

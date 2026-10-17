@@ -65,7 +65,7 @@ const rawFields = {
   betterAuthTrustedOrigins: optional(
     Config.nonEmptyString("BETTER_AUTH_TRUSTED_ORIGINS"),
   ),
-  // Railway injects this; its edge sets X-Real-IP to the client's address, overwriting any sent.
+  // Railway injects this; its edge sets X-Real-IP to the client's address.
   railwayEnvironmentId: optional(Config.nonEmptyString("RAILWAY_ENVIRONMENT_ID")),
   githubClientId: Config.nonEmptyString("GITHUB_CLIENT_ID"),
   githubClientSecret: Config.schema(NonEmptySecret, "GITHUB_CLIENT_SECRET"),

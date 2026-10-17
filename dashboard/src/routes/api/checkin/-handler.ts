@@ -53,11 +53,13 @@ function clientFromForwardedFor(value: string | null, peer: string) {
   return client;
 }
 
+const valueAddedLast = (headers: Headers, name: string) => headers.get(name)?.split(",").at(-1)?.trim();
+
 export function observedIp(headers: Headers, clientIpHeaders: ReadonlyArray<string> | undefined, peer: string | undefined) {
   const validPeer = peer !== undefined && isIP(peer) !== 0 ? peer : undefined;
   if (clientIpHeaders !== undefined) {
     for (const name of clientIpHeaders) {
-      const value = headers.get(name)?.split(",")[0]?.trim();
+      const value = valueAddedLast(headers, name);
       if (value !== undefined && isIP(value) !== 0) return value;
     }
     return validPeer ?? "unknown";

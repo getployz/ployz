@@ -1,6 +1,8 @@
 import { type AddressInfo, BlockList, createServer, type Server, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { connectOnce, probePeers, refusedTarget } from "#/modules/machines/waiting/probe.server";
+import type { ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
+import { type ProbeResults, portStates } from "#/modules/machines/waiting/probe";
+import { connectOnce, probePeers, probeThroughWindow, refusedTarget } from "#/modules/machines/waiting/probe.server";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -23,13 +25,30 @@ describe("refusedTarget", () => {
   it.each([
     "0.1.2.3", "10.0.0.5", "100.64.0.1", "127.0.0.1", "169.254.1.1", "172.16.0.1", "172.31.255.255", "192.0.0.8",
     "192.0.2.1", "192.168.1.1", "198.18.0.1", "198.19.255.1", "198.51.100.7", "203.0.113.7", "224.0.0.1", "255.255.255.255",
-    "::", "::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:a00:1","64:ff9b::1", "100::1", "2001:db8::1", "fc00::1", "fd12::1",
+    "::", "::1", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:a00:1", "64:ff9b::1", "100::1", "2001:db8::1", "fc00::1", "fd12::1",
     "fe80::1", "ff02::1",
   ])("refuses %s", (ip) => {
     expect(refusedTarget(ip, none)).toBe("private_range");
   });
 
-  it.each(["1.1.1.1", "8.8.8.8", "100.128.0.1", "172.32.0.1", "198.20.0.1", "2606:4700::1111", "::ffff:8.8.8.8"])(
+  it.each([
+    ["fec0::/10 site-local", "fec0::1"],
+    ["fec0::/10 site-local, upper end", "feff::1"],
+    ["::/96 IPv4-compatible, dotted", "::10.0.0.5"],
+    ["::/96 IPv4-compatible, dotted public", "::8.8.8.8"],
+    ["::/96 IPv4-compatible, hex", "::808:808"],
+    ["::ffff:0:0/96 SIIT, hex", "::ffff:0:a00:5"],
+    ["::ffff:0:0/96 SIIT, dotted", "::ffff:0:10.0.0.5"],
+    ["2002::/16 6to4", "2002:a00:5::1"],
+    ["2001::/32 Teredo", "2001:0:4136:e378::1"],
+    ["192.88.99.0/24 6to4 relay", "192.88.99.1"],
+    ["2001:10::/28 ORCHID", "2001:10::1"],
+    ["3fff::/20 documentation", "3fff::1"],
+  ])("refuses %s (%s)", (_range, ip) => {
+    expect(refusedTarget(ip, none)).toBe("private_range");
+  });
+
+  it.each(["1.1.1.1", "8.8.8.8", "100.128.0.1", "172.32.0.1", "198.20.0.1", "2606:4700::1111", "::ffff:8.8.8.8", "::ffff:808:808"])(
     "probes %s",
     (ip) => {
       expect(refusedTarget(ip, none)).toBeNull();
@@ -39,6 +58,7 @@ describe("refusedTarget", () => {
   it("has no address to probe for a value that is not an IP", () => {
     expect(refusedTarget("", none)).toBe("no_address");
     expect(refusedTarget("example.com", none)).toBe("no_address");
+    expect(refusedTarget("1.2.3", none)).toBe("no_address");
   });
 
   it("probes a lab range only when named", () => {
@@ -50,22 +70,34 @@ describe("refusedTarget", () => {
   });
 });
 
+const NONCE = "WN5PN_dxAm32GdMdb68fzg";
+
 describe("connectOnce", () => {
-  it("is open when the port accepts and sends nothing", async () => {
+  it("is answered only when the host writes the nonce", async () => {
+    const port = await listen((socket) => socket.write(NONCE));
+    expect(await connectOnce("127.0.0.1", port, NONCE)).toEqual({ seen: "answered", bytesRead: NONCE.length });
+  });
+
+  it("is another listener when the port accepts and sends nothing", async () => {
     let received = 0;
     const port = await listen((socket) => socket.on("data", (chunk) => (received += chunk.length)));
-    expect(await connectOnce("127.0.0.1", port, { greetingMs: 50 })).toEqual({ state: "open", bytesRead: 0 });
+    expect(await connectOnce("127.0.0.1", port, NONCE, { greetingMs: 50 })).toEqual({ seen: "other_listener", bytesRead: 0 });
     expect(received).toBe(0);
   });
 
-  it("is closed when nothing listens", async () => {
-    const port = await listen(() => {});
-    await new Promise((resolve) => servers.pop()?.close(resolve));
-    expect((await connectOnce("127.0.0.1", port)).state).toBe("closed");
+  it("is another listener when the port answers with other bytes", async () => {
+    const port = await listen((socket) => socket.write("SSH-2.0-OpenSSH_9.6\r\n"));
+    expect((await connectOnce("127.0.0.1", port, NONCE)).seen).toBe("other_listener");
   });
 
-  it("is unknown when nothing answers the connect", async () => {
-    expect((await connectOnce("192.0.2.1", 80, { timeoutMs: 50 })).state).toBe("unknown");
+  it("is refused when nothing listens", async () => {
+    const port = await listen(() => {});
+    await new Promise((resolve) => servers.pop()?.close(resolve));
+    expect((await connectOnce("127.0.0.1", port, NONCE)).seen).toBe("refused");
+  });
+
+  it("has no answer when nothing answers the connect", async () => {
+    expect((await connectOnce("192.0.2.1", 80, NONCE, { timeoutMs: 50 })).seen).toBe("no_answer");
   });
 
   it("never follows a redirect", async () => {
@@ -74,18 +106,97 @@ describe("connectOnce", () => {
     const port = await listen((socket) =>
       socket.end(`HTTP/1.1 301 Moved Permanently\r\nLocation: http://127.0.0.1:${elsewhere}/\r\n\r\n`),
     );
-    const result = await connectOnce("127.0.0.1", port);
-    expect(result.state).toBe("open");
+    expect((await connectOnce("127.0.0.1", port, NONCE)).seen).toBe("other_listener");
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(followed).toBe(0);
   });
 
   it("reads at most 64 bytes of a large greeting", async () => {
     const port = await listen((socket) => socket.write(Buffer.alloc(1024 * 1024, 0x61)));
-    const result = await connectOnce("127.0.0.1", port);
-    expect(result.state).toBe("open");
+    const result = await connectOnce("127.0.0.1", port, NONCE);
+    expect(result.seen).toBe("other_listener");
     expect(result.bytesRead).toBeGreaterThan(0);
     expect(result.bytesRead).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("probeThroughWindow", () => {
+  const fast = { firstAfterMs: 20, everyMs: 60, timeoutMs: 200, greetingMs: 50 };
+
+  async function freePort() {
+    const port = await listen(() => {});
+    await new Promise((resolve) => servers.pop()?.close(resolve));
+    return port;
+  }
+
+  it("is answered when the host binds late in the window", async () => {
+    const port = await freePort();
+    setTimeout(() => {
+      const server = createServer((socket) => socket.end(NONCE));
+      servers.push(server);
+      server.listen(port, "127.0.0.1");
+    }, 200);
+    expect(await probeThroughWindow("127.0.0.1", port, NONCE, 600, fast)).toBe("answered");
+  });
+
+  it("is refused only when every attempt through the window was refused", async () => {
+    const port = await freePort();
+    const started = Date.now();
+    expect(await probeThroughWindow("127.0.0.1", port, NONCE, 300, fast)).toBe("refused");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+  });
+
+  it("has no answer when an attempt goes unanswered", async () => {
+    expect(await probeThroughWindow("192.0.2.1", 80, NONCE, 150, fast)).toBe("no_answer");
+  });
+});
+
+describe("portStates", () => {
+  const request: ProbeRequest = { nonce: NONCE, windowMs: 10_000, listen: ["udp:51820", "tcp:80", "tcp:443"], send: [] };
+  const handedAt = "2026-10-17T00:00:00.000Z";
+  const during = new Date("2026-10-17T00:00:05.000Z");
+  const after = new Date("2026-10-17T00:01:00.000Z");
+  const host = { heardFrom: [], bindFailed: [] };
+  const both = (seen: "pending" | "answered" | "other_listener" | "refused" | "no_answer") => ({ "80": { seen }, "443": { seen } });
+
+  it("is Unknown without a host report even when every connect was refused", () => {
+    const probe: ProbeResults = { request, handedAt, address: "8.8.8.8", tcp: both("refused") };
+    expect(portStates(probe, during)["80"]).toEqual({ state: "unknown", reason: "pending" });
+    expect(portStates(probe, after)["80"]).toEqual({ state: "unknown", reason: "no_host_report" });
+  });
+
+  it("is Closed with a host report and every connect refused", () => {
+    expect(portStates({ request, handedAt, address: "8.8.8.8", tcp: both("refused"), host }, after))
+      .toEqual({ "80": { state: "closed" }, "443": { state: "closed" } });
+  });
+
+  it("is Open when the host answered, report or not", () => {
+    expect(portStates({ request, handedAt, address: "8.8.8.8", tcp: both("answered") }, during)["443"]).toEqual({ state: "open" });
+  });
+
+  it("is Unknown port busy when the host could not bind", () => {
+    const busy = { heardFrom: [], bindFailed: ["tcp:80"] };
+    const states = portStates({ request, handedAt, address: "8.8.8.8", tcp: both("refused"), host: busy }, after);
+    expect(states["80"]).toEqual({ state: "unknown", reason: "port_busy" });
+    expect(states["443"]).toEqual({ state: "closed" });
+    expect(portStates({ request, handedAt, address: "8.8.8.8", tcp: both("other_listener"), host: busy }, after)["80"])
+      .toEqual({ state: "unknown", reason: "port_busy" });
+  });
+
+  it("settles a connect that never published as no answer once the window and grace pass", () => {
+    const probe: ProbeResults = { request, handedAt, address: "8.8.8.8", tcp: both("pending"), host };
+    expect(portStates(probe, during)["80"]).toEqual({ state: "unknown", reason: "pending" });
+    expect(portStates(probe, after)["80"]).toEqual({ state: "unknown", reason: "no_answer" });
+  });
+
+  it("stays pending until the request is handed out", () => {
+    expect(portStates({ request, tcp: both("pending") }, after)["80"]).toEqual({ state: "unknown", reason: "pending" });
+  });
+
+  it("keeps another listener and an unanswered connect Unknown", () => {
+    expect(portStates({ request, handedAt, tcp: both("other_listener"), host }, after)["80"])
+      .toEqual({ state: "unknown", reason: "other_listener" });
+    expect(portStates({ request, handedAt, tcp: both("no_answer"), host }, after)["80"]).toEqual({ state: "unknown", reason: "no_answer" });
   });
 });
 

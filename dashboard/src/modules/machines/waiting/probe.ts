@@ -1,19 +1,58 @@
 import { Schema } from "effect";
-import { ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
+import { CHECKIN_WAIT_SECONDS, ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
 
-export const PortProbe = Schema.Union([
-  Schema.Struct({ state: Schema.Literals(["open", "closed"]) }),
-  Schema.Struct({ state: Schema.Literal("unknown"), reason: Schema.Literals(["pending", "private_range", "no_address", "no_answer"]) }),
+const REPORT_GRACE_MS = 3 * CHECKIN_WAIT_SECONDS * 1000;
+
+export const TcpObservation = Schema.Union([
+  Schema.Struct({ seen: Schema.Literals(["pending", "answered", "other_listener", "refused", "no_answer"]) }),
+  Schema.Struct({ seen: Schema.Literal("not_probed"), reason: Schema.Literals(["private_range", "no_address"]) }),
 ]);
-export type PortProbe = typeof PortProbe.Type;
+export type TcpObservation = typeof TcpObservation.Type;
 
 export const ProbeResults = Schema.Struct({
   request: ProbeRequest,
   handedAt: Schema.optionalKey(Schema.String),
-  tcp: Schema.Struct({ "80": PortProbe, "443": PortProbe }),
+  address: Schema.optionalKey(Schema.String),
+  tcp: Schema.Struct({ "80": TcpObservation, "443": TcpObservation }),
   host: Schema.optionalKey(Schema.Struct({ heardFrom: Schema.Array(Schema.String), bindFailed: Schema.Array(Schema.String) })),
 });
 export type ProbeResults = typeof ProbeResults.Type;
+
+export type PortState =
+  | { readonly state: "open" | "closed" }
+  | {
+    readonly state: "unknown";
+    readonly reason: "pending" | "private_range" | "no_address" | "no_answer" | "other_listener" | "port_busy" | "no_host_report";
+  };
+
+function portState(probe: ProbeResults, port: keyof PortStates, now: Date): PortState {
+  const tcp = probe.tcp[port];
+  if (tcp.seen === "not_probed") return { state: "unknown", reason: tcp.reason };
+  if (tcp.seen === "answered") return { state: "open" };
+  if (probe.host?.bindFailed.includes(`tcp:${port}`)) return { state: "unknown", reason: "port_busy" };
+  const settled = probe.handedAt !== undefined
+    && now.getTime() >= Date.parse(probe.handedAt) + probe.request.windowMs + REPORT_GRACE_MS;
+  switch (tcp.seen) {
+    case "pending":
+      return { state: "unknown", reason: settled ? "no_answer" : "pending" };
+    case "other_listener":
+    case "no_answer":
+      return { state: "unknown", reason: tcp.seen };
+    case "refused":
+      if (probe.host !== undefined) return { state: "closed" };
+      return { state: "unknown", reason: settled ? "no_host_report" : "pending" };
+  }
+}
+
+export interface PortStates {
+  readonly "80": PortState;
+  readonly "443": PortState;
+}
+
+export const portStates = (probe: ProbeResults, now: Date): PortStates => ({
+  "80": portState(probe, "80", now),
+  "443": portState(probe, "443", now),
+});
 
 export const OpenProbeSelectionInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty()),
