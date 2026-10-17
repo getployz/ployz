@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { Client, ConfigCommand, MachineId } from "@ployz/sdk";
-import { eq, isNotNull, sql } from "drizzle-orm";
+import { type Client, type ConfigCommand, type MachineId, RpcError } from "@ployz/sdk";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Result } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
@@ -42,10 +42,10 @@ const here = { project: null, environment: null };
 type Services = Effect.Success<ReturnType<typeof cloud>>;
 type Store = Effect.Success<typeof cloudStore>;
 
-const cloud = (servers: "answering" | "unreachable") => Effect.gen(function* () {
+const cloud = (servers: "answering" | "unreachable" | { answers: boolean }) => Effect.gen(function* () {
   const ployz = makePloyzLayer({
     connect: async () => {
-      if (servers === "unreachable") throw new Error("no route to the Server");
+      if (typeof servers === "string" ? servers === "unreachable" : !servers.answers) throw new Error("no route to the Server");
       return asTestDouble<Client>()({ close: async () => undefined });
     },
   });
@@ -172,10 +172,63 @@ const pairingRows = Effect.gen(function* () {
   return yield* drizzle.select({ id: organizationPairing.organizationId, removalStartedAt: organizationPairing.removalStartedAt }).from(organizationPairing);
 });
 
-const backdateRemoval = Effect.gen(function* () {
+/** Moves every teardown timestamp `hours` into the past on the database clock, as if that long went by. */
+const backdate = (hours: number) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(organizationPairing).set({ removalStartedAt: new Date(Date.now() - 2 * HOUR) }).where(isNotNull(organizationPairing.removalStartedAt));
-  yield* drizzle.execute(sql`update config_removal_mark set at = at - 7200 where organization_id = ${ORGANIZATION}`);
+  const by = sql.raw(`interval '${hours} hours'`);
+  yield* drizzle.execute(sql`update organization_pairing set removal_started_at = removal_started_at - ${by} where removal_started_at is not null`);
+  yield* drizzle.execute(sql`update config_removal_mark set at = at - ${hours * 3600} where organization_id = ${ORGANIZATION}`);
+  yield* drizzle.execute(sql.raw(`do $$ begin if to_regclass('anonymous_teardown') is not null then
+    update anonymous_teardown set waiting_since = waiting_since - interval '${hours} hours', silent_since = silent_since - interval '${hours} hours';
+  end if; end $$`));
+});
+
+const appClock = (shiftMs: number) => vi.spyOn(Date, "now").mockReturnValue(Date.now() + shiftMs);
+
+/** Counts console lines that mention `text`, wherever Effect's logger writes them. */
+const logLines = (text: string) => {
+  const spies = (["log", "info", "warn", "error", "debug"] as const).map((method) => vi.spyOn(console, method));
+  const mentions = (value: unknown) => {
+    try {
+      return (typeof value === "string" ? value : JSON.stringify(value) ?? "").includes(text);
+    } catch {
+      return false;
+    }
+  };
+  return {
+    count: () => spies.flatMap((spy) => spy.mock.calls).filter((args) => args.some(mentions)).length,
+    restore: () => spies.forEach((spy) => spy.mockRestore()),
+  };
+};
+
+/** Holds `database`'s next transaction: `at: "start"` before its program runs, `at: "commit"` after it ran. */
+const holdNextTransaction = (database: Effect.Success<typeof Database>, at: "start" | "commit") => {
+  let reached!: () => void;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { reached = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const original = database.transaction.bind(database);
+  const spy = vi.spyOn(database, "transaction").mockImplementationOnce((program, config) => original(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`select now()`);
+    if (at === "start") {
+      reached();
+      yield* Effect.promise(() => released);
+      return yield* program;
+    }
+    const value = yield* program;
+    reached();
+    yield* Effect.promise(() => released);
+    return value;
+  }), config));
+  return { held, release, restore: () => spy.mockRestore() };
+};
+
+const sleep = (ms: number) => Effect.promise(() => new Promise((resolve) => setTimeout(resolve, ms)));
+
+const expireSoon = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organizationToken).set({ expiresAt: sql`clock_timestamp() + interval '1.5 seconds'` });
 });
 
 it.live("leaves an Organization alone while its agent's token is live", () => Effect.gen(function* () {
@@ -280,24 +333,57 @@ it.live("a claim that lands while teardown reads the Store keeps the Organizatio
   }).pipe(Effect.provide(services));
 }), 60_000);
 
-it.live("a claim that lands while teardown removes the Store's rows keeps the Organization", () => Effect.gen(function* () {
+it.live("a claim that committed while teardown waited on the Organization keeps it, its Project, its Store and its Server", () => Effect.gen(function* () {
   const services = yield* cloud("answering");
   yield* Effect.gen(function* () {
-    const { store } = yield* seeded(new Date(Date.now() - 60_000));
+    const { store } = yield* seeded(new Date(Date.now() + HOUR), { project: true, server: true });
     const secret = yield* claimable;
     const person = yield* ada;
-    const run = Effect.runPromiseWith(services);
-    const { drizzle } = yield* Database;
-    const original = store.removeOrganization.bind(store);
-    const remove = vi.spyOn(store, "removeOrganization").mockImplementationOnce(async (...args) => {
-      await run(drizzle.update(organizationToken).set({ expiresAt: new Date(Date.now() + HOUR) }));
-      await run(claimOrganization({ userId: person }, secret));
+    yield* expireSoon;
+    const database = yield* Database;
+    const claim = holdNextTransaction(database, "commit");
+    const claimed = Effect.runPromiseWith(services)(claimOrganization({ userId: person }, secret));
+    yield* Effect.promise(() => claim.held);
+    claim.restore();
+    yield* sleep(1_600);
+    const step = Effect.runPromise(tearDown(services));
+    yield* sleep(300);
+    claim.release();
+    yield* Effect.promise(() => claimed);
+    expect((yield* Effect.promise(() => step)).result).toEqual({ organizationId: ORGANIZATION, state: "claimed", did: "nothing" });
+    expect(yield* projects(store)).toEqual(["shop"]);
+    expect(yield* pairingRows).toEqual([{ id: ORGANIZATION, removalStartedAt: null }]);
+    expect(yield* owners(ORGANIZATION)).toEqual([person]);
+    expect(yield* database.drizzle.select({ id: analyticsSite.organizationId }).from(analyticsSite)).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a claim checked after the token ran out is refused even when its transaction began before, so teardown loses nobody's Project", () => Effect.gen(function* () {
+  const services = yield* cloud("answering");
+  yield* Effect.gen(function* () {
+    const { store } = yield* seeded(new Date(Date.now() + HOUR), { project: true, server: true });
+    const secret = yield* claimable;
+    const person = yield* ada;
+    yield* expireSoon;
+    const database = yield* Database;
+    const claim = holdNextTransaction(database, "start");
+    const claimed = Effect.runPromiseWith(services)(Effect.result(claimOrganization({ userId: person }, secret)));
+    yield* Effect.promise(() => claim.held);
+    claim.restore();
+    yield* sleep(1_600);
+    const original = store.write.bind(store);
+    const write = vi.spyOn(store, "write").mockImplementationOnce(async (...args) => {
+      claim.release();
+      await claimed;
       return original(...args);
     });
-    const step = yield* tearDown(services).pipe(Effect.ensuring(Effect.sync(() => remove.mockRestore())));
-    expect(step.result).toEqual({ organizationId: ORGANIZATION, state: "claimed", did: "nothing" });
-    expect(yield* owners(ORGANIZATION)).toEqual([person]);
-    expect(yield* drizzle.select({ id: analyticsSite.organizationId }).from(analyticsSite)).toEqual([{ id: ORGANIZATION }]);
+    const step = yield* tearDown(services).pipe(Effect.ensuring(Effect.sync(() => { claim.release(); write.mockRestore(); })));
+    const outcome = yield* Effect.promise(() => claimed);
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) expect(outcome.failure).toMatchObject({ _tag: "Conflict", message: "This sandbox expired." });
+    expect(yield* owners(ORGANIZATION)).not.toContain(person);
+    expect(step.result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect(yield* runnerFails(store)).toBe(1);
   }).pipe(Effect.provide(services));
 }), 60_000);
 
@@ -342,7 +428,7 @@ it.live("forgets a Server that stayed unreachable an hour after its Project's re
     expect(yield* pairingRows).toEqual([{ id: ORGANIZATION, removalStartedAt: null }]);
     expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
 
-    yield* backdateRemoval;
+    yield* backdate(2);
     const forgotten = yield* tearDown(services);
     expect(forgotten.result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_projects" });
     expect(forgotten.ctx.step.sendEvent).toHaveBeenCalledWith("request-next-step", [createAnonymousTeardownRequestedEvent({ organizationId: ORGANIZATION })]);
@@ -358,15 +444,19 @@ it.live("forgets a Server that stayed unreachable an hour after its pairing's re
   const services = yield* cloud("unreachable");
   yield* Effect.gen(function* () {
     yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    const { drizzle } = yield* Database;
+    expect(yield* drizzle.select().from(organizationMachine)).not.toEqual([]);
     expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
     expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
     const [pairing] = yield* pairingRows;
     expect(pairing?.id).toBe(ORGANIZATION);
     expect(pairing?.removalStartedAt).not.toBeNull();
+    expect(yield* owners(ORGANIZATION)).toHaveLength(1);
     expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
 
-    yield* backdateRemoval;
+    yield* backdate(2);
     expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_organization" });
+    expect(yield* pairingRows).toEqual([]);
     yield* nothingLeft(ORGANIZATION);
   }).pipe(Effect.provide(services));
 }), 60_000);
@@ -376,7 +466,7 @@ it.live("never forgets a Server that answers, however long the token and the rem
   yield* Effect.gen(function* () {
     yield* seeded(new Date(Date.now() - 48 * HOUR), { server: true });
     expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
-    yield* backdateRemoval;
+    yield* backdate(2);
     expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
     const [pairing] = yield* pairingRows;
     expect(pairing?.id).toBe(ORGANIZATION);
@@ -415,5 +505,169 @@ it.live("the sweep names only Organizations an anonymous agent alone owns whose 
     yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: FOURTH, role: "owner" });
     const run = yield* sweep(services);
     expect(run.result).toEqual({ organizationIds: [ORGANIZATION] });
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a Server that answers restarts the silence clock: silence after an answer waits another hour", () => Effect.gen(function* () {
+  const servers = { answers: false };
+  const services = yield* cloud(servers);
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    servers.answers = true;
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    servers.answers = false;
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("one failed probe never forgets a Server that answered, however old the removal", () => Effect.gen(function* () {
+  const servers = { answers: true };
+  const services = yield* cloud(servers);
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    servers.answers = false;
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a cancelled Project removal never counts as silence, so the first teardown keeps the Server", () => Effect.gen(function* () {
+  const services = yield* cloud("unreachable");
+  yield* Effect.gen(function* () {
+    const { store } = yield* seeded(new Date(Date.now() + HOUR), { project: true, server: true });
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "remove", project: "shop", environment: null, version: null, accept_volume_loss: {}, every_copy: {} }));
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "cancel_removal", project: "shop", environment: null }));
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update config_removal_mark set at = at - 7200 where organization_id = ${ORGANIZATION}`);
+    expect(yield* drizzle.execute(sql`select state from config_removal_mark where organization_id = ${ORGANIZATION}`, "objects")).toEqual([{ state: "cancelled" }]);
+    yield* drizzle.update(organizationToken).set({ expiresAt: sql`now() - interval '1 second'` });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a process clock two hours ahead never forgets a Server that went silent seconds ago", () => Effect.gen(function* () {
+  const services = yield* cloud("unreachable");
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    const clock = appClock(2 * HOUR);
+    const run = yield* tearDown(services).pipe(Effect.ensuring(Effect.sync(() => clock.mockRestore())));
+    expect(run.result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("the database clock decides every teardown time: liveness, lapse, the forget window and the day-long warning", () => Effect.gen(function* () {
+  const servers = { answers: true };
+  const services = yield* cloud(servers);
+  const atAppClock = <A, E>(shiftMs: number, program: Effect.Effect<A, E>) => Effect.suspend(() => {
+    const clock = appClock(shiftMs);
+    return program.pipe(Effect.ensuring(Effect.sync(() => clock.mockRestore())));
+  });
+  yield* Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* seeded(new Date(Date.now() + HOUR), { server: true });
+    expect((yield* atAppClock(48 * HOUR, tearDown(services))).result).toEqual({ organizationId: ORGANIZATION, state: "live", did: "nothing" });
+
+    yield* drizzle.update(organizationToken).set({ expiresAt: sql`now() - interval '1 second'` });
+    expect((yield* atAppClock(-48 * HOUR, sweep(services))).result).toEqual({ organizationIds: [ORGANIZATION] });
+    const warned = logLines("waited a day");
+    expect((yield* atAppClock(-48 * HOUR, tearDown(services))).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect((yield* atAppClock(48 * HOUR, tearDown(services))).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    const lines = warned.count();
+    warned.restore();
+    expect(lines).toBe(0);
+
+    servers.answers = false;
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    expect((yield* atAppClock(-2 * HOUR, tearDown(services))).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_organization" });
+    yield* nothingLeft(ORGANIZATION);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("warns once per Organization that waits a day on a Server that answers, however many runs follow", () => Effect.gen(function* () {
+  const services = yield* cloud("answering");
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(25);
+    const warned = logLines("waited a day");
+    for (let run = 0; run < 3; run++) {
+      expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    }
+    const lines = warned.count();
+    warned.restore();
+    expect(lines).toBe(1);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a Store that refuses every removal still forgets a Server silent for an hour, then finishes", () => Effect.gen(function* () {
+  const services = yield* cloud("unreachable");
+  yield* Effect.gen(function* () {
+    const { store } = yield* seeded(new Date(Date.now() - 2 * HOUR), { project: true, server: true });
+    const original = store.write.bind(store);
+    const write = vi.spyOn(store, "write").mockImplementation(async (organizationId, command, ...rest) => {
+      if (command.command === "remove") throw new RpcError({ code: "conflict", message: "The Server must confirm this removal.", details: null });
+      return original(organizationId, command, ...rest);
+    });
+    const refused = yield* Effect.gen(function* () {
+      const first = yield* tearDown(services);
+      expect(first.error).toBeDefined();
+      yield* backdate(2);
+      const second = yield* tearDown(services);
+      expect(second.error).toBeDefined();
+      return yield* pairingRows;
+    }).pipe(Effect.ensuring(Effect.sync(() => write.mockRestore())));
+    expect(refused).toEqual([]);
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_projects" });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "removed_organization" });
+    yield* nothingLeft(ORGANIZATION);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("never forgets the Servers of an Organization a person claimed while teardown waited on them", () => Effect.gen(function* () {
+  const services = yield* cloud("unreachable");
+  yield* Effect.gen(function* () {
+    const { store } = yield* seeded(new Date(Date.now() - 2 * HOUR), { project: true, server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* runnerFails(store);
+    yield* backdate(2);
+    const person = yield* ada;
+    const run = Effect.runPromiseWith(services);
+    const { drizzle } = yield* Database;
+    const original = store.read.bind(store);
+    const read = vi.spyOn(store, "read").mockImplementationOnce(async (...args) => {
+      await run(drizzle.insert(member).values({ userId: person, organizationId: ORGANIZATION, role: "owner" }));
+      return original(...args);
+    });
+    const step = yield* tearDown(services).pipe(Effect.ensuring(Effect.sync(() => read.mockRestore())));
+    expect(step.result).toEqual({ organizationId: ORGANIZATION, state: "claimed", did: "nothing" });
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* drizzle.select().from(organizationMachine)).not.toEqual([]);
+    expect(yield* projects(store)).toEqual(["shop"]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("two runs at once both wait on a Server that answers and keep it", () => Effect.gen(function* () {
+  const services = yield* cloud("answering");
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    const runs = yield* Effect.promise(() => Promise.all([Effect.runPromise(tearDown(services)), Effect.runPromise(tearDown(services))]));
+    expect(runs.map((run) => run.result)).toEqual([
+      { organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" },
+      { organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" },
+    ]);
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
   }).pipe(Effect.provide(services));
 }), 60_000);

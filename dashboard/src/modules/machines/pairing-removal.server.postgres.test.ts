@@ -43,6 +43,7 @@ describe("protected pairing removal", () => {
     // The authenticated endpoint distinguishes a cleared Management Client from a replaced client key.
     const endpoint = { paired: true, online: true, loseAck: false, replaced: false, devices: new Set<string>() };
     const cleared: string[] = [];
+    const calls: string[] = [];
     const dialed: ConnectOptions[] = [];
     let mutations = 0;
     const ployz = makePloyzLayer({
@@ -59,19 +60,21 @@ describe("protected pairing removal", () => {
           inspect: async () => ({ management_clients: ["cloud", ...endpoint.devices] }),
           clearManagementClient: async (label: string) => {
             cleared.push(label);
+            calls.push(label);
             if (endpoint.devices.delete(label)) return;
             if (label !== "cloud") throw new Error(`unexpected Management Client ${label}`);
             mutations += 1;
             endpoint.paired = false;
             if (endpoint.loseAck) throw new Error("Rotation closed the old stream");
           },
+          setPushTarget: async (target: string | null) => { calls.push(`push:${target}`); },
           close: async () => undefined,
         });
       },
     });
     const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption), Layer.succeed(InngestClient, sendsNowhere()));
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
-    return { endpoint, dialed, cleared, mutations: () => mutations, makeRuntime };
+    return { endpoint, dialed, cleared, calls, mutations: () => mutations, makeRuntime };
   }
 
   it.each([
@@ -157,6 +160,16 @@ describe("protected pairing removal", () => {
     try {
       expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
       expect(fake.cleared).toEqual(["cli-a", "cli-b", "cloud"]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("stops the Server pushing to Cloud before Cloud gives up its own slot", async () => {
+    const fake = fixture();
+    fake.endpoint.devices = new Set(["cli-a", "cli-b"]);
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect(fake.calls).toEqual(["cli-a", "cli-b", "push:null", "cloud"]);
     } finally { await runtime.dispose(); }
   });
 
