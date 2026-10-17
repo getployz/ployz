@@ -8,6 +8,9 @@ pub const BACKING_FILE: &str = "/var/lib/ployz-machine-pool";
 /// Survives a missing device so recovery cannot replace its Pool with a root-backed Pool.
 pub const DEVICE_POOL_MARKER: &str = "/var/lib/ployz-machine-pool.device";
 
+/// Ownership written only after the device Pool has been verified.
+pub const CONFIRMED_DEVICE_POOL_MARKER: &str = "ployz-device\nconfirmed\n";
+
 /// The Pool whose file backing the volume plugin can grow.
 pub const ROOT_BACKED_POOL_NAME: &str = "ployz";
 

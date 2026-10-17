@@ -33,6 +33,7 @@ pub(super) fn prepare_storage(
         StoragePreparation::None => Ok(()),
         StoragePreparation::Zfs { device: None } => {
             prepare_zfs(paths)?;
+            reconcile_device_pool_marker(paths)?;
             println!("ZFS storage preparation validated; no Machine Pool was created");
             Ok(())
         }
@@ -40,46 +41,30 @@ pub(super) fn prepare_storage(
             device: Some(device),
         } => {
             let device = device.as_path();
-            if paths.zfs_module.is_dir() && existing_device_pool(device)? {
+            fs::canonicalize(device).map_err(|source| Error::Io {
+                stage: "resolve ZFS device",
+                source,
+            })?;
+            if paths.device_pool_marker.with_extension("").exists() {
+                return Err(refuse(
+                    STAGE,
+                    "a file-backed Machine Pool already exists; refusing to replace it with a device Pool",
+                ));
+            }
+            let module_loaded = paths.zfs_module.is_dir()
+                || (command_exists("zpool")
+                    && run_host("load ZFS kernel module for retry", "modprobe", ["zfs"]).is_ok());
+            if module_loaded && existing_device_pool(device)? {
                 return remember_device_pool(paths);
             }
             super::assess::empty_device(device)?;
             prepare_zfs(paths)?;
             if !existing_device_pool(device)? {
                 let assessed = super::assess::empty_device(device)?;
+                create_device_pool(device, &assessed, paths)?;
+            } else {
                 remember_device_pool(paths)?;
-                let resolved = fs::canonicalize(device).map_err(|source| Error::Io {
-                    stage: "resolve ZFS device before creation",
-                    source,
-                })?;
-                if resolved != assessed {
-                    return Err(refuse(
-                        STAGE,
-                        "the selected device path changed during assessment",
-                    ));
-                }
-                let mut create = Command::new("zpool");
-                create
-                    .args([
-                        "create",
-                        "-m",
-                        "none",
-                        "-o",
-                        "ashift=12",
-                        "-O",
-                        "canmount=off",
-                        DEVICE_BACKED_POOL_NAME,
-                    ])
-                    .arg(device);
-                run_command("create device Machine Pool", &mut create)?;
-                if !existing_device_pool(device)? {
-                    return Err(refuse(
-                        STAGE,
-                        "the device Machine Pool was not imported after creation",
-                    ));
-                }
             }
-            remember_device_pool(paths)?;
             println!(
                 "Machine Pool {DEVICE_BACKED_POOL_NAME} is ready on {}",
                 device.display()
@@ -92,44 +77,160 @@ pub(super) fn prepare_storage(
 fn remember_device_pool(paths: &InstallPaths) -> Result<(), Error> {
     write_file_atomically(
         &paths.device_pool_marker,
-        "ployz-device\n",
+        crate::machine_pool::CONFIRMED_DEVICE_POOL_MARKER,
         "remember device Machine Pool",
     )
+}
+
+fn create_device_pool(device: &Path, assessed: &Path, paths: &InstallPaths) -> Result<(), Error> {
+    let resolved = fs::canonicalize(device).map_err(|source| Error::Io {
+        stage: "resolve ZFS device before creation",
+        source,
+    })?;
+    if resolved != assessed {
+        return Err(refuse(
+            STAGE,
+            "the selected device path changed during assessment",
+        ));
+    }
+    zpool_stdout([
+        OsStr::new("create"),
+        OsStr::new("-m"),
+        OsStr::new("none"),
+        OsStr::new("-o"),
+        OsStr::new("ashift=12"),
+        OsStr::new("-O"),
+        OsStr::new("canmount=off"),
+        OsStr::new(DEVICE_BACKED_POOL_NAME),
+        device.as_os_str(),
+    ])?;
+    if !existing_device_pool(device)? {
+        return Err(refuse(
+            STAGE,
+            "the device Machine Pool was not imported after creation",
+        ));
+    }
+    remember_device_pool(paths)
+}
+
+fn zpool_stdout(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Result<String, Error> {
+    let mut command = Command::new("/usr/bin/timeout");
+    command.args(["--signal=KILL", "30s", "zpool"]).args(args);
+    let output = run_command(STAGE, &mut command)?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn reconcile_device_pool_marker(paths: &InstallPaths) -> Result<(), Error> {
+    if !paths.device_pool_marker.exists() {
+        return Ok(());
+    }
+    let imported = zpool_stdout(["list", "-H", "-o", "name"])?;
+    let exported = zpool_stdout(["import"])?;
+    let exported = crate::machine_pool::importable_names(&exported)
+        .map_err(|error| refuse(STAGE, error.to_string()))?;
+    if imported.lines().any(|name| name == DEVICE_BACKED_POOL_NAME)
+        || exported.contains(&DEVICE_BACKED_POOL_NAME)
+    {
+        return Ok(());
+    }
+    let marker = fs::read_to_string(&paths.device_pool_marker).map_err(|source| Error::Io {
+        stage: "read device Machine Pool ownership",
+        source,
+    })?;
+    let backing = paths.device_pool_marker.with_extension("");
+    if marker == "ployz-device\n" && backing.exists() {
+        let labels = zpool_stdout([OsStr::new("import"), OsStr::new("-d"), backing.as_os_str()])?;
+        let labels = crate::machine_pool::importable_names(&labels)
+            .map_err(|error| refuse(STAGE, error.to_string()))?;
+        if labels.as_slice() == [crate::machine_pool::ROOT_BACKED_POOL_NAME]
+            || imported
+                .lines()
+                .any(|name| name == crate::machine_pool::ROOT_BACKED_POOL_NAME)
+        {
+            return fs::remove_file(&paths.device_pool_marker).map_err(|source| Error::Io {
+                stage: "remove stale device Machine Pool marker",
+                source,
+            });
+        }
+    }
+    Err(refuse(
+        STAGE,
+        "device Machine Pool is unavailable; refusing to discard confirmed or unresolved ownership",
+    ))
 }
 
 fn existing_device_pool(device: &Path) -> Result<bool, Error> {
     if !command_exists("zpool") {
         return Ok(false);
     }
-    let pools = command_stdout(
-        STAGE,
-        "zpool",
-        [
-            "list",
-            "-Hp",
-            "-o",
-            "name,size,allocated,free,health,readonly",
-        ],
-    )?;
+    let pools = zpool_stdout([
+        "list",
+        "-Hp",
+        "-o",
+        "name,size,allocated,free,health,readonly",
+    ])?;
     let pool = crate::machine_pool::one_usable(&pools)
         .map_err(|error| refuse(STAGE, error.to_string()))?;
-    let Some(pool) = pool else { return Ok(false) };
-    if pool.name() != DEVICE_BACKED_POOL_NAME {
-        return Err(refuse(
-            STAGE,
-            format!(
-                "Machine Pool {} already exists; refusing to replace it with {}",
-                pool.name(),
-                device.display()
-            ),
-        ));
-    }
     let device = fs::canonicalize(device).map_err(|source| Error::Io {
         stage: "resolve ZFS device",
         source,
     })?;
-    let status = command_stdout(STAGE, "zpool", ["status", "-LP", DEVICE_BACKED_POOL_NAME])?;
-    if !device_pool_matches(&status, &device) {
+    if let Some(pool) = pool {
+        if pool.name() != DEVICE_BACKED_POOL_NAME {
+            return Err(refuse(
+                STAGE,
+                format!(
+                    "named-device storage requires a single Machine Pool; {} already exists; refusing to replace it",
+                    pool.name()
+                ),
+            ));
+        }
+    } else {
+        let scan = zpool_stdout(["import"])?;
+        let names = crate::machine_pool::importable_names(&scan)
+            .map_err(|error| refuse(STAGE, error.to_string()))?;
+        let count = names
+            .iter()
+            .filter(|name| **name == DEVICE_BACKED_POOL_NAME)
+            .count();
+        if count > 1 {
+            return Err(refuse(
+                STAGE,
+                "ambiguous device Machine Pool labels; refusing to choose one",
+            ));
+        }
+        if count == 0 {
+            return Ok(false);
+        }
+        let status = scan
+            .split("pool:")
+            .skip(1)
+            .find(|section| section.split_whitespace().next() == Some(DEVICE_BACKED_POOL_NAME))
+            .ok_or_else(|| refuse(STAGE, "device Machine Pool label is incomplete"))?;
+        require_device_backing(status, &device)?;
+        zpool_stdout(["import", "-N", DEVICE_BACKED_POOL_NAME])?;
+    }
+    let status = zpool_stdout(["status", "-LP", DEVICE_BACKED_POOL_NAME])?;
+    require_device_backing(&status, &device)?;
+    let pools = zpool_stdout([
+        "list",
+        "-Hp",
+        "-o",
+        "name,size,allocated,free,health,readonly",
+    ])?;
+    match crate::machine_pool::one_usable(&pools)
+        .map_err(|error| refuse(STAGE, error.to_string()))?
+    {
+        Some(pool) if pool.name() == DEVICE_BACKED_POOL_NAME => Ok(true),
+        _ => Err(refuse(
+            STAGE,
+            "the device Machine Pool is not the sole usable imported Pool",
+        )),
+    }
+}
+
+fn require_device_backing(status: &str, device: &Path) -> Result<(), Error> {
+    if !device_pool_matches(status, device) {
         return Err(refuse(
             STAGE,
             format!(
@@ -138,17 +239,35 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
             ),
         ));
     }
-    Ok(true)
+    Ok(())
 }
 
 fn device_pool_matches(status: &str, device: &Path) -> bool {
-    let mut devices = status
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|name| name.starts_with('/'));
+    let status = status
+        .split_once("config:")
+        .map_or(status, |(_, config)| config);
+    let mut devices = status.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let name = fields.next()?;
+        let state = fields.next()?;
+        (name != DEVICE_BACKED_POOL_NAME
+            && matches!(
+                state,
+                "ONLINE" | "DEGRADED" | "OFFLINE" | "UNAVAIL" | "FAULTED" | "REMOVED"
+            ))
+        .then_some(name)
+    });
     devices.next().is_some_and(|name| {
-        let backing = Path::new(name);
-        backing == device || partition_of(backing, device)
+        let backing = if name.starts_with('/') {
+            PathBuf::from(name)
+        } else {
+            Path::new("/dev").join(name)
+        };
+        let backing = fs::canonicalize(&backing)
+            .or_else(|_| fs::canonicalize(Path::new("/dev/disk/by-id").join(name)))
+            .or_else(|_| fs::canonicalize(Path::new("/dev/disk/by-path").join(name)))
+            .unwrap_or(backing);
+        backing == device || partition_of(&backing, device)
     }) && devices.next().is_none()
 }
 

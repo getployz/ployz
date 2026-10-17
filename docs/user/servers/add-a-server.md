@@ -107,11 +107,15 @@ A by-id path stays stable when the kernel renames disks after a reboot. You can 
 name a kernel path such as `zfs:/dev/vdb`. The disk must
 be an empty whole disk. Ployz refuses a disk with a filesystem, a partition table,
 partitions, or mounts. It creates the `ployz-device` pool on the selected disk.
-After a reboot, Ployz imports that pool again. If the device is unavailable, storage
+Retrying installation on the same disk also imports an exported pool before checking
+whether the disk is empty. After a reboot, Ployz imports that pool again. If the device is unavailable, storage
 operations fail instead of creating a replacement pool on the main disk.
 
 With `--storage zfs` and no device, Ployz prepares ZFS and creates a file-backed pool
-on the main disk when you deploy the first managed volume. For installer-only use,
+on the main disk when you deploy the first managed volume. A failed named-device
+attempt that creates no pool leaves this option available. Existing file-backed
+storage takes priority over pools found on attached disks. If a previously owned
+device pool is missing, preparation refuses instead of forgetting it. For installer-only use,
 `ployzd install --storage zfs:/dev/vdb` accepts the same device form.
 
 ## Start without ZFS

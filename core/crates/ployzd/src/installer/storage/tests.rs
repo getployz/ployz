@@ -20,12 +20,19 @@ fn storage_device_parsing_preserves_default_and_named_targets() {
 
 #[test]
 fn storage_device_pool_requires_exactly_the_requested_backing() {
-    let status =
-        "  pool: ployz-device\nconfig:\n\tNAME STATE\n\tployz-device ONLINE\n\t  /dev/vdb ONLINE\n";
+    let status = "  pool: ployz-device\n state: ONLINE\nconfig:\n\tNAME STATE\n\tployz-device ONLINE\n\t  /dev/vdb ONLINE\n";
     assert!(device_pool_matches(status, Path::new("/dev/vdb")));
     assert!(!device_pool_matches(status, Path::new("/dev/vdc")));
     assert!(!device_pool_matches(
         &format!("{status}\t  /dev/vdc ONLINE\n"),
+        Path::new("/dev/vdb")
+    ));
+    assert!(device_pool_matches(
+        "ployz-device ONLINE\n  null ONLINE\n",
+        Path::new("/dev/null")
+    ));
+    assert!(!device_pool_matches(
+        "ployz-device ONLINE\n  mirror-0 ONLINE\n    /dev/vdb ONLINE\n    123456 UNAVAIL\n",
         Path::new("/dev/vdb")
     ));
 }
@@ -969,4 +976,191 @@ fn debian_kernel_flavour_names_header_packages() {
         debian_kernel_flavour("6.12.43+deb13-cloud-arm64"),
         Some("cloud-arm64")
     );
+}
+
+#[test]
+fn device_creation_commits_ownership_only_after_confirmation() {
+    const CASE: &str = "PLOYZ_DEVICE_CREATE_CONTRACT";
+    if let Ok(case) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let device = root.join("device");
+        let assessed = if case == "path-changed" {
+            root.join("old-device")
+        } else {
+            device.clone()
+        };
+        let result = create_device_pool(&device, &assessed, &paths);
+        if case == "success" {
+            result.unwrap();
+            assert!(paths.device_pool_marker.exists());
+        } else {
+            assert!(result.is_err());
+            assert!(!paths.device_pool_marker.exists());
+            reconcile_device_pool_marker(&paths).unwrap();
+            fs::write(
+                paths.device_pool_marker.with_extension(""),
+                "retained file Pool",
+            )
+            .unwrap();
+            reconcile_device_pool_marker(&paths).unwrap();
+            assert!(!paths.device_pool_marker.exists());
+        }
+        fs::write(root.join("child-completed"), case).unwrap();
+        return;
+    }
+    for case in ["create-failed", "path-changed", "not-imported", "success"] {
+        let root = fixture(case);
+        fs::create_dir(root.path().join("commands")).unwrap();
+        fs::write(root.path().join("device"), "selected disk").unwrap();
+        write_script(
+            &root.path().join("commands/zpool"),
+            r#"
+case "$1" in
+ create) [ "$PLOYZ_DEVICE_CREATE_CONTRACT" != create-failed ] || exit 1 ;;
+ list) [ "$PLOYZ_DEVICE_CREATE_CONTRACT" != success ] || printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ import) : ;;
+ status) printf 'pool: ployz-device\nconfig:\n  %s/device ONLINE\n' "$PLOYZ_INSTALLER_CONTRACT_ROOT" ;;
+ *) exit 97 ;;
+esac
+"#,
+        );
+        run_contract_child_with_environment(
+            "installer::storage::tests::device_creation_commits_ownership_only_after_confirmation",
+            root.path(),
+            CASE.into(),
+            case.into(),
+            case,
+            [],
+        );
+    }
+}
+
+#[test]
+fn plain_zfs_reconciles_stale_ownership_only_with_proven_file_pool_evidence() {
+    const CASE: &str = "PLOYZ_MARKER_RECONCILE_CONTRACT";
+    if let Ok(case) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let result = reconcile_device_pool_marker(&paths);
+        match case.as_str() {
+            "retained-file" => {
+                result.unwrap();
+                assert!(!paths.device_pool_marker.exists());
+            }
+            "exported-device" | "imported-device" => {
+                result.unwrap();
+                assert!(paths.device_pool_marker.exists());
+            }
+            _ => {
+                assert!(result.is_err());
+                assert!(paths.device_pool_marker.exists());
+            }
+        }
+        fs::write(root.join("child-completed"), case).unwrap();
+        return;
+    }
+    for case in [
+        "retained-file",
+        "owned-missing",
+        "owned-with-file",
+        "unlabeled-file",
+        "exported-device",
+        "imported-device",
+    ] {
+        let root = fixture(case);
+        fs::create_dir(root.path().join("commands")).unwrap();
+        fs::write(root.path().join("machine-pool.device"), "ployz-device\n").unwrap();
+        if case == "owned-with-file" {
+            fs::write(
+                root.path().join("machine-pool.device"),
+                crate::machine_pool::CONFIRMED_DEVICE_POOL_MARKER,
+            )
+            .unwrap();
+        }
+        if case.ends_with("file") {
+            fs::write(root.path().join("machine-pool"), "existing backing bytes").unwrap();
+        }
+        write_script(
+            &root.path().join("commands/zpool"),
+            r#"
+case "$1" in
+ list) [ "$PLOYZ_MARKER_RECONCILE_CONTRACT" != imported-device ] || echo ployz-device ;;
+ import)
+   if [ "$#" = 1 ]; then
+     [ "$PLOYZ_MARKER_RECONCILE_CONTRACT" != exported-device ] || printf 'pool: ployz-device\n'
+   elif [ "$PLOYZ_MARKER_RECONCILE_CONTRACT" = retained-file ] || [ "$PLOYZ_MARKER_RECONCILE_CONTRACT" = owned-with-file ]; then printf 'pool: ployz\n'
+   fi ;;
+ *) exit 97 ;;
+esac
+"#,
+        );
+        run_contract_child_with_environment(
+            "installer::storage::tests::plain_zfs_reconciles_stale_ownership_only_with_proven_file_pool_evidence",
+            root.path(),
+            CASE.into(),
+            case.into(),
+            case,
+            [],
+        );
+    }
+}
+
+#[test]
+fn named_storage_retry_imports_only_exported_pool_on_the_requested_disk() {
+    const CASE: &str = "PLOYZ_DEVICE_IMPORT_CONTRACT";
+    if let Ok(case) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let storage =
+            StoragePreparation::parse(format!("zfs:{}", root.join("device").display())).unwrap();
+        let result = prepare_storage(&storage, &paths);
+        if matches!(case.as_str(), "exported" | "unloaded") {
+            result.unwrap();
+            assert!(paths.device_pool_marker.exists());
+            assert!(root.join("imported").exists());
+        } else {
+            assert!(result.is_err());
+            assert!(!paths.device_pool_marker.exists());
+            assert!(!root.join("imported").exists());
+        }
+        fs::write(root.join("child-completed"), case).unwrap();
+        return;
+    }
+    for case in ["exported", "unloaded", "other-device", "file-backing"] {
+        let root = fixture(case);
+        fs::create_dir(root.path().join("commands")).unwrap();
+        if case != "unloaded" {
+            fs::create_dir_all(root.path().join("sys/module/zfs")).unwrap();
+        }
+        if case == "file-backing" {
+            fs::write(root.path().join("machine-pool"), "retained file Pool").unwrap();
+        }
+        fs::write(root.path().join("device"), "labelled disk").unwrap();
+        write_script(&root.path().join("commands/modprobe"), "exit 0");
+        write_script(
+            &root.path().join("commands/zpool"),
+            r#"
+case "$1" in
+ list) [ ! -e "$PLOYZ_INSTALLER_CONTRACT_ROOT/imported" ] || printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ import)
+   if [ "$#" = 1 ]; then
+     backing="$PLOYZ_INSTALLER_CONTRACT_ROOT/device"
+     [ "$PLOYZ_DEVICE_IMPORT_CONTRACT" != other-device ] || backing=/dev/other
+     printf 'pool: ployz-device\nconfig:\n  %s ONLINE\n' "$backing"
+   else : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/imported"; fi ;;
+ status) printf 'pool: ployz-device\nconfig:\n  %s/device ONLINE\n' "$PLOYZ_INSTALLER_CONTRACT_ROOT" ;;
+ *) exit 97 ;;
+esac
+"#,
+        );
+        run_contract_child_with_environment(
+            "installer::storage::tests::named_storage_retry_imports_only_exported_pool_on_the_requested_disk",
+            root.path(),
+            CASE.into(),
+            case.into(),
+            case,
+            [],
+        );
+    }
 }
