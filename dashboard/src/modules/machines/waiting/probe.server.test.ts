@@ -1,8 +1,8 @@
 import { type AddressInfo, BlockList, createServer, type Server, type Socket } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
 import { type ProbeResults, portStates } from "#/modules/machines/waiting/probe";
-import { connectOnce, probePeers, probeThroughWindow, refusedTarget } from "#/modules/machines/waiting/probe.server";
+import { connectOnce, probeGreeting, probePeers, probeThroughWindow, refusedTarget } from "#/modules/machines/waiting/probe.server";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -61,6 +61,11 @@ describe("refusedTarget", () => {
     expect(refusedTarget("1.2.3", none)).toBe("no_address");
   });
 
+  it("has no address to probe for an address with a zone", () => {
+    expect(refusedTarget("2606:4700::1%-", none)).toBe("no_address");
+    expect(refusedTarget("2606:4700::1%eth0", none)).toBe("no_address");
+  });
+
   it("probes a lab range only when named", () => {
     const allow = new BlockList();
     allow.addSubnet("192.168.122.0", 24, "ipv4");
@@ -72,8 +77,28 @@ describe("refusedTarget", () => {
 
 const NONCE = "WN5PN_dxAm32GdMdb68fzg";
 
+describe("probeGreeting", () => {
+  const keyA = "00".repeat(32);
+  const keyB = "11".repeat(32);
+
+  it("derives 22 base64url characters from the handout and the host's key", () => {
+    expect(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA)).toBe("Zr9vkJejXJXyNHjVDV674T");
+  });
+
+  it("differs per host and per handout", () => {
+    expect(probeGreeting(NONCE, keyA)).not.toBe(probeGreeting(NONCE, keyB));
+    expect(probeGreeting(NONCE, keyA)).not.toBe(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA));
+  });
+
+  it("reads another host's answer at a shared address as another listener", async () => {
+    const port = await listen((socket) => socket.end(probeGreeting(NONCE, keyA)));
+    expect((await connectOnce("127.0.0.1", port, probeGreeting(NONCE, keyB))).seen).toBe("other_listener");
+    expect((await connectOnce("127.0.0.1", port, probeGreeting(NONCE, keyA))).seen).toBe("answered");
+  });
+});
+
 describe("connectOnce", () => {
-  it("is answered only when the host writes the nonce", async () => {
+  it("is answered only when the host writes the greeting", async () => {
     const port = await listen((socket) => socket.write(NONCE));
     expect(await connectOnce("127.0.0.1", port, NONCE)).toEqual({ seen: "answered", bytesRead: NONCE.length });
   });
@@ -149,6 +174,21 @@ describe("probeThroughWindow", () => {
   it("has no answer when an attempt goes unanswered", async () => {
     expect(await probeThroughWindow("192.0.2.1", 80, NONCE, 150, fast)).toBe("no_answer");
   });
+
+  it("has no answer when the window ends before the first attempt", async () => {
+    expect(await probeThroughWindow("127.0.0.1", await freePort(), NONCE, 10, fast)).toBe("no_answer");
+  });
+
+  it("stops without connecting when the loop wakes after the window has ended", async () => {
+    const port = await freePort();
+    const start = Date.now();
+    vi.spyOn(Date, "now").mockReturnValueOnce(start).mockReturnValueOnce(start).mockReturnValueOnce(start + 1_000);
+    try {
+      expect(await probeThroughWindow("127.0.0.1", port, NONCE, 300, fast)).toBe("no_answer");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 });
 
 describe("portStates", () => {
@@ -172,6 +212,12 @@ describe("portStates", () => {
 
   it("is Open when the host answered, report or not", () => {
     expect(portStates({ request, handedAt, address: "8.8.8.8", tcp: both("answered") }, during)["443"]).toEqual({ state: "open" });
+  });
+
+  it("is Unknown port busy when the host could not bind, even if something answered", () => {
+    const busy = { heardFrom: [], bindFailed: ["tcp:80"] };
+    expect(portStates({ request, handedAt, address: "8.8.8.8", tcp: both("answered"), host: busy }, after)["80"])
+      .toEqual({ state: "unknown", reason: "port_busy" });
   });
 
   it("is Unknown port busy when the host could not bind", () => {

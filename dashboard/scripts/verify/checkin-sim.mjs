@@ -2,10 +2,10 @@
 // tick to /api/checkin, then the run prints answers, p50, p95 and errors. Run from dashboard/ against up.sh's Cloud:
 //   node scripts/verify/checkin-sim.mjs --token pflt_... [--hosts N] [--ticks N | --once] [--interval ms]
 //     [--bad-signature] [--skew seconds] [--prep docker=installing,zfs=installing] [--hostname name]
-//     [--pad-bytes N] [--ip addr] [--seed text] [--probe-report nonce] [--url http://localhost:port]
+//     [--pad-bytes N] [--ip addr] [--seed text] [--probe-report handout] [--url http://localhost:port]
 // --seed derives each host's key from text, so a later run checks in as the same hosts. Each host claims its own source address through x-forwarded-for (198.18.0.0/15), which dev Cloud trusts; --ip
 // sends every host from one address instead.
-import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
@@ -83,7 +83,7 @@ function signed(host) {
     cliVersion: "checkin-sim",
     report: report(host),
     ...(prep === undefined ? {} : { prep }),
-    ...(flags["probe-report"] === undefined ? {} : { probe: { nonce: flags["probe-report"], heardFrom: [], bindFailed: [] } }),
+    ...(flags["probe-report"] === undefined ? {} : { probe: { handout: flags["probe-report"], heardFrom: [], bindFailed: [] } }),
   }));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + Number(flags.skew));
   const stamp = Buffer.alloc(8);
@@ -111,8 +111,9 @@ function signed(host) {
 
 function describe(status, answer, host) {
   if (status === 200 && answer.kind === "wait" && answer.probe !== undefined) {
-    const { nonce, windowMs, send } = answer.probe;
-    return `wait retryAfter=${answer.retryAfter} probe nonce=${nonce} windowMs=${windowMs} host=${host.ip} peers=${send.map((peer) => peer.target).join(",")}`;
+    const { nonce, handout, windowMs, send } = answer.probe;
+    const greeting = createHmac("sha256", handout).update(`ployz-probe-tcp:${host.key}`).digest("base64url").slice(0, 22);
+    return `wait retryAfter=${answer.retryAfter} probe nonce=${nonce} handout=${handout} greeting=${greeting} windowMs=${windowMs} host=${host.ip} peers=${send.map((peer) => peer.target).join(",")}`;
   }
   if (status === 200 && answer.kind === "wait") return `wait retryAfter=${answer.retryAfter}`;
   if (status === 200 && answer.kind === "stop") return `stop ${answer.reason}`;

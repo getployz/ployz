@@ -162,7 +162,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
       .where(and(key, eq(waitingServer.fleetTokenId, token.id), isNull(waitingServer.rejectedAt)))
       .returning({ id: waitingServer.id, probe: waitingServer.probe });
   if (row === undefined) return OWNERSHIP_CHANGED;
-  const probe = yield* handOutProbe(row.id, decodeStoredProbe(row.probe), observedIp);
+  const probe = yield* handOutProbe(row.id, decodeStoredProbe(row.probe), observedIp, request.checkinKey);
   const wait: CheckinResponse = { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS };
   return probe === null ? wait : { ...wait, probe };
 });

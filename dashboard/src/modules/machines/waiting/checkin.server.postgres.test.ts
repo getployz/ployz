@@ -1,7 +1,7 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { Cause, Effect, Exit, Random } from "effect";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
+import type { CheckinRequest, CheckinResponse, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
@@ -171,6 +171,11 @@ const shownProbe = async () => (await harness.runEffect(listWaitingServers(ada, 
 
 const waitingIds = async () => (await rows()).map((row) => row.id);
 
+const handedOut = (answer: CheckinResponse) => {
+  if (answer.kind !== "wait" || answer.probe === undefined) throw new Error("expected a probe in the wait");
+  return answer.probe.handout;
+};
+
 it("hands every selected host one shared nonce in its next wait, once", async () => {
   const { token } = await fleetToken("rack-1");
   const ips = ["198.51.100.11", "198.51.100.12", "198.51.100.13"];
@@ -228,15 +233,15 @@ it("answers the check-in before Cloud's connects run, and shows refusals as Clos
     const { token } = await fleetToken("rack-1");
     const host = newHost();
     await send(token, host, { ip: "127.0.0.1" });
-    const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
     await shortenWindow(2_000);
     const started = performance.now();
-    expect(await send(token, host, { ip: "127.0.0.1" })).toHaveProperty("probe");
+    const handout = handedOut(await send(token, host, { ip: "127.0.0.1" }));
     expect(performance.now() - started).toBeLessThan(900);
     expect(await settledTcp("127.0.0.1")).toEqual({ "80": { seen: "refused" }, "443": { seen: "refused" } });
     expect(await shownProbe()).toEqual({ "80": { state: "unknown", reason: "pending" }, "443": { state: "unknown", reason: "pending" } });
 
-    await send(token, host, { ip: "127.0.0.1", probe: { nonce, heardFrom: [], bindFailed: ["tcp:443"] } });
+    await send(token, host, { ip: "127.0.0.1", probe: { handout, heardFrom: [], bindFailed: ["tcp:443"] } });
     expect(await shownProbe()).toEqual({ "80": { state: "closed" }, "443": { state: "unknown", reason: "port_busy" } });
   } finally {
     vi.unstubAllEnvs();
@@ -310,27 +315,96 @@ it("ignores a connect that finishes after the host moved to another address", as
   }
 });
 
-it("stores a host's report only under its own selection's nonce, and keeps it across check-ins", async () => {
+it("stores a host's report only under its own handout, and keeps it across check-ins", async () => {
   const first = await fleetToken("rack-1");
   const second = await fleetToken("rack-2");
   const host = newHost();
   const ip = "198.51.100.31";
-  const hostReport = (nonce: string) => ({ nonce, heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] });
+  const hostReport = (handout: string) => ({ handout, heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] });
 
   expect(await send(first.token, host, { ip, probe: hostReport("old") })).toEqual(wait);
   expect(await storedProbe(ip)).toBeNull();
 
   const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
-  expect(await send(first.token, host, { ip, probe: hostReport("old") })).toMatchObject({ probe: { nonce } });
+  const handout = handedOut(await send(first.token, host, { ip, probe: hostReport(nonce) }));
+  expect(handout).not.toBe(nonce);
   expect(await storedProbe(ip)).not.toHaveProperty("host");
 
-  expect(await send(first.token, host, { ip, probe: hostReport(nonce) })).toEqual(wait);
+  expect(await send(first.token, host, { ip, probe: hostReport(handout) })).toEqual(wait);
   const reported = { heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] };
   expect(await storedProbe(ip)).toMatchObject({ request: { nonce }, host: reported });
   await send(first.token, host, { ip });
   expect(await storedProbe(ip)).toMatchObject({ host: reported });
   await send(second.token, host, { ip });
   expect(await storedProbe(ip)).toMatchObject({ host: reported });
+});
+
+it("never counts a replayed report from the old address for the new handout", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.51" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const first = handedOut(await send(token, host, { ip: "198.51.100.51" }));
+
+  const oldReport = request(token, host, { ip: "198.51.100.52", probe: { handout: first, heardFrom: [], bindFailed: [] } });
+  const second = handedOut(await harness.runEffect(checkIn(oldReport)));
+  expect(second).not.toBe(first);
+  await harness.runEffect(checkIn(oldReport));
+  expect(await storedProbe("198.51.100.52")).not.toHaveProperty("host");
+
+  await harness.pool.query(`update waiting_server set probe = jsonb_set(probe, '{tcp}', '{"80":{"seen":"refused"},"443":{"seen":"refused"}}')`);
+  await handedLongAgo();
+  const noReport = { state: "unknown", reason: "no_host_report" };
+  expect(await shownProbe()).toEqual({ "80": noReport, "443": noReport });
+});
+
+it("reads port busy for a host that couldn't listen, even when another host at its address answered", async () => {
+  const { token } = await fleetToken("rack-1");
+  const [a, b] = [newHost(), newHost()];
+  const ip = "198.51.100.61";
+  await send(token, a, { ip, hostname: "a" });
+  await send(token, b, { ip, hostname: "b" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await send(token, a, { ip, hostname: "a" });
+  const handout = handedOut(await send(token, b, { ip, hostname: "b" }));
+  await harness.pool.query(`update waiting_server set probe = jsonb_set(probe, '{tcp}', '{"80":{"seen":"answered"},"443":{"seen":"other_listener"}}')`);
+  await send(token, b, { ip, hostname: "b", probe: { handout, heardFrom: [], bindFailed: ["tcp:80"] } });
+  const shown = await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }));
+  expect(shown.find((server) => server.report.hostname === "b")?.probe).toEqual({
+    "80": { state: "unknown", reason: "port_busy" },
+    "443": { state: "unknown", reason: "other_listener" },
+  });
+});
+
+it("stops probing a host whose address keeps changing, and says so", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.71" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const handouts = [];
+  for (const ip of ["198.51.100.71", "198.51.100.72", "198.51.100.73"]) handouts.push(handedOut(await send(token, host, { ip })));
+  expect(new Set(handouts).size).toBe(3);
+
+  expect(await send(token, host, { ip: "198.51.100.74" })).toEqual(wait);
+  expect(await send(token, host, { ip: "198.51.100.73" })).toEqual(wait);
+  const unstable = { state: "unknown", reason: "address_unstable" };
+  expect(await shownProbe()).toEqual({ "80": unstable, "443": unstable });
+});
+
+it("won't reopen a selection over a host whose window is still running", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.81" });
+  const ids = await waitingIds();
+  const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  await send(token, host, { ip: "198.51.100.81" });
+
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toMatchObject({ probing: 0 });
+  expect(await storedProbe("198.51.100.81")).toMatchObject({ request: { nonce } });
+  await handedLongAgo();
+  const reopened = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  expect(reopened).toMatchObject({ probing: 1 });
+  expect(await storedProbe("198.51.100.81")).toMatchObject({ request: { nonce: reopened.nonce } });
 });
 
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {

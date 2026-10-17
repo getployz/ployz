@@ -64,7 +64,7 @@ export const CheckinRequest = Schema.Struct({
     failure: Schema.optionalKey(Schema.Struct({ stage: Schema.String, message: Schema.String })),
   })),
   probe: Schema.optionalKey(Schema.Struct({
-    nonce: Schema.String,
+    handout: Schema.String,
     heardFrom: Schema.Array(Schema.String),
     bindFailed: Schema.Array(Schema.String),
   })),
@@ -86,6 +86,8 @@ export const ProbeRequest = Schema.Struct({
 });
 export type ProbeRequest = typeof ProbeRequest.Type;
 
+export type ProbeHandout = ProbeRequest & { readonly handout: string };
+
 export type CheckinResponse =
-  | { readonly kind: "wait"; readonly retryAfter: number; readonly probe?: ProbeRequest }
+  | { readonly kind: "wait"; readonly retryAfter: number; readonly probe?: ProbeHandout }
   | { readonly kind: "stop"; readonly reason: CheckinStopReason; readonly message: string };
