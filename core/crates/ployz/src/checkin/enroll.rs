@@ -129,12 +129,7 @@ pub(super) async fn attempt<H: Host>(
             tokio::select! {
                 outcome = &mut enrolling => break outcome,
                 message = heartbeat(client, key, paths, report, &mut status, &mut attempt, &mut moved) => {
-                    match message {
-                        Some(message) if attempt.stage >= EnrollStage::Joining => {
-                            tracing::warn!(%message, "Ignoring rejection of a committed enrollment");
-                        }
-                        message => rejected = message,
-                    }
+                    rejected = message;
                 }
             }
         }
@@ -202,6 +197,11 @@ async fn heartbeat(
         probe: None,
     };
     match client.post(key, &request).await {
+        client::Reply::Answer(Answer::Stop(StopReason::Rejected, message))
+            if attempt.stage >= EnrollStage::Joining =>
+        {
+            tracing::warn!(%message, "Ignoring rejection of a committed enrollment");
+        }
         client::Reply::Answer(Answer::Stop(StopReason::Rejected, message)) => return Some(message),
         client::Reply::Unreachable(_, why) => {
             crate::ui::note(format!("Could not report the enroll stage: {why}"));

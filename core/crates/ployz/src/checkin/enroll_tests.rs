@@ -760,6 +760,47 @@ async fn rejection_after_storage_allows_committed_work_to_finish() {
 }
 
 #[tokio::test]
+async fn committed_resume_keeps_heartbeat_pacing_when_cloud_keeps_rejecting() {
+    let fixture = Fixture::new("ready");
+    previous(&fixture, Seen::Enroll, EnrollStage::Joining);
+    let mut answers = vec![instruction("zfs")];
+    answers.extend(std::iter::repeat_n(
+        r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#.to_owned(),
+        100,
+    ));
+    let cloud = Arc::new(Cloud::answering(answers).await);
+    let mut host = Scripted::new(
+        &cloud,
+        vec![
+            EnrollStage::Enrolling,
+            EnrollStage::Joining,
+            EnrollStage::Publishing,
+        ],
+        Ok(()),
+    );
+    host.pace = Some(Duration::from_millis(250));
+
+    assert_eq!(
+        pass(
+            &host,
+            &mut fixture.client(&cloud),
+            &fixture.key,
+            &fixture.paths,
+            Utc::now(),
+        )
+        .await,
+        Next::Enrolled
+    );
+    assert!(host.events().contains(&"finished"));
+    assert!(
+        cloud.attempts().len() <= 5,
+        "Repeated rejection bypassed stage/heartbeat pacing: {} posts",
+        cloud.attempts().len()
+    );
+    assert_eq!(cloud.stages(), ["joining", "publishing"]);
+}
+
+#[tokio::test]
 async fn rejected_committed_resume_reports_its_actual_failure() {
     let fixture = Fixture::new("ready");
     let cloud = Arc::new(
