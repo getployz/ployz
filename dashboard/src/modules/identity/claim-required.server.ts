@@ -37,7 +37,7 @@ export const isOwnedOnlyByAgents = (organizationId: string) =>
   ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true) && !kinds.includes(false)));
 
 /** A token still runs by the database clock, the one clock a claim and a teardown both read. */
-export const tokenRuns = sql`${organizationToken.expiresAt} > now()`;
+export const tokenRuns = sql`${organizationToken.expiresAt} > clock_timestamp()`;
 
 /** The secret in the Organization's claim URL. Derived from its id, so every refusal names the same one. */
 export const claimSecretFor = Effect.fn("Identity.claimSecretFor")(function* (organizationId: string) {

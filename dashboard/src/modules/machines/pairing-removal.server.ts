@@ -50,10 +50,11 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
  * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
  * a legacy claim, Fleet Token creation, Forget Servers, a pairing removal, a dead-claim release and Organization
  * removal. The pairing row can't do it, since it doesn't exist before the first server founds. Taken first in its
- * transaction; the order after it is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows
- * (each in id order), then enrollment tokens, then `operation_outbox` cancel events (in attempt id order), then the
- * Organization row. Cancel, Reject and the run and sweep closers only end attempts; they skip this lock and start at
- * `server_enrollment`, Reject after its `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
+ * transaction; Organization removal alone then locks the Organization row, the row a claim locks without this lock. The
+ * order after that is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows (each in id
+ * order), then enrollment tokens, then `operation_outbox` cancel events (in attempt id order). Cancel, Reject and the
+ * run and sweep closers only end attempts; they skip this lock and start at `server_enrollment`, Reject after its
+ * `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
  * Revoke locks its token, then that token's `waiting_server` rows, and probe selection locks only `waiting_server` rows. A
  * check-in holds at most one `waiting_server` row, after its token, and stamps a probe handout on that same row. A cancel
  * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt.
@@ -297,7 +298,7 @@ const ManagementClientCleared = Schema.Struct({
 });
 
 /**
- * Clear one Machine's device holders (`cli-*`), then its `cloud` Management Client. Only a successful Clear or an
+ * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
  * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders.
  */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
@@ -309,6 +310,7 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
       for (const label of labels) {
         if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
       }
+      yield* session.setPushTarget(null).pipe(Effect.catchTag("ServerLacks", () => Effect.void));
       yield* session.clearManagementClient("cloud");
       return true;
     })).pipe(Effect.catch((error) => Effect.succeed(
