@@ -6,6 +6,7 @@ import type { StoreCall } from "./store.contract";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
+import { permissionsOf } from "#/modules/organization/permissions";
 import {
   checkInStoreGithubBuild, checkStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
 } from "#/modules/config-store/store-github-builds.server";
@@ -108,7 +109,7 @@ it.live(
       // Cancelling the Deployment ends the build GitHub holds; a late check-in is refused.
       const cancelled = yield* provided(callStore(ORGANIZATION, "00000000-0000-4000-8000-00000000b0ff", {
         operation: "write", command: { command: "cancel", deployment: "00000000-0000-4000-8000-00000000b102" },
-      }));
+      }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
       expect(cancelled).toMatchObject({ ok: true });
       expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ status: "failed" });
       expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });

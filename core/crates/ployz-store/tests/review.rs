@@ -8,12 +8,12 @@
 use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AddDomain, Admit, Approval, ApprovalDigest, Change, ConfigStore, CreateProject,
+    Actor, AddDomain, Admit, Approval, ApprovalDigest, Asks, Change, ConfigStore, CreateProject,
     CreateService, CreateVolume, DataEffect, Deploy, DeploymentId, DestructiveEffect,
     DestructiveKind, DiffQuery, DiffView, Discard, Discarded, Edit, EnvironmentId,
-    EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, ProjectId, ProjectName,
-    Publish, Published, RemoveDomain, RemoveService, RemoveVolume, Revision, ServiceLineageId,
-    SettingPath, Trusted, VolumeId, VolumeName,
+    EnvironmentQuery, EnvironmentRef, Hostname, Mount, OrganizationId, Permission, ProjectId,
+    ProjectName, Publish, Published, RemoveDomain, RemoveService, RemoveVolume, Revision,
+    ServiceLineageId, SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -541,6 +541,10 @@ fn a_compound_settings_row_discards_that_setting() {
 fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
     let (store, mut who) = shop();
     who.principal = Some(ployz_store::Principal::parse("Ada Lovelace").unwrap());
+    let held = Trusted {
+        permissions: Some(Permission::ALL.iter().copied().collect()),
+        ..Trusted::default()
+    };
     let save = |message: &str| {
         store
             .write_trusted(
@@ -549,7 +553,7 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
                     message: Some(message.into()),
                     ..Publish::default()
                 },
-                &Trusted::default(),
+                &held,
             )
             .unwrap()
     };
@@ -569,7 +573,18 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
             .unwrap(),
         before
     );
-    discard(&store, &who, Some("web"), None).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
+                path: Some(SettingPath::parse("web").unwrap()),
+                version: None,
+            },
+            &held,
+        )
+        .unwrap();
     assert_eq!(
         store
             .read(&who, &ployz_store::HistoryQuery::default())
@@ -3757,6 +3772,54 @@ fn publishing_a_removal_waits_for_a_human_to_approve_exactly_it() {
     assert!(approval.starts_with(&format!("{version}:")), "{approval}");
     let approved = Approval::Approved(ApprovalDigest::parse(approval).unwrap());
     publish_as(&store, &who, None, approved).unwrap();
+}
+
+#[test]
+fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    let holding = |permissions: &[Permission], approval: Approval, asks: Asks| Trusted {
+        permissions: Some(permissions.iter().copied().collect()),
+        approval,
+        asks,
+        ..Trusted::default()
+    };
+    let stages = [Permission::ChangesStage, Permission::ChangesDeploy];
+    let asked = store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &holding(&stages, Approval::Required, Asks::EveryDeploy),
+        )
+        .unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
+    remove_service(&store, &who, "web");
+    let publish = |permissions: &[Permission]| {
+        store.write_trusted(
+            &who,
+            &Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &holding(permissions, Approval::Required, Asks::Destroys),
+        )
+    };
+    let refused = publish(&stages).unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(refused.message, "Needs changes:destroy");
+    let asked = publish(&[Permission::ChangesStage, Permission::ChangesDestroy]).unwrap_err();
+    assert_eq!(asked.code.as_str(), "approval_required", "{asked:?}");
 }
 
 #[test]

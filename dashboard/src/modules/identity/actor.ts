@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { can, type Permission } from "#/modules/organization/permissions";
+import { can, type Permission, permissionsOf } from "#/modules/organization/permissions";
 import type { SupportShows } from "#/modules/support-access/support-access";
 
 export const Actor = Schema.Struct({
@@ -35,3 +35,7 @@ export const callerCan = (caller: Pick<Caller, "role">, permission: Permission) 
 /** `callerCan`, but support with support access holds what the support role does: for the sites that let support act. */
 export const callerOrSupportCan = (caller: Pick<Caller, "role" | "support">, permission: Permission) =>
   caller.role !== null ? can(caller.role, permission) : caller.support !== null && can("support", permission);
+
+/** The Caller's effective permissions, the set the Store checks each command against: their role's, or support's. */
+export const callerPermissions = (caller: Pick<Caller, "role" | "support">): Permission[] =>
+  caller.role !== null ? permissionsOf(caller.role) : caller.support !== null ? permissionsOf("support") : [];
