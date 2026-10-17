@@ -433,14 +433,15 @@ it("reopens all of a selection or none of it when one host's window is still run
   expect(await storedProbe("198.51.100.83")).toBeNull();
 });
 
-const blockedOnRowLock = async () => {
+const blockedOnRowLocks = async (count: number) => {
   for (let waited = 0; waited < 5000; waited += 20) {
     const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'");
-    if (rows.length > 0) return;
+    if (rows.length >= count) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("the selection never waited on the check-in's row lock");
+  throw new Error(`fewer than ${count} operations waited on a row lock`);
 };
+const blockedOnRowLock = () => blockedOnRowLocks(1);
 
 it("won't reopen over a handout a queued check-in committed while the selection waited", async () => {
   const { token } = await fleetToken("rack-1");
@@ -467,6 +468,82 @@ it("won't reopen over a handout a queued check-in committed while the selection 
   }
   expect(await storedProbe(ip)).toMatchObject({ request: { nonce }, handout: "queued" });
 });
+
+it("stamps a handout when it is issued, so a check-in queued behind a long lock isn't reopened over", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  const ip = "198.51.100.85";
+  await send(token, host, { ip });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+
+  const blocker = await harness.pool.connect();
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server for update");
+    const checking = send(token, host, { ip });
+    await blockedOnRowLock();
+    await new Promise((resolve) => setTimeout(resolve, 11_200));
+    const reopening = harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+    await blockedOnRowLocks(2);
+    await blocker.query("commit");
+    const handout = handedOut(await checking);
+    expect(await reopening).toEqual({ probing: 0 });
+    expect(await storedProbe(ip)).toMatchObject({ handout });
+  } finally {
+    blocker.release();
+  }
+}, 20_000);
+
+const heapFirstBiggestId = async (token: string) => {
+  for (const ip of ["198.51.100.86", "198.51.100.87"]) await send(token, newHost(), { ip });
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.86'", [big]);
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.87'", [small]);
+  return { big, small };
+};
+
+const smallLockedWhileBigHeld = async (writer: (ids: ReadonlyArray<string>) => Promise<void>, token: string) => {
+  const { big, small } = await heapFirstBiggestId(token);
+  const blocker = await harness.pool.connect();
+  const probe = await harness.pool.connect();
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server where id = $1 for update", [big]);
+    const writing = writer([big, small]);
+    await blockedOnRowLock();
+    await probe.query("begin");
+    const lockedSmall = await probe.query("select id from waiting_server where id = $1 for update nowait", [small])
+      .then(() => false, () => true);
+    await probe.query("rollback");
+    await blocker.query("commit");
+    await writing;
+    return lockedSmall;
+  } finally {
+    blocker.release();
+    probe.release();
+  }
+};
+
+it("locks waiting rows in id order in every writer of several, so they can't deadlock each other", async () => {
+  const writers = {
+    select: async (ids: ReadonlyArray<string>) => {
+      await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+    },
+    reject: async (ids: ReadonlyArray<string>) => {
+      await harness.runEffect(rejectWaitingServers(ada, { organizationSlug: "ada", ids }));
+    },
+    revoke: async () => {
+      await harness.runEffect(revokeFleetToken(ada, { organizationSlug: "ada", name: "lock-order" }));
+    },
+  };
+  for (const [name, writer] of Object.entries(writers)) {
+    await harness.pool.query("truncate table waiting_server, fleet_token cascade");
+    const { token } = await fleetToken("lock-order");
+    expect({ name, lockedSmall: await smallLockedWhileBigHeld(writer, token) }).toEqual({ name, lockedSmall: true });
+  }
+}, 20_000);
 
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {
   const { token } = await fleetToken("rack-1");

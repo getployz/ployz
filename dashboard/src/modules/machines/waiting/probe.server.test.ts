@@ -314,4 +314,19 @@ describe("probePeers", () => {
     expect(peers.get("a")?.map((peer) => peer.target)).toEqual(["1.0.0.4"]);
     expect(peers.get("b")?.map((peer) => peer.target)).toEqual(["1.0.0.4", "1.0.0.1"]);
   });
+
+  it("checks each distinct address once, even for 1,000 hosts behind one address or all private", () => {
+    const checks = vi.spyOn(BlockList.prototype, "check");
+    try {
+      const shared = Array.from({ length: 1000 }, (_, i) => host(`s${i}`, "1.0.0.1"));
+      expect([...probePeers(shared).values()].every((send) => send.length === 0)).toBe(true);
+      expect(checks.mock.calls.length).toBeLessThanOrEqual(1);
+      checks.mockClear();
+      const lan = Array.from({ length: 1000 }, (_, i) => host(`p${i}`, `10.0.${i >> 8}.${i & 255}`));
+      expect([...probePeers(lan).values()].every((send) => send.length === 0)).toBe(true);
+      expect(checks.mock.calls.length).toBeLessThanOrEqual(1000);
+    } finally {
+      checks.mockRestore();
+    }
+  });
 });

@@ -165,7 +165,7 @@ export const handOutProbe = Effect.fn("Probe.handOut")(function* (
   const notProbed = refused === null ? null : JSON.stringify({ "80": { seen: "not_probed", reason: refused }, "443": { seen: "not_probed", reason: refused } });
   const { drizzle } = yield* Database;
   const handout = randomBytes(16).toString("base64url");
-  const handedOut = sql`${waitingServer.probe} || jsonb_build_object('handout', ${handout}::text, 'handedAt', now(), 'address', ${observedIp}::text)`;
+  const handedOut = sql`${waitingServer.probe} || jsonb_build_object('handout', ${handout}::text, 'handedAt', clock_timestamp(), 'address', ${observedIp}::text)`;
   const [handed] = yield* drizzle
     .update(waitingServer)
     .set({ probe: notProbed === null ? handedOut : sql`jsonb_set(${handedOut}, '{tcp}', ${notProbed}::jsonb)` })
@@ -206,11 +206,12 @@ export const probeAfterCheckIn = (observedIp: string, report: CheckinRequest["pr
 
 export function probePeers(hosts: ReadonlyArray<{ readonly id: string; readonly observedIp: string }>) {
   const allow = devOnlyProbeAllowList();
+  const eligible = new Set([...new Set(hosts.map((host) => host.observedIp))].filter((ip) => refusedTarget(ip, allow) === null));
   return new Map(hosts.map((host, index) => {
     const targets = new Set<string>();
     for (let step = 1; step < hosts.length && targets.size < MAX_PEERS; step++) {
       const peer = hosts[(index + step) % hosts.length];
-      if (peer !== undefined && refusedTarget(peer.observedIp, allow) === null && peer.observedIp !== host.observedIp) targets.add(peer.observedIp);
+      if (peer !== undefined && peer.observedIp !== host.observedIp && eligible.has(peer.observedIp)) targets.add(peer.observedIp);
     }
     return [host.id, [...targets].map((target) => ({ target, port: 51820 as const }))];
   }));
@@ -227,14 +228,14 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
     inArray(waitingServer.id, [...input.ids]),
     isNull(waitingServer.rejectedAt),
   );
-  const reopenable = sql<boolean>`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= now() - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`;
+  const reopenable = sql<boolean>`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= clock_timestamp() - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const hosts = yield* drizzle
       .select({ id: waitingServer.id, observedIp: waitingServer.observedIp, reopenable })
       .from(waitingServer)
       .where(selected)
-      .orderBy(waitingServer.firstSeenAt, waitingServer.id)
+      .orderBy(waitingServer.id)
       .for("update");
     if (hosts.length === 0 || hosts.some((host) => !host.reopenable)) return { probing: 0 };
     const nonce = randomBytes(16).toString("base64url");
