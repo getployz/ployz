@@ -22,7 +22,12 @@ const PATIENCE: Duration = Duration::from_secs(3);
 thread_local! {
     /// Stands in for `net.ipv6.bindv6only=1`, which makes every IPv6 socket IPv6-only by default.
     pub(super) static ONLY_V6_BY_DEFAULT: Cell<bool> = const { Cell::new(false) };
+    /// Fails every IPv6 bind with this errno.
+    pub(super) static IPV6_FAILS_WITH: Cell<Option<i32>> = const { Cell::new(None) };
 }
+
+/// Held to stall every save, the way a slow disk stalls `sync_all`.
+pub(super) static SAVES: Mutex<()> = Mutex::new(());
 
 fn free_port() -> u16 {
     loop {
@@ -119,7 +124,7 @@ async fn a_longer_window_is_clamped_to_ten_seconds() {
         .open(handout("long", 60_000, &[Port::Udp(port)], &[]), &key())
         .await;
 
-    probes.window.take().unwrap().await.unwrap();
+    probes.finish().await;
 
     assert_eq!(opened.elapsed(), WINDOW_CAP);
     assert!(bindable(port));
@@ -138,7 +143,7 @@ async fn every_socket_closes_when_the_window_ends_and_the_report_stays() {
     greeting_from(tcp).await;
 
     eventually(|| bindable(tcp) && bindable(udp)).await;
-    assert_eq!(probes.report().unwrap().handout, "short");
+    assert_eq!(probes.report().await.unwrap().handout, "short");
 }
 
 #[tokio::test]
@@ -168,7 +173,7 @@ async fn a_port_another_process_holds_goes_to_bind_failed() {
         .open(
             handout(
                 "busy",
-                5_000,
+                1_000,
                 &[Port::Tcp(held_tcp), Port::Udp(held_udp), Port::Tcp(free)],
                 &[],
             ),
@@ -177,8 +182,9 @@ async fn a_port_another_process_holds_goes_to_bind_failed() {
         .await;
 
     greeting_from(free).await;
+    probes.finish().await;
     assert_eq!(
-        probes.report().unwrap().bind_failed,
+        probes.report().await.unwrap().bind_failed,
         [format!("tcp:{held_tcp}"), format!("udp:{held_udp}")]
     );
 }
@@ -188,21 +194,15 @@ async fn peers_hear_each_other_once_by_address() {
     let (a, b) = (free_port(), free_port());
     let (mut first, mut second) = (Probes::default(), Probes::default());
     first
-        .open(handout("a", 5_000, &[Port::Udp(a)], &[b]), &key())
+        .open(handout("a", 1_500, &[Port::Udp(a)], &[b]), &key())
         .await;
     second
-        .open(handout("b", 5_000, &[Port::Udp(b)], &[a]), &key())
+        .open(handout("b", 1_500, &[Port::Udp(b)], &[a]), &key())
         .await;
 
-    eventually(|| {
-        [&first, &second]
-            .iter()
-            .all(|probes| !probes.report().unwrap().heard_from.is_empty())
-    })
-    .await;
-    tokio::time::sleep(RESEND * 2).await;
-    for probes in [&first, &second] {
-        assert_eq!(probes.report().unwrap().heard_from, ["127.0.0.1"]);
+    tokio::join!(first.finish(), second.finish());
+    for probes in [&mut first, &mut second] {
+        assert_eq!(probes.report().await.unwrap().heard_from, ["127.0.0.1"]);
     }
 }
 
@@ -211,7 +211,7 @@ async fn only_the_exact_nonce_counts_as_heard() {
     let port = free_port();
     let mut probes = Probes::default();
     probes
-        .open(handout("nonce", 5_000, &[Port::Udp(port)], &[]), &key())
+        .open(handout("nonce", 1_000, &[Port::Udp(port)], &[]), &key())
         .await;
     let wrong = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let target = ("127.0.0.1", port);
@@ -223,15 +223,14 @@ async fn only_the_exact_nonce_counts_as_heard() {
     ] {
         wrong.send_to(payload, target).await.unwrap();
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(probes.report().unwrap().heard_from.is_empty());
-
     let right = UdpSocket::bind("[::1]:0").await.unwrap();
     right
         .send_to(NONCE.as_bytes(), ("::1", port))
         .await
         .unwrap();
-    eventually(|| probes.report().unwrap().heard_from == ["::1"]).await;
+
+    probes.finish().await;
+    assert_eq!(probes.report().await.unwrap().heard_from, ["::1"]);
 }
 
 #[tokio::test]
@@ -244,14 +243,15 @@ async fn a_new_handout_replaces_the_window_even_with_the_same_nonce() {
     greeting_from(port).await;
 
     probes
-        .open(handout("second", 10_000, &[Port::Tcp(port)], &[]), &key())
+        .open(handout("second", 1_000, &[Port::Tcp(port)], &[]), &key())
         .await;
 
     assert_eq!(
         greeting_from(port).await,
         greeting("second", key().public_hex(), port).into_bytes()
     );
-    let report = probes.report().unwrap();
+    probes.finish().await;
+    let report = probes.report().await.unwrap();
     assert_eq!(report.handout, "second");
     assert!(report.bind_failed.is_empty());
 }
@@ -267,7 +267,7 @@ async fn an_ipv6_only_default_still_listens_and_reports_busy_ports_over_ipv4() {
         .open(
             handout(
                 "v6only",
-                5_000,
+                1_500,
                 &[
                     Port::Tcp(tcp),
                     Port::Udp(udp),
@@ -288,11 +288,59 @@ async fn an_ipv6_only_default_still_listens_and_reports_busy_ports_over_ipv4() {
     peer.send_to(NONCE.as_bytes(), ("127.0.0.1", udp))
         .await
         .unwrap();
-    eventually(|| probes.report().unwrap().heard_from == ["127.0.0.1"]).await;
+    probes.finish().await;
+    let report = probes.report().await.unwrap();
+    assert_eq!(report.heard_from, ["127.0.0.1"]);
     assert_eq!(
-        probes.report().unwrap().bind_failed,
+        report.bind_failed,
         [format!("tcp:{held_tcp}"), format!("udp:{held_udp}")]
     );
+}
+
+#[tokio::test]
+async fn only_a_host_without_ipv6_falls_back_to_ipv4() {
+    let (refused, unsupported) = (free_port(), free_port());
+    let mut probes = Probes::default();
+
+    IPV6_FAILS_WITH.set(Some(Errno::ACCESS.raw_os_error()));
+    probes
+        .open(handout("denied", 1_000, &[Port::Tcp(refused)], &[]), &key())
+        .await;
+    assert!(TcpStream::connect(("127.0.0.1", refused)).await.is_err());
+    probes.finish().await;
+    assert_eq!(
+        probes.report().await.unwrap().bind_failed,
+        [format!("tcp:{refused}")]
+    );
+
+    IPV6_FAILS_WITH.set(Some(Errno::AFNOSUPPORT.raw_os_error()));
+    probes
+        .open(handout("v4", 1_000, &[Port::Tcp(unsupported)], &[]), &key())
+        .await;
+    assert_eq!(
+        greeting_from(unsupported).await,
+        greeting("v4", key().public_hex(), unsupported).into_bytes()
+    );
+    probes.finish().await;
+    assert!(probes.report().await.unwrap().bind_failed.is_empty());
+}
+
+#[tokio::test]
+async fn a_window_still_open_reports_nothing_and_close_forgets_it() {
+    let port = free_port();
+    let mut probes = Probes::default();
+    probes
+        .open(handout("open", 10_000, &[Port::Udp(port)], &[]), &key())
+        .await;
+    let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    peer.send_to(NONCE.as_bytes(), ("127.0.0.1", port))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    assert_eq!(probes.report().await, None);
+    probes.close().await;
+    assert_eq!(probes.report().await, None);
 }
 
 #[tokio::test]
@@ -325,8 +373,46 @@ async fn a_window_that_runs_out_is_saved_for_the_next_process() {
 
     probes.finish().await;
 
-    assert_eq!(Probes::load(saved).report(), probes.report());
-    assert_eq!(probes.report().unwrap().handout, "short");
+    assert_eq!(Probes::load(saved).report().await, probes.report().await);
+    assert_eq!(probes.report().await.unwrap().handout, "short");
+}
+
+#[tokio::test]
+async fn a_slow_save_holds_no_port_and_no_check_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("probe.json");
+    let (tcp, udp) = (free_port(), free_port());
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let disk = std::thread::spawn(move || {
+        let _stalled = SAVES.lock().unwrap();
+        held.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(3));
+    });
+    holding.recv().unwrap();
+    let opened = Instant::now();
+    let mut probes = Probes::load(saved.clone());
+    probes
+        .open(
+            handout("slow", 200, &[Port::Tcp(tcp), Port::Udp(udp)], &[]),
+            &key(),
+        )
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    assert!(
+        opened.elapsed() < Duration::from_millis(1_500),
+        "the runtime stalled"
+    );
+    assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
+    assert!(bindable(tcp) && bindable(udp));
+    assert!(!saved.exists());
+    assert_eq!(probes.report().await, None);
+    release.send(()).unwrap();
+    disk.join().unwrap();
+    probes.finish().await;
+    assert_eq!(Probes::load(saved).report().await.unwrap().handout, "slow");
 }
 
 #[test]

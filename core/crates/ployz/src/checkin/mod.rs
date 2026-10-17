@@ -619,7 +619,7 @@ async fn pass_from<H: Host>(
         cli_version: env!("CARGO_PKG_VERSION"),
         report: &report,
         prep: Some(prep),
-        probe: probes.report(),
+        probe: probes.report().await,
     };
     let next = match client.post(key, &request).await {
         client::Reply::Answer(Answer::Wait(after)) => {

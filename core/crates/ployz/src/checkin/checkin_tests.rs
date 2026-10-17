@@ -571,7 +571,7 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
 }
 
 #[tokio::test]
-async fn a_probe_handout_opens_a_window_and_every_later_check_in_reports_it() {
+async fn a_check_in_reports_a_window_only_once_it_has_ended() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -580,12 +580,15 @@ async fn a_probe_handout_opens_a_window_and_every_later_check_in_reports_it() {
         .unwrap()
         .port();
     let body = format!(
-        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":10000,"listen":["tcp:{port}"],"send":[]}}}}"#
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":1000,"listen":["tcp:{port}"],"send":[]}}}}"#
     );
     let (url, server) = answering_cloud("200 OK".to_owned(), body, 3).await;
     let (host, mut client, mut probes) = (FakeHost::default(), client(&url), Probes::default());
 
-    for _ in 0..3 {
+    for pass in 0..3 {
+        if pass == 2 {
+            probes.finish().await;
+        }
         let next = pass_from(
             &host,
             &mut client,
@@ -616,13 +619,16 @@ async fn a_probe_handout_opens_a_window_and_every_later_check_in_reports_it() {
     }
 
     let requests = server.await.unwrap();
-    assert!(!requests.first().unwrap().contains(r#""probe""#));
-    for later in requests.get(1..).unwrap() {
-        assert!(
-            later.contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
-            "{later}"
-        );
+    for open in requests.get(..2).unwrap() {
+        assert!(!open.contains(r#""probe""#), "{open}");
     }
+    assert!(
+        requests
+            .last()
+            .unwrap()
+            .contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+        "{requests:?}"
+    );
     assert_eq!(
         LocalCheckin::read(&paths.status()).unwrap().unwrap().answer,
         Seen::Wait
@@ -717,24 +723,16 @@ async fn handed(paths: &Paths, probes: &mut Probes, handout: &str, port: u16, wi
     server.await.unwrap();
 }
 
-/// Sends the window's nonce until the window has heard it.
-async fn heard(probes: &Probes, handout: &str, port: u16) {
+async fn send_nonce(port: u16) {
     let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while probes
-            .report()
-            .is_none_or(|report| report == window_report(handout, &[]))
-        {
-            peer.send_to(b"n0nce", ("127.0.0.1", port)).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the window hears the nonce");
+    for _ in 0..5 {
+        peer.send_to(b"n0nce", ("127.0.0.1", port)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
-fn saved(paths: &Paths) -> Option<probe::Report> {
-    Probes::load(paths.probe()).report()
+async fn saved(paths: &Paths) -> Option<probe::Report> {
+    Probes::load(paths.probe()).report().await
 }
 
 fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
@@ -745,33 +743,20 @@ fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
 }
 
 #[tokio::test]
-async fn what_a_window_heard_outlives_a_failed_probe_mid_window_and_a_restart() {
+async fn what_a_window_heard_outlives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = udp_port();
     let mut probes = Probes::load(paths.probe());
     handed(&paths, &mut probes, "h", port, 1_000).await;
-    heard(&probes, "h", port).await;
-
-    let failing = FakeHost {
-        probe_fails: true,
-        ..FakeHost::default()
-    };
-    let next = pass_from(
-        &failing,
-        &mut client("http://127.0.0.1:9"),
-        &key(),
-        &paths,
-        Utc::now(),
-        false,
-        &mut probes,
-    )
-    .await;
-    assert!(matches!(next, Next::Retry { .. }), "{next:?}");
+    send_nonce(port).await;
     probes.finish().await;
     drop(probes);
 
-    assert_eq!(saved(&paths), Some(window_report("h", &["127.0.0.1"])));
+    assert_eq!(
+        saved(&paths).await,
+        Some(window_report("h", &["127.0.0.1"]))
+    );
 }
 
 #[tokio::test]
@@ -782,13 +767,13 @@ async fn a_restart_mid_window_resumes_no_report_rather_than_a_partial_or_older_o
     let mut probes = Probes::load(paths.probe());
     handed(&paths, &mut probes, "first", port, 300).await;
     probes.finish().await;
-    assert_eq!(saved(&paths), Some(window_report("first", &[])));
+    assert_eq!(saved(&paths).await, Some(window_report("first", &[])));
 
     handed(&paths, &mut probes, "second", port, 10_000).await;
-    heard(&probes, "second", port).await;
+    send_nonce(port).await;
     drop(probes);
 
-    assert_eq!(saved(&paths), None);
+    assert_eq!(saved(&paths).await, None);
     let (url, server) = answering_cloud(
         "200 OK".to_owned(),
         r#"{"kind":"wait","retryAfter":10}"#.to_owned(),
@@ -834,7 +819,7 @@ async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
         request.contains(r#""probe":{"handout":"h","heardFrom":["2001:db8::1"],"bindFailed":[]}"#),
         "{request}"
     );
-    assert_eq!(saved(&paths), Some(kept.clone()));
+    assert_eq!(saved(&paths).await, Some(kept.clone()));
 
     let failing = FakeHost {
         probe_fails: true,
@@ -849,7 +834,7 @@ async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
     )
     .await;
     assert!(matches!(next, Next::Retry { .. }), "{next:?}");
-    assert_eq!(saved(&paths), Some(kept));
+    assert_eq!(saved(&paths).await, Some(kept));
 }
 
 #[tokio::test]

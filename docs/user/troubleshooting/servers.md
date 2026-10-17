@@ -236,13 +236,13 @@ prepares Docker and ZFS meanwhile.
 10. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
     at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
     while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
-    A server that restarts while it listens reports nothing for that check, so its ports read
-    Unknown: check again. **Open** means Cloud
-    reached the port and the server answered. **Closed** means the server listened but Cloud's
-    connection was refused, so a firewall in front of it turns the port away. **Unknown · port
-    busy** means another program, such as a web server, already holds that port, so Ployz couldn't
-    listen on it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check again. A server
-    running a `ployz` older than this feature leaves every port Unknown.
+    The server tells Cloud what it heard only after it closes the ports. One that restarts while it
+    listens tells Cloud nothing for that check, so its ports read Unknown: check again. **Open**
+    means Cloud reached the port and the server answered. **Closed** means the server listened but
+    Cloud's connection was refused, so a firewall in front of it turns the port away. **Unknown ·
+    port busy** means another program, such as a web server, already holds that port, so Ployz
+    couldn't listen on it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check again. A
+    server running a `ployz` older than this feature leaves every port Unknown.
 
 ## Ployz stops over a leftover network
 
