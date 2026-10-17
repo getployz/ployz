@@ -70,9 +70,13 @@ fn save(config: &Path, stored: &Stored) -> Result<(), LoginError> {
         .map_err(|source| failed(path.clone(), source))?;
     file.persist(&path)
         .map_err(|error| failed(path.clone(), error.error))?;
-    std::fs::File::open(dir)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|source| failed(path.clone(), source))?;
+    // mcp.json now holds the new token, so a failure here must not revoke it.
+    if let Err(error) = std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+        ui::warn(format!(
+            "Saved the new token to {}, but could not flush its directory ({error}). It may not survive a crash.",
+            path.display()
+        ));
+    }
     Ok(())
 }
 
