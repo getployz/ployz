@@ -6,6 +6,7 @@ import {
   encodePublicError,
   NotFound,
   publicErrorResponse,
+  RateLimited,
   Validation,
 } from "#/server/public-error";
 
@@ -75,9 +76,17 @@ describe("encodePublicError", () => {
     });
     expect(encodePublicError(new Conflict({ message: "row 0190 locked by inngest run" })).message)
       .toBe("The request conflicts with the current state.");
-    // Only Validation and Conflict carry the flag through; an internal failure never does.
+    // Only refusals carry the flag through; an internal failure never does.
     expect(encodePublicError({ _tag: "DatabaseFailure", userFacing: true, message: "db.internal" }).message)
       .toBe("The request could not be completed.");
+  });
+
+  it("answers a rate limit with 429 and RATE_LIMITED", async () => {
+    const response = publicErrorResponse(new RateLimited({ message: "Too many signups from this address.", userFacing: true }));
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({
+      _tag: "PublicError", code: "RATE_LIMITED", message: "Too many signups from this address.",
+    });
   });
 
   it("does not report expected typed failures", () => {
