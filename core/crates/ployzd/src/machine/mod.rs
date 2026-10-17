@@ -284,6 +284,15 @@ impl LocalMachineRecord {
             .map(|(label, _)| label)
     }
 
+    /// Label of the slot holding `remote` as its accepted key.
+    #[must_use]
+    pub fn accepted_label(&self, remote: &[u8; 32]) -> Option<&ManagementClientLabel> {
+        self.management_clients
+            .iter()
+            .find(|(_, slot)| slot.accepted().as_ref() == Some(remote))
+            .map(|(label, _)| label)
+    }
+
     /// Whether `remote` is any slot's accepted or pending key, so it may connect.
     #[must_use]
     pub fn admits_management_client(&self, remote: &[u8; 32]) -> bool {
