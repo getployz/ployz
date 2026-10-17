@@ -200,5 +200,6 @@ From the CLI, `ployz org rm SLUG` does the same. If this device was signed in to
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
 then `ployz login`.
 
-An agent's sandbox removes itself 24 hours after the agent made it, unless someone keeps it. See
+An agent's sandbox ends 24 hours after the agent made it, unless someone keeps it. Ployz then
+removes it. See
 [When nobody claims it](try-without-an-account.md#when-nobody-claims-it).
