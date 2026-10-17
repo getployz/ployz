@@ -5,7 +5,6 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { callerEnvironments, type Caller } from "#/modules/identity/actor";
-import { outsideEnvironments } from "#/modules/identity/token-grant";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
@@ -16,7 +15,7 @@ import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/mach
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { lacks } from "#/modules/organization/access.server";
+import { beyondEnvironments, lacksPermission } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
 import { requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
@@ -63,11 +62,17 @@ const actor = (caller: Caller) => ({ userId: caller.userId, organizationId: call
  * which has no `environment`.
  */
 export const unheld = (caller: Caller, requires: Permission, environment?: string | null) => {
-  const lacking = lacks(caller, requires);
-  if (lacking !== null) return refused({ code: "forbidden", message: lacking, details: { permission: requires } });
+  const lacking = unpermitted(caller, requires);
+  if (lacking !== null) return lacking;
   const environments = callerEnvironments(caller);
-  if (environments === undefined || (environment !== undefined && environment !== null && environments.includes(environment))) return null;
-  return refused({ code: "forbidden", message: outsideEnvironments(environments), details: { environments } });
+  const beyond = beyondEnvironments(environments, environment === undefined || environment === null ? "organization" : { environment });
+  return beyond === null ? null : refused({ code: "forbidden", message: beyond, details: { environments: environments ?? [] } });
+};
+
+/** `unheld` for the permission alone: what an operation checks before it looks up where it lands. */
+export const unpermitted = (caller: Caller, requires: Permission) => {
+  const lacking = lacksPermission(caller, requires);
+  return lacking === null ? null : refused({ code: "forbidden", message: lacking, details: { permission: requires } });
 };
 
 /** `run`, unless `caller` may not run an operation that `requires` a permission. */

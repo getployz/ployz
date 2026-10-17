@@ -351,7 +351,7 @@ export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Acc
  * the write. A query of another Environment, past `MAX_SHOWN_VIEWS`, or whose reread fails, is dropped; the tab refetches those.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
-  const access = yield* requireAccess(actor, organizationSlug, writePermission(command));
+  const access = yield* requireAccess(actor, organizationSlug, writePermission(command), "store");
   const result = yield* callStoreWith(access, actor, { operation: "write", command });
   if (!result.ok) return result satisfies StoreWriteResult;
   const keys = new Set(commandEnvironments(command).map(environmentKey));

@@ -28,7 +28,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   yield* Effect.annotateCurrentSpan("ployz.agent", agent ?? "none");
   const caller = yield* resolveCaller(request.headers);
   if (upload !== undefined) {
-    const lacking = lacks(caller, "changes:deploy");
+    // A blob lands in no Environment: unreferenced, it's released after a day, and the Deployment that names it meets the Store's Environment check.
+    const lacking = lacks(caller, "changes:deploy", "store");
     if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: { permission: "changes:deploy" } });
     const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
     return refused === undefined

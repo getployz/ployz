@@ -22,9 +22,10 @@ import {
   runVolume,
   setServer,
   unheld,
+  unpermitted,
   upgradeServer,
 } from "#/modules/operations/operations.server";
-import { OPERATIONS } from "#/modules/operations/operations";
+import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, rpcErrorCode, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -199,6 +200,8 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
   });
   switch (action.action) {
     case "service": {
+      const lacking = unpermitted(caller, OPERATIONS[`service.${action.verb}`].requires);
+      if (lacking !== null) return lacking;
       const found = yield* beforeWrite(findService(organizationId, action.environment, action.service));
       if (found === null) return noSuch("Service");
       const admission = yield* actService(caller, { environmentId: action.environment, service: action.service, ...found, verb: action.verb, only: action.only, digest }, call);
@@ -223,6 +226,9 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
     case "clean":
       return yield* admitted(yield* cleanNamespace(caller, action.leftover, call), { kind: "leftover", namespace: action.leftover }, "leftover");
     case "remove_server": {
+      // Before the Servers are asked what the removal loses, so a token that can't remove Servers hears why, not that they're down.
+      const refused = unheld(caller, OPERATIONS["server.remove"].requires);
+      if (refused !== null) return refused;
       const connected = yield* beforeWrite(session(organizationId));
       if (connected === null) return yield* beforeWrite(notConnected(organizationId));
       const { data_loss } = yield* beforeWrite(connected.dataLossIfMachineRemoved(action.server.machine));
@@ -239,9 +245,13 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
         "Server",
       );
     case "volume": {
+      // Its Environment is known only once found; the permission is known now, so a token without it never waits on Servers.
+      const quickSync = action.run.run === "sync" && !action.run.full;
+      const lacking = unpermitted(caller, quickSync ? OPERATIONS["volume.sync"].requires : VOLUME_OPERATIONS[volumeRunInput(action.run, "").kind].requires);
+      if (lacking !== null) return lacking;
       const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
-      if (action.run.run === "sync" && !action.run.full) {
+      if (quickSync) {
         const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, found.environment.environment);
         if (unsynced !== null) return unsynced;
         const synced = yield* refreshMirror({ userId: caller.userId, organizationId }, found.environment, action.volume);
