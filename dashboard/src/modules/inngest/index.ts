@@ -21,6 +21,7 @@ import {
 import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
+import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
 import {
   createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
 } from "#/modules/config-store/store-deployment.inngest";
@@ -54,6 +55,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createNamespaceCleanupFunctions(inngest),
     createRetireServerAccess(inngest),
     createPruneOrganizationChangeLog(inngest),
+    createSweepExpiredVerifications(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
     ...createServerUpgradeFunctions(inngest),
