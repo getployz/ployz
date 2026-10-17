@@ -171,32 +171,41 @@ const shownProbe = async () => (await harness.runEffect(listWaitingServers(ada, 
 
 const waitingIds = async () => (await rows()).map((row) => row.id);
 
+const openedNonce = async (ip: string): Promise<string> => (await storedProbe(ip))?.request.nonce;
+
 const handedOut = (answer: CheckinResponse) => {
   if (answer.kind !== "wait" || answer.probe === undefined) throw new Error("expected a probe in the wait");
   return answer.probe.handout;
 };
 
 it("hands every selected host one shared nonce in its next wait, once", async () => {
-  const { token } = await fleetToken("rack-1");
-  const ips = ["198.51.100.11", "198.51.100.12", "198.51.100.13"];
-  const hosts = ips.map(() => newHost());
-  for (const [n, host] of hosts.entries()) await send(token, host, { ip: ips[n] });
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "198.51.100.0/24");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const ips = ["198.51.100.11", "198.51.100.12", "198.51.100.13"];
+    const hosts = ips.map(() => newHost());
+    for (const [n, host] of hosts.entries()) await send(token, host, { ip: ips[n] });
 
-  const opened = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
-  expect(opened).toMatchObject({ probing: 3 });
+    expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }))).toEqual({ probing: 3 });
+    const nonce = await openedNonce(ips[0] ?? "");
+    await shortenWindow(1_500);
 
-  const answers = [];
-  for (const [n, host] of hosts.entries()) answers.push(await send(token, host, { ip: ips[n] }));
-  for (const [n, answer] of answers.entries()) {
-    expect(answer).toMatchObject({ ...wait, probe: { nonce: opened.nonce, listen: ["udp:51820", "tcp:80", "tcp:443"] } });
-    const probe = "probe" in answer ? answer.probe : undefined;
-    expect(probe?.windowMs).toBeLessThanOrEqual(10_000);
-    const targets = probe?.send.map((peer) => peer.target) ?? [];
-    expect(targets.length).toBeLessThanOrEqual(3);
-    expect(targets).not.toContain(ips[n]);
-    expect(new Set(targets)).toEqual(new Set(ips.filter((ip) => ip !== ips[n])));
+    const answers = [];
+    for (const [n, host] of hosts.entries()) answers.push(await send(token, host, { ip: ips[n] }));
+    for (const [n, answer] of answers.entries()) {
+      expect(answer).toMatchObject({ ...wait, probe: { nonce, listen: ["udp:51820", "tcp:80", "tcp:443"] } });
+      const probe = "probe" in answer ? answer.probe : undefined;
+      expect(probe?.windowMs).toBeLessThanOrEqual(10_000);
+      const targets = probe?.send.map((peer) => peer.target) ?? [];
+      expect(targets.length).toBeLessThanOrEqual(3);
+      expect(targets).not.toContain(ips[n]);
+      expect(new Set(targets)).toEqual(new Set(ips.filter((ip) => ip !== ips[n])));
+    }
+    for (const [n, host] of hosts.entries()) expect(await send(token, host, { ip: ips[n] })).toEqual(wait);
+    for (const ip of ips) await settledTcp(ip);
+  } finally {
+    vi.unstubAllEnvs();
   }
-  for (const [n, host] of hosts.entries()) expect(await send(token, host, { ip: ips[n] })).toEqual(wait);
 });
 
 it("never selects another Organization's or a rejected host", async () => {
@@ -286,7 +295,8 @@ it("drops results measured at an address the host has moved off, and probes it a
   const { token } = await fleetToken("rack-1");
   const host = newHost();
   await send(token, host, { ip: "127.0.0.2" });
-  const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const nonce = await openedNonce("127.0.0.2");
   await harness.pool.query(`update waiting_server set probe = probe || jsonb_build_object(
     'handedAt', now(), 'address', '127.0.0.2', 'tcp', '{"80":{"seen":"answered"},"443":{"seen":"answered"}}'::jsonb)`);
   expect(await shownProbe()).toEqual({ "80": { state: "open" }, "443": { state: "open" } });
@@ -325,7 +335,8 @@ it("stores a host's report only under its own handout, and keeps it across check
   expect(await send(first.token, host, { ip, probe: hostReport("old") })).toEqual(wait);
   expect(await storedProbe(ip)).toBeNull();
 
-  const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const nonce = await openedNonce(ip);
   const handout = handedOut(await send(first.token, host, { ip, probe: hostReport(nonce) }));
   expect(handout).not.toBe(nonce);
   expect(await storedProbe(ip)).not.toHaveProperty("host");
@@ -396,15 +407,65 @@ it("won't reopen a selection over a host whose window is still running", async (
   const host = newHost();
   await send(token, host, { ip: "198.51.100.81" });
   const ids = await waitingIds();
-  const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  const nonce = await openedNonce("198.51.100.81");
   await send(token, host, { ip: "198.51.100.81" });
 
-  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toMatchObject({ probing: 0 });
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toEqual({ probing: 0 });
   expect(await storedProbe("198.51.100.81")).toMatchObject({ request: { nonce } });
   await handedLongAgo();
-  const reopened = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
-  expect(reopened).toMatchObject({ probing: 1 });
-  expect(await storedProbe("198.51.100.81")).toMatchObject({ request: { nonce: reopened.nonce } });
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toEqual({ probing: 1 });
+  expect(await openedNonce("198.51.100.81")).not.toBe(nonce);
+});
+
+it("reopens all of a selection or none of it when one host's window is still running", async () => {
+  const { token } = await fleetToken("rack-1");
+  const [running, idle] = [newHost(), newHost()];
+  await send(token, running, { ip: "198.51.100.82" });
+  await send(token, idle, { ip: "198.51.100.83" });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: [ids[0] ?? ""] }));
+  const nonce = await openedNonce("198.51.100.82");
+  await send(token, running, { ip: "198.51.100.82" });
+
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toEqual({ probing: 0 });
+  expect(await openedNonce("198.51.100.82")).toBe(nonce);
+  expect(await storedProbe("198.51.100.83")).toBeNull();
+});
+
+const blockedOnRowLock = async () => {
+  for (let waited = 0; waited < 5000; waited += 20) {
+    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'");
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("the selection never waited on the check-in's row lock");
+};
+
+it("won't reopen over a handout a queued check-in committed while the selection waited", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  const ip = "198.51.100.84";
+  await send(token, host, { ip });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  const nonce = await openedNonce(ip);
+
+  const checkin = await harness.pool.connect();
+  try {
+    await checkin.query("begin");
+    await checkin.query(
+      "update waiting_server set probe = probe || jsonb_build_object('handout', 'queued', 'handedAt', now(), 'address', $1::text)",
+      [ip],
+    );
+    const reopening = harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+    await blockedOnRowLock();
+    await checkin.query("commit");
+    expect(await reopening).toEqual({ probing: 0 });
+  } finally {
+    checkin.release();
+  }
+  expect(await storedProbe(ip)).toMatchObject({ request: { nonce }, handout: "queued" });
 });
 
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {

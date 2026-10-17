@@ -44,8 +44,8 @@ export function refusedTarget(ip: string, allow: BlockList = devOnlyProbeAllowLi
   return address.range() === "unicast" ? null : "private_range";
 }
 
-export const probeGreeting = (handout: string, checkinKey: string) =>
-  createHmac("sha256", handout).update(`ployz-probe-tcp:${checkinKey}`).digest("base64url").slice(0, GREETING_LENGTH);
+export const probeGreeting = (handout: string, checkinKey: string, port: number) =>
+  createHmac("sha256", handout).update(`ployz-probe-tcp:${checkinKey}:${port}`).digest("base64url").slice(0, GREETING_LENGTH);
 
 export type ConnectSeen = "answered" | "other_listener" | "refused" | "no_answer";
 
@@ -62,9 +62,12 @@ export function connectOnce(
     let connected = false;
     let refused = false;
     let done = false;
+    let greetingTimer: NodeJS.Timeout | undefined;
     const finish = () => {
       if (done) return;
       done = true;
+      clearTimeout(deadline);
+      clearTimeout(greetingTimer);
       socket.destroy();
       const answered = bytesRead >= expected.length && received.subarray(0, expected.length).equals(expected);
       const seen = connected ? (answered ? "answered" : "other_listener") : refused ? "refused" : "no_answer";
@@ -91,9 +94,9 @@ export function connectOnce(
     socket.once("close", finish);
     socket.once("connect", () => {
       connected = true;
-      socket.setTimeout(options.greetingMs ?? WINDOW_SCHEDULE.greetingMs, finish);
+      greetingTimer = setTimeout(finish, options.greetingMs ?? WINDOW_SCHEDULE.greetingMs);
     });
-    socket.setTimeout(options.timeoutMs ?? WINDOW_SCHEDULE.timeoutMs, finish);
+    const deadline = setTimeout(finish, options.timeoutMs ?? WINDOW_SCHEDULE.timeoutMs);
   });
 }
 
@@ -123,10 +126,12 @@ export async function probeThroughWindow(
   return refused && !unanswered ? "refused" : "no_answer";
 }
 
-type Handout = { readonly handout: string; readonly greeting: string; readonly address: string };
+type Handout = { readonly handout: string; readonly checkinKey: string; readonly address: string };
 
 const probePort = (handout: Handout, request: ProbeRequest, port: number) =>
-  Effect.promise(() => probeThroughWindow(probeAddress(handout.address), port, handout.greeting, request.windowMs)).pipe(
+  Effect.promise(() =>
+    probeThroughWindow(probeAddress(handout.address), port, probeGreeting(handout.handout, handout.checkinKey, port), request.windowMs)
+  ).pipe(
     Effect.tap((seen) => Effect.logInfo(`Probe ${handout.address}:${port} ${seen}`)),
     Effect.map((seen): TcpObservation => ({ seen })),
   );
@@ -169,7 +174,7 @@ export const handOutProbe = Effect.fn("Probe.handOut")(function* (
   if (handed === undefined) return null;
   const request = pending.value.request;
   if (refused === null) {
-    const target = { handout, greeting: probeGreeting(handout, checkinKey), address: observedIp };
+    const target = { handout, checkinKey, address: observedIp };
     yield* afterDatabaseCommit(Effect.forkDetach(inboundProbe(id, target, request).pipe(
       Effect.catchCause((cause) => Effect.logWarning("A waiting server's inbound probe failed.", cause)),
     )));
@@ -200,11 +205,12 @@ export const probeAfterCheckIn = (observedIp: string, report: CheckinRequest["pr
 };
 
 export function probePeers(hosts: ReadonlyArray<{ readonly id: string; readonly observedIp: string }>) {
+  const allow = devOnlyProbeAllowList();
   return new Map(hosts.map((host, index) => {
     const targets = new Set<string>();
     for (let step = 1; step < hosts.length && targets.size < MAX_PEERS; step++) {
       const peer = hosts[(index + step) % hosts.length];
-      if (peer !== undefined && isLiteralAddress(peer.observedIp) && peer.observedIp !== host.observedIp) targets.add(peer.observedIp);
+      if (peer !== undefined && refusedTarget(peer.observedIp, allow) === null && peer.observedIp !== host.observedIp) targets.add(peer.observedIp);
     }
     return [host.id, [...targets].map((target) => ({ target, port: 51820 as const }))];
   }));
@@ -215,27 +221,33 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
   input: { readonly organizationSlug: string; readonly ids: ReadonlyArray<string> },
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const { drizzle } = yield* Database;
-  const hosts = yield* drizzle
-    .select({ id: waitingServer.id, observedIp: waitingServer.observedIp })
-    .from(waitingServer)
-    .where(and(
-      eq(waitingServer.organizationId, organization.id),
-      inArray(waitingServer.id, [...input.ids]),
-      isNull(waitingServer.rejectedAt),
-      sql`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= now() - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`,
-    ))
-    .orderBy(waitingServer.firstSeenAt, waitingServer.id);
-  const nonce = randomBytes(16).toString("base64url");
-  if (hosts.length === 0) return { nonce, probing: 0 };
-  const pending: TcpObservation = { seen: "pending" };
-  const probes = Object.fromEntries([...probePeers(hosts)].map(([id, send]) => {
-    const request: ProbeRequest = { nonce, windowMs: PROBE_WINDOW_MS, listen: ["udp:51820", "tcp:80", "tcp:443"], send };
-    return [id, { request, tcp: { "80": pending, "443": pending } } satisfies ProbeResults];
+  const database = yield* Database;
+  const selected = and(
+    eq(waitingServer.organizationId, organization.id),
+    inArray(waitingServer.id, [...input.ids]),
+    isNull(waitingServer.rejectedAt),
+  );
+  const reopenable = sql<boolean>`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= now() - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const hosts = yield* drizzle
+      .select({ id: waitingServer.id, observedIp: waitingServer.observedIp, reopenable })
+      .from(waitingServer)
+      .where(selected)
+      .orderBy(waitingServer.firstSeenAt, waitingServer.id)
+      .for("update");
+    if (hosts.length === 0 || hosts.some((host) => !host.reopenable)) return { probing: 0 };
+    const nonce = randomBytes(16).toString("base64url");
+    const pending: TcpObservation = { seen: "pending" };
+    const probes = Object.fromEntries([...probePeers(hosts)].map(([id, send]) => {
+      const request: ProbeRequest = { nonce, windowMs: PROBE_WINDOW_MS, listen: ["udp:51820", "tcp:80", "tcp:443"], send };
+      return [id, { request, tcp: { "80": pending, "443": pending } } satisfies ProbeResults];
+    }));
+    const opened = yield* drizzle
+      .update(waitingServer)
+      .set({ probe: sql`${JSON.stringify(probes)}::jsonb -> (${waitingServer.id}::text)` })
+      .where(and(selected, inArray(waitingServer.id, hosts.map((host) => host.id)), reopenable))
+      .returning({ id: waitingServer.id });
+    return { probing: opened.length };
   }));
-  yield* drizzle
-    .update(waitingServer)
-    .set({ probe: sql`${JSON.stringify(probes)}::jsonb -> (${waitingServer.id}::text)` })
-    .where(and(eq(waitingServer.organizationId, organization.id), inArray(waitingServer.id, hosts.map((host) => host.id))));
-  return { nonce, probing: hosts.length };
 });

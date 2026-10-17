@@ -1,4 +1,4 @@
-import { type AddressInfo, BlockList, createServer, type Server, type Socket } from "node:net";
+import { type AddressInfo, BlockList, connect, createServer, type Server, type Socket } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
 import { type ProbeResults, portStates } from "#/modules/machines/waiting/probe";
@@ -81,19 +81,38 @@ describe("probeGreeting", () => {
   const keyA = "00".repeat(32);
   const keyB = "11".repeat(32);
 
-  it("derives 22 base64url characters from the handout and the host's key", () => {
-    expect(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA)).toBe("Zr9vkJejXJXyNHjVDV674T");
+  it("derives 22 base64url characters from the handout, the host's key and the port", () => {
+    expect(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA, 80)).toBe("l1OVJ_H135Z5twPXDwQwfR");
+    expect(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA, 443)).toBe("0lBKCojY1NDofwLi7YBLnR");
   });
 
-  it("differs per host and per handout", () => {
-    expect(probeGreeting(NONCE, keyA)).not.toBe(probeGreeting(NONCE, keyB));
-    expect(probeGreeting(NONCE, keyA)).not.toBe(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA));
+  it("differs per host, per handout and per port", () => {
+    expect(probeGreeting(NONCE, keyA, 80)).not.toBe(probeGreeting(NONCE, keyB, 80));
+    expect(probeGreeting(NONCE, keyA, 80)).not.toBe(probeGreeting("AAAAAAAAAAAAAAAAAAAAAA", keyA, 80));
+    expect(probeGreeting(NONCE, keyA, 80)).not.toBe(probeGreeting(NONCE, keyA, 443));
   });
 
   it("reads another host's answer at a shared address as another listener", async () => {
-    const port = await listen((socket) => socket.end(probeGreeting(NONCE, keyA)));
-    expect((await connectOnce("127.0.0.1", port, probeGreeting(NONCE, keyB))).seen).toBe("other_listener");
-    expect((await connectOnce("127.0.0.1", port, probeGreeting(NONCE, keyA))).seen).toBe("answered");
+    const port = await listen((socket) => socket.end(probeGreeting(NONCE, keyA, 80)));
+    expect((await connectOnce("127.0.0.1", port, probeGreeting(NONCE, keyB, 80))).seen).toBe("other_listener");
+    expect((await connectOnce("127.0.0.1", port, probeGreeting(NONCE, keyA, 80))).seen).toBe("answered");
+  });
+
+  it("reads a visitor relaying the host's port 80 greeting on port 443 as another listener", async () => {
+    const hostPort80 = await listen((socket) => socket.end(probeGreeting(NONCE, keyA, 80)));
+    let relayed = 0;
+    const visitorPort443 = await listen((socket) => {
+      const visitor = connect({ host: "127.0.0.1", port: hostPort80 });
+      visitor.on("error", () => socket.destroy());
+      visitor.once("data", (greeting) => {
+        relayed += 1;
+        socket.end(greeting);
+        visitor.destroy();
+      });
+    });
+    expect((await connectOnce("127.0.0.1", visitorPort443, probeGreeting(NONCE, keyA, 443))).seen).toBe("other_listener");
+    expect(relayed).toBe(1);
+    expect((await connectOnce("127.0.0.1", hostPort80, probeGreeting(NONCE, keyA, 80))).seen).toBe("answered");
   });
 });
 
@@ -113,6 +132,28 @@ describe("connectOnce", () => {
   it("is another listener when the port answers with other bytes", async () => {
     const port = await listen((socket) => socket.write("SSH-2.0-OpenSSH_9.6\r\n"));
     expect((await connectOnce("127.0.0.1", port, NONCE)).seen).toBe("other_listener");
+  });
+
+  const drip = (greeting: string) => async (socket: Socket) => {
+    for (const byte of greeting) {
+      if (socket.destroyed) return;
+      socket.write(byte);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+  };
+
+  it("stops at the deadline even while a listener drips the greeting", async () => {
+    const port = await listen(drip(NONCE));
+    const started = performance.now();
+    expect((await connectOnce("127.0.0.1", port, NONCE, { timeoutMs: 150, greetingMs: 5_000 })).seen).toBe("other_listener");
+    expect(performance.now() - started).toBeLessThan(400);
+  });
+
+  it("stops at the greeting wait even while a listener drips the greeting", async () => {
+    const port = await listen(drip(NONCE));
+    const started = performance.now();
+    expect((await connectOnce("127.0.0.1", port, NONCE, { timeoutMs: 5_000, greetingMs: 150 })).seen).toBe("other_listener");
+    expect(performance.now() - started).toBeLessThan(400);
   });
 
   it("is refused when nothing listens", async () => {
@@ -266,5 +307,11 @@ describe("probePeers", () => {
     expect(probePeers([host("a", "1.0.0.1")]).get("a")).toEqual([]);
     const peers = probePeers([host("a", "1.0.0.1"), host("b", "1.0.0.1"), host("c", ""), host("d", "1.0.0.4")]);
     expect(peers.get("a")?.map((peer) => peer.target)).toEqual(["1.0.0.4"]);
+  });
+
+  it("never sends a host to a peer at a private or loopback address", () => {
+    const peers = probePeers([host("a", "1.0.0.1"), host("b", "10.0.0.2"), host("c", "127.0.0.1"), host("d", "1.0.0.4")]);
+    expect(peers.get("a")?.map((peer) => peer.target)).toEqual(["1.0.0.4"]);
+    expect(peers.get("b")?.map((peer) => peer.target)).toEqual(["1.0.0.4", "1.0.0.1"]);
   });
 });

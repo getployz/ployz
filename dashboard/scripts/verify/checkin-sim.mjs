@@ -112,8 +112,8 @@ function signed(host) {
 function describe(status, answer, host) {
   if (status === 200 && answer.kind === "wait" && answer.probe !== undefined) {
     const { nonce, handout, windowMs, send } = answer.probe;
-    const greeting = createHmac("sha256", handout).update(`ployz-probe-tcp:${host.key}`).digest("base64url").slice(0, 22);
-    return `wait retryAfter=${answer.retryAfter} probe nonce=${nonce} handout=${handout} greeting=${greeting} windowMs=${windowMs} host=${host.ip} peers=${send.map((peer) => peer.target).join(",")}`;
+    const greeting = (port) => createHmac("sha256", handout).update(`ployz-probe-tcp:${host.key}:${port}`).digest("base64url").slice(0, 22);
+    return `wait retryAfter=${answer.retryAfter} probe nonce=${nonce} handout=${handout} greeting80=${greeting(80)} greeting443=${greeting(443)} windowMs=${windowMs} host=${host.ip} peers=${send.map((peer) => peer.target).join(",")}`;
   }
   if (status === 200 && answer.kind === "wait") return `wait retryAfter=${answer.retryAfter}`;
   if (status === 200 && answer.kind === "stop") return `stop ${answer.reason}`;
