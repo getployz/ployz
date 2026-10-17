@@ -159,23 +159,29 @@ it and still exit cleanly, with the service set up and checking in:
   Any process on the server, containers included, can read user data from the provider's
   metadata service for as long as the server runs. Give a token you put there a short expiry.
 - **Run it again.** The same line on the same host updates its token and keeps it one server.
-  The host keeps its old token until Cloud answers the new one. If Cloud can't be reached, a
-  rerun with a different token ends with `Cloud hasn't answered the new Fleet Token, so this host
-  keeps its old token and check-in service. Run the install again.` and an error. A rerun with
-  the same token keeps trying, as a first install does.
+  The host keeps its old token until Cloud answers the new one. If Cloud can't be reached, or the
+  probe fails, a rerun with a different token ends with `This host keeps its old token and
+  check-in service until Cloud answers the new Fleet Token. Run the install again.` and an error.
+  If the new token already has as many waiting servers as it allows, the rerun ends with
+  `Cloud didn't take the new Fleet Token, so this host keeps its old token and check-in service.`
+  and an error. A rerun with the same token keeps trying, as a first install does.
+- **A token file it can't read.** If `/etc/ployz/fleet-token` exists but can't be read, the
+  install ends with `Could not read /etc/ployz/fleet-token` and an error before it writes
+  anything. Fix or remove that file and run the install again.
 - **An expired token** prints `Token expired.`, Cloud's reason, and `Run the install again with a
   new token.`, and the script exits with an error. A revoked one says so the same way.
 - **A token Cloud doesn't know**, or a missing `PLOYZ_CLOUD_URL` when you
   [run your own Cloud](../self-hosting.md), ends the install with
-  `Cloud at … refused this Fleet Token.` and an error.
+  `Cloud at … refused this Fleet Token.` and an error. It says to check `PLOYZ_CLOUD_URL` only
+  when you set it.
 - **Something other than Ployz Cloud answers**, such as a 404 or a web page from a wrong
   `PLOYZ_CLOUD_URL`, a proxy or a firewall, the install ends with an error that names the URL it
   reached and says it `isn't how Ployz Cloud answers. A proxy or firewall in between may have
   answered instead`. It says to check `PLOYZ_CLOUD_URL` only when you set it.
 
 When the install ends with an error because the token isn't shaped like one, Cloud refused it,
-the clock is off, Cloud was unreachable on a rerun with a new token, or something other than
-Cloud answered, it has installed only the `ployz` CLI and started nothing. On a first install no
+the clock is off, Cloud didn't answer or take a new token on a rerun, the token file couldn't be
+read, or something other than Cloud answered, it has installed only the `ployz` CLI and started nothing. On a first install no
 check-in service is set up and preparation never starts. On a host that already checks in, the
 running service keeps its old token and goes on as before.
 

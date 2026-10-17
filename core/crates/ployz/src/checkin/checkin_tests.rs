@@ -304,17 +304,24 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
     let held = |after, body: &str| {
         client::reply(StatusCode::TOO_MANY_REQUESTS, after, None, body.as_bytes())
     };
-    for message in [
-        "This Fleet Token already has 5 waiting servers.",
-        "Too many check-ins.",
-        "Busy, retry.",
+    for (message, hold) in [
+        (
+            "This Fleet Token already has 1000 waiting servers.",
+            Hold::Full,
+        ),
+        (
+            "This Fleet Token already has 5 waiting servers.",
+            Hold::Full,
+        ),
+        ("Too many check-ins.", Hold::Busy),
+        ("Busy, retry.", Hold::Busy),
     ] {
         assert_eq!(
             held(
                 Some(Duration::from_secs(1)),
                 &format!(r#"{{"error":"{message}"}}"#)
             ),
-            Reply::Held(Duration::from_secs(1), message.to_owned())
+            Reply::Held(Duration::from_secs(1), hold, message.to_owned())
         );
     }
     assert_eq!(
@@ -322,12 +329,20 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
             Some(Duration::from_secs(u64::MAX)),
             r#"{"error":"Busy, retry."}"#
         ),
-        Reply::Held(Duration::from_secs(3600), "Busy, retry.".to_owned())
+        Reply::Held(
+            Duration::from_secs(3600),
+            Hold::Busy,
+            "Busy, retry.".to_owned()
+        )
     );
     for body in [
         "",
         "<html>Slow down</html>",
         r#"{"message":"rate limited"}"#,
+        r#"{"error":"Too Many Requests"}"#,
+        r#"{"error":"Too many check-ins"}"#,
+        r#"{"error":"This Fleet Token already has many waiting servers."}"#,
+        r#"{"error":"This Fleet Token already has  waiting servers."}"#,
     ] {
         assert_eq!(
             held(Some(Duration::from_secs(9)), body),
@@ -355,12 +370,13 @@ async fn a_check_in_cloud_held_back_names_its_reason_in_status() {
     )
     .await;
     let host = FakeHost::default();
-    let Next::Held { after, why } =
+    let Next::Held { after, hold, why } =
         pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
     else {
         panic!("Cloud's 429 holds the check-in back");
     };
     assert_eq!(after, Duration::from_secs(1));
+    assert_eq!(hold, Hold::Full);
     assert_eq!(
         why,
         "Cloud held this check-in back: This Fleet Token already has 5 waiting servers."
@@ -368,6 +384,32 @@ async fn a_check_in_cloud_held_back_names_its_reason_in_status() {
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline(), Headline::open("Held by Cloud"));
     assert!(status.says_why());
+}
+
+#[tokio::test]
+async fn an_unreachable_cloud_says_why_in_one_sentence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, _server) = answering_cloud(
+        "403 Forbidden".to_owned(),
+        r#"{"error":"Forbidden."}"#.to_owned(),
+        1,
+    )
+    .await;
+    let next = pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths(&dir),
+        Utc::now(),
+    )
+    .await;
+    let Next::Retry { why, .. } = next else {
+        panic!("{next:?}");
+    };
+    assert_eq!(
+        why,
+        "Could not reach Ployz Cloud: Cloud answered 403 Forbidden: Forbidden."
+    );
 }
 
 #[tokio::test]

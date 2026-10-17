@@ -220,8 +220,9 @@ prepares Docker and ZFS meanwhile.
    the URL at your Ployz Cloud, or let the server through, and run the install again.
 7. `Held by Cloud` means Ployz Cloud answered but held the check-in back, and the `reason` line
    gives Cloud's message. `This Fleet Token already has N waiting servers.` means the token has
-   as many waiting servers as it allows. Approve or reject some on the **Servers** page, and the
-   loop gets in on its next try. Otherwise Cloud is busy, and the loop asks again when Cloud says
+   as many waiting servers as it allows. Rejected servers count too, so rejecting them frees
+   nothing. Run the install again with another token, or revoke the full one to clear its waiting
+   servers, which stops them all. Otherwise Cloud is busy, and the loop asks again when Cloud says
    to.
 8. `Needs a newer ployz` means Ployz Cloud couldn't read this server's check-in. The loop tries
    again every hour. Install a newer `ployz` and run `sudo ployz server checkin --install`.

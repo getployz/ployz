@@ -7,7 +7,7 @@ use std::{
     env as process_env,
     ffi::OsStr,
     fs,
-    io::{IsTerminal, Read},
+    io::{self, IsTerminal, Read},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
@@ -18,7 +18,8 @@ use ployz_core::RpcErrorCode;
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::checkin::{
-    self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Next, Paths, StopReason, System, unit,
+    self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Hold, Next, Paths, StopReason, System,
+    unit,
 };
 use crate::cli::{base, env, switch, value};
 use crate::cloud_login::DEFAULT_CLOUD;
@@ -82,11 +83,13 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     }
     let runtime = runtime()?;
     if matches.get_flag("install") {
-        let token_from_stdin = matches.get_flag("token-stdin");
-        let token = if token_from_stdin {
-            stdin_token(std::io::stdin())?
+        let (token, token_source) = if matches.get_flag("token-stdin") {
+            let token = stdin_token(std::io::stdin())?;
+            let replaces = replaces_token(&paths.token_file, &token)?;
+            (token, Token::Piped { replaces })
         } else {
-            FleetToken::read(&paths.token_file).map_err(key_failure)?
+            let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
+            (token, Token::InFile)
         };
         let (key, mut client) = connect(&paths, &cloud_url, token)?;
         let url_source = match matches.value_source("cloud-url") {
@@ -97,7 +100,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
         let install_with = Install {
             cloud_url: &cloud_url,
             url_source,
-            token_from_stdin,
+            token: token_source,
         };
         return runtime.block_on(install(&mut client, &key, &paths, install_with));
     }
@@ -159,17 +162,49 @@ fn stdin_token(mut stdin: impl Read + IsTerminal) -> Result<FleetToken, Error> {
         .ok_or_else(|| Error::usage("stdin doesn't hold a Fleet Token (pflt_…)"))
 }
 
+/// Whether `token_file` holds a token other than `token`. Only a missing file makes a first
+/// install: one this can't read may hold the token the running service checks in with.
+fn replaces_token(token_file: &Path, token: &FleetToken) -> Result<bool, Error> {
+    match FleetToken::read(token_file) {
+        Ok(held) => Ok(held != *token),
+        Err(checkin::KeyError::Token { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            Ok(false)
+        }
+        // Nothing in it can check in, so there is no token to keep.
+        Err(checkin::KeyError::NotAToken { .. }) => Ok(false),
+        Err(checkin::KeyError::Token { path, source }) => Err(Error::caused(
+            RpcErrorCode::InvalidArgument,
+            format!(
+                "Could not read {}, so this install can't tell whether it replaces a Fleet Token. Fix or remove that file, then run the install again.",
+                path.display()
+            ),
+            source,
+        )),
+        Err(error) => Err(key_failure(error)),
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Install<'a> {
     cloud_url: &'a str,
     url_source: Option<&'static str>,
-    token_from_stdin: bool,
+    token: Token,
+}
+
+#[derive(Clone, Copy)]
+enum Token {
+    /// Read from --token-file, where it stays.
+    InFile,
+    /// Piped on stdin. `replaces` when --token-file holds a different token.
+    Piped { replaces: bool },
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Answered {
     Waiting,
-    Held,
+    Held(Hold, String),
     Unconfirmed(String),
 }
 
@@ -216,20 +251,30 @@ fn keep_answered_token(
     install_with: Install<'_>,
 ) -> Result<Answered, Error> {
     let answered = install_outcome(next, install_with)?;
-    if let Answered::Unconfirmed(why) = &answered {
-        if install_with.token_from_stdin
-            && FleetToken::read(token_file).is_ok_and(|old| !client.sends(&old))
-        {
+    let replaces = matches!(install_with.token, Token::Piped { replaces: true });
+    match &answered {
+        Answered::Unconfirmed(why) if replaces => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
                 format!(
-                    "{why} Cloud hasn't answered the new Fleet Token, so this host keeps its old token and check-in service. Run the install again."
+                    "{why} This host keeps its old token and check-in service until Cloud answers the new Fleet Token. Run the install again."
                 ),
             ));
         }
-        crate::ui::warn(format!("{why} The check-in service keeps trying."));
+        Answered::Held(Hold::Full, why) if replaces => {
+            return Err(Error::coded(
+                RpcErrorCode::Unavailable,
+                format!(
+                    "{why} Cloud didn't take the new Fleet Token, so this host keeps its old token and check-in service. Run the install again with another token, or revoke this one to clear its waiting servers."
+                ),
+            ));
+        }
+        Answered::Unconfirmed(why) | Answered::Held(_, why) => {
+            crate::ui::warn(format!("{why} The check-in service keeps trying."));
+        }
+        Answered::Waiting => {}
     }
-    if !install_with.token_from_stdin {
+    if let Token::InFile = install_with.token {
         keep_token_private(token_file)?;
         return Ok(answered);
     }
@@ -255,16 +300,18 @@ fn install_outcome(next: Next, install_with: Install<'_>) -> Result<Answered, Er
             }
             Ok(Answered::Waiting)
         }
-        Next::Held { why, .. } => {
-            crate::ui::warn(format!("{why} The check-in service keeps trying."));
-            Ok(Answered::Held)
-        }
+        Next::Held { hold, why, .. } => Ok(Answered::Held(hold, why)),
         Next::Retry { why, .. } => Ok(Answered::Unconfirmed(why)),
         Next::RefusedOnce { .. } => Err(Error::coded(
             RpcErrorCode::Unauthenticated,
-            format!(
-                "Cloud at {cloud_url} refused this Fleet Token. Check the token, and PLOYZ_CLOUD_URL if you run your own Cloud, then run the install again."
-            ),
+            match install_with.url_source {
+                Some(setting) => format!(
+                    "Cloud at {cloud_url} refused this Fleet Token. Check the token and {setting}, then run the install again."
+                ),
+                None => format!(
+                    "Cloud at {cloud_url} refused this Fleet Token. Check the token, then run the install again."
+                ),
+            },
         )),
         Next::Stop(reason, message) => {
             let again = if reason == StopReason::Rejected {

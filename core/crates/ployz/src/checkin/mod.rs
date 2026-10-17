@@ -19,7 +19,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
+pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
 use wire::{Answer, CheckinRequest, PrepState};
 pub(crate) use wire::{DockerPrep, Issue, Prep, Probe, StopReason, ZfsPrep};
 
@@ -229,6 +229,7 @@ pub(crate) enum Next {
     },
     Held {
         after: Duration,
+        hold: Hold,
         why: String,
     },
     Stop(StopReason, String),
@@ -379,7 +380,7 @@ pub(crate) async fn run<H: Host>(
                 last_log = log;
                 tokio::time::sleep(after).await;
             }
-            Next::Retry { after, why } | Next::Held { after, why } => {
+            Next::Retry { after, why } | Next::Held { after, why, .. } => {
                 last_log = None;
                 crate::ui::note(format!("{why} Trying again in {}s.", after.as_secs()));
                 tokio::time::sleep(after).await;
@@ -649,11 +650,12 @@ async fn pass_from<H: Host>(
                 }
             }
         }
-        client::Reply::Held(after, why) => {
+        client::Reply::Held(after, hold, why) => {
             status.answer = Seen::Held;
             status.message = Some(why.clone());
             Next::Held {
                 after,
+                hold,
                 why: format!("Cloud held this check-in back: {why}"),
             }
         }
@@ -662,7 +664,10 @@ async fn pass_from<H: Host>(
             status.message = Some(why.clone());
             Next::Retry {
                 after,
-                why: format!("Could not reach Ployz Cloud: {why}."),
+                why: format!(
+                    "Could not reach Ployz Cloud: {}.",
+                    why.trim_end_matches('.')
+                ),
             }
         }
         client::Reply::NotCloud(why) => {

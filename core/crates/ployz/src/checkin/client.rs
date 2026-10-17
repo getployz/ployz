@@ -32,7 +32,18 @@ const FLEET_TOKEN_SECRET_CHARS: usize = 43;
 const TOKEN_MODE: u32 = 0o600;
 const MAX_SKEW_SECONDS: i64 = 300;
 const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
+// Cloud's own words. Only these mean Cloud refused the token or held a check-in back; any other
+// 401 or 429 may come from something in between.
 const CLOUD_REFUSAL: &str = "Authentication is required.";
+const CLOUD_BUSY: [&str; 2] = ["Too many check-ins.", "Busy, retry."];
+const CLOUD_FULL: (&str, &str) = ("This Fleet Token already has ", " waiting servers.");
+
+/// Why Cloud held a check-in back: it is busy, or the token has all the waiting servers it allows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    Busy,
+    Full,
+}
 
 #[derive(Debug, Error)]
 pub enum KeyError {
@@ -165,7 +176,7 @@ pub(super) enum Reply {
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
-    Held(Duration, String),
+    Held(Duration, Hold, String),
     /// The URL answered, and the answer can't have come from Ployz Cloud.
     NotCloud(String),
     ClockOff(String),
@@ -297,8 +308,8 @@ pub(super) fn reply(
     let said = cloud_error(body);
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
-        return match said {
-            Some(why) => Reply::Held(after, why),
+        return match said.and_then(|why| Some((cloud_hold(&why)?, why))) {
+            Some((hold, why)) => Reply::Held(after, hold, why),
             None => Reply::Unreachable(after, format!("Cloud answered {status}")),
         };
     }
@@ -319,6 +330,16 @@ fn cloud_error(body: &[u8]) -> Option<String> {
         _ => text("error"),
     };
     message.map(str::to_owned)
+}
+
+fn cloud_hold(said: &str) -> Option<Hold> {
+    if CLOUD_BUSY.contains(&said) {
+        return Some(Hold::Busy);
+    }
+    let cap = said
+        .strip_prefix(CLOUD_FULL.0)?
+        .strip_suffix(CLOUD_FULL.1)?;
+    (!cap.is_empty() && cap.bytes().all(|digit| digit.is_ascii_digit())).then_some(Hold::Full)
 }
 
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well
