@@ -7,7 +7,7 @@ import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
-import { callerPermissions } from "#/modules/identity/actor";
+import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { NotFound, Validation } from "#/server/public-error";
 
@@ -63,7 +63,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     if (!gated.ok) return refusal(gated.refusal);
   }
   const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
-  const gate = { approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller) } as const;
+  const gate = { approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller), environments: callerEnvironments(caller) } as const;
   const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
   const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });

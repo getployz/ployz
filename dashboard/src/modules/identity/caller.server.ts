@@ -73,6 +73,8 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string,
       organizationId: organization.id,
       slug: organization.slug,
       role: member.role,
+      permissions: organizationToken.permissions,
+      environments: organizationToken.environments,
     })
     .from(organizationToken)
     .innerJoin(organization, eq(organization.id, organizationToken.organizationId))
@@ -91,7 +93,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string,
   return {
     userId: row.userId,
     organization: { id: row.organizationId, slug: row.slug },
-    credential: { kind: "token", id: row.id },
+    credential: { kind: "token", id: row.id, grant: { permissions: row.permissions, environments: row.environments } },
     role: row.role,
     support: null,
     via: ployzVia(row.kind, headers),

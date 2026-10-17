@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import { TOKEN_KINDS, type TokenKind } from "#/modules/identity/actor";
+import type { Permission } from "#/modules/organization/permissions";
 
 import { organization } from "#/modules/organization/tables";
 
@@ -192,6 +193,9 @@ export const organizationToken = pgTable(
       mode: "date",
       withTimezone: true,
     }).notNull(),
+    // Null is Full as you, and any Environment: see TokenGrant.
+    permissions: text("permissions").array().$type<Permission[]>(),
+    environments: text("environments").array(),
   },
   (table) => [
     unique().on(table.secretHash),

@@ -10,8 +10,9 @@ use ts_rs::TS;
 
 use crate::domain::DomainEvidence;
 use crate::git::AuthorizedRepository;
-use crate::id::{ApprovalDigest, GithubUserId};
+use crate::id::{ApprovalDigest, EnvironmentName, GithubUserId};
 use crate::permission::Permission;
+use crate::storage::Tx;
 
 /// What Cloud checked for one write. Empty unless Cloud supplies it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -47,6 +48,11 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub permissions: Option<BTreeSet<Permission>>,
+    /// The Environments the caller's token may write, by name: a write to any other is
+    /// refused. None when its grant names none, so it may write any it has permission to.
+    #[serde(default)]
+    #[ts(optional)]
+    pub environments: Option<BTreeSet<EnvironmentName>>,
     /// Whether a human must approve a publication that destroys something, and what they
     /// approved.
     #[serde(default)]
@@ -125,6 +131,32 @@ impl Trusted {
             )),
             _ => Ok(()),
         }
+    }
+
+    /// Refuse a write outside the token's Environments. It runs after the command, so
+    /// a write that names no Environment is refused too, and the refusal rolls it back.
+    pub(crate) fn within(&self, tx: &mut dyn Tx, written: &crate::Written) -> Result<(), RpcError> {
+        let Some(allowed) = &self.environments else {
+            return Ok(());
+        };
+        if let Some(id) = written.environment()
+            && allowed.contains(&crate::scope::load_by_id(tx, id)?.summary.name)
+        {
+            return Ok(());
+        }
+        Err(crate::error::forbidden(
+            format!("This token can deploy only to {}.", listed(allowed)),
+            serde_json::json!({ "environments": allowed }),
+        ))
+    }
+}
+
+/// `staging`, `staging and qa`, `dev, staging and qa`.
+fn listed(names: &BTreeSet<EnvironmentName>) -> String {
+    let names: Vec<&str> = names.iter().map(EnvironmentName::as_str).collect();
+    match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+        _ => names.concat(),
     }
 }
 
