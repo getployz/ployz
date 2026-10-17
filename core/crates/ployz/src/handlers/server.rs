@@ -30,6 +30,7 @@ use super::{Error, leaf_matches, string_values, with_client};
 use crate::ui::Hint;
 
 mod add;
+pub(super) mod checkin;
 pub(super) mod clean;
 pub(super) mod drain;
 pub(super) mod enroll;

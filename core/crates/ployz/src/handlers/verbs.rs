@@ -455,6 +455,15 @@ pub(crate) const SERVER_BUILD_CACHE_CLEAR: Verb = Verb::local(
     server::clear_build_cache,
 )
 .docs("builds/build-resources-and-cache.md");
+pub(crate) const SERVER_CHECKIN: Verb = Verb::local(
+    "server checkin",
+    Never,
+    server::checkin::command,
+    server::checkin::checkin,
+)
+.refuses_json()
+.keeps_running(KeepsRunning::Always)
+.docs("troubleshooting/servers.md");
 pub(crate) const SERVER_CLEAN: Verb = Verb::cloud(
     "server clean",
     Depends,
@@ -763,6 +772,7 @@ pub(crate) const VERBS: &[Verb] = &[
     SCHEMA,
     SERVER_ADD,
     SERVER_BUILD_CACHE_CLEAR,
+    SERVER_CHECKIN,
     SERVER_CLEAN,
     SERVER_DRAIN,
     SERVER_FORGET,
