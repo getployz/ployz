@@ -7,6 +7,7 @@ import { ENROLLMENT_STAGES, type EnrollmentStage } from "#/modules/machines/wait
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { readiness } from "./waiting-row";
 
+const BOX_RECT = { width: 0, height: 520 };
 const GRID = "grid grid-cols-[12px_minmax(120px,1fr)_130px_120px_180px_64px] items-center gap-3 px-3";
 const STAGES = {
   installing: "Installing", storage: "Setting up ZFS", enrolling: "Enrolling", queued: "In line", joining: "Joining", publishing: "Going live",
@@ -64,8 +65,8 @@ export const EnrollingList = memo(function EnrollingList({ attempts, onCancel, j
     getScrollElement: () => scroller.current,
     getItemKey: (index) => rows[index]?.id ?? index,
     estimateSize: () => 52,
-    initialRect: { width: 0, height },
-    observeElementRect: (_, report) => report({ width: 0, height }),
+    initialRect: BOX_RECT,
+    observeElementRect: (_, report) => report(BOX_RECT),
     overscan: 2,
   });
   const items = virtual.getVirtualItems();
