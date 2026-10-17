@@ -19,7 +19,7 @@ use crate::{
 };
 use ployz_core::EnvironmentValues;
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client};
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client, with_reader};
 
 /// List observed Service and hook Containers.
 ///
@@ -32,8 +32,10 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
-    let namespace = super::operator::scope(root)?.map(|scoped| scoped.namespace);
-    with_client(root, |client| {
+    let scoped = super::operator::scope(root)?;
+    let namespace = scoped.as_ref().map(|scoped| scoped.namespace.clone());
+    let order = sort.clone();
+    let credential = with_reader(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
             let live = client
@@ -66,6 +68,9 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 crate::ui::rows(&table);
             })
         })
+    })?;
+    credential.map_or(Ok(()), |credential| {
+        super::cloud_read::processes(&credential, scoped, &order)
     })
 }
 

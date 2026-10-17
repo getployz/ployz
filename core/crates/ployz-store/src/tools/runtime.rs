@@ -333,7 +333,8 @@ impl Tool for ServiceLogs {
 
 /// The variables a Service's Settings `values` show as plain text. A secret shows no value
 /// and a template shows its `${{ … }}`, so neither ever matches a Container's env.
-fn plain_env(values: &serde_json::Map<String, Value>) -> BTreeMap<String, String> {
+#[must_use]
+pub fn plain_env(values: &serde_json::Map<String, Value>) -> BTreeMap<String, String> {
     let Some(Value::Object(env)) = values.get("env") else {
         return BTreeMap::new();
     };
