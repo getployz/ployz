@@ -40,6 +40,10 @@ use crate::cloud_login::{CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 
+mod login;
+
+pub(super) use login::{login, login_command};
+
 pub(super) fn command(command: Command) -> Command {
     command.about("Serve the agent tools to a coding agent as MCP tools over stdio")
 }
@@ -553,15 +557,36 @@ impl Server {
             Store::Local(store, who) => store::sweep(store, who)
                 .map(|()| Backend::Local(store, who))
                 .map_err(|error| Error::from(StoreCallError::Refused(error)).to_string()),
-            Store::Cloud => cloud_account::credential(
-                &CredentialStore::beside(&self.account.config),
-                self.account.token.clone(),
-                self.account.cloud.clone(),
-            )
-            .await
-            .map(Backend::Cloud)
-            .map_err(|error| Error::from(error).to_string()),
+            Store::Cloud => self.agent().await.map(Backend::Cloud),
         }
+    }
+
+    /// What the agent acts with: `PLOYZ_TOKEN`, else the agent token `ployz mcp login` made.
+    async fn agent(&self) -> Result<Credential, String> {
+        if self
+            .account
+            .token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            return self.person().await;
+        }
+        match login::stored(&self.account.config) {
+            Ok(Some(stored)) => Ok(stored.credential()),
+            Ok(None) => Err(login::NOT_LOGGED_IN.to_owned()),
+            Err(error) => Err(Error::from(error).to_string()),
+        }
+    }
+
+    /// What the person at the MCP host answers its form with: no agent answers an approval.
+    async fn person(&self) -> Result<Credential, String> {
+        cloud_account::credential(
+            &CredentialStore::beside(&self.account.config),
+            self.account.token.clone(),
+            self.account.cloud.clone(),
+        )
+        .await
+        .map_err(|error| Error::from(error).to_string())
     }
 
     /// Which Store a new call reaches. A device can switch Organizations
@@ -852,13 +877,17 @@ impl Server {
                 }
                 Step::Write { write } => {
                     if let Some((asked, answer)) = answered.take() {
-                        let Backend::Cloud(credential) = call.backend else {
+                        let Backend::Cloud(_) = call.backend else {
                             return Ok(refused(not_here().message).into());
+                        };
+                        let person = match self.person().await {
+                            Ok(person) => person,
+                            Err(text) => return Ok(refused(text).into()),
                         };
                         let verb = verb(call.tool, call.input, &asked);
                         let typed = typed(&write);
                         match self
-                            .decide(credential, verb, &asked, typed.as_deref(), answer)
+                            .decide(&person, verb, &asked, typed.as_deref(), answer)
                             .await?
                         {
                             Answer::Approved => approval = Some(asked.id),

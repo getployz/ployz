@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
-import type { Caller } from "#/modules/identity/actor";
+import type { Caller, TokenKind } from "#/modules/identity/actor";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -27,10 +27,13 @@ export const requireSignedIn = (caller: Caller) =>
     ? Effect.void
     : Effect.fail(new Validation({ message: "Only a signed-in person can make or revoke tokens; run `ployz login`.", userFacing: true }));
 
-/** Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. */
+/**
+ * Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. A
+ * token an agent asks for is an agent's, so no agent mints itself a credential that answers approvals.
+ */
 export const createOrganizationToken = Effect.fn("OrganizationToken.create")(function* (
   caller: Caller,
-  input: { readonly name: string; readonly expiresInDays: number },
+  input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind },
 ) {
   yield* requireSignedIn(caller);
   const database = yield* Database;
@@ -41,14 +44,16 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
       organizationId: caller.organization.id,
       userId: caller.userId,
       name: input.name,
+      kind: caller.via === "agent" ? "agent" : (input.kind ?? "cli"),
       secretHash: hashOrganizationTokenSecret(secret),
       expiresAt: new Date(Date.now() + input.expiresInDays * DAY_MS),
     })
-    .returning({ id: organizationToken.id, expiresAt: organizationToken.expiresAt });
+    .returning({ id: organizationToken.id, kind: organizationToken.kind, expiresAt: organizationToken.expiresAt });
   if (created === undefined) return yield* Effect.die("insert returned no row");
   return {
     id: created.id,
     name: input.name,
+    kind: created.kind,
     organization: caller.organization.slug,
     expires_at: created.expiresAt.toISOString(),
     secret,
@@ -69,6 +74,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     .select({
       id: organizationToken.id,
       name: organizationToken.name,
+      kind: organizationToken.kind,
       createdAt: organizationToken.createdAt,
       expiresAt: organizationToken.expiresAt,
     })
@@ -88,6 +94,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     tokens: tokens.map((token) => ({
       id: token.id,
       name: token.name,
+      kind: token.kind,
       created_at: token.createdAt.toISOString(),
       expires_at: token.expiresAt.toISOString(),
       expired: token.expiresAt <= now,

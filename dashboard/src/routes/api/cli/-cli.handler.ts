@@ -4,7 +4,7 @@ import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideApproval } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
 import {
   createOrganizationToken,
@@ -42,6 +42,7 @@ import { refreshMirror } from "#/modules/volume-copies/volume-copies.refresh.ser
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
+  kind: Schema.optional(Schema.Literals(TOKEN_KINDS)),
 });
 
 const NewFleetToken = Schema.Struct({
@@ -128,8 +129,8 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       };
     case "POST tokens": {
       const input = yield* decodeBody(NewToken, request,
-        "A token needs a name of 1 to 64 characters and an expiry of 1 to 365 days.");
-      return { token: yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days }) };
+        "A token needs a name of 1 to 64 characters, an expiry of 1 to 365 days, and a kind of cli or agent.");
+      return { token: yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind }) };
     }
     case "DELETE tokens/:id": {
       if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such token or signed-in device." });

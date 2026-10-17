@@ -322,21 +322,21 @@ export type Decider = Actor & { readonly organization: { readonly id: string } }
 );
 
 /**
- * An agent never approves. What an agent asked waits on a person in the dashboard, or on the `ployz mcp` that asked,
- * which shows its human the form and answers through the credential it asked with. A request from before Cloud
- * recorded who asked is treated as an agent's.
+ * An agent answers no approval, either way. What an agent asked waits on a person: in the dashboard, or, when
+ * `ployz mcp` asked with its token, at a `ployz` command as the member who asked, which is how `ployz mcp` records the
+ * answer its human gave in the form. A request from the sidebar, a remote MCP client, or from before Cloud recorded
+ * who asked waits on the dashboard.
  */
 const mayApprove = (decider: Decider, row: ApprovalRow) => {
   if (decider.via === "dashboard") return true;
-  if (decider.via === "agent" || !("credential" in decider)) return false;
   if (row.via === "cli") return true;
-  return row.credentialKind !== "oauth" && decider.credential.kind === row.credentialKind && decider.credential.id === row.credentialId;
+  return row.via === "agent" && row.credentialKind === "token" && decider.userId === row.requestedByUserId;
 };
 
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
  * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
- * may deny; who may approve is `mayApprove`'s. The row records who decided.
+ * may deny and an agent may not; who may approve is `mayApprove`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
   caller: Decider,
@@ -356,6 +356,9 @@ export const decideApproval = <R = never>(
       ? conflict("The plan changed since this was asked; run the command again to review it.", current)
       : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
   };
+  if (caller.via === "agent") {
+    return { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals.", details: { approval: approvalView(found) } } } satisfies Decided;
+  }
   const row = yield* freshen(found, operationDigest);
   if ("approve" in decision && !mayApprove(caller, row)) {
     const message = "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";

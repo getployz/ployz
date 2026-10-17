@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
-import { createdAt, updatedAt } from "#/db/tables";
+import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
+import { TOKEN_KINDS, type TokenKind } from "#/modules/identity/actor";
 
 import { organization } from "#/modules/organization/tables";
 
-import { boolean, index, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -170,7 +171,8 @@ export const deviceCode = pgTable(
 
 /**
  * Organization Tokens: `PLOYZ_TOKEN` credentials, each bound to one Organization and acting as the member who made it.
- * Only the SHA-256 of the secret is kept; the secret is shown once, when the token is made.
+ * Only the SHA-256 of the secret is kept; the secret is shown once, when the token is made. `kind` is fixed at mint:
+ * a `cli` token speaks for a person running `ployz`, an `agent` token for `ployz mcp`.
  */
 export const organizationToken = pgTable(
   "organization_token",
@@ -184,6 +186,7 @@ export const organizationToken = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    kind: text("kind").$type<TokenKind>().notNull().default("cli"),
     secretHash: text("secret_hash").notNull(),
     expiresAt: timestamp("expires_at", {
       mode: "date",
@@ -193,5 +196,6 @@ export const organizationToken = pgTable(
   (table) => [
     unique().on(table.secretHash),
     index("organization_token_organization_id_idx").on(table.organizationId),
+    check("organization_token_kind_check", sql`${table.kind} in (${sqlStringLiterals(TOKEN_KINDS)})`),
   ],
 );

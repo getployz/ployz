@@ -21,8 +21,9 @@ use crate::cloud_login::{
 /// slow), so the client's 15s default would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Who a Cloud call speaks for. `ployz mcp` speaks for an agent, and Cloud lets only a
-/// person, or the prompt that asked, approve what an agent asks for.
+/// Who a Cloud call speaks for. Cloud reads it from the credential, so this is only a hint:
+/// `Agent` narrows a person's credential to an agent, and an agent token stays an agent's.
+/// Cloud lets no agent answer an approval.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
     Cli,
@@ -148,6 +149,28 @@ pub(crate) struct TokenEntry {
     pub(crate) expires_at: String,
     pub(crate) expired: bool,
     pub(crate) current: bool,
+    #[serde(default)]
+    pub(crate) kind: TokenKind,
+}
+
+/// Who an Organization Token speaks for, fixed when it is made.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenKind {
+    /// A person's `ployz`.
+    #[default]
+    Cli,
+    /// An agent's, as `ployz mcp login` makes; it answers no approval.
+    Agent,
+}
+
+impl TokenKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Agent => "agent",
+        }
+    }
 }
 
 /// A signed-in device of the caller's.
@@ -208,6 +231,8 @@ pub(crate) struct NewToken {
     pub(crate) organization: String,
     pub(crate) expires_at: String,
     pub(crate) secret: String,
+    #[serde(default)]
+    pub(crate) kind: TokenKind,
 }
 
 /// A revoked token or signed-out device.
@@ -274,7 +299,7 @@ pub(crate) async fn credentials(credential: &Credential) -> Result<Credentials, 
     call(credential, Method::GET, "tokens", None).await
 }
 
-/// Make an Organization Token acting as the caller in the caller's Organization.
+/// Make an Organization Token of `kind` acting as the caller in the caller's Organization.
 ///
 /// # Errors
 ///
@@ -282,13 +307,15 @@ pub(crate) async fn credentials(credential: &Credential) -> Result<Credentials, 
 pub(crate) async fn new_token(
     credential: &Credential,
     name: &str,
+    kind: TokenKind,
     expires_in_days: u16,
 ) -> Result<NewToken, LoginError> {
     #[derive(Deserialize)]
     struct Reply {
         token: NewToken,
     }
-    let body = serde_json::json!({ "name": name, "expires_in_days": expires_in_days });
+    let body =
+        serde_json::json!({ "name": name, "kind": kind, "expires_in_days": expires_in_days });
     let reply: Reply = call(credential, Method::POST, "tokens", Some(&body)).await?;
     Ok(reply.token)
 }
@@ -1204,19 +1231,22 @@ mod tests {
                 let body: serde_json::Value = serde_json::from_str(body).unwrap();
                 assert_eq!(
                     body,
-                    serde_json::json!({ "name": "ci", "expires_in_days": 30 })
+                    serde_json::json!({ "name": "ci", "kind": "agent", "expires_in_days": 30 })
                 );
                 (
                     200,
                     serde_json::json!({ "token": {
                         "id": "t1", "name": "ci", "organization": "acme",
-                        "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new",
+                        "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new", "kind": "agent",
                     } }),
                 )
             }
             other => panic!("unexpected {other}"),
         });
-        let made = new_token(&token(&cloud), "ci", 30).await.unwrap();
+        let made = new_token(&token(&cloud), "ci", TokenKind::Agent, 30)
+            .await
+            .unwrap();
         assert_eq!(made.secret, "ployz_new");
+        assert_eq!(made.kind, TokenKind::Agent);
     }
 }

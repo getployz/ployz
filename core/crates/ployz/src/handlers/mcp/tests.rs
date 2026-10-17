@@ -831,6 +831,111 @@ async fn a_host_that_elicits_asks_the_human_and_an_approval_resends_the_write() 
     );
 }
 
+/// A device signed in as Ada, with or without the agent token `ployz mcp login` made.
+fn signed_in_home(fake: &Fake, agent: bool) -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    let cloud = json!({
+        "state": "signed_in",
+        "cloud": fake.url,
+        "token": "ployz_device",
+        "account": { "id": "usr_ada", "email": "ada@example.com", "name": "Ada" },
+        "organization": { "id": "org", "slug": "acme" },
+    });
+    std::fs::write(home.path().join("cloud.json"), cloud.to_string()).unwrap();
+    if agent {
+        let mcp = json!({
+            "cloud": fake.url,
+            "id": "tok_agent",
+            "organization": "acme",
+            "token": "ployz_agent",
+        });
+        std::fs::write(home.path().join("mcp.json"), mcp.to_string()).unwrap();
+    }
+    home
+}
+
+fn without_token(server: Server, home: &tempfile::TempDir) -> Server {
+    Server {
+        account: Account {
+            config: home.path().join("config.toml"),
+            token: None,
+            cloud: None,
+            organization: OnceCell::new_with(Some(org())),
+        },
+        ..server
+    }
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn ployz_mcp_sends_the_agent_credential_and_the_human_answers_with_their_own() {
+    let Approving {
+        fake,
+        server,
+        deploy,
+    } = approving();
+    let home = signed_in_home(&fake, true);
+    let mut client = eliciting(without_token(server, &home)).await;
+    client
+        .send(&request(
+            2,
+            "tools/call",
+            json!({ "name": "deploy", "arguments": deploy.input }),
+        ))
+        .await;
+    let asking = client.reply().await;
+    assert_eq!(asking["method"], "elicitation/create", "{asking}");
+    let done = reply_to(
+        &mut client,
+        &asking,
+        json!({ "action": "accept", "content": { "approve": true } }),
+    )
+    .await;
+    assert_eq!(done["id"], 2, "{done}");
+    let seen = fake.requests();
+    resent(&seen);
+    let (decided, agent): (Vec<_>, Vec<_>) = seen
+        .iter()
+        .partition(|seen| seen.path.starts_with("/api/cli/approvals/"));
+    let [decided] = decided[..] else {
+        panic!("expected one decision: {seen:?}");
+    };
+    assert_eq!(
+        decided.bearer, "ployz_device",
+        "the human answers as themself"
+    );
+    assert_eq!(decided.via, None, "{seen:?}");
+    assert!(
+        !agent.is_empty()
+            && agent
+                .iter()
+                .all(|each| each.bearer == "ployz_agent" && each.via.as_deref() == Some("agent")),
+        "every agent call carries the agent token: {seen:?}"
+    );
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn ployz_mcp_without_its_own_token_refuses_and_names_ployz_mcp_login() {
+    let Approving {
+        fake,
+        server,
+        deploy,
+    } = approving();
+    let home = signed_in_home(&fake, false);
+    let mut client = Client::initialized(without_token(server, &home), json!({})).await;
+    let done = client.call(2, "deploy", deploy.input.clone()).await;
+    assert_eq!(done["result"]["isError"], true, "{done}");
+    assert!(
+        done.to_string().contains("ployz mcp login"),
+        "names the fix: {done}"
+    );
+    assert!(
+        fake.requests().is_empty(),
+        "the human's sign-in is never the agent's"
+    );
+}
+
 fn removal_asks() -> Value {
     json!({ "error": {
         "code": "approval_required",

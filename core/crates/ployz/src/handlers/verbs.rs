@@ -392,6 +392,8 @@ pub(crate) const LOGS: Verb = Verb::cloud("logs", Never, operator::logs_command,
 pub(crate) const MCP: Verb = Verb::local("mcp", Never, mcp::command, mcp::serve)
     .refuses_json()
     .docs("cli/overview.md");
+pub(crate) const MCP_LOGIN: Verb = Verb::cloud("mcp login", Always, mcp::login_command, mcp::login)
+    .docs("account/connect-an-agent.md");
 pub(crate) const METRICS: Verb =
     Verb::cloud("metrics", Never, metrics::command, metrics::metrics).docs("observe/metrics.md");
 pub(crate) const ORG_BUILD_ORDER: Verb = Verb::cloud(
@@ -784,6 +786,7 @@ pub(crate) const VERBS: &[Verb] = &[
     LOGOUT,
     LOGS,
     MCP,
+    MCP_LOGIN,
     METRICS,
     ORG_BUILD_ORDER,
     ORG_LEAVE,

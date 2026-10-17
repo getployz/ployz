@@ -62,6 +62,15 @@ claude mcp add -s user ployz -- ployz mcp
 In Codex, run `codex mcp add ployz -- ployz mcp` instead. If the server is already registered,
 leave it as it is.
 
+Then give `ployz mcp` its own agent token. It doesn't use the sign-in from step 3, and its tools
+fail until it has one:
+
+```sh
+ployz mcp login
+```
+
+Running it again replaces the token and revokes the old one.
+
 An agent app that can't run `ployz` on this computer can use the Ployz tools from Ployz Cloud
 instead. Add `https://ployz.dev/mcp` as a remote MCP server, for example
 `claude mcp add --transport http ployz https://ployz.dev/mcp`. The app opens the browser for the
