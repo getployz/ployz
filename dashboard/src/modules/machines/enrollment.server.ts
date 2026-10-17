@@ -409,7 +409,7 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
     const first = (line?.joining ?? 0) + (line?.waiting ?? 0);
     if (first < slots) return null;
     yield* drizzle.update(tokens)
-      .set({ queuedAt: sql`coalesce(${tokens.queuedAt}, clock_timestamp())`, updatedAt: new Date() })
+      .set({ queuedAt: sql`coalesce(${tokens.queuedAt}, clock_timestamp())`, updatedAt: sql`clock_timestamp()` })
       .where(eq(tokens.tokenHash, tokenHash));
     return waitForJoinSlot(first - slots + 1);
   },
