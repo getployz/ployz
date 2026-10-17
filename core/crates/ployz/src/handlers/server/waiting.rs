@@ -212,7 +212,7 @@ pub(super) async fn reject<'a>(
 /// Whether Cloud may have acted on a call that failed: it timed out, dropped the
 /// connection, failed inside, or refused with a code this build cannot read. Every
 /// other refusal left the list as it was.
-fn may_have_acted(error: &StoreCallError) -> bool {
+pub(super) fn may_have_acted(error: &StoreCallError) -> bool {
     match error {
         StoreCallError::Refused(refusal) => {
             matches!(

@@ -84,6 +84,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
+- `server enroll`, which enrolls hosts waiting in Cloud by name or glob.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
@@ -257,6 +258,12 @@ server waiting for approval, it leads with a **this server** line: `Installing D
 `Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
+
+`ployz server enroll 'host-*' --name 'web-{n}'` prints Cloud's enrollment plan and asks before
+starting. Add `--yes` to accept it without a prompt, including with `--json`. `--status` follows
+the stages. Run `ployz server enroll --status` to resume following after Ctrl-C. See
+[Servers waiting to join](../servers/manage-servers.md#servers-waiting-to-join) for storage and
+selection flags.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
