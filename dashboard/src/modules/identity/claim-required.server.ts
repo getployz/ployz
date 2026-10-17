@@ -30,7 +30,7 @@ const ownerKinds = Effect.fn("Identity.ownerKinds")(function* (organizationId: s
 });
 
 export const isAnonymousOrganization = (organizationId: string) =>
-  ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true)));
+  ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.length === 0 || kinds.includes(true)));
 
 export const isOwnedOnlyByAgents = (organizationId: string) =>
   ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true) && !kinds.includes(false)));

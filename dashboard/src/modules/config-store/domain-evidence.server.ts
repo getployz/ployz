@@ -18,13 +18,14 @@ const OBSERVATION_TTL_MS = 15_000;
 
 /** The parts of a call that need domain evidence; decode it with this. The Store validates the whole call. */
 const DomainCall = Schema.Union([
-  Schema.Struct({ command: Schema.Literal("add_domain"), hostname: Schema.optional(Schema.NullOr(Schema.String)) }),
-  Schema.Struct({ command: Schema.Literals(["remove_domain", "set_generated_domain"]) }),
+  Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain", "set_generated_domain"]) }),
   // Only a Deploy expands domains: a removal expands none, a retry inherits what its source froze.
   Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literal("deploy"), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literal("domains") }),
   Schema.Struct({ query: Schema.Literal("domain"), environment: Schema.optional(EnvironmentRef), domain: Schema.String }),
 ]);
+
+const AddDomainAnyHostname = Schema.Struct({ command: Schema.Literal("add_domain"), hostname: Schema.optional(Schema.Unknown) });
 
 const nothing: ConfigDomainEvidence = { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] };
 
@@ -133,11 +134,13 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   read: StoreRead,
   lookUp: (hostname: string) => Effect.Effect<DnsLookup | null> = lookUpHostname,
 ) {
-  const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(call.operation === "read" ? call.query : call.command));
+  const asked = call.operation === "read" ? call.query : call.command;
+  const adding = Option.getOrUndefined(Schema.decodeUnknownOption(AddDomainAnyHostname)(asked));
+  if ((adding?.hostname ?? null) !== null) yield* requireClaimed(organizationId, "add_domain");
+  const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(asked));
   if (wanted === undefined) return nothing;
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
-      if (wanted.command === "add_domain" && (wanted.hostname ?? null) !== null) yield* requireClaimed(organizationId, "add_domain");
       const edit: ConfigDomainEvidence = {
         ...nothing,
         cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
