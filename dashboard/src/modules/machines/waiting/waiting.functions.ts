@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
-import { cancelServerEnrollment, previewServerEnrollment, readServerEnrollments, startServerEnrollment } from "#/modules/machines/waiting/enroll.server";
+import { cancelServerEnrollment, previewServerEnrollment, readServerEnrollmentStatus, startServerEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import { OpenProbeSelectionInput, SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
@@ -43,7 +43,7 @@ const DashboardEnrollInput = Schema.Struct({
   ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(SELECTION_MAX)),
 });
 
-export const planServerEnrollmentServerFn = createServerFn({ method: "GET" })
+export const planServerEnrollmentServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(DashboardEnrollInput))
   .handler(({ context, data }) => runActor(context, previewServerEnrollment(context.actor, data)));
@@ -56,7 +56,7 @@ export const startServerEnrollmentServerFn = createServerFn({ method: "POST" })
 export const serverEnrollmentStatusServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(ListWaitingServersInput))
-  .handler(({ context, data }) => runActor(context, readServerEnrollments(context.actor, data)));
+  .handler(({ context, data }) => runActor(context, readServerEnrollmentStatus(context.actor, data)));
 
 export const cancelServerEnrollmentServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])

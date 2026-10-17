@@ -16,6 +16,7 @@ import {
   cancelServerEnrollment,
   previewServerEnrollment,
   readServerEnrollments,
+  readServerEnrollmentStatus,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
 import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
@@ -1108,4 +1109,39 @@ it("restores arrival order when every enrollment in a batch has the same request
   const result = await run(readServerEnrollments(ada, { organizationSlug: "ada" }));
   expect(result.map((row) => row.name)).toEqual(["web-1", "web-2", "web-3"]);
   expect(new Set(result.map((row) => row.requestedAt)).size).toBe(1);
+});
+
+it("requires a new first server after Forget despite retained Joined history", async () => {
+  const [old, fresh, another] = await waiting("old", "fresh", "another");
+  if (!old || !fresh || !another) throw new Error("three hosts");
+  const original = await run(enroll([old]));
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now(), encrypted_token = null where id = $1", [original.attempts[0]?.id]);
+  const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  expect(await run(forgetServers({ userId: ada.userId, organizationId: adaOrg }).pipe(
+    Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+  ))).toMatchObject({ ok: true });
+  const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
+  expect(status.attempts[0]?.state).toBe("joined");
+  expect(status.hasFirst).toBe(false);
+  const started = await run(enroll([fresh, another], { first: fresh.id }));
+  expect(started.attempts.map((row) => row.role)).toEqual(["founder", "joiner"]);
+  expect((await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }))).hasFirst).toBe(true);
+});
+
+it("counts live join slots instead of stale workflow stages after completion and expiry", async () => {
+  const founder = "f".repeat(32);
+  await harness.pool.query(
+    "insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id) values ($1, $2, 'founder', $3, $3)",
+    [adaOrg, encryption.encrypt("ployz1:founded"), founder],
+  );
+  const hosts = await waiting(...Array.from({ length: 10 }, (_, n) => `web-${n}`));
+  await run(enroll(hosts));
+  await harness.pool.query("update server_enrollment set state = 'running', stage = 'publishing'");
+  await harness.pool.query("update machine_enrollment_token set claimed_machine_id = replace(id::text, '-', ''), claimed_public_key = 'k', claimed_at = now()");
+  const tokenIds = (await harness.pool.query<{ id: string }>("select id from machine_enrollment_token order by id limit 2")).rows;
+  await harness.pool.query("update machine_enrollment_token set joined_machine_id = claimed_machine_id where id = $1", [tokenIds[0]?.id]);
+  await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '10 minutes' where id = $1", [tokenIds[1]?.id]);
+  const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
+  expect(status.attempts.filter((row) => row.stage === "publishing" && row.endedAt === null)).toHaveLength(10);
+  expect(status.joining).toBe(8);
 });

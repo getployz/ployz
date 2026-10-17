@@ -27,21 +27,19 @@ export function waitingAfterReturns(servers: readonly WaitingServerView[], attem
   const rows = [...servers].sort((a, b) => {
     const aEnd = returned.get(a.id)?.endedAt;
     const bEnd = returned.get(b.id)?.endedAt;
-    if (aEnd && bEnd) return aEnd.localeCompare(bEnd) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
-    if (aEnd || bEnd) return aEnd ? 1 : -1;
-    return a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
+    return (aEnd ?? a.firstSeenAt).localeCompare(bEnd ?? b.firstSeenAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
   });
   return { rows, returned };
 }
 
-export function EnrollmentCounters({ waiting, attempts }: { waiting: readonly WaitingServerView[]; attempts: readonly ServerEnrollmentView[] }) {
+export function EnrollmentCounters({ waiting, attempts, joining }: { joining: number; waiting: readonly WaitingServerView[]; attempts: readonly ServerEnrollmentView[] }) {
   const active = attempts.filter((row) => row.endedAt === null);
   const latest = new Map(attempts.map((row) => [row.waitingServerId, row]));
   return <Counters label="Server totals" values={[
     ["Waiting", String(waiting.length)],
     ["Ready", String(waiting.filter((row) => readiness(row) === "ready").length)],
     ["Enrolling", String(active.length)],
-    ["Joining", `${active.filter((row) => row.stage === "joining" || row.stage === "publishing").length} / 8`],
+    ["Joining", `${joining} / 8`],
     ["Joined", String([...latest.values()].filter((row) => row.state === "joined").length)],
     ["Failed", String([...latest.values()].filter((row) => row.state === "failed").length)],
   ]} />;
@@ -55,7 +53,7 @@ function Counters({ label, values }: { label: string; values: readonly (readonly
   </dl></div>;
 }
 
-export function EnrollingList({ attempts, onCancel }: { attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
+export function EnrollingList({ attempts, onCancel, joining }: { joining: number; attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
   const rows = attempts.filter((row) => row.endedAt === null || row.state === "joined");
   if (rows.length === 0) return null;
   const active = rows.filter((row) => row.endedAt === null);
@@ -70,7 +68,7 @@ export function EnrollingList({ attempts, onCancel }: { attempts: readonly Serve
       ["Setting up ZFS", String(active.filter((row) => row.state === "running" && row.stage === "storage").length)],
       ["Enrolling", String(active.filter((row) => row.state === "running" && row.stage === "enrolling").length)],
       ["In line", String(active.filter((row) => row.state === "running" && row.stage === "queued").length)],
-      ["Joining", `${active.filter((row) => row.stage === "joining" || row.stage === "publishing").length} / 8`],
+      ["Joining", `${joining} / 8`],
     ]} />
     <div className="overflow-x-auto rounded-lg border">
       <div role="table" aria-label="Enrolling servers" className="min-w-[780px] text-sm">

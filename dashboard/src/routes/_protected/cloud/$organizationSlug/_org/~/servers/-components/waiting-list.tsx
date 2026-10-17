@@ -30,17 +30,17 @@ export const VISIBLE_ROWS = 10;
 const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
 const GRID = "grid grid-cols-[20px_minmax(0,1fr)_130px_92px_150px_150px_160px] items-center gap-3 px-3";
 
-export function WaitingSection({ organizationSlug, token, hasFirst }: { organizationSlug: string; token: string | undefined; hasFirst: boolean }) {
+export function WaitingSection({ organizationSlug, token }: { organizationSlug: string; token: string | undefined }) {
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const cancel = useCancelEnrollment(organizationSlug);
   const servers = waiting.data ?? [];
-  const attempts = enrollments.data ?? [];
+  const attempts = enrollments.data?.attempts ?? [];
   if (waiting.isError || enrollments.isError) return <p role="alert">Couldn’t load waiting servers or enrollments. <Button variant="outline" onClick={() => { void waiting.refetch(); void enrollments.refetch(); }}>Retry</Button></p>;
   return <>
-    <EnrollmentCounters waiting={servers} attempts={attempts} />
-    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} attempts={attempts} hasFirst={hasFirst || attempts.some((row) => row.endedAt === null || row.state === "joined")} />
-    <EnrollingList attempts={attempts} onCancel={(id) => cancel.mutate(id)} />
+    <EnrollmentCounters waiting={servers} attempts={attempts} joining={enrollments.data?.joining ?? 0} />
+    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} attempts={attempts} hasFirst={enrollments.data?.hasFirst ?? true} />
+    <EnrollingList attempts={attempts} joining={enrollments.data?.joining ?? 0} onCancel={(id) => cancel.mutate(id)} />
   </>;
 }
 
