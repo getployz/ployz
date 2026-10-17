@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { runInngestEffect } from "#/server/run.server";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { createCancelNamespaceCleanup, createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import { createCancelServerDrain, createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
 import { createCancelServerUpgrade, createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
@@ -40,22 +41,23 @@ describe("attemptLifecycle", () => {
     expect((await cancel(otherFunctionId)).result).toEqual({ skipped: true });
   });
 
-  it("hands the failed run's triggering event to closeRun, so a row no run bound still closes", async () => {
+  it("hands a failed run's triggering event to closeRun only when the workflow asks for it", async () => {
     const closed: unknown[] = [];
-    const lifecycle = attemptLifecycle({
+    const probe = (triggeringOnFailure: boolean) => attemptLifecycle({
       run: { id: "probe", triggers: [{ event: "probe/requested" }], handler: async () => null },
       cancelId: "cancel-probe",
       triggeringEvent: Schema.Struct({ data: Schema.Struct({ attemptId: Schema.String }) }),
+      triggeringOnFailure,
       closeRun: (runId, end, triggering) => {
         closed.push([runId, end, Option.getOrUndefined(triggering)?.data.attemptId]);
         return Effect.succeed(1);
       },
       sweep: { id: "probe-sweep", closeStale: () => Effect.succeed({}) },
-    });
-    const run = lifecycle.createRun(new Inngest({ id: "test" }), asTestDouble<typeof runInngestEffect>()(async () => 1));
-    const onFailure = asTestDouble<(ctx: { event: unknown }) => Promise<void>>()(run.opts.onFailure);
-    await onFailure({ event: { name: "inngest/function.failed", data: { run_id: "run-1", event: { name: "probe/requested", data: { attemptId: "a-1" } } } } });
-    expect(closed).toEqual([["run-1", "failure", "a-1"]]);
+    }).createRun(new Inngest({ id: "test" }), asTestDouble<typeof runInngestEffect>()(async () => 1));
+    const event = { name: "probe/requested", data: { attemptId: "a-1" } };
+    await invokeOnFailure(probe(true), "run-1", event);
+    await invokeOnFailure(probe(false), "run-2", event);
+    expect(closed).toEqual([["run-1", "failure", "a-1"], ["run-2", "failure", undefined]]);
   });
 
   it("names the cancelled function under the client's app id", async () => {

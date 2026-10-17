@@ -150,6 +150,7 @@ describe("skips", () => {
     ["a host on a revoked token", row("a", { tokenEnded: "revoked" }), "Fleet Token revoked"],
     ["a blocked host", row("a", { report: { blockers: [{ code: "disk", message: "Disk is 20 GB. Ployz needs 30 GB." }] } }), "Disk is 20 GB. Ployz needs 30 GB."],
     ["a CLI from before enroll", row("a", { report: { cliVersion: "0.3.0" } }), "Update ployz"],
+    ["a host whose CLI never said its version", row("a", { report: { cliVersion: undefined } }), "Update ployz"],
   ])("skips %s", (_, candidate, reason) => {
     expect(reasonFor(candidate)).toEqual([{ id: "a", reason }]);
   });

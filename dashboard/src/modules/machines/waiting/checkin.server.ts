@@ -15,7 +15,7 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
-import { isReadyFor, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
+import { ENROLLMENT_STAGES, isReadyFor, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -191,8 +191,10 @@ const hasOpenEnrollment = Effect.fn("Checkin.hasOpenEnrollment")(function* (
   return row !== undefined;
 });
 
+const PAST_STORAGE = new Set<string | null>(ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1));
+
 function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentCheckinReport | null {
-  if (open.instruction.storage.kind === "zfs" && request.prep?.zfs === "failed") {
+  if (open.instruction.storage.kind === "zfs" && request.prep?.zfs === "failed" && !PAST_STORAGE.has(open.stage)) {
     return { attemptId: open.id, stage: "storage", failure: { stage: "storage", message: ZFS_BUILD_FAILED } };
   }
   const attempt = request.attempt;

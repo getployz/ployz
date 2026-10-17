@@ -1,10 +1,12 @@
-import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
-import { Cause, Effect, Exit } from "effect";
+import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
 import { serverEnrollmentReportedEvent } from "#/modules/inngest/events";
-import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { enrollMachine, hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import {
@@ -14,10 +16,14 @@ import {
 } from "#/modules/machines/waiting/enroll.server";
 import { closeServerEnrollment, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { createServerEnrollmentRun } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { Database } from "#/server/database.server";
+import { makeInngestEffectRunner, type runInngestEffect } from "#/server/run.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { invokeOnFailure } from "#/test/inngest-failure";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ada = { userId: "00000000-0000-4000-8000-000000000801" };
@@ -208,6 +214,16 @@ it("reports a failed ZFS build to the run and stops answering enroll", async () 
   }));
 });
 
+it("ignores a stale failed ZFS build once the host is past storage", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a], { storage: { kind: "zfs", useSpareDisk: false, fallbackToDocker: false } }));
+  await harness.pool.query("update server_enrollment set state = 'running', stage = 'joining'");
+  sent.mockClear();
+  expect(await checkin(a, { docker: "ready", zfs: "failed" })).toMatchObject({ kind: "enroll", role: "founder" });
+  expect(sent).not.toHaveBeenCalled();
+});
+
 it("keeps an enrolling host's row and check-ins through a revoke, and removes the rest", async () => {
   const [a, b] = await waiting("web-a", "web-b");
   if (a === undefined || b === undefined) throw new Error("two hosts");
@@ -227,15 +243,66 @@ it("cancels a rejected host's open attempt", async () => {
   expect(await outbox()).toContain("server/enrollment.cancel");
 });
 
-it("plans a first server when the Organization's pairing was claimed but never founded and no first server is on its way", async () => {
+const legacyClaim = (age: string) =>
+  harness.pool.query(
+    "insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id, created_at) values ($1, '{}'::jsonb, 'k', $2, now() - $3::interval)",
+    [adaOrg, "00000000000000000000000000000001", age],
+  );
+const pairings = async () =>
+  (await harness.pool.query<{ founder_claim_machine_id: string }>("select founder_claim_machine_id from organization_pairing")).rows;
+
+const identity = (machineId: string) => ({
+  protocolVersion: 1 as const,
+  machineId: Schema.decodeUnknownSync(rustMachineIdSchema)(machineId),
+  initialPolicy: { labels: {}, accepts_builds: true, accepts_services: true, accepts_ingress: true },
+  name: `server-${machineId.slice(0, 4)}`,
+  publicKey: createHash("sha256").update(machineId).digest("base64"),
+  advertisedEndpoints: ["10.0.0.9:51820"],
+  requestedStorage: "none" as const,
+});
+
+const claimAsFounder = async (target: Host, machineId: string) => {
+  const answer = await checkin(target);
+  if (answer.kind !== "enroll") throw new Error(`expected enroll, got ${answer.kind}`);
+  return run(enrollMachine({ token: answer.token, identity: identity(machineId) }).pipe(
+    Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntime["Service"]>()({})),
+  ));
+};
+
+it("plans a first server over an old founding claim no first server is finishing, and drops that claim", async () => {
   const [a, b] = await waiting("web-a", "web-b");
   if (a === undefined || b === undefined) throw new Error("two hosts");
-  await harness.pool.query("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id) values ($1, '{}'::jsonb, 'k', $2)", [adaOrg, "00000000000000000000000000000001"]);
+  await legacyClaim("1 hour");
   const started = await run(enroll([a, b], { first: a.id }));
   expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.state])).toEqual([
     [a.id, "founder", "instructed"],
     [b.id, "joiner", "awaiting_founder"],
   ]);
+  expect(await pairings()).toEqual([]);
+});
+
+it("keeps a fresh founding claim from server add, and plans only joiners behind it", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  await legacyClaim("1 minute");
+  const started = await run(enroll([a, b], { first: a.id }));
+  expect(started.attempts.map((attempt) => [attempt.role, attempt.state])).toEqual([
+    ["joiner", "awaiting_founder"],
+    ["joiner", "awaiting_founder"],
+  ]);
+  expect(await pairings()).toEqual([{ founder_claim_machine_id: "00000000000000000000000000000001" }]);
+});
+
+it("lets a host whose founding attempt failed found again on a new enrollment", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  await run(enroll([a]));
+  expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
+  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now()");
+
+  const [again] = (await run(enroll([a]))).attempts;
+  expect([again?.role, again?.state]).toEqual(["founder", "instructed"]);
+  expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
 });
 
 it("waits for a reject in flight before planning, and skips the host it rejected", async () => {
@@ -293,4 +360,16 @@ it("closes a cancelled attempt no run has bound, and says when there was nothing
   expect(await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id }))).toEqual({ id, cancelling: false });
   expect(await failure(cancelServerEnrollment(ada, { organizationSlug: "ada", id: "00000000-0000-4000-8000-000000000899" })))
     .toMatchObject({ _tag: "NotFound" });
+});
+
+it("fails an attempt whose run failed before it bound the attempt", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  const [started] = (await run(enroll([a]))).attempts;
+  const runner = createServerEnrollmentRun(new Inngest({ id: "test" }), makeInngestEffectRunner(run) as typeof runInngestEffect);
+  await invokeOnFailure(runner, "run-never-bound", {
+    name: "server/enrollment.requested",
+    data: { attemptId: started?.id, organizationId: adaOrg },
+  });
+  expect((await attempts()).map((row) => [row.state, row.ended_at !== null, row.inngest_run_id])).toEqual([["failed", true, null]]);
 });

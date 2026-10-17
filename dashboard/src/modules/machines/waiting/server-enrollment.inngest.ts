@@ -125,9 +125,11 @@ const lifecycle = attemptLifecycle({
   },
   cancelId: "cancel-server-enrollment",
   triggeringEvent: Schema.Struct({ data: Schema.Struct({ attemptId: Schema.String }) }),
+  triggeringOnFailure: true,
   closeRun: (runId, end, triggering) =>
     closeServerEnrollment(runId, end, Option.isSome(triggering) ? triggering.value.data.attemptId : undefined),
   sweep: { id: "server-enrollment-sweep", closeStale: closeStaleServerEnrollments },
 });
 
+export const createServerEnrollmentRun = lifecycle.createRun;
 export const createServerEnrollmentFunctions = lifecycle.createFunctions;
