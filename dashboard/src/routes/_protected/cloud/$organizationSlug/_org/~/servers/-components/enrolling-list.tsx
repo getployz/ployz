@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import { Button } from "#/components/ui/button";
 import { cn } from "#/lib/utils";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
@@ -55,7 +55,7 @@ function Counters({ label, values }: { label: string; values: readonly (readonly
   </dl></div>;
 }
 
-export function EnrollingList({ attempts, onCancel, joining }: { joining: number; attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
+export const EnrollingList = memo(function EnrollingList({ attempts, onCancel, joining }: { joining: number; attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
   const rows = attempts.filter((row) => row.endedAt === null || row.state === "joined");
   const scroller = useRef<HTMLDivElement>(null);
   const height = Math.min(rows.length, 10) * 52;
@@ -117,4 +117,4 @@ export function EnrollingList({ attempts, onCancel, joining }: { joining: number
       </div>
     </div>
   </section>;
-}
+});
