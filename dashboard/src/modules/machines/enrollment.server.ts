@@ -44,7 +44,7 @@ import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollmen
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
-import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
@@ -386,6 +386,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     const joiner = input.role === "joiner";
     return yield* database.transaction(
       Effect.gen(function* () {
+        yield* lockOrganizationEnrollment(input.organizationId);
         const { drizzle } = yield* Database;
         const [claimed] = joiner ? [] : yield* drizzle
           .insert(schemaOrganizationPairing)

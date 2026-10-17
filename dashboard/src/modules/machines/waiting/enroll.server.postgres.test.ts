@@ -3,9 +3,11 @@ import { Cause, Effect, Exit, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { serverEnrollmentReportedEvent } from "#/modules/inngest/events";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { enrollMachine, hashEnrollmentToken, insertEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { forgetEmptiedPairing, revokeOrganizationPairing, seeCluster } from "#/modules/machines/pairing-removal.server";
 import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
@@ -712,5 +714,46 @@ it("keeps an attempt an enroll committed while an expired-token check-in waited 
     await gate.query("select pg_advisory_unlock(934125)");
     gate.release();
     await harness.pool.query("drop trigger pause_expiring_enroll on server_enrollment; drop function pause_expiring_enroll()");
+  }
+}, 15_000);
+
+it("holds Enroll behind Forget Servers before the first server founds, so no attempt keeps a deleted token", async () => {
+  const [a, b] = await waiting("first-unclaimed", "second-unclaimed");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  await run(enroll([a]));
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934128)");
+  await harness.pool.query(`
+    create function pause_forget() returns trigger language plpgsql as $$ begin
+      perform pg_advisory_xact_lock(934128);
+      return new;
+    end $$;
+    create trigger pause_forget before update on machine_enrollment_token for each row execute function pause_forget();
+  `);
+  const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  try {
+    const forgetting = run(forgetServers({ userId: ada.userId, organizationId: adaOrg }).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+    ));
+    await waitFor("advisory");
+    let settled = false;
+    const enrolling = failure(enroll([b])).finally(() => { settled = true; });
+    for (let i = 0; i < 100 && !settled; i++) {
+      const { rows } = await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = 'advisory'");
+      if (rows.length >= 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await gate.query("select pg_advisory_unlock(934128)");
+    expect(await forgetting).toMatchObject({ ok: true });
+    expect(await enrolling).toBeNull();
+    const open = (await harness.pool.query<{ host: string; role: string; token: string | null }>(`
+      select se.waiting_server_id as host, se.role, t.id as token from server_enrollment se
+        left join machine_enrollment_token t on t.id = se.enroll_token_id where se.ended_at is null
+    `)).rows;
+    expect(open).toEqual([{ host: b.id, role: "founder", token: expect.any(String) }]);
+  } finally {
+    await gate.query("select pg_advisory_unlock(934128)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_forget on machine_enrollment_token; drop function pause_forget()");
   }
 }, 15_000);

@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentCancelEvent, createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
 import { insertEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { closeUnboundServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
@@ -179,6 +179,7 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
   // A first server can't found while the earlier pairing waits on removal, so it ends now rather than failing hours later.
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
+    yield* lockOrganizationEnrollment(organizationId);
     const { drizzle } = yield* Database;
     const [current] = yield* drizzle.select({ removalStartedAt: organizationPairing.removalStartedAt })
       .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId)).for("update");
@@ -198,6 +199,7 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   const ids = input.ids.filter((id) => /^[0-9a-f-]{36}$/u.test(id));
   yield* releaseDeadClaim(organization.id);
   return yield* database.transaction(Effect.gen(function* () {
+    yield* lockOrganizationEnrollment(organization.id);
     const { drizzle } = yield* Database;
     const [pairing] = yield* drizzle
       .select({ founderMachineId: organizationPairing.founderMachineId, removalEndpoints: organizationPairing.removalEndpoints })

@@ -43,6 +43,17 @@ const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
   });
 });
 
+/**
+ * Serializes every writer that creates, cancels or deletes an Organization's enrollments, tokens or pairing: Enroll,
+ * a legacy claim, Forget Servers, a pairing removal and a dead-claim release. The pairing row can't do it, since it
+ * doesn't exist before the first server founds. Taken first in its transaction; the order after it is the pairing row,
+ * then `waiting_server` rows, then `server_enrollment` rows (each in id order), then enrollment tokens.
+ */
+export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`organization-enrollment:${organizationId}`}))`);
+});
+
 const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   yield* cancelOpenServerEnrollments(organizationId);
@@ -68,6 +79,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
   function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
     const database = yield* Database;
     const disabled = yield* database.transaction(Effect.gen(function* () {
+      yield* lockOrganizationEnrollment(organizationId);
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select().from(organizationPairing)
         .where(eq(organizationPairing.organizationId, organizationId)).for("update");
@@ -124,6 +136,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
 
 /** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */
 const lockWitnessedPairing = Effect.fn("PairingRemoval.lockWitnessed")(function* (organizationId: string, generation: string) {
+  yield* lockOrganizationEnrollment(organizationId);
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select().from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId)).for("update");
@@ -217,6 +230,7 @@ export const seeCluster = Effect.fn("PairingRemoval.seeCluster")(function* (orga
 
 /** As `seeCluster`, holding the pairing row's lock for the caller's transaction. */
 const lockCluster = Effect.fn("PairingRemoval.lockCluster")(function* (organizationId: string) {
+  yield* lockOrganizationEnrollment(organizationId);
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select().from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId)).for("update");
