@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
@@ -7,7 +7,9 @@ import { createOrganizationToken, listCredentials, mintOrganizationTokenUnchecke
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
+import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
 const ACME = "00000000-0000-4000-8000-00000000d001";
@@ -16,7 +18,9 @@ let harness: PostgresTestHarness;
 const ids = { ada: "", bob: "", eve: "" };
 const roles = { ada: "owner", bob: "admin", eve: "member" } satisfies Record<keyof typeof ids, Caller["role"]>;
 
-const run = <A, E>(effect: Effect.Effect<A, E, Database>) => harness.runEffect(effect);
+const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: "postgres://unused@localhost/unused" } }))));
+
+const run = <A, E>(effect: Effect.Effect<A, E, Database | AppConfig>) => harness.runEffect(effect.pipe(Effect.provide(config)));
 
 const callerOf = (who: keyof typeof ids): Caller => ({
   userId: ids[who],

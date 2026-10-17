@@ -1,5 +1,6 @@
 import { Effect } from "effect";
 import { Auth } from "#/server/auth.server";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { completeGithubConnect, startGithubConnect } from "#/modules/github/github-connect.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
@@ -29,9 +30,9 @@ function respond(request: Request, effect: Program) {
     effect.pipe(
       Effect.map(seeOther),
       Effect.catchIf(
-        (error) => error instanceof Unauthorized || error instanceof Forbidden || error instanceof NotFound,
+        (error) => error instanceof Unauthorized || error instanceof Forbidden || error instanceof NotFound || error instanceof StoreRefused,
         (error) => Effect.succeed(error instanceof Unauthorized ? seeOther("/auth")
-          : error instanceof Forbidden ? refusal(403, error.message) : refusal(404, "No such Organization.")),
+          : error instanceof Forbidden || error instanceof StoreRefused ? refusal(403, error.message) : refusal(404, "No such Organization.")),
       ),
       Effect.catchCause((cause) =>
         Effect.logError("GitHub connect failed.", cause).pipe(Effect.as(refusal(500, "Something went wrong. Try again."))),

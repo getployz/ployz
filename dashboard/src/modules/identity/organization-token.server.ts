@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -49,6 +50,7 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
   caller: Caller,
   input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind },
 ) {
+  yield* requireClaimed(caller.organization.id, "mint_token");
   yield* requireSignedIn(caller);
   const minted = yield* mintOrganizationTokenUnchecked({
     organizationId: caller.organization.id,

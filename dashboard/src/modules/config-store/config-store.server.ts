@@ -158,6 +158,7 @@ function statusFor(code: string) {
       return 401;
     case "forbidden":
     case "approval_denied":
+    case "claim_required":
       return 403;
     case "unsupported":
       return 501;

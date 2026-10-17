@@ -7,6 +7,7 @@ import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domai
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
@@ -17,7 +18,8 @@ const OBSERVATION_TTL_MS = 15_000;
 
 /** The parts of a call that need domain evidence; decode it with this. The Store validates the whole call. */
 const DomainCall = Schema.Union([
-  Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain", "set_generated_domain"]) }),
+  Schema.Struct({ command: Schema.Literal("add_domain"), hostname: Schema.optional(Schema.NullOr(Schema.String)) }),
+  Schema.Struct({ command: Schema.Literals(["remove_domain", "set_generated_domain"]) }),
   // Only a Deploy expands domains: a removal expands none, a retry inherits what its source froze.
   Schema.Struct({ command: Schema.Literal("admit"), admit: Schema.Literal("deploy"), environment: Schema.optional(EnvironmentRef) }),
   Schema.Struct({ query: Schema.Literal("domains") }),
@@ -135,6 +137,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   if (wanted === undefined) return nothing;
   if ("command" in wanted) {
     if (wanted.command !== "admit") {
+      if (wanted.command === "add_domain" && (wanted.hostname ?? null) !== null) yield* requireClaimed(organizationId, "add_domain");
       const edit: ConfigDomainEvidence = {
         ...nothing,
         cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),

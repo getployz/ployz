@@ -11,6 +11,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor } from "#/modules/identity/actor";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import {
@@ -140,8 +141,9 @@ const billingPage = (appUrl: URL, organizationSlug: string) =>
 /** The paying user's Polar portal, as the billing page's "Manage billing" opens it. */
 export const createCustomerPortal = Effect.fn("Billing.createPortal")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "org:read");
+    yield* requireClaimed(organization.id, "billing");
     const polar = yield* requireHostedPolar();
-    yield* requireAccess(actor, input.organizationSlug, "org:read");
     const config = yield* AppConfig;
     return yield* polar.createCustomerPortal({
       externalCustomerId: actor.userId,
