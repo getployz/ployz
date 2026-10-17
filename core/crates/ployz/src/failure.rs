@@ -1124,6 +1124,7 @@ mod tests {
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
             retry: ployz_core::Retry::AfterRestart,
+            reached: false,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
                 io::ErrorKind::ConnectionRefused,
             )))),

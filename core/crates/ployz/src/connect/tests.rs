@@ -30,6 +30,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
             selection: ConnectionSource::Direct,
             attempts: 1,
             retry: aggregate,
+            reached: false,
             last: Some(Box::new(ssh_error)),
         };
         assert_eq!(error.retry(), aggregate);
@@ -455,6 +456,88 @@ async fn missing_ssh_client_does_not_skip_later_non_ssh_connections() {
         matches!(error, ConnectError::AllFailed { attempts: 2, .. }),
         "{error:?}"
     );
+}
+
+/// A daemon on `socket` that refuses discovery with `status`.
+async fn refusing_daemon(socket: &std::path::Path, status: fn() -> tonic::Status) {
+    use ployz_core::{MachineRpcServer, OpaquePayload};
+    use ployz_testkit::fake_machine::{Fake, FakeMachine};
+
+    struct Daemon(fn() -> tonic::Status);
+
+    #[tonic::async_trait]
+    impl FakeMachine for Daemon {
+        async fn describe_contract(
+            &self,
+            _request: tonic::Request<OpaquePayload>,
+        ) -> Result<tonic::Response<OpaquePayload>, tonic::Status> {
+            Err((self.0)())
+        }
+    }
+
+    let listener = tokio::net::UnixListener::bind(socket).unwrap();
+    tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(MachineRpcServer::new(Fake(Daemon(status))))
+            .serve_with_incoming(tokio_stream::wrappers::UnixListenerStream::new(listener)),
+    );
+}
+
+#[tokio::test]
+async fn missing_ssh_client_keeps_an_earlier_daemons_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("refusing.sock");
+    refusing_daemon(&socket, || tonic::Status::unauthenticated("not authorized")).await;
+    let error = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![
+                Connection::unix(&socket).unwrap(),
+                Connection::ssh(SshDestination::parse("user@example.com").unwrap()),
+            ],
+        },
+        Arc::new(SystemConnector::new("/ployz-missing-ssh-client")),
+    )
+    .await
+    .err()
+    .expect("a refusal and a missing ssh client must fail");
+    assert!(
+        matches!(
+            error,
+            ConnectError::AllFailed {
+                attempts: 2,
+                reached: true,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(!error.unreached(), "{error:?}");
+}
+
+#[tokio::test]
+async fn a_cancelled_status_a_daemon_sent_is_an_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("cancelling.sock");
+    refusing_daemon(&socket, || tonic::Status::cancelled("shutting down")).await;
+    let error = connect_selected_with(
+        SelectedConnections {
+            source: ConnectionSource::Direct,
+            connections: vec![Connection::unix(&socket).unwrap()],
+        },
+        Arc::new(SystemConnector::new("/ployz-missing-ssh-client")),
+    )
+    .await
+    .err()
+    .expect("a cancelled discovery must fail");
+    assert!(!error.unreached(), "{error:?}");
+    assert_eq!(error.retry(), Retry::AfterRestart, "{error:?}");
+    let mut local = tonic::Status::cancelled("connection closed");
+    local.set_source(Arc::new(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "connection closed",
+    )));
+    assert!(ConnectError::Rpc(TransportError::from(local)).unreached());
 }
 
 #[tokio::test]

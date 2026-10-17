@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 
 use super::{signed_in, waiting, with_client};
 use crate::{
-    connect::TARGET_RPC_TIMEOUT,
+    connect::{ConnectError, TARGET_RPC_TIMEOUT},
+    context::ContextError,
     handlers::{Error, leaf_matches, runtime},
     ui::{self, Cell, Gaps, Table, Tone},
 };
@@ -131,14 +132,18 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     let selector = leaf
         .get_one::<String>("server")
         .ok_or_else(|| Error::usage("server is required"))?;
-    let Err(error) = server(root, selector) else {
-        return Ok(());
+    let (error, unconnected) = match server(root, selector) {
+        Ok(()) => return Ok(()),
+        Err(Unshown::Unconnected(error)) => (error, true),
+        Err(Unshown::Failed(error)) => (error, false),
     };
     let report = error.report();
     let missing = report.code == RpcErrorCode::NotFound;
     let unreachable =
         report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
-    if !(missing || unreachable) || waiting::points_elsewhere(leaf) {
+    // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.
+    let unasked = unconnected && waiting::inherits_a_connection(leaf);
+    if !(missing || unreachable || unasked) || waiting::points_elsewhere(leaf) {
         return Err(error);
     }
     let runtime = runtime()?;
@@ -147,81 +152,92 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     };
     let listed = match runtime.block_on(waiting::fetch(&credential)) {
         Ok(listed) => listed,
-        Err(fetch) if missing => {
-            return Err(fetch.context(format!(
-                "No Server matches {selector}, and the servers waiting to join could not be read."
-            )));
+        Err(fetch) => {
+            ui::warn_cause("The servers waiting to join could not be read", &fetch);
+            return Err(error);
         }
-        Err(_) => return Err(error),
     };
-    let named: Vec<_> = match listed.iter().find(|host| host.row.id == *selector) {
-        Some(host) => vec![host],
-        None => listed
-            .iter()
-            .filter(|host| host.row.name == *selector)
-            .collect(),
-    };
-    match named.as_slice() {
-        [] => Err(error),
+    match waiting::named(&listed, selector)?.as_slice() {
+        [] => Err(error.hint(waiting::copied_hint(selector))),
         [host] => waiting::show(host),
-        hosts => Err(Error::detailed(
-            RpcErrorCode::Ambiguous,
+        hosts => Err(waiting::ambiguous(
             format!(
-                "{} waiting servers are named {selector}. Show one by its id: {}",
+                "{} waiting servers are named {}. Show one by its id",
                 hosts.len(),
-                hosts
-                    .iter()
-                    .map(|host| format!(
-                        "{} ({})",
-                        waiting::printable(&host.row.id),
-                        waiting::printable(host.row.ip())
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                ui::printable(selector)
             ),
-            json!({
-                "waiting_servers": hosts
-                    .iter()
-                    .map(|host| json!({ "id": host.row.id, "ip": host.row.ip() }))
-                    .collect::<Vec<_>>(),
-            }),
+            hosts,
         )),
     }
 }
 
 /// Print fresh targeted Machine telemetry, its round-trip times to peers, and its
 /// latest upgrade attempt; list/watch request only storage evidence.
-fn server(root: &ArgMatches, selector: &str) -> Result<(), Error> {
-    let selector = MachineTarget::parse(selector)?;
-    with_client(root, |client| {
-        Box::pin(async move {
-            let details = client
-                .invoke::<op::Inspect>(
-                    InspectRequest {
-                        telemetry: ployz_core::InspectTelemetry::Full,
-                        include_rtts: true,
-                        include_storage: true,
-                        ..Default::default()
-                    },
-                    &selector,
-                    Some(TARGET_RPC_TIMEOUT),
-                )
-                .await
-                .map_err(|error| {
-                    Error::from(error)
-                        .context(format!("Could not show Server {}.", selector.as_str()))
-                })?;
-            let mut server = serde_json::to_value(&details)?;
-            if let Value::Object(fields) = &mut server {
-                fields.remove("upgrade");
-                fields.insert("public_key".into(), json!(details.public_key.to_string()));
-                if let Some(machine) = &details.machine {
-                    fields.insert("machine".into(), super::machine_json(machine));
-                }
-            }
-            crate::ui::show(&json!({ "server": server, "upgrade": details.upgrade }))
-        })
+fn server(root: &ArgMatches, selector: &str) -> Result<(), Unshown> {
+    let selector = MachineTarget::parse(selector).map_err(|error| Unshown::Failed(error.into()))?;
+    let leaf = leaf_matches(root);
+    let context = leaf.get_one::<String>("context").map(String::as_str);
+    runtime().map_err(Unshown::Failed)?.block_on(async {
+        let mut client = super::connect(leaf, context).await.map_err(Unshown::of)?;
+        inspect(&mut client, &selector)
+            .await
+            .map_err(Unshown::Failed)
     })
+}
+
+/// Why a Server was not shown: no connection reached a daemon, or a daemon answered.
+enum Unshown {
+    Unconnected(Error),
+    Failed(Error),
+}
+
+impl Unshown {
+    /// A connection that a daemon refused, or whose identity or protocol it contradicted,
+    /// was answered: only selection, dial and transport failures leave it unconnected.
+    fn of(error: Error) -> Self {
+        let source = std::error::Error::source(&error);
+        let unreached = source
+            .and_then(|source| source.downcast_ref::<ConnectError>())
+            .map_or_else(
+                || source.is_some_and(|source| source.is::<ContextError>()),
+                ConnectError::unreached,
+            );
+        if unreached {
+            Self::Unconnected(error)
+        } else {
+            Self::Failed(error)
+        }
+    }
+}
+
+async fn inspect(
+    client: &mut crate::connect::Client,
+    selector: &MachineTarget,
+) -> Result<(), Error> {
+    let details = client
+        .invoke::<op::Inspect>(
+            InspectRequest {
+                telemetry: ployz_core::InspectTelemetry::Full,
+                include_rtts: true,
+                include_storage: true,
+                ..Default::default()
+            },
+            selector,
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map_err(|error| {
+            Error::from(error).context(format!("Could not show Server {}.", selector.as_str()))
+        })?;
+    let mut server = serde_json::to_value(&details)?;
+    if let Value::Object(fields) = &mut server {
+        fields.remove("upgrade");
+        fields.insert("public_key".into(), json!(details.public_key.to_string()));
+        if let Some(machine) = &details.machine {
+            fields.insert("machine".into(), super::machine_json(machine));
+        }
+    }
+    crate::ui::show(&json!({ "server": server, "upgrade": details.upgrade }))
 }
 
 /// One `server ls` row: the observation, its Machine as every `server` command prints
