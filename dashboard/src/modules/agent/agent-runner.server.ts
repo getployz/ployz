@@ -11,7 +11,7 @@ import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
-import { mayProtect, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
+import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { JsonObject } from "#/db/tables";
 import { type Caller, callerPermissions } from "#/modules/identity/actor";
@@ -230,8 +230,8 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     if ("refused" in unprotect) return done({ ok: false, refusal: unprotect.refused });
     const { asked, command } = unprotect;
     if (asked !== null) {
-      // Only someone who may protect gets a human asked on their behalf.
-      if (!(yield* mayProtect(caller.organization.id, caller.userId))) return done({ ok: false, refusal: protectorOnly });
+      const refused = protectorOnly(caller);
+      if (refused !== null) return done({ ok: false, refusal: refused });
       const gated = yield* gateOperation(caller, call.approvalId, asked);
       if (!gated.ok) return asking(gated.refusal) ?? done({ ok: false, refusal: gated.refusal });
     }

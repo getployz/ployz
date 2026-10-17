@@ -91,16 +91,8 @@ impl Backend {
         approval: Option<&str>,
     ) -> Result<C::Written, StoreCallError> {
         match self {
-            // The hidden local Store's one user owns everything, so they may protect.
             Self::Local(store, who) => store
-                .write_trusted(
-                    who,
-                    command,
-                    &Trusted {
-                        may_protect: true,
-                        ..trusted
-                    },
-                )
+                .write_trusted(who, command, &trusted)
                 .map_err(StoreCallError::Refused),
             Self::Cloud(runtime, credential) => {
                 let written: Written = runtime.block_on(cloud_account::config_store(

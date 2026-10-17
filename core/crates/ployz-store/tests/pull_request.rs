@@ -64,7 +64,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
             default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
-        ..backend::cloud()
+        ..Trusted::default()
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
@@ -228,7 +228,7 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
                 id: id.clone(),
                 environment: at(environment),
             }),
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     id
@@ -246,7 +246,7 @@ fn shut_down(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentI
                 version: None,
                 accept_volume_loss: Vec::new(),
             }),
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     id
@@ -702,7 +702,7 @@ fn missing_evidence_needs_approval() {
     };
     assert_eq!(opened(headless, &members), 0);
     assert_eq!(
-        opened(numbered(3, "2026-09-29T10:00:03Z"), &backend::cloud()),
+        opened(numbered(3, "2026-09-29T10:00:03Z"), &Trusted::default()),
         0
     );
     // An included bot deploys from the repository, never from a fork.
@@ -795,7 +795,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     assert!(
@@ -968,7 +968,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     accept_volume_loss: Vec::new(),
                     message: None,
                 }),
-                &backend::cloud(),
+                &Trusted::default(),
             )
             .unwrap();
         run(&store, &id, &["web"]);
@@ -1029,7 +1029,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, services: &[&str]
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     run(store, &id, services);
@@ -1045,7 +1045,7 @@ fn vouched() -> Trusted {
             default_branch: backend::git_branch("main"),
             branches: vec![backend::git_branch("release")],
         }],
-        ..backend::cloud()
+        ..Trusted::default()
     }
 }
 

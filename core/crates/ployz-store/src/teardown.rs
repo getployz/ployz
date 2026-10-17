@@ -201,11 +201,6 @@ pub(crate) fn set_protected(
 ) -> Result<EnvironmentsView, RpcError> {
     let environment = scope::lock(tx, who, &set.environment)?;
     let summary = &environment.summary;
-    crate::storage::admit_protect(tx, |_| {
-        Ok(Some(
-            json!({ "project": summary.project, "environment": summary.name }),
-        ))
-    })?;
     if let Some(seen) = &set.seen {
         unchanged(tx, &environment, seen)?;
     }

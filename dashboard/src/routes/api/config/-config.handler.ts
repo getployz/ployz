@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
 import { gateOperation, hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
-import { mayProtect, protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
+import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
@@ -55,8 +55,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     : null;
   if (unprotect !== null && "refused" in unprotect) return refusal(unprotect.refused);
   if (unprotect?.asked) {
-    // Only someone who may protect gets a human asked on their behalf.
-    if (!(yield* mayProtect(caller.organization.id, caller.userId))) return refusal(protectorOnly);
+    const refused = protectorOnly(caller);
+    if (refused !== null) return refusal(refused);
     const gated = yield* gateOperation(caller, request.headers.get("x-ployz-approval"), unprotect.asked);
     if (!gated.ok) return refusal(gated.refusal);
   }

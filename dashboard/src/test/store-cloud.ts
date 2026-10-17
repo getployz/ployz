@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import type { ConfigStore, ConfigTrusted, Connection } from "@ployz/sdk";
+import type { ConfigTrusted, Connection } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { vi } from "vitest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
-import { CloudStore, cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
@@ -31,25 +31,6 @@ export const sendsNowhere = () => {
   return inngest;
 };
 
-const observesNothing: ConfigTrusted = { repositories: [], domains: { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] } };
-
-/**
- * The Store with a test's own writes made as Cloud itself, which may protect: one that names no `may_protect` writes as
- * Cloud would, never as a caller the SDK fences. Cloud's own writes always name it, so they meet the fence unchanged.
- */
-const writingAsCloud = Layer.effect(CloudStore, Effect.gen(function* () {
-  const live = yield* CloudStore;
-  const patched = new WeakSet<ConfigStore>();
-  const asCloud = (store: ConfigStore) => {
-    if (patched.has(store)) return;
-    patched.add(store);
-    const write = store.write.bind(store);
-    store.write = (organization, command, trusted, principal) =>
-      write(organization, command, trusted?.may_protect === undefined ? { ...(trusted ?? observesNothing), may_protect: true } : trusted, principal);
-  };
-  return { open: Effect.tap(live.open, (store) => Effect.sync(() => asCloud(store))) };
-}));
-
 /**
  * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
  * (none by default), repository reads through it unless `repositories` stands in, no Cluster paired, a self-hosted
@@ -74,7 +55,7 @@ export const storeTestCloud = Effect.fn(function* (options: {
     configLayer,
     database,
     SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-    writingAsCloud.pipe(Layer.provide(CloudStoreLive), Layer.provide(Layer.merge(configLayer, database))),
+    CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, database))),
     Layer.succeed(GithubApi, github),
     options.repositories === undefined
       ? GithubRepositoriesLive.pipe(Layer.provide(Layer.merge(database, Layer.succeed(GithubApi, github))))

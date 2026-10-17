@@ -74,7 +74,7 @@ function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved
   const refused = yourRole !== undefined && !can(yourRole, "environments:protect");
   return (
     <SettingsSection id="protected" title="Protected"
-      description="Only admins can change its repository, deploy branch or protection, and it can't be deleted.">
+      description="Only an owner or admin can change its repository, deploy branch or protection, and it can't be deleted.">
       <SettingsRow
         label="Protect this environment"
         hint={refused ? "Only an owner or admin can change this." : undefined}

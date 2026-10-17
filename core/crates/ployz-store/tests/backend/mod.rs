@@ -44,15 +44,6 @@ pub fn git_branch(name: &str) -> ployz_store::BranchName {
     ployz_store::BranchName::parse(name).unwrap()
 }
 
-/// Cloud's own write, as a worker or the hidden local Store's one user makes it: no
-/// member acts, so it may protect.
-pub fn cloud() -> ployz_store::Trusted {
-    ployz_store::Trusted {
-        may_protect: true,
-        ..ployz_store::Trusted::default()
-    }
-}
-
 /// Cloud's evidence for the repositories `acme/web` (11) and `acme/docs` (12), each on
 /// `main` with a `dev` branch.
 pub fn acme_repositories() -> ployz_store::Trusted {
@@ -65,7 +56,7 @@ pub fn acme_repositories() -> ployz_store::Trusted {
     };
     ployz_store::Trusted {
         repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
-        ..cloud()
+        ..ployz_store::Trusted::default()
     }
 }
 
@@ -78,7 +69,7 @@ pub fn ada() -> ployz_store::GithubUserId {
 pub fn members() -> ployz_store::Trusted {
     ployz_store::Trusted {
         members: Some(vec![ada()]),
-        ..cloud()
+        ..ployz_store::Trusted::default()
     }
 }
 
@@ -127,7 +118,7 @@ pub fn admit(
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
-            &cloud(),
+            &ployz_store::Trusted::default(),
         )
         .unwrap();
     id

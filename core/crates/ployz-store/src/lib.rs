@@ -189,18 +189,13 @@ impl ConfigStore {
     }
 
     /// Apply `command` — a [`Command`], or one of its payloads for its own result —
-    /// in one transaction: all of it, or none. Without Cloud's evidence this is the
-    /// hidden local Store, whose one user owns everything, so it may protect.
+    /// in one transaction: all of it, or none.
     ///
     /// # Errors
     /// Returns an RPC error: `invalid_argument`, `not_found`, `ambiguous` or `conflict`
     /// for what the command asks, or a storage error.
     pub fn write<C: Tell>(&self, who: &Actor, command: &C) -> Result<C::Written, RpcError> {
-        let owner = Trusted {
-            may_protect: true,
-            ..Trusted::default()
-        };
-        self.write_trusted(who, command, &owner)
+        self.write_trusted(who, command, &Trusted::default())
     }
 
     /// [`write`](Self::write) with evidence Cloud gathered itself, such as which
@@ -225,20 +220,15 @@ impl ConfigStore {
         })
     }
 
-    /// Run `work` in one write transaction, which may protect only when `trusted`
-    /// says so, whoever acts: Cloud found their role may, or Cloud itself writes.
+    /// Run `work` in one write transaction acting for the caller `trusted` describes,
+    /// so a write it reaches deep inside still meets [`storage::admit_protect`].
     fn acting<T>(
         &self,
         trusted: &Trusted,
         work: impl FnOnce(&mut dyn storage::Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
-        self.storage.write(|tx| {
-            if trusted.may_protect {
-                work(tx)
-            } else {
-                work(&mut storage::Unprotecting(tx))
-            }
-        })
+        self.storage
+            .write(|tx| work(&mut storage::Acting { tx, trusted }))
     }
 
     /// [`write_trusted`](Self::write_trusted) a [`Command`], answering with the pull
