@@ -21,7 +21,7 @@ import { Database } from "#/server/database.server";
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
  * rerun confirms it; only then do Cloud's rows go.
  */
-export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization" | "role">, slug: string) {
+export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization" | "role"> & Partial<Pick<Caller, "credential">>, slug: string) {
   const { id, slug: current } = caller.organization;
   if (slug !== current) {
     return refused({

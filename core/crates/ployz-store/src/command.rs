@@ -774,7 +774,11 @@ pub enum Written {
 /// returns what the first run wrote; any of its IDs reused with another body, or
 /// from another Organization, is `conflict`.
 /// `answer`, unless the caller's token may not write the Environment it wrote.
-fn within<A: Clone>(at: &mut Call<'_>, answer: A, written: impl FnOnce(A) -> Written) -> Result<A, RpcError> {
+fn within<A: Clone>(
+    at: &mut Call<'_>,
+    answer: A,
+    written: impl FnOnce(A) -> Written,
+) -> Result<A, RpcError> {
     if at.trusted.environments.is_some() {
         at.trusted.within(&mut *at.tx, &written(answer.clone()))?;
     }

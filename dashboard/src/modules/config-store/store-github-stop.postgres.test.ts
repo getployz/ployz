@@ -1,3 +1,4 @@
+import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { it } from "@effect/vitest";
 import type { ConfigCommand } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
@@ -65,7 +66,7 @@ for (const { stop, failed } of cases) {
       yield* provided(recordStoreDeploymentRun("walk-1", { organizationId: ORGANIZATION, environmentId: "00000000-0000-4000-8000-00000000c003", deploymentId: DEPLOYMENT }));
 
       if (stop === "disconnect") {
-        const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1" }, role: "owner", support: null, via: "cli" };
+        const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1", grant: FULL_GRANT }, role: "owner", support: null, via: "cli" };
         yield* provided(disconnectGithub(caller, "shop", "acme"));
       } else {
         yield* Effect.promise(() => executeProcessGithubInstallationReceived({ event: webhook(stop), step }, run, run));

@@ -9,7 +9,7 @@ use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
-use crate::cloud_account::{self, Credential, ServerClears, TokenKind};
+use crate::cloud_account::{self, Credential, ServerClears, TokenKind, TokenPreset};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 
@@ -28,6 +28,19 @@ pub(super) fn token_new_command(command: Command) -> Command {
                 .default_value("90")
                 .help("Days until the token stops working"),
         )
+        .arg(
+            value("preset", None)
+                .value_parser(["full", "read", "deploy"])
+                .default_value("full")
+                .help("What it may do: full acts as you, read only reads, deploy stages and deploys one Environment"),
+        )
+        .arg(
+            value("environment", None)
+                .value_name("ENVIRONMENT")
+                .required_if_eq("preset", "deploy")
+                .help("The one Environment a deploy token may change, by name"),
+        )
+        .after_help("Examples:\n  ployz token new ci\n  ployz token new ci --preset deploy --environment staging")
 }
 
 pub(super) fn token_list_command(command: Command) -> Command {
@@ -114,13 +127,23 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
     let days = *matches
         .get_one::<u16>("expires-in")
         .expect("expires-in has a default");
+    let preset = match (
+        matches.get_one::<String>("preset").map(String::as_str),
+        matches.get_one::<String>("environment").cloned(),
+    ) {
+        (Some("deploy"), Some(environment)) => TokenPreset::Deploy { environment },
+        (Some("read"), None) => TokenPreset::Read,
+        (Some("full") | None, None) => TokenPreset::Full,
+        _ => return Err(Error::usage("only --preset deploy takes --environment")),
+    };
     let token = in_cloud(root, async |_, credential| {
-        cloud_account::new_token(credential, name, TokenKind::Cli, days).await
+        cloud_account::new_token(credential, name, TokenKind::Cli, &preset, days).await
     })?;
     ui::finish(&serde_json::json!({ "token": token }), || {
         ui::note(format_args!(
-            "Made token {} in Organization {}, expiring {}. Its secret is shown only now; set it as PLOYZ_TOKEN:",
+            "Made token {} ({}) in Organization {}, expiring {}. Its secret is shown only now; set it as PLOYZ_TOKEN:",
             token.name.escape_debug(),
+            token.scope,
             token.organization,
             token.expires_at
         ));
@@ -133,7 +156,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         cloud_account::credentials(credential).await
     })?;
     let mut table = Table::new(
-        ["KIND", "ID", "NAME", "EXPIRES", "STATE"],
+        ["KIND", "ID", "NAME", "SCOPE", "EXPIRES", "STATE"],
         "No tokens or signed-in devices.",
     );
     let current = |current| {
@@ -148,6 +171,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
             Cell::from(token.kind.as_str()),
             Cell::from(&token.id),
             Cell::from(token.name.escape_debug().to_string()),
+            Cell::from(&token.scope),
             Cell::from(token.expires_at.to_string()),
             if token.expired {
                 Cell::status("expired", Tone::Bad)
@@ -161,6 +185,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
             Cell::from("device"),
             Cell::from(&device.id),
             Cell::from(""),
+            Cell::from(""),
             Cell::from(device.expires_at.to_string()),
             current(device.current),
         ]);
@@ -169,6 +194,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
         table.row([
             Cell::from(super::store::word(&revoking.kind)),
             Cell::from(&revoking.id),
+            Cell::from(""),
             Cell::from(""),
             Cell::from(""),
             Cell::status(
