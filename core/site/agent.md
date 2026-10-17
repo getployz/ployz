@@ -64,6 +64,10 @@ built. Ployz removes the sandbox and its projects 24 hours after the call unless
 it. Custom domains, tokens, invites, billing and GitHub wait until then. See
 https://ployz.dev/docs/account/try-without-an-account.
 
+In a sandbox, `ployz mcp login` waits for a claim, because it makes a token. In step 4, skip it
+and give `ployz mcp` the sandbox token instead:
+`claude mcp add -s user -e PLOYZ_TOKEN=ployz_... ployz -- ployz mcp`.
+
 ## 4. Add the Ployz tools
 
 `ployz mcp` serves the Ployz tools over MCP. Register it with the agent you are running in:
