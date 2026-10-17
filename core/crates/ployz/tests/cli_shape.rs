@@ -588,9 +588,13 @@ fn server_clean_signed_in_refuses_another_clusters_servers() {
     }
 }
 
-/// Cloud's waiting-server routes for web-1, web-2 and db-1. Records each route, with
-/// the body of a reject, and answers anything else with 404.
-fn waiting_cloud(routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> String {
+/// Cloud's waiting-server routes for web-1, web-2, db-1 and two hosts named twin.
+/// Answers the list with `waiting`, records each route with the body of a reject, and
+/// answers anything else with 404.
+fn waiting_cloud(
+    routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    waiting: &'static str,
+) -> String {
     use std::io::{BufRead, Read, Write};
     let row = |id: &str, name: &str, status: &str| {
         serde_json::json!({
@@ -623,6 +627,8 @@ fn waiting_cloud(routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Strin
         row("00000000-0000-4000-8000-000000000001", "web-1", "blocked"),
         row("00000000-0000-4000-8000-000000000002", "web-2", "waiting"),
         row("00000000-0000-4000-8000-000000000003", "db-1", "waiting"),
+        row("00000000-0000-4000-8000-000000000004", "twin", "waiting"),
+        row("00000000-0000-4000-8000-000000000005", "twin", "waiting"),
     ]});
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -647,7 +653,7 @@ fn waiting_cloud(routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Strin
             reader.read_exact(&mut sent).unwrap();
             let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
             let (status, body) = match route.as_str() {
-                "GET /api/cli/waiting-servers" => ("200 OK", listed.clone()),
+                "GET /api/cli/waiting-servers" => (waiting, listed.clone()),
                 "POST /api/cli/server-access" => (
                     "200 OK",
                     serde_json::json!({ "connections": [], "unreachable": [] }),
@@ -682,7 +688,7 @@ fn waiting_cloud(routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Strin
 #[test]
 fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let cloud = waiting_cloud(routes.clone());
+    let cloud = waiting_cloud(routes.clone(), "200 OK");
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
     let posted = || -> Vec<String> {
         routes
@@ -703,7 +709,7 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
         .iter()
         .map(|row| row["name"].clone())
         .collect();
-    assert_eq!(names, ["web-1", "web-2", "db-1"], "{json}");
+    assert_eq!(names, ["web-1", "web-2", "db-1", "twin", "twin"], "{json}");
 
     let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
     assert_eq!(code, Some(0), "{json}");
@@ -715,6 +721,16 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
 
     let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
     assert_eq!(code, Some(1), "{json}");
+
+    let (code, json, _) = run_json_with(&["server", "show", "twin", "--json"], &token);
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "ambiguous");
+    assert_eq!(
+        message(&json),
+        "2 waiting servers are named twin. Show one by its id: \
+         00000000-0000-4000-8000-000000000004 (203.0.113.9), \
+         00000000-0000-4000-8000-000000000005 (203.0.113.9)"
+    );
 
     let (code, json, _) = run_json_with(&["server", "reject", "web-*", "--json"], &token);
     assert_eq!(code, Some(2), "{json}");
@@ -1250,4 +1266,17 @@ fn logs_reads_a_window_or_a_deployment_running_or_not() {
         .render_long_help()
         .to_string();
     assert!(help.contains("running or not"), "{help}");
+}
+
+#[test]
+fn server_show_says_when_the_waiting_list_could_not_be_read() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes, "503 Service Unavailable");
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+    let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
+    assert_ne!(code, Some(0), "{json}");
+    assert_eq!(
+        message(&json),
+        "No Server matches nobody, and the servers waiting to join could not be read"
+    );
 }

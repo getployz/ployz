@@ -173,11 +173,13 @@ pub(super) async fn reject(credential: &Credential, ids: &[&str]) -> Result<u64,
         let Reply { rejected } =
             cloud_account::refusable(credential, Method::POST, "reject-servers", Some(&body))
                 .await
-                .map_err(|error| match total {
-                    0 => Error::from(error),
-                    done => Error::from(error).context(format!(
-                        "{done} rejected before Cloud refused the rest; run the same reject again"
-                    )),
+                .map_err(|error| {
+                    match total {
+            0 => Error::from(error),
+            done => Error::from(error).context(format!(
+                "{done} rejected; the outcome of the rest is unknown. Run the same reject again"
+            )),
+        }
                 })?;
         total += rejected;
     }

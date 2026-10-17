@@ -141,9 +141,13 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     let Ok(Some(credential)) = cloud_runs(&runtime, leaf) else {
         return Err(error);
     };
-    let Ok(listed) = runtime.block_on(waiting::fetch(&credential)) else {
-        return Err(error);
-    };
+    let listed = runtime
+        .block_on(waiting::fetch(&credential))
+        .map_err(|fetch| {
+            fetch.context(format!(
+                "No Server matches {selector}, and the servers waiting to join could not be read"
+            ))
+        })?;
     let named: Vec<_> = listed
         .iter()
         .filter(|host| host.row.name == *selector || host.row.id == *selector)
@@ -154,8 +158,13 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
         hosts => Err(Error::detailed(
             RpcErrorCode::Ambiguous,
             format!(
-                "{} waiting servers are named {selector}. Show one by its id.",
-                hosts.len()
+                "{} waiting servers are named {selector}. Show one by its id: {}",
+                hosts.len(),
+                hosts
+                    .iter()
+                    .map(|host| format!("{} ({})", host.row.id, host.row.ip()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             json!({
                 "waiting_servers": hosts
