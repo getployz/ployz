@@ -656,8 +656,9 @@ impl Server {
 
     /// The human who answers an approval `agent` asked for in `acting`, the
     /// Organization the call acts in: this device's sign-in, else `PLOYZ_TOKEN`. The
-    /// sign-in must be in `agent`'s Cloud and in `acting`, since Cloud finds the
-    /// approval only there.
+    /// sign-in must be in `agent`'s Cloud and, by Cloud's account, in `acting`, since
+    /// Cloud finds the approval only there. Making an Organization in the browser moves
+    /// the device there without telling `cloud.json`.
     async fn decider(
         &self,
         agent: &Credential,
@@ -682,7 +683,14 @@ impl Server {
                 device = signed_in.cloud,
             ));
         }
-        if signed_in.organization.id != acting.as_str() {
+        let device = Credential::Device(signed_in);
+        let current = cloud_account::organizations(&device)
+            .await
+            .map_err(|error| Error::from(error).to_string())?
+            .into_iter()
+            .find(|entry| entry.current)
+            .ok_or_else(|| Error::from(LoginError::TokenRefused).to_string())?;
+        if current.id != acting.as_str() {
             let organization = cloud_account::acting_in(agent)
                 .await
                 .map_err(|error| Error::from(error).to_string())?
@@ -692,10 +700,10 @@ impl Server {
                  in {acting}, so the answer was not recorded and nothing was {past}. It stays \
                  pending; run `ployz org use {organization}` and call the tool again, or \
                  approve it in Ployz Cloud.",
-                acting = signed_in.organization.slug,
+                acting = current.slug,
             ));
         }
-        Ok(Credential::Device(signed_in))
+        Ok(device)
     }
 
     /// Which Store a new call reaches. A device can switch Organizations

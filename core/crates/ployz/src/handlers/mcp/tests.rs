@@ -965,7 +965,7 @@ async fn ployz_mcp_sends_the_agent_credential_and_the_human_answers_with_their_o
         fake,
         server,
         deploy,
-    } = approving();
+    } = approving_as(vec![acts_in("org", "acme")], Duration::ZERO);
     let home = signed_in_home(&fake, true);
     let mut client = eliciting(without_token(server, &home)).await;
     client
@@ -988,6 +988,7 @@ async fn ployz_mcp_sends_the_agent_credential_and_the_human_answers_with_their_o
     resent(&seen);
     let (decided, agent): (Vec<_>, Vec<_>) = seen
         .iter()
+        .filter(|seen| seen.path != "/api/cli/organizations")
         .partition(|seen| seen.path.starts_with("/api/cli/approvals/"));
     let [decided] = decided[..] else {
         panic!("expected one decision: {seen:?}");
@@ -1046,7 +1047,7 @@ async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
         fake,
         server,
         deploy,
-    } = approving();
+    } = approving_as(vec![acts_in("org", "acme")], Duration::ZERO);
     let home = signed_in_home(&fake, false);
     let mut client = eliciting(signed_in_beside(server, &home)).await;
     client
@@ -1069,6 +1070,7 @@ async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
     resent(&seen);
     let (decided, agent): (Vec<_>, Vec<_>) = seen
         .iter()
+        .filter(|seen| seen.path != "/api/cli/organizations")
         .partition(|seen| seen.path.starts_with("/api/cli/approvals/"));
     let [decided] = decided[..] else {
         panic!("expected one decision: {seen:?}");
@@ -1083,27 +1085,15 @@ async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn an_approval_in_another_organization_is_not_answered_and_names_the_switch() {
-    let agent_acts_in = Scripted {
-        path: "/api/cli/organizations".to_owned(),
-        body: Value::Null,
-        answer: Answered::Value(json!({ "organizations": [
-            { "id": "org", "slug": "acme", "name": "Acme", "current": true },
-        ] })),
-    };
+    // Cloud moved the device to globex; its cloud.json still says acme.
+    let device_acts_in = acts_in("org_globex", "globex");
+    let agent_acts_in = acts_in("org", "acme");
     let Approving {
         fake,
         server,
         deploy,
-    } = approving_as(vec![agent_acts_in], Duration::ZERO);
+    } = approving_as(vec![device_acts_in, agent_acts_in], Duration::ZERO);
     let home = signed_in_home(&fake, true);
-    let device = json!({
-        "state": "signed_in",
-        "cloud": fake.url,
-        "token": "ployz_device",
-        "account": { "id": "usr_ada", "email": "ada@example.com", "name": "Ada" },
-        "organization": { "id": "org_globex", "slug": "globex" },
-    });
-    std::fs::write(home.path().join("cloud.json"), device.to_string()).unwrap();
     let mut client = eliciting(without_token(server, &home)).await;
     client
         .send(&request(
@@ -1121,10 +1111,16 @@ async fn an_approval_in_another_organization_is_not_answered_and_names_the_switc
     .await;
     assert_eq!(done["result"]["isError"], true, "{done}");
     assert!(
-        done.to_string().contains("ployz org use acme"),
+        done.to_string().contains("this device acts in globex")
+            && done.to_string().contains("ployz org use acme"),
         "names the switch: {done}"
     );
     let seen = fake.requests();
+    assert!(
+        seen.iter()
+            .any(|seen| seen.path == "/api/cli/organizations" && seen.bearer == "ployz_device"),
+        "asks Cloud where the device acts: {seen:?}"
+    );
     assert!(decisions(&seen).is_empty(), "{seen:?}");
     wrote_once(&seen);
 }

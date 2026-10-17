@@ -137,13 +137,16 @@ An agent can't answer an approval: `ployz mcp`, an agent you connected to Ployz 
 Ployz agent can neither approve nor deny one. When the Ployz agent or an agent you connected to
 Ployz Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org approval approve`
 refuses with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog,
-in the sidebar, or with `ployz org approval approve` from any computer where you're signed in to
-`ployz`. If you run the same change yourself with `ployz`, typing the name in your terminal
+in the sidebar, or with `ployz org approval approve`. The dialog and the command answer with this
+computer's `ployz` login, so it must be signed in to the agent's Ployz Cloud and acting in the
+organization that owns the request. Otherwise they refuse: run `ployz org use ORG` to switch,
+then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
 approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
 
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop a program
-that's trying to get around it: anything that holds your `ployz` login or token can approve its
-own `ployz` request, as if you'd typed the name in a terminal.
+that's trying to get around it: anything that holds your own `ployz` login or one of your own
+tokens can approve its own `ployz` request, as if you'd typed the name in a terminal. The agent
+token `ployz mcp login` saves can't approve or deny anything.
 Keep tokens you give an agent short-lived: a token can't make or revoke tokens, so revoking it
 cuts the agent off. Keep
 [backups](../services/databases.md#back-up-a-database) of data you can't lose.

@@ -314,15 +314,18 @@ fn check_acting_in(acting: &str, directory: &str, link: &Link) -> Result<(), Err
         return Ok(());
     }
     let next = if linked.id == LOCAL_ORGANIZATION {
-        "ployz link".to_owned()
+        format!("Link {directory} again.")
     } else {
-        format!("ployz org use {}", linked.slug)
+        format!(
+            "Run `ployz org use {}`, then `ployz mcp login`, or link {directory} again.",
+            linked.slug
+        )
     };
     Err(Error::detailed(
         RpcErrorCode::Conflict,
         format!(
             "{directory} is linked in Organization {}, but `ployz mcp` acts in another \
-             Organization. Run `{next}`, then `ployz mcp login`, or link {directory} again.",
+             Organization. {next}",
             linked.slug
         ),
         json!({ "link": directory, "linked": linked.slug }),

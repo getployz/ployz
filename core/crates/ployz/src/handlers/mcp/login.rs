@@ -55,7 +55,14 @@ pub(super) fn stored(config: &Path) -> Result<Option<Stored>, LoginError> {
     }
 }
 
-fn save(config: &Path, stored: &Stored) -> Result<(), LoginError> {
+/// Whether a saved `mcp.json` survives a crash.
+enum Saved {
+    Durable,
+    /// It holds the new token, but a crash may bring back the one before.
+    Unflushed(io::Error),
+}
+
+fn save(config: &Path, stored: &Stored) -> Result<Saved, LoginError> {
     let path = path(config);
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir).map_err(|source| failed(path.clone(), source))?;
@@ -71,13 +78,12 @@ fn save(config: &Path, stored: &Stored) -> Result<(), LoginError> {
     file.persist(&path)
         .map_err(|error| failed(path.clone(), error.error))?;
     // mcp.json now holds the new token, so a failure here must not revoke it.
-    if let Err(error) = std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
-        ui::warn(format!(
-            "Saved the new token to {}, but could not flush its directory ({error}). It may not survive a crash.",
-            path.display()
-        ));
-    }
-    Ok(())
+    Ok(
+        match std::fs::File::open(dir).and_then(|dir| dir.sync_all()) {
+            Ok(()) => Saved::Durable,
+            Err(error) => Saved::Unflushed(error),
+        },
+    )
 }
 
 pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
@@ -90,11 +96,11 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
         }
         Err(error) => return Err(error.into()),
     };
-    let (made, replaced) = in_cloud(root, async |_, credential| {
+    let (made, revoked, left) = in_cloud(root, async |_, credential| {
         let made =
             cloud_account::new_token(credential, "ployz mcp", TokenKind::Agent, LIFETIME_DAYS)
                 .await?;
-        let kept = if made.kind == TokenKind::Agent {
+        let saved = if made.kind == TokenKind::Agent {
             save(
                 &config,
                 &Stored {
@@ -110,27 +116,42 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
                 made.kind.as_str()
             )))
         };
-        if let Err(error) = kept {
-            if let Err(revoking) = cloud_account::remove_token(credential, &made.id).await {
-                ui::warn(format!(
-                    "Could not revoke the token {} just made: {revoking}. Run `ployz token rm {}`.",
-                    made.id, made.id
-                ));
+        let saved = match saved {
+            Ok(saved) => saved,
+            Err(error) => {
+                if let Err(revoking) = cloud_account::remove_token(credential, &made.id).await {
+                    ui::warn(format!(
+                        "Could not revoke the token {} just made: {revoking}. Run `ployz token rm {}`.",
+                        made.id, made.id
+                    ));
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
-        let replaced = match previous {
-            Some(previous) if previous.cloud == credential.cloud() => {
-                let revoked = revoke(credential, &previous.id).await;
-                Some((previous.id, revoked))
-            }
-            _ => None,
         };
-        Ok((made, replaced))
+        let (revoked, left) = match previous
+            .map(|previous| fate(previous, credential.cloud(), &made.organization, &saved))
+        {
+            None => (None, None),
+            Some(Err(left)) => (None, Some(left)),
+            Some(Ok(id)) => match revoke(credential, &id).await {
+                Ok(true) => (Some(id), None),
+                Ok(false) => (None, None),
+                Err(error) => {
+                    let left = Left {
+                        why: format!("revoking it failed ({error})"),
+                        fix: format!("run `ployz token rm {id}`"),
+                        id,
+                    };
+                    (None, Some(left))
+                }
+            },
+        };
+        Ok((made, revoked, left))
     })?;
-    if let Some((id, Err(error))) = &replaced {
+    if let Some(left) = &left {
         ui::warn(format!(
-            "Could not revoke the agent token {id} this replaced: {error}. Run `ployz token rm {id}`."
+            "The agent token {} this replaced is still live: {}. To revoke it, {}.",
+            left.id, left.why, left.fix
         ));
     }
     let token = serde_json::json!({
@@ -145,10 +166,48 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
             "`ployz mcp` now acts with its own agent token {} in Organization {}, expiring {}.",
             made.id, made.organization, made.expires_at
         ));
-        if let Some((id, Ok(true))) = &replaced {
+        if let Some(id) = &revoked {
             ui::note(format_args!("Revoked the agent token {id} it replaced."));
         }
     })
+}
+
+/// An agent token this login leaves live, why, and how to revoke it.
+#[derive(Debug)]
+struct Left {
+    id: String,
+    why: String,
+    fix: String,
+}
+
+/// The agent token `mcp.json` held before is revoked with this login's sign-in only in the
+/// Cloud and Organization that sign-in acts in, and only once the new token is durable.
+fn fate(previous: Stored, cloud: &str, organization: &str, saved: &Saved) -> Result<String, Left> {
+    let id = previous.id;
+    let (why, fix) = if previous.cloud != cloud {
+        (
+            format!("it is in Ployz Cloud at {}", previous.cloud),
+            format!("sign in there and run `ployz token rm {id}`"),
+        )
+    } else if previous.organization != organization {
+        (
+            format!("it is in Organization {}", previous.organization),
+            format!(
+                "run `ployz org use {}`, then `ployz token rm {id}`",
+                previous.organization
+            ),
+        )
+    } else if let Saved::Unflushed(error) = saved {
+        (
+            format!(
+                "a crash may bring it back into mcp.json, which could not be flushed ({error})"
+            ),
+            format!("run `ployz token rm {id}`"),
+        )
+    } else {
+        return Ok(id);
+    };
+    Err(Left { id, why, fix })
 }
 
 /// Revoke the token `ployz mcp` held before, only while this Organization lists it as an
@@ -164,4 +223,56 @@ async fn revoke(credential: &Credential, id: &str) -> Result<bool, LoginError> {
     }
     cloud_account::remove_token(credential, id).await?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held(cloud: &str, organization: &str) -> Stored {
+        Stored {
+            cloud: cloud.to_owned(),
+            id: "tok_old".to_owned(),
+            organization: organization.to_owned(),
+            token: Secret::new("ployz_old".to_owned()),
+        }
+    }
+
+    const CLOUD: &str = "https://cloud.example";
+
+    #[test]
+    fn the_token_before_is_revoked_in_its_own_organization_once_the_new_one_is_durable() {
+        let fate = fate(held(CLOUD, "ada"), CLOUD, "ada", &Saved::Durable);
+        assert_eq!(fate.unwrap(), "tok_old");
+    }
+
+    #[test]
+    fn a_token_before_in_another_organization_is_left_with_the_lines_that_revoke_it() {
+        let left = fate(held(CLOUD, "ada"), CLOUD, "adaside", &Saved::Durable).unwrap_err();
+        assert_eq!(left.id, "tok_old");
+        assert_eq!(
+            left.fix,
+            "run `ployz org use ada`, then `ployz token rm tok_old`"
+        );
+    }
+
+    #[test]
+    fn a_token_before_in_another_cloud_is_left_and_named() {
+        let left = fate(
+            held("https://other.example", "ada"),
+            CLOUD,
+            "ada",
+            &Saved::Durable,
+        )
+        .unwrap_err();
+        assert!(left.why.contains("https://other.example"), "{left:?}");
+        assert_eq!(left.fix, "sign in there and run `ployz token rm tok_old`");
+    }
+
+    #[test]
+    fn a_new_token_that_may_not_survive_a_crash_keeps_the_one_before_live() {
+        let unflushed = Saved::Unflushed(io::Error::other("disk"));
+        let left = fate(held(CLOUD, "ada"), CLOUD, "ada", &unflushed).unwrap_err();
+        assert_eq!(left.fix, "run `ployz token rm tok_old`");
+    }
 }
