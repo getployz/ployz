@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { PROBE_WINDOW_MS } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
-import { fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
 export function useWaitingServers(organizationSlug: string) {
   return useQuery(waitingServersQueryOptions(organizationSlug));
@@ -59,6 +59,10 @@ export function useSettledProbe(organizationSlug: string, ids: readonly string[]
 
 export function useEnrollmentStatus(organizationSlug: string) {
   return useQuery(serverEnrollmentsQueryOptions(organizationSlug));
+}
+
+export function useWaitingServerDetail(organizationSlug: string, id: string | null) {
+  return useQuery(waitingServerDetailQueryOptions(organizationSlug, id));
 }
 
 export function useCancelEnrollment(organizationSlug: string) {

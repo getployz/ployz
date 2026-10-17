@@ -194,7 +194,10 @@ const shortenWindow = (ms: number) =>
 const handedLongAgo = () =>
   harness.pool.query("update waiting_server set probe = jsonb_set(probe, '{handedAt}', to_jsonb(now() - interval '1 hour'))");
 
-const shownProbe = async () => (await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" })))[0]?.probe;
+const shownProbe = async () => {
+  const [row] = await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }));
+  return row === undefined ? undefined : (await harness.runEffect(showWaitingServer(ada, { organizationSlug: "ada", id: row.id }))).probe;
+};
 
 const waitingIds = async () => (await rows()).map((row) => row.id);
 
@@ -408,7 +411,8 @@ it("reads port busy for a host that couldn't listen, even when another host at i
   await harness.pool.query(`update waiting_server set probe = jsonb_set(probe, '{tcp}', '{"80":{"seen":"answered"},"443":{"seen":"other_listener"}}')`);
   await send(token, b, { ip, hostname: "b", probe: { handout, heardFrom: [], bindFailed: ["tcp:80"] } });
   const shown = await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }));
-  expect(shown.find((server) => server.report.hostname === "b")?.probe).toEqual({
+  const bId = shown.find((server) => server.report.hostname === "b")?.id ?? "";
+  expect((await run(showWaitingServer(ada, { organizationSlug: "ada", id: bId }))).probe).toEqual({
     "80": { state: "unknown", reason: "port_busy" },
     "443": { state: "unknown", reason: "other_listener" },
   });
@@ -803,7 +807,12 @@ it("lists and shows waiting hosts only to their own Organization", async () => {
   const [listed] = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
   const id = listed?.id ?? "";
   expect(listed).toMatchObject({ fleetToken: "rack-1", status: "waiting", report: { hostname: "<script>alert(1)</script>" } });
-  expect(await run(showWaitingServer(ada, { organizationSlug: "ada", id }))).toEqual(listed);
+  const detail = await run(showWaitingServer(ada, { organizationSlug: "ada", id }));
+  expect(detail).toMatchObject({ id, report: { hostname: "<script>alert(1)</script>" }, probe: null });
+  expect(detail.report).toHaveProperty("kernel");
+  expect(listed).not.toHaveProperty("probe");
+  expect(listed?.report).not.toHaveProperty("kernel");
+  expect(listed?.report).not.toHaveProperty("warnings");
   expect(await failure(showWaitingServer(bob, { organizationSlug: "bob", id })))
     .toMatchObject({ _tag: "NotFound", message: "No such waiting server." });
   expect(await run(rejectWaitingServers(bob, { organizationSlug: "bob", ids: [id] }))).toEqual({ rejected: 0 });

@@ -9,7 +9,7 @@ import { readiness } from "./waiting-row";
 
 const BOX_RECT = { width: 0, height: 520 };
 const GRID = "grid grid-cols-[12px_minmax(120px,1fr)_130px_120px_180px_64px] items-center gap-3 px-3";
-const STAGES = {
+export const STAGES = {
   installing: "Installing", storage: "Setting up ZFS", enrolling: "Enrolling", queued: "In line", joining: "Joining", publishing: "Going live",
 } satisfies Record<EnrollmentStage, string>;
 
@@ -20,19 +20,6 @@ export function enrollmentStage(row: ServerEnrollmentView) {
   if (row.state === "instructed") return "Starting";
   const stage = ENROLLMENT_STAGES.find((stage) => stage === row.stage);
   return stage === undefined ? "Starting" : STAGES[stage];
-}
-
-export function waitingAfterReturns(servers: readonly WaitingServerView[], attempts: readonly ServerEnrollmentView[]) {
-  const latest = new Map<string, ServerEnrollmentView>();
-  for (const row of attempts) latest.set(row.waitingServerId, row);
-  const returned = new Map<string, ServerEnrollmentView>();
-  for (const [id, row] of latest) if (row.state === "failed" || row.state === "cancelled") returned.set(id, row);
-  const rows = [...servers].sort((a, b) => {
-    const aEnd = returned.get(a.id)?.endedAt;
-    const bEnd = returned.get(b.id)?.endedAt;
-    return (aEnd ?? a.firstSeenAt).localeCompare(bEnd ?? b.firstSeenAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id);
-  });
-  return { rows, returned };
 }
 
 export function EnrollmentCounters({ waiting, attempts, joining }: { joining: number; waiting: readonly WaitingServerView[]; attempts: readonly ServerEnrollmentView[] }) {
@@ -56,7 +43,7 @@ function Counters({ label, values }: { label: string; values: readonly (readonly
   </dl></div>;
 }
 
-export const EnrollingList = memo(function EnrollingList({ attempts, onCancel, joining }: { joining: number; attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
+export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }: { attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
   const rows = attempts.filter((row) => row.endedAt === null || row.state === "joined");
   const scroller = useRef<HTMLDivElement>(null);
   const height = Math.min(rows.length, 10) * 52;
@@ -74,19 +61,18 @@ export const EnrollingList = memo(function EnrollingList({ attempts, onCancel, j
   const padBottom = virtual.getTotalSize() - (items.at(-1)?.end ?? 0);
   if (rows.length === 0) return null;
   const active = rows.filter((row) => row.endedAt === null);
-  const starting = active.filter((row) => row.state === "awaiting_founder" || row.state === "instructed").length;
+  const stageCounts = new Map<string, number>();
+  for (const row of active) {
+    const stage = ENROLLMENT_STAGES.find((stage) => stage === row.stage);
+    const label = row.state !== "running" || stage === undefined ? "Starting"
+      : stage === "joining" || stage === "publishing" ? "Joining" : STAGES[stage];
+    stageCounts.set(label, (stageCounts.get(label) ?? 0) + 1);
+  }
   return <section aria-labelledby="enrolling-heading" className="flex flex-col gap-2.5">
     <div className="flex items-center gap-2.5"><h2 id="enrolling-heading" className="text-sm font-semibold">Enrolling</h2>
       <span className="text-xs text-muted-foreground tabular-nums">{rows.length - active.length} of {rows.length} joined</span>
     </div>
-    <Counters label="Enrollment stages" values={[
-      ["Starting", String(starting)],
-      ["Installing", String(active.filter((row) => row.state === "running" && row.stage === "installing").length)],
-      ["Setting up ZFS", String(active.filter((row) => row.state === "running" && row.stage === "storage").length)],
-      ["Enrolling", String(active.filter((row) => row.state === "running" && row.stage === "enrolling").length)],
-      ["In line", String(active.filter((row) => row.state === "running" && row.stage === "queued").length)],
-      ["Joining", `${joining} / 8`],
-    ]} />
+    <Counters label="Enrollment stages" values={["Starting", "Installing", "Setting up ZFS", "Enrolling", "In line", "Joining"].map((name) => [name, String(stageCounts.get(name) ?? 0)] as const)} />
     <div className="overflow-x-auto rounded-lg border">
       <div role="table" aria-label="Enrolling servers" aria-rowcount={rows.length + 1} className="min-w-[780px] text-sm">
         <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
@@ -108,7 +94,7 @@ export const EnrollingList = memo(function EnrollingList({ attempts, onCancel, j
                 {ENROLLMENT_STAGES.map((value, index) => <span key={value} data-segment={value} className={cn("h-1 rounded-full", joined || (row.state === "running" && !row.queued && index <= step) ? "bg-success" : "bg-muted")} />)}
               </div>
               <span role="cell" className="truncate text-xs text-muted-foreground" title={row.failure?.message ?? undefined}>
-                {row.ahead !== null ? `${row.ahead} servers ahead` : row.stage === "queued" ? "Position unknown" : row.queued ? "Waiting for preparation" : row.storage.kind === "zfs" ? row.storage.device ?? "ZFS on main disk" : "Docker only"}
+                {row.ahead !== null ? `${row.ahead} ${row.ahead === 1 ? "server" : "servers"} ahead` : row.stage === "queued" ? "" : row.queued ? "Preparing" : row.storage.kind === "zfs" ? row.storage.device ?? "ZFS on main disk" : "Docker only"}
               </span>
               <span role="cell">{joined ? null : <Button size="sm" variant="ghost" aria-label={`Cancel ${row.name}`} onClick={() => onCancel(row.id)}>Cancel</Button>}</span>
             </div>;

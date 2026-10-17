@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, gte, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
@@ -325,6 +325,8 @@ export type ServerEnrollmentView = {
   readonly endedAt: string | null;
 };
 
+export const RECENT_ENROLLMENT_MS = 60 * 60 * 1000;
+
 export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id?: string },
@@ -349,7 +351,9 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
-      input.id === undefined ? isNull(waitingServer.rejectedAt) : eq(serverEnrollment.id, input.id),
+      input.id === undefined ? and(isNull(waitingServer.rejectedAt), or(
+        isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS)),
+      )) : eq(serverEnrollment.id, input.id),
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
   const { ahead, joining } = yield* readJoinStatus(organization.id);

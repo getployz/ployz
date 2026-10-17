@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CHECKIN_WAIT_SECONDS, type StoredReport } from "#/modules/machines/waiting/checkin-wire";
@@ -18,7 +18,7 @@ export const stillWaiting = sql`not exists (select 1 from ${serverEnrollment} wh
 
 export type WaitingServerStatus = "offline" | "blocked" | "preparing" | "waiting";
 
-export type WaitingServerView = {
+export type WaitingServerDetail = {
   readonly id: string;
   readonly report: StoredReport;
   readonly observedIp: string;
@@ -27,6 +27,26 @@ export type WaitingServerView = {
   readonly firstSeenAt: string;
   readonly lastCheckInAt: string;
   readonly probe: PortStates | null;
+};
+
+export type WaitingReturn = {
+  readonly state: "failed" | "cancelled";
+  readonly stage: string | null;
+  readonly message: string | null;
+};
+
+type ListReport = Pick<StoredReport, "hostname" | "os" | "cpuCount" | "memoryTotalBytes" | "blockers"> & {
+  readonly provider?: StoredReport["provider"];
+  readonly prep?: StoredReport["prep"];
+  readonly disks: ReadonlyArray<Pick<StoredReport["disks"][number], "role" | "sizeBytes">>;
+  readonly zfs: { readonly kind: "eligible"; readonly buildMinutes?: number | undefined }
+    | Extract<StoredReport["zfs"], { readonly kind: "ineligible" }>;
+};
+
+export type WaitingServerView = Omit<WaitingServerDetail, "report" | "probe"> & {
+  readonly report: ListReport;
+  readonly arrivalAt: string;
+  readonly returned: WaitingReturn | null;
 };
 
 export function waitingServerStatus(report: StoredReport, lastCheckInAt: Date, now: Date): WaitingServerStatus {
@@ -38,6 +58,10 @@ export function waitingServerStatus(report: StoredReport, lastCheckInAt: Date, n
 
 const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string, id: string | null) {
   const { drizzle } = yield* Database;
+  const latest = drizzle.select({ state: serverEnrollment.state, stage: serverEnrollment.stage, failure: serverEnrollment.failure, endedAt: serverEnrollment.endedAt })
+    .from(serverEnrollment).where(eq(serverEnrollment.waitingServerId, waitingServer.id))
+    .orderBy(desc(serverEnrollment.requestedAt), desc(serverEnrollment.id)).limit(1).as("latest_return");
+  const arrival = sql<Date>`coalesce(${latest.endedAt}, ${waitingServer.firstSeenAt})`;
   const rows = yield* drizzle
     .select({
       id: waitingServer.id,
@@ -46,20 +70,27 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
       fleetToken: fleetToken.name,
       firstSeenAt: waitingServer.firstSeenAt,
       lastCheckInAt: waitingServer.lastCheckInAt,
-      probe: waitingServer.probe,
+      probe: id === null ? sql<null>`null` : waitingServer.probe,
+      arrivalAt: arrival,
+      returnState: latest.state,
+      returnStage: latest.stage,
+      returnFailure: latest.failure,
     })
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))
+    .leftJoinLateral(latest, sql`true`)
     .where(and(
       eq(waitingServer.organizationId, organizationId),
       isNull(waitingServer.rejectedAt),
       stillWaiting,
       id === null ? undefined : eq(waitingServer.id, id),
     ))
-    .orderBy(asc(waitingServer.firstSeenAt), asc(waitingServer.id));
+    .orderBy(asc(arrival), asc(waitingServer.firstSeenAt), asc(waitingServer.id));
   const now = new Date();
-  return rows.map((row): WaitingServerView => ({
+  return rows.map(({ arrivalAt, returnState, returnStage, returnFailure, ...row }) => ({
     ...row,
+    arrivalAt: new Date(arrivalAt).toISOString(),
+    returned: returnState === "failed" || returnState === "cancelled" ? { state: returnState, stage: returnFailure?.stage ?? returnStage, message: returnFailure?.message ?? null } satisfies WaitingReturn : null,
     status: waitingServerStatus(row.report, row.lastCheckInAt, now),
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastCheckInAt: row.lastCheckInAt.toISOString(),
@@ -72,7 +103,20 @@ export const listWaitingServers = Effect.fn("WaitingServer.list")(function* (
   input: { readonly organizationSlug: string },
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
-  return yield* listed(organization.id, null);
+  const rows = yield* listed(organization.id, null);
+  return rows.map(({ probe: _probe, report, ...row }): WaitingServerView => ({
+    ...row,
+    report: {
+      hostname: report.hostname, os: report.os, provider: report.provider,
+      cpuCount: report.cpuCount, memoryTotalBytes: report.memoryTotalBytes,
+      prep: report.prep, blockers: report.blockers.slice(0, 1),
+      disks: report.disks.map(({ role, sizeBytes }) => ({ role, sizeBytes })),
+      zfs: report.zfs.kind === "ineligible" ? report.zfs : {
+        kind: "eligible",
+        buildMinutes: report.zfs.buildMinutes,
+      },
+    },
+  }));
 });
 
 export const showWaitingServer = Effect.fn("WaitingServer.show")(function* (

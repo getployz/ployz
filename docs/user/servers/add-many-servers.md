@@ -28,13 +28,19 @@ check-in refreshes the row. Offline hosts have stopped checking in.
    You can select hosts while they prepare. Blocked and Offline hosts cannot be selected.
    With just one waiting host in a new organization, the Enroll sheet opens automatically.
 2. For a new cluster, choose the **First server**. Everything else joins once it is up.
-3. Choose **Volumes**. ZFS gives volumes size limits. You can use a spare disk and fall back
+3. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
    to Docker where ZFS cannot run. **Docker only** has no managed volume size limits.
 4. Keep **Hostnames**, or choose **Pattern** under **Names** and enter `web-{n}` to get
    `web-1`, `web-2`, and so on. Choose whether the servers run **Services**, **Web traffic**,
    and **Builds**.
 5. Review the names, storage choices and any **Skip** reasons. For a selection across
    providers or networks, check that every source belongs to you. Click **Enroll N**.
+
+## Use spare disk
+
+The Enroll sheet currently uses ZFS on the main disk. Hosts that check in do not yet
+advertise support for creating a pool on a named spare disk, so the sheet does not offer
+that choice. An empty spare disk in the report alone does not prove that support.
 
 ## Follow progress
 
@@ -44,12 +50,13 @@ means the first server has not finished. **In line** means it is waiting for a j
 when Cloud knows the position, the detail shows how many servers are ahead.
 
 The first server joins, then the others join up to eight at a time. **Joining N / 8** includes
-servers going live. Every row draws six progress segments, including Docker-only servers.
-**Joined** rows stay in the list. The Servers below it show what Cloud observes from your
+servers going live. The stage counters count attempts, including **Going live** under **Joining**;
+the **Joining N / 8** total counts Cloud join slots. Every row draws six progress segments, including Docker-only servers.
+**Joined** rows stay in the list for one hour. Older attempts leave the polling view. The Servers below it show what Cloud observes from your
 running cluster. A new server takes no apps until you deploy.
 
 **Cancel** on a row ends that attempt and revokes its enrollment token. A failed or cancelled
-host returns to the bottom of Waiting. Failed rows show the stage and reason. Fix the cause,
+host returns to the bottom of Waiting. The live host status stays primary; its return stage and reason appear below it. Fix the cause,
 then select and enroll the host again. Reloading restores the list and its order.
 
 **Reject** turns away an unrecognized host. The same installation cannot come back with the
