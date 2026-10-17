@@ -132,11 +132,6 @@ impl Asked {
         }
     }
 
-    /// The slug of the Organization the approval lives in, when Cloud names it.
-    pub(crate) fn organization(&self) -> Option<&str> {
-        self.organization.as_deref()
-    }
-
     /// The name a person types to approve: the Environment's, or the operation's.
     pub(crate) fn name(&self) -> &str {
         match &self.subject {

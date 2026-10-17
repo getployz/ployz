@@ -716,15 +716,17 @@ struct Approving {
 }
 
 fn approving_with(slow: Duration) -> Approving {
-    approving_as(deploy_asks(), slow)
+    approving_as(Vec::new(), slow)
 }
 
-fn approving_as(asks: Value, slow: Duration) -> Approving {
+/// [`approving_with`], with Cloud also answering `also`.
+fn approving_as(also: Vec<Scripted>, slow: Duration) -> Approving {
     let deploy = transcript("deploy", in_org());
     // A second call on the same server reads again before it writes.
     let mut twice = script(&deploy);
     twice.extend(script(&deploy));
-    let fake = fake_cloud(twice, Some(asks), slow);
+    twice.extend(also);
+    let fake = fake_cloud(twice, Some(deploy_asks()), slow);
     let server = on_cloud(&fake, deploy.place.clone());
     Approving {
         fake,
@@ -994,14 +996,27 @@ async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn an_approval_in_another_organization_is_not_answered_and_names_the_switch() {
-    let mut asks = deploy_asks();
-    asks["error"]["details"]["organization"] = json!("globex");
+    let agent_acts_in = Scripted {
+        path: "/api/cli/organizations".to_owned(),
+        body: Value::Null,
+        answer: Answered::Value(json!({ "organizations": [
+            { "id": "org", "slug": "acme", "name": "Acme", "current": true },
+        ] })),
+    };
     let Approving {
         fake,
         server,
         deploy,
-    } = approving_as(asks, Duration::ZERO);
+    } = approving_as(vec![agent_acts_in], Duration::ZERO);
     let home = signed_in_home(&fake, true);
+    let device = json!({
+        "state": "signed_in",
+        "cloud": fake.url,
+        "token": "ployz_device",
+        "account": { "id": "usr_ada", "email": "ada@example.com", "name": "Ada" },
+        "organization": { "id": "org_globex", "slug": "globex" },
+    });
+    std::fs::write(home.path().join("cloud.json"), device.to_string()).unwrap();
     let mut client = eliciting(without_token(server, &home)).await;
     client
         .send(&request(
@@ -1019,7 +1034,7 @@ async fn an_approval_in_another_organization_is_not_answered_and_names_the_switc
     .await;
     assert_eq!(done["result"]["isError"], true, "{done}");
     assert!(
-        done.to_string().contains("ployz org use globex"),
+        done.to_string().contains("ployz org use acme"),
         "names the switch: {done}"
     );
     let seen = fake.requests();

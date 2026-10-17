@@ -64,6 +64,25 @@ fn publishing_setup(config: &Path, cloud: Option<String>, token: Option<&str>) -
     }
 }
 
+/// Each call reads the link, like each CLI command, so `ployz link` takes effect on the
+/// next call. A Cloud link must be in the Organization the call's credential acts in.
+fn located(config: PathBuf) -> Locate {
+    Box::new(move |store| {
+        let scope = match &store {
+            StoreAt::Local => super::link::scope_from_env(&config)?,
+            StoreAt::Cloud { organization } => {
+                super::link::scope_from_env_in(&config, organization.as_str())?
+            }
+        };
+        let at = scope.at();
+        Ok(Place {
+            project: at.project,
+            environment: at.environment,
+            store,
+        })
+    })
+}
+
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
     let local = if store::local_mode() {
@@ -80,17 +99,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     // Only Cloud runs a published command, so a local Store lists none.
     let setup = matches!(store, Store::Cloud)
         .then(|| publishing_setup(&config, cloud.clone(), token.as_deref()));
-    let linked = config.clone();
-    // Like each CLI command, each call reads the link, so `ployz link` or
-    // `ployz org use` takes effect on the next call.
-    let place: Locate = Box::new(move |store| {
-        let at = super::link::scope_from_env(&linked)?.at();
-        Ok(Place {
-            project: at.project,
-            environment: at.environment,
-            store,
-        })
-    });
+    let place = located(config.clone());
     let server = Server::new(
         Account {
             config,
@@ -601,12 +610,14 @@ impl Server {
         .map_err(|error| Error::from(error).to_string())
     }
 
-    /// The human who answers an approval `agent` asked for: this device's sign-in, else
-    /// `PLOYZ_TOKEN`. The sign-in must be in `agent`'s Cloud and in the Organization the
-    /// approval lives in, since Cloud finds the approval only there.
+    /// The human who answers an approval `agent` asked for in `acting`, the
+    /// Organization the call acts in: this device's sign-in, else `PLOYZ_TOKEN`. The
+    /// sign-in must be in `agent`'s Cloud and in `acting`, since Cloud finds the
+    /// approval only there.
     async fn decider(
         &self,
         agent: &Credential,
+        acting: &OrganizationId,
         verb: Verb,
         asked: &Asked,
     ) -> Result<Credential, String> {
@@ -627,9 +638,11 @@ impl Server {
                 device = signed_in.cloud,
             ));
         }
-        if let Some(organization) = asked.organization()
-            && organization != signed_in.organization.slug
-        {
+        if signed_in.organization.id != acting.as_str() {
+            let organization = cloud_account::acting_in(agent)
+                .await
+                .map_err(|error| Error::from(error).to_string())?
+                .slug;
             return Err(format!(
                 "The approval of {what} is in Organization {organization}, but this device acts \
                  in {acting}, so the answer was not recorded and nothing was {past}. It stays \
@@ -929,11 +942,13 @@ impl Server {
                 }
                 Step::Write { write } => {
                     if let Some((asked, answer)) = answered.take() {
-                        let Backend::Cloud(agent) = call.backend else {
+                        let (Backend::Cloud(agent), Some(StoreAt::Cloud { organization })) =
+                            (call.backend, &call.store)
+                        else {
                             return Ok(refused(not_here().message).into());
                         };
                         let verb = verb(call.tool, call.input, &asked);
-                        let person = match self.decider(agent, verb, &asked).await {
+                        let person = match self.decider(agent, organization, verb, &asked).await {
                             Ok(person) => person,
                             Err(text) => return Ok(refused(text).into()),
                         };
