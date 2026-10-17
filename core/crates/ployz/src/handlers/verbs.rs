@@ -309,11 +309,13 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
     Never,
     env::branch_command,
     env::branch::branch,
-);
+)
+.needs(Permission::EnvironmentCreate);
 pub(crate) const ENV_COPY: Verb =
     Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
 pub(crate) const ENV_DEFAULT: Verb =
-    Verb::cloud("env default", Never, env::default_command, env::default);
+    Verb::cloud("env default", Never, env::default_command, env::default)
+        .needs(Permission::ProjectEdit);
 pub(crate) const ENV_KEEP: Verb =
     Verb::cloud("env keep", Never, env::keep_command, env::branch::keep);
 pub(crate) const ENV_LS: Verb =
@@ -331,7 +333,8 @@ pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     Never,
     env::on_merge_command,
     env::pr::on_merge,
-);
+)
+.needs(Permission::ProjectEdit);
 pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
     .docs("environments/preview-environments.md");
 pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
@@ -345,7 +348,8 @@ pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
 pub(crate) const ENV_RM: Verb = Verb::cloud("env rm", Always, env::rm_command, env::rm)
     .docs("cli/overview.md")
     .needs(Permission::EnvironmentDelete);
-pub(crate) const ENV_SETUP: Verb = Verb::cloud("env setup", Never, env::setup_command, env::setup);
+pub(crate) const ENV_SETUP: Verb =
+    Verb::cloud("env setup", Never, env::setup_command, env::setup).needs(Permission::ProjectEdit);
 pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     "env shutdown",
     Always,
@@ -418,7 +422,8 @@ pub(crate) const ORG_BUILD_ORDER: Verb = Verb::cloud(
     Depends,
     account::org_build_order_command,
     account::org_build_order,
-);
+)
+.needs(Permission::OrgSettings);
 pub(crate) const ORG_LEAVE: Verb = Verb::cloud(
     "org leave",
     Always,
@@ -452,7 +457,8 @@ pub(crate) const PROJECT_RENAME: Verb = Verb::cloud(
     Never,
     project::rename_command,
     project::rename,
-);
+)
+.needs(Permission::ProjectEdit);
 pub(crate) const PROJECT_RM: Verb =
     Verb::cloud("project rm", Always, project::rm_command, project::rm)
         .docs("cli/overview.md")
@@ -1084,6 +1090,13 @@ mod tests {
             .unwrap();
         let help = rm.get_after_help().unwrap().to_string();
         assert!(help.contains("Needs environment:delete"), "{help}");
+        let rename = root
+            .find_subcommand("project")
+            .unwrap()
+            .find_subcommand("rename")
+            .unwrap();
+        let help = rename.get_after_help().unwrap().to_string();
+        assert!(help.contains("Needs project:edit"), "{help}");
     }
 
     fn claimed() -> impl Iterator<Item = (String, ToolId)> {

@@ -6,9 +6,9 @@ use std::collections::BTreeSet;
 
 use ployz_core::{RpcError, ServiceName};
 use ployz_store::{
-    Actor, Change, ConfigStore, CreateProject, CreateService, DeploymentId, Edit, EnvironmentId,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, OrganizationId, Permission, ProjectId,
-    ProjectName, Remove, ServiceLineageId, SettingPath, Start, Trusted,
+    Actor, CancelRemoval, Change, ConfigStore, CreateProject, CreateService, DeploymentId, Edit,
+    EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, OrganizationId, Permission,
+    ProjectId, ProjectName, Remove, ServiceLineageId, SetBuildOrder, SettingPath, Start, Trusted,
 };
 use serde_json::json;
 
@@ -127,6 +127,40 @@ fn a_deploy_without_changes_deploy_is_refused_before_it_looks_anything_up() {
         .write_trusted(&who, &start, &holding(&[Permission::ChangesDeploy]))
         .unwrap_err();
     assert_eq!(missing.code.as_str(), "not_found", "{missing:?}");
+}
+
+#[test]
+fn the_build_order_and_a_removal_cancel_name_their_own_permissions() {
+    let (store, who) = shop();
+    let everything_but = |missing: Permission| {
+        holding(
+            &Permission::ALL
+                .iter()
+                .copied()
+                .filter(|p| *p != missing)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let refused = store
+        .write_trusted(
+            &who,
+            &SetBuildOrder { build_order: None },
+            &everything_but(Permission::OrgSettings),
+        )
+        .unwrap_err();
+    needs(&refused, "org:settings");
+    let cancel = CancelRemoval {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: Some(EnvironmentName::parse("production").unwrap()),
+    };
+    let refused = store
+        .write_trusted(
+            &who,
+            &cancel,
+            &everything_but(Permission::EnvironmentDelete),
+        )
+        .unwrap_err();
+    needs(&refused, "environment:delete");
 }
 
 #[test]
