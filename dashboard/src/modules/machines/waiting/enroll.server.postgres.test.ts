@@ -19,6 +19,7 @@ import {
 } from "#/modules/machines/waiting/enroll.server";
 import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
@@ -616,6 +617,49 @@ it("locks waiting servers in id order when rejecting, so a concurrent enroll doe
     gate.release();
     await harness.pool.query("drop trigger pause_reject on waiting_server; drop function pause_reject()");
   }
+}, 15_000);
+
+const lockWaits = async (count: number) => {
+  for (let i = 0; i < 300; i++) {
+    const { rows } = await harness.pool.query<{ n: number }>(
+      "select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
+    );
+    if ((rows[0]?.n ?? 0) >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`fewer than ${count} waited on a lock`);
+};
+
+it("ends a rejected host's open attempt while a probe selection waits on the same rows, without a deadlock", async () => {
+  const [a, b] = await waiting("heap-first-big-id", "heap-second-small-id");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  await harness.pool.query("update waiting_server set id = $1 where id = $2", [big, a.id]);
+  await harness.pool.query("update waiting_server set id = $1 where id = $2", [small, b.id]);
+  a.id = big;
+  b.id = small;
+  await run(enroll([b]));
+  const blocker = await harness.pool.connect();
+  let selecting: Promise<unknown> | undefined;
+  let rejecting: Promise<unknown> | undefined;
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server where id = $1 for update", [small]);
+    selecting = failure(openProbeSelection(ada, { organizationSlug: "ada", ids: [big, small] }));
+    await lockWaits(1);
+    rejecting = failure(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [big, small] }));
+    await lockWaits(2);
+    await blocker.query("commit");
+    expect(await Promise.all([selecting, rejecting])).toEqual([null, null]);
+  } finally {
+    await blocker.query("rollback");
+    blocker.release();
+    await selecting;
+    await rejecting;
+  }
+  expect((await attempts()).map((row) => [row.state, row.ended_at !== null])).toEqual([["cancelled", true]]);
+  expect(await outbox()).toContain("server/enrollment.cancel");
 }, 15_000);
 
 it("keeps a waiting server whose attempt an enroll committed while a Fleet Token revoke waited on it", async () => {
