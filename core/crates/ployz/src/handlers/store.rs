@@ -183,6 +183,7 @@ impl<'m> Store<'m> {
                 .and_then(serde_json::Value::as_str)
             {
                 Some("publish") => approval::Verb::Publish,
+                Some("remove") => approval::Verb::Remove,
                 _ => approval::Verb::Deploy,
             };
             let retry = self.approving(&asked.id);
