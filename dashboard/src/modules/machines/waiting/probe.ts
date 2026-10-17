@@ -64,8 +64,11 @@ export const portStates = (probe: ProbeResults, now: Date): PortStates => ({
   "443": portState(probe, "443", now),
 });
 
+/** The most waiting servers one probe or Reject takes at once. */
+export const SELECTION_MAX = 1000;
+
 export const OpenProbeSelectionInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty()),
-  ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
+  ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(SELECTION_MAX)),
 });
 export type OpenProbeSelectionInput = typeof OpenProbeSelectionInput.Type;

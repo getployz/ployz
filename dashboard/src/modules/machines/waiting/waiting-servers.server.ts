@@ -1,16 +1,20 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CHECKIN_WAIT_SECONDS, type StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { type PortStates, portStates } from "#/modules/machines/waiting/probe";
 import { decodeStoredProbe } from "#/modules/machines/waiting/probe.server";
-import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
+import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
 const OFFLINE_AFTER_MS = 3 * CHECKIN_WAIT_SECONDS * 1000;
+
+/** A host stops waiting once an enrollment is under way for it or has made it a Server. */
+export const stillWaiting = sql`not exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
+  and (${serverEnrollment.endedAt} is null or ${serverEnrollment.state} = 'joined'))`;
 
 export type WaitingServerStatus = "offline" | "blocked" | "preparing" | "waiting";
 
@@ -49,6 +53,7 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
     .where(and(
       eq(waitingServer.organizationId, organizationId),
       isNull(waitingServer.rejectedAt),
+      stillWaiting,
       id === null ? undefined : eq(waitingServer.id, id),
     ))
     .orderBy(asc(waitingServer.firstSeenAt), asc(waitingServer.id));

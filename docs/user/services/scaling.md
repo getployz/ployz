@@ -31,7 +31,7 @@ doesn't check that a server has room for them, so leave some headroom.
 
 ## Add a server
 
-1. [Add a server](../servers/add-a-server.md). It joins your other servers and takes web
+1. [Add a server](../servers/add-a-server.md#add-one-server-that-joins-right-away). It joins your other servers and takes web
    traffic, like the rest.
 2. Deploy again to spread your replicas onto it. Replicas only move when you deploy, and the
    dashboard's **Deploy** needs a staged change, so for now this takes the CLI:

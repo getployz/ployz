@@ -237,6 +237,7 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_org/~/account", "account"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/$serverId", "servers"],
+  ["/_protected/cloud/$organizationSlug/_org/~/servers/tokens", "servers"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/$deploymentId", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/versions", "deployments"],

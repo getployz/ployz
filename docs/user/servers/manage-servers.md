@@ -37,18 +37,20 @@ If the page shows **Can't reach your servers right now**, see
 
 ## Servers waiting to join
 
-A server you installed Ployz on checks in with Ployz Cloud and waits until you let it join. To list
-the ones waiting:
+A server you installed with a Fleet Token checks in with Ployz Cloud and waits. Ployz can't let a
+waiting server join yet; to add one you can deploy to, see
+[Add one server that joins right away](add-a-server.md#add-one-server-that-joins-right-away). To
+list the ones waiting:
 
 ```sh
 ployz server ls --waiting
 ```
 
 Each row shows the start of the server's id, its name, its provider, the IP address Ployz Cloud saw
-it check in from, its status and how long ago it first checked in. **Ready** means it can join now.
+it check in from, its status and how long ago it first checked in. **Ready** means it has everything it needs.
 **Installing Docker** and **Building ZFS** mean it is still getting ready. **Docker install failed**
-means Ployz couldn't install Docker there. **Blocked** means something on the server stops it from
-joining, and **Offline** means it stopped checking in.
+means Ployz couldn't install Docker there. **Blocked** means something on the server stops Ployz
+from using it, and **Offline** means it stopped checking in.
 
 To see one in full, with its CPU, memory, disks, Docker, the storage it would get and anything
 blocking it:
@@ -426,7 +428,7 @@ warns about services still running there and prints the drain command.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
-server stops everything; your projects and settings stay, and the bottom bar shows **Add a server**
+server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
 
 The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,

@@ -140,7 +140,7 @@ deploy a card can read **Not running** or **Crashed** for a few seconds: if the 
   **Deployments** if it's stuck.
 - It's building on GitHub Actions, and the run hasn't started or finished. Its **Build** log shows
   where it is.
-- The bottom bar shows **Add a server**: your organization has no server yet.
+- The bottom bar shows **Add servers**: your organization has no server yet.
   [Add one](../servers/add-a-server.md).
 - Nothing else is running: click **Deploy now** on the deployment's page.
 

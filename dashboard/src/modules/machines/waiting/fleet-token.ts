@@ -39,4 +39,7 @@ export type FleetTokenView = {
   readonly autoEnrollMax: number | null;
   readonly lastUsedAt: string | null;
   readonly createdAt: string;
+  readonly createdBy: string;
+  readonly waiting: number;
+  readonly joined: number;
 };

@@ -164,8 +164,8 @@ the kernel is newer than ZFS supports. Either:
 
 You'll see `enroll HTTP 401`.
 
-The command expired or was mistyped. It works for 24 hours. Go to **Servers**, click **Add server**
-and run the new command.
+The enrollment token expired or was mistyped. It works for 24 hours. Run
+`ployz server add --command` on your machine for a new one and run its line again.
 
 ## The server's name is invalid
 
@@ -297,8 +297,8 @@ it a few minutes first.
 
 No other server can join until the first one finishes.
 
-1. If the first server still exists, run its command on it again. If the command expired, take a
-   new one from **Add server**; it picks up where the server left off.
+1. If the first server still exists, run its command on it again. If its token expired, run
+   `ployz server add --command` for a new one; it picks up where the server left off.
 2. If that server is gone, or you want to start over, make sure it's stopped or erased at your
    provider. Then go to **Organization**, click **Reset founding attempt**, tick **I confirm the
    old Machine has been stopped or erased.** and click **Reset enrollment**.
@@ -356,7 +356,7 @@ while `ployz service ls` shows the target running.
 
 Your organization has no server, so nothing can deploy.
 
-[Add a server](../servers/add-a-server.md). Your projects and settings are kept. Once it joins,
+[Add a server with `ployz server add`](../servers/add-a-server.md#add-one-server-that-joins-right-away). Your projects and settings are kept. Once it joins,
 **Deploy** is back and Ployz deploys your environments to it. Staged changes stay in the bottom
 bar.
 

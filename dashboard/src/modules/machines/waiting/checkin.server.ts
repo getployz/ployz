@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, count, eq, isNull, sql } from "drizzle-orm";
+import { and, count, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import {
   CHECKIN_WAIT_SECONDS,
@@ -279,6 +279,17 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   const ended = endedBy(token);
   const stopped = ended === null ? null : yield* database.transaction(endUnlessEnrolling(token, request.checkinKey, ended));
   if (stopped !== null) return stopped;
+
+  // Every check-in of a token shares this row, so a fresh stamp is left alone and the update locks nothing.
+  if (ended === null) {
+    yield* database.drizzle
+      .update(fleetToken)
+      .set({ lastUsedAt: sql`now()` })
+      .where(and(
+        eq(fleetToken.id, token.id),
+        or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`now() - interval '1 minute'`)),
+      ));
+  }
 
   yield* sometimesPruneStaleRateLimits;
   const tooMany = new CheckinRefused({ status: 429, message: "Too many check-ins." });
