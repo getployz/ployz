@@ -6,7 +6,7 @@ import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.fun
 import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
 import { AddServersDialog } from "./add-servers-dialog";
 
-const TOKEN = "pflt_7d1f0c9a2b4e6f8a1c3e5d7b9f0a2c4e";
+const TOKEN = "pflt_test-fixture-token";
 
 beforeEach(() => {
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
