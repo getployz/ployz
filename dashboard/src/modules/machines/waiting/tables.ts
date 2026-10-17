@@ -106,5 +106,5 @@ export const rateLimitEvent = pgTable(
     key: text("key").notNull(),
     at: timestamp("at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index("rate_limit_event_key_at_idx").on(table.key, table.at)],
+  (table) => [index("rate_limit_event_key_at_idx").on(table.key, table.at), index("rate_limit_event_at_idx").on(table.at)],
 );
