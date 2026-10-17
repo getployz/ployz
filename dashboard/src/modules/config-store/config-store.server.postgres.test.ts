@@ -605,6 +605,84 @@ it.live(
   60_000,
 );
 
+/** Evidence of someone who may protect, and no more. */
+const owner = { repositories: [], domains: { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] }, may_protect: true };
+/** Runs `between` once, after Cloud's first Environment listing reads and before it answers. */
+const afterListing = Effect.fn(function* (between: () => Promise<void>) {
+  const store = yield* cloudStore;
+  const read = store.read.bind(store);
+  let landed = false;
+  vi.spyOn(store, "read").mockImplementation(async (organization, query) => {
+    const answer = await read(organization, query);
+    if (!landed && query.query === "environments") {
+      landed = true;
+      await between();
+    }
+    return answer;
+  });
+  return () => landed;
+});
+const asAgent = (session: string, approvalId: string | null) => {
+  const headers = signedIn(session);
+  headers.set("x-ployz-via", "agent");
+  if (approvalId !== null) headers.set("x-ployz-approval", approvalId);
+  return headers;
+};
+/** Creates Environment `name` in `shop`, Protected once, as someone who may protect. */
+const protectedEnvironment = Effect.fn(function* (organizationId: string, id: string, name: string) {
+  const store = yield* cloudStore;
+  return async () => {
+    await store.write(organizationId, { command: "create_environment", id, project: "shop", name }, owner);
+    await store.write(organizationId, { command: "set_environment_protected", environment: { project: "shop", environment: name }, protected: true }, owner);
+  };
+});
+
+it.live(
+  "an agent's approved unprotect of the default is refused when another Environment became the default before it lands",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, slug } = yield* protectedShop();
+        const store = yield* cloudStore;
+        // staging is Protected once too, so its protection reads the same as production's.
+        yield* Effect.promise(yield* protectedEnvironment(organizationId, "00000000-0000-4000-8000-000000000090", "staging"));
+        const agent = { ...alice, via: "agent" as const };
+        const listing = Effect.fn(function* () {
+          const environments = yield* Effect.promise(() => store.read(organizationId, { query: "environments", project: "shop" }));
+          return environments.view === "environments"
+            ? environments.environments.map((environment) => [environment.name, environment.default, environment.protected])
+            : assert.fail("no environments");
+        });
+        const toDefault = (environment: string) => async () => {
+          await store.write(organizationId, { command: "set_default_environment", environment: { project: "shop", environment } }, owner);
+        };
+
+        for (const surface of ["sidebar", "mcp"] as const) {
+          // The human approves unprotecting the default, production.
+          yield* Effect.promise(toDefault("production"));
+          const call = { tool: "environment_protect", input: { protected: false }, key: `default-${surface}`, approvalId: null, page: { at: "organization" as const } };
+          const asked = yield* runAgentCall(agent, call);
+          if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
+          assert.deepInclude(asked.asking.refusal.details, { operation: { verb: "unprotect", name: "production" } });
+          const { approval } = asked.asking.refusal.details as { approval: string };
+          assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, asked.asking.approvalId, { approve: { digest: approval } })).ok);
+
+          const moved = yield* afterListing(toDefault("staging"));
+          const code = surface === "sidebar"
+            ? refusedCode(yield* runAgentCall(agent, { ...call, approvalId: asked.asking.approvalId }))
+            : (yield* send("write", asAgent(session, asked.asking.approvalId), { command: "set_environment_protected", environment: here, protected: false })).json.error?.code;
+          assert.strictEqual(code, "conflict", surface);
+          assert.isTrue(moved());
+          vi.restoreAllMocks();
+          assert.deepStrictEqual(yield* listing(), [["production", false, true], ["staging", true, true]], surface);
+        }
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(true))).ok);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
 it.live(
   "someone no longer a member may not protect, and Cloud's own write still may",
   () =>

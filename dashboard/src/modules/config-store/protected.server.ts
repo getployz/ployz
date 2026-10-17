@@ -53,7 +53,8 @@ const listed = Effect.fn("ConfigStore.listed")(function* (ref: typeof Environmen
  * What an agent's `command` waits on when it unprotects a Protected Environment, or null when it doesn't: that leaves the
  * Environment removable and its source open to anyone who can stage, so a human says yes first. The preview names which
  * protection it lifts, so a yes holds for that one: protecting it again asks again. `command` is what to write: an
- * unprotect carries the protection Cloud decided on, so the Store refuses it if another write changed it since.
+ * unprotect carries the Environment and protection Cloud decided on, so the Store refuses it if its reference now names
+ * another Environment or another write changed the protection since.
  */
 export const unprotectAsked = Effect.fn("ConfigStore.unprotectAsked")(function* (organizationId: string, command: ConfigCommand) {
   if (command.command !== "set_environment_protected" || command.protected) return { asked: null, command };
@@ -63,7 +64,7 @@ export const unprotectAsked = Effect.fn("ConfigStore.unprotectAsked")(function* 
     Effect.catchTag("StoreRefused", () => Effect.succeed(undefined)),
   );
   if (environment === undefined) return { asked: null, command };
-  const decided = { ...command, seen: { protected: environment.protected, protections: environment.protections } };
+  const decided = { ...command, seen: { environment: environment.id, protected: environment.protected, protections: environment.protections } };
   if (!environment.protected) return { asked: null, command: decided };
   const asked = {
     subject: `environment:${environment.id}`,
