@@ -126,7 +126,7 @@ it.live("a destructive CLI publish waits for a human to approve exactly what it 
       const { drizzle } = yield* Database;
       yield* drizzle.insert(organization).values({ id: OTHER, name: "Other", slug: "other" });
     }));
-    expect(yield* provided(trustedApproval(OTHER, first.approval_id))).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
+    expect(yield* provided(trustedApproval(OTHER, first.approval_id))).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(yield* provided(Effect.flip(getApproval(OTHER, first.approval_id)))).toMatchObject({ _tag: "NotFound" });
 
     // Approving another digest conflicts; approving the one asked about is what the retry tells the Store.
@@ -343,8 +343,8 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     const firstId = first.json.error?.details?.approval_id ?? expect.fail("no approval_id");
 
     const unknown = yield* cli(publish, UNKNOWN_APPROVAL);
-    expect(unknown.status).toBe(422);
-    expect(unknown.json.error).toMatchObject({ code: "invalid_argument", details: { approval_id: UNKNOWN_APPROVAL } });
+    expect(unknown.status).toBe(404);
+    expect(unknown.json.error).toMatchObject({ code: "not_found", details: { approval_id: UNKNOWN_APPROVAL } });
     expect(unknown.json.error?.message).not.toContain(UNKNOWN_APPROVAL);
 
     yield* provided(decideApproval(caller, firstId, { reject: { reason: "not today" } }));
@@ -417,6 +417,31 @@ it.live("an anonymous agent's Organization has no person to ask: its Deploys and
     expect(yield* cli(publish)).toMatchObject({ status: 200 });
     expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.approval]))
       .toEqual([["admit", "not_required"], ["publish", "not_required"]]);
+  }));
+
+it.live("an approval from another Organization is no approval here, whether or not this one asks, and nothing saves", () =>
+  Effect.gen(function* () {
+    const { provided, caller, userId, cli, store } = yield* shopRemovingWeb();
+    const details = (yield* cli(publish)).json.error?.details;
+    const own = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval(caller, own, { approve: { digest: details?.approval ??expect.fail("no digest") } }));
+    const foreign = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(organization).values({ id: OTHER, name: "Other", slug: "other" });
+      const [approved] = yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.id, own));
+      const [copied] = yield* drizzle.insert(operationApprovals)
+        .values({ ...(approved ?? expect.fail("no approval")), id: crypto.randomUUID(), organizationId: OTHER }).returning();
+      return copied?.id ?? expect.fail("no copy");
+    }));
+    const write = vi.spyOn(store, "write");
+    const notFound = { status: 404, json: { error: { code: "not_found", message: "No such approval.", details: { approval_id: foreign } } } };
+
+    expect(yield* cli(publish, foreign)).toMatchObject(notFound);
+    yield* provided(anonymous(userId));
+    expect(yield* cli(publish, foreign)).toMatchObject(notFound);
+    expect(write).not.toHaveBeenCalled();
+
+    expect(yield* cli(publish, own)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
 
 const removeShop = (version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });
@@ -839,7 +864,7 @@ it.live("a named approval no human denied lets an operation that destroys nothin
 
     yield* provided(decideApproval(caller, waiting.approval_id, { approve: { digest: waiting.approval } }, answers(waiting.approval)));
     expect(yield* gate(emptied, waiting.approval_id)).toEqual({ ok: true, approvalId: null });
-    expect(yield* gate(emptied, crypto.randomUUID())).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
+    expect(yield* gate(emptied, crypto.randomUUID())).toMatchObject({ ok: false, refusal: { code: "not_found" } });
   }));
 
 it.live("a pending approval still waits on the human whether a retry names it or not", () =>

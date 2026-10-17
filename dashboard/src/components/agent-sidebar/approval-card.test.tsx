@@ -38,7 +38,7 @@ const approval = asTestDouble<ApprovalView>()({
 function show(seed: ApprovalView, onSettled = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   render(<QueryClientProvider client={client}><ApprovalCard organizationSlug="acme" id={seed.id} seed={seed} onSettled={onSettled} /></QueryClientProvider>);
-  return { onSettled, card: () => screen.getByLabelText("Deploy production needs approval") };
+  return { onSettled, card: () => screen.getByLabelText("Deploy shop/production needs approval") };
 }
 
 const answered = (status: ApprovalView["status"], reason: string | null = null) =>
@@ -51,6 +51,17 @@ it("leads with what the plan destroys and folds the rest to a count", () => {
   expect(within(card).queryByText(/1 → 2/)).toBeNull();
   fireEvent.click(within(card).getByText("1 other change"));
   expect(within(card).getByText(/web .*1 → 2/)).toBeTruthy();
+});
+
+it("names the Project, so two Deploys to production read apart", () => {
+  const blog = { ...approval, id: "a2", review: {
+    effects: [],
+    diff: asTestDouble<DiffView>()({ environment: { id: "e2", project: "blog", name: "production", revision: 1 }, total_count: 0, changes: [] }),
+  } };
+  show(approval);
+  show(blog);
+  const titles = [...document.querySelectorAll("[data-slot=card-title]")].map((title) => title.textContent);
+  expect(titles).toEqual(["Deploy shop/production", "Deploy blog/production"]);
 });
 
 it("approves exactly the digest shown, then settles", async () => {
@@ -100,8 +111,8 @@ it("names a Server operation by its verb and Server, with nothing folded", () =>
 it("says a Save deletes nothing until the next deploy, and approving it saves without deploying", async () => {
   decide.mockResolvedValue(({ ok: true, approval: { ...approval, command: "publish", status: "approved", decided_at: "2026-10-08T12:01:00.000Z" } }) as never);
   const { onSettled } = show(asTestDouble<ApprovalView>()({ ...approval, command: "publish" }));
-  const card = within(screen.getByLabelText("Save production needs approval"));
-  expect(card.getByText("Save production")).toBeTruthy();
+  const card = within(screen.getByLabelText("Save shop/production needs approval"));
+  expect(card.getByText("Save shop/production")).toBeTruthy();
   expect(card.getByText("Deletes on deploy")).toBeTruthy();
   expect(card.getByRole("list", { name: "Destroys" }).textContent).toBe("Next deploy deletes volume pg-data.");
   fireEvent.click(card.getByRole("button", { name: /^Approve/ }));
@@ -112,17 +123,17 @@ it("says a Save deletes nothing until the next deploy, and approving it saves wi
 it("counts a Deploy's deleted Volumes, and anything else it destroys as things", () => {
   const two = { ...approval.review, effects: [approval.review.effects[0], { kind: "deletes_volume" as const, name: "cache", node: "v2", path: "volumes.cache" }] };
   show(asTestDouble<ApprovalView>()({ ...approval, review: two }));
-  expect(within(screen.getByLabelText("Deploy production needs approval")).getByText("Deletes 2 volumes")).toBeTruthy();
+  expect(within(screen.getByLabelText("Deploy shop/production needs approval")).getByText("Deletes 2 volumes")).toBeTruthy();
   cleanup();
   const mixed = { ...approval.review, effects: [approval.review.effects[0], { kind: "removes_service" as const, name: "web", node: "s1", path: "services.s1" }] };
   show(asTestDouble<ApprovalView>()({ ...approval, review: mixed }));
-  expect(within(screen.getByLabelText("Deploy production needs approval")).getByText("Destroys 2 things")).toBeTruthy();
+  expect(within(screen.getByLabelText("Deploy shop/production needs approval")).getByText("Destroys 2 things")).toBeTruthy();
 });
 
 it("words a destroyed thing without a name as its kind, never by its id", () => {
   const review = { ...approval.review, effects: [{ kind: "removes_service" as const, node: "0b9c5d1e-svc", path: "services.0b9c5d1e-svc" }] };
   show(asTestDouble<ApprovalView>()({ ...approval, review }));
-  expect(within(screen.getByLabelText("Deploy production needs approval")).getByRole("list", { name: "Destroys" }).textContent).toBe("Removes a service");
+  expect(within(screen.getByLabelText("Deploy shop/production needs approval")).getByRole("list", { name: "Destroys" }).textContent).toBe("Removes a service");
 });
 
 it("says the plan changed when the approval was superseded, and settles", () => {

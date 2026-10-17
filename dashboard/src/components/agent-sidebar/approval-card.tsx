@@ -45,6 +45,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const [refused, setRefused] = useState<string | null>(null);
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
+  const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const others = otherChanges(approval.review);
 
   const decide = async (decision: ApprovalDecision) => {
@@ -71,10 +72,10 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
 
   return (
     <Card state="destructive" size="sm" tabIndex={0} autoFocus={autoFocus} onKeyDown={onKeyDown}
-      aria-label={`${subject.verb} ${subject.name} needs approval`}
+      aria-label={`${subject.verb} ${place} needs approval`}
       className="outline-none focus-visible:ring-2">
       <CardHeader className="flex items-center justify-between gap-2">
-        <CardTitle>{subject.verb} {subject.name}</CardTitle>
+        <CardTitle>{subject.verb} {place}</CardTitle>
         <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
