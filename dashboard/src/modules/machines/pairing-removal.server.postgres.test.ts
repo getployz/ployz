@@ -4,7 +4,7 @@ import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
-import { sendsNowhere } from "#/test/store-cloud";
+import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -133,6 +133,20 @@ describe("protected pairing removal", () => {
       const next = await runtime.runPromise(loadOrganizationConnections(organizationId));
       expect(next).toMatchObject({ kind: "ready", connections: [{ management: "ployz1:next-generation" }] });
       expect((await harness.pool.query("select is_dial_entry from organization_machine")).rows).toEqual([{ is_dial_entry: true }]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("revokes a lapsed sandbox's pairing and leaves its anonymous owner to the teardown", async () => {
+    await harness.pool.query("truncate organization cascade");
+    const { userId } = await harness.runEffect(seedAnonymousStoreOrganization(organizationId, new Date(Date.now() - 1000)));
+    await seedPairing();
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect(fake.mutations()).toBe(1);
+      expect((await harness.pool.query("select * from organization_pairing")).rows).toEqual([]);
+      expect((await harness.pool.query("select is_anonymous from \"user\" where id=$1", [userId])).rows).toEqual([{ is_anonymous: true }]);
     } finally { await runtime.dispose(); }
   });
 
