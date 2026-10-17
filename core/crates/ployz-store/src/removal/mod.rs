@@ -869,8 +869,8 @@ fn still_running<'a>(
     Ok(running)
 }
 
-/// Refuse to remove the Default Environment, or one with Branches, on its own:
-/// Branches use it live, and the Default goes with its Project.
+/// Refuse to remove the Default Environment, a Protected one, or one with Branches,
+/// on its own: Branches use it live, and the Default goes with its Project.
 pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
     let summary = &environment.summary;
     let default = tx.query(
@@ -884,6 +884,26 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
                 summary.name, summary.project
             ),
             json!({ "next": show(&summary.project, &summary.name) }),
+        ));
+    }
+    let protected = tx.query(
+        "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
+        &[summary.id.as_str().into()],
+    )?;
+    if !protected.is_empty() {
+        return Err(error::unsupported(
+            format!("{} is Protected: unprotect it first", summary.name),
+            json!({
+                "protected": summary.name,
+                "next": next(
+                    "environment_protect",
+                    json!({
+                        "project": summary.project,
+                        "environment": summary.name,
+                        "protected": false,
+                    }),
+                ),
+            }),
         ));
     }
     let branches = tx

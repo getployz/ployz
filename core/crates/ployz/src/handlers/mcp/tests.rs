@@ -1734,7 +1734,7 @@ fn removed_but_unswept() -> ConfigStore {
     use ployz_store::{
         Admit, CreateEnvironment, CreateService, Deploy, DeploymentId, EnvironmentName,
         EnvironmentRef, Removal, Remove, RunEvidence, RunnerId, ServiceLineageId,
-        SetDefaultEnvironment, Trusted, VolumeObservation,
+        SetDefaultEnvironment, SetEnvironmentProtected, Trusted, VolumeObservation,
     };
 
     let store = shop();
@@ -1818,6 +1818,15 @@ fn removed_but_unswept() -> ConfigStore {
                     project: None,
                     environment: Some(EnvironmentName::parse("staging").unwrap()),
                 },
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &SetEnvironmentProtected {
+                environment: production(),
+                protected: false,
             },
         )
         .unwrap();

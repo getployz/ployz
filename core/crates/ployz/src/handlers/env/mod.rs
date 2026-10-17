@@ -14,7 +14,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateEnvironment, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentSummary,
-    EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment,
+    EnvironmentsQuery, EnvironmentsView, NeverSync, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 use serde_json::json;
 
@@ -47,6 +47,14 @@ pub(super) fn default_command(command: Command) -> Command {
     command
         .about("Make an Environment the Project's Default Environment")
         .arg(positional("name", true))
+        .arg(project_arg())
+}
+
+pub(super) fn protect_command(command: Command) -> Command {
+    command
+        .about("Protect an Environment so it cannot be removed")
+        .arg(positional("name", true))
+        .arg(switch("off", None).help("Unprotect it, so it can be removed"))
         .arg(project_arg())
 }
 
@@ -378,6 +386,27 @@ pub(super) fn default(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::list(&listed, &environments(&listed))
 }
 
+pub(super) fn protect(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = EnvironmentName::parse(required(matches, "name")?)?;
+    let protected = !matches.get_flag("off");
+    let set = SetEnvironmentProtected {
+        environment: EnvironmentRef {
+            project: project(matches)?,
+            environment: Some(name.clone()),
+        },
+        protected,
+    };
+    let listed = store(root)?.write(&set)?;
+    let sentence = if protected {
+        format!("{name} is Protected")
+    } else {
+        format!("{name} is no longer Protected")
+    };
+    crate::ui::done(&listed, sentence)?;
+    Ok(())
+}
+
 pub(super) fn setup(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let set = ployz_store::SetBranchSetup {
@@ -394,6 +423,7 @@ fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
         [
             "ENVIRONMENT",
             "DEFAULT",
+            "PROTECTED",
             "BRANCH OF",
             "REMOVAL",
             "BRANCH SETUP",
@@ -408,6 +438,7 @@ fn environments(listed: &EnvironmentsView) -> crate::ui::Table {
             } else {
                 Cell::from("")
             },
+            Cell::from(if environment.protected { "yes" } else { "" }),
             Cell::from(
                 environment
                     .parent

@@ -49,6 +49,8 @@ pub struct EnvironmentListing {
     pub merged: bool,
     /// What a new Branch of it runs when it names no Setup Commands.
     pub branch_setup: Vec<crate::SetupCommand>,
+    /// Whether it refuses removal until it is unprotected.
+    pub protected: bool,
 }
 
 /// Make an Environment its Project's Default Environment.
@@ -56,6 +58,16 @@ pub struct EnvironmentListing {
 #[serde(deny_unknown_fields)]
 pub struct SetDefaultEnvironment {
     pub environment: EnvironmentRef,
+}
+
+/// Protect a Project's own Environment, or unprotect it: a Protected Environment
+/// refuses removal on its own.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetEnvironmentProtected {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    pub protected: bool,
 }
 
 /// List the Organization's Projects.
@@ -92,7 +104,7 @@ pub(crate) fn environments(
 ) -> Result<EnvironmentsView, RpcError> {
     let project = scope::project(tx, who, query.project.as_ref())?;
     let rows = tx.query(
-        "SELECT e.id, e.name, p.name, e.branch_setup FROM config_environment e \
+        "SELECT e.id, e.name, p.name, e.branch_setup, e.protected FROM config_environment e \
          LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
          LEFT JOIN config_environment p ON p.id = b.parent_id \
          WHERE e.project_id = ?1 ORDER BY e.name",
@@ -112,6 +124,7 @@ pub(crate) fn environments(
                 Some(_) => row.json(3, "Branch setup")?,
                 None => Vec::new(),
             },
+            protected: row.int(4)? != 0,
             id,
         });
     }
@@ -150,6 +163,48 @@ pub(crate) fn set_default(
             who.organization.as_str().into(),
             environment.summary.project.as_str().into(),
         ],
+    )?;
+    environments(
+        tx,
+        who,
+        &EnvironmentsQuery {
+            project: Some(environment.summary.project),
+        },
+    )
+}
+
+pub(crate) fn set_protected(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    set: &SetEnvironmentProtected,
+) -> Result<EnvironmentsView, RpcError> {
+    let environment = scope::lock(tx, who, &set.environment)?;
+    let summary = &environment.summary;
+    let kind = if crate::pull_request::of(tx, &summary.id)?.is_some() {
+        Some("a PR Environment")
+    } else if !tx
+        .query(
+            "SELECT parent_id FROM config_environment_branch WHERE environment_id = ?1",
+            &[summary.id.as_str().into()],
+        )?
+        .is_empty()
+    {
+        Some("a Branch")
+    } else {
+        None
+    };
+    if let Some(kind) = kind {
+        return Err(error::unsupported(
+            format!(
+                "{} is {kind}: only a Project's own Environments can be Protected",
+                summary.name
+            ),
+            json!({ "project": summary.project, "environment": summary.name }),
+        ));
+    }
+    tx.execute(
+        "UPDATE config_environment SET protected = ?1 WHERE id = ?2",
+        &[i64::from(set.protected).into(), summary.id.as_str().into()],
     )?;
     environments(
         tx,

@@ -275,6 +275,10 @@ c env "env pr --json" --json env pr
 m env "env pr --on: no repository" env pr acme/app --on
 m env "env shutdown (never deployed)" env shutdown qa
 m env "env shutdown --json (never deployed)" --json env shutdown qa
+m env "env protect" env protect staging
+m env "env protect: a Branch" env protect fix-web
+m env "env rm: Protected Environment" env rm staging --confirm shop/staging
+m env "env protect --json --off" --json env protect staging --off
 m env "env rm without --confirm" env rm qa
 m env "env rm --json without --confirm" --json env rm qa
 m env "env rm: --confirm mismatch" env rm qa --confirm qa

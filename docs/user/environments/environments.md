@@ -188,6 +188,15 @@ the default environment too, into any other place. What staging only got from pr
 The default environment is where the project opens, for everyone in your organization. Pick
 another under **Default environment** in **Settings → Project**.
 
+### Protect an environment
+
+A new project's default environment starts Protected. A Protected environment can't be deleted
+until you unprotect it. Deleting the whole project still takes it.
+
+Run `ployz env protect staging` to protect another environment, and `ployz env protect staging
+--off` to unprotect it. `ployz env ls` shows which are Protected. Branches and preview
+environments can't be Protected.
+
 ### Delete an environment
 
 1. Open the environment's **Settings → Environment**.
@@ -196,8 +205,8 @@ another under **Default environment** in **Settings → Project**.
 
 ![Settings → Environment: setup commands for new branches, and Delete environment](../images/environment-settings.png)
 
-You can't delete one that still has branches, or the default environment until you make another
-one the default.
+You can't delete one that still has branches, a Protected one, or the default environment until
+you make another one the default.
 
 Deleting returns at once. The environment stays listed until every server that ran it has taken it
 off, and then it's gone. A server that's offline holds its part until it answers or you remove the

@@ -345,6 +345,9 @@ pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
 )
 .docs("environments/preview-environments.md")
 .needs(Permission::ChangesDeploy);
+pub(crate) const ENV_PROTECT: Verb =
+    Verb::cloud("env protect", Never, env::protect_command, env::protect)
+        .needs(Permission::EnvironmentsProtect);
 pub(crate) const ENV_RM: Verb = Verb::cloud("env rm", Always, env::rm_command, env::rm)
     .docs("cli/overview.md")
     .needs(Permission::EnvironmentDelete);
@@ -800,6 +803,7 @@ pub(crate) const VERBS: &[Verb] = &[
     ENV_ON_MERGE,
     ENV_PR,
     ENV_PR_APPROVE,
+    ENV_PROTECT,
     ENV_RM,
     ENV_SETUP,
     ENV_SHUTDOWN,

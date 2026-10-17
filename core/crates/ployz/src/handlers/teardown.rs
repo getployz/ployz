@@ -384,7 +384,7 @@ fn swept_by_cloud(
 const SLOW: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What goes before an Environment of `project` the Store won't remove alone: its
-/// first Branch, or for a Default Environment another Default.
+/// first Branch, its protection, or for a Default Environment another Default.
 fn goes_first(error: &StoreCallError, project: &ProjectName) -> Option<String> {
     let StoreCallError::Refused(refusal) = error else {
         return None;
@@ -392,17 +392,23 @@ fn goes_first(error: &StoreCallError, project: &ProjectName) -> Option<String> {
     if refusal.code != RpcErrorCode::Unsupported {
         return None;
     }
-    let branch = refusal
-        .details
+    let details = &refusal.details;
+    let branch = details
         .get("branches")
-        .and_then(|branches| branches.get(0));
-    let words = match branch.and_then(serde_json::Value::as_str) {
-        Some(branch) => ["env", "rm", branch],
-        None => ["env", "default", "ENV"],
+        .and_then(|branches| branches.get(0))
+        .and_then(serde_json::Value::as_str);
+    let protected = details.get("protected").and_then(serde_json::Value::as_str);
+    let words: &[&str] = match (branch, protected) {
+        (Some(branch), _) => &["env", "rm", branch],
+        (None, Some(protected)) => &["env", "protect", protected, "--off"],
+        (None, None) => &["env", "default", "ENV"],
     };
     let project = ["--project", project.as_str()];
     Some(shell_words::join(
-        ["ployz"].into_iter().chain(words).chain(project),
+        ["ployz"]
+            .into_iter()
+            .chain(words.iter().copied())
+            .chain(project),
     ))
 }
 

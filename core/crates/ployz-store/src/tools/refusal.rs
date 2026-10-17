@@ -315,6 +315,10 @@ fn store_next(next: &Value) -> Next {
             "environment_show",
             json!({ "project": input.get("project") }),
         )),
+        // Unprotecting is a person's call, made where they can see what it guards.
+        "environment_protect" => Next::Fix(Fix::OpenDashboard {
+            page: DashboardPage::Environments,
+        }),
         // A removal is never proposed to a call that did not ask for one.
         _ => Next::Drop,
     }
