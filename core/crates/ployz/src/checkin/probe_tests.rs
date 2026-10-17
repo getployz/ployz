@@ -61,9 +61,14 @@ async fn eventually(mut check: impl FnMut() -> bool) {
     }
 }
 
+/// A family the host lacks counts as free, so an IPv4-only host still finds a port.
 fn bindable(port: u16) -> bool {
+    let free = |bound: io::Result<()>| {
+        bound.err().map(|error| error.kind()) != Some(io::ErrorKind::AddrInUse)
+    };
     ["0.0.0.0", "::"].into_iter().all(|any| {
-        StdTcpListener::bind((any, port)).is_ok() && StdUdpSocket::bind((any, port)).is_ok()
+        free(StdTcpListener::bind((any, port)).map(drop))
+            && free(StdUdpSocket::bind((any, port)).map(drop))
     })
 }
 
