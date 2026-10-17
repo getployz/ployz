@@ -1250,7 +1250,10 @@ fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
         .lines()
         .find(|line| line.contains("--yes"))
         .unwrap_or_else(|| panic!("{stderr:?}"));
-    assert!(retry.contains(r"$'web\x1b[31mX\u202e\'1'"), "{retry:?}");
+    assert!(
+        retry.contains(r"$'web\x1b[31mX\xe2\x80\xae\'1'"),
+        "{retry:?}"
+    );
     assert!(!retry.contains('\u{FFFD}'), "{retry:?}");
     assert!(rejected_ids(&routes).is_empty());
 }

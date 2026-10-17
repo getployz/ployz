@@ -376,14 +376,16 @@ fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
     }
     let mut word = String::from("$'");
     for c in arg.chars() {
-        let code = u32::from(c);
-        let _ = match c {
-            '\\' | '\'' => write!(word, "\\{c}"),
-            c if !crate::ui::unprintable(c) => write!(word, "{c}"),
-            _ if code < 0x80 => write!(word, "\\x{code:02x}"),
-            _ if code <= 0xFFFF => write!(word, "\\u{code:04x}"),
-            _ => write!(word, "\\U{code:08x}"),
-        };
+        match c {
+            '\\' | '\'' => word.extend(['\\', c]),
+            c if !crate::ui::unprintable(c) => word.push(c),
+            // Bash decodes \u by the locale; bytes read the same under any.
+            _ => {
+                for byte in c.encode_utf8(&mut [0; 4]).bytes() {
+                    let _ = write!(word, "\\x{byte:02x}");
+                }
+            }
+        }
     }
     word.push('\'');
     word.into()
@@ -488,8 +490,32 @@ mod tests {
         assert_eq!(shell_word("web-*"), "'web-*'");
         assert_eq!(shell_word("web-1"), "web-1");
         assert_eq!(shell_word("web\u{1b}[31m'1"), "$'web\\x1b[31m\\'1'");
-        assert_eq!(shell_word("evil\u{202E}1\\"), "$'evil\\u202e1\\\\'");
-        assert_eq!(shell_word("a\u{85}\u{E0001}"), "$'a\\u0085\\U000e0001'");
+        assert_eq!(shell_word("evil\u{202E}1\\"), "$'evil\\xe2\\x80\\xae1\\\\'");
+        assert_eq!(
+            shell_word("a\u{85}\u{E0001}"),
+            "$'a\\xc2\\x85\\xf3\\xa0\\x80\\x81'"
+        );
+    }
+
+    #[test]
+    fn bash_reads_a_retry_word_back_as_the_same_bytes_in_any_locale() {
+        let words = [
+            "a\u{85}b",
+            "evil\u{202E}1",
+            "\u{E0001}tag\u{85}a",
+            "\u{1F600}\u{1b}[0m\u{1F600}",
+        ];
+        for locale in ["C", "C.UTF-8"] {
+            for word in words {
+                let output = std::process::Command::new("bash")
+                    .args(["-c", &format!("printf %s {}", shell_word(word))])
+                    .env("LC_ALL", locale)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{locale} {word:?}");
+                assert_eq!(output.stdout, word.as_bytes(), "{locale} {word:?}");
+            }
+        }
     }
 
     #[test]
