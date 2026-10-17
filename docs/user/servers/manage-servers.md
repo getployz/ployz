@@ -35,6 +35,47 @@ A server that can hold [managed volumes](../services/volumes.md) shows nothing a
 If the page shows **Can't reach your servers right now**, see
 [Troubleshooting servers](../troubleshooting/servers.md#cant-reach-your-servers-right-now).
 
+## Servers waiting to join
+
+A server you installed Ployz on checks in with Ployz Cloud and waits until you let it join. To list
+the ones waiting:
+
+```sh
+ployz server ls --waiting
+```
+
+Each row shows the start of the server's id, its name, its provider, the IP address Ployz Cloud saw
+it check in from, its status and how long ago it first checked in. **Ready** means it can join now.
+**Installing Docker** and **Building ZFS** mean it is still getting ready. **Docker install failed**
+means Ployz couldn't install Docker there. **Blocked** means something on the server stops it from
+joining, and **Offline** means it stopped checking in.
+
+To see one in full, with its CPU, memory, disks, Docker, the storage it would get and anything
+blocking it:
+
+```sh
+ployz server show web-3
+```
+
+`ployz server show` shows a server in your cluster the same way, so one command covers both.
+
+To turn away servers you don't want, name them, give a pattern or give one server's id from
+`ployz server ls --waiting --json`. A name rejects every waiting server with that name. Patterns
+match names only, and case matters. An exact id wins over a server whose name is that id, and a
+server named exactly what you typed wins over the pattern it spells, so `db[1]` means that name.
+Ployz lists what matches with each one's id and asks before it does anything:
+
+```sh
+ployz server reject 'web-*'
+```
+
+Answer `y` and it prints `2 rejected. They won't come back under the same Fleet Token.` A rejected
+server stops checking in, and asking again with the same Fleet Token gets it turned away. To keep
+out every server that holds a Fleet Token, revoke the token. If one left the list before Ployz
+Cloud got to it, the count says so, as in `1 of 2 rejected; the rest had already left the list.`
+Add `--yes` to skip the question, for example in a script. Without `--yes` outside a terminal it
+fails with `confirmation_required` and rejects nothing.
+
 ## See what runs on a server
 
 Click a server. Its page shows its status and public IP address, then:

@@ -183,6 +183,16 @@ impl Setup {
         }
     }
 
+    /// The same setup for a credential that acts in `cloud`, whatever the environment
+    /// and the sign-in name.
+    pub(crate) fn in_cloud(self, cloud: &str) -> Self {
+        Self {
+            cloud: cloud.to_owned(),
+            configured: true,
+            ..self
+        }
+    }
+
     /// The credential for the Cloud, if the process has one.
     ///
     /// # Errors

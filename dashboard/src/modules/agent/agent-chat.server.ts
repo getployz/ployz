@@ -88,7 +88,7 @@ const approvalGate = (caller: AgentCaller, run: Run, here: Here) => {
       const answer = answers.get(call.id);
       if (answer?.cancelled === true) {
         if (answer.approvalId !== null) {
-          yield* decideApproval(caller, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
+          yield* decideApproval({ ...caller, via: "dashboard" }, answer.approvalId, { reject: {} }).pipe(Effect.catchTag("NotFound", () => Effect.void));
         }
         return { outcome: { ok: false, cancelled: true } };
       }

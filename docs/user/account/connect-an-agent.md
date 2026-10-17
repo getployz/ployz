@@ -8,7 +8,9 @@ sign in once in your browser, and pick the organization the agent works in. Noth
 your computer, and no token to copy.
 
 This works on [ployz.dev](https://ployz.dev). A [Self-hosted Cloud](../self-hosting.md) doesn't
-serve it; use [`ployz mcp`](../cli/overview.md#give-the-agent-ployz-tools) there.
+serve it; use [`ployz mcp`](../cli/overview.md#give-the-agent-ployz-tools) there. `ployz mcp`
+has its own credential. Run `ployz mcp login` once to give it an agent token, which can't answer
+an approval.
 
 ## Connect
 

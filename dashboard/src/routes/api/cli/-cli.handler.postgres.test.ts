@@ -146,8 +146,10 @@ const Approval = Schema.Struct({ id: Schema.String, status: Schema.String, diges
 const Reply = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
-  token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String })),
-  tokens: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean, expired: Schema.Boolean }))),
+  token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String, kind: Schema.String })),
+  tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
+    id: Schema.String, kind: Schema.String, current: Schema.Boolean, expired: Schema.Boolean,
+  }))),
   fleet_token: Schema.optionalKey(Schema.Struct({ id: Schema.String, name: Schema.String, token: Schema.String, expires_at: Schema.String })),
   fleet_tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, name: Schema.String, expired: Schema.Boolean, auto_enroll_max: Schema.NullOr(Schema.Number),
@@ -207,7 +209,13 @@ type Reply = typeof Reply.Type;
 const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 /** `session` is a signed-in login's session token, which the CLI sends as a bearer token. */
-type As = { readonly session?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
+type As = {
+  readonly session?: string;
+  readonly bearer?: string;
+  readonly approval?: string;
+  readonly key?: string;
+  readonly via?: string;
+};
 
 type CliBody = JsonObject;
 
@@ -217,6 +225,7 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
   if (as.approval !== undefined) headers.set("x-ployz-approval", as.approval);
   if (as.key !== undefined) headers.set("x-ployz-request-key", as.key);
+  if (as.via !== undefined) headers.set("x-ployz-via", as.via);
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
@@ -1021,6 +1030,53 @@ it.live(
           ["namespace:left-behind", "approved"],
           [`server:${fra1}`, "pending"],
         ]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an agent token's destroy asks whatever header it sends, and only its person answers",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-agent-token-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindClusterOf({ observesFra1: true, sessionsOpened: 0 }), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const mint = Effect.fn(function* (body: CliBody) {
+          const made = yield* cli("POST", "tokens", alice, { expires_in_days: 30, ...body });
+          return (made.json.token ?? assert.fail(made.text)).secret;
+        });
+        assert.strictEqual((yield* cli("POST", "tokens", alice, { name: "x", expires_in_days: 30, kind: "dashboard" })).status, 422);
+        const agent = yield* mint({ name: "mcp", kind: "agent" });
+        const ci = yield* mint({ name: "ci" });
+        const byAgent = yield* cli("POST", "tokens", { ...alice, via: "agent" }, { name: "sneaky", expires_in_days: 30, kind: "cli" });
+        assert.strictEqual(byAgent.json.token?.kind, "agent", byAgent.text);
+
+        const listed = yield* cli("GET", "tokens", alice);
+        assert.deepStrictEqual(listed.json.tokens?.map(({ kind }) => kind).sort(), ["agent", "agent", "cli"]);
+
+        const asked = yield* cli("POST", "namespaces/left-behind/clean", { bearer: agent });
+        assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"], asked.text);
+        const details = asked.json.error?.details ?? assert.fail("no details");
+        const approvalId = details.approval_id ?? assert.fail("no approval id");
+        const row = () => drizzle.select({ via: operationApprovals.via, status: operationApprovals.status })
+          .from(operationApprovals).where(eq(operationApprovals.id, approvalId));
+        assert.deepStrictEqual(yield* row(), [{ via: "agent", status: "pending" }]);
+
+        const approve = { approve: { digest: details.approval ?? "" } };
+        for (const as of [{ bearer: agent }, { bearer: agent, via: "cli" }, { bearer: ci, via: "agent" }]) {
+          for (const body of [approve, { reject: {} }]) {
+            const refused = yield* cli("POST", `approvals/${approvalId}`, as, body);
+            assert.deepStrictEqual([refused.status, refused.json.error?.message], [403, "Agents can't answer approvals."], refused.text);
+          }
+        }
+        assert.deepStrictEqual(yield* row(), [{ via: "agent", status: "pending" }]);
+
+        const approved = yield* cli("POST", `approvals/${approvalId}`, { bearer: ci }, approve);
+        assert.deepStrictEqual([approved.status, approved.json.approval?.status], [200, "approved"], approved.text);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -440,8 +440,81 @@ async fn contract() {
             .unwrap();
     let device_connection = observed.recv().await.unwrap();
     device_session.inspect().await.unwrap();
+    let slots = owner
+        .record()
+        .management_clients()
+        .cloned()
+        .collect::<Vec<_>>();
+    for refused in [
+        device_session.set_management_client(cloud()).await,
+        device_session
+            .set_management_client(ManagementClientLabel::parse("cli-other").unwrap())
+            .await,
+    ] {
+        let error = refused.expect_err("a cli- slot must not set a slot");
+        assert!(
+            error.to_string().contains("only Cloud manages slots"),
+            "{error}"
+        );
+    }
+    let error = device_session
+        .clear_management_client(device_label.clone())
+        .await
+        .expect_err("a cli- slot must not clear a slot");
+    assert!(
+        error.to_string().contains("only Cloud manages slots"),
+        "{error}"
+    );
+    // Forwarding drops the caller's key, so a request routed at another Machine is
+    // refused at entry rather than served there as a local call, even from Cloud.
+    let routed = || {
+        let mut routed = tonic::Request::new(
+            op::SetManagementClient::into_request(SetManagementClientRequest::Set {
+                label: cloud(),
+            })
+            .encode()
+            .unwrap(),
+        );
+        routed.metadata_mut().insert(
+            ployz_core::ONE_TARGET_HEADER,
+            tonic::metadata::MetadataValue::from_static("elsewhere"),
+        );
+        routed
+    };
+    let device_channel = connector.connect(&connection(&device)).await.unwrap();
+    let device_channel_connection = observed.recv().await.unwrap();
+    let status = MachineRpcClient::new(device_channel)
+        .set_management_client(routed())
+        .await
+        .expect_err("a routed slot change from a cli- slot must be refused");
+    assert_eq!(status.code(), tonic::Code::PermissionDenied, "{status}");
+    let cloud_channel = connector.connect(&connection(&capability)).await.unwrap();
+    observed.recv().await.unwrap();
+    let status = MachineRpcClient::new(cloud_channel)
+        .set_management_client(routed())
+        .await
+        .expect_err("a routed slot change from Cloud must be refused");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status}");
+    assert!(
+        status
+            .message()
+            .contains("only on the Server that holds them"),
+        "{status}"
+    );
+    assert_eq!(
+        owner
+            .record()
+            .management_clients()
+            .cloned()
+            .collect::<Vec<_>>(),
+        slots
+    );
+    device_session.inspect().await.unwrap();
     session.clear_management_client(device_label).await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), device_connection.closed())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), device_channel_connection.closed())
         .await
         .unwrap();
     drop(device_session);

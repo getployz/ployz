@@ -297,10 +297,10 @@ stdout:
 }
 ```
 
-### server inspect
+### server show
 
 ```console
-$ ployz server inspect alpha
+$ ployz server show alpha
 # exit 0
 ```
 
@@ -399,10 +399,10 @@ stdout:
 }
 ```
 
-### server inspect --json
+### server show --json
 
 ```console
-$ ployz server inspect alpha --json
+$ ployz server show alpha --json
 # exit 0
 ```
 

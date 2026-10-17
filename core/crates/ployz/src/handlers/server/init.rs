@@ -121,7 +121,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let inspect_recovery = super::super::recovery_command(
         matches,
         &context_name,
-        &["server", "inspect", machine.name.as_str()],
+        &["server", "show", machine.name.as_str()],
     );
     let ingress = runtime.block_on(async {
         let mut ready = helpers::wait_direct_participating(

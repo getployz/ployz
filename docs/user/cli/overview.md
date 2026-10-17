@@ -37,7 +37,7 @@ your app's directory.
 Paste this into your coding agent, such as Claude Code or Codex:
 
 ```text
-Set me up for Ployz: https://ployz.sh/agent.md
+Set me up for Ployz: https://ployz.dev/agents.md
 ```
 
 The agent installs the CLI and the Ployz skill, signs you in, and registers the Ployz MCP tools.
@@ -46,7 +46,7 @@ agent afterwards so it loads the skill and the tools.
 From then on you can ask it to deploy, add a database or read logs. The skill points the agent
 to `ployz --help` and `ployz schema --json` for every command and setting.
 
-To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
+To set it up by hand, follow the steps in [ployz.dev/agents.md](https://ployz.dev/agents.md)
 yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
@@ -59,9 +59,21 @@ by hand for every project:
 
 ```sh
 claude mcp add -s user ployz -- ployz mcp
+ployz mcp login
 ```
 
-For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
+For Codex, run `codex mcp add ployz -- ployz mcp`. `ployz mcp` doesn't use your sign-in. It acts
+with its own agent token, which `ployz mcp login` makes in your current organization and keeps
+on this computer. Until you run it, every tool call fails and names the command. The token acts
+as you in that organization, expires after 365 days, and shows as `agent` under KIND in
+`ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. An agent
+token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
+in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
+for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
+calls as the agent's.
+
+The tools create
 Projects, read and stage changes in them, review and deploy them (or save them for the next deploy), restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
@@ -73,7 +85,7 @@ Some things are not tools. Run these yourself in a terminal:
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
-- Branches and tokens.
+- Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
 
 Tools that can delete something when they run are marked destructive: `deploy`,
@@ -83,7 +95,8 @@ or release a copy or remove a mirror, and removing an organization member or inv
 removal, such as `service_remove`, deletes nothing until the next deploy, so it isn't marked. When
 one of them needs your approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
-the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
+the agent's app shows you what it would remove and asks you to approve or deny it. Your answer
+goes to Ployz Cloud with your own sign-in, not the agent's token. Removing a
 Project, an Environment or a Server also asks you to type its name. Approve and the call goes
 ahead. Leave Approve unticked and Ployz denies the approval; any reason you type goes back to the
 agent, which is told nothing changed. Declining or closing the dialog denies it too, without a
@@ -212,7 +225,9 @@ offline, run it again once that server is back. Owners and admins see and can re
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. A token you make outlives the login you made it
+another that outlives it, or revoke the rest. `ployz token ls` shows each token's KIND: `cli` for
+one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
+answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.
 
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
@@ -226,6 +241,12 @@ row, so `ployz service ls | cut -f1` prints the names. An empty list prints one 
 stderr, such as `No Services in production yet.`; piped, it also prints the header row on stdout.
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
+
+`ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
+server waiting for approval, it leads with a **this server** line: `Installing Docker`,
+`Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
+`Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
+it as `blocked` lines. With `--json` this is the `this_server` object.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.

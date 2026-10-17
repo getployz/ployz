@@ -281,8 +281,8 @@ runtime_section() {
   h $f "server"
   c $R "server ls" -- $P server ls
   c $R "server ls --json" -- $P --json server ls
-  c $R "server inspect" -- $P server inspect machine-1
-  c $R "server inspect --json" -- $P --json server inspect machine-1
+  c $R "server show" -- $P server show machine-1
+  c $R "server show --json" -- $P --json server show machine-1
   c $R "server logs" -- $P server logs --tail 5
   c $R "server logs --json" -- $P --json server logs --tail 2
 }
@@ -411,7 +411,7 @@ errors_section() {
     c $X "domain check of an unknown domain $j" -- $P $j domain check nosuch.example.com
     c $X "domain set on an unknown Service $j" -- $P $j domain set nosuch foo
     c $X "domain rm of an unknown domain $j" -- $P $j domain rm nosuch.example.com
-    c $X "server inspect of an unknown Server $j" -- $P $j server inspect nosuch
+    c $X "server show of an unknown Server $j" -- $P $j server show nosuch
     c $X "env copy of an unknown node $j" -- $P $j env copy nosuch --env fix-api
     c $X "env copy in a non-Branch $j" -- $P $j env copy web
     c $X "env sync --to from a non-Branch $j" -- $P $j env sync --to --plan

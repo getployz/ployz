@@ -392,6 +392,8 @@ pub(crate) const LOGS: Verb = Verb::cloud("logs", Never, operator::logs_command,
 pub(crate) const MCP: Verb = Verb::local("mcp", Never, mcp::command, mcp::serve)
     .refuses_json()
     .docs("cli/overview.md");
+pub(crate) const MCP_LOGIN: Verb = Verb::cloud("mcp login", Always, mcp::login_command, mcp::login)
+    .docs("account/connect-an-agent.md");
 pub(crate) const METRICS: Verb =
     Verb::cloud("metrics", Never, metrics::command, metrics::metrics).docs("observe/metrics.md");
 pub(crate) const ORG_BUILD_ORDER: Verb = Verb::cloud(
@@ -455,6 +457,15 @@ pub(crate) const SERVER_BUILD_CACHE_CLEAR: Verb = Verb::local(
     server::clear_build_cache,
 )
 .docs("builds/build-resources-and-cache.md");
+pub(crate) const SERVER_CHECKIN: Verb = Verb::local(
+    "server checkin",
+    Never,
+    server::checkin::command,
+    server::checkin::checkin,
+)
+.refuses_json()
+.keeps_running(KeepsRunning::Always)
+.docs("troubleshooting/servers.md");
 pub(crate) const SERVER_CLEAN: Verb = Verb::cloud(
     "server clean",
     Depends,
@@ -479,12 +490,6 @@ pub(crate) const SERVER_FORGET: Verb = Verb::cloud(
 )
 .docs("servers/manage-servers.md")
 .tool(ToolId::ServerForget);
-pub(crate) const SERVER_INSPECT: Verb = Verb::cloud(
-    "server inspect",
-    Never,
-    server::inspect_command,
-    server::inspect,
-);
 pub(crate) const SERVER_LOGS: Verb = Verb::cloud(
     "server logs",
     Never,
@@ -493,7 +498,15 @@ pub(crate) const SERVER_LOGS: Verb = Verb::cloud(
 )
 .keeps_running(KeepsRunning::With("--follow"));
 pub(crate) const SERVER_LS: Verb =
-    Verb::cloud("server ls", Never, server::list_command, server::list);
+    Verb::cloud("server ls", Never, server::list_command, server::list)
+        .docs("servers/manage-servers.md");
+pub(crate) const SERVER_REJECT: Verb = Verb::cloud(
+    "server reject",
+    Always,
+    server::reject::command,
+    server::reject::reject,
+)
+.docs("servers/manage-servers.md");
 pub(crate) const SERVER_RM: Verb =
     Verb::cloud("server rm", Always, server::remove_command, server::remove)
         .docs("servers/manage-servers.md")
@@ -502,6 +515,9 @@ pub(crate) const SERVER_SET: Verb =
     Verb::cloud("server set", Depends, server::set_command, server::set)
         .docs("servers/manage-servers.md")
         .tool(ToolId::ServerSet);
+pub(crate) const SERVER_SHOW: Verb =
+    Verb::cloud("server show", Never, server::show_command, server::show)
+        .docs("servers/manage-servers.md");
 pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
     "server upgrade",
     Depends,
@@ -510,6 +526,27 @@ pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
 )
 .docs("servers/manage-servers.md")
 .tool(ToolId::ServerUpgrade);
+pub(crate) const SERVER_TOKEN_CREATE: Verb = Verb::cloud(
+    "server token create",
+    Always,
+    server::token::create_command,
+    server::token::create,
+)
+.docs("servers/add-a-server.md");
+pub(crate) const SERVER_TOKEN_LS: Verb = Verb::cloud(
+    "server token ls",
+    Never,
+    server::token::ls_command,
+    server::token::ls,
+)
+.docs("servers/add-a-server.md");
+pub(crate) const SERVER_TOKEN_REVOKE: Verb = Verb::cloud(
+    "server token revoke",
+    Always,
+    server::token::revoke_command,
+    server::token::revoke,
+)
+.docs("servers/add-a-server.md");
 pub(crate) const SERVICE_ADD: Verb = Verb::cloud(
     "service add",
     Never,
@@ -749,6 +786,7 @@ pub(crate) const VERBS: &[Verb] = &[
     LOGOUT,
     LOGS,
     MCP,
+    MCP_LOGIN,
     METRICS,
     ORG_BUILD_ORDER,
     ORG_LEAVE,
@@ -763,14 +801,19 @@ pub(crate) const VERBS: &[Verb] = &[
     SCHEMA,
     SERVER_ADD,
     SERVER_BUILD_CACHE_CLEAR,
+    SERVER_CHECKIN,
     SERVER_CLEAN,
     SERVER_DRAIN,
     SERVER_FORGET,
-    SERVER_INSPECT,
     SERVER_LOGS,
     SERVER_LS,
+    SERVER_REJECT,
     SERVER_RM,
     SERVER_SET,
+    SERVER_SHOW,
+    SERVER_TOKEN_CREATE,
+    SERVER_TOKEN_LS,
+    SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
     SERVICE_ADD,
     SERVICE_INSPECT,
@@ -844,6 +887,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "server",
         command: server::group,
+    },
+    Group {
+        path: "server token",
+        command: server::token::group,
     },
     Group {
         path: "service",

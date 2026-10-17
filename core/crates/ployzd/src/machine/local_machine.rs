@@ -11,9 +11,10 @@ use std::{
 use ployz_core::{
     EnrollRequest, Enrolled, ForgetRequest, Forgotten, InspectRequest, LeaveRequest, Left,
     LeftPhase, LocalMachinePhase, Machine, MachineDetails, MachineId, MachineIdentity, MachineList,
-    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, MembershipEvidence,
-    PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode, RttObservation,
-    RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest, synthesize_membership,
+    MachineObservation, MachineToken, MachineUpdated, ManagementAddress, ManagementClientLabel,
+    MembershipEvidence, PublicIpDiscovery, RegisterRequest, Registered, RpcError, RpcErrorCode,
+    RttObservation, RttStatistics, SelectedEndpoint, StorageDeparture, UpdateMachineRequest,
+    synthesize_membership,
 };
 use thiserror::Error;
 
@@ -95,6 +96,8 @@ pub enum Error {
     Store(#[from] StoreError),
     #[error("management credential has been revoked")]
     ManagementRevoked,
+    #[error("only Cloud manages slots")]
+    OnlyCloudManagesSlots,
     #[error("Machine is not participating")]
     NotParticipating,
     #[error("Cluster store is not available")]
@@ -210,6 +213,26 @@ impl LocalMachine {
             return Err(Error::ManagementRevoked);
         }
         Ok(())
+    }
+
+    /// Refuse a slot change from any management client other than Cloud's.
+    /// Local-socket callers carry no client key and keep full authority.
+    pub(crate) fn require_slot_authority(
+        client: Option<[u8; 32]>,
+        record: &LocalMachineRecord,
+    ) -> Result<(), Error> {
+        let Some(remote) = client else {
+            return Ok(());
+        };
+        let label = record.accepted_label(&remote);
+        if label.is_some_and(|label| label.as_str() == "cloud") {
+            return Ok(());
+        }
+        tracing::warn!(
+            slot = label.map_or("none", ManagementClientLabel::as_str),
+            "refused SetManagementClient: only Cloud manages slots"
+        );
+        Err(Error::OnlyCloudManagesSlots)
     }
 
     /// Admit work under installation exclusion only, taking no turn in Machine

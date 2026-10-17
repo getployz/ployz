@@ -21,8 +21,6 @@ use crate::cloud_login::{
 /// slow), so the client's 15s default would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Who a Cloud call speaks for. `ployz mcp` speaks for an agent, and Cloud lets only a
-/// person, or the prompt that asked, approve what an agent asks for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
     Cli,
@@ -148,6 +146,25 @@ pub(crate) struct TokenEntry {
     pub(crate) expires_at: String,
     pub(crate) expired: bool,
     pub(crate) current: bool,
+    #[serde(default)]
+    pub(crate) kind: TokenKind,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenKind {
+    #[default]
+    Cli,
+    Agent,
+}
+
+impl TokenKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Agent => "agent",
+        }
+    }
 }
 
 /// A signed-in device of the caller's.
@@ -208,6 +225,8 @@ pub(crate) struct NewToken {
     pub(crate) organization: String,
     pub(crate) expires_at: String,
     pub(crate) secret: String,
+    #[serde(default)]
+    pub(crate) kind: TokenKind,
 }
 
 /// A revoked token or signed-out device.
@@ -282,13 +301,15 @@ pub(crate) async fn credentials(credential: &Credential) -> Result<Credentials, 
 pub(crate) async fn new_token(
     credential: &Credential,
     name: &str,
+    kind: TokenKind,
     expires_in_days: u16,
 ) -> Result<NewToken, LoginError> {
     #[derive(Deserialize)]
     struct Reply {
         token: NewToken,
     }
-    let body = serde_json::json!({ "name": name, "expires_in_days": expires_in_days });
+    let body =
+        serde_json::json!({ "name": name, "kind": kind, "expires_in_days": expires_in_days });
     let reply: Reply = call(credential, Method::POST, "tokens", Some(&body)).await?;
     Ok(reply.token)
 }
@@ -582,11 +603,6 @@ async fn store_answer<T: DeserializeOwned>(
     credential: &Credential,
     response: reqwest::Response,
 ) -> Result<T, StoreCallError> {
-    #[derive(Deserialize)]
-    #[serde(tag = "_tag")]
-    enum Public {
-        PublicError { code: String, message: String },
-    }
     let status = response.status();
     notice_revision(&response);
     let bytes = response
@@ -598,20 +614,9 @@ async fn store_answer<T: DeserializeOwned>(
             return Err(StoreCallError::Refused(refused));
         }
         if !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-            && let Ok(Public::PublicError { code, message }) = serde_json::from_slice(&bytes)
+            && let Some(refused) = public_error(&bytes)
         {
-            let code = match code.as_str() {
-                "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
-                "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
-                "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
-                _ => ployz_core::RpcErrorCode::Internal,
-            };
-            return Err(StoreCallError::Refused(RpcError {
-                code,
-                message,
-                details: serde_json::Value::Null,
-                cause: Vec::new(),
-            }));
+            return Err(StoreCallError::Refused(refused));
         }
         if status == StatusCode::NOT_FOUND {
             return Err(LoginError::Unsupported(credential.cloud().to_owned()).into());
@@ -945,6 +950,29 @@ pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
         .map(|refusal| refusal.error)
 }
 
+/// A Cloud route's `PublicError`, as the refusal it stands for.
+pub(crate) fn public_error(body: &[u8]) -> Option<RpcError> {
+    #[derive(Deserialize)]
+    #[serde(tag = "_tag")]
+    enum Public {
+        PublicError { code: String, message: String },
+    }
+    let Public::PublicError { code, message } = serde_json::from_slice(body).ok()?;
+    let code = match code.as_str() {
+        "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
+        "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
+        "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
+        "UNAUTHORIZED" | "FORBIDDEN" => ployz_core::RpcErrorCode::Unauthenticated,
+        _ => ployz_core::RpcErrorCode::Internal,
+    };
+    Some(RpcError {
+        code,
+        message,
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    })
+}
+
 async fn send(
     credential: &Credential,
     method: Method,
@@ -1197,19 +1225,22 @@ mod tests {
                 let body: serde_json::Value = serde_json::from_str(body).unwrap();
                 assert_eq!(
                     body,
-                    serde_json::json!({ "name": "ci", "expires_in_days": 30 })
+                    serde_json::json!({ "name": "ci", "kind": "agent", "expires_in_days": 30 })
                 );
                 (
                     200,
                     serde_json::json!({ "token": {
                         "id": "t1", "name": "ci", "organization": "acme",
-                        "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new",
+                        "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new", "kind": "agent",
                     } }),
                 )
             }
             other => panic!("unexpected {other}"),
         });
-        let made = new_token(&token(&cloud), "ci", 30).await.unwrap();
+        let made = new_token(&token(&cloud), "ci", TokenKind::Agent, 30)
+            .await
+            .unwrap();
         assert_eq!(made.secret, "ployz_new");
+        assert_eq!(made.kind, TokenKind::Agent);
     }
 }

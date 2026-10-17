@@ -1,9 +1,11 @@
 // Seeds a verification database through the app's own Config Store commands. up.sh runs it with runner.mjs, so
 // `#/` imports resolve against this checkout. Typechecked with the app: a refactor that breaks it fails `pnpm typecheck`.
-// Prints one line, `VERIFY_SEED <json>`: the organization slug, the session cookie, an Organization Token for the CLI
-// (`cliToken`), every write's outcome and what was skipped.
+// Prints one line, `VERIFY_SEED <json>`: the organization slug, a session cookie and an Organization Token for the CLI per
+// person (Ada's `cookie` and `cliToken`, `graceCookie` and `graceToken`, `linusCookie` and `linusToken`), every write's
+// outcome and what was skipped.
 //
-// Ada Lovelace's organization holds project `shop`, on public images so a real Server can run it:
+// Ada Lovelace owns organization `ada`; Grace Hopper is an admin and Linus Torvalds a member there. It holds project
+// `shop`, on public images so a real Server can run it:
 //   fix-api     a Branch of production (api, web) with 2 changes to save; production moved on after it branched
 //   staging     a kept Branch of production (api, worker) that includes search's changes, then sets one itself
 //   search      a Branch of staging, synced into it and changed again since: Details offers Include newer changes
@@ -30,7 +32,7 @@ import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { linkGithubInstallation, upsertCachedGithubRepositories, upsertGithubInstallation } from "#/modules/github/github.repository";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
-import { account, session, user } from "#/modules/identity/tables";
+import { account, member, session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
@@ -106,18 +108,33 @@ const seed = Effect.gen(function* () {
     yield* drizzle.insert(account).values({ userId: ada.id, providerId: "github", accountId: String(ADA_GITHUB_ID) });
   }
 
-  // A session better-auth accepts: its row plus the HMAC-signed `better-auth.session_token` cookie.
+  // A session better-auth accepts in Ada's organization: its row plus the HMAC-signed `better-auth.session_token` cookie.
+  const signIn = (userId: string, role: "owner" | "admin" | "member", token: string) => Effect.gen(function* () {
+    const [signedIn] = yield* drizzle.insert(session).values({
+      userId, token, expiresAt: new Date(Date.now() + 30 * 24 * 3600_000),
+      activeOrganizationId: organizationId, activeOrganizationSlug: organizationSlug,
+    }).returning({ id: session.id });
+    if (!signedIn) return yield* Effect.die("No session.");
+    const cookie = encodeURIComponent(`${token}.${createHmac("sha256", env("BETTER_AUTH_SECRET")).update(token).digest("base64")}`);
+    const { secret } = yield* createOrganizationToken(
+      { userId, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id }, role, support: null, via: "dashboard" },
+      { name: "verify", expiresInDays: 30 },
+    );
+    return { cookie, cliToken: secret };
+  });
   const token = env("VERIFY_SESSION_TOKEN");
-  const [signedIn] = yield* drizzle.insert(session).values({
-    userId: ada.id, token, expiresAt: new Date(Date.now() + 30 * 24 * 3600_000),
-    activeOrganizationId: organizationId, activeOrganizationSlug: organizationSlug,
-  }).returning({ id: session.id });
-  if (!signedIn) return yield* Effect.die("No session.");
-  const cookie = encodeURIComponent(`${token}.${createHmac("sha256", env("BETTER_AUTH_SECRET")).update(token).digest("base64")}`);
-  const { secret: cliToken } = yield* createOrganizationToken(
-    { userId: ada.id, organization: { id: organizationId, slug: organizationSlug }, credential: { kind: "session", id: signedIn.id }, role: "owner", support: null, via: "dashboard" },
-    { name: "verify", expiresInDays: 30 },
-  );
+  const { cookie, cliToken } = yield* signIn(ada.id, "owner", token);
+  // Colleagues sign up with their own personal organization, then join Ada's. Their session tokens derive from Ada's, so
+  // their cookies also survive a reseed.
+  const colleague = (name: string, email: string, role: "admin" | "member") => Effect.gen(function* () {
+    const [person] = yield* drizzle.insert(user).values({ email, emailVerified: true, name }).returning();
+    if (!person) return yield* Effect.die("No user.");
+    yield* ensurePersonalOrganizationForUser(person);
+    yield* drizzle.insert(member).values({ userId: person.id, organizationId, role });
+    return yield* signIn(person.id, role, createHash("sha256").update(`${token}:${email}`).digest("hex"));
+  });
+  const grace = yield* colleague("Grace Hopper", "grace@example.com", "admin");
+  const linus = yield* colleague("Linus Torvalds", "linus@example.com", "member");
 
   const writes: Record<string, string> = {};
   const skipped: string[] = [];
@@ -297,7 +314,10 @@ const seed = Effect.gen(function* () {
     yield* write("blog pr-146 excludes LOG_LEVEL", { command: "never_sync", environment: blog("pr-146"), rows: ["web.env.LOG_LEVEL"] });
   }
 
-  return { organizationSlug, cookie, cliToken, bob, writes, skipped };
+  return {
+    organizationSlug, cookie, cliToken, graceCookie: grace.cookie, graceToken: grace.cliToken,
+    linusCookie: linus.cookie, linusToken: linus.cliToken, bob, writes, skipped,
+  };
 });
 
 // Without real Servers no Inngest answers, and the SDK retries each refused send for about 1.8 s. Refuse it at once.

@@ -110,8 +110,8 @@ m "$S" "server add: without --standalone (needs Cloud login)" -- $P server add "
 
 c "$S" "server ls" -- $P server ls
 c "$S" "server ls --json" -- $P server ls --json
-c "$S" "server inspect" -- $P server inspect alpha
-c "$S" "server inspect --json" -- $P server inspect alpha --json
+c "$S" "server show" -- $P server show alpha
+c "$S" "server show --json" -- $P server show alpha --json
 c "$S" "server logs -n 5" -- $P server logs -n 5
 head_json "$S" "server logs --json" 5 -- $P server logs -n 5 --json
 c "$S" "server clean (list orphan Namespaces)" -- $P server clean
@@ -204,14 +204,14 @@ m "$O" "volume inspect unknown" -- $P volume inspect nope
 m "$O" "build without a Cloud Build Grant" -- $P build --grant x --deployment 1 --commit abc --fingerprint f
 
 E=$CAPTURES/errors.md
-c "$E" "server inspect unknown" -- $P server inspect nope
+c "$E" "server show unknown" -- $P server show nope
 c "$E" "service inspect unknown" -- $P service inspect nope
 c "$E" "server rm without --confirm" -- $P server rm gamma
 c "$E" "server drain unknown" -- $P server drain nope
 docker stop "$NET-2" >/dev/null
 c "$E" "server ls (gamma stopped)" -- $P server ls
 c "$E" "server ls --json (gamma stopped)" -- $P server ls --json
-c "$E" "server inspect gamma (stopped)" -- $P server inspect gamma
+c "$E" "server show gamma (stopped)" -- $P server show gamma
 c "$E" "ps (gamma stopped)" -- $P ps
 c "$E" "ps --json (gamma stopped)" -- $P ps --json
 c "$E" "logs (gamma stopped)" -- $P logs web -n 1

@@ -1,4 +1,4 @@
-=== server inspect unknown :: $ ployz server inspect nope
+=== server show unknown :: $ ployz server show nope
 No Server named "nope"; ployz server ls lists them
 
 === service inspect unknown :: $ ployz service inspect nope
@@ -139,7 +139,7 @@ d7bb999f0d454dbcacc63d085021de34	alpha	up	Docker only	10.210.0.0/24	10.210.0.1	2
   ]
 }
 
-=== server inspect gamma (stopped) :: $ ployz server inspect gamma
+=== server show gamma (stopped) :: $ ployz server show gamma
 transport error
 
 === ps (gamma stopped) :: $ ployz ps

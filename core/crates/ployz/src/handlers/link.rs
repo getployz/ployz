@@ -20,12 +20,13 @@ use ployz_store::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, scoped, store};
+use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, reachable, scoped, store};
 use super::{Error, config_path, leaf_matches};
+use crate::checkin::{LocalCheckin, Paths};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::{Account, CredentialStore, Organization};
-use crate::ui::{Fields, Hint};
+use crate::ui::{Cell, Fields, Hint, Tone};
 
 pub(super) fn link_command(command: Command) -> Command {
     scoped(command.about("Link this directory to a Project and Environment"))
@@ -80,15 +81,20 @@ impl Scope {
         }
     }
 
-    /// Fill what flags and environment variables left open from the directory link.
-    fn linked(mut self, config: &Path) -> Result<Self, Error> {
+    /// Fill what flags and environment variables left open from the directory link,
+    /// once `check` accepts the link's Organization.
+    fn linked(
+        mut self,
+        config: &Path,
+        check: impl FnOnce(&str, &Link) -> Result<(), Error>,
+    ) -> Result<Self, Error> {
         if self.project.is_some() && self.environment.is_some() {
             return Ok(self);
         }
         let Some((directory, link)) = find(config)? else {
             return Ok(self);
         };
-        check_organization(config, &directory, &link)?;
+        check(&directory, &link)?;
         let project = self.project.get_or_insert(Named {
             name: link.project.clone(),
             source: Source::Link,
@@ -111,14 +117,31 @@ impl Scope {
 
 /// The scope a command acts on.
 pub(crate) fn scope(matches: &ArgMatches) -> Result<Scope, Error> {
-    given(matches)?.linked(&config_path(matches)?)
+    let config = config_path(matches)?;
+    given(matches)?.linked(&config, |directory, link| {
+        check_organization(&config, directory, link)
+    })
 }
 
 /// The scope from `PLOYZ_PROJECT`, `PLOYZ_ENV` and the directory link alone, for
 /// shell completion, which sees no flags.
 pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
+    from_env()?.linked(config, |directory, link| {
+        check_organization(config, directory, link)
+    })
+}
+
+/// [`scope_from_env`] for a caller whose credential acts in the Organization with ID
+/// `acting`, such as `ployz mcp`'s agent token, rather than in this device's sign-in.
+pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Error> {
+    from_env()?.linked(config, |directory, link| {
+        check_acting_in(acting, directory, link)
+    })
+}
+
+fn from_env() -> Result<Scope, Error> {
     let named = |name: &str| std::env::var(name).ok();
-    Scope {
+    Ok(Scope {
         project: named(env::PROJECT)
             .map(|name| ProjectName::parse(name).map(env_named))
             .transpose()?,
@@ -126,8 +149,7 @@ pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
             .map(|name| EnvironmentName::parse(name).map(env_named))
             .transpose()?,
         link: None,
-    }
-    .linked(config)
+    })
 }
 
 fn env_named<T>(name: T) -> Named<T> {
@@ -278,6 +300,35 @@ fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(),
             linked.slug, acting.slug
         ),
         json!({ "link": directory, "linked": linked.slug, "acting": acting.slug }),
+    )
+    .hint(Hint::Next(next)))
+}
+
+/// A link made in another Organization than `acting` would send its names to the
+/// wrong Organization, so it stops the call.
+fn check_acting_in(acting: &str, directory: &str, link: &Link) -> Result<(), Error> {
+    let Some(linked) = &link.organization else {
+        return Ok(());
+    };
+    if linked.id == acting {
+        return Ok(());
+    }
+    let next = if linked.id == LOCAL_ORGANIZATION {
+        format!("Link {directory} again.")
+    } else {
+        format!(
+            "Run `ployz org use {}`, then `ployz mcp login`, or link {directory} again.",
+            linked.slug
+        )
+    };
+    Err(Error::detailed(
+        RpcErrorCode::Conflict,
+        format!(
+            "{directory} is linked in Organization {}, but `ployz mcp` acts in another \
+             Organization. {next}",
+            linked.slug
+        ),
+        json!({ "link": directory, "linked": linked.slug }),
     )
     .hint(Hint::Next(next)))
 }
@@ -452,7 +503,9 @@ struct Attention {
 
 #[derive(Serialize)]
 struct Status {
-    identity: Identity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    this_server: Option<LocalCheckin>,
+    identity: Option<Identity>,
     scope: Scope,
     /// The Environment the scope resolves to; none when it doesn't resolve.
     environment: Option<EnvironmentSummary>,
@@ -468,36 +521,38 @@ const RECENT: usize = 5;
 /// `ployz status`: one call that orients an agent.
 pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
-    let identity = identity(&store)?;
+    let this_server = this_server();
+    let store = reachable(root)?;
+    let identity = store.as_ref().map(identity).transpose()?;
     let scope = scope(matches)?;
     let mut attention = Vec::new();
-    let diff = match store.try_read(&DiffQuery {
-        environment: scope.at(),
-    }) {
-        Ok(diff) => Some(diff),
-        // The scope doesn't resolve: say so, and still say who and where.
-        Err(StoreCallError::Refused(error))
-            if matches!(error.code, RpcErrorCode::NotFound | RpcErrorCode::Ambiguous) =>
-        {
-            let next = match error.details.get("next").and_then(|next| next.as_str()) {
-                Some(next) => next.to_owned(),
-                // Ambiguous, or the linked Project is gone: pick one to act in.
-                None => "ployz link --project PROJECT".to_owned(),
-            };
-            let next = Some(next);
-            attention.push(Attention {
-                reason: error.code.to_string(),
-                message: crate::ui::row(&error),
-                deployment: None,
-                next,
-            });
-            None
-        }
-        Err(error) => return Err(store.fail(error)),
+    let diff = match &store {
+        None => None,
+        Some(store) => match store.try_read(&DiffQuery {
+            environment: scope.at(),
+        }) {
+            Ok(diff) => Some(diff),
+            Err(StoreCallError::Refused(error))
+                if matches!(error.code, RpcErrorCode::NotFound | RpcErrorCode::Ambiguous) =>
+            {
+                let next = match error.details.get("next").and_then(|next| next.as_str()) {
+                    Some(next) => next.to_owned(),
+                    None => "ployz link --project PROJECT".to_owned(),
+                };
+                let next = Some(next);
+                attention.push(Attention {
+                    reason: error.code.to_string(),
+                    message: crate::ui::row(&error),
+                    deployment: None,
+                    next,
+                });
+                None
+            }
+            Err(error) => return Err(store.fail(error)),
+        },
     };
     let mut deploying = Vec::new();
-    if diff.is_some() {
+    if let (Some(store), Some(_)) = (&store, &diff) {
         let page = store.read(&DeploymentsQuery {
             environment: scope.at(),
             limit: Some(RECENT),
@@ -550,8 +605,12 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             deploying
                 .first()
                 .map(|deployment| super::deploy::show_hint(matches, deployment.number))
+        })
+        .or_else(|| {
+            (identity.is_none() && this_server.is_none()).then(|| "ployz login".to_owned())
         });
     let status = Status {
+        this_server,
         identity,
         scope,
         environment: diff.map(|diff| diff.environment),
@@ -566,9 +625,40 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
+fn this_server() -> Option<LocalCheckin> {
+    let path = Path::new(Paths::CHECKIN_DIR).join("status.json");
+    LocalCheckin::read(&path)
+        .inspect_err(|error| {
+            crate::ui::warn(format!("Could not read {}: {error}", path.display()));
+        })
+        .ok()
+        .flatten()
+}
+
 fn status_record(status: &Status) -> Fields {
-    let identity = &status.identity;
     let mut record = Fields::new();
+    if let Some(checkin) = &status.this_server {
+        let crate::checkin::Headline {
+            title: headline,
+            ended,
+        } = checkin.headline();
+        let tone = if ended { Tone::Bad } else { Tone::Change };
+        record.push("this server", Cell::status(headline, tone));
+        for blocker in &checkin.blockers {
+            record.push("blocked", Cell::status(&blocker.message, Tone::Bad));
+        }
+        if let Some(message) = checkin.message.as_deref().filter(|_| checkin.says_why()) {
+            record.push("reason", message);
+        }
+        record.push(
+            "checked in",
+            crate::checkin::ago(checkin.at, chrono::Utc::now()),
+        );
+    }
+    let Some(identity) = &status.identity else {
+        record.push("signed in as", "no one");
+        return record;
+    };
     if let Some(cloud) = &identity.cloud {
         record.push("cloud", cloud);
     }
@@ -622,7 +712,7 @@ fn status_record(status: &Status) -> Fields {
     for attention in &status.attention {
         record.push(
             "needs attention",
-            crate::ui::Cell::status(&attention.message, crate::ui::Tone::Bad),
+            Cell::status(&attention.message, Tone::Bad),
         );
     }
     record
@@ -707,4 +797,42 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         Some(context) => via("context", Some(context)),
         None => via("local", None),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linked_in(id: &str, slug: &str) -> Link {
+        Link {
+            organization: Some(Organization {
+                id: id.to_owned(),
+                slug: slug.to_owned(),
+            }),
+            project: ProjectName::parse("shop".to_owned()).unwrap(),
+            environment: EnvironmentName::parse("production".to_owned()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_link_from_another_organization_than_the_credential_s_stops_the_call() {
+        let link = linked_in("org_globex", "globex");
+        let refused = check_acting_in("org_acme", "/src/shop", &link).unwrap_err();
+        let message = refused.to_string();
+        assert!(
+            message.contains("linked in Organization globex"),
+            "{message}"
+        );
+        assert!(message.contains("ployz org use globex"), "{message}");
+        check_acting_in("org_globex", "/src/shop", &link).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_names_no_organization_is_not_checked() {
+        let link = Link {
+            organization: None,
+            ..linked_in("org_globex", "globex")
+        };
+        check_acting_in("org_acme", "/src/shop", &link).unwrap();
+    }
 }
