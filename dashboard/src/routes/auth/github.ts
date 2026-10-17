@@ -21,7 +21,7 @@ class GithubSignInRefused extends Data.TaggedError("GithubSignInRefused")<{
 const githubSignIn = Effect.fn("Auth.githubSignIn")(function* (request: Request) {
   const callbackURL = safeCallbackURL(new URL(request.url));
   const session = yield* getAuthSessionEffect(request.headers);
-  if (session !== null) return seeOther(callbackURL);
+  if (session !== null && session.user.isAnonymous !== true) return seeOther(callbackURL);
 
   // better-auth's OAuth state cookie reaches the browser through tanstackStartCookies, not this response.
   const response = yield* signInGithubEffect(request.headers, callbackURL);

@@ -81,6 +81,7 @@ const AuthSession = Schema.Struct({
     name: Schema.String,
     image: Schema.optionalKey(Schema.NullOr(Schema.String)),
     openStartedDeployments: Schema.optionalKey(Schema.Boolean),
+    isAnonymous: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   }),
 });
 

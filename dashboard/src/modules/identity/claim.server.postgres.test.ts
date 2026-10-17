@@ -2,6 +2,7 @@ import { it } from "@effect/vitest";
 import { eq } from "drizzle-orm";
 import { Effect, Exit, Layer } from "effect";
 import { expect } from "vitest";
+import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
@@ -53,6 +54,15 @@ const membersOf = Effect.fn(function* (organizationId: string) {
 
 const bearer = (token: string) => new Headers({ authorization: `Bearer ${token}` });
 
+/** A drain that removes a service: destructive, so a claimed Organization's agent must ask a person. */
+const DRAIN: OperationAsked = {
+  subject: `server:${machineId("a")}`,
+  verb: "drain",
+  name: "fra-1",
+  preview: { server: machineId("a"), moves: ["shop.web"], stays: [], retires: ["shop.edge"] },
+  effects: [{ kind: "removes_service", name: "shop.edge", node: "edge", path: "services/shop.edge" }],
+};
+
 it.live("a person who claims the sandbox becomes its sole owner and the agent's token keeps working for 90 days", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
@@ -79,6 +89,8 @@ it.live("a person who claims the sandbox becomes its sole owner and the agent's 
 
     expect(yield* isAnonymousOrganization(agent.organization.id)).toBe(false);
     for (const action of ACTIONS) yield* requireClaimed(agent.organization.id, action);
+    const gated = yield* gateOperation({ ...caller, via: "agent" }, null, DRAIN);
+    expect(gated).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
   })));
 
 it.live("the claim removes the empty Organization sign-in made and moves the person's sessions onto the sandbox", () =>

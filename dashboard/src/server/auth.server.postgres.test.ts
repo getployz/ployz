@@ -73,14 +73,19 @@ it.live(
         assert.strictEqual(restored?.session.userId, actor.userId);
 
         assert.strictEqual(restored?.user.openStartedDeployments, true);
-        const userPreference = yield* auth.handler(new Request("http://localhost:3000/api/auth/update-user", {
+        assert.strictEqual(restored?.user.isAnonymous, false);
+        const update = (body: Record<string, boolean>) => auth.handler(new Request("http://localhost:3000/api/auth/update-user", {
           method: "POST",
           headers: { cookie, "content-type": "application/json", origin: "http://localhost:3000" },
-          body: JSON.stringify({ openStartedDeployments: false }),
+          body: JSON.stringify(body),
         }));
+        const userPreference = yield* update({ openStartedDeployments: false });
         assert.strictEqual(userPreference.status, 200);
         const updatedUser = yield* auth.getSession(new Headers({ cookie }));
         assert.strictEqual(updatedUser?.user.openStartedDeployments, false);
+        const anonymityClaimed = yield* update({ isAnonymous: true });
+        assert.strictEqual(anonymityClaimed.status, 400);
+        assert.strictEqual((yield* auth.getSession(new Headers({ cookie })))?.user.isAnonymous, false);
 
         const anonymous = yield* Effect.exit(auth.resolveActor(new Headers()));
         assert.strictEqual(anonymous._tag, "Failure");

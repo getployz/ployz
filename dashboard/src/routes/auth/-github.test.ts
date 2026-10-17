@@ -8,8 +8,9 @@ import { handleGithubSignIn } from "./github";
 useServiceFreeEffectRunner();
 
 const GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize?state=abc";
-// SAFETY: The route only checks whether a session exists.
-const SESSION = {} as AuthSession;
+// SAFETY: The route only checks whether a session exists and whether its user is anonymous.
+const SESSION = { user: {} } as AuthSession;
+const ANONYMOUS_SESSION = { user: { isAnonymous: true } } as AuthSession;
 
 const getSession = vi.spyOn(auth, "getAuthSessionEffect");
 const signIn = vi.spyOn(auth, "signInGithubEffect");
@@ -56,6 +57,15 @@ describe("GET /auth/github", () => {
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("/cloud/acme");
     expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it("sends an anonymous agent's session to GitHub as if signed out", async () => {
+    getSession.mockImplementation(() => Effect.succeed(ANONYMOUS_SESSION));
+
+    const response = await handleGithubSignIn(request("/claim/secret"));
+
+    expect(signIn).toHaveBeenCalledWith(expect.any(Headers), "/claim/secret");
+    expect(response.headers.get("location")).toBe(GITHUB_AUTHORIZE);
   });
 
   it("keeps a signed-in visitor on this origin", async () => {
