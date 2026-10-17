@@ -191,7 +191,6 @@ it.live("an agent answers no approval, and what it asked waits on a person in Cl
     }
     expect(yield* status(fromMcp)).toBe("pending");
     expect(yield* approve(colleague, fromMcp)).toMatchObject(refused);
-    // `ployz mcp` posts its host's form answer with its person's own `ployz` credential.
     expect(yield* approve(otherToken, fromMcp)).toMatchObject({ ok: true, approval: { status: "approved" } });
 
     const fromGrant = yield* ask(grant);

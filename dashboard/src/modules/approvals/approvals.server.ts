@@ -321,12 +321,6 @@ export type Decider = Actor & { readonly organization: { readonly id: string } }
   | Pick<Caller, "via" | "credential">
 );
 
-/**
- * An agent answers no approval, either way. What an agent asked waits on a person: in the dashboard, or, when
- * `ployz mcp` asked with its token, at a `ployz` command as the member who asked, which is how `ployz mcp` records the
- * answer its human gave in the form. A request from the sidebar, a remote MCP client, or from before Cloud recorded
- * who asked waits on the dashboard.
- */
 const mayApprove = (decider: Decider, row: ApprovalRow) => {
   if (decider.via === "dashboard") return true;
   if (row.via === "cli") return true;
@@ -336,7 +330,7 @@ const mayApprove = (decider: Decider, row: ApprovalRow) => {
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
  * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
- * may deny and an agent may not; who may approve is `mayApprove`'s. The row records who decided.
+ * may deny; who may approve is `mayApprove`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
   caller: Decider,

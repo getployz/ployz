@@ -27,10 +27,7 @@ export const requireSignedIn = (caller: Caller) =>
     ? Effect.void
     : Effect.fail(new Validation({ message: "Only a signed-in person can make or revoke tokens; run `ployz login`.", userFacing: true }));
 
-/**
- * Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. A
- * token an agent asks for is an agent's, so no agent mints itself a credential that answers approvals.
- */
+/** Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. */
 export const createOrganizationToken = Effect.fn("OrganizationToken.create")(function* (
   caller: Caller,
   input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind },

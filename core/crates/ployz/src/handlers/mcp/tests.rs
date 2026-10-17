@@ -831,7 +831,6 @@ async fn a_host_that_elicits_asks_the_human_and_an_approval_resends_the_write() 
     );
 }
 
-/// A device signed in as Ada, with or without the agent token `ployz mcp login` made.
 fn signed_in_home(fake: &Fake, agent: bool) -> tempfile::TempDir {
     let home = tempfile::tempdir().unwrap();
     let cloud = json!({

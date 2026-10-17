@@ -10,7 +10,6 @@ use crate::cloud_account::{self, Credential, TokenKind};
 use crate::cloud_login::{LoginError, Secret};
 use crate::ui;
 
-/// Days an agent token works before `ployz mcp login` is needed again.
 const LIFETIME_DAYS: u16 = 365;
 
 pub(crate) const NOT_LOGGED_IN: &str =
@@ -20,7 +19,6 @@ pub(crate) fn login_command(command: Command) -> Command {
     command.about("Give `ployz mcp` its own agent token, which answers no approval")
 }
 
-/// The agent token `ployz mcp login` made, kept beside the Ployz config.
 #[derive(Serialize, Deserialize)]
 pub(super) struct Stored {
     cloud: String,
@@ -46,11 +44,6 @@ fn failed(path: PathBuf, source: io::Error) -> LoginError {
     LoginError::Store { path, source }
 }
 
-/// The agent token stored beside `config`, if `ployz mcp login` made one.
-///
-/// # Errors
-///
-/// Returns a store that cannot be read or parsed.
 pub(super) fn stored(config: &Path) -> Result<Option<Stored>, LoginError> {
     let path = path(config);
     match std::fs::read(&path) {

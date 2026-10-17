@@ -561,7 +561,6 @@ impl Server {
         }
     }
 
-    /// What the agent acts with: `PLOYZ_TOKEN`, else the agent token `ployz mcp login` made.
     async fn agent(&self) -> Result<Credential, String> {
         if self
             .account
@@ -578,7 +577,6 @@ impl Server {
         }
     }
 
-    /// What the person at the MCP host answers its form with: no agent answers an approval.
     async fn person(&self) -> Result<Credential, String> {
         cloud_account::credential(
             &CredentialStore::beside(&self.account.config),

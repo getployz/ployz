@@ -17,7 +17,6 @@ import { Forbidden, Unauthorized } from "#/server/public-error";
  * it is unexpired and its maker is still a member; a session acts in its active Organization while its user is a
  * member there. Anything else is refused. The session must come in the Authorization header, as the CLI sends it:
  * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
- * `via` comes from the credential, as `ployzVia` reads it.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
   const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];
@@ -44,11 +43,6 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
   } satisfies Caller;
 });
 
-/**
- * Who a `ployz` request speaks for: an agent token is an agent's, and a signed-in device or any other token a
- * `ployz` command's. `x-ployz-via: agent` can only narrow a `ployz` command to an agent, so no header lifts an agent
- * to a person.
- */
 export const ployzVia = (credential: TokenKind, headers: Headers): TokenKind =>
   headers.get("x-ployz-via") === "agent" ? "agent" : credential;
 

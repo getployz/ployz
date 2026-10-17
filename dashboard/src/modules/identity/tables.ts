@@ -171,8 +171,7 @@ export const deviceCode = pgTable(
 
 /**
  * Organization Tokens: `PLOYZ_TOKEN` credentials, each bound to one Organization and acting as the member who made it.
- * Only the SHA-256 of the secret is kept; the secret is shown once, when the token is made. `kind` is fixed at mint:
- * a `cli` token speaks for a person running `ployz`, an `agent` token for `ployz mcp`.
+ * Only the SHA-256 of the secret is kept; the secret is shown once, when the token is made.
  */
 export const organizationToken = pgTable(
   "organization_token",

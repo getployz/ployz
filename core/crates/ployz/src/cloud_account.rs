@@ -21,9 +21,6 @@ use crate::cloud_login::{
 /// slow), so the client's 15s default would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Who a Cloud call speaks for. Cloud reads it from the credential, so this is only a hint:
-/// `Agent` narrows a person's credential to an agent, and an agent token stays an agent's.
-/// Cloud lets no agent answer an approval.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
     Cli,
@@ -153,14 +150,11 @@ pub(crate) struct TokenEntry {
     pub(crate) kind: TokenKind,
 }
 
-/// Who an Organization Token speaks for, fixed when it is made.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TokenKind {
-    /// A person's `ployz`.
     #[default]
     Cli,
-    /// An agent's, as `ployz mcp login` makes; it answers no approval.
     Agent,
 }
 
@@ -299,7 +293,7 @@ pub(crate) async fn credentials(credential: &Credential) -> Result<Credentials, 
     call(credential, Method::GET, "tokens", None).await
 }
 
-/// Make an Organization Token of `kind` acting as the caller in the caller's Organization.
+/// Make an Organization Token acting as the caller in the caller's Organization.
 ///
 /// # Errors
 ///
