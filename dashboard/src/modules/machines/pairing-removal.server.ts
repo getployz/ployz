@@ -300,15 +300,15 @@ const ManagementClientCleared = Schema.Struct({
 /**
  * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
  * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders. A Machine that
- * answers `inspect` but never confirms still holds the pairing, and Cloud records that it answered.
+ * authenticates but never confirms still holds the pairing, and Cloud records that it answered.
  */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
-      const { management_clients: labels } = yield* session.inspect();
       return yield* Effect.gen(function* () {
+        const { management_clients: labels } = yield* session.inspect();
         for (const label of labels) {
           if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
         }
@@ -336,8 +336,10 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
     }
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
       if (endpoint.status !== "pending") return;
-      const management = yield* decrypt(endpoint.encryptedExpected);
-      const heard = yield* removeEndpointPairing(endpoint.machineId, management);
+      const heard = yield* decrypt(endpoint.encryptedExpected).pipe(
+        Effect.flatMap((management) => removeEndpointPairing(endpoint.machineId, management)),
+        Effect.orElseSucceed(() => "silent" as const),
+      );
       if (heard === "silent") return;
       yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
@@ -347,7 +349,7 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
             ? { status: "confirmed", machineId: entry.machineId } : entry),
         }).where(eq(organizationPairing.organizationId, organizationId));
       }));
-    }).pipe(Effect.ignore), { concurrency: 4, discard: true });
+    }), { concurrency: 4, discard: true });
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const current = yield* loadCurrentAttempt(attempt);
