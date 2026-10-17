@@ -979,6 +979,66 @@ it("previews a first server over a founding claim no token can finish, and leave
   expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role])).toEqual([[a.id, "founder"], [b.id, "joiner"]]);
 });
 
+it.each([
+  { kind: "empty", endpoints: [] },
+  { kind: "confirmed", endpoints: [{ machineId: legacyMachine, status: "confirmed" }] },
+])("previews the same founder Enroll starts after $kind removal completes, without clearing the pairing", async ({ endpoints }) => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a?.id === undefined || b?.id === undefined) throw new Error("two hosts");
+  await legacyClaim("1 hour");
+  await harness.pool.query(
+    "update organization_pairing set removal_started_at = date_trunc('milliseconds', now()), removal_endpoints = $1::jsonb",
+    [JSON.stringify(endpoints)],
+  );
+  const before = (await harness.pool.query("select * from organization_pairing")).rows;
+  const events = await outbox();
+  sent.mockClear();
+  const input: EnrollInput = { ids: [a.id, b.id], first: b.id, ...plainly, names: { kind: "pattern", pattern: "node-{n}" } };
+  const plan = await run(preview(input));
+  expect(plan.rows.map((row) => [row.waitingServerId, row.role, row.instruction.name])).toEqual([
+    [b.id, "founder", "node-1"],
+    [a.id, "joiner", "node-2"],
+  ]);
+  expect((await harness.pool.query("select * from organization_pairing")).rows).toEqual(before);
+  expect(await attempts()).toEqual([]);
+  expect(await tokenCount()).toBe(0);
+  expect(await outbox()).toEqual(events);
+  expect(sent).not.toHaveBeenCalled();
+
+  const started = await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.name]))
+    .toEqual(plan.rows.map((row) => [row.waitingServerId, row.role, row.instruction.name]));
+  expect(started.skipped).toEqual(plan.skipped);
+  expect(started.spread).toEqual(plan.spread);
+  const instructions = await harness.pool.query<{ waiting_server_id: string; instruction: unknown }>(
+    "select waiting_server_id, instruction from server_enrollment",
+  );
+  expect(new Map(instructions.rows.map((row) => [row.waiting_server_id, row.instruction])))
+    .toEqual(new Map(plan.rows.map((row) => [row.waitingServerId, row.instruction])));
+  expect(await pairings()).toEqual([]);
+});
+
+it.each(["pending", "unknown"])("refuses preview and Enroll while a removal endpoint is %s", async (status) => {
+  const [a] = await waiting("web-a");
+  if (a?.id === undefined) throw new Error("one host");
+  await legacyClaim("1 hour");
+  await harness.pool.query(
+    "update organization_pairing set removal_started_at = date_trunc('milliseconds', now()), removal_endpoints = $1::jsonb",
+    [JSON.stringify([status === "pending"
+      ? { machineId: legacyMachine, status, encryptedExpected: encryption.encrypt("ployz1:legacy-pairing") }
+      : { machineId: legacyMachine, status }])],
+  );
+  const input: EnrollInput = { ids: [a.id], ...plainly };
+  const refusal = {
+    _tag: "Conflict",
+    message: status === "pending"
+      ? "Cloud can't reach an earlier server to remove its pairing yet. Try again, or use Forget Servers."
+      : "Cloud can't remove an earlier server's pairing. Use Forget Servers.",
+  };
+  expect(await failure(preview(input))).toMatchObject(refusal);
+  expect(await failure(startServerEnrollment(ada, { organizationSlug: "ada", ...input }))).toMatchObject(refusal);
+});
+
 it("refuses a preview the way Enroll refuses it", async () => {
   const [a, b] = await waiting("web-a", "web-b");
   if (a?.id === undefined || b?.id === undefined) throw new Error("two hosts");

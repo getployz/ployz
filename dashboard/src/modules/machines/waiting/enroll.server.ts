@@ -198,7 +198,10 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
 ) {
   const { drizzle } = yield* Database;
   const select = drizzle.select().from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
-  const [pairing] = mode === "start" ? yield* select.for("update") : yield* select;
+  const [persisted] = mode === "start" ? yield* select.for("update") : yield* select;
+  const pairing = persisted?.founderMachineId === null && persisted.removalEndpoints?.every((endpoint) => endpoint.status === "confirmed")
+    ? undefined
+    : persisted;
   if (pairing !== undefined && pairing.removalEndpoints !== null) {
     const retryable = pairing.removalEndpoints.some((endpoint) => endpoint.status === "pending");
     return yield* new Conflict({
