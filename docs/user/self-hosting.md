@@ -166,7 +166,7 @@ To install a server with a [Fleet Token](servers/add-a-server.md#install-with-a-
 your address to the install line, or the server checks in with ployz.dev:
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL=https://cloud.example.com PLOYZ_ENROLL_TOKEN=pflt_… sh
+curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL=https://cloud.example.com sh -s -- --enroll
 ```
 
 The CLI signs in to ployz.dev unless you point it at yours:

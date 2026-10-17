@@ -123,22 +123,18 @@ pack_release 1.2.3
 cat > "$TMP/ployz" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then echo 1.2.3; exit 0; fi
+token_file=$5
 {
     echo "argv=$*"
     echo "enroll=${PLOYZ_ENROLL_TOKEN:-}"
     echo "skip_zfs=${PLOYZ_SKIP_ZFS:-}"
-    echo "mode=$(stat -c %a "$FLEET_TOKEN_FILE")"
-    echo "token=$(cat "$FLEET_TOKEN_FILE")"
+    echo "mode=$(stat -c %a "$token_file")"
+    echo "token=$(cat "$token_file")"
 } > "$CHECKIN_LOG"
-stop() {
-    printf '{\n  "answer": "stop",\n  "reason": "%s"\n}\n' "$1" > "$CHECKIN_STATUS"
-    rm -f "$FLEET_TOKEN_FILE"
-}
 case "${FAKE_ANSWER:-wait}" in
     wait) echo "Waiting for approval" ;;
-    expired) stop token_expired; echo "Token expired. The Fleet Token expired." >&2; exit 1 ;;
-    revoked) stop token_revoked; echo "Token revoked. The Fleet Token was revoked." >&2; exit 1 ;;
-    unreachable) echo "Could not reach Cloud." >&2; exit 1 ;;
+    expired) rm -f "$token_file"; echo "error: Token expired. Run the install again with a new token." >&2; exit 1 ;;
+    refused) echo "error: Cloud refused this Fleet Token." >&2; exit 1 ;;
 esac
 EOF
 tar -czf "$TMP/release/ployz_linux_amd64.tar.gz" -C "$TMP" ployz
@@ -147,22 +143,37 @@ cat > "$TMP/bin/id" <<'EOF'
 #!/bin/sh
 echo "${FAKE_UID:-0}"
 EOF
-chmod 0755 "$TMP/bin/id"
+cat > "$TMP/bin/stty" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$STTY_LOG"
+EOF
+printf '#!/bin/sh\n' > "$TMP/bin/systemctl"
+chmod 0755 "$TMP/bin/id" "$TMP/bin/stty" "$TMP/bin/systemctl"
 
-TOKEN=pflt_abc123
-export FLEET_TOKEN_FILE=$TMP/etc/ployz/fleet-token CHECKIN_STATUS=$TMP/status.json CHECKIN_LOG=$TMP/checkin.log
+TOKEN=pflt_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ-_01234
+FLEET_TOKEN_FILE=$TMP/etc/ployz/fleet-token
+export PLOYZ_TEST_ROOT=$TMP CHECKIN_LOG=$TMP/checkin.log STTY_LOG=$TMP/stty.log
 enroll() {
-    rm -rf "${TMP:?}/etc" "$CHECKIN_LOG" "$TMP/install/ployz"
+    rm -rf "${TMP:?}/etc" "$CHECKIN_LOG" "$STTY_LOG" "$TMP/install/ployz"
+    # shellcheck disable=SC2086
     env PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" INSTALL_BIN_DIR="$TMP/install" \
-        PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" 1.2.3 > "$TMP/out" 2> "$TMP/err"
+        PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" ${ENROLL_FLAG:-} 1.2.3 > "$TMP/out" 2> "$TMP/err"
 }
-
-for value in unset '' cet_abc123 PFLT_abc123; do
-    if [ "$value" = unset ]; then enroll; else enroll PLOYZ_ENROLL_TOKEN="$value"; fi
+installed_only() {
     printf '%s\n' 'ployz_linux_amd64.tar.gz: OK' "Installed ployz to $TMP/install/ployz" | diff - "$TMP/out"
-    [ ! -s "$TMP/err" ]
     [ ! -e "$FLEET_TOKEN_FILE" ]
     [ ! -e "$CHECKIN_LOG" ]
+}
+
+for value in unset ''; do
+    if [ "$value" = unset ]; then enroll; else enroll PLOYZ_ENROLL_TOKEN="$value"; fi
+    installed_only
+    [ ! -s "$TMP/err" ]
+done
+for value in cet_abc123 PFLT_abc123; do
+    enroll PLOYZ_ENROLL_TOKEN="$value"
+    installed_only
+    [ "$(cat "$TMP/err")" = "PLOYZ_ENROLL_TOKEN doesn't start with pflt_, so this installs only the CLI." ]
 done
 
 enroll PLOYZ_ENROLL_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
@@ -172,23 +183,48 @@ enroll PLOYZ_ENROLL_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
 [ "$(cat "$FLEET_TOKEN_FILE")" = $TOKEN ]
 printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE" enroll= skip_zfs=1 mode=600 \
     "token=$TOKEN" | diff - "$CHECKIN_LOG"
+[ ! -e "$STTY_LOG" ]
+
+# --enroll reads the token from the terminal with echo off, so it never reaches sudo's arguments.
+mkdir -p "$TMP/dev"
+printf '%s\n' "$TOKEN" > "$TMP/dev/tty"
+ENROLL_FLAG=--enroll enroll
+[ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
+printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE" enroll= skip_zfs= mode=600 \
+    "token=$TOKEN" | diff - "$CHECKIN_LOG"
+printf '%s\n' -echo echo | diff - "$STTY_LOG"
+grep -Fq 'Fleet Token: ' "$TMP/dev/tty"
 
 if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_UID=1000; then
     echo "enrolled without root" >&2
     exit 1
 fi
-grep -Fq 'Run it as root' "$TMP/err"
+grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- --enroll' "$TMP/err"
 [ ! -e "$TMP/install/ployz" ]
 [ ! -e "$FLEET_TOKEN_FILE" ]
 
-for case in 'revoked:no' 'expired:yes' 'unreachable:no'; do
-    if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_ANSWER="${case%:*}"; then
-        echo "${case%:*} answer exited 0" >&2
+# A token of the wrong shape stops the script before it installs or writes anything.
+for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!"; do
+    for flag in '' --enroll; do
+        printf '%s\n' "$value" > "$TMP/dev/tty"
+        if [ -n "$flag" ]; then
+            if ENROLL_FLAG=$flag enroll; then echo "accepted $value from the terminal" >&2; exit 1; fi
+        elif enroll PLOYZ_ENROLL_TOKEN="$value"; then
+            echo "accepted $value" >&2
+            exit 1
+        fi
+        grep -Fq "That isn't a Fleet Token" "$TMP/err"
+        [ ! -e "$TMP/install/ployz" ]
+        [ ! -e "$FLEET_TOKEN_FILE" ]
+    done
+done
+
+for answer in expired refused; do
+    if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
+        echo "$answer answer exited 0" >&2
         exit 1
     fi
-    # The unreachable run inherits the expired status.json the earlier runs left behind.
-    if grep -Fq 'Token expired. Run the install again with a new token.' "$TMP/err"; then said=yes; else said=no; fi
-    [ "$said" = "${case#*:}" ] || { echo "${case%:*}: expired line printed=$said" >&2; exit 1; }
+    [ "$(wc -l < "$TMP/err")" = 1 ] || { echo "$answer: the script added to ployz's error" >&2; exit 1; }
 done
 
 echo "CLI installer verifies the checksum and binary before installing, and checks in with a Fleet Token"

@@ -11,10 +11,10 @@ use chrono::Utc;
 use clap::{ArgMatches, Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{LoopPloyzd, command, loop_ployzd, loop_start};
+use super::{LoopPloyzd, command, first_pass, loop_ployzd, loop_start};
 use crate::checkin::{
-    self, CheckinClient, CheckinKey, FleetToken, Host, LocalCheckin, Paths, Probe, Seen, System,
-    unit,
+    self, CheckinClient, CheckinKey, FleetToken, Host, LocalCheckin, Next, Paths, Probe, Seen,
+    StopReason, System, unit,
 };
 
 const PROBE: &str = r#"{"facts":{"os":{"id":"ubuntu","version_id":"24.04"},"kernel":"6.8.0","arch":"x86_64","virt":"BareMetal","cgroup":"V2","cpu_count":4,"memory_total_bytes":8589934592,"disks":[],"docker":"Absent"},"assessment":{"blockers":[],"warnings":[],"zfs":{"Ineligible":{"reason":{"code":"zfs_off","message":"Off."}}}}}"#;
@@ -348,4 +348,51 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
             .starts_with("No ployzd on PATH or at "),
         "the status names what is missing"
     );
+}
+
+#[test]
+fn an_install_ends_with_an_error_when_cloud_refuses_the_token() {
+    let refused = first_pass(
+        Next::Refused {
+            after: std::time::Duration::from_secs(60),
+        },
+        "cloud.example.com",
+    )
+    .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("Cloud at cloud.example.com refused this Fleet Token"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn an_install_stopped_by_its_token_says_to_run_it_again_with_a_new_one() {
+    for (reason, again) in [
+        (StopReason::TokenExpired, true),
+        (StopReason::TokenRevoked, true),
+        (StopReason::Rejected, false),
+    ] {
+        let stopped = first_pass(Next::Stop(reason, "Said Cloud.".to_owned()), "ployz.dev")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            stopped.contains(&format!("{}. Said Cloud.", reason.title())),
+            "{stopped}"
+        );
+        assert_eq!(
+            stopped.contains("Run the install again with a new token."),
+            again,
+            "{stopped}"
+        );
+    }
+}
+
+#[test]
+fn an_install_that_waits_or_cannot_reach_cloud_leaves_the_loop_running() {
+    let after = std::time::Duration::from_secs(60);
+    assert!(first_pass(Next::Wait { after, log: None }, "ployz.dev").is_ok());
+    let why = "Could not reach Ployz Cloud: refused.".to_owned();
+    assert!(first_pass(Next::Retry { after, why }, "ployz.dev").is_ok());
 }

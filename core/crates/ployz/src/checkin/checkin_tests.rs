@@ -624,7 +624,7 @@ async fn refused_pass(
 
 fn retries_after(next: &Next, seconds: u64) {
     assert!(
-        matches!(next, Next::Retry { after, .. } if *after == Duration::from_secs(seconds)),
+        matches!(next, Next::Refused { after } if *after == Duration::from_secs(seconds)),
         "{next:?}"
     );
 }
@@ -676,14 +676,14 @@ async fn a_token_swapped_in_after_a_refusal_gets_its_own_two_refusals_across_res
 }
 
 #[tokio::test]
-async fn the_loop_starting_right_after_an_install_refusal_does_not_confirm_it() {
+async fn an_install_rerun_right_after_a_refusal_does_not_confirm_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let installed = cloud_now();
     let now = Utc::now();
     retries_after(&refused_pass(&paths, OLD, now, installed, true).await, 60);
-    let looped = refused_pass(&paths, OLD, now, installed + TimeDelta::seconds(3), false).await;
-    retries_after(&looped, 57);
+    let rerun = refused_pass(&paths, OLD, now, installed + TimeDelta::seconds(3), true).await;
+    retries_after(&rerun, 57);
 }
 
 #[tokio::test]
@@ -794,10 +794,7 @@ async fn one_refusal_keeps_the_token_and_a_success_after_it_clears_it() {
     let host = FakeHost::default();
     let (url, _server) = unauthorized_cloud(4, 1).await;
     let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    assert!(
-        matches!(&next, Next::Retry { after, .. } if *after == Duration::from_secs(60)),
-        "{next:?}"
-    );
+    retries_after(&next, 60);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(
         status.headline(),
@@ -812,7 +809,7 @@ async fn one_refusal_keeps_the_token_and_a_success_after_it_clears_it() {
     pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     let (url, _server) = unauthorized_cloud(4, 1).await;
     let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    assert!(matches!(next, Next::Retry { .. }), "{next:?}");
+    assert!(matches!(next, Next::Refused { .. }), "{next:?}");
     assert!(paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
 }

@@ -153,9 +153,7 @@ impl Host for System {
     }
 
     async fn disable_loop(&self) -> Result<(), String> {
-        let disabled = systemctl(&["disable", unit::CHECKIN]).await;
-        let stopped = systemctl(&["stop", "--no-block", unit::PREPARE]).await;
-        disabled.and(stopped)
+        systemctl(&["disable", unit::CHECKIN]).await
     }
 
     fn stale_ployzd(&self) -> Option<String> {
@@ -225,6 +223,10 @@ pub(crate) enum Next {
     Retry {
         after: Duration,
         why: String,
+    },
+    /// Cloud refused the token once. A second refusal a minute later confirms it.
+    Refused {
+        after: Duration,
     },
     Stop(StopReason, String),
     ClockOff(String),
@@ -370,6 +372,14 @@ pub(crate) async fn run<H: Host>(
             Next::Retry { after, why } => {
                 last_log = None;
                 crate::ui::note(format!("{why} Trying again in {}s.", after.as_secs()));
+                tokio::time::sleep(after).await;
+            }
+            Next::Refused { after } => {
+                last_log = None;
+                crate::ui::note(format!(
+                    "{REFUSED_ONCE}. Trying again in {}s.",
+                    after.as_secs()
+                ));
                 tokio::time::sleep(after).await;
             }
             Next::Stop(reason, message) => {
@@ -629,11 +639,10 @@ async fn pass_from<H: Host>(
                 status.answer = Seen::Refused;
                 status.message = Some(REFUSED_ONCE.to_owned());
                 status.refused = Some(first);
-                Next::Retry {
+                Next::Refused {
                     after: client::BACKOFF
                         .saturating_sub(waited)
                         .max(Duration::from_secs(1)),
-                    why: format!("{REFUSED_ONCE}."),
                 }
             }
         }

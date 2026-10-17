@@ -17,7 +17,7 @@ use ployz_core::RpcErrorCode;
 
 use super::super::{Error, leaf_matches, runtime};
 use crate::checkin::{
-    self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Next, Paths, System, unit,
+    self, CheckinClient, CheckinEnd, CheckinKey, FleetToken, Next, Paths, StopReason, System, unit,
 };
 use crate::cli::{base, env, switch, value};
 use crate::cloud_login::DEFAULT_CLOUD;
@@ -76,8 +76,9 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     }
     let runtime = runtime()?;
     if matches.get_flag("install") {
-        runtime.block_on(stop_old_loop())?;
+        // A token that can't be used leaves the running loop alone.
         let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
+        runtime.block_on(stop_old_loop())?;
         let (key, mut client) = connect(&paths, &cloud_url, token)?;
         return runtime.block_on(install(&mut client, &key, &paths, &cloud_url));
     }
@@ -145,32 +146,52 @@ async fn install(
     write_unit(unit::PREPARE, &prepare_unit)?;
     systemd(&["daemon-reload"]).await?;
     crate::ui::stream("Checking in");
-    match checkin::install_pass(&host, client, key, paths, Utc::now()).await {
+    let next = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
+    if let Next::Stop(reason, _) = next {
+        checkin::stop(&host, client, paths, reason).await;
+    }
+    first_pass(next, cloud_url)?;
+    systemd(&["enable", "--now", unit::CHECKIN]).await?;
+    crate::ui::stream("Waiting for approval");
+    Ok(())
+}
+
+/// Whether the install leaves the loop running after its one check-in. A refusal ends the install
+/// at once, though the loop would ask once more, since someone is there to fix the token.
+fn first_pass(next: Next, cloud_url: &str) -> Result<(), Error> {
+    match next {
         Next::Wait { log, .. } => {
             if let Some(line) = log {
                 crate::ui::note(line);
             }
+            Ok(())
         }
         Next::Retry { why, .. } => {
             crate::ui::warn(format!("{why} The loop keeps trying."));
+            Ok(())
         }
+        Next::Refused { .. } => Err(Error::coded(
+            RpcErrorCode::Unauthenticated,
+            format!(
+                "Cloud at {cloud_url} refused this Fleet Token. Check the token, and PLOYZ_CLOUD_URL if you run your own Cloud, then run the install again."
+            ),
+        )),
         Next::Stop(reason, message) => {
-            checkin::stop(&host, client, paths, reason).await;
-            return Err(Error::coded(
+            let again = if reason == StopReason::Rejected {
+                ""
+            } else {
+                " Run the install again with a new token."
+            };
+            Err(Error::coded(
                 RpcErrorCode::Unauthenticated,
-                format!("{}. {message}", reason.title()),
-            ));
+                format!("{}. {message}{again}", reason.title()),
+            ))
         }
-        Next::ClockOff(why) => {
-            return Err(Error::coded(
-                RpcErrorCode::Unauthenticated,
-                format!("{why}, then run this again."),
-            ));
-        }
+        Next::ClockOff(why) => Err(Error::coded(
+            RpcErrorCode::Unauthenticated,
+            format!("{why}, then run this again."),
+        )),
     }
-    systemd(&["enable", "--now", unit::CHECKIN]).await?;
-    crate::ui::stream("Waiting for approval");
-    Ok(())
 }
 
 async fn stop_old_loop() -> Result<(), Error> {

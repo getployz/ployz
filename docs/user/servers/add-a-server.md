@@ -124,22 +124,22 @@ A Fleet Token starts with `pflt_`. Give it to the install script and the host as
 instead of joining:
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
+curl -fsSL https://ployz.sh | sudo sh -s -- --enroll
 ```
 
-The script prints `Installs Docker and Ployz. Nothing joins until you say so.` first. It installs
-the CLI, writes the token to `/etc/ployz/fleet-token`, readable by root only, and runs
-`ployz server checkin --install`. That ends with `Waiting for approval`, within seconds: Docker
-and ZFS install in the background while the host waits, and the host shows on the **Servers**
-page at once.
+The script prints `Installs Docker and Ployz. Nothing joins until you say so.` and asks for the
+token at a `Fleet Token:` prompt that doesn't show what you paste. The token never appears on a
+command line, so it stays out of `sudo`'s log, shell history and `ps`. The script checks that the
+token looks like one before it changes anything. It installs the CLI, writes the token to
+`/etc/ployz/fleet-token`, readable by root only, and runs `ployz server checkin --install`. That
+ends with `Waiting for approval`, within seconds: Docker installs and ZFS builds in the background
+while the host waits, and the host shows on the **Servers** page at once.
 
-- **After `sudo`.** Put the token after `sudo`, as shown. Set before it, `sudo` drops the variable
-  and the script only installs the CLI.
-- **On a shared host.** While the install runs, `ps` shows the `sudo` command line, token included,
-  to every local user. Run the line from a root shell, without `sudo`, to keep it out.
-- **Without ZFS.** Add `PLOYZ_SKIP_ZFS=1` next to the token, as `--storage none` does for
-  `ployz server add`.
-- **From user data.** cloud-init runs user data as root, so leave out `sudo`:
+- **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
+  `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- --enroll`. It does what
+  `--storage none` does for `ployz server add`.
+- **From user data.** cloud-init runs user data as root with no terminal to prompt at, so pass the
+  token in `PLOYZ_ENROLL_TOKEN` instead:
 
   ```yaml
   #cloud-config
@@ -147,14 +147,23 @@ page at once.
     - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=pflt_… sh
   ```
 
-- **Run it again.** The same line on the same host updates its token and keeps it one server.
-- **An expired token** prints `Token expired. Run the install again with a new token.` and the
-  script exits with an error. A revoked one says so the same way. Nothing keeps running on the
-  host.
+  Any process on the server, containers included, can read user data from the provider's
+  metadata service for as long as the server runs. Give a token you put there a short expiry.
+- **Run it again.** The same line on the same host updates its token and keeps it one server. A
+  token that isn't one leaves the host as it was.
+- **An expired token** prints `Token expired.`, Cloud's reason, and `Run the install again with a
+  new token.`, and the script exits with an error. A revoked one says so the same way.
+- **A token Cloud doesn't know**, or a missing `PLOYZ_CLOUD_URL` when you
+  [run your own Cloud](../self-hosting.md), ends the install with
+  `Cloud at … refused this Fleet Token.` and an error.
 
-The script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. It ignores any other
-value and only installs the CLI, as it does without a token. If the
-host waits longer than you expect, see
+When the install ends with an error, the host stops checking in and won't start again at boot.
+Preparation already under way finishes, so a package install is never cut off halfway, and
+nothing starts again.
+
+Without `--enroll`, the script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. For
+any other value it says so and only installs the CLI, as it does without a token. If the host
+waits longer than you expect, see
 [A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 
 ## Open the firewall

@@ -4,10 +4,17 @@ set -eu
 
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
+ENROLL=
+if [ "${1:-}" = --enroll ]; then
+    ENROLL=1
+    shift
+fi
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
-FLEET_TOKEN_FILE=${FLEET_TOKEN_FILE:-/etc/ployz/fleet-token}
-CHECKIN_STATUS=${CHECKIN_STATUS:-/var/lib/ployz/checkin/status.json}
+FLEET_TOKEN_FILE=${PLOYZ_TEST_ROOT:-}/etc/ployz/fleet-token
+TTY=${PLOYZ_TEST_ROOT:-}/dev/tty
+FLEET_TOKEN=${PLOYZ_ENROLL_TOKEN:-}
+unset PLOYZ_ENROLL_TOKEN
 # Same grammar as scripts/release-tag.sh; this file is fetched alone, so it cannot source it.
 RELEASE_NUMBER='(0|[1-9][0-9]{0,18})'
 STABLE_VERSION="$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER"
@@ -75,7 +82,7 @@ resolve_install() {
 
 install_cli() {
     tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+    trap 'rm -rf "$tmp_dir"; rm -f "${staged:-}"' EXIT HUP INT TERM
     version=$(resolve_install "$PLOYZ_VERSION")
     matches_version "$version" "$RELEASE_VERSION" || error "Invalid version: $PLOYZ_VERSION"
 
@@ -109,28 +116,47 @@ write_fleet_token() {
     mv -f "$staged" "$FLEET_TOKEN_FILE"
 }
 
-# A stop on this token deletes the token file, so a status left by an older install never matches.
-token_expired() {
-    [ ! -e "$FLEET_TOKEN_FILE" ] && grep -Eq '"reason": *"token_expired"' "$CHECKIN_STATUS" 2>/dev/null
+# The same shape ployz checks, spelled out so no locale widens the range.
+is_fleet_token() {
+    case "$1" in pflt_*) ;; *) return 1 ;; esac
+    secret=${1#pflt_}
+    [ "${#secret}" -eq 43 ] || return 1
+    case "$secret" in
+        *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
+    esac
+}
+
+# The script itself arrives on stdin, so the token is read from the terminal, never echoed.
+read_fleet_token() {
+    (: < "$TTY") 2>/dev/null ||
+        error "No terminal to read the Fleet Token from. Set PLOYZ_ENROLL_TOKEN in the root environment instead, as cloud-init does."
+    printf 'Fleet Token: ' >> "$TTY"
+    trap 'stty echo < "$TTY"; exit 130' HUP INT TERM
+    stty -echo < "$TTY"
+    read -r FLEET_TOKEN < "$TTY" || FLEET_TOKEN=
+    stty echo < "$TTY"
+    trap - HUP INT TERM
+    printf '\n' >> "$TTY"
 }
 
 check_in() {
     echo "Installs Docker and Ployz. Nothing joins until you say so."
     [ "$(uname -s)" = Linux ] || error "A Fleet Token needs a Linux server."
-    [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=... sh"
-    fleet_token=$PLOYZ_ENROLL_TOKEN
-    unset PLOYZ_ENROLL_TOKEN
+    [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- --enroll"
+    command -v systemctl >/dev/null 2>&1 || error "A Fleet Token needs a server that runs systemd."
+    [ -n "$FLEET_TOKEN" ] || read_fleet_token
+    is_fleet_token "$FLEET_TOKEN" ||
+        error "That isn't a Fleet Token. It is pflt_ and 43 more characters. Copy it again."
     install_cli
-    write_fleet_token "$fleet_token"
-    if ! "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE"; then
-        if token_expired; then
-            echo "Token expired. Run the install again with a new token." >&2
-        fi
-        exit 1
-    fi
+    write_fleet_token "$FLEET_TOKEN"
+    "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE"
 }
 
-case "${PLOYZ_ENROLL_TOKEN:-}" in
-    pflt_*) check_in ;;
-    *) install_cli ;;
+case "$ENROLL:$FLEET_TOKEN" in
+    1:* | :pflt_*) check_in ;;
+    :) install_cli ;;
+    *)
+        echo "PLOYZ_ENROLL_TOKEN doesn't start with pflt_, so this installs only the CLI." >&2
+        install_cli
+        ;;
 esac
