@@ -108,8 +108,11 @@ name a kernel path such as `zfs:/dev/vdb`. The disk must
 be an empty whole disk. Ployz refuses a disk with a filesystem, a partition table,
 partitions, or mounts. It creates the `ployz-device` pool on the selected disk.
 Retrying installation on the same disk also imports an exported pool before checking
-whether the disk is empty. After a reboot, Ployz imports that pool again. If the device is unavailable, storage
-operations fail instead of creating a replacement pool on the main disk.
+whether the disk is empty. After a reboot, a volume lookup, mount, or storage request
+imports that pool again. Ployz records device ownership before serving volumes,
+including when the operating system already imported the pool. If the device is
+unavailable, storage operations fail instead of creating a replacement pool on the
+main disk.
 
 With `--storage zfs` and no device, Ployz prepares ZFS and creates a file-backed pool
 on the main disk when you deploy the first managed volume. A failed named-device

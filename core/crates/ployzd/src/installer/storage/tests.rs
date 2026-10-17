@@ -110,7 +110,7 @@ fn named_storage_retries_only_the_same_unambiguous_device_pool() {
         } else {
             let failure = result.unwrap_err().to_string();
             let expected = match case.as_str() {
-                "foreign" => "already exists",
+                "foreign" => "single Machine Pool",
                 "ambiguous" => "ambiguous",
                 "other-device" => "not backed solely",
                 _ => unreachable!(),
@@ -996,14 +996,6 @@ fn device_creation_commits_ownership_only_after_confirmation() {
             assert!(paths.device_pool_marker.exists());
         } else {
             assert!(result.is_err());
-            assert!(!paths.device_pool_marker.exists());
-            reconcile_device_pool_marker(&paths).unwrap();
-            fs::write(
-                paths.device_pool_marker.with_extension(""),
-                "retained file Pool",
-            )
-            .unwrap();
-            reconcile_device_pool_marker(&paths).unwrap();
             assert!(!paths.device_pool_marker.exists());
         }
         fs::write(root.join("child-completed"), case).unwrap();

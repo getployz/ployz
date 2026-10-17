@@ -180,7 +180,7 @@ fn existing_device_pool(device: &Path) -> Result<bool, Error> {
             return Err(refuse(
                 STAGE,
                 format!(
-                    "named-device storage requires a single Machine Pool; {} already exists; refusing to replace it",
+                    "named-device storage requires a single Machine Pool; found {}",
                     pool.name()
                 ),
             ));

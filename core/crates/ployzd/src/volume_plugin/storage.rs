@@ -265,7 +265,12 @@ impl VolumeStorage {
 
     pub(super) async fn mountpoint(&self, name: &DockerVolumeName) -> Result<String> {
         let _guard = self.admit_mutation().await?;
-        let pool = self.one_pool().await?;
+        let _pool_guard = self.pool.lock_mutation().await?;
+        let pool = self
+            .pool
+            .admit(super::pool::UnlabeledBacking::Preserve)
+            .await?
+            .ok_or("no usable existing Machine Pool")?;
         let datasets = self.datasets(&pool).await?;
         let dataset = Self::dataset(&datasets, &pool, name)?
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
