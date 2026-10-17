@@ -788,7 +788,26 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
             .projects
             .is_empty()
     );
+    let Removal::Removing { id: removal, .. } = removing else {
+        panic!("removed at once");
+    };
+    assert!(
+        store
+            .read(
+                &who,
+                &RemovedQuery {
+                    id: removal.clone()
+                }
+            )
+            .unwrap()
+            .residuals
+            .is_empty()
+    );
     store.remove_organization(&who).unwrap();
+    assert_eq!(
+        refusal(store.read(&who, &RemovedQuery { id: removal })).code,
+        RpcErrorCode::NotFound
+    );
     // Its name is free again.
     store
         .write(
