@@ -1319,6 +1319,101 @@ fn server_show_reaches_the_waiting_list_past_an_inherited_connection() {
     );
 }
 
+/// A daemon on a unix socket that answers every request after discovery with an ambiguous name.
+#[cfg(unix)]
+fn ambiguous_daemon(socket: &std::path::Path) {
+    use ployz_core::{
+        ContractDescription, MachineRpcServer, OpaquePayload, PROTOCOL_MAJOR, RpcError,
+        RpcErrorCode, RpcResponse,
+    };
+    use ployz_testkit::fake_machine::{Fake, FakeMachine};
+    use tonic::{Request, Response, Status};
+
+    struct Daemon;
+
+    #[tonic::async_trait]
+    impl FakeMachine for Daemon {
+        async fn describe_contract(
+            &self,
+            _request: Request<OpaquePayload>,
+        ) -> Result<Response<OpaquePayload>, Status> {
+            let description = ContractDescription {
+                machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse().unwrap(),
+                protocol_major: PROTOCOL_MAJOR,
+                daemon_version: "cli-shape".into(),
+                capabilities: ployz_core::served_capabilities()
+                    .into_iter()
+                    .map(|name| name.parse().unwrap())
+                    .collect(),
+            };
+            Ok(Response::new(
+                RpcResponse::from(description).encode().unwrap(),
+            ))
+        }
+
+        async fn inspect(
+            &self,
+            _request: Request<OpaquePayload>,
+        ) -> Result<Response<OpaquePayload>, Status> {
+            let refusal = RpcError {
+                code: RpcErrorCode::Ambiguous,
+                message: "Two enrolled Servers are named web-1.".into(),
+                details: Default::default(),
+                cause: vec![],
+            };
+            Ok(Response::new(RpcResponse::from(refusal).encode().unwrap()))
+        }
+    }
+
+    let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async move {
+                let incoming = tokio_stream::wrappers::UnixListenerStream::new(
+                    tokio::net::UnixListener::from_std(listener).unwrap(),
+                );
+                tonic::transport::Server::builder()
+                    .add_service(MachineRpcServer::new(Fake(Daemon)))
+                    .serve_with_incoming(incoming)
+                    .await
+                    .unwrap();
+            });
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn server_show_keeps_an_inherited_daemons_refusal() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ployzd.sock");
+    ambiguous_daemon(&socket);
+    let connect = format!("unix://{}", socket.display());
+
+    let (code, json, _) = run_json_with(
+        &["server", "show", "web-1", "--json"],
+        &[
+            ("PLOYZ_TOKEN", "ployz_secret"),
+            ("PLOYZ_CLOUD_URL", cloud.as_str()),
+            ("PLOYZ_CONNECT", connect.as_str()),
+        ],
+    );
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "ambiguous", "{json}");
+    assert!(json.get("waiting_server").is_none(), "{json}");
+    assert!(
+        !routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|route| route.contains("waiting-servers")),
+        "{routes:?}"
+    );
+}
+
 #[test]
 fn server_inspect_is_gone_and_show_takes_its_place() {
     let (code, json, _) = run_json(&["server", "inspect", "web-1", "--json"]);
