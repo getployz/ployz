@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
-import { createOrganizationToken, listCredentials, mintOrganizationToken, revokeCredential } from "#/modules/identity/organization-token.server";
+import { createOrganizationToken, listCredentials, mintOrganizationTokenUnchecked, revokeCredential } from "#/modules/identity/organization-token.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
@@ -96,7 +96,7 @@ describe("organization tokens", () => {
   it("acts as its maker until the expiry it was minted with, then reads as no credential", async () => {
     const noSession = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(null) });
     const presented = async (expiresAt: Date) => {
-      const { secret } = await run(mintOrganizationToken({ organizationId: ACME, userId: ids.eve, name: "agent", kind: "agent", expiresAt }));
+      const { secret } = await run(mintOrganizationTokenUnchecked({ organizationId: ACME, userId: ids.eve, name: "agent", kind: "agent", expiresAt }));
       return run(resolveCaller(new Headers({ authorization: `Bearer ${secret}` })).pipe(
         Effect.map((caller) => caller.userId),
         Effect.catchTag("Unauthorized", () => Effect.succeed("unauthorized")),

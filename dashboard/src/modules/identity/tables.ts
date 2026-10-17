@@ -19,7 +19,6 @@ export const user = pgTable(
     name: text("name").notNull(),
     image: text("image"),
     openStartedDeployments: boolean("open_started_deployments").default(true).notNull(),
-    /** Made by `POST /api/agent/signup` for an agent with no GitHub account: it never signs in, it holds only its token. */
     isAnonymous: boolean("is_anonymous").default(false).notNull(),
   },
   (table) => [unique().on(table.email)],

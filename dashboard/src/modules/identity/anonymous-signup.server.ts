@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomInt, randomUUID } from "node:crypto";
 import { Effect } from "effect";
-import { mintOrganizationToken } from "#/modules/identity/organization-token.server";
+import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
@@ -14,10 +14,6 @@ export const ANONYMOUS_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
 const base32Suffix = () => Array.from({ length: 8 }, () => BASE32[randomInt(BASE32.length)]).join("");
 
-/**
- * A user with no sign-in, owning a fresh Organization, and a token that acts for it for 24 hours. The user is
- * inserted directly, never through better-auth, so its user-created hook never makes a "<name>'s Projects" org.
- */
 export const signUpAnonymous = Effect.fn("Identity.signUpAnonymous")(function* () {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
@@ -41,7 +37,7 @@ export const signUpAnonymous = Effect.fn("Identity.signUpAnonymous")(function* (
       exhausted: new Conflict({ message: "Could not allocate an anonymous organization slug." }),
     });
     yield* drizzle.insert(member).values({ userId: created.id, organizationId: sandbox.id, role: "owner" });
-    const token = yield* mintOrganizationToken({
+    const token = yield* mintOrganizationTokenUnchecked({
       organizationId: sandbox.id,
       userId: created.id,
       name: ANONYMOUS_ORGANIZATION_NAME,

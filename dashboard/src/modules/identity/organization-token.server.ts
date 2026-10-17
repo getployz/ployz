@@ -27,11 +27,7 @@ export const requireSignedIn = (caller: Caller) =>
     ? Effect.void
     : Effect.fail(new Validation({ message: "Only a signed-in person can make or revoke tokens; run `ployz login`.", userFacing: true }));
 
-/**
- * Stores a new token acting as `userId` in `organizationId` until `expiresAt`, with no check that anyone may make it.
- * Callers decide that. The secret is returned here and never again.
- */
-export const mintOrganizationToken = Effect.fn("OrganizationToken.mint")(function* (input: {
+export const mintOrganizationTokenUnchecked = Effect.fn("OrganizationToken.mint")(function* (input: {
   readonly organizationId: string;
   readonly userId: string;
   readonly name: string;
@@ -54,7 +50,7 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
   input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind },
 ) {
   yield* requireSignedIn(caller);
-  const minted = yield* mintOrganizationToken({
+  const minted = yield* mintOrganizationTokenUnchecked({
     organizationId: caller.organization.id,
     userId: caller.userId,
     name: input.name,

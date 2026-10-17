@@ -87,6 +87,6 @@ it.live("answers GET with 405 in the public error shape", () =>
     const response = signupMethodNotAllowed();
     expect(response.status).toBe(405);
     expect(response.headers.get("allow")).toBe("POST");
-    const body = yield* Effect.promise(() => response.json() as Promise<Record<string, unknown>>);
+    const body = yield* Effect.promise(() => response.json() as Promise<unknown>);
     expect(body).toMatchObject({ _tag: "PublicError", code: "VALIDATION_FAILED", message: "Sign up with POST." });
   }));

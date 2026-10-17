@@ -10,7 +10,6 @@ export const SIGNUP_WINDOWS: ReadonlyArray<RateWindow> = [
 
 const noStore = { "cache-control": "no-store" };
 
-/** Any body is ignored: the signup takes nothing from the agent but its address, which only the limit reads. */
 export const handleAgentSignup = Effect.fn("Agent.signup")(function* (clientIp: string) {
   const admission = yield* admitWithinWindows(`agent-signup:${clientIp}`, SIGNUP_WINDOWS);
   if (!admission.admitted) {

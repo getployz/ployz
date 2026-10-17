@@ -41,17 +41,15 @@ export type Admission =
   | { readonly admitted: true }
   | { readonly admitted: false; readonly retryAfterSeconds: number };
 
-const EVENT_RETENTION = sql`interval '1 day'`;
+const EVENT_RETENTION_SECONDS = 24 * 60 * 60;
 
-/**
- * Admits one request for `key` when every window still has room, and records it. A refused request records nothing,
- * so retrying early never pushes the wait out; `retryAfterSeconds` is when the oldest event in the fullest window
- * ages out. Windows are at most a day long.
- */
 export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(function* (
   key: string,
   windows: ReadonlyArray<RateWindow>,
 ) {
+  if (windows.some((window) => window.seconds > EVENT_RETENTION_SECONDS)) {
+    return yield* Effect.die(`a rate window may not outlast the ${EVENT_RETENTION_SECONDS}s event retention`);
+  }
   const database = yield* Database;
   const admission: Admission = yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -77,7 +75,7 @@ export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(func
     return { admitted: true as const };
   }));
   if ((yield* Random.next) * PRUNE_ONE_CALL_IN < 1) {
-    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`now() - ${EVENT_RETENTION}`));
+    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`now() - make_interval(secs => ${EVENT_RETENTION_SECONDS})`));
   }
   return admission;
 });

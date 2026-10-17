@@ -99,7 +99,6 @@ export const checkinRateLimit = pgTable("checkin_rate_limit", {
   count: integer("count").notNull(),
 });
 
-/** One admitted request per row, so a limit can count a key's requests over any window up to a day. */
 export const rateLimitEvent = pgTable(
   "rate_limit_event",
   {
