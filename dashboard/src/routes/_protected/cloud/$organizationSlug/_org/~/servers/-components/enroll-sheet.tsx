@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
@@ -21,17 +21,22 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
   hasFirst: boolean;
   onClose: () => void;
 }) {
+  const [initialHasFirst] = useState(hasFirst);
   const [first, setFirst] = useState(servers[0]?.id ?? "");
   const [storage, setStorage] = useState("zfs");
-  const [spare, setSpare] = useState(true);
   const [fallback, setFallback] = useState(true);
   const [names, setNames] = useState("hostnames");
   const [pattern, setPattern] = useState("web-{n}");
+  const [settledPattern, setSettledPattern] = useState(pattern);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettledPattern(pattern), 300);
+    return () => clearTimeout(timer);
+  }, [pattern]);
   const [runs, setRuns] = useState({ services: true, ingress: true, builds: true });
   const choices = {
     ids: servers.map((row) => row.id),
-    storage: storage === "none" ? { kind: "none" } : { kind: "zfs", useSpareDisk: spare, fallbackToDocker: fallback },
-    names: names === "pattern" ? { kind: "pattern", pattern } : { kind: "hostnames" },
+    storage: storage === "none" ? { kind: "none" } : { kind: "zfs", useSpareDisk: false, fallbackToDocker: fallback },
+    names: names === "pattern" ? { kind: "pattern", pattern: settledPattern } : { kind: "hostnames" },
     runs,
   } satisfies EnrollInput;
   const input: EnrollInput = hasFirst ? choices : { ...choices, first };
@@ -60,6 +65,7 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
       </SheetHeader>
       <div className="flex-1 overflow-y-auto px-4">
         <FieldGroup>
+          {initialHasFirst !== hasFirst ? <FieldDescription>{hasFirst ? "Another server is starting the cluster." : "Choose the first server again."}</FieldDescription> : null}
           {preview && (preview.spread.providers > 1 || preview.spread.networks > 3) ? <Alert>
             <AlertTitle>{preview.spread.networks} networks, {preview.spread.providers} providers</AlertTitle>
             <AlertDescription>Make sure they’re all yours.<details><summary>Show sources</summary>{servers.map((row) => <p key={row.id}>{row.report.hostname} · {row.observedIp} · {row.report.provider ?? "Unknown"}</p>)}</details></AlertDescription>
@@ -78,7 +84,7 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
               <NativeSelectOption value="none">Docker only · No size limits</NativeSelectOption>
             </NativeSelect></Field>
             {storage === "zfs" ? <>
-              <Field orientation="horizontal"><Checkbox id="enroll-spare" checked={spare} onCheckedChange={setSpare} /><FieldLabel htmlFor="enroll-spare">Use a spare disk if there is one</FieldLabel></Field>
+              <FieldDescription>ZFS uses the main disk.</FieldDescription>
               <Field orientation="horizontal"><Checkbox id="enroll-fallback" checked={fallback} onCheckedChange={setFallback} /><FieldLabel htmlFor="enroll-fallback">Fall back to Docker where ZFS can’t run</FieldLabel></Field>
             </> : null}
           </FieldSet>
@@ -103,7 +109,7 @@ export function EnrollSheet({ organizationSlug, servers, hasFirst, onClose }: {
       </div>
       <SheetFooter>
         <p className="text-xs text-muted-foreground">{hasFirst ? "Joins 8 at a time." : "First one, then 8 at a time."}</p>
-        <Button disabled={start.isPending || plan.isFetching || count === 0} onClick={() => start.mutate()}>Enroll {count}</Button>
+        <Button disabled={start.isPending || plan.isPending || plan.isPlaceholderData || plan.isError || (names === "pattern" && pattern !== settledPattern) || count === 0} onClick={() => start.mutate()}>Enroll {count}</Button>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
       </SheetFooter>
     </SheetContent>

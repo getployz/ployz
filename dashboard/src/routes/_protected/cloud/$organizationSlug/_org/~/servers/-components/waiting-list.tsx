@@ -1,16 +1,16 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { cn } from "#/lib/utils";
+import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollmentCounters, EnrollingList, waitingAfterReturns } from "./enrolling-list";
-import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServers } from "./use-waiting";
+import { EnrollmentCounters, EnrollingList, STAGES } from "./enrolling-list";
+import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
   disksText,
@@ -24,6 +24,8 @@ import {
   statusCell,
   volumesText,
 } from "./waiting-row";
+
+const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView[]; now: number }>({ servers: [], now: 0 });
 
 export const ROW_PX = 52;
 export const VISIBLE_ROWS = 10;
@@ -39,17 +41,16 @@ export function WaitingSection({ organizationSlug, token }: { organizationSlug: 
   if (waiting.isError || enrollments.isError) return <p role="alert">Couldn’t load waiting servers or enrollments. <Button variant="outline" onClick={() => { void waiting.refetch(); void enrollments.refetch(); }}>Retry</Button></p>;
   return <>
     <EnrollmentCounters waiting={servers} attempts={attempts} joining={enrollments.data?.joining ?? 0} />
-    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} attempts={attempts} hasFirst={enrollments.data?.hasFirst ?? true} />
-    <EnrollingList attempts={attempts} joining={enrollments.data?.joining ?? 0} onCancel={cancel.mutate} />
+    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} />
+    <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
   </>;
 }
 
-export function WaitingList({ organizationSlug, servers, now, token, attempts = [], hasFirst = true }: {
+export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   now: number;
   token?: string | undefined;
-  attempts?: readonly ServerEnrollmentView[];
   hasFirst?: boolean;
 }) {
   const [filter, setFilter] = useState<ReadinessFilter>("all");
@@ -68,7 +69,8 @@ export function WaitingList({ organizationSlug, servers, now, token, attempts = 
       setEnroll([lone]);
     }
   }, [lone]);
-  const { rows: ordered, returned } = waitingAfterReturns(servers, attempts);
+  const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
+  const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
   const reject = useRejectWaiting(organizationSlug);
 
   const counts = new Map<ReadinessFilter, number>([["all", servers.length]]);
@@ -87,9 +89,8 @@ export function WaitingList({ organizationSlug, servers, now, token, attempts = 
   const full = chosen.length >= SELECTION_MAX;
   const pickable = rows.filter(selectable);
   const allPicked = pickable.length > 0 && pickable.slice(0, SELECTION_MAX).every((server) => pickedIds.has(server.id));
-  const open = servers.find((server) => server.id === openId) ?? null;
+  const detail = useWaitingServerDetail(organizationSlug, openId);
   const scroller = useRef<HTMLDivElement>(null);
-  // Only the rows in view render, so a long wait list costs no more to draw than the box holds.
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -106,12 +107,14 @@ export function WaitingList({ organizationSlug, servers, now, token, attempts = 
 
   useSettledProbe(organizationSlug, openId === null ? chosen : [openId]);
 
-  const toggle = (id: string, on: boolean) => {
-    const next = new Set(chosen);
-    if (on) next.add(id);
-    else next.delete(id);
-    setPicked(next);
-  };
+  const toggle = useCallback((id: string, on: boolean) => {
+    setPicked((current) => {
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   const rejectIds = (ids: readonly string[]) => {
     reject.mutate(ids);
     setPicked(new Set());
@@ -119,7 +122,7 @@ export function WaitingList({ organizationSlug, servers, now, token, attempts = 
   };
 
   return (
-    <section aria-labelledby="waiting-heading" className="flex flex-col gap-2.5">
+    <WaitingStatusContext value={statusContext}><section aria-labelledby="waiting-heading" className="flex flex-col gap-2.5">
       <div className="flex flex-wrap items-center gap-2.5">
         <h2 id="waiting-heading" className="text-sm font-semibold">Waiting</h2>
         <span className="text-xs text-muted-foreground tabular-nums">{servers.length}</span>
@@ -186,12 +189,10 @@ export function WaitingList({ organizationSlug, servers, now, token, attempts = 
                     <WaitingRow
                       key={server.id}
                       server={server}
-                      now={now}
-                      returned={returned.get(server.id)}
                       picked={pickedIds.has(server.id)}
                       full={full}
-                      onPick={(on) => toggle(server.id, on)}
-                      onOpen={() => setOpenId(server.id)}
+                      onPick={toggle}
+                      onOpen={setOpenId}
                     />
                   );
                 })}
@@ -211,29 +212,25 @@ export function WaitingList({ organizationSlug, servers, now, token, attempts = 
       ) : null}
       {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
       <WaitingDetailSheet
-        server={open}
+        open={openId !== null}
+        failed={detail.isError}
+        server={openId === null ? null : detail.data ?? null}
         now={now}
         onOpenChange={(next) => { if (!next) setOpenId(null); }}
         onReject={(id) => rejectIds([id])}
       />
-    </section>
+    </section></WaitingStatusContext>
   );
 }
 
-function WaitingRow({ server, now, picked, full, onPick, onOpen, returned }: {
+const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOpen }: {
   server: WaitingServerView;
-  returned: ServerEnrollmentView | undefined;
-  now: number;
   picked: boolean;
   full: boolean;
-  onPick: (on: boolean) => void;
-  onOpen: () => void;
+  onPick: (id: string, on: boolean) => void;
+  onOpen: (id: string) => void;
 }) {
   const { report } = server;
-  const status = returned ? {
-    bold: returned.state === "cancelled" ? "Cancelled" : `Failed at ${returned.failure?.stage ?? returned.stage ?? "start"}`,
-    detail: returned.failure?.message ?? "Ready to try again",
-  } : statusCell(server, now);
   const disks = disksText(report);
   const volumes = volumesText(report);
   const state = readiness(server);
@@ -242,7 +239,7 @@ function WaitingRow({ server, now, picked, full, onPick, onOpen, returned }: {
       role="row"
       data-state={state}
       aria-selected={picked}
-      onClick={onOpen}
+      onClick={() => onOpen(server.id)}
       className={cn(GRID, "cursor-pointer border-t hover:bg-muted/50", picked && "bg-muted")}
       style={{ height: ROW_PX }}
     >
@@ -251,11 +248,11 @@ function WaitingRow({ server, now, picked, full, onPick, onOpen, returned }: {
           aria-label={`Select ${report.hostname}`}
           checked={picked}
           disabled={!selectable(server) || (full && !picked)}
-          onCheckedChange={(on) => onPick(on)}
+          onCheckedChange={(on) => onPick(server.id, on)}
         />
       </span>
       <TwoLineCell>
-        <button type="button" className="truncate text-left font-medium outline-none focus-visible:underline" onClick={(event) => { event.stopPropagation(); onOpen(); }}>
+        <button type="button" className="truncate text-left font-medium outline-none focus-visible:underline" onClick={(event) => { event.stopPropagation(); onOpen(server.id); }}>
           {report.hostname}
         </button>
         <span>{report.os.id} {report.os.version}</span>
@@ -270,12 +267,28 @@ function WaitingRow({ server, now, picked, full, onPick, onOpen, returned }: {
         {disks.spare === "" ? null : <span className="text-muted-foreground"> {disks.spare}</span>}
       </span>
       <TwoLineCell><span>{volumes.bold}</span><span>{volumes.detail}</span></TwoLineCell>
-      <TwoLineCell>
-        <span className={cn("font-medium", state === "blocked" && "text-destructive")}>{status.bold}</span>
-        <span>{status.detail}</span>
-      </TwoLineCell>
+      <WaitingStatus id={server.id} />
     </div>
   );
+}, (a, b) => a.server.id === b.server.id && a.server.report === b.server.report
+  && a.server.observedIp === b.server.observedIp && a.server.status === b.server.status
+  && a.server.returned === b.server.returned && a.picked === b.picked && a.full === b.full
+  && a.onPick === b.onPick && a.onOpen === b.onOpen);
+
+function WaitingStatus({ id }: { id: string }) {
+  const { servers, now } = useContext(WaitingStatusContext);
+  const server = servers.find((row) => row.id === id);
+  if (server === undefined) return null;
+  const status = statusCell(server, now);
+  const returned = server.returned;
+  const stage = ENROLLMENT_STAGES.find((stage) => stage === returned?.stage);
+  const reason = returned === null ? null : returned.state === "cancelled" ? "Cancelled"
+    : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
+  const detail = reason === null ? status.detail : `${status.detail} · ${reason}${returned?.message ? ` · ${returned.message}` : ""}`;
+  return <TwoLineCell>
+    <span className={cn("font-medium", readiness(server) === "blocked" && "text-destructive")}>{status.bold}</span>
+    <span title={detail}>{detail}</span>
+  </TwoLineCell>;
 }
 
 function TwoLineCell({ children }: { children: [ReactNode, ReactNode] }) {

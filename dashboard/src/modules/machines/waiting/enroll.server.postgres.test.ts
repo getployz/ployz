@@ -20,6 +20,7 @@ import {
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
 import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { listWaitingServers } from "#/modules/machines/waiting/waiting-servers.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
@@ -1144,4 +1145,39 @@ it("counts live join slots instead of stale workflow stages after completion and
   const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
   expect(status.attempts.filter((row) => row.stage === "publishing" && row.endedAt === null)).toHaveLength(10);
   expect(status.joining).toBe(8);
+});
+
+it.each(["failed", "cancelled"] as const)("projects a %s return and its effective arrival in one Waiting response", async (state) => {
+  const [first, second] = await waiting("first", "second");
+  if (!first?.id || !second?.id) throw new Error("two hosts");
+  await harness.pool.query("update waiting_server set first_seen_at = now() - interval '2 hours' where id = $1", [first.id]);
+  const started = await run(enroll([first], { first: first.id }));
+  expect((await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((row) => row.id)).toEqual([second.id]);
+  await harness.pool.query("update server_enrollment set state = $1, ended_at = now(), stage = 'storage', failure = '{\"stage\":\"storage\",\"message\":\"Disk missing\"}' where id = $2", [state, started.attempts[0]?.id]);
+  const result = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  expect(result.map((row) => row.id)).toEqual([second.id, first.id]);
+  const returned = result[1];
+  expect(returned?.returned).toEqual({ state, stage: "storage", message: "Disk missing" });
+  expect(Date.parse(returned?.arrivalAt ?? "")).toBeGreaterThan(Date.parse(result[0]?.arrivalAt ?? ""));
+  expect(returned).not.toHaveProperty("probe");
+  expect(returned?.report).not.toHaveProperty("kernel");
+});
+
+it("polls open attempts and one hour of ended attempts while preserving direct history reads", async () => {
+  const hosts = await waiting("old-joined", "recent-joined", "old-failed", "recent-failed", "open");
+  const first = hosts[0];
+  if (!first?.id) throw new Error("first host");
+  const started = await run(enroll(hosts, { first: first.id }));
+  const byHost = new Map(started.attempts.map((row) => [row.waitingServerId, row.id]));
+  for (const [index, each] of hosts.entries()) {
+    if (index === 4) continue;
+    await harness.pool.query("update server_enrollment set state = $1, ended_at = now() - ($2::int * interval '1 minute') where id = $3", [index < 2 ? "joined" : "failed", index % 2 === 0 ? 120 : 5, byHost.get(each.id ?? "")]);
+  }
+  const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
+  expect(status.attempts.map((row) => row.name).sort()).toEqual(["open", "recent-failed", "recent-joined"]);
+  const oldId = byHost.get(first.id);
+  if (oldId === undefined) throw new Error("old attempt");
+  expect((await run(readServerEnrollments(ada, { organizationSlug: "ada", id: oldId })))[0]?.name).toBe("old-joined");
+  const waitingRows = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  expect(waitingRows.find((row) => row.report.hostname === "old-failed")?.returned?.state).toBe("failed");
 });

@@ -98,7 +98,7 @@ It prints the token once, with the line to run on each host:
 curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
 ```
 
-- **Hosts wait.** A host that runs the line checks in and waits; it doesn't join.
+- **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
 - **Expiry and revoke stop new hosts only.** Servers already in stay.
 

@@ -1,4 +1,3 @@
-import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type { PortState } from "#/modules/machines/waiting/probe";
 import { ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
@@ -35,7 +34,7 @@ export function blockerLabel(code: string) {
   return BLOCKER_LABELS.get(code) ?? "Blocked";
 }
 
-export function readiness(server: WaitingServerView): Readiness {
+export function readiness(server: Pick<WaitingServerView, "report" | "status" | "lastCheckInAt">): Readiness {
   switch (server.status) {
     case "offline":
       return "offline";
@@ -48,7 +47,7 @@ export function readiness(server: WaitingServerView): Readiness {
   }
 }
 
-export function selectable(server: WaitingServerView) {
+export function selectable(server: Pick<WaitingServerView, "report" | "status" | "lastCheckInAt">) {
   const state = readiness(server);
   return state === "ready" || state === "preparing";
 }
@@ -62,13 +61,13 @@ function ago(iso: string, now: number) {
   return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
 }
 
-export function lastSeen(server: WaitingServerView, now: number) {
+export function lastSeen(server: Pick<WaitingServerView, "report" | "status" | "lastCheckInAt">, now: number) {
   return server.status === "offline" ? `Last seen ${ago(server.lastCheckInAt, now)}` : `Seen ${ago(server.lastCheckInAt, now)}`;
 }
 
 export type TwoLines = { readonly bold: string; readonly detail: string };
 
-export function statusCell(server: WaitingServerView, now: number): TwoLines {
+export function statusCell(server: Pick<WaitingServerView, "report" | "status" | "lastCheckInAt">, now: number): TwoLines {
   const { report } = server;
   const seen = ago(server.lastCheckInAt, now);
   if (server.status === "offline") return { bold: "Offline", detail: seen };
@@ -90,25 +89,24 @@ export function bytes(value: number) {
   return value >= 1024 * GB ? `${Math.round((value / (1024 * GB)) * 10) / 10} TB` : `${Math.round(value / GB)} GB`;
 }
 
-export function sizeText(report: StoredReport) {
+export function sizeText(report: WaitingServerView["report"]) {
   return `${report.cpuCount} vCPU · ${bytes(report.memoryTotalBytes)}`;
 }
 
-export function disksText(report: StoredReport) {
+export function disksText(report: WaitingServerView["report"]) {
   const root = report.disks.find((disk) => disk.role === "root");
   const empty = report.disks.filter((disk) => disk.role === "empty");
   return { main: root === undefined ? "No disk" : bytes(root.sizeBytes), spare: empty.map((disk) => `+${bytes(disk.sizeBytes)}`).join(" ") };
 }
 
-export function volumesText(report: StoredReport): TwoLines {
+export function volumesText(report: WaitingServerView["report"]): TwoLines {
   if (report.zfs.kind === "ineligible") return { bold: "Docker only", detail: report.zfs.message };
   const minutes = report.zfs.buildMinutes;
   const bold = minutes === undefined ? "ZFS" : `ZFS · ~${Math.max(1, Math.round(minutes))} min`;
-  const spare = report.zfs.targets.some((target) => target.kind === "disk");
-  return { bold, detail: spare ? "Main or empty disk" : "Main disk" };
+  return { bold, detail: "Main disk" };
 }
 
-export function providerOf(server: WaitingServerView) {
+export function providerOf(server: Pick<WaitingServerView, "report">) {
   return server.report.provider ?? "Unknown";
 }
 
@@ -134,7 +132,7 @@ export function portText(port: PortState): string {
   }
 }
 
-export function hostnameOrIpMatcher(query: string): (server: WaitingServerView) => boolean {
+export function hostnameOrIpMatcher(query: string): (server: Pick<WaitingServerView, "report" | "observedIp">) => boolean {
   const term = query.trim().toLowerCase();
   if (term === "") return () => true;
   const test = term.includes("*")
