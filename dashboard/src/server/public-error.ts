@@ -37,7 +37,7 @@ export class RateLimited extends Data.TaggedError("RateLimited")<{
 
 export class Forbidden extends Data.TaggedError("Forbidden")<{
   readonly message: string;
-}> {
+} & UserFacing> {
   readonly publicErrorCategory = "forbidden" as const;
 }
 
@@ -179,7 +179,7 @@ export function encodePublicError(cause: unknown): PublicErrorData {
       return encode({
         _tag: "PublicError",
         code: "FORBIDDEN",
-        message: "You do not have permission to perform this action.",
+        message: userFacingMessage(cause, "You do not have permission to perform this action."),
       });
     case "not-found":
       return encode({

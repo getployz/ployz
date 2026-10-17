@@ -19,6 +19,7 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { type Access, requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import type { Caller } from "#/modules/identity/actor";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
+import { permissionsOf } from "#/modules/organization/permissions";
 import * as ids from "#/test/ids";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
@@ -1436,6 +1437,29 @@ it.live(
 );
 
 it.live(
+  "a Read token can't upload source, and nothing is kept",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
+        yield* request("write", alice, shop);
+        const { secret } = yield* createOrganizationToken(yield* resolveCaller(signedIn(alice)), {
+          name: "reader", expiresInDays: 1, preset: { preset: "read" },
+        });
+        const deploymentId = "00000000-0000-4000-8000-000000000204";
+        const refused = yield* upload(deploymentId, secret, yield* sourceArchive);
+        assert.strictEqual(refused.status, 403);
+        expect(refused.json.error).toMatchObject({ code: "forbidden", message: "This token's grant doesn't include changes:deploy." });
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a user's write carries what they hold: none named is a defect, and callStoreBy sends the role's set",
   () =>
     Effect.gen(function* () {
@@ -1448,7 +1472,7 @@ it.live(
         const memberId = linus?.id ?? assert.fail("no member");
         yield* drizzle.insert(member).values({ userId: memberId, organizationId, role: "member" });
         const organization = { id: organizationId, slug: "shop" };
-        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization });
+        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization, permissions: permissionsOf(role), environments: undefined });
         const buildOrder = write({ command: "set_build_order", build_order: "servers-then-github" });
 
         // A user's write with no permissions named is Cloud's defect, never a grant.

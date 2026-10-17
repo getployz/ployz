@@ -3556,6 +3556,35 @@ fn agent_retries(
 }
 
 #[test]
+fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let staging = Trusted {
+        approval: Approval::Required,
+        asks: Asks::EveryDeploy,
+        environments: Some([ployz_store::EnvironmentName::parse("staging").unwrap()].into()),
+        ..Trusted::default()
+    };
+    let deploy = deploy_trusted(&store, &who, 3, &staging).unwrap_err();
+    assert_eq!(deploy.code.as_str(), "forbidden", "{deploy:?}");
+    assert_eq!(deploy.message, "This token can deploy only to staging.");
+    let retry = store
+        .write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(2),
+            }),
+            &staging,
+        )
+        .unwrap_err();
+    assert_eq!(retry.code.as_str(), "forbidden", "{retry:?}");
+    assert_eq!(retry.message, "This token can deploy only to staging.");
+}
+
+#[test]
 fn an_agent_approval_admits_one_retry() {
     let (store, who) = shop();
     apply_both(&store, &who, 1);

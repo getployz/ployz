@@ -76,7 +76,7 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
   const environments = [...new Set(requireView(useStoreView(organizationSlug, projectsQuery())).projects.flatMap((project) => project.environments))].sort();
   const [name, setName] = useState("");
   const [choice, setChoice] = useState<Choice>("deploy");
-  const [environment, setEnvironment] = useState(environments[0] ?? "");
+  const [environment, setEnvironment] = useState(environments.includes("staging") ? "staging" : (environments[0] ?? ""));
   const preset: TokenPreset = choice === "deploy" ? { preset: "deploy", environment } : { preset: choice };
   const make = useMutation({
     mutationFn: () => createTokenServerFn({ data: { organizationSlug, name: name.trim(), expiresInDays: 90, preset } }),

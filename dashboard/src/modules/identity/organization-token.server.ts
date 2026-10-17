@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
@@ -78,6 +79,14 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
     scope: grantLabel(grant),
     secret: minted.secret,
   };
+});
+
+/** A Deploy token's Environment, refused when no Project in the Organization has one by that name. */
+export const knownEnvironment = Effect.fn("OrganizationToken.knownEnvironment")(function* (caller: Caller, preset: TokenPreset) {
+  if (preset.preset !== "deploy") return preset;
+  const { projects } = yield* readStore(caller.organization.id, { query: "projects" });
+  if (projects.some((project) => project.environments.includes(preset.environment))) return preset;
+  return yield* new Validation({ message: `No Project here has an Environment named ${preset.environment}.`, userFacing: true });
 });
 
 /** Owners and admins reach every token in the Organization; anyone else only their own. */

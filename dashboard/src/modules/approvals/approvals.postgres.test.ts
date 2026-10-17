@@ -81,8 +81,8 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
     return rows.map((row) => row.id);
   }));
   const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } }, { name: "agent", expiresInDays: 1 }));
-  const cli = (command: ConfigCommand, approval?: string, via?: "agent") => provided(Effect.gen(function* () {
-    const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${secret}` });
+  const cli = (command: ConfigCommand, approval?: string, via?: "agent", bearer = secret) => provided(Effect.gen(function* () {
+    const headers = new Headers({ "content-type": "application/json", authorization: `Bearer ${bearer}` });
     if (approval !== undefined) headers.set("x-ployz-approval", approval);
     if (via !== undefined) headers.set("x-ployz-via", via);
     const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", {
@@ -406,6 +406,19 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
     expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
+  }));
+
+it.live("a Deploy token for staging is refused a production Deploy before anyone is asked", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli, pending } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    const { secret } = yield* provided(createOrganizationToken({ ...caller, credential: { kind: "session", id: "session-1" } },
+      { name: "staging", expiresInDays: 1, preset: { preset: "deploy", environment: "staging" } }));
+
+    const refused = yield* cli(deploy(1), undefined, "agent", secret);
+    expect(refused.status).toBe(403);
+    expect(refused.json.error?.message).toBe("This token can deploy only to staging.");
+    expect(yield* pending).toEqual([]);
   }));
 
 it.live("an anonymous agent's Organization has no person to ask: its Deploys and destroys go through as not required", () =>

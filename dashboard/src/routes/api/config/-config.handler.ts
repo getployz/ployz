@@ -9,6 +9,7 @@ import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store
 import { receiveUpload } from "#/modules/config-store/upload.server";
 import { callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { lacks } from "#/modules/organization/access.server";
 import { NotFound, Validation } from "#/server/public-error";
 
 /**
@@ -27,6 +28,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   yield* Effect.annotateCurrentSpan("ployz.agent", agent ?? "none");
   const caller = yield* resolveCaller(request.headers);
   if (upload !== undefined) {
+    const lacking = lacks(caller, "changes:deploy");
+    if (lacking !== null) return refusal({ code: "forbidden", message: lacking, details: { permission: "changes:deploy" } });
     const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
     return refused === undefined
       ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })

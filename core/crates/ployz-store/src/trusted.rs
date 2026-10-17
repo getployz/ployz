@@ -141,16 +141,52 @@ impl Trusted {
         let Some(allowed) = &self.environments else {
             return Ok(());
         };
-        if let Some(id) = written.environment()
-            && allowed.contains(&crate::scope::load_by_id(tx, id)?.summary.name)
-        {
+        let mut names = Vec::new();
+        wrote(tx, written, &mut names)?;
+        if !names.is_empty() && names.iter().all(|name| allowed.contains(name)) {
             return Ok(());
         }
-        Err(crate::error::forbidden(
-            format!("This token can deploy only to {}.", listed(allowed)),
-            serde_json::json!({ "environments": allowed }),
-        ))
+        Err(outside(allowed))
     }
+
+    /// Refuse a write to Environment `name` outside this token's Environments before
+    /// it asks a human to approve anything there.
+    pub(crate) fn writes(&self, name: &EnvironmentName) -> Result<(), RpcError> {
+        match &self.environments {
+            Some(allowed) if !allowed.contains(name) => Err(outside(allowed)),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn outside(allowed: &BTreeSet<EnvironmentName>) -> RpcError {
+    crate::error::forbidden(
+        format!("This token can deploy only to {}.", listed(allowed)),
+        serde_json::json!({ "environments": allowed }),
+    )
+}
+
+/// Every Environment `written` wrote, by name: each command's in a Batch, and the
+/// Branch a Sync closed as well as the one it staged into. A closed Branch may be gone
+/// already, so a Sync names both from what it answered.
+fn wrote(
+    tx: &mut dyn Tx,
+    written: &crate::Written,
+    names: &mut Vec<EnvironmentName>,
+) -> Result<(), RpcError> {
+    if let crate::Written::Batch(batched) = written {
+        for each in &batched.results {
+            wrote(tx, each, names)?;
+        }
+    } else if let crate::Written::Synced(synced) = written {
+        names.push(synced.into.name.clone());
+        if synced.closing {
+            names.push(synced.from.name.clone());
+        }
+    } else if let Some(id) = written.environment() {
+        names.push(crate::scope::load_by_id(tx, id)?.summary.name);
+    }
+    Ok(())
 }
 
 fn listed(names: &BTreeSet<EnvironmentName>) -> String {

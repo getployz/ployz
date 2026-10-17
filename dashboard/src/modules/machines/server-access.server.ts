@@ -7,6 +7,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { refusalOf } from "#/modules/organization/access.server";
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -49,7 +50,9 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const slug = caller.organization.slug;
     return { ok: false as const, refusal: {
       code: "forbidden",
-      message: `Server access needs an admin. Ask an owner or admin of ${slug}.`,
+      message: callerCan({ role: caller.role }, "servers:shell")
+        ? refusalOf("servers:shell", "grant")
+        : `Server access needs an admin. Ask an owner or admin of ${slug}.`,
       details: { organization: slug },
     } satisfies StoreRefusal };
   }
