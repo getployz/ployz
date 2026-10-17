@@ -1265,7 +1265,6 @@ fn server_reject_counts_a_later_refused_batch_as_not_rejected() {
         "{json}"
     );
 }
-
 #[test]
 fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
     let hostile = "web\u{1b}[31mX\u{202E}'1";
@@ -1367,17 +1366,26 @@ fn server_show_reaches_the_waiting_list_past_an_inherited_connection() {
     );
 }
 
-/// A daemon on a unix socket that answers every request after discovery with an ambiguous name.
+/// How the fake daemon answers discovery: with its contract at this protocol major, or by
+/// refusing the caller.
 #[cfg(unix)]
-fn ambiguous_daemon(socket: &std::path::Path) {
+#[derive(Clone, Copy)]
+enum Discovery {
+    Describes(u32),
+    Unauthenticated,
+}
+
+/// A daemon on a unix socket, Machine `bbbb…`, that answers discovery as told and every
+/// Inspect with an ambiguous name.
+#[cfg(unix)]
+fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
     use ployz_core::{
-        ContractDescription, MachineRpcServer, OpaquePayload, PROTOCOL_MAJOR, RpcError,
-        RpcErrorCode, RpcResponse,
+        ContractDescription, MachineRpcServer, OpaquePayload, RpcError, RpcErrorCode, RpcResponse,
     };
     use ployz_testkit::fake_machine::{Fake, FakeMachine};
     use tonic::{Request, Response, Status};
 
-    struct Daemon;
+    struct Daemon(Discovery);
 
     #[tonic::async_trait]
     impl FakeMachine for Daemon {
@@ -1385,9 +1393,15 @@ fn ambiguous_daemon(socket: &std::path::Path) {
             &self,
             _request: Request<OpaquePayload>,
         ) -> Result<Response<OpaquePayload>, Status> {
+            let protocol_major = match self.0 {
+                Discovery::Describes(major) => major,
+                Discovery::Unauthenticated => {
+                    return Err(Status::unauthenticated("this caller is not authorized"));
+                }
+            };
             let description = ContractDescription {
                 machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse().unwrap(),
-                protocol_major: PROTOCOL_MAJOR,
+                protocol_major,
                 daemon_version: "cli-shape".into(),
                 capabilities: ployz_core::served_capabilities()
                     .into_iter()
@@ -1423,12 +1437,62 @@ fn ambiguous_daemon(socket: &std::path::Path) {
                     tokio::net::UnixListener::from_std(listener).unwrap(),
                 );
                 tonic::transport::Server::builder()
-                    .add_service(MachineRpcServer::new(Fake(Daemon)))
+                    .add_service(MachineRpcServer::new(Fake(Daemon(discovery))))
                     .serve_with_incoming(incoming)
                     .await
                     .unwrap();
             });
     });
+}
+
+/// `ployz server show web-1 --json` with a config whose context `prod` holds `connection`,
+/// and the inherited environment `envs`.
+#[cfg(unix)]
+fn show_web_1_with_config(
+    connections: serde_json::Value,
+    envs: &[(&str, &str)],
+) -> (Option<i32>, serde_json::Value) {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let contexts = serde_json::json!({ "contexts": { "prod": { "connections": connections } } });
+    std::fs::write(&config, contexts.to_string()).unwrap();
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["server", "show", "web-1", "--json"])
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_STORE")
+        .envs(envs.iter().copied())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
+    (output.status.code(), json)
+}
+
+/// The daemon's answer stands: exit `code` with `error`, and Cloud's waiting list is never read.
+#[cfg(unix)]
+fn assert_kept(
+    case: &str,
+    (code, json): (Option<i32>, serde_json::Value),
+    expected: (i32, &str),
+    routes: &std::sync::Mutex<Vec<String>>,
+) {
+    assert_eq!(code, Some(expected.0), "{case}: {json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        expected.1,
+        "{case}: {json}"
+    );
+    assert!(json.get("waiting_server").is_none(), "{case}: {json}");
+    let mut routes = routes.lock().unwrap();
+    assert!(
+        !routes.iter().any(|route| route.contains("waiting-servers")),
+        "{case}: {routes:?}"
+    );
+    routes.clear();
 }
 
 #[cfg(unix)]
@@ -1438,7 +1502,7 @@ fn server_show_keeps_an_inherited_daemons_refusal() {
     let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("ployzd.sock");
-    ambiguous_daemon(&socket);
+    fake_daemon(&socket, Discovery::Describes(ployz_core::PROTOCOL_MAJOR));
     let connect = format!("unix://{}", socket.display());
 
     let (code, json, _) = run_json_with(
@@ -1449,17 +1513,81 @@ fn server_show_keeps_an_inherited_daemons_refusal() {
             ("PLOYZ_CONNECT", connect.as_str()),
         ],
     );
-    assert_eq!(code, Some(2), "{json}");
-    assert_eq!(json.pointer("/error/code").unwrap(), "ambiguous", "{json}");
-    assert!(json.get("waiting_server").is_none(), "{json}");
-    assert!(
-        !routes
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|route| route.contains("waiting-servers")),
-        "{routes:?}"
+    assert_kept("inspect ambiguous", (code, json), (2, "ambiguous"), &routes);
+}
+
+#[cfg(unix)]
+#[test]
+fn server_show_keeps_an_inherited_daemons_discovery_answer() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = |name: &str, discovery| {
+        let socket = dir.path().join(name);
+        fake_daemon(&socket, discovery);
+        socket.to_str().unwrap().to_owned()
+    };
+    let current = daemon(
+        "current.sock",
+        Discovery::Describes(ployz_core::PROTOCOL_MAJOR),
     );
+    let refusing = daemon("refusing.sock", Discovery::Unauthenticated);
+    let future = daemon("future.sock", Discovery::Describes(99));
+    let inherit = |name, value| {
+        [
+            ("PLOYZ_TOKEN", "ployz_secret"),
+            ("PLOYZ_CLOUD_URL", cloud.as_str()),
+            (name, value),
+        ]
+    };
+    let connect_refusing = format!("unix://{refusing}");
+    let connect_future = format!("unix://{future}");
+    let pinned = |path: &str| serde_json::json!([{ "unix": path, "machine_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }]);
+    let unpinned = |path: &str| serde_json::json!([{ "unix": path }]);
+    let broken = dir.path().join("broken.sock");
+    std::os::unix::net::UnixListener::bind(&broken).unwrap();
+
+    assert_kept(
+        "context pins another Machine",
+        show_web_1_with_config(pinned(&current), &inherit("PLOYZ_CONTEXT", "prod")),
+        (1, "unauthenticated"),
+        &routes,
+    );
+    assert_kept(
+        "context daemon refuses discovery",
+        show_web_1_with_config(unpinned(&refusing), &inherit("PLOYZ_CONTEXT", "prod")),
+        (1, "unauthenticated"),
+        &routes,
+    );
+    let refused_then_dead =
+        serde_json::json!([{ "unix": refusing }, { "unix": broken.to_str().unwrap() }]);
+    let (code, json) = show_web_1_with_config(refused_then_dead, &inherit("PLOYZ_CONTEXT", "prod"));
+    assert_ne!(code, Some(0), "refused, then a dead socket: {json}");
+    assert!(json.get("waiting_server").is_none(), "{json}");
+    assert!(routes.lock().unwrap().is_empty(), "{json}");
+    assert_kept(
+        "connect daemon refuses discovery",
+        show_web_1_with_config(
+            unpinned(&current),
+            &inherit("PLOYZ_CONNECT", &connect_refusing),
+        ),
+        (1, "unauthenticated"),
+        &routes,
+    );
+    assert_kept(
+        "connect daemon speaks another protocol",
+        show_web_1_with_config(
+            unpinned(&current),
+            &inherit("PLOYZ_CONNECT", &connect_future),
+        ),
+        (1, "unsupported"),
+        &routes,
+    );
+
+    let (code, json) =
+        show_web_1_with_config(unpinned(&current), &inherit("PLOYZ_CONTEXT", "missing"));
+    assert_eq!(code, Some(0), "missing context: {json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web-1");
 }
 
 #[test]

@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 
 use super::{signed_in, waiting, with_client};
 use crate::{
-    connect::TARGET_RPC_TIMEOUT,
+    connect::{ConnectError, TARGET_RPC_TIMEOUT},
+    context::ContextError,
     handlers::{Error, leaf_matches, runtime},
     ui::{self, Cell, Gaps, Table, Tone},
 };
@@ -177,19 +178,36 @@ fn server(root: &ArgMatches, selector: &str) -> Result<(), Unshown> {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime().map_err(Unshown::Failed)?.block_on(async {
-        let mut client = super::connect(leaf, context)
-            .await
-            .map_err(Unshown::Unconnected)?;
+        let mut client = super::connect(leaf, context).await.map_err(Unshown::of)?;
         inspect(&mut client, &selector)
             .await
             .map_err(Unshown::Failed)
     })
 }
 
-/// Why a Server was not shown: no connection reached a daemon, or the request failed after.
+/// Why a Server was not shown: no connection reached a daemon, or a daemon answered.
 enum Unshown {
     Unconnected(Error),
     Failed(Error),
+}
+
+impl Unshown {
+    /// A connection that a daemon refused, or whose identity or protocol it contradicted,
+    /// was answered: only selection, dial and transport failures leave it unconnected.
+    fn of(error: Error) -> Self {
+        let source = std::error::Error::source(&error);
+        let unreached = source
+            .and_then(|source| source.downcast_ref::<ConnectError>())
+            .map_or_else(
+                || source.is_some_and(|source| source.is::<ContextError>()),
+                ConnectError::unreached,
+            );
+        if unreached {
+            Self::Unconnected(error)
+        } else {
+            Self::Failed(error)
+        }
+    }
 }
 
 async fn inspect(

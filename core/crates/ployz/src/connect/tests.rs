@@ -30,6 +30,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
             selection: ConnectionSource::Direct,
             attempts: 1,
             retry: aggregate,
+            reached: false,
             last: Some(Box::new(ssh_error)),
         };
         assert_eq!(error.retry(), aggregate);
