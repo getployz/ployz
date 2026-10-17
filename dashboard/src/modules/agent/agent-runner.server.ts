@@ -6,11 +6,12 @@ import { AGENT, agentResume, agentStart, CATALOG, finish, GATED, untilWrite } fr
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
-import { requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
+import { gateOperation, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
+import { unprotectAsked } from "#/modules/config-store/protected.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { JsonObject } from "#/db/tables";
 import { type Caller, callerPermissions } from "#/modules/identity/actor";
@@ -221,6 +222,16 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
   const { step, state } = paused;
   if (step.step !== "write") return done(yield* finish(paused, read, agentWrite(caller)));
   const { write } = step;
+  // Protecting asks no one; unprotecting asks a human once, as Cloud's operations do, then the tool finishes.
+  if (write.at === "store" && write.write.command === "set_environment_protected") {
+    const unprotect = yield* unprotectAsked(caller.organization.id, write.write);
+    if (unprotect !== null) {
+      const gated = yield* gateOperation(caller, call.approvalId, unprotect);
+      if (!gated.ok) return asking(gated.refusal) ?? done({ ok: false, refusal: gated.refusal });
+    }
+    const written = yield* storeAnswer(caller, { operation: "write", command: write.write }, AGENT);
+    return done(yield* finish(agentResume(state, [written]), read, agentWrite(caller)));
+  }
   if (write.at === "store") {
     const gated: Gated = yield* runGated(caller, write.write, call.approvalId);
     if ("asking" in gated) return gated;

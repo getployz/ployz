@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { CodeIcon, EllipsisIcon } from "lucide-react";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
@@ -9,18 +10,21 @@ import { useCommitHold } from "#/components/stageable/use-commit-hold";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Input } from "#/components/ui/input";
+import { Switch } from "#/components/ui/switch";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import type { SetupCommand as DraftCommand } from "#/modules/config-store/branch-picks";
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { can } from "#/modules/organization/permissions";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
-/** An Environment's settings over the Config Store: deleting it, once it is neither the Default nor a Parent. */
+/** An Environment's settings over the Config Store: its protection, and deleting it once it is neither the Default, Protected, nor a Parent. */
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
@@ -31,9 +35,15 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
   const disabledReason = environment?.default
     ? `${environmentSlug} is ${projectSlug}'s default environment. Make another the default to delete it, or delete the project.`
+    : environment?.protected ? `${environmentSlug} is Protected. Unprotect it first.`
     : branches.length > 0 ? `Delete its branches first: ${branches.join(", ")}.` : undefined;
   return (
     <>
+    {/* Branches and PR Environments come and go; only a Project's own Environments are protected. */}
+    {environment && environment.parent === null ? (
+      <StoreProtection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
+        saved={environment.protected} />
+    ) : null}
     <StoreBranchSetup organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
       saved={environment?.branch_setup ?? []} />
     <StoreTeardownSection
@@ -51,6 +61,35 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
       onCompleted={() => void navigate({ to: "/cloud/$organizationSlug/$projectSlug", params: { organizationSlug, projectSlug }, replace: true })}
     />
     </>
+  );
+}
+
+/** Whether only admins may change this Environment's source and protection, and whether it refuses deletion. Saved at once. */
+function StoreProtection({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: boolean }) {
+  const writer = useStoreWriter(organizationSlug);
+  const [checked, hold] = useCommitHold(saved);
+  // Support has no row here; Cloud still checks it. Until the members load, the role is unknown, so it waits.
+  const members = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members;
+  const yourRole = members?.find((row) => row.you)?.role;
+  const refused = yourRole !== undefined && !can(yourRole, "environments:protect");
+  return (
+    <SettingsSection id="protected" title="Protected"
+      description="Only admins can change its repository, deploy branch or protection, and it can't be deleted.">
+      <SettingsRow
+        label="Protect this environment"
+        hint={refused ? "Only an owner or admin can change this." : undefined}
+        commit="change"
+        control={(
+          <Switch id="environment-protected" aria-label="Protected" checked={checked} disabled={refused}
+            onCheckedChange={(next) => {
+              if (next !== checked) {
+                hold(next, writer.commit({ command: "set_environment_protected",
+                  environment: { project: projectSlug, environment: environmentSlug }, protected: next }));
+              }
+            }} />
+        )}
+      />
+    </SettingsSection>
   );
 }
 

@@ -1747,9 +1747,9 @@
       "read_only": false
     },
     {
-      "description": "Protect a Project's own Environment so it cannot be removed, or unprotect it. Branches and PR Environments cannot be Protected. Never asks a human to approve.",
+      "description": "Protect a Project's own Environment so it cannot be removed, or unprotect it. Branches and PR Environments cannot be Protected. May stop to ask a human to approve.",
       "destructive": false,
-      "gate": "never",
+      "gate": "cloud",
       "input_schema": {
         "additionalProperties": false,
         "properties": {

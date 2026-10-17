@@ -4,6 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
+import { guardProtected } from "#/modules/config-store/protected.server";
 import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { account, member, user } from "#/modules/identity/tables";
@@ -297,6 +298,7 @@ export const callStore = <C extends StoreCall>(
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
+    if (call.operation === "write") yield* guardProtected(organizationId, userId, call.command, read);
     const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
     // Cloud sends every user's set, so a write by a user with none named is a defect, never a grant.
@@ -369,8 +371,9 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
   return { ...result, answers: answers.flat() } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
 
-/** Deleting an Environment or a Project takes its delete permission; every other write only staging. */
+/** Deleting an Environment or a Project takes its delete permission, protecting one its own; every other write only staging. */
 const writePermission = (command: ConfigCommand): Permission => {
+  if (command.command === "set_environment_protected") return "environments:protect";
   if (command.command !== "remove") return "changes:stage";
   return command.environment == null ? "project:delete" : "environment:delete";
 };

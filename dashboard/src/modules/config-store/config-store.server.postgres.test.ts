@@ -46,12 +46,15 @@ import { encodePublicError, NotFound, statusForPublicError } from "#/server/publ
 const origin = "http://localhost:3000";
 
 /**
- * GitHub as these tests see it: `acme/web` is private (read through installation 7) with a `dev` branch, `acme/docs`
- * is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
+ * GitHub as these tests see it: `acme/web` is private (read through installation 7) with `dev` and `main` branches,
+ * `acme/docs` is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
  */
 const github = fakeGithubApi({
   "/repos/acme/web/git/ref/heads%2Fdev": {
     ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) },
+  },
+  "/repos/acme/web/git/ref/heads%2Fmain": {
+    ref: "refs/heads/main", object: { type: "commit", sha: "b".repeat(40) },
   },
   "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
   "/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
@@ -282,6 +285,95 @@ it.live(
         yield* drizzle.update(member).set({ role: "admin" }).where(eq(member.userId, bobUser));
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteStaging)).ok, "an admin deletes the Environment");
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteShop)).ok, "an admin deletes the Project");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Alice owns Project shop, whose production is Protected and runs `web` from acme/web; Bob is a member of her Organization. */
+const protectedShop = Effect.fn(function* () {
+  const alice = yield* resolveCaller(signedIn(yield* signUp("alice")));
+  const bobUser = (yield* resolveCaller(signedIn(yield* signUp("bob")))).userId;
+  const slug = alice.organization.slug;
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(member).values({ userId: bobUser, organizationId: alice.organization.id, role: "member" });
+  yield* drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
+  yield* drizzle.insert(organizationGithubInstallation).values({
+    organizationId: alice.organization.id, installationId: 7, connectedByUserId: alice.userId, connectedGithubLogin: "alice",
+  });
+  yield* drizzle.insert(githubRepositoryCache).values({
+    installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+    private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
+  });
+  const protection = Effect.fn(function* () {
+    const listing = yield* callStoreAsMember(alice, slug, { operation: "read", query: { query: "environments", project: "shop" } });
+    return listing.ok && listing.value.view === "environments"
+      ? listing.value.environments.map((environment) => [environment.name, environment.protected])
+      : assert.fail("no environments");
+  });
+  const role = (value: "admin" | "member") => drizzle.update(member).set({ role: value }).where(eq(member.userId, bobUser));
+
+  assert.isTrue((yield* writeStoreAsMember(alice, slug, shop)).ok);
+  assert.deepStrictEqual(yield* protection(), [["production", true]]);
+  assert.isTrue((yield* writeStoreAsMember(alice, slug, {
+    command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null,
+  })).ok, "an owner connects a repository in a Protected Environment");
+  return { alice, bob: { userId: bobUser }, organizationId: alice.organization.id, slug, protection, role };
+});
+const branch = (value: string): ConfigCommand => ({
+  command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.branch", value }],
+});
+const protect = (on: boolean): ConfigCommand => ({
+  command: "set_environment_protected", environment: { project: "shop", environment: "production" }, protected: on,
+});
+const adminOnly = "Only an owner or admin of this Organization can do this.";
+const refusalOf = (result: { ok: true } | { ok: false; refusal: { code: string; message: string } }) =>
+  result.ok ? null : [result.refusal.code, result.refusal.message];
+
+it.live(
+  "a new Project's production is Protected, and only an owner or admin changes its source or its protection",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, bob, slug, protection, role } = yield* protectedShop();
+
+        assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, branch("dev"))), ["forbidden", adminOnly]);
+        const unprotect = yield* Effect.exit(writeStoreAsMember(bob, slug, protect(false)));
+        assert.deepInclude(Exit.isFailure(unprotect) ? Cause.squash(unprotect.cause) : null, { _tag: "Forbidden", message: adminOnly });
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+
+        yield* role("admin");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, branch("dev"))).ok, "an admin changes the branch");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, protect(false))).ok, "an admin unprotects production");
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+
+        yield* role("member");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, branch("main"))).ok, "a member changes the branch once it isn't Protected");
+        const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
+        assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "the CLI's write skips the dashboard's role check, and a Protected Environment's source and protection still need an owner or admin",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { bob, organizationId, protection, role } = yield* protectedShop();
+        const cli = (command: ConfigCommand) =>
+          callStore(organizationId, bob.userId, { operation: "write", command }, { source: "cli", agent: null });
+
+        assert.deepStrictEqual(refusalOf(yield* cli(protect(false))), ["forbidden", adminOnly]);
+        assert.deepStrictEqual(refusalOf(yield* cli(branch("dev"))), ["forbidden", adminOnly]);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+
+        yield* role("admin");
+        assert.isTrue((yield* cli(protect(false))).ok, "an admin unprotects production from the CLI");
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

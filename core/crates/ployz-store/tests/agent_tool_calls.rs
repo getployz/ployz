@@ -288,6 +288,7 @@ fn the_store_and_cloud_decide_who_asks_a_human() {
         BTreeMap::from([
             ("deploy", Gate::Store),
             ("deployment_retry", Gate::Store),
+            ("environment_protect", Gate::Cloud),
             ("environment_remove", Gate::Store),
             ("project_remove", Gate::Store),
             ("server_clean", Gate::Cloud),

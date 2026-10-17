@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigTrusted } from "@ployz/sdk";
+import type { BatchCommand, ConfigCommand, ConfigTrusted } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { githubBranchExists, resolveReadableRepository } from "#/modules/github/readable-repository.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
@@ -10,6 +10,7 @@ const Text = Schema.String;
 const GitCommand = Schema.Union([
   Schema.Struct({
     command: Schema.Literal("create_git_service"),
+    environment: Schema.optional(EnvironmentRef),
     name: Text,
     repository: Text,
     branch: Schema.optional(Schema.NullOr(Text)),
@@ -48,6 +49,16 @@ function wanted(command: typeof GitCommand.Type) {
     services.set(service, entry);
   }
   return services;
+}
+
+/** The Environment in which `command` connects a repository or changes a deploy branch, a Batch's included; none if it doesn't. */
+export function gitSourceEnvironment(command: ConfigCommand | BatchCommand): typeof EnvironmentRef.Type | undefined {
+  if (command.command === "batch") {
+    return command.commands.some((inner) => gitSourceEnvironment(inner) !== undefined) ? command.environment : undefined;
+  }
+  const git = Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(command));
+  if (git === undefined || wanted(git).size === 0) return undefined;
+  return git.environment ?? {};
 }
 
 /**

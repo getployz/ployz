@@ -6,7 +6,7 @@ export const APPROVAL_STATUSES = ["pending", "approved", "denied", "superseded"]
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
 /** The operations `ployz` and agents run through Cloud that may wait for a human. Upgrade and a Service start never do. */
-export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart";
+export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "release" | "remove_mirror" | "stop" | "restart" | "unprotect";
 
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
@@ -34,6 +34,7 @@ export function approvalBadge(command: string, { effects }: ApprovalReview) {
   if (command === "retry") return "Redeploys";
   if (command === "stop") return "Stops service";
   if (command === "restart") return "Restarts service";
+  if (command === "unprotect") return "Unprotects";
   if (effects.length === 0) return "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
@@ -82,6 +83,7 @@ const destroys = {
   revokes_invite: { verb: "Revokes", noun: "invite for", after: "" },
   stops_service: { verb: "Stops", noun: "service", after: " until started again" },
   restarts_service: { verb: "Restarts", noun: "service", after: "" },
+  unprotects_environment: { verb: "Unprotects", noun: "environment", after: "" },
 } satisfies Record<DestructiveKind, { verb: string; noun: string; after: string }>;
 
 /**
