@@ -41,6 +41,8 @@ pub(crate) struct PublishedCommand {
     pub(crate) about: String,
     pub(crate) examples: Vec<String>,
     pub(crate) effect: Effect,
+    /// The permission Cloud checks before running it, when Cloud said.
+    pub(crate) requires: Option<String>,
     /// Whether `ployz mcp` lists it.
     pub(crate) agents: bool,
     pub(crate) typed: Option<Typed>,
@@ -470,6 +472,7 @@ impl PublishedCommand {
                     }
                 }
             },
+            requires: entry.requires,
             agents: entry.agents,
             typed: entry.typed.map(|typed| match typed {
                 wire::Typed::Organization => Typed::Organization,
