@@ -1,0 +1,3 @@
+# One agent briefing: ployz.dev/agents.md has these setup steps (core/site/agent.md) and the deploy that follows.
+/agent.md https://ployz.dev/agents.md 301
+/agents.md https://ployz.dev/agents.md 301

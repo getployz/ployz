@@ -12,7 +12,7 @@ mkdir -p "$out_dir"
 install -m 0644 "$ROOT/install.sh" "$out_dir/index.html"
 install -m 0644 "$ROOT/install.sh" "$out_dir/install.sh"
 install -m 0644 "$ROOT/site/_headers" "$out_dir/_headers"
-install -m 0644 "$ROOT/site/agent.md" "$out_dir/agent.md"
+install -m 0644 "$ROOT/site/_redirects" "$out_dir/_redirects"
 install -m 0644 "$ROOT/site/skill.md" "$out_dir/skill.md"
 
 if [ -n "$channels_dir" ]; then

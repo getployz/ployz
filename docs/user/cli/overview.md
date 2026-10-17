@@ -37,7 +37,7 @@ your app's directory.
 Paste this into your coding agent, such as Claude Code or Codex:
 
 ```text
-Set me up for Ployz: https://ployz.sh/agent.md
+Set me up for Ployz: https://ployz.dev/agents.md
 ```
 
 The agent installs the CLI and the Ployz skill, signs you in, and registers the Ployz MCP tools.
@@ -46,7 +46,7 @@ agent afterwards so it loads the skill and the tools.
 From then on you can ask it to deploy, add a database or read logs. The skill points the agent
 to `ployz --help` and `ployz schema --json` for every command and setting.
 
-To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
+To set it up by hand, follow the steps in [ployz.dev/agents.md](https://ployz.dev/agents.md)
 yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
