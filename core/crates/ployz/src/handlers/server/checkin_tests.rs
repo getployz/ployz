@@ -11,7 +11,7 @@ use chrono::Utc;
 use clap::{ArgMatches, Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{LoopPloyzd, command, install_outcome, loop_ployzd, loop_start};
+use super::{LoopPloyzd, accept, command, install_outcome, loop_ployzd, loop_start};
 use crate::checkin::{
     self, CheckinClient, CheckinKey, FleetToken, Host, LocalCheckin, Next, Paths, Probe, Seen,
     StopReason, System, unit,
@@ -395,4 +395,117 @@ fn an_install_that_waits_or_cannot_reach_cloud_leaves_the_loop_running() {
     assert!(install_outcome(Next::Wait { after, log: None }, "ployz.dev").is_ok());
     let why = "Could not reach Ployz Cloud: refused.".to_owned();
     assert!(install_outcome(Next::Retry { after, why }, "ployz.dev").is_ok());
+}
+
+#[test]
+fn an_install_that_reaches_something_other_than_cloud_fails() {
+    let why = "http://127.0.0.1:9/api/checkin answered 404 Not Found, so it isn't Ployz Cloud";
+    let failed = install_outcome(Next::NotCloud(why.to_owned()), "ployz.dev")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        failed.contains(&format!(
+            "{why}. Check PLOYZ_CLOUD_URL, then run the install again."
+        )),
+        "{failed}"
+    );
+    let clock = install_outcome(Next::ClockOff("Clock off".to_owned()), "ployz.dev")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        clock.contains("Clock off, then run the install again."),
+        "{clock}"
+    );
+}
+
+const OLD_TOKEN: &str = "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const NEW_TOKEN: &str = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+#[test]
+fn a_token_from_stdin_replaces_the_old_one_only_once_cloud_answers_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = dir.path().join("etc/fleet-token");
+    fs::create_dir_all(token_file.parent().unwrap()).unwrap();
+    fs::write(&token_file, format!("{OLD_TOKEN}\n")).unwrap();
+    let candidate =
+        CheckinClient::new("http://127.0.0.1:9", FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
+    let after = std::time::Duration::from_secs(60);
+    for refused in [
+        Next::RefusedOnce { after },
+        Next::Stop(StopReason::TokenExpired, "Expired.".to_owned()),
+        Next::NotCloud("answered 404 Not Found".to_owned()),
+        Next::ClockOff("Clock off".to_owned()),
+    ] {
+        assert!(accept(refused, &candidate, &token_file, true, "ployz.dev").is_err());
+        assert_eq!(
+            fs::read_to_string(&token_file).unwrap(),
+            format!("{OLD_TOKEN}\n")
+        );
+    }
+    accept(
+        Next::Wait { after, log: None },
+        &candidate,
+        &token_file,
+        true,
+        "ployz.dev",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+    let mode = fs::metadata(&token_file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let why = "Could not reach Ployz Cloud: refused.".to_owned();
+    let fresh = dir.path().join("new/fleet-token");
+    accept(
+        Next::Retry { after, why },
+        &candidate,
+        &fresh,
+        true,
+        "ployz.dev",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&fresh).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+}
+
+#[test]
+fn a_token_read_from_its_file_stays_where_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = dir.path().join("fleet-token");
+    fs::write(&token_file, format!("{OLD_TOKEN}\n")).unwrap();
+    fs::set_permissions(&token_file, fs::Permissions::from_mode(0o644)).unwrap();
+    let client =
+        CheckinClient::new("http://127.0.0.1:9", FleetToken::read(&token_file).unwrap()).unwrap();
+    let after = std::time::Duration::from_secs(60);
+    accept(
+        Next::Wait { after, log: None },
+        &client,
+        &token_file,
+        false,
+        "ployz.dev",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{OLD_TOKEN}\n")
+    );
+    let mode = fs::metadata(&token_file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn a_token_on_stdin_belongs_to_an_install() {
+    let parsed = command(Command::new("checkin"))
+        .no_binary_name(true)
+        .try_get_matches_from(["--token-stdin"]);
+    assert!(parsed.is_err());
+    let parsed = command(Command::new("checkin"))
+        .no_binary_name(true)
+        .try_get_matches_from(["--install", "--token-stdin"])
+        .unwrap();
+    assert!(parsed.get_flag("token-stdin"));
 }

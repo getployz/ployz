@@ -130,10 +130,12 @@ curl -fsSL https://ployz.sh | sudo sh -s -- --enroll
 The script prints `Installs Docker and Ployz. Nothing joins until you say so.` and asks for the
 token at a `Fleet Token:` prompt that doesn't show what you paste. The token never appears on a
 command line, so it stays out of `sudo`'s log, shell history and `ps`. The script checks that the
-token looks like one before it changes anything. It installs the CLI, writes the token to
-`/etc/ployz/fleet-token`, readable by root only, and runs `ployz server checkin --install`. That
-ends with `Waiting for approval`, within seconds: Docker installs and ZFS builds in the background
-while the host waits, and the host shows on the **Servers** page at once.
+token looks like one before it changes anything. It installs the CLI and runs
+`ployz server checkin --install`, which checks in with the token and only once Cloud has answered
+writes it to `/etc/ployz/fleet-token`, readable by root only. That ends with
+`Waiting for approval`, within seconds: Docker installs and ZFS builds in the background while the
+host waits, and the host shows on the **Servers** page at once. If Cloud can't be reached at all,
+the install still ends that way and the host keeps trying every minute.
 
 - **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
   `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- --enroll`. It does what
@@ -149,17 +151,19 @@ while the host waits, and the host shows on the **Servers** page at once.
 
   Any process on the server, containers included, can read user data from the provider's
   metadata service for as long as the server runs. Give a token you put there a short expiry.
-- **Run it again.** The same line on the same host updates its token and keeps it one server. A
-  token that isn't one leaves the host as it was.
+- **Run it again.** The same line on the same host updates its token and keeps it one server.
+  The host keeps its old token until Cloud answers the new one.
 - **An expired token** prints `Token expired.`, Cloud's reason, and `Run the install again with a
   new token.`, and the script exits with an error. A revoked one says so the same way.
 - **A token Cloud doesn't know**, or a missing `PLOYZ_CLOUD_URL` when you
   [run your own Cloud](../self-hosting.md), ends the install with
   `Cloud at … refused this Fleet Token.` and an error.
+- **A `PLOYZ_CLOUD_URL` that isn't Ployz Cloud**, one that answers with a 404 or a web page, ends
+  the install with `… so it isn't Ployz Cloud. Check PLOYZ_CLOUD_URL, then run the install again.`
 
-When the install ends with an error, the host stops checking in and won't start again at boot.
-Preparation already under way finishes, so a package install is never cut off halfway, and
-nothing starts again.
+An install that ends with an error changes nothing on the host. On a first install no check-in
+service is set up and preparation never starts. On a host that already checks in, the running
+service keeps its old token and goes on as before.
 
 Without `--enroll`, the script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. For
 any other value it says so and only installs the CLI, as it does without a token. If the host

@@ -119,21 +119,28 @@ fi
 [ "$("$TMP/install/ployz")" = installed ]
 
 # The checkin stub records what it was given, then answers as FAKE_ANSWER says Cloud did.
+# Like ployz, it writes the token file only once Cloud answers the token.
 pack_release 1.2.3
 cat > "$TMP/ployz" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then echo 1.2.3; exit 0; fi
 token_file=$5
+token=
+case " $* " in *" --token-stdin "*) token=$(cat) ;; esac
 {
     echo "argv=$*"
     echo "enroll=${PLOYZ_ENROLL_TOKEN:-}"
     echo "skip_zfs=${PLOYZ_SKIP_ZFS:-}"
-    echo "mode=$(stat -c %a "$token_file")"
-    echo "token=$(cat "$token_file")"
+    echo "leaked=$(env | sed -n 's/^\(FLEET_TOKEN\|TTY\)=.*/\1 /p' | tr -d '\n')$(env | grep -c pflt_)"
+    echo "token=$token"
 } > "$CHECKIN_LOG"
 case "${FAKE_ANSWER:-wait}" in
-    wait) echo "Waiting for approval" ;;
-    expired) rm -f "$token_file"; echo "error: Token expired. Run the install again with a new token." >&2; exit 1 ;;
+    wait)
+        mkdir -p "${token_file%/*}"
+        (umask 077 && printf '%s\n' "$token" > "$token_file")
+        echo "Waiting for approval"
+        ;;
+    expired) echo "error: Token expired. Run the install again with a new token." >&2; exit 1 ;;
     refused) echo "error: Cloud refused this Fleet Token." >&2; exit 1 ;;
 esac
 EOF
@@ -146,22 +153,32 @@ EOF
 cat > "$TMP/bin/stty" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$STTY_LOG"
+[ "$*" != -g ] || echo saved-mode
+[ "$*" != -echo ] || [ -z "${FAKE_NO_ECHO_OFF:-}" ]
 EOF
 printf '#!/bin/sh\n' > "$TMP/bin/systemctl"
 chmod 0755 "$TMP/bin/id" "$TMP/bin/stty" "$TMP/bin/systemctl"
 
 TOKEN=pflt_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ-_01234
+OLD_TOKEN=pflt_ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkj
 FLEET_TOKEN_FILE=$TMP/etc/ployz/fleet-token
 export PLOYZ_TEST_ROOT=$TMP CHECKIN_LOG=$TMP/checkin.log STTY_LOG=$TMP/stty.log
 enroll() {
-    rm -rf "${TMP:?}/etc" "$CHECKIN_LOG" "$STTY_LOG" "$TMP/install/ployz"
+    [ -n "${KEEP_ETC:-}" ] || rm -rf "${TMP:?}/etc"
+    rm -f "$CHECKIN_LOG" "$STTY_LOG" "$TMP/install/ployz"
+    # shellcheck disable=SC2086
     env PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" INSTALL_BIN_DIR="$TMP/install" \
-        PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" ${ENROLL_FLAG:+"$ENROLL_FLAG"} 1.2.3 > "$TMP/out" 2> "$TMP/err"
+        PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" ${INSTALL_ARGS:-${ENROLL_FLAG:-} 1.2.3} \
+        > "$TMP/out" 2> "$TMP/err"
 }
 installed_only() {
     printf '%s\n' 'ployz_linux_amd64.tar.gz: OK' "Installed ployz to $TMP/install/ployz" | diff - "$TMP/out"
     [ ! -e "$FLEET_TOKEN_FILE" ]
     [ ! -e "$CHECKIN_LOG" ]
+}
+checked_in_with() {
+    printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE --token-stdin" enroll= "skip_zfs=$1" \
+        leaked=0 "token=$TOKEN" | diff - "$CHECKIN_LOG"
 }
 
 for value in unset ''; do
@@ -178,20 +195,33 @@ done
 enroll PLOYZ_ENROLL_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
 [ "$(head -n 1 "$TMP/out")" = "Installs Docker and Ployz. Nothing joins until you say so." ]
 [ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
-[ "$(stat -c %a "$FLEET_TOKEN_FILE")" = 600 ]
 [ "$(cat "$FLEET_TOKEN_FILE")" = $TOKEN ]
-printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE" enroll= skip_zfs=1 mode=600 \
-    "token=$TOKEN" | diff - "$CHECKIN_LOG"
+checked_in_with 1
 [ ! -e "$STTY_LOG" ]
 
+# A FLEET_TOKEN or TTY the caller exported must not carry the token into ployz's environment.
+enroll PLOYZ_ENROLL_TOKEN=$TOKEN FLEET_TOKEN=exported TTY=exported
+checked_in_with ''
+
 mkdir -p "$TMP/dev"
+for args in '--enroll 1.2.3' '1.2.3 --enroll'; do
+    printf '%s\n' "$TOKEN" > "$TMP/dev/tty"
+    INSTALL_ARGS=$args enroll
+    [ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
+    checked_in_with ''
+    printf '%s\n' -g -echo saved-mode | diff - "$STTY_LOG"
+    grep -Fq 'Fleet Token: ' "$TMP/dev/tty"
+done
+
+# With echo still on, the prompt never shows, so nothing is typed into an echoing terminal.
 printf '%s\n' "$TOKEN" > "$TMP/dev/tty"
-ENROLL_FLAG=--enroll enroll
-[ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
-printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE" enroll= skip_zfs= mode=600 \
-    "token=$TOKEN" | diff - "$CHECKIN_LOG"
-printf '%s\n' -echo echo | diff - "$STTY_LOG"
-grep -Fq 'Fleet Token: ' "$TMP/dev/tty"
+if ENROLL_FLAG=--enroll enroll FAKE_NO_ECHO_OFF=1; then
+    echo "read a token with echo on" >&2
+    exit 1
+fi
+grep -Fq 'Could not turn off echo' "$TMP/err"
+if grep -Fq 'Fleet Token: ' "$TMP/dev/tty"; then echo "prompted with echo on" >&2; exit 1; fi
+[ ! -e "$CHECKIN_LOG" ]
 
 if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_UID=1000; then
     echo "enrolled without root" >&2
@@ -216,12 +246,23 @@ for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!"; do
     done
 done
 
+# A refused token changes nothing: no token file on a first install, the old token on a rerun.
 for answer in expired refused; do
     if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
         echo "$answer answer exited 0" >&2
         exit 1
     fi
     [ "$(wc -l < "$TMP/err")" = 1 ] || { echo "$answer: the script added to ployz's error" >&2; exit 1; }
+    [ ! -e "$FLEET_TOKEN_FILE" ]
+    mkdir -p "${FLEET_TOKEN_FILE%/*}"
+    printf '%s\n' "$OLD_TOKEN" > "$FLEET_TOKEN_FILE"
+    if KEEP_ETC=1 enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_ANSWER=$answer; then
+        echo "$answer rerun exited 0" >&2
+        exit 1
+    fi
+    [ "$(cat "$FLEET_TOKEN_FILE")" = "$OLD_TOKEN" ]
 done
+
+python3 "$ROOT/scripts/test-cli-installer-tty.py" "$ROOT/install.sh"
 
 echo "CLI installer verifies the checksum and binary before installing, and checks in with a Fleet Token"

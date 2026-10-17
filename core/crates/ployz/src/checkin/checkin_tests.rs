@@ -138,22 +138,63 @@ fn the_signature_matches_what_cloud_verifies() {
 
 #[test]
 fn an_answer_this_cli_cannot_read_waits_a_minute() {
-    for body in [
-        &br#"{"kind":"reboot"}"#[..],
-        b"not json",
-        br#"{"kind":"wait"}"#,
-    ] {
-        assert_eq!(wire::answer(body), Answer::Wait(Duration::from_secs(60)));
+    for body in [&br#"{"kind":"reboot"}"#[..], br#"{"kind":"wait"}"#] {
+        assert_eq!(
+            wire::answer(body),
+            Some(Answer::Wait(Duration::from_secs(60)))
+        );
     }
     assert_eq!(
         wire::answer(br#"{"kind":"wait","retryAfter":30}"#),
-        Answer::Wait(Duration::from_secs(30))
+        Some(Answer::Wait(Duration::from_secs(30)))
     );
     for huge in [
         &br#"{"kind":"wait","retryAfter":999999}"#[..],
         br#"{"kind":"wait","retryAfter":1e300}"#,
     ] {
-        assert_eq!(wire::answer(huge), Answer::Wait(Duration::from_secs(3600)));
+        assert_eq!(
+            wire::answer(huge),
+            Some(Answer::Wait(Duration::from_secs(3600)))
+        );
+    }
+}
+
+#[test]
+fn an_answer_cloud_could_not_have_sent_is_not_cloud() {
+    for body in [
+        &b"<!doctype html><title>Welcome to nginx</title>"[..],
+        b"not json",
+        b"",
+        b"[]",
+        br#"{"ok":true}"#,
+        br#"{"kind":7}"#,
+    ] {
+        assert_eq!(wire::answer(body), None);
+        assert!(matches!(
+            client::reply(StatusCode::OK, None, None, body),
+            Reply::NotCloud(why) if why.starts_with("answered 200 OK")
+        ));
+    }
+    for status in [
+        StatusCode::NOT_FOUND,
+        StatusCode::METHOD_NOT_ALLOWED,
+        StatusCode::FORBIDDEN,
+        StatusCode::GONE,
+    ] {
+        assert_eq!(
+            client::reply(status, None, None, b"Not Found"),
+            Reply::NotCloud(format!("answered {status}"))
+        );
+    }
+    for status in [
+        StatusCode::REQUEST_TIMEOUT,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ] {
+        assert!(matches!(
+            client::reply(status, None, None, b""),
+            Reply::Unreachable(after, _) if after == Duration::from_secs(60)
+        ));
     }
 }
 
@@ -1080,11 +1121,83 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
         at("2026-10-16T01:31:00Z"),
     )
     .await;
+    assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 0);
+    let answered = at("2026-10-16T01:32:00Z");
+    restart_preparation(&reinstalled, &paths, answered).await;
     assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.prepare_retries, 0);
+    assert_eq!(status.prepare_started, Some(answered));
     // ployzd records what it added in the state file, so the restart leaves it alone.
     assert_eq!(fs::read_to_string(&paths.prepare_state).unwrap(), state);
+}
+
+#[tokio::test]
+async fn an_install_starts_no_preparation_before_cloud_answers_the_token() {
+    for (status, body) in [
+        ("200 OK", r#"{"kind":"wait","retryAfter":30}"#),
+        (
+            "401 Unauthorized\r\nDate: {date}",
+            r#"{"error":"Authentication is required."}"#,
+        ),
+        ("404 Not Found", "Not Found"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let status = status.replace("{date}", &Utc::now().to_rfc2822());
+        let (url, _server) = answering_cloud(status, body.to_owned(), 1).await;
+        let host = FakeHost::default();
+        install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+        assert_eq!(host.prepares.load(Ordering::SeqCst), 0, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn a_preparation_that_finished_or_runs_is_not_restarted_by_an_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#,
+    )
+    .unwrap();
+    let ready = FakeHost::default();
+    restart_preparation(&ready, &paths, Utc::now()).await;
+    assert_eq!(ready.prepares.load(Ordering::SeqCst), 0);
+    fs::remove_file(&paths.prepare_state).unwrap();
+    let running = FakeHost::default();
+    running.preparing.store(true, Ordering::SeqCst);
+    restart_preparation(&running, &paths, Utc::now()).await;
+    assert_eq!(running.prepares.load(Ordering::SeqCst), 0);
+    let fresh = FakeHost::default();
+    restart_preparation(&fresh, &paths, Utc::now()).await;
+    assert_eq!(fresh.prepares.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_url_that_is_not_cloud_is_retried_and_named_in_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, _server) = answering_cloud(
+        "404 Not Found".to_owned(),
+        "<html>Not Found</html>".to_owned(),
+        1,
+    )
+    .await;
+    let host = FakeHost::default();
+    let Next::NotCloud(why) = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
+    else {
+        panic!("a 404 is not Cloud");
+    };
+    assert!(
+        why.starts_with(&format!("{url}/api/checkin answered 404 Not Found")),
+        "{why}"
+    );
+    assert!(why.ends_with("so it isn't Ployz Cloud"), "{why}");
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline(), Headline::open("Not Ployz Cloud"));
+    assert!(status.says_why());
 }
 
 #[tokio::test]

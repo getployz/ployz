@@ -5,13 +5,18 @@ set -eu
 PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 ENROLL=
-if [ "${1:-}" = --enroll ]; then
-    ENROLL=1
-    shift
-fi
-PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
+VERSION_ARG=
+for arg do
+    case "$arg" in
+        --enroll) ENROLL=1 ;;
+        *) VERSION_ARG=${VERSION_ARG:-$arg} ;;
+    esac
+done
+PLOYZ_VERSION=${PLOYZ_VERSION:-${VERSION_ARG:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
 FLEET_TOKEN_FILE=${PLOYZ_TEST_ROOT:-}/etc/ployz/fleet-token
+# Unset first, so a name exported by the caller doesn't carry the token into ployz's environment.
+unset FLEET_TOKEN TTY
 TTY=${PLOYZ_TEST_ROOT:-}/dev/tty
 FLEET_TOKEN=${PLOYZ_ENROLL_TOKEN:-}
 unset PLOYZ_ENROLL_TOKEN
@@ -82,7 +87,8 @@ resolve_install() {
 
 install_cli() {
     tmp_dir=$(mktemp -d)
-    trap 'rm -rf "$tmp_dir"; rm -f "${staged:-}"' EXIT HUP INT TERM
+    trap 'rm -rf "$tmp_dir"' EXIT
+    trap 'exit 130' HUP INT TERM
     version=$(resolve_install "$PLOYZ_VERSION")
     matches_version "$version" "$RELEASE_VERSION" || error "Invalid version: $PLOYZ_VERSION"
 
@@ -108,33 +114,26 @@ install_cli() {
     echo "Installed ployz to $INSTALL_BIN_DIR/ployz"
 }
 
-# printf is a builtin, so the token reaches the file without entering any process's argv.
-write_fleet_token() {
-    mkdir -p "$(dirname "$FLEET_TOKEN_FILE")"
-    staged=$(mktemp "$FLEET_TOKEN_FILE.XXXXXX")
-    printf '%s\n' "$1" > "$staged"
-    mv -f "$staged" "$FLEET_TOKEN_FILE"
-}
-
 # The same shape ployz checks, spelled out so no locale widens the range.
 is_fleet_token() {
     case "$1" in pflt_*) ;; *) return 1 ;; esac
-    secret=${1#pflt_}
-    [ "${#secret}" -eq 43 ] || return 1
-    case "$secret" in
+    set -- "${1#pflt_}"
+    [ "${#1}" -eq 43 ] || return 1
+    case "$1" in
         *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
     esac
 }
 
 # The script itself arrives on stdin, so the token is read from the terminal, never echoed.
 read_fleet_token() {
-    (: < "$TTY") 2>/dev/null ||
+    tty_mode=$(stty -g 2>/dev/null < "$TTY") ||
         error "No terminal to read the Fleet Token from. Set PLOYZ_ENROLL_TOKEN in the root environment instead, as cloud-init does."
+    trap 'stty "$tty_mode" < "$TTY"; exit 130' HUP INT TERM
+    stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
+    # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
     printf 'Fleet Token: ' >> "$TTY"
-    trap 'stty echo < "$TTY"; exit 130' HUP INT TERM
-    stty -echo < "$TTY"
     read -r FLEET_TOKEN < "$TTY" || FLEET_TOKEN=
-    stty echo < "$TTY"
+    stty "$tty_mode" < "$TTY"
     trap - HUP INT TERM
     printf '\n' >> "$TTY"
 }
@@ -148,8 +147,9 @@ check_in() {
     is_fleet_token "$FLEET_TOKEN" ||
         error "That isn't a Fleet Token. It is pflt_ and 43 more characters. Copy it again."
     install_cli
-    write_fleet_token "$FLEET_TOKEN"
-    "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE"
+    # printf is a builtin, so the token reaches ployz on stdin without entering any process's argv.
+    printf '%s\n' "$FLEET_TOKEN" |
+        "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE" --token-stdin
 }
 
 case "$ENROLL:$FLEET_TOKEN" in

@@ -29,6 +29,7 @@ pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
 const FLEET_TOKEN_SECRET_CHARS: usize = 43;
+const TOKEN_MODE: u32 = 0o600;
 const MAX_SKEW_SECONDS: i64 = 300;
 const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
 const CLOUD_REFUSAL: &str = "Authentication is required.";
@@ -131,19 +132,19 @@ impl FleetToken {
             path: path.to_owned(),
             source,
         })?;
+        Self::parse(&text).ok_or_else(|| KeyError::NotAToken {
+            path: path.to_owned(),
+        })
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         let token = text.trim();
         let secret = token.strip_prefix(FLEET_TOKEN_PREFIX).unwrap_or_default();
-        if secret.len() == FLEET_TOKEN_SECRET_CHARS
+        (secret.len() == FLEET_TOKEN_SECRET_CHARS
             && secret
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        {
-            Ok(Self(token.to_owned()))
-        } else {
-            Err(KeyError::NotAToken {
-                path: path.to_owned(),
-            })
-        }
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
+        .then(|| Self(token.to_owned()))
     }
 
     #[cfg(test)]
@@ -164,6 +165,8 @@ pub(super) enum Reply {
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
+    /// The URL answered, and the answer can't have come from Ployz Cloud.
+    NotCloud(String),
     ClockOff(String),
     Outdated(String),
 }
@@ -191,6 +194,19 @@ impl CheckinClient {
 
     pub(super) fn sends(&self, token: &FleetToken) -> bool {
         self.token == *token
+    }
+
+    /// Writes the token this client sends to `path` in one step, readable by root only.
+    pub(crate) fn write_token(&self, path: &Path) -> io::Result<()> {
+        let directory = path.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(directory)?;
+        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(TOKEN_MODE))?;
+        writeln!(file, "{}", self.token.0)?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 
     /// Names the token in status.json without writing the token itself there.
@@ -236,7 +252,11 @@ impl CheckinClient {
             .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
             .map(|cloud| cloud.to_utc());
         let body = response.bytes().await.unwrap_or_default();
-        reply(status, retry_after, cloud, &body)
+        let reply = reply(status, retry_after, cloud, &body);
+        if let Reply::NotCloud(why) = &reply {
+            return Reply::NotCloud(format!("{} {why}, so it isn't Ployz Cloud", self.url));
+        }
+        reply
     }
 }
 
@@ -247,7 +267,14 @@ pub(super) fn reply(
     body: &[u8],
 ) -> Reply {
     if status.is_success() {
-        return Reply::Answer(wire::answer(body));
+        return wire::answer(body).map_or_else(
+            || {
+                Reply::NotCloud(format!(
+                    "answered {status} with something other than a check-in answer"
+                ))
+            },
+            Reply::Answer,
+        );
     }
     if status == StatusCode::UNAUTHORIZED {
         return unauthorized(cloud, body);
@@ -265,6 +292,11 @@ pub(super) fn reply(
             .unwrap_or(Duration::from_secs(1))
             .min(wire::WAIT_CAP);
         return Reply::Answer(Answer::Wait(after));
+    }
+    // Cloud answers these, and a timeout says nothing about who answered. Any other 4xx means
+    // the URL reached something else.
+    if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
+        return Reply::NotCloud(format!("answered {status}"));
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
 }

@@ -7,6 +7,7 @@ use std::{
     env as process_env,
     ffi::OsStr,
     fs,
+    io::Read,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
@@ -35,6 +36,11 @@ pub(crate) fn command(command: Command) -> Command {
                 .value_parser(clap::value_parser!(PathBuf))
                 .default_value(Paths::TOKEN_FILE)
                 .help("Read the Fleet Token from this file"),
+        )
+        .arg(
+            switch("token-stdin", None)
+                .requires("install")
+                .help("Read the Fleet Token from stdin, and write it to --token-file once Cloud answers it"),
         )
         .arg(
             value("cloud-url", None)
@@ -76,10 +82,14 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     }
     let runtime = runtime()?;
     if matches.get_flag("install") {
-        let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
-        let token = runtime.block_on(stop_old_loop(token))?;
+        let candidate = matches.get_flag("token-stdin");
+        let token = if candidate {
+            stdin_token()?
+        } else {
+            FleetToken::read(&paths.token_file).map_err(key_failure)?
+        };
         let (key, mut client) = connect(&paths, &cloud_url, token)?;
-        return runtime.block_on(install(&mut client, &key, &paths, &cloud_url));
+        return runtime.block_on(install(&mut client, &key, &paths, &cloud_url, candidate));
     }
     let Some((ployzd, token)) = runtime.block_on(loop_start(
         &System::with(PathBuf::new()),
@@ -121,13 +131,30 @@ fn connect(
     Ok((key, client))
 }
 
+fn stdin_token() -> Result<FleetToken, Error> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|error| {
+            Error::caused(
+                RpcErrorCode::InvalidArgument,
+                "Could not read the Fleet Token from stdin.",
+                error,
+            )
+        })?;
+    FleetToken::parse(&text)
+        .ok_or_else(|| Error::usage("stdin doesn't hold a Fleet Token (pflt_…)"))
+}
+
+/// Checks in with the token before it touches anything a running loop uses, so a token Cloud
+/// refuses leaves the old token, units and loop as they were.
 async fn install(
     client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
     cloud_url: &str,
+    candidate: bool,
 ) -> Result<(), Error> {
-    keep_token_private(&paths.token_file)?;
     let host = System::with(install_ployzd(paths, process_env::var_os("PATH").as_deref()).await?);
     let ployz = process_env::current_exe().map_err(|error| {
         Error::caused(
@@ -141,18 +168,43 @@ async fn install(
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     let prepare_unit = unit::prepare(&host.ployzd, skip_zfs)
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
+    crate::ui::stream("Checking in");
+    let next = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
+    accept(next, client, &paths.token_file, candidate, cloud_url)?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
     systemd(&["daemon-reload"]).await?;
-    crate::ui::stream("Checking in");
-    let next = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
-    if let Next::Stop(reason, _) = next {
-        checkin::stop(&host, client, paths, reason).await;
-    }
-    install_outcome(next, cloud_url)?;
-    systemd(&["enable", "--now", unit::CHECKIN]).await?;
+    checkin::restart_preparation(&host, paths, Utc::now()).await;
+    systemd(&["enable", unit::CHECKIN]).await?;
+    // A loop already running checks in with the old token until it starts over.
+    systemd(&["restart", unit::CHECKIN]).await?;
     crate::ui::stream("Waiting for approval");
     Ok(())
+}
+
+/// Keeps the token Cloud answered. A token read from stdin reaches the token file only here, so
+/// one Cloud refuses never replaces the token a running loop uses.
+fn accept(
+    next: Next,
+    client: &CheckinClient,
+    token_file: &Path,
+    candidate: bool,
+    cloud_url: &str,
+) -> Result<(), Error> {
+    install_outcome(next, cloud_url)?;
+    if !candidate {
+        return keep_token_private(token_file);
+    }
+    client.write_token(token_file).map_err(|error| {
+        Error::caused(
+            RpcErrorCode::Internal,
+            format!(
+                "Could not write the Fleet Token to {}.",
+                token_file.display()
+            ),
+            error,
+        )
+    })
 }
 
 fn install_outcome(next: Next, cloud_url: &str) -> Result<(), Error> {
@@ -186,17 +238,13 @@ fn install_outcome(next: Next, cloud_url: &str) -> Result<(), Error> {
         }
         Next::ClockOff(why) => Err(Error::coded(
             RpcErrorCode::Unauthenticated,
-            format!("{why}, then run this again."),
+            format!("{why}, then run the install again."),
+        )),
+        Next::NotCloud(why) => Err(Error::coded(
+            RpcErrorCode::InvalidArgument,
+            format!("{why}. Check PLOYZ_CLOUD_URL, then run the install again."),
         )),
     }
-}
-
-async fn stop_old_loop(token: FleetToken) -> Result<FleetToken, Error> {
-    if Path::new(UNIT_DIR).join(unit::CHECKIN).exists() {
-        // Disabled too, so an install that fails from here leaves no loop to start at boot.
-        systemd(&["disable", "--now", unit::CHECKIN]).await?;
-    }
-    Ok(token)
 }
 
 /// The ployzd the loop runs with, and why it should be replaced when it is older than this CLI.
