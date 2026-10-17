@@ -142,21 +142,28 @@ export const closeServerEnrollment = Effect.fn("ServerEnrollment.closeRun")(func
   return yield* endAndRevokeTokens(or(ownedBy(runId), unbound), RUN_ENDS[end]);
 });
 
-export const closeUnboundServerEnrollments = Effect.fn("ServerEnrollment.closeUnbound")(function* (
+// Each event's outbox row stays locked until commit, so every canceller enqueues only after it holds its attempts, in id order.
+const enqueueCancels = (attemptIds: ReadonlyArray<string>) =>
+  Effect.forEach([...attemptIds].sort(), (attemptId) => enqueueEvent(createServerEnrollmentCancelEvent({ attemptId })), { discard: true });
+
+/** Cancels the open attempts among `attemptIds`: a bound attempt's run ends it, and an unbound one ends here. */
+export const cancelServerEnrollments = Effect.fn("ServerEnrollment.cancelAttempts")(function* (
   organizationId: string,
   attemptIds: ReadonlyArray<string>,
 ) {
-  return yield* endAndRevokeTokens(and(
-    eq(serverEnrollment.organizationId, organizationId),
-    inArray(serverEnrollment.id, [...attemptIds]),
-    isNull(serverEnrollment.inngestRunId),
-    open,
-  ), { state: "cancelled" });
+  if (attemptIds.length === 0) return;
+  const { drizzle } = yield* Database;
+  const locked = yield* drizzle.select({ id: serverEnrollment.id, runId: serverEnrollment.inngestRunId }).from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), inArray(serverEnrollment.id, [...attemptIds]), open))
+    .orderBy(serverEnrollment.id)
+    .for("update");
+  const unbound = locked.filter((row) => row.runId === null).map((row) => row.id);
+  if (unbound.length > 0) yield* endAndRevokeTokensNow(and(inArray(serverEnrollment.id, unbound), open), { state: "cancelled" });
+  yield* enqueueCancels(locked.map((row) => row.id));
 });
 
 export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpen")(function* (organizationId: string) {
-  const ended = yield* endAndRevokeTokensNow(and(eq(serverEnrollment.organizationId, organizationId), open), { state: "cancelled" });
-  for (const attemptId of ended) yield* enqueueEvent(createServerEnrollmentCancelEvent({ attemptId }));
+  yield* enqueueCancels(yield* endAndRevokeTokensNow(and(eq(serverEnrollment.organizationId, organizationId), open), { state: "cancelled" }));
 });
 
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {

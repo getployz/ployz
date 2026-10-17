@@ -800,3 +800,70 @@ it("ends an unpaired Organization's attempts before its tokens when removing it,
 it("ends an unpaired Organization's attempts before its tokens when removing it, so a public Cancel does not deadlock", async () => {
   await removeUnpairedOrganizationWhile((id) => cancelServerEnrollment(ada, { organizationSlug: "ada", id }), false);
 }, 15_000);
+
+it("locks the attempt before its cancel event when cancelling, so an Organization removal does not deadlock", async () => {
+  const [a] = await waiting("public-cancel-first");
+  if (a === undefined) throw new Error("one host");
+  const attempt = (await run(enroll([a]))).attempts[0];
+  if (attempt === undefined) throw new Error("one attempt");
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934137)");
+  await harness.pool.query(`
+    create function pause_cancel_event() returns trigger language plpgsql as $$ begin
+      if new.name = 'server/enrollment.cancel' then perform pg_advisory_xact_lock(934137); end if;
+      return new;
+    end $$;
+    create trigger pause_cancel_event after insert on operation_outbox for each row execute function pause_cancel_event();
+  `);
+  const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  try {
+    const cancelling = failure(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attempt.id }));
+    await waitFor("advisory");
+    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, "ada").pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+    ));
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934137)");
+    expect(await Promise.all([cancelling, removing])).toEqual([null, null]);
+    expect((await harness.pool.query("select 1 from organization")).rows).toEqual([]);
+  } finally {
+    await gate.query("select pg_advisory_unlock(934137)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_cancel_event on operation_outbox; drop function pause_cancel_event()");
+  }
+}, 15_000);
+
+it("holds Fleet Token creation behind an Organization removal", async () => {
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934138)");
+  await harness.pool.query(`
+    create function pause_token_delete() returns trigger language plpgsql as $$ begin
+      perform pg_advisory_xact_lock(934138);
+      return old;
+    end $$;
+    create trigger pause_token_delete after delete on machine_enrollment_token for each row execute function pause_token_delete();
+  `);
+  await run(insertEnrollmentToken({ organizationId: adaOrg, userId: ada.userId }));
+  const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  const advisoryWaiters = async () =>
+    (await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = 'advisory'")).rows.length;
+  try {
+    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, "ada").pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+    ));
+    await waitFor("advisory");
+    let created = false;
+    const creating = failure(createFleetToken(ada, { organizationSlug: "ada", name: "rack-2", expiresIn: "1d", autoEnroll: null }))
+      .finally(() => { created = true; });
+    for (let i = 0; i < 100 && !created && (await advisoryWaiters()) < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(created).toBe(false);
+    await gate.query("select pg_advisory_unlock(934138)");
+    expect(await removing).toBeNull();
+    expect(await creating).not.toBeNull();
+    expect((await harness.pool.query("select 1 from fleet_token")).rows).toEqual([]);
+  } finally {
+    await gate.query("select pg_advisory_unlock(934138)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_token_delete on machine_enrollment_token; drop function pause_token_delete()");
+  }
+}, 15_000);

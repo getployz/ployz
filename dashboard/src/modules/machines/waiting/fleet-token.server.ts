@@ -10,6 +10,7 @@ import {
   type FleetTokenView,
   type ListFleetTokensInput,
 } from "#/modules/machines/waiting/fleet-token";
+import { lockOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
 import { generateTokenName } from "#/modules/machines/waiting/names";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -31,27 +32,31 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
   generateName: () => string = generateTokenName,
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
   const expiresAt = new Date(Date.now() + LIFETIME_DAYS[input.expiresIn] * DAY_MS);
   const insert = (name: string) => {
     const token = `${FLEET_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-    return drizzle
-      .insert(fleetToken)
-      .values({
-        organizationId: organization.id,
-        name,
-        tokenHash: hashFleetToken(token),
-        expiresAt,
-        autoEnrollMax: input.autoEnroll?.maxServers ?? null,
-        createdByUserId: actor.userId,
-      })
-      .returning({ id: fleetToken.id })
-      .pipe(
-        Effect.flatMap(([row]) => row === undefined
-          ? Effect.die("Fleet Token insert returned no row")
-          : Effect.succeed(Option.some({ token, id: row.id, name, expiresAt: expiresAt.toISOString() }))),
-        Effect.catchIf(isUniqueViolation, () => Effect.succeed(Option.none())),
-      );
+    // Organization removal holds this lock while it locks the tokens and then their hosts, so no token appears between.
+    return database.transaction(Effect.gen(function* () {
+      yield* lockOrganizationEnrollment(organization.id);
+      const { drizzle } = yield* Database;
+      return yield* drizzle
+        .insert(fleetToken)
+        .values({
+          organizationId: organization.id,
+          name,
+          tokenHash: hashFleetToken(token),
+          expiresAt,
+          autoEnrollMax: input.autoEnroll?.maxServers ?? null,
+          createdByUserId: actor.userId,
+        })
+        .returning({ id: fleetToken.id });
+    })).pipe(
+      Effect.flatMap(([row]) => row === undefined
+        ? Effect.die("Fleet Token insert returned no row")
+        : Effect.succeed(Option.some({ token, id: row.id, name, expiresAt: expiresAt.toISOString() }))),
+      Effect.catchIf(isUniqueViolation, () => Effect.succeed(Option.none())),
+    );
   };
   if (input.name !== null) {
     const created = yield* insert(input.name);

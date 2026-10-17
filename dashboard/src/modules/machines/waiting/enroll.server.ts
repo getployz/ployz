@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { createServerEnrollmentCancelEvent, createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
+import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
 import { insertEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
-import { closeUnboundServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
+import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
   ENROLL_MIN_CLI_VERSION,
   type EnrollInput,
@@ -185,7 +185,7 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
       .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId)).for("update");
     if (current?.removalStartedAt == null) return;
     const founding = yield* openFounderAttempt(organizationId);
-    if (founding !== undefined) yield* cancelAttempts(organizationId, [founding.id]);
+    if (founding !== undefined) yield* cancelServerEnrollments(organizationId, [founding.id]);
   }));
 });
 
@@ -254,15 +254,6 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   );
 });
 
-export const cancelAttempts = Effect.fn("ServerEnrollment.cancelAttempts")(function* (
-  organizationId: string,
-  attemptIds: ReadonlyArray<string>,
-) {
-  if (attemptIds.length === 0) return;
-  for (const attemptId of attemptIds) yield* enqueueEvent(createServerEnrollmentCancelEvent({ attemptId }));
-  yield* closeUnboundServerEnrollments(organizationId, attemptIds);
-});
-
 export const cancelServerEnrollment = Effect.fn("ServerEnrollment.cancel")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id: string },
@@ -276,7 +267,7 @@ export const cancelServerEnrollment = Effect.fn("ServerEnrollment.cancel")(funct
       .from(serverEnrollment)
       .where(and(eq(serverEnrollment.organizationId, organization.id), eq(serverEnrollment.id, input.id)));
     if (attempt === undefined) return yield* new NotFound({ message: "No such enrollment." });
-    if (attempt.open) yield* cancelAttempts(organization.id, [attempt.id]);
+    if (attempt.open) yield* cancelServerEnrollments(organization.id, [attempt.id]);
     return { id: attempt.id, cancelling: attempt.open };
   }));
 });

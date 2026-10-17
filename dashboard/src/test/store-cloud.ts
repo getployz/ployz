@@ -24,7 +24,6 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 
-/** An Inngest client whose sends succeed without leaving the process. */
 /** An Inngest client whose sends succeed and go nowhere. */
 export const sendsNowhere = () => {
   const inngest = new Inngest({ id: "store-test" });

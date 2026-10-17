@@ -48,11 +48,13 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
 
 /**
  * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
- * a legacy claim, Forget Servers, a pairing removal, a dead-claim release and Organization removal. The pairing row
- * can't do it, since it doesn't exist before the first server founds. Taken first in its transaction; the order after
- * it is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows (each in id order), then
- * enrollment tokens, then the Organization row. Cancel and the run and sweep closers only end attempts; they skip this
- * lock and start at `server_enrollment`.
+ * a legacy claim, Fleet Token creation, Forget Servers, a pairing removal, a dead-claim release and Organization
+ * removal. The pairing row can't do it, since it doesn't exist before the first server founds. Taken first in its
+ * transaction; the order after it is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows
+ * (each in id order), then enrollment tokens, then `operation_outbox` cancel events (in attempt id order), then the
+ * Organization row. Cancel, Reject and the run and sweep closers only end attempts; they skip this lock and start at
+ * `server_enrollment`, Reject after its `waiting_server` rows. A cancel event's outbox row stays locked until commit, so
+ * no path inserts one before it holds that attempt.
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
