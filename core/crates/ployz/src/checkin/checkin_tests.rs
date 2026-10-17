@@ -1107,6 +1107,31 @@ async fn a_probe_that_never_finishes_is_cut_off_and_retried() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_failed_probe_keeps_the_last_window_report_for_the_next_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let host = FakeHost {
+        probe_hangs: true,
+        ..FakeHost::default()
+    };
+    let heard: probe::Report =
+        serde_json::from_str(r#"{"handout":"h","heardFrom":["2001:db8::1"],"bindFailed":[]}"#)
+            .unwrap();
+    let mut probes = Probes::resume(Some(heard.clone()));
+    pass_from(
+        &host,
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    assert_eq!(last_probe(&paths), Some(heard));
+}
+
+#[tokio::test(start_paused = true)]
 async fn one_failed_preparation_is_retried_once_however_often_the_loop_polls() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);

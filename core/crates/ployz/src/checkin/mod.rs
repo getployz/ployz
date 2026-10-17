@@ -569,7 +569,7 @@ async fn pass_from<H: Host>(
         prepare_retries,
         prepare_started,
         refused: None,
-        probe: None,
+        probe: probes.report(),
     };
     status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
