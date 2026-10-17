@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use super::probe;
+
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
@@ -21,6 +23,8 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) report: &'a HostReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prep: Option<Prep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) probe: Option<probe::Report>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,6 +131,7 @@ pub(crate) enum ZfsPrep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Answer {
     Wait(Duration),
+    Probe(Duration, probe::Handout),
     Enroll,
     Stop(StopReason, String),
 }
@@ -157,6 +162,8 @@ pub(super) fn answer(body: &[u8]) -> Answer {
         Wait {
             #[serde(rename = "retryAfter")]
             retry_after: f64,
+            #[serde(default)]
+            probe: Option<serde_json::Value>,
         },
         Enroll {},
         Stop {
@@ -166,7 +173,14 @@ pub(super) fn answer(body: &[u8]) -> Answer {
         },
     }
     match serde_json::from_slice::<Wire>(body) {
-        Ok(Wire::Wait { retry_after }) => Answer::Wait(wait_for(retry_after)),
+        Ok(Wire::Wait { retry_after, probe }) => match probe.map(serde_json::from_value) {
+            Some(Ok(handout)) => Answer::Probe(wait_for(retry_after), handout),
+            Some(Err(why)) => {
+                crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
+                Answer::Wait(wait_for(retry_after))
+            }
+            None => Answer::Wait(wait_for(retry_after)),
+        },
         Ok(Wire::Enroll {}) => Answer::Enroll,
         Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
         Err(_) => Answer::Wait(UNKNOWN_WAIT),

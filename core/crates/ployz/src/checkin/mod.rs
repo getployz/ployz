@@ -6,6 +6,7 @@
 //! and `status.json` only remembers the last answer for `ployz status`.
 
 mod client;
+mod probe;
 pub(crate) mod unit;
 mod wire;
 
@@ -20,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
+use probe::Probes;
 use wire::{Answer, CheckinRequest, PrepState};
 pub(crate) use wire::{DockerPrep, Issue, Prep, Probe, StopReason, ZfsPrep};
 
@@ -63,6 +65,10 @@ impl Paths {
 
     pub(crate) fn status(&self) -> PathBuf {
         self.checkin_dir.join("status.json")
+    }
+
+    fn probe(&self) -> PathBuf {
+        self.checkin_dir.join("probe.json")
     }
 }
 
@@ -358,8 +364,9 @@ pub(crate) async fn run<H: Host>(
     paths: &Paths,
 ) -> CheckinEnd {
     let mut last_log = None;
+    let mut probes = Probes::load(paths.probe());
     loop {
-        match pass(host, client, key, paths, Utc::now()).await {
+        match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after, log } => {
                 if let Some(line) = log.filter(|line| last_log != Some(*line)) {
                     crate::ui::note(line);
@@ -466,6 +473,7 @@ pub(crate) async fn stop<H: Host>(
     CheckinEnd::Stopped(reason)
 }
 
+#[cfg(test)]
 pub(crate) async fn pass<H: Host>(
     host: &H,
     client: &mut CheckinClient,
@@ -473,7 +481,16 @@ pub(crate) async fn pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, false).await
+    pass_from(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        false,
+        &mut Probes::load(paths.probe()),
+    )
+    .await
 }
 
 /// The pass an explicit `--install` makes: a failed preparation starts over at once, with its
@@ -485,7 +502,16 @@ pub(crate) async fn install_pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, true).await
+    pass_from(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        true,
+        &mut Probes::load(paths.probe()),
+    )
+    .await
 }
 
 async fn pass_from<H: Host>(
@@ -495,6 +521,7 @@ async fn pass_from<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
     installing: bool,
+    probes: &mut Probes,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     let refusal = previous
@@ -578,7 +605,7 @@ async fn pass_from<H: Host>(
             status.message = Some(why.clone());
             record(&status, paths);
             return Next::Retry {
-                after: client::BACKOFF,
+                after: probes.retry_after(client::BACKOFF),
                 why: format!("Could not probe this server: {why}."),
             };
         }
@@ -592,13 +619,32 @@ async fn pass_from<H: Host>(
         cli_version: env!("CARGO_PKG_VERSION"),
         report: &report,
         prep: Some(prep),
+        probe: probes.report().await,
     };
-    let next = match client.post(key, &request).await {
-        client::Reply::Answer(Answer::Wait(after)) => {
+    let sent = tokio::time::Instant::now();
+    let reply = client.post(key, &request).await;
+    if request.probe.is_some() && matches!(&reply, client::Reply::Answer(_)) {
+        probes.reported();
+    }
+    let next = match reply {
+        client::Reply::Answer(Answer::Wait(after)) | client::Reply::RateLimited(after) => {
+            status.answer = Seen::Wait;
+            Next::Wait { after, log: None }
+        }
+        client::Reply::Answer(Answer::Probe(after, handout)) => {
+            probes.open(handout, key, sent).await;
+            if installing {
+                crate::ui::note(format!(
+                    "Listening on the probe ports for up to {}s.",
+                    probe::WINDOW_CAP.as_secs()
+                ));
+                probes.finish().await;
+            }
             status.answer = Seen::Wait;
             Next::Wait { after, log: None }
         }
         client::Reply::Answer(Answer::Enroll) => {
+            probes.close().await;
             status.answer = Seen::Enroll;
             Next::Wait {
                 after: ENROLL_WAIT,
@@ -641,7 +687,7 @@ async fn pass_from<H: Host>(
             status.answer = Seen::Unreachable;
             status.message = Some(why.clone());
             Next::Retry {
-                after,
+                after: probes.retry_after(after),
                 why: format!("Could not reach Ployz Cloud: {why}."),
             }
         }
@@ -659,6 +705,9 @@ async fn pass_from<H: Host>(
             }
         }
     };
+    if matches!(next, Next::Stop(..)) {
+        probes.close().await;
+    }
     record(&status, paths);
     next
 }
@@ -674,7 +723,7 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
         prep: previous.as_ref().and_then(|status| status.prep),
         blockers: Vec::new(),
         prepare_retries: previous.as_ref().map_or(0, |status| status.prepare_retries),
-        prepare_started: previous.and_then(|status| status.prepare_started),
+        prepare_started: previous.as_ref().and_then(|status| status.prepare_started),
         refused: None,
     };
     record(&status, paths);
