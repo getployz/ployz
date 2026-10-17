@@ -19,6 +19,7 @@ export const organizationPairing = pgTable(
     founderPublicKey: text("founder_public_key"),
     founderClaimMachineId: text("founder_claim_machine_id").notNull().$type<MachineId>(),
     founderMachineId: text("founder_machine_id").$type<MachineId>(),
+    founderClaimTokenId: uuid("founder_claim_token_id"),
     createdAt,
     updatedAt,
   },

@@ -1,13 +1,15 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
+import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
+import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -42,15 +44,45 @@ const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
   });
 });
 
+const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* cancelOpenServerEnrollments(organizationId);
+  yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+});
+
+const unrecordedClaimLive = Effect.fn("PairingRemoval.unrecordedClaimLive")(function* (pairing: Pairing) {
+  const { drizzle } = yield* Database;
+  const [live] = yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
+    eq(machineEnrollmentToken.organizationId, pairing.organizationId),
+    eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
+    isNull(machineEnrollmentToken.joinedMachineId),
+    gt(machineEnrollmentToken.expiresAt, sql`now()`),
+  )).limit(1);
+  return live !== undefined;
+});
+
+const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function* (pairing: Pairing) {
+  if (pairing.founderClaimTokenId === null) return yield* unrecordedClaimLive(pairing);
+  const { drizzle } = yield* Database;
+  const [token] = yield* drizzle.select({
+    live: sql<boolean>`${machineEnrollmentToken.expiresAt} > now() and ${serverEnrollment.endedAt} is null`,
+  }).from(machineEnrollmentToken)
+    .leftJoin(serverEnrollment, eq(serverEnrollment.id, machineEnrollmentToken.serverEnrollmentId))
+    .where(eq(machineEnrollmentToken.id, pairing.founderClaimTokenId));
+  return token?.live === true;
+});
+
 /** Move usable credentials out of ordinary lookup before doing any remote work. */
 export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
-  function* (organizationId: string) {
+  function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
     const database = yield* Database;
     const disabled = yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select().from(organizationPairing)
         .where(eq(organizationPairing.organizationId, organizationId)).for("update");
       if (!pairing) return null;
+      const deadClaim = options.deadClaimOnly === true && pairing.removalStartedAt === null;
+      if (deadClaim && (pairing.founderMachineId !== null || (yield* foundingClaimLive(pairing)))) return "kept" as const;
       const secret = yield* decrypt(pairing.encryptedPairingSecret);
       const generation = createHash("sha256").update(secret).digest("hex");
       let attempt: RemovalAttempt;
@@ -70,8 +102,9 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         }))))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
         const intendedMachines = [pairing.founderClaimMachineId, ...(allocation?.assignments.map((assignment) => assignment.machine.id) ?? [])];
+        const waived = deadClaim ? pairing.founderClaimMachineId : null;
         for (const machineId of intendedMachines) {
-          if (!removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
+          if (machineId !== waived && !removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
             removalEndpoints.push({ machineId: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(machineId), status: "unknown" });
           }
         }
@@ -82,11 +115,12 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
         // Every device's capability goes at once; clearing each Server's `cli-*` holders below confirms it.
         yield* drizzle.delete(serverAccess).where(eq(serverAccess.organizationId, organizationId));
-        yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+        yield* deleteEnrollmentTokens(organizationId);
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
       return { attempt, generation };
     }));
+    if (disabled === "kept") return disabled;
     if (disabled !== null) {
       const runtime = yield* OrganizationRuntime;
       yield* runtime.cancel(organizationId, disabled.generation);
@@ -162,7 +196,7 @@ export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
       if (pairing.kind === "replaced") return replaced;
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } satisfies ServerRelease;
       const { drizzle } = yield* Database;
-      yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+      yield* deleteEnrollmentTokens(organizationId);
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
       return { kind: "released" } satisfies ServerRelease;
     }));
@@ -214,7 +248,7 @@ export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function*
     const written = yield* storeSystem(organizationId, { event: "cluster_forgotten" });
     const { drizzle } = yield* Database;
     yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
-    yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+    yield* deleteEnrollmentTokens(organizationId);
     yield* drizzle.delete(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
     yield* drizzle.delete(machineRemoveAttempt).where(eq(machineRemoveAttempt.organizationId, organizationId));
     yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
@@ -265,8 +299,9 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
 
 /** Endpoint failures are unconfirmed outcomes, never evidence that old access was revoked. */
 export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
-  function* (organizationId: string) {
-    const attempt = yield* disableOrganizationPairing(organizationId);
+  function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
+    const attempt = yield* disableOrganizationPairing(organizationId, options);
+    if (attempt === "kept") return { confirmed: false, endpoints: [] };
     const database = yield* Database;
     if (attempt === null) {
       const candidates = yield* database.drizzle.select({ machineId: organizationMachine.machineId })

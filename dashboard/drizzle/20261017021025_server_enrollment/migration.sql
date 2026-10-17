@@ -17,6 +17,7 @@ CREATE TABLE "server_enrollment" (
 	"ended_at" timestamp with time zone
 );
 --> statement-breakpoint
+ALTER TABLE "organization_pairing" ADD COLUMN "founder_claim_token_id" uuid;--> statement-breakpoint
 ALTER TABLE "machine_enrollment_token" ADD COLUMN "enrollment_role" text;--> statement-breakpoint
 ALTER TABLE "machine_enrollment_token" ADD COLUMN "server_enrollment_id" uuid;--> statement-breakpoint
 CREATE UNIQUE INDEX "server_enrollment_one_open_idx" ON "server_enrollment" ("waiting_server_id") WHERE ended_at is null;--> statement-breakpoint

@@ -95,6 +95,7 @@ export async function executeServerEnrollment({ event, step, runId }: Ctx, runEf
       if (heard === undefined) quiet += 1;
       const found = await step.run(`check-${heardCount}`, () => runEffect(checkServerEnrollment(attemptId)));
       if (found.kind === "gone") return { attemptId, state: "settled" as const };
+      if (found.kind === "removed") return fail(`fail-removed-${heardCount}`, null, "Enrollment token removed");
       if (found.kind === "joined") return join(`join-${heardCount}`, found.machineId);
       if (found.kind === "silent") return fail(`fail-silent-${heardCount}`, null, "Server stopped checking in");
       continue;

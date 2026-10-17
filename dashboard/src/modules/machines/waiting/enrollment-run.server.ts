@@ -107,14 +107,16 @@ export const endServerEnrollment = Effect.fn("ServerEnrollment.endRun")(function
 export const checkServerEnrollment = Effect.fn("ServerEnrollment.check")(function* (attemptId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({
+    tokenId: machineEnrollmentToken.id,
     joined: machineEnrollmentToken.joinedMachineId,
     lastCheckInAt: waitingServer.lastCheckInAt,
   })
     .from(serverEnrollment)
-    .innerJoin(machineEnrollmentToken, eq(machineEnrollmentToken.id, serverEnrollment.enrollTokenId))
+    .leftJoin(machineEnrollmentToken, eq(machineEnrollmentToken.id, serverEnrollment.enrollTokenId))
     .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
     .where(eq(serverEnrollment.id, attemptId));
   if (row === undefined) return { kind: "gone" } as const;
+  if (row.tokenId === null) return { kind: "removed" } as const;
   if (row.joined !== null) return { kind: "joined", machineId: row.joined } as const;
   if (Date.now() - row.lastCheckInAt.getTime() > CHECKIN_SILENCE_MS) return { kind: "silent" } as const;
   return { kind: "waiting" } as const;
@@ -140,6 +142,20 @@ export const closeUnboundServerEnrollments = Effect.fn("ServerEnrollment.closeUn
     eq(serverEnrollment.organizationId, organizationId),
     inArray(serverEnrollment.id, [...attemptIds]),
     isNull(serverEnrollment.inngestRunId),
+    open,
+  ), { state: "cancelled" });
+});
+
+export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpen")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment)
+    .where(and(eq(serverEnrollment.organizationId, organizationId), open))
+    .orderBy(serverEnrollment.id)
+    .for("update");
+  if (rows.length === 0) return;
+  yield* endAndRevokeTokensNow(and(
+    eq(serverEnrollment.organizationId, organizationId),
+    inArray(serverEnrollment.id, rows.map((row) => row.id)),
     open,
   ), { state: "cancelled" });
 });
