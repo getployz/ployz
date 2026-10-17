@@ -1080,3 +1080,32 @@ it("shows how many joins are ahead of an attempt waiting for a join slot, and nu
   await harness.pool.query("update machine_enrollment_token set updated_at = now() - interval '1 minute' where server_enrollment_id = $1", [first]);
   expect(await ahead()).toEqual(new Map([[first, null], [second, 1], [third, null]]));
 });
+
+
+it("never reselects a joined host in a later Cloud preview or start", async () => {
+  const [joined, fresh] = await waiting("already-joined", "fresh");
+  if (!joined || !fresh) throw new Error("two hosts");
+  const first = await run(enroll([joined]));
+  const id = first.attempts[0]?.id;
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now(), encrypted_token = null where id = $1", [id]);
+  const input = { organizationSlug: "ada", ids: [joined.id ?? "", fresh.id ?? ""], first: fresh.id, storage: { kind: "none" }, names: { kind: "hostnames" }, runs: { services: true, ingress: true, builds: true } } as const;
+  const preview = await run(previewServerEnrollment(ada, input));
+  expect(preview.rows.map((row) => row.waitingServerId)).toEqual([fresh.id]);
+  expect(preview.skipped).toEqual([{ id: joined.id, reason: "Already joined" }]);
+  const next = await run(startServerEnrollment(ada, input));
+  expect(next.attempts.map((row) => row.waitingServerId)).toEqual([fresh.id]);
+  expect(next.skipped).toEqual(preview.skipped);
+});
+
+it("restores arrival order when every enrollment in a batch has the same request time", async () => {
+  const hosts = await waiting("web-1", "web-2", "web-3");
+  const first = hosts[0];
+  if (!first) throw new Error("first host");
+  for (const [index, target] of hosts.entries()) {
+    await harness.pool.query("update waiting_server set first_seen_at = $1 where id = $2", [new Date(1000 * index), target.id]);
+  }
+  await run(enroll(hosts, { first: first.id }));
+  const result = await run(readServerEnrollments(ada, { organizationSlug: "ada" }));
+  expect(result.map((row) => row.name)).toEqual(["web-1", "web-2", "web-3"]);
+  expect(new Set(result.map((row) => row.requestedAt)).size).toBe(1);
+});

@@ -33,6 +33,7 @@ export type EnrollCandidate = {
   readonly observedIp: string;
   readonly rejected: boolean;
   readonly enrolling: boolean;
+  readonly joined?: boolean;
   readonly tokenEnded: "expired" | "revoked" | null;
 };
 
@@ -55,6 +56,7 @@ export type EnrollPlan =
 
 function skipReason(row: EnrollCandidate | undefined): string | null {
   if (row === undefined || row.rejected) return "Not waiting";
+  if (row.joined) return "Already joined";
   if (row.enrolling) return "Already enrolling";
   if (row.tokenEnded !== null) return `Fleet Token ${row.tokenEnded}`;
   const blocker = row.report.blockers[0];
@@ -156,6 +158,7 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
       observedIp: waitingServer.observedIp,
       rejected: sql<boolean>`${waitingServer.rejectedAt} is not null`,
       enrolling: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.endedAt} is null)`,
+      joined: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined')`,
       tokenEnded: sql<"expired" | "revoked" | null>`case when ${fleetToken.revokedAt} is not null then 'revoked' when ${fleetToken.expiresAt} <= now() then 'expired' end`,
     })
     .from(waitingServer)
@@ -340,7 +343,7 @@ export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function
       eq(serverEnrollment.organizationId, organization.id),
       input.id === undefined ? isNull(waitingServer.rejectedAt) : eq(serverEnrollment.id, input.id),
     ))
-    .orderBy(asc(serverEnrollment.requestedAt), asc(serverEnrollment.id));
+    .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
   const line = yield* readJoinLine(organization.id);
   return rows.map(({ instruction, report, ...row }): ServerEnrollmentView => ({
     ...row,

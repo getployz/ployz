@@ -69,8 +69,9 @@ The command installs Ployz and adds the server to your organization. If your pro
 firewall in front of it, open [these ports](../servers/add-a-server.md#open-the-firewall).
 
 **Add servers** in the bottom bar makes a Fleet Token instead. A server that runs its install
-line shows up under **Waiting** on the **Servers** page, but Ployz can't let a waiting server join
-yet, so it can't take a deploy.
+line shows up under **Waiting** on the **Servers** page. Select it and click **Enroll** to
+choose its storage and name. With one waiting server in a new organization, that sheet opens
+automatically. See [Add many servers](../servers/add-many-servers.md) for the full flow.
 
 ## Deploy
 
