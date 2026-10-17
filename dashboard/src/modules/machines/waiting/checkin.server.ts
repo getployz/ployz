@@ -10,6 +10,7 @@ import {
   type CheckinStopReason,
 } from "#/modules/machines/waiting/checkin-wire";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
@@ -143,25 +144,27 @@ const admit = Effect.fn("Checkin.admit")(function* (
     });
   }
   const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-  const fresh = { report, observedIp, probe: request.probe ?? sql`${waitingServer.probe}`, lastCheckInAt: sql`now()` };
+  const fresh = { report, observedIp, probe: probeAfterCheckIn(observedIp, request.probe), lastCheckInAt: sql`now()` };
   // The capacity decision above holds only while the row is as it was read, so a changed row goes back through it.
   const [row] = newToToken
     ? yield* drizzle
       .insert(waitingServer)
-      .values({ organizationId: token.organizationId, fleetTokenId: token.id, checkinKey: request.checkinKey, report, observedIp, probe: request.probe ?? null })
+      .values({ organizationId: token.organizationId, fleetTokenId: token.id, checkinKey: request.checkinKey, report, observedIp })
       .onConflictDoUpdate({
         target: [waitingServer.organizationId, waitingServer.checkinKey],
         set: { ...fresh, fleetTokenId: token.id, rejectedAt: null },
         setWhere: existing === undefined ? sql`false` : eq(waitingServer.fleetTokenId, existing.fleetTokenId),
       })
-      .returning({ id: waitingServer.id })
+      .returning({ id: waitingServer.id, probe: waitingServer.probe })
     : yield* drizzle
       .update(waitingServer)
       .set(fresh)
       .where(and(key, eq(waitingServer.fleetTokenId, token.id), isNull(waitingServer.rejectedAt)))
-      .returning({ id: waitingServer.id });
+      .returning({ id: waitingServer.id, probe: waitingServer.probe });
   if (row === undefined) return OWNERSHIP_CHANGED;
-  return { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS } satisfies CheckinResponse;
+  const probe = yield* handOutProbe(row.id, decodeStoredProbe(row.probe), observedIp, request.checkinKey);
+  const wait: CheckinResponse = { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS };
+  return probe === null ? wait : { ...wait, probe };
 });
 
 export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {

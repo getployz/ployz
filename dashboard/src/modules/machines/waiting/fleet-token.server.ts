@@ -111,9 +111,11 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
       .update(fleetToken)
       .set({ revokedAt: new Date() })
       .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
+    const held = eq(waitingServer.fleetTokenId, found.id);
+    yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(held).orderBy(waitingServer.id).for("update");
     const removed = yield* drizzle
       .delete(waitingServer)
-      .where(eq(waitingServer.fleetTokenId, found.id))
+      .where(held)
       .returning({ id: waitingServer.id });
     return { waitingRemoved: removed.length };
   }));
