@@ -215,12 +215,15 @@ where
     }
 }
 
-fn already_assigned(details: &MachineDetails, assigned: &Machine) -> bool {
-    details.phase == LocalMachinePhase::Participating
-        && details
-            .machine
-            .as_ref()
-            .is_some_and(|machine| machine.id == assigned.id)
+/// This host's copy of the assigned Machine, once a join has started or finished here.
+fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Option<&'a Machine> {
+    matches!(
+        details.phase,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+    )
+    .then_some(details.machine.as_ref())
+    .flatten()
+    .filter(|machine| machine.id == assigned.id)
 }
 
 async fn enroll_current_identity(
@@ -272,24 +275,28 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let assigned = join.registration.assigned_machine.clone();
+    let local = already_assigned(&details, &assigned);
     if !initial_policy.matches(&assigned)
-        || (already_assigned(&details, &assigned)
-            && !initial_policy.matches(
-                details
-                    .machine
-                    .as_ref()
-                    .expect("already assigned Machine exists"),
-            ))
+        || local.is_some_and(|machine| !initial_policy.matches(machine))
     {
         return Err(Error::conflict(
             "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
         ));
     }
     let pairing = join.pairing;
-    let mut ready = if already_assigned(&details, &assigned) {
+    let mut ready = if local.is_some() {
         report.step(Step::Join);
         progress(EnrollStage::Joining);
-        client
+        if details.phase == LocalMachinePhase::Joining {
+            wait_phase(
+                matches,
+                LocalMachinePhase::Participating,
+                "the joined Server did not become ready",
+            )
+            .await?
+        } else {
+            client
+        }
     } else {
         client = ensure_uninitialized(
             matches,
@@ -674,6 +681,10 @@ where
             install(Installation::Host(StorageChoice::None)).await?;
             wait_client(matches).await
         }
+        // A resumed enroll can land while the joining daemon restarts.
+        Err(error) if error.is_setup_retryable() && dials_this_host(matches) => {
+            wait_client(matches).await
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -832,5 +843,47 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::Context(
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
+    }
+
+    #[test]
+    fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
+        let assigned = crate::global_fixtures::machine('a', "web-3");
+        let other = crate::global_fixtures::machine('b', "web-4");
+        let details = |phase, machine: Option<&Machine>| MachineDetails {
+            id: assigned.id,
+            phase,
+            public_key: assigned.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: machine.cloned(),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+        };
+        for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
+            assert_eq!(
+                already_assigned(&details(phase.clone(), Some(&assigned)), &assigned),
+                Some(&assigned),
+                "{phase:?}"
+            );
+            assert_eq!(
+                already_assigned(&details(phase, Some(&other)), &assigned),
+                None
+            );
+        }
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Uninitialized, None), &assigned),
+            None
+        );
+        assert_eq!(
+            already_assigned(
+                &details(LocalMachinePhase::Resetting, Some(&assigned)),
+                &assigned
+            ),
+            None
+        );
     }
 }

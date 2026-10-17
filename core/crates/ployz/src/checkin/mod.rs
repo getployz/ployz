@@ -47,7 +47,7 @@ pub(crate) struct Paths {
 }
 
 impl Paths {
-    pub(crate) const CHECKIN_DIR: &str = "/var/lib/ployz/checkin";
+    pub(crate) const CHECKIN_DIR: &str = "/var/lib/ployz-checkin";
     pub(crate) const TOKEN_FILE: &str = "/etc/ployz/fleet-token";
 
     pub(crate) fn system(token_file: PathBuf) -> Self {

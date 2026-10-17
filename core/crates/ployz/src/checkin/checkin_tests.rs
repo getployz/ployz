@@ -444,13 +444,13 @@ fn the_preparation_unit_quotes_ployzd_and_refuses_paths_that_break_it() {
 fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
     let text = unit::checkin(
         Path::new("/opt/my tools/ployz"),
-        Path::new("/var/lib/ployz/checkin/ployzd"),
+        Path::new("/var/lib/ployz-checkin/ployzd"),
         Path::new("/etc/ployz/fleet-token"),
         "https://cloud.example/100%",
     )
     .unwrap();
     assert!(text.contains(
-        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz/checkin/ployzd\"\n"
+        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz-checkin/ployzd\"\n"
     ));
     assert!(text.contains("Environment=\"PLOYZ_CLOUD_URL=https://cloud.example/100%%\"\n"));
     for url in ["https://a\nExecStart=/bin/sh", "https://a\"", "https://a\\"] {
@@ -1566,4 +1566,16 @@ fn ago_reads_in_the_largest_whole_unit() {
     assert_eq!(ago(now - TimeDelta::hours(3), now), "3h ago");
     assert_eq!(ago(now - TimeDelta::days(2), now), "2d ago");
     assert_eq!(ago(now + TimeDelta::seconds(5), now), "0s ago");
+}
+
+#[test]
+fn checkin_state_stays_out_of_the_daemon_data_dir() {
+    let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
+    for path in [paths.key(), paths.status(), paths.checkin_dir] {
+        assert!(
+            !path.starts_with("/var/lib/ployz"),
+            "ployzd refuses to claim a data dir holding {}",
+            path.display()
+        );
+    }
 }
