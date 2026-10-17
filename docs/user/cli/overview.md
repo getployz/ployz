@@ -171,13 +171,20 @@ Roles are `owner`, `admin` and `member`. Only an owner can make, change or remov
 Any member can run `ployz org member ls`. Pending invites name who was invited, so
 `ployz org invite ls` refuses anyone but an owner or admin.
 
-Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`, `logs`, `ps`,
-`metrics`, `service start`, `service stop`, `service restart`, `service port-forward`,
+Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`,
+`service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
 `server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
 `Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
 `deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
-`This token's grant doesn't include servers:shell.` See
+`This token's grant doesn't include servers:shell.`
+
+`logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
+`read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
+shows each server's newest 200 lines at most, with secrets scrubbed, and can't use `--follow`,
+`--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
+if the directory isn't linked. A `deploy` token reads only its own environment, so
+`ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
 Pick a member by email or by name. When two members share a name, the command refuses with

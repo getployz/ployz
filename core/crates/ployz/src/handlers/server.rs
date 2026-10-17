@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    cloud_account::{self, Credential},
+    cloud_account::{self, Credential, StoreCallError},
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
     connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
@@ -153,8 +153,38 @@ pub(super) fn approved_rerun(matches: &ArgMatches, args: &[&str], id: &str) -> S
     super::rerun(matches, &args)
 }
 
+/// How a read reaches what it reads.
+pub(super) enum Reach {
+    /// Through the Servers themselves.
+    Dial(Client),
+    /// Through Cloud: this credential may read, but Cloud refused it Server access.
+    Ask(Credential),
+}
+
+/// Reach the Cluster for a read Cloud can also answer, the way [`connect`] does, except
+/// that a credential Cloud refuses Server access, such as a Read only or Deploy token,
+/// comes back to ask Cloud instead.
+pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result<Reach, Error> {
+    if matches.get_one::<String>("connect").is_none() && context.is_none() {
+        let store = CredentialStore::beside(&super::config_path(matches)?);
+        if let Ok(credential) = cloud_account::from_env(&store).await {
+            return match cloud_account::server_access(&credential).await {
+                Ok(access) => dial(matches, access).await.map(Reach::Dial),
+                Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
+                    Ok(Reach::Ask(credential))
+                }
+                Err(error) => Err(error.into()),
+            };
+        }
+    }
+    connect(matches, context).await.map(Reach::Dial)
+}
+
 async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<Client, Error> {
-    let access = cloud_account::server_access(credential).await?;
+    dial(matches, cloud_account::server_access(credential).await?).await
+}
+
+async fn dial(matches: &ArgMatches, access: cloud_account::ServerAccess) -> Result<Client, Error> {
     if access.connections.is_empty() {
         return Err(no_reachable_server(access.unreachable));
     }

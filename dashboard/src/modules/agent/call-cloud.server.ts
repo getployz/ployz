@@ -5,7 +5,7 @@ import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/con
 import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, callerEnvironments } from "#/modules/identity/actor";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
@@ -26,6 +26,7 @@ import {
   upgradeServer,
 } from "#/modules/operations/operations.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
+import type { Permission } from "#/modules/organization/permissions";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, rpcErrorCode, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -113,6 +114,23 @@ const copies = Effect.fn("CallCloud.copies")(function* (organizationId: string, 
   });
 });
 
+/**
+ * Why `caller` may not read with `permission`, or null when it may. A read of one Namespace lands in its Environment,
+ * so a token held to Environments reads only theirs; a read of no Namespace lands nowhere, unless `organizationWide`.
+ */
+const unread = Effect.fn("CallCloud.unread")(function* (caller: Caller, permission: Permission, namespace: string | null, organizationWide = false) {
+  const lacking = unpermitted(caller, permission);
+  if (lacking !== null || callerEnvironments(caller) === undefined) return lacking;
+  if (namespace === null) return organizationWide ? unheld(caller, permission) : null;
+  const owned = (yield* owners(caller.organization.id)).find((row) => row.namespace === namespace);
+  return unheld(caller, permission, owned?.environment ?? null);
+});
+
+const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (caller: Caller, query: CloudQuery, permission: Permission, namespace: string | null, organizationWide = false) {
+  const refused = yield* unread(caller, permission, namespace, organizationWide);
+  return refused ?? (yield* runtimeAsk(caller.organization.id, query));
+});
+
 const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQuery) {
   const organizationId = caller.organization.id;
   switch (query.query) {
@@ -134,9 +152,11 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       return yield* Effect.flatMap(GithubRepositories, (github) => github.file(caller, file)).pipe(Effect.map(answer));
     }
     case "servers":
+      return yield* runtimeRead(caller, query, "servers:read", null);
     case "containers":
+      return yield* runtimeRead(caller, query, "servers:read", query.namespace);
     case "metrics":
-      return yield* runtimeAsk(organizationId, query);
+      return yield* runtimeRead(caller, query, "metrics:read", query.subject.kind === "service" ? query.subject.namespace : null);
     case "copies":
       return yield* copies(organizationId, query.namespace, query.volume);
     case "operations":
@@ -147,13 +167,14 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       if (caller.support !== null && !caller.support.logs) {
         return refusal("forbidden", "This Organization doesn't show its container logs to Ployz support.");
       }
-      return yield* runtimeAsk(organizationId, query);
+      return yield* runtimeRead(caller, query, "logs:read", query.namespace);
     case "server_logs":
       // The support logs switch promises only Container output, so it never opens a Server's own logs.
       if (caller.support !== null) {
         return refusal("forbidden", "Ployz support can't read an Organization's Server logs.");
       }
-      return yield* runtimeAsk(organizationId, query);
+      // A Server's own processes log for every Environment it runs, so a token held to some may not read them.
+      return yield* runtimeRead(caller, query, "logs:read", null, true);
   }
 });
 
