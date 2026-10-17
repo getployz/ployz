@@ -61,7 +61,7 @@ describe("ROLE_PERMISSIONS", () => {
 
 type Need = "operate" | "manage" | "own";
 
-const kindBeforePermissions =(role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
+const kindBeforePermissions = (role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
   if (role !== null) {
     if (need === "manage" && role === "member") return "forbidden";
     if (need === "own" && role !== "owner") return "forbidden";
