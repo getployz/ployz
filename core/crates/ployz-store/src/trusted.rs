@@ -56,6 +56,11 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(as = "Option<Asks>", optional)]
     pub asks: Asks,
+    /// Whether the caller may choose a Protected Environment's repository and deploy
+    /// branch, as Cloud found their role. The Store's own automation always may.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub may_protect: bool,
 }
 
 /// Whether Cloud asks a human before a publication destroys something, and which

@@ -18,8 +18,9 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceSettingChange,
-    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
+    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceGitBranch,
+    ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
+    compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -28,12 +29,12 @@ use ts_rs::TS;
 pub use approval::{DestructiveEffect, DestructiveKind};
 pub(crate) use approval::{approve, approve_retry};
 
-use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
 use crate::settings::{ServiceSetting, SettingPath, shown};
 use crate::storage::Tx;
+use crate::{Actor, Trusted};
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -612,6 +613,7 @@ pub(crate) fn publish(
     intent: SavedEnvironmentIntent,
     latest: Option<&Saved>,
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
+    trusted: &Trusted,
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
     crate::volume::check_storage(tx, environment, &intent)?;
@@ -620,6 +622,7 @@ pub(crate) fn publish(
     {
         return Ok((latest.revision, false));
     }
+    guard_source(tx, who, environment, latest, &intent, trusted)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     let accepted = (!accepted.is_empty())
         .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
@@ -642,6 +645,60 @@ pub(crate) fn publish(
     )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// Refuse a caller who may not protect when `intent` changes what a GitHub merge ships
+/// into a Protected Environment: the repository or deploy branch of a Service it held
+/// before, or a Git Service it adds. Removing a Service is removal's to approve.
+fn guard_source(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentId,
+    latest: Option<&Saved>,
+    intent: &SavedEnvironmentIntent,
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    if who.principal.is_none() || trusted.may_protect {
+        return Ok(());
+    }
+    let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
+    let changed: Vec<&str> = intent
+        .services
+        .iter()
+        .filter(
+            |service| match before.iter().find(|old| old.id == service.id) {
+                Some(old) => git_source(old) != git_source(service),
+                None => git_source(service).is_some(),
+            },
+        )
+        .map(|service| service.slug.as_str())
+        .collect();
+    if changed.is_empty()
+        || tx
+            .query(
+                "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
+                &[environment.as_str().into()],
+            )?
+            .is_empty()
+    {
+        return Ok(());
+    }
+    Err(error::forbidden(
+        "Only an owner or admin of this Organization can do this.",
+        json!({ "services": changed }),
+    ))
+}
+
+/// The repository and deploy branch a GitHub merge ships `service` from, if any.
+fn git_source(service: &SavedServiceIntent) -> Option<(u64, &ServiceGitBranch)> {
+    match &service.config.source {
+        ServiceSource::Git {
+            repository_id,
+            branch,
+            ..
+        } => Some((*repository_id, branch)),
+        ServiceSource::Empty { .. } | ServiceSource::Image { .. } => None,
+    }
 }
 
 /// Replace the consent saved with `revision`, which an unchanged Save renews.

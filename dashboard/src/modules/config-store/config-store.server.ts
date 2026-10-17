@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
-import { guardProtected } from "#/modules/config-store/protected.server";
+import { guardProtected, mayProtect } from "#/modules/config-store/protected.server";
 import { gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { account, member, user } from "#/modules/identity/tables";
@@ -298,8 +298,9 @@ export const callStore = <C extends StoreCall>(
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
-    if (call.operation === "write") yield* guardProtected(organizationId, userId, call.command, read);
-    const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
+    const may_protect = call.operation === "write" && (yield* mayProtect(organizationId, userId));
+    if (call.operation === "write") yield* guardProtected(may_protect, call.command, read);
+    const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate, may_protect };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
     // Cloud sends every user's set, so a write by a user with none named is a defect, never a grant.
     if (userId !== null && gate.permissions === undefined) return yield* Effect.die("A user's Store write names no permissions");

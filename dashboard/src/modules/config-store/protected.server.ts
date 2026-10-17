@@ -12,25 +12,31 @@ import { Database } from "#/server/database.server";
 import { type EnvironmentRef, StoreRefused, type StoreRead } from "./store.contract";
 
 /**
- * Refuses `command` by user `userId` unless they may protect Environments, when it changes an Environment's protection
- * or connects a repository or changes a deploy branch in a Protected one. Cloud itself (null) may; so may no one outside
- * the Organization's members, support included.
+ * Whether user `userId` may protect Environments in `organizationId` and choose a Protected one's repository and deploy
+ * branch. Cloud itself (null) may; so may no one outside the Organization's members, support included.
+ */
+export const mayProtect = Effect.fn("ConfigStore.mayProtect")(function* (organizationId: string, userId: string | null) {
+  if (userId === null) return true;
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ role: member.role }).from(member)
+    .where(and(eq(member.organizationId, organizationId), eq(member.userId, userId))).limit(1).pipe(Effect.orDie);
+  return row !== undefined && can(row.role, "environments:protect");
+});
+
+/**
+ * Refuses `command` unless the caller `may` protect Environments, when it changes an Environment's protection or
+ * connects, changes or clears a repository or deploy branch in a Protected one.
  */
 export const guardProtected = Effect.fn("ConfigStore.guardProtected")(function* (
-  organizationId: string,
-  userId: string | null,
+  may: boolean,
   command: ConfigCommand,
   read: StoreRead,
 ) {
-  if (userId === null) return;
+  if (may) return;
   if (command.command !== "set_environment_protected") {
     const environment = gitSourceEnvironment(command);
     if (environment === undefined || (yield* listed(environment, read))?.protected !== true) return;
   }
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ role: member.role }).from(member)
-    .where(and(eq(member.organizationId, organizationId), eq(member.userId, userId))).limit(1).pipe(Effect.orDie);
-  if (row !== undefined && can(row.role, "environments:protect")) return;
   return yield* new StoreRefused({ code: "forbidden", message: refusalOf("environments:protect"), details: null });
 });
 
