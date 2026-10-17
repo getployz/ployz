@@ -56,9 +56,10 @@ approval while only the agent owns the organization.
 
 ## Hand over the claim link
 
-Send the person the `claimUrl`. They open it, sign in with GitHub and click **Keep this
-Organization**. The organization, its servers and its projects are theirs now, and they become
-its owner. The agent's token keeps working for 90 more days.
+Send the person the `claimUrl`. They open it and sign in with GitHub, and they keep the sandbox
+on their way back. A person who is already signed in clicks **Keep this Organization** instead.
+The organization, its servers and its projects are theirs now, and they become its owner. The
+agent's token keeps working for 90 more days.
 
 If the link says **This sandbox expired**, the 24 hours are up. Run the agent again for a new
 sandbox. If someone already kept it, its owner can invite you.
@@ -89,5 +90,8 @@ then removes the organization without it. The hour starts when Ployz first fails
 server. It starts again each time the server answers, and when the server is paired again. A
 server answers as soon as Ployz connects to it, even if the removal then fails there. A server
 that keeps answering is never forgotten, and the removal waits for it.
+
+A forgotten server keeps running its services, and its volume data stays on the disk. To clean
+it up, see [Forget a server that is gone](../servers/manage-servers.md#forget-a-server-that-is-gone).
 
 **Next:** [connect an agent to Ployz Cloud](connect-an-agent.md) once you have an account.

@@ -13,7 +13,7 @@ Your name, email and avatar, with each way you sign in, such as **GitHub**, and 
 it. They come from GitHub, so you can't edit them here.
 
 If an agent made a sandbox for you, open its claim link and sign in to keep it. You become its
-owner. A link more than 24 hours old says the sandbox expired. See
+owner. An unclaimed link more than 24 hours old says the sandbox expired. See
 [Try Ployz without an account](try-without-an-account.md).
 
 ## Sessions
