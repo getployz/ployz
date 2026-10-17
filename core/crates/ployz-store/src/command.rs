@@ -198,11 +198,11 @@ macro_rules! commands {
                                 $($same)::+(&mut *at.tx, at.who, self, first)
                             };
                             let answer = replayable(at, self, &ids, fits, run)?;
-                            return within(at, answer, |answer| Written::$written(answer.into()));
+                            return refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()));
                         }
                     )?
                     let answer = run(at)?;
-                    within(at, answer, |answer| Written::$written(answer.into()))
+                    refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()))
                 }
 
                 fn to_command(&self) -> Value {
@@ -770,21 +770,21 @@ pub enum Written {
     Batch(Batched),
 }
 
-/// Run `create` once for the caller-minted `ids`. Replaying the identical command
-/// returns what the first run wrote; any of its IDs reused with another body, or
-/// from another Organization, is `conflict`.
-/// `answer`, unless the caller's token may not write the Environment it wrote.
-fn within<A: Clone>(
+fn refuse_outside_environments<A: Clone>(
     at: &mut Call<'_>,
     answer: A,
     written: impl FnOnce(A) -> Written,
 ) -> Result<A, RpcError> {
     if at.trusted.environments.is_some() {
-        at.trusted.within(&mut *at.tx, &written(answer.clone()))?;
+        at.trusted
+            .refuse_written_outside_environments(&mut *at.tx, &written(answer.clone()))?;
     }
     Ok(answer)
 }
 
+/// Run `create` once for the caller-minted `ids`. Replaying the identical command
+/// returns what the first run wrote; any of its IDs reused with another body, or
+/// from another Organization, is `conflict`.
 fn replayable<C: Tell + ?Sized>(
     at: &mut Call<'_>,
     command: &C,

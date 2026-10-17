@@ -396,7 +396,6 @@ fn staging() -> EnvironmentRef {
     }
 }
 
-/// A Deploy token for `environments`: it may stage and deploy, but only there.
 fn deploying_to(environments: &[&str]) -> Trusted {
     Trusted {
         environments: Some(

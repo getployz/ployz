@@ -62,6 +62,12 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
 
 type Choice = TokenPreset["preset"];
 
+const CHOICES: ReadonlyArray<{ value: Choice; label: string }> = [
+  { value: "deploy", label: "Deploy" },
+  { value: "read", label: "Read only" },
+  { value: "full", label: "Full as you" },
+];
+
 function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
   organizationSlug: string;
   onMade: () => void;
@@ -107,10 +113,8 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
               </Field>
               <Field>
                 <FieldLabel htmlFor="token-preset">Access</FieldLabel>
-                <NativeSelect id="token-preset" value={choice} onChange={(event) => setChoice(event.target.value === "read" ? "read" : event.target.value === "full" ? "full" : "deploy")}>
-                  <NativeSelectOption value="deploy">Deploy</NativeSelectOption>
-                  <NativeSelectOption value="read">Read only</NativeSelectOption>
-                  <NativeSelectOption value="full">Full as you</NativeSelectOption>
+                <NativeSelect id="token-preset" value={choice} onChange={(event) => setChoice(CHOICES.find((option) => option.value === event.target.value)?.value ?? "deploy")}>
+                  {CHOICES.map((option) => <NativeSelectOption key={option.value} value={option.value}>{option.label}</NativeSelectOption>)}
                 </NativeSelect>
               </Field>
               {choice === "deploy" ? (

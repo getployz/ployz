@@ -133,9 +133,11 @@ impl Trusted {
         }
     }
 
-    /// Refuse a write outside the token's Environments. It runs after the command, so
-    /// a write that names no Environment is refused too, and the refusal rolls it back.
-    pub(crate) fn within(&self, tx: &mut dyn Tx, written: &crate::Written) -> Result<(), RpcError> {
+    pub(crate) fn refuse_written_outside_environments(
+        &self,
+        tx: &mut dyn Tx,
+        written: &crate::Written,
+    ) -> Result<(), RpcError> {
         let Some(allowed) = &self.environments else {
             return Ok(());
         };
@@ -151,7 +153,6 @@ impl Trusted {
     }
 }
 
-/// `staging`, `staging and qa`, `dev, staging and qa`.
 fn listed(names: &BTreeSet<EnvironmentName>) -> String {
     let names: Vec<&str> = names.iter().map(EnvironmentName::as_str).collect();
     match names.split_last() {

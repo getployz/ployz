@@ -3,7 +3,6 @@ import { listTokensServerFn } from "#/modules/identity/organization-token.functi
 
 export const tokensKey = (organizationSlug: string) => ["organization-tokens", organizationSlug] as const;
 
-/** The tokens the signed-in person can revoke: their own, or every one in the Organization for owners and admins. */
 export function organizationTokensQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: tokensKey(organizationSlug),
