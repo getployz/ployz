@@ -476,6 +476,14 @@ pub(crate) const SERVER_ADD: Verb = Verb::cloud(
 .stdin(&[("--token-stdin", Stdin::Only)])
 .keeps_running(KeepsRunning::With("--wait"))
 .docs("servers/add-a-server.md");
+pub(crate) const SERVER_ENROLL: Verb = Verb::cloud(
+    "server enroll",
+    Depends,
+    server::enroll::waiting_command,
+    server::enroll::enroll_waiting,
+)
+.keeps_running(KeepsRunning::With("--status"))
+.docs("servers/manage-servers.md");
 pub(crate) const SERVER_BUILD_CACHE_CLEAR: Verb = Verb::local(
     "server build-cache-clear",
     Never,
@@ -830,6 +838,7 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_CHECKIN,
     SERVER_CLEAN,
     SERVER_DRAIN,
+    SERVER_ENROLL,
     SERVER_FORGET,
     SERVER_LOGS,
     SERVER_LS,

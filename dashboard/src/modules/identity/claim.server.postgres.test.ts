@@ -352,7 +352,7 @@ it.live("rotating the encryption secret retires every outstanding claim URL, and
     expect(yield* claimOrganization(ada.actor, secret).pipe(rotated)).toEqual({ slug: agent.organization.slug });
   })));
 
-it.live("the claim page reads the sandbox while it waits, answers the owner's slug after, says it was taken to anyone else, and knows no wrong secret", () =>
+it.live("the claim page reads the sandbox while it waits, answers the owner's slug after, says it was taken to anyone else, and finds nothing under a wrong or tampered secret", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
     const store = yield* cloudStore;
@@ -362,7 +362,9 @@ it.live("the claim page reads the sandbox while it waits, answers the owner's sl
     expect(yield* readClaim(agent.secret, null)).toEqual({
       state: "pending", organization: { name: "Agent sandbox", slug: agent.organization.slug }, servers: 0, projects: 1, hoursLeft: 24,
     });
-    expect(yield* readClaim("not-a-secret", null)).toEqual({ state: "expired" });
+    expect(yield* readClaim("not-a-secret", null)).toEqual({ state: "not_found" });
+    const tampered = `${agent.secret.slice(0, -1)}${agent.secret.endsWith("A") ? "B" : "A"}`;
+    expect(yield* readClaim(tampered, null)).toEqual({ state: "not_found" });
 
     const ada = yield* person("Ada", "ada@example.test");
     const bob = yield* person("Bob", "bob@example.test");
@@ -370,7 +372,7 @@ it.live("the claim page reads the sandbox while it waits, answers the owner's sl
     expect(yield* readClaim(agent.secret, ada.actor)).toEqual({ state: "claimed", organization: { slug: agent.organization.slug } });
     expect(yield* readClaim(agent.secret, bob.actor)).toEqual({ state: "taken" });
     expect(yield* readClaim(agent.secret, null)).toEqual({ state: "taken" });
-    expect(yield* readClaim("not-a-secret", bob.actor)).toEqual({ state: "expired" });
+    expect(yield* readClaim("not-a-secret", bob.actor)).toEqual({ state: "not_found" });
   })));
 
 it.live("a second visit after the claim changes nothing: claiming again answers the same slug and leaves the sessions where they are; anyone else hears it was kept; a wrong or expired secret is refused", () =>

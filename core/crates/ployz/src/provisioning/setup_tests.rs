@@ -95,7 +95,7 @@ async fn run_remote(remote: &Remote, release: &Path) -> Result<(), ProvisionErro
     let host = remote.preflight().await?;
     let bootstrap = Bootstrap::from_release_dir(release, &host.architecture).await?;
     remote
-        .install_bootstrap(&host, &bootstrap, VERSION, StorageChoice::None)
+        .install_bootstrap(&host, &bootstrap, VERSION, &StoragePreparation::None)
         .await
 }
 
@@ -125,7 +125,7 @@ async fn local_setup_runs_the_verified_bootstrap_installer() {
         &bootstrap(&release).await.unwrap(),
         VERSION,
         Preparation::Host {
-            storage: StorageChoice::None,
+            storage: &StoragePreparation::None,
             group_user: None,
         },
     )

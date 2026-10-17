@@ -238,14 +238,6 @@ pub(super) async fn server_add(
     instruction: &EnrollInstruction,
     progress: &dyn Fn(EnrollStage),
 ) -> Result<Committed, String> {
-    if let EnrollStorage::Zfs {
-        device: Some(device),
-    } = &instruction.storage
-    {
-        crate::ui::note(format!(
-            "Cloud selected {device}. This version builds ZFS on the default disk."
-        ));
-    }
     let root = crate::cli::command()
         .try_get_matches_from(add_arguments(
             instruction,
@@ -287,9 +279,12 @@ pub(super) fn add_arguments(
     home_set: bool,
 ) -> Vec<String> {
     let policy = &instruction.policy;
-    let storage = match instruction.storage {
-        EnrollStorage::None => "none",
-        EnrollStorage::Zfs { .. } => "zfs",
+    let storage = match &instruction.storage {
+        EnrollStorage::None => "none".to_owned(),
+        EnrollStorage::Zfs { device: None } => "zfs".to_owned(),
+        EnrollStorage::Zfs {
+            device: Some(device),
+        } => format!("zfs:{device}"),
     };
     let mut arguments: Vec<String> = [
         "ployz",
@@ -301,7 +296,7 @@ pub(super) fn add_arguments(
         "--name",
         &instruction.name,
         "--storage",
-        storage,
+        &storage,
         "--cloud-url",
         cloud,
     ]

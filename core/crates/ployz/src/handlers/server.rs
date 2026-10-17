@@ -548,9 +548,9 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(switch("no-install", None))
         .arg(
             value("storage", None)
-                .value_parser(clap::value_parser!(ployz_core::StorageChoice))
+                .value_parser(clap::value_parser!(ployz_core::StoragePreparation))
                 .help(
-                    "zfs sets up Managed volumes [Cloud default]; none is Docker only (not recommended)",
+                    "zfs sets up Managed volumes [Cloud default]; zfs:<device> uses an empty disk; none is Docker only",
                 ),
         )
         .arg(value("public-ip", None).default_value("auto"))

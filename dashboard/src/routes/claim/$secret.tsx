@@ -11,6 +11,7 @@ import { claimOrganizationServerFn } from "#/modules/identity/claim.functions";
 import { type Claim, claimQueryOptions } from "#/modules/identity/claim.queries";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
 import { ClaimSummary } from "#/routes/claim/-components/claim-summary";
+import { useRestored } from "#/routes/claim/-components/use-restored";
 
 export const Route = createFileRoute("/claim/$secret")({
   staticData: { secret: true },
@@ -31,6 +32,8 @@ function ClaimPage() {
   const { secret } = Route.useParams();
   const claim = useSuspenseQuery(claimQueryOptions(secret)).data;
   const session = useAuth();
+  // Back after Keep would show the claim frozen mid-click; loading it again finds it kept and opens the Organization.
+  useRestored(reload);
   // The loader's prefetch does not wait on client navigation, so a claimed state can arrive here instead.
   if (claim.state === "claimed") return <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug: claim.organization.slug }} replace />;
   // An agent's anonymous session is signed out here, as on the sign-in routes: only a person keeps an Organization.
@@ -38,7 +41,9 @@ function ClaimPage() {
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
-        {claim.state === "expired" ? (
+        {claim.state === "not_found" ? (
+          <NotFound signedIn={person !== null} />
+        ) : claim.state === "expired" ? (
           <Expired signedIn={person !== null} />
         ) : claim.state === "taken" ? (
           <Taken signedIn={person !== null} />
@@ -49,6 +54,23 @@ function ClaimPage() {
         )}
       </div>
     </main>
+  );
+}
+
+const reload = () => window.location.reload();
+
+function NotFound({ signedIn }: { signedIn: boolean }) {
+  return (
+    <div className="flex flex-col items-center gap-6 text-center">
+      <PloyzMark className="size-11" decorative />
+      <div className="flex flex-col gap-2">
+        <h1 className="text-xl font-semibold">No sandbox at this link</h1>
+        <p className="text-sm text-muted-foreground">Check the link your agent gave you.</p>
+      </div>
+      <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
+        {signedIn ? "Go to Cloud" : "Sign in"}
+      </Link>
+    </div>
   );
 }
 

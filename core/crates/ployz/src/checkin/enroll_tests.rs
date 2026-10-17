@@ -967,7 +967,7 @@ async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
 }
 
 #[test]
-fn the_zfs_device_survives_decoding_until_device_selection_is_supported() {
+fn the_zfs_device_reaches_server_add() {
     let answer = wire::answer(
         instruction("zfs")
             .replace(
@@ -988,7 +988,7 @@ fn the_zfs_device_survives_decoding_until_device_selection_is_supported() {
     assert!(
         add_arguments(&instruction, "https://cloud.example", true)
             .windows(2)
-            .any(|pair| pair == ["--storage", "zfs"])
+            .any(|pair| pair == ["--storage", "zfs:/dev/disk/by-id/spare"])
     );
 }
 

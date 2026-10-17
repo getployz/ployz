@@ -507,6 +507,36 @@ pub(super) fn disks_from_lsblk(
     (disks, errors)
 }
 
+pub(super) fn empty_device(device: &Path) -> Result<PathBuf, Error> {
+    let path = fs::canonicalize(device).map_err(|source| Error::Io {
+        stage: "resolve ZFS device",
+        source,
+    })?;
+    let metadata = fs::metadata(&path).map_err(|source| Error::Io {
+        stage: "inspect ZFS device",
+        source,
+    })?;
+    if !metadata.file_type().is_block_device() {
+        return Err(super::refuse(
+            "assess ZFS device",
+            format!("{} is not a block device", device.display()),
+        ));
+    }
+    let (disks, errors) = read_disks(Filesystem::read_root()?);
+    if let Some(error) = errors.into_iter().next() {
+        return Err(error);
+    }
+    if let Some(reason) = device_blocker(disks.as_deref().unwrap_or_default(), &path) {
+        return Err(super::refuse("assess ZFS device", reason.message));
+    }
+    Ok(path)
+}
+
+fn device_blocker(disks: &[Disk], device: &Path) -> Option<Blocker> {
+    (!disks.iter().any(|disk| Path::new(&disk.path) == device && matches!(disk.role, DiskRole::Empty)))
+        .then(|| Blocker::new("device_not_empty", format!("{} is not an empty whole disk; partitions, filesystems and mounted disks cannot be used", device.display())))
+}
+
 /// `mountpoints` from util-linux 2.37 on, `mountpoint` before it.
 fn mounts(device: &Value) -> impl Iterator<Item = &Value> {
     match device["mountpoints"].as_array() {

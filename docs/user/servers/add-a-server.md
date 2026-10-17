@@ -112,6 +112,32 @@ The [Tokens](#your-tokens) page on **Servers** shows the same list. Revoking als
 host's process list while it runs; a Fleet Token is short-lived and you can revoke it, so that
 exposure ends when you do.
 
+## Use an empty spare disk for volumes
+
+To put managed volumes on a spare disk, name it when you enroll the server:
+
+```sh
+sudo ployz server add --storage zfs:/dev/disk/by-id/virtio-data
+```
+
+A by-id path stays stable when the kernel renames disks after a reboot. You can also
+name a kernel path such as `zfs:/dev/vdb`. The disk must
+be an empty whole disk. Ployz refuses a disk with a filesystem, a partition table,
+partitions, or mounts. It creates the `ployz-device` pool on the selected disk.
+Retrying installation on the same disk also imports an exported pool before checking
+whether the disk is empty. After a reboot, a volume lookup, mount, or storage request
+imports that pool again. Ployz records device ownership before serving volumes,
+including when the operating system already imported the pool. If the device is
+unavailable, storage operations fail instead of creating a replacement pool on the
+main disk.
+
+With `--storage zfs` and no device, Ployz prepares ZFS and creates a file-backed pool
+on the main disk when you deploy the first managed volume. A failed named-device
+attempt that creates no pool leaves this option available. Existing file-backed
+storage takes priority over pools found on attached disks. If a previously owned
+device pool is missing, preparation refuses instead of forgetting it. For installer-only use,
+`ployzd install --storage zfs:/dev/vdb` accepts the same device form.
+
 ## Start without ZFS
 
 The command sets up managed volumes with ZFS, so every [volume](../services/volumes.md) gets a
