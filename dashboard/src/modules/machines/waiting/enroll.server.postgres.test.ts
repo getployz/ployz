@@ -14,6 +14,7 @@ import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waitin
 import { checkIn, checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import {
   cancelServerEnrollment,
+  previewServerEnrollment,
   readServerEnrollments,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
@@ -911,3 +912,110 @@ it("holds Fleet Token creation behind an Organization removal", async () => {
     await harness.pool.query("drop trigger pause_token_delete on machine_enrollment_token; drop function pause_token_delete()");
   }
 }, 15_000);
+
+const preview = (input: EnrollInput) => previewServerEnrollment(ada, { organizationSlug: "ada", ...input });
+const tokenCount = async () => Number((await harness.pool.query<{ n: string }>("select count(*) as n from machine_enrollment_token")).rows[0]?.n);
+const plainly = { storage: { kind: "none" }, names: { kind: "hostnames" }, runs: { services: true, ingress: true, builds: false } } as const;
+
+it("previews the plan Enroll carries out next, and writes nothing", async () => {
+  const [a, b, c, d] = await waiting("web-a", "web-b", "web-c", "web-d");
+  if (a?.id === undefined || b?.id === undefined || c?.id === undefined || d?.id === undefined) throw new Error("four hosts");
+  await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [d.id] }));
+  const before = await outbox();
+  sent.mockClear();
+  const input: EnrollInput = {
+    ids: [a.id, b.id, c.id, d.id, "nope"],
+    first: c.id,
+    storage: { kind: "zfs", useSpareDisk: false, fallbackToDocker: false },
+    names: { kind: "pattern", pattern: "node-{n}" },
+    runs: { services: true, ingress: false, builds: true },
+  };
+  const plan = await run(preview(input));
+  expect(plan.rows.map((row) => [row.waitingServerId, row.hostname, row.role, row.instruction.name, row.instruction.storage])).toEqual([
+    [c.id, "web-c", "founder", "node-1", { kind: "zfs" }],
+    [a.id, "web-a", "joiner", "node-2", { kind: "zfs" }],
+    [b.id, "web-b", "joiner", "node-3", { kind: "zfs" }],
+  ]);
+  expect(plan.skipped).toEqual([{ id: d.id, reason: "Not waiting" }, { id: "nope", reason: "Not waiting" }]);
+  expect(await attempts()).toEqual([]);
+  expect(await tokenCount()).toBe(0);
+  expect(await outbox()).toEqual(before);
+  expect(sent).not.toHaveBeenCalled();
+
+  const started = await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.name]))
+    .toEqual(plan.rows.map((row) => [row.waitingServerId, row.role, row.instruction.name]));
+  const instructions = await harness.pool.query<{ waiting_server_id: string; instruction: unknown }>(
+    "select waiting_server_id, instruction from server_enrollment",
+  );
+  expect(new Map(instructions.rows.map((row) => [row.waiting_server_id, row.instruction])))
+    .toEqual(new Map(plan.rows.map((row) => [row.waitingServerId, row.instruction])));
+  expect(started.skipped).toEqual(plan.skipped);
+  expect(started.spread).toEqual(plan.spread);
+});
+
+it("previews joiners behind an open first server, and skips the host already enrolling", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a?.id === undefined || b?.id === undefined) throw new Error("two hosts");
+  await run(enroll([a]));
+  const input: EnrollInput = { ids: [a.id, b.id], ...plainly };
+  const plan = await run(preview(input));
+  expect(plan.rows.map((row) => [row.waitingServerId, row.role])).toEqual([[b.id, "joiner"]]);
+  expect(plan.skipped).toEqual([{ id: a.id, reason: "Already enrolling" }]);
+  const started = await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role])).toEqual([[b.id, "joiner"]]);
+  expect(started.skipped).toEqual(plan.skipped);
+});
+
+it("previews a first server over a founding claim no token can finish, and leaves the claim for Enroll to drop", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a?.id === undefined || b?.id === undefined) throw new Error("two hosts");
+  await legacyClaim("1 hour");
+  const input: EnrollInput = { ids: [a.id, b.id], first: a.id, ...plainly };
+  const plan = await run(preview(input));
+  expect(plan.rows.map((row) => [row.waitingServerId, row.role])).toEqual([[a.id, "founder"], [b.id, "joiner"]]);
+  expect(await pairings()).toEqual([{ founder_claim_machine_id: legacyMachine }]);
+  const started = await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role])).toEqual([[a.id, "founder"], [b.id, "joiner"]]);
+});
+
+it("refuses a preview the way Enroll refuses it", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a?.id === undefined || b?.id === undefined) throw new Error("two hosts");
+  const input: EnrollInput = { ids: [a.id, b.id], ...plainly };
+  const refusal = { _tag: "Validation", message: "Pick the first server: it sets up the cluster the rest join." };
+  expect(await failure(preview(input))).toMatchObject(refusal);
+  expect(await failure(startServerEnrollment(ada, { organizationSlug: "ada", ...input }))).toMatchObject(refusal);
+});
+
+it("shows how many joins are ahead of an attempt waiting for a join slot, and null for the rest", async () => {
+  const founder = "f".repeat(32);
+  await harness.pool.query(
+    "insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id) values ($1, $2, 'founder', $3, $3)",
+    [adaOrg, encryption.encrypt("ployz1:founded"), founder],
+  );
+  for (let slot = 0; slot < 8; slot += 1) {
+    const holder = await run(insertEnrollmentToken({ organizationId: adaOrg, userId: ada.userId }));
+    await harness.pool.query(
+      "update machine_enrollment_token set claimed_machine_id = $1, claimed_public_key = 'k', claimed_at = now() where token_hash = $2",
+      [String(slot).repeat(32), hashEnrollmentToken(holder.token)],
+    );
+  }
+  const [a, b, c] = await waiting("web-a", "web-b", "web-c");
+  if (a === undefined || b === undefined || c === undefined) throw new Error("three hosts");
+  const started = await run(enroll([a, b, c]));
+  const ask = async (target: Host, machineId: string) => {
+    const answer = await checkin(target);
+    if (answer.kind !== "enroll") throw new Error(`expected enroll, got ${answer.kind}`);
+    return run(enrollMachine({ token: answer.token, identity: identity(machineId) }));
+  };
+  expect(await ask(a, "a".repeat(32))).toMatchObject({ kind: "not_yet", reason: "queued", ahead: 1 });
+  expect(await ask(b, "b".repeat(32))).toMatchObject({ kind: "not_yet", reason: "queued", ahead: 2 });
+  const ahead = async () => new Map((await run(readServerEnrollments(ada, { organizationSlug: "ada" }))).map((row) => [row.id, row.ahead]));
+  const byHost = new Map(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.id]));
+  const [first, second, third] = [byHost.get(a.id ?? ""), byHost.get(b.id ?? ""), byHost.get(c.id ?? "")];
+  expect(await ahead()).toEqual(new Map([[first, 1], [second, 2], [third, null]]));
+
+  await harness.pool.query("update machine_enrollment_token set updated_at = now() - interval '1 minute' where server_enrollment_id = $1", [first]);
+  expect(await ahead()).toEqual(new Map([[first, null], [second, 1], [third, null]]));
+});
