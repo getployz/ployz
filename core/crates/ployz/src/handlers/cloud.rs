@@ -92,8 +92,8 @@ where
         .and_then(|printed| printed)
 }
 
-/// Enroll as `server add` does, telling `progress` each stage as it starts, then send
-/// Cloud the best-effort setup report for the outcome.
+/// Enroll as `server add` does, reporting Joining only after the daemon accepts
+/// enrollment, then send Cloud the best-effort setup report for the outcome.
 pub(crate) async fn run_enrollment<Install, InstallFuture>(
     root: &ArgMatches,
     token: &CloudEnrollToken,
@@ -307,7 +307,6 @@ where
         progress(EnrollStage::Storage);
         client = provision_storage(matches, client, join.storage, install).await?;
         report.step(Step::Join);
-        progress(EnrollStage::Joining);
         crate::handlers::server::enroll(
             &mut client,
             EnrollRequest {
@@ -318,6 +317,7 @@ where
             },
         )
         .await?;
+        progress(EnrollStage::Joining);
         wait_phase(
             matches,
             LocalMachinePhase::Participating,
@@ -441,7 +441,6 @@ where
             progress(EnrollStage::Storage);
             client = provision_storage(matches, client, storage, install).await?;
             report.step(Step::Join);
-            progress(EnrollStage::Joining);
             let machine = crate::handlers::server::enroll(
                 &mut client,
                 EnrollRequest {
@@ -456,6 +455,7 @@ where
                 },
             )
             .await?;
+            progress(EnrollStage::Joining);
             let ready = wait_phase(
                 matches,
                 LocalMachinePhase::Participating,
@@ -872,17 +872,23 @@ mod tests {
                 token: None,
             };
             let observed = details.clone();
+            let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+            let received = std::sync::Arc::clone(&reached);
             let (client, server) =
                 crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
                     let details = observed.clone();
+                    let received = std::sync::Arc::clone(&received);
                     async move {
-                        match request.into_inner().decode_request().unwrap().body {
-                            RpcRequestBody::Inspect(_) => {
-                                Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
-                            }
-                            RpcRequestBody::Enroll(_) => std::future::pending().await,
-                            request => panic!("unexpected RPC: {request:?}"),
+                        let request = request.into_inner().decode_request().unwrap().body;
+                        if matches!(request, RpcRequestBody::Inspect(_)) {
+                            return Ok(Response::new(RpcResponse::from(details).encode().unwrap()));
                         }
+                        assert!(
+                            matches!(request, RpcRequestBody::Enroll(_)),
+                            "unexpected RPC: {request:?}"
+                        );
+                        received.notify_one();
+                        std::future::pending().await
                     }
                 })
                 .await;
@@ -955,11 +961,15 @@ mod tests {
                     .await
                 }
             };
-            assert!(
-                tokio::time::timeout(Duration::from_millis(200), enrolling)
-                    .await
-                    .is_err()
-            );
+            tokio::pin!(enrolling);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    outcome = &mut enrolling => panic!("unacknowledged enrollment finished: {outcome:?}"),
+                    () = reached.notified() => {}
+                }
+            })
+            .await
+            .expect("the RPC fixture receives enrollment");
             server.abort();
             assert_eq!(
                 *stages.borrow(),

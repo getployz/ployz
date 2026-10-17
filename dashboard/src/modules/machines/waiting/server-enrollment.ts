@@ -9,6 +9,8 @@ export type EnrollmentStage = "installing" | "storage" | "enrolling" | "queued" 
 
 export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "enrolling", "queued", "storage", "joining", "publishing"];
 
+export const PAST_STORAGE: ReadonlySet<string | null> = new Set(ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1));
+
 export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
 
 export type EnrollStorage = { readonly kind: "none" } | { readonly kind: "zfs"; readonly device?: string };

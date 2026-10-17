@@ -59,10 +59,10 @@ pub(super) fn failure_line(failure: &AttemptFailure) -> String {
 }
 
 /// Run `instruction`, reporting monotonic progress on changes and every [`HEARTBEAT`].
-/// Before a saved Joining stage, rejection awaits installation and stops at live
-/// Enrolling or Queued. From saved Joining onward, rejection cannot cancel a committed
-/// resume. A successful join is recorded for cleanup; a failure keeps its live stage
-/// for the next check-in and returns to polling.
+/// Rejection awaits installation and stops at live Enrolling or Queued. Once the
+/// attempt has reported Joining, saved or in this run, rejection cannot cancel its
+/// committed join. A successful join is recorded for cleanup; a failure keeps its
+/// live stage for the next check-in and returns to polling.
 pub(super) async fn attempt<H: Host>(
     host: &H,
     client: &CheckinClient,
