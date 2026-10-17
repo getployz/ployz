@@ -162,6 +162,13 @@ app's client ID and secret to ask GitHub which installations the person connecti
    runs on: Ployz Cloud is only the dashboard, and your apps run on the servers you add. The
    command the dashboard gives you already points at your address.
 
+To install a server with a [Fleet Token](servers/add-a-server.md#install-with-a-fleet-token), add
+your address to the install line, or the server checks in with ployz.dev:
+
+```sh
+curl -fsSL https://ployz.sh | sudo PLOYZ_CLOUD_URL=https://cloud.example.com PLOYZ_ENROLL_TOKEN=pflt_… sh
+```
+
 The CLI signs in to ployz.dev unless you point it at yours:
 
 ```sh

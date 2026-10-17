@@ -118,6 +118,41 @@ a database's included, fails to deploy until you open it and tick **Use a plain 
 (not recommended)** under **Advanced**; see
 [When your servers show Docker only](../services/volumes.md#when-your-servers-show-docker-only).
 
+## Install with a Fleet Token
+
+A Fleet Token starts with `pflt_`. Give it to the install script and the host asks to join
+instead of joining:
+
+```sh
+curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
+```
+
+The script prints `Installs Docker and Ployz. Nothing joins until you say so.` first. It installs
+the CLI, writes the token to `/etc/ployz/fleet-token`, readable by root only, and runs
+`ployz server checkin --install`. That ends with `Waiting for approval`, within seconds: Docker
+and ZFS install in the background while the host waits, and the host shows on the **Servers**
+page at once.
+
+- **Without ZFS.** Add `PLOYZ_SKIP_ZFS=1` next to the token, as `--storage none` does for
+  `ployz server add`.
+- **From user data.** cloud-init runs user data as root, so leave out `sudo`:
+
+  ```yaml
+  #cloud-config
+  runcmd:
+    - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=pflt_… sh
+  ```
+
+- **Run it again.** The same line on the same host updates its token and keeps it one server.
+- **An expired token** prints `Token expired. Run the install again with a new token.` and the
+  script exits with an error. A revoked one says so the same way. Nothing keeps running on the
+  host.
+
+The script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. Any other value is left
+to `ployz server add`, and the script only installs the CLI, as it does without a token. If the
+host waits longer than you expect, see
+[A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
+
 ## Open the firewall
 
 Ployz opens the ports it needs on the server itself. If your provider runs a firewall in front of

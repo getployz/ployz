@@ -6,6 +6,8 @@ PLOYZ_GITHUB_URL=${PLOYZ_GITHUB_URL:-https://github.com/getployz/ployz}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 PLOYZ_VERSION=${PLOYZ_VERSION:-${1:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
+FLEET_TOKEN_FILE=${FLEET_TOKEN_FILE:-/etc/ployz/fleet-token}
+CHECKIN_STATUS=${CHECKIN_STATUS:-/var/lib/ployz/checkin/status.json}
 # Same grammar as scripts/release-tag.sh; this file is fetched alone, so it cannot source it.
 RELEASE_NUMBER='(0|[1-9][0-9]{0,18})'
 STABLE_VERSION="$RELEASE_NUMBER\.$RELEASE_NUMBER\.$RELEASE_NUMBER"
@@ -99,4 +101,36 @@ install_cli() {
     echo "Installed ployz to $INSTALL_BIN_DIR/ployz"
 }
 
-install_cli
+# printf is a builtin, so the token reaches the file without entering any process's argv.
+write_fleet_token() {
+    mkdir -p "$(dirname "$FLEET_TOKEN_FILE")"
+    staged=$(mktemp "$FLEET_TOKEN_FILE.XXXXXX")
+    printf '%s\n' "$1" > "$staged"
+    mv -f "$staged" "$FLEET_TOKEN_FILE"
+}
+
+# A stop on this token deletes the token file, so a status left by an older install never matches.
+token_expired() {
+    [ ! -e "$FLEET_TOKEN_FILE" ] && grep -Eq '"reason": *"token_expired"' "$CHECKIN_STATUS" 2>/dev/null
+}
+
+check_in() {
+    echo "Installs Docker and Ployz. Nothing joins until you say so."
+    [ "$(uname -s)" = Linux ] || error "A Fleet Token needs a Linux server."
+    [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=... sh"
+    fleet_token=$PLOYZ_ENROLL_TOKEN
+    unset PLOYZ_ENROLL_TOKEN
+    install_cli
+    write_fleet_token "$fleet_token"
+    if ! "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE"; then
+        if token_expired; then
+            echo "Token expired. Run the install again with a new token." >&2
+        fi
+        exit 1
+    fi
+}
+
+case "${PLOYZ_ENROLL_TOKEN:-}" in
+    pflt_*) check_in ;;
+    *) install_cli ;;
+esac

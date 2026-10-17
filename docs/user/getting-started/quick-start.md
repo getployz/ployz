@@ -64,6 +64,10 @@ While you have no server, the bottom bar shows **Add a server** where **Deploy**
 The command installs Ployz and adds the server to your organization. If your provider puts a
 firewall in front of it, open [these ports](../servers/add-a-server.md#open-the-firewall).
 
+Starting servers from a script or from cloud-init user data? Install them with a
+[Fleet Token](../servers/add-a-server.md#install-with-a-fleet-token) instead. Each one installs
+Docker and Ployz, then waits until you say it can join.
+
 ## Deploy
 
 When the server joins, **Deploy** appears in the bottom bar, next to **Apply 2 changes**: the new
