@@ -3,6 +3,9 @@ import { admit, refusalOf, type Role } from "#/modules/organization/access.serve
 import { PERMISSIONS, type Permission } from "#/modules/organization/permissions";
 import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
 
+/** Support holds what admin does, except the permissions named here as withheld from it. */
+const WITHHELD_FROM_SUPPORT: ReadonlyArray<Permission> = ["environments:protect"];
+
 const GRANTS: ReadonlyArray<readonly [permission: Permission, member: boolean, admin: boolean, owner: boolean]> = [
   ["org:read", true, true, true],
   ["org:settings", false, true, true],
@@ -69,10 +72,10 @@ describe("admit", () => {
       : { kind: "forbidden", permission });
   });
 
-  it.each(GRANTS.map(([permission, , admin]) => ({ permission, admin })))(
-    "$permission for support while allowed: $admin",
-    ({ permission, admin }) => {
-      expect(admitted(null, permission, { isStaff: true, allowed: true })).toEqual(admin
+  it.each(GRANTS.map(([permission, , admin]) => ({ permission, held: admin && !WITHHELD_FROM_SUPPORT.includes(permission) })))(
+    "$permission for support while allowed: $held",
+    ({ permission, held }) => {
+      expect(admitted(null, permission, { isStaff: true, allowed: true })).toEqual(held
         ? { kind: "support", userId, organization, shows: SUPPORT_SHOWS_NONE }
         : { kind: "forbidden", permission });
     },

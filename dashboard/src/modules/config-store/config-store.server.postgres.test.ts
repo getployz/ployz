@@ -16,7 +16,9 @@ import { decideApproval } from "#/modules/approvals/approvals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { callStore, callStoreAsMember, callStoreBy, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import type { Access } from "#/modules/organization/access.server";
+import { type Access, requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
+import type { Caller } from "#/modules/identity/actor";
+import { organizationSupportAccess } from "#/modules/support-access/tables";
 import * as ids from "#/test/ids";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
@@ -538,6 +540,76 @@ it.live(
         mcp.set("x-ployz-via", "agent");
         const fromMcp = yield* send("write", mcp, protect(false));
         assert.deepStrictEqual([fromMcp.json.error?.code, fromMcp.json.error?.message], ["forbidden", adminOnly]);
+        assert.deepStrictEqual(yield* unprotectApprovals(organizationId), []);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Ployz staff with support access to Alice's Organization: not a member, acting as the dashboard's support Caller. */
+const supportIn = Effect.fn(function* (alice: { readonly userId: string }, organizationId: string, slug: string) {
+  const { drizzle } = yield* Database;
+  const session = yield* signUp("staff");
+  const staff = (yield* resolveCaller(signedIn(session))).userId;
+  yield* drizzle.insert(organizationSupportAccess).values({ organizationId, allowed: true, changedByUserId: alice.userId });
+  const access = yield* requireAccess({ userId: staff }, slug, "org:read").pipe(Effect.provideService(SupportStaff, supportStaffOf([staff])));
+  if (access.kind !== "support") return assert.fail(`staff isn't support: ${access.kind}`);
+  const caller: Caller = {
+    userId: staff, organization: access.organization, credential: { kind: "session", id: "support" },
+    role: null, support: access.shows, via: "dashboard",
+  };
+  return { caller, session };
+});
+
+it.live(
+  "support doesn't change Protected production's source or protection, or remove its Project",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, organizationId, slug, protection } = yield* protectedShop();
+        const { caller: staff } = yield* supportIn(alice, organizationId, slug);
+        const projects = Effect.fn(function* () {
+          const listing = yield* callStoreAsMember(alice, slug, { operation: "read", query: { query: "projects" } });
+          return listing.ok && listing.value.view === "projects" ? listing.value.projects.map((project) => project.name) : assert.fail("no projects");
+        });
+
+        yield* Effect.gen(function* () {
+          assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(staff, slug, branch("dev"))), ["forbidden", adminOnly]);
+          const unprotect = yield* Effect.exit(writeStoreAsMember(staff, slug, protect(false)));
+          assert.deepInclude(Exit.isFailure(unprotect) ? Cause.squash(unprotect.cause) : null, { _tag: "Forbidden", message: adminOnly });
+          const removal = yield* writeStoreAsMember(staff, slug, { command: "remove", project: "shop" });
+          assert.deepStrictEqual(refusalOf(removal), ["forbidden", "Needs environments:protect"]);
+        }).pipe(Effect.provideService(SupportStaff, supportStaffOf([staff.userId])));
+
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        assert.deepStrictEqual(yield* projects(), ["shop"]);
+        const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
+        assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "support's agent asking to unprotect is refused, and no human is asked",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, organizationId, slug, protection } = yield* protectedShop();
+        const { caller: staff, session } = yield* supportIn(alice, organizationId, slug);
+
+        const fromSidebar = yield* runAgentCall({ ...staff, via: "agent" }, unprotectByAgent("support", null))
+          .pipe(Effect.provideService(SupportStaff, supportStaffOf([staff.userId])));
+        assert.deepStrictEqual(fromSidebar, { outcome: { ok: false, refusal: { code: "forbidden", message: adminOnly, details: null } } });
+        // `ployz mcp` acts only as a member, so support's session is refused before the Store is asked.
+        yield* activeIn(staff.userId, organizationId, slug);
+        const mcp = signedIn(session);
+        mcp.set("x-ployz-via", "agent");
+        const fromMcp = yield* send("write", mcp, protect(false));
+        assert.strictEqual(fromMcp.status, 403);
         assert.deepStrictEqual(yield* unprotectApprovals(organizationId), []);
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
       }).pipe(Effect.provide(layer));
