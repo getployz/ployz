@@ -98,3 +98,14 @@ export const checkinRateLimit = pgTable("checkin_rate_limit", {
   windowStart: timestamp("window_start", { mode: "date", withTimezone: true }).notNull(),
   count: integer("count").notNull(),
 });
+
+/** One admitted request per row, so a limit can count a key's requests over any window up to a day. */
+export const rateLimitEvent = pgTable(
+  "rate_limit_event",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    key: text("key").notNull(),
+    at: timestamp("at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("rate_limit_event_key_at_idx").on(table.key, table.at)],
+);
