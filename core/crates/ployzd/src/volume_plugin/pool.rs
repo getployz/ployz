@@ -19,7 +19,7 @@ use super::{
 /// Filename of the root-backed Machine Pool vdev.
 #[cfg(test)]
 pub(super) const POOL_BACKING_FILE: &str = "machine-pool";
-const POOL_NAME: &str = "ployz";
+const POOL_NAME: &str = machine_pool::ROOT_BACKED_POOL_NAME;
 /// Debian's monthly zfsutils cron trims Pools it misreads as NVMe-only, which
 /// punches holes in a file vdev. A trimmed backing file can no longer hold the
 /// Pool's size when the host root fills up.

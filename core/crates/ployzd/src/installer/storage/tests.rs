@@ -9,6 +9,39 @@ use std::{
 };
 
 #[test]
+fn storage_device_parsing_preserves_default_and_named_targets() {
+    for value in ["none", "zfs", "zfs:/dev/vdb", "zfs:/dev/disk/by-id/spare"] {
+        assert_eq!(StoragePreparation::parse(value).unwrap().to_string(), value);
+    }
+    for value in ["zfs:", "zfs:vdb", "none:/dev/vdb", "other"] {
+        assert!(StoragePreparation::parse(value).is_err(), "{value}");
+    }
+}
+
+#[test]
+fn storage_device_pool_requires_exactly_the_requested_backing() {
+    let status =
+        "  pool: ployz-device\nconfig:\n\tNAME STATE\n\tployz-device ONLINE\n\t  /dev/vdb ONLINE\n";
+    assert!(device_pool_matches(status, Path::new("/dev/vdb")));
+    assert!(!device_pool_matches(status, Path::new("/dev/vdc")));
+    assert!(!device_pool_matches(
+        &format!("{status}\t  /dev/vdc ONLINE\n"),
+        Path::new("/dev/vdb")
+    ));
+}
+
+#[test]
+fn storage_refuses_missing_or_non_block_device_before_preparing_zfs() {
+    let root = tempfile::tempdir().unwrap();
+    let regular = root.path().join("regular");
+    fs::write(&regular, "keep this data").unwrap();
+    for device in [regular.clone(), root.path().join("missing")] {
+        assert!(super::super::assess::empty_device(&device).is_err());
+    }
+    assert_eq!(fs::read_to_string(regular).unwrap(), "keep this data");
+}
+
+#[test]
 fn smoke_pool_cleanup_preserves_backing_until_absence_is_proven() {
     const CASE: &str = "PLOYZ_SMOKE_CLEANUP_CASE";
     const ROOT: &str = "PLOYZ_SMOKE_CLEANUP_ROOT";
@@ -187,7 +220,10 @@ fn zfs_unsupported_os_contract() {
         let case = REFUSALS.iter().find(|case| case.name == name).unwrap();
         let root = contract_root();
         let paths = InstallPaths::at(&root);
-        assert_refused(prepare_storage(StorageChoice::Zfs, &paths), case.expected);
+        assert_refused(
+            prepare_storage(&StoragePreparation::Zfs { device: None }, &paths),
+            case.expected,
+        );
         assert!(!paths.modprobe_dir.exists());
         fs::write(root.join("child-completed"), name).unwrap();
         return;
@@ -621,7 +657,7 @@ fn zfs_amazon_linux_contract() {
         let root = contract_root();
         let paths = InstallPaths::at(&root);
         let result = if case.via_storage {
-            prepare_storage(StorageChoice::Zfs, &paths)
+            prepare_storage(&StoragePreparation::Zfs { device: None }, &paths)
         } else {
             let os = OsRelease::read(&paths.os_release).unwrap();
             let tarball = if name == "checksum-mismatch" {
@@ -771,7 +807,13 @@ fn zfs_already_installed_contract() {
         let root = contract_root();
         // Past the build, this ends at the host-root reserve or the fake modprobe; either way
         // the parent checks nothing was installed.
-        assert!(prepare_storage(StorageChoice::Zfs, &InstallPaths::at(&root)).is_err());
+        assert!(
+            prepare_storage(
+                &StoragePreparation::Zfs { device: None },
+                &InstallPaths::at(&root)
+            )
+            .is_err()
+        );
         fs::write(root.join("child-completed"), name).unwrap();
         return;
     }

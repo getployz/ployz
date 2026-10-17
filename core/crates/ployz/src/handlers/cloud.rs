@@ -38,7 +38,7 @@ pub(super) fn enroll(
     enroll_token(root, token, cloud_url, &|installation| async move {
         match installation {
             Installation::Host(storage) => {
-                crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage).await?;
+                crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), &storage).await?;
             }
             Installation::Daemon => crate::provisioning::synchronize_local_daemon().await?,
         }
@@ -149,7 +149,7 @@ where
     progress(EnrollStage::Installing);
     if remote && !matches.get_flag("no-install") {
         // A remote host is provisioned once, up front, with this CLI's release.
-        crate::provisioning::provision(matches, requested_storage).await?;
+        crate::provisioning::provision(matches, &requested_storage).await?;
     }
     let mut client = connect_machine(matches, install).await?;
     client = synchronize_daemon(matches, client, install).await?;
@@ -161,7 +161,7 @@ where
     let (details, machine_token, name, outcome) = enroll_current_identity(
         &mut client,
         requested_name,
-        requested_storage,
+        requested_storage.choice(),
         &initial_policy,
         &url,
         token,
@@ -172,7 +172,7 @@ where
     report.step(Step::Storage);
     match outcome {
         Outcome::Join(join) => {
-            report.enrolled(join.storage, false);
+            report.enrolled(join.storage.choice(), false);
             enroll_join(
                 matches,
                 client,
@@ -192,7 +192,7 @@ where
             pairing,
             storage,
         } => {
-            report.enrolled(storage, true);
+            report.enrolled(storage.choice(), true);
             enroll_founder(
                 matches,
                 client,
@@ -305,7 +305,7 @@ where
         )
         .await?;
         progress(EnrollStage::Storage);
-        client = provision_storage(matches, client, join.storage, install).await?;
+        client = provision_storage(matches, client, &join.storage, install).await?;
         report.step(Step::Join);
         crate::handlers::server::enroll(
             &mut client,
@@ -371,7 +371,7 @@ async fn enroll_founder<Install, InstallFuture>(
     cluster_network: Ipv4Net,
     mode: InitializeMode,
     pairing: CloudPairing,
-    storage: StorageChoice,
+    storage: ployz_core::StoragePreparation,
     cloud_url: &str,
     token: &CloudEnrollToken,
     install: &Install,
@@ -439,7 +439,7 @@ where
             )
             .await?;
             progress(EnrollStage::Storage);
-            client = provision_storage(matches, client, storage, install).await?;
+            client = provision_storage(matches, client, &storage, install).await?;
             report.step(Step::Join);
             let machine = crate::handlers::server::enroll(
                 &mut client,
@@ -551,15 +551,19 @@ async fn set_cloud_management_client(
 async fn provision_storage<Install, InstallFuture>(
     matches: &ArgMatches,
     client: Client,
-    storage: StorageChoice,
+    storage: &ployz_core::StoragePreparation,
     install: &Install,
 ) -> Result<Client, Error>
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    crate::provisioning::announce_storage(storage);
-    if storage != StorageChoice::Zfs {
+    let storage = cloud_enroll::storage_with_requested_device(
+        storage,
+        &super::server::requested_storage(matches),
+    );
+    crate::provisioning::announce_storage(&storage);
+    if storage.choice() != StorageChoice::Zfs {
         return Ok(client);
     }
     if !installs_here(matches, &client) {
@@ -677,14 +681,14 @@ where
     match dial(matches).await {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
-            install(Installation::Host(StorageChoice::None)).await?;
+            install(Installation::Host(StorageChoice::None.into())).await?;
             wait_client(matches).await
         }
         Err(error) if error.is_setup_retryable() && dials_this_host(matches) => {
             if local_selection(matches)?.connections.iter().any(|connection| {
                 matches!(connection.transport(), Transport::Unix(path) if !path.exists())
             }) {
-                install(Installation::Host(StorageChoice::None)).await?;
+                install(Installation::Host(StorageChoice::None.into())).await?;
             }
             wait_client(matches).await
         }
@@ -929,7 +933,7 @@ mod tests {
                         "10.210.0.0/16".parse().unwrap(),
                         InitializeMode::New,
                         pairing,
-                        StorageChoice::None,
+                        StorageChoice::None.into(),
                         "http://unused.invalid",
                         &token,
                         &install,
@@ -944,7 +948,7 @@ mod tests {
                         details,
                         Join {
                             pairing,
-                            storage: StorageChoice::None,
+                            storage: StorageChoice::None.into(),
                             registration: ployz_core::Registered {
                                 assigned_machine: machine,
                                 visible_peers: Vec::new(),

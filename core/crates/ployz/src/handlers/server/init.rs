@@ -59,9 +59,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let (machine, connection) = runtime.block_on(async {
         if !no_install {
             if local {
-                crate::provisioning::provision_local(version, storage).await?;
+                crate::provisioning::provision_local(version, &storage).await?;
             } else {
-                crate::provisioning::provision(matches, storage).await?;
+                crate::provisioning::provision(matches, &storage).await?;
             }
         }
         let mut target = if !no_install {

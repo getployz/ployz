@@ -257,6 +257,78 @@ impl FromStr for StorageChoice {
     }
 }
 
+/// Installer intent. The backing device stays outside durable Machine RPC records.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum StoragePreparation {
+    #[default]
+    None,
+    Zfs {
+        device: Option<String>,
+    },
+}
+
+impl StoragePreparation {
+    /// The storage mode carried by enrollment RPC and allocation history.
+    #[must_use]
+    pub const fn choice(&self) -> StorageChoice {
+        match self {
+            Self::None => StorageChoice::None,
+            Self::Zfs { .. } => StorageChoice::Zfs,
+        }
+    }
+
+    /// Parse `none`, `zfs`, or `zfs:<absolute device path>`.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown mode or a device path that is not absolute.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        match value {
+            "none" => Ok(Self::None),
+            "zfs" => Ok(Self::Zfs { device: None }),
+            _ => match value.strip_prefix("zfs:") {
+                Some(device) if std::path::Path::new(device).is_absolute() => Ok(Self::Zfs {
+                    device: Some(device.to_owned()),
+                }),
+                _ => Err(ValueError::new(
+                    "Storage Preparation",
+                    value,
+                    "none, zfs, or zfs:<absolute device path>",
+                )),
+            },
+        }
+    }
+}
+
+impl From<StorageChoice> for StoragePreparation {
+    fn from(choice: StorageChoice) -> Self {
+        match choice {
+            StorageChoice::None => Self::None,
+            StorageChoice::Zfs => Self::Zfs { device: None },
+        }
+    }
+}
+
+impl fmt::Display for StoragePreparation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => formatter.write_str("none"),
+            Self::Zfs { device: None } => formatter.write_str("zfs"),
+            Self::Zfs {
+                device: Some(device),
+            } => write!(formatter, "zfs:{device}"),
+        }
+    }
+}
+
+impl FromStr for StoragePreparation {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "mode", content = "address")]
 pub enum PublicIpDiscovery {

@@ -9,7 +9,8 @@ use std::{
     process::Command,
 };
 
-use ployz_core::StorageChoice;
+use crate::machine_pool::DEVICE_BACKED_POOL_NAME;
+use ployz_core::StoragePreparation;
 
 use super::assess::{
     Filesystem, Virtualization, ZFS_SMOKE_BYTES, read_secure_boot_variable, read_virtualization,
@@ -24,11 +25,100 @@ use super::{
 
 const POSIX_STAT_BLOCK_BYTES: u64 = 512;
 
-pub(super) fn prepare_storage(storage: StorageChoice, paths: &InstallPaths) -> Result<(), Error> {
+pub(super) fn prepare_storage(
+    storage: &StoragePreparation,
+    paths: &InstallPaths,
+) -> Result<(), Error> {
     match storage {
-        StorageChoice::None => Ok(()),
-        StorageChoice::Zfs => prepare_zfs(paths),
+        StoragePreparation::None => Ok(()),
+        StoragePreparation::Zfs { device: None } => prepare_zfs(paths),
+        StoragePreparation::Zfs {
+            device: Some(device),
+        } => {
+            let device = Path::new(device);
+            if existing_device_pool(device)? {
+                return Ok(());
+            }
+            super::assess::empty_device(device)?;
+            prepare_zfs(paths)?;
+            if !existing_device_pool(device)? {
+                let device = super::assess::empty_device(device)?;
+                let mut create = Command::new("zpool");
+                create
+                    .args([
+                        "create",
+                        "-m",
+                        "none",
+                        "-o",
+                        "ashift=12",
+                        "-O",
+                        "canmount=off",
+                        DEVICE_BACKED_POOL_NAME,
+                    ])
+                    .arg(&device);
+                run_command("create device Machine Pool", &mut create)?;
+                if !existing_device_pool(&device)? {
+                    return Err(refuse(
+                        STAGE,
+                        "the device Machine Pool was not imported after creation",
+                    ));
+                }
+            }
+            Ok(())
+        }
     }
+}
+
+fn existing_device_pool(device: &Path) -> Result<bool, Error> {
+    if !command_exists("zpool") {
+        return Ok(false);
+    }
+    let pools = command_stdout(
+        STAGE,
+        "zpool",
+        [
+            "list",
+            "-Hp",
+            "-o",
+            "name,size,allocated,free,health,readonly",
+        ],
+    )?;
+    let pool = crate::machine_pool::one_usable(&pools)
+        .map_err(|error| refuse(STAGE, error.to_string()))?;
+    let Some(pool) = pool else { return Ok(false) };
+    if pool.name() != DEVICE_BACKED_POOL_NAME {
+        return Err(refuse(
+            STAGE,
+            format!(
+                "Machine Pool {} already exists; refusing to replace it with {}",
+                pool.name(),
+                device.display()
+            ),
+        ));
+    }
+    let device = fs::canonicalize(device).map_err(|source| Error::Io {
+        stage: "resolve ZFS device",
+        source,
+    })?;
+    let status = command_stdout(STAGE, "zpool", ["status", "-LP", DEVICE_BACKED_POOL_NAME])?;
+    if !device_pool_matches(&status, &device) {
+        return Err(refuse(
+            STAGE,
+            format!(
+                "Machine Pool {DEVICE_BACKED_POOL_NAME} is not backed solely by {}",
+                device.display()
+            ),
+        ));
+    }
+    Ok(true)
+}
+
+fn device_pool_matches(status: &str, device: &Path) -> bool {
+    let mut devices = status
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| name.starts_with('/'));
+    devices.next().is_some_and(|name| Path::new(name) == device) && devices.next().is_none()
 }
 
 pub(super) const STAGE: &str = "prepare ZFS storage";

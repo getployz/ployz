@@ -21,7 +21,7 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StorageChoice};
+use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation};
 use thiserror::Error;
 
 use crate::mutation;
@@ -52,7 +52,7 @@ pub enum InstallMode {
     /// Prepare the host and optionally configure its requested storage.
     PrepareHost {
         /// Explicit storage preparation for a fresh Machine.
-        storage: StorageChoice,
+        storage: StoragePreparation,
         /// Existing operator to add to the Ployz service group during host preparation.
         group_user: Option<String>,
     },
@@ -280,7 +280,7 @@ async fn install_locked(
         } => {
             // Before the ZFS build or any change: Ployz can't use every Docker it would retain.
             verify_docker()?;
-            prepare_storage(*storage, paths)?;
+            prepare_storage(storage, paths)?;
             install_prerequisites()?;
             let inherited_group = sudo_user();
             create_user_and_directories(

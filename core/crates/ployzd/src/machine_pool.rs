@@ -5,6 +5,12 @@ use std::num::NonZeroU64;
 /// The file a root-backed Machine Pool lives in, on the host root filesystem.
 pub const BACKING_FILE: &str = "/var/lib/ployz-machine-pool";
 
+/// The Pool whose file backing the volume plugin can grow.
+pub const ROOT_BACKED_POOL_NAME: &str = "ployz";
+
+/// The Pool created on a disk explicitly selected during installation.
+pub const DEVICE_BACKED_POOL_NAME: &str = "ployz-device";
+
 /// A writable imported Machine Pool with usable health.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MachinePool {

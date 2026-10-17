@@ -67,7 +67,9 @@ function resolveStorage(report: StoredReport, storage: EnrollInput["storage"]): 
   if (storage.kind === "none") return { kind: "none" };
   if (report.zfs.kind === "ineligible") return storage.fallbackToDocker ? { kind: "none" } : { skip: report.zfs.message };
   const spare = storage.useSpareDisk ? report.zfs.targets.find((target) => target.kind === "disk") : undefined;
-  return spare === undefined ? { kind: "zfs" } : { kind: "zfs", device: spare.byId };
+  if (spare === undefined) return { kind: "zfs" };
+  const device = spare.byId.startsWith("/") ? spare.byId : `/dev/disk/by-id/${spare.byId}`;
+  return { kind: "zfs", device };
 }
 
 function network(ip: string) {

@@ -170,7 +170,7 @@ impl EnrollIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Join {
     pub pairing: CloudPairing,
-    pub storage: StorageChoice,
+    pub storage: ployz_core::StoragePreparation,
     pub registration: Registered,
 }
 
@@ -181,7 +181,7 @@ pub(crate) enum Outcome {
     Initialize {
         mode: InitializeMode,
         pairing: CloudPairing,
-        storage: StorageChoice,
+        storage: ployz_core::StoragePreparation,
     },
 }
 
@@ -199,7 +199,7 @@ pub(crate) enum Response {
     Initialize {
         mode: InitializeMode,
         pairing: CloudPairing,
-        storage: StorageChoice,
+        storage: ployz_core::StoragePreparation,
     },
     NotYet {
         retry_after: Duration,
@@ -270,8 +270,8 @@ impl TryFrom<String> for EnrollStage {
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
-        #[serde(default)]
-        storage: StorageChoice,
+        #[serde(default, deserialize_with = "deserialize_storage")]
+        storage: ployz_core::StoragePreparation,
         registration: Box<Registered>,
     },
     NotYet {
@@ -285,8 +285,8 @@ enum EnrollWire {
     Initialize {
         resumed: bool,
         pairing: CloudPairing,
-        #[serde(default)]
-        storage: StorageChoice,
+        #[serde(default, deserialize_with = "deserialize_storage")]
+        storage: ployz_core::StoragePreparation,
     },
 }
 
@@ -587,11 +587,98 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
     }
 }
 
+pub(crate) fn storage_with_requested_device(
+    returned: &ployz_core::StoragePreparation,
+    requested: &ployz_core::StoragePreparation,
+) -> ployz_core::StoragePreparation {
+    match (returned, requested) {
+        (
+            ployz_core::StoragePreparation::Zfs { device: None },
+            ployz_core::StoragePreparation::Zfs { .. },
+        ) => requested.clone(),
+        (returned, _) => returned.clone(),
+    }
+}
+
+fn deserialize_storage<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ployz_core::StoragePreparation, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Legacy(StorageChoice),
+        Target {
+            kind: StorageChoice,
+            device: Option<String>,
+        },
+    }
+    match Wire::deserialize(deserializer)? {
+        Wire::Legacy(choice) => Ok(choice.into()),
+        Wire::Target {
+            kind: StorageChoice::None,
+            device: None,
+        } => Ok(StorageChoice::None.into()),
+        Wire::Target {
+            kind: StorageChoice::Zfs,
+            device,
+        } => {
+            let value = device.map_or_else(|| "zfs".to_owned(), |device| format!("zfs:{device}"));
+            ployz_core::StoragePreparation::parse(value).map_err(serde::de::Error::custom)
+        }
+        Wire::Target {
+            kind: StorageChoice::None,
+            device: Some(_),
+        } => Err(serde::de::Error::custom(
+            "Docker-only storage cannot name a device",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+
+    #[test]
+    fn cloud_enroll_storage_wire_accepts_zfs_with_and_without_a_device() {
+        for (wire, device) in [
+            (serde_json::json!("zfs"), None),
+            (serde_json::json!({"kind": "zfs"}), None),
+            (
+                serde_json::json!({"kind": "zfs", "device": "/dev/vdb"}),
+                Some("/dev/vdb"),
+            ),
+        ] {
+            let Response::Initialize { storage, .. } = parse_enroll(&serde_json::to_vec(&serde_json::json!({
+                "kind": "initialize", "resumed": false, "pairing": {"secret": "pairing-secret"}, "storage": wire,
+            })).unwrap()).unwrap() else { panic!("initialize response") };
+            assert_eq!(
+                storage,
+                ployz_core::StoragePreparation::Zfs {
+                    device: device.map(str::to_owned)
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_enroll_storage_preserves_the_selected_device_only_when_zfs_is_allowed() {
+        let requested = ployz_core::StoragePreparation::parse("zfs:/dev/vdb").unwrap();
+        assert_eq!(
+            storage_with_requested_device(&StorageChoice::Zfs.into(), &requested),
+            requested
+        );
+        assert_eq!(
+            storage_with_requested_device(&StorageChoice::None.into(), &requested),
+            ployz_core::StoragePreparation::None
+        );
+        let returned = ployz_core::StoragePreparation::parse("zfs:/dev/vdc").unwrap();
+        assert_eq!(
+            storage_with_requested_device(&returned, &requested),
+            returned
+        );
+    }
 
     fn pairing() -> CloudPairing {
         CloudPairing {
@@ -681,7 +768,7 @@ mod tests {
             panic!("expected join");
         };
         assert_eq!(join.pairing, pairing());
-        assert_eq!(join.storage, ployz_core::StorageChoice::Zfs);
+        assert_eq!(join.storage, ployz_core::StorageChoice::Zfs.into());
         assert_eq!(join.registration, registration());
     }
 
@@ -759,7 +846,7 @@ mod tests {
         .unwrap() else {
             panic!("expected initialize");
         };
-        assert_eq!(storage, StorageChoice::None);
+        assert_eq!(storage, StorageChoice::None.into());
     }
 
     #[test]

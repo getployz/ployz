@@ -8,7 +8,7 @@ use std::{
 };
 
 use clap::ArgMatches;
-use ployz_core::{MachineRelease, StorageChoice};
+use ployz_core::{MachineRelease, StoragePreparation};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -141,10 +141,12 @@ pub enum ProvisionError {
 /// Resolve Machine storage preparation once before provisioning or enrollment.
 pub(crate) fn resolve_storage(
     matches: &ArgMatches,
-) -> Result<StorageChoice, crate::failure::Failure> {
-    let storage = match matches.get_one::<StorageChoice>("storage").copied() {
+) -> Result<StoragePreparation, crate::failure::Failure> {
+    let storage = match matches.get_one::<StoragePreparation>("storage").cloned() {
         Some(storage) => storage,
-        None if matches.get_flag("yes") || matches.get_flag("no-install") => StorageChoice::None,
+        None if matches.get_flag("yes") || matches.get_flag("no-install") => {
+            StoragePreparation::None
+        }
         None => {
             let index = crate::ui::select(
                 "Storage preparation",
@@ -161,40 +163,40 @@ pub(crate) fn resolve_storage(
                 "Cancelled. Nothing was installed.",
             )?;
             if index == 0 {
-                StorageChoice::Zfs
+                StoragePreparation::Zfs { device: None }
             } else {
-                StorageChoice::None
+                StoragePreparation::None
             }
         }
     };
-    if storage == StorageChoice::Zfs && matches.get_flag("no-install") {
+    if matches!(storage, StoragePreparation::Zfs { .. }) && matches.get_flag("no-install") {
         return Err(ProvisionError::ZfsWithoutInstaller.into());
     }
-    announce_storage(storage);
+    announce_storage(&storage);
     Ok(storage)
 }
 
 /// Why `--storage none` is not recommended; said once when a Server starts without ZFS.
 const DOCKER_ONLY: &str = "Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.";
 
-pub(crate) fn announce_storage(storage: StorageChoice) {
-    if storage == StorageChoice::None {
+pub(crate) fn announce_storage(storage: &StoragePreparation) {
+    if storage == &StoragePreparation::None {
         crate::ui::warn(DOCKER_ONLY);
     }
 }
 
 /// What enrollment asks its installer to do on this host.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Installation {
     /// Prepare the host and install the daemon, with `storage`.
-    Host(StorageChoice),
+    Host(StoragePreparation),
     /// Replace only the daemon binary with this CLI's version.
     Daemon,
 }
 
 enum Preparation<'user> {
     Host {
-        storage: StorageChoice,
+        storage: &'user StoragePreparation,
         group_user: Option<&'user str>,
     },
     SoftwareOnly,
@@ -207,7 +209,7 @@ fn install_arguments(version: &str, preparation: Preparation<'_>) -> Vec<OsStrin
             storage,
             group_user,
         } => {
-            arguments.extend(["--storage".into(), storage.as_str().into()]);
+            arguments.extend(["--storage".into(), storage.to_string().into()]);
             if let Some(user) = group_user {
                 arguments.extend(["--group-user".into(), user.into()]);
             }
@@ -426,7 +428,7 @@ impl Remote {
         host: &RemoteHost,
         bootstrap: &Bootstrap,
         version: &str,
-        storage: StorageChoice,
+        storage: &StoragePreparation,
     ) -> Result<(), ProvisionError> {
         let via_sudo = host.user != "root";
         let remote_directory = format!("/tmp/ployz-bootstrap-{}", Uuid::new_v4());
@@ -542,7 +544,10 @@ fn finish_remote(
 /// invalid, when platform inspection, bootstrap acquisition, checksum or version
 /// verification fails, when staging or installation fails, or when the staged
 /// bootstrap cannot be removed.
-pub async fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(), ProvisionError> {
+pub async fn provision(
+    matches: &ArgMatches,
+    storage: &StoragePreparation,
+) -> Result<(), ProvisionError> {
     let remote = Remote::from_matches(matches)?;
     let host = remote.preflight().await?;
     let bootstrap = Bootstrap::acquire(&host.architecture).await?;
@@ -563,7 +568,10 @@ pub async fn provision(matches: &ArgMatches, storage: StorageChoice) -> Result<(
 /// reports unsupported platforms, release acquisition and filesystem failures,
 /// checksum or executable-version verification failures, and installer spawn or
 /// non-zero exit failures.
-pub async fn provision_local(version: &str, storage: StorageChoice) -> Result<(), ProvisionError> {
+pub async fn provision_local(
+    version: &str,
+    storage: &StoragePreparation,
+) -> Result<(), ProvisionError> {
     let group_user = env::var("SUDO_USER").ok().filter(|user| !user.is_empty());
     provision_local_with(
         version,
@@ -622,7 +630,7 @@ pub(crate) async fn install_with(
     if !process_is_root() {
         return Err(ProvisionError::NotRoot);
     }
-    let preparation = match installation {
+    let preparation = match &installation {
         Installation::Host(storage) => Preparation::Host {
             storage,
             group_user: None,
@@ -779,7 +787,7 @@ mod tests {
             install_arguments(
                 "1.2.3",
                 Preparation::Host {
-                    storage: StorageChoice::Zfs,
+                    storage: &StoragePreparation::Zfs { device: None },
                     group_user: Some("deploy"),
                 },
             ),
@@ -865,7 +873,7 @@ mod tests {
     fn storage_resolution_honors_explicit_and_safe_noninteractive_choices() {
         assert_eq!(
             storage_matches(["ployz", "server", "add", "root@host", "--storage", "zfs"]),
-            StorageChoice::Zfs
+            StoragePreparation::Zfs { device: None }
         );
         assert_eq!(
             storage_matches([
@@ -877,11 +885,11 @@ mod tests {
                 "--storage",
                 "none"
             ]),
-            StorageChoice::None
+            StoragePreparation::None
         );
         assert_eq!(
             storage_matches(["ployz", "server", "add", "root@host", "--yes"]),
-            StorageChoice::None
+            StoragePreparation::None
         );
     }
 
@@ -912,7 +920,7 @@ mod tests {
         );
     }
 
-    fn storage_matches<const N: usize>(args: [&str; N]) -> StorageChoice {
+    fn storage_matches<const N: usize>(args: [&str; N]) -> StoragePreparation {
         let matches = crate::cli::command().try_get_matches_from(args).unwrap();
         let (_, matches) = matches
             .subcommand_matches("server")
@@ -928,7 +936,7 @@ mod tests {
             return;
         }
         assert!(matches!(
-            provision_local(env!("CARGO_PKG_VERSION"), StorageChoice::None).await,
+            provision_local(env!("CARGO_PKG_VERSION"), &StoragePreparation::None).await,
             Err(ProvisionError::NotRoot)
         ));
     }

@@ -95,6 +95,25 @@ Revoking also drops the hosts still waiting on that token. The install line puts
 host's process list while it runs; a Fleet Token is short-lived and you can revoke it, so that
 exposure ends when you do.
 
+## Use an empty spare disk for volumes
+
+To put managed volumes on a spare disk, name it when you enroll the server:
+
+```sh
+sudo ployz server add --storage zfs:/dev/vdb
+```
+
+You can also use a stable path such as `zfs:/dev/disk/by-id/virtio-data`. The disk must
+be an empty whole disk. Ployz refuses a disk with a filesystem, a partition table,
+partitions, or mounts. It creates the `ployz-device` pool on the selected disk.
+
+When you enroll a waiting host with **Use spare disk**, Cloud names an empty disk
+the host reported. The host checks the disk again before using it.
+
+With `--storage zfs` and no device, Ployz prepares ZFS and creates a file-backed pool
+on the main disk when you deploy the first managed volume. For installer-only use,
+`ployzd install --storage zfs:/dev/vdb` accepts the same device form.
+
 ## Start without ZFS
 
 The command sets up managed volumes with ZFS, so every [volume](../services/volumes.md) gets a

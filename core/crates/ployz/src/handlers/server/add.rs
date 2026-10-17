@@ -30,7 +30,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let runtime = runtime()?;
     let assigned = runtime.block_on(async {
         if !no_install {
-            crate::provisioning::provision(matches, storage).await?;
+            crate::provisioning::provision(matches, &storage).await?;
         }
         let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
@@ -64,7 +64,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 assigned_subnet: None,
                 initial_policy: policy,
                 name,
-                storage,
+                storage: storage.choice(),
                 public_key: token.public_key,
                 public_ip: token.public_ip,
                 advertised_endpoints: token.advertised_endpoints,
