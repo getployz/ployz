@@ -624,6 +624,8 @@ struct WaitingCloud {
     list: &'static str,
     unreachable: Vec<String>,
     rejects: Vec<(&'static str, Option<usize>)>,
+    /// The body of every reject answered with an error status, instead of a count.
+    refusal: Option<serde_json::Value>,
 }
 
 impl WaitingCloud {
@@ -649,6 +651,7 @@ impl WaitingCloud {
             list: "200 OK",
             unreachable: Vec::new(),
             rejects: Vec::new(),
+            refusal: None,
         }
     }
 }
@@ -665,6 +668,7 @@ fn waiting_cloud(
         list,
         unreachable,
         rejects,
+        refusal,
     } = cloud;
     let listed = serde_json::json!({ "waiting_servers": rows });
     let mut rejects = rejects.into_iter();
@@ -704,10 +708,13 @@ fn waiting_cloud(
                         .unwrap()
                         .len();
                     let (status, short) = rejects.next().unwrap_or(("200 OK", None));
-                    (
-                        status,
-                        serde_json::json!({ "rejected": short.unwrap_or(ids) }),
-                    )
+                    match &refusal {
+                        Some(refusal) if !status.starts_with('2') => (status, refusal.clone()),
+                        _ => (
+                            status,
+                            serde_json::json!({ "rejected": short.unwrap_or(ids) }),
+                        ),
+                    }
                 }
                 _ => ("404 Not Found", serde_json::json!({ "error": "not found" })),
             };
@@ -1265,6 +1272,39 @@ fn server_reject_counts_a_later_refused_batch_as_not_rejected() {
         "{json}"
     );
 }
+
+#[test]
+fn server_reject_counts_a_refusal_it_cannot_read_as_uncertain() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            rejects: vec![("504 Gateway Timeout", None)],
+            refusal: Some(serde_json::json!({
+                "error": { "code": "deadline_exceeded", "message": "The Store timed out." }
+            })),
+            ..WaitingCloud::of(bulk_rows())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "reject", "bulk-*", "--yes", "--json"], &token);
+    assert_eq!(code, Some(3), "{json}");
+    let sent = rejected_ids(&routes);
+    assert_eq!(sent.iter().map(Vec::len).collect::<Vec<_>>(), [1000]);
+    assert_eq!(json.get("rejected").unwrap(), 0, "{json}");
+    assert_eq!(
+        json.get("uncertain").unwrap(),
+        &serde_json::json!(sent.first().unwrap()),
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "deadline_exceeded",
+        "{json}"
+    );
+}
+
 #[test]
 fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
     let hostile = "web\u{1b}[31mX\u{202E}'1";

@@ -210,13 +210,14 @@ pub(super) async fn reject<'a>(
 }
 
 /// Whether Cloud may have acted on a call that failed: it timed out, dropped the
-/// connection, or failed inside. Every answer it refused with left the list as it was.
+/// connection, failed inside, or refused with a code this build cannot read. Every
+/// other refusal left the list as it was.
 fn may_have_acted(error: &StoreCallError) -> bool {
     match error {
         StoreCallError::Refused(refusal) => {
             matches!(
                 refusal.code,
-                RpcErrorCode::Internal | RpcErrorCode::Unavailable
+                RpcErrorCode::Internal | RpcErrorCode::Unavailable | RpcErrorCode::Unknown(_)
             )
         }
         StoreCallError::Cloud(LoginError::Status { status, .. }) => *status >= 500,
