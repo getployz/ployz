@@ -1233,6 +1233,86 @@ describe("organization enrollment coordinator", () => {
       expect(await enrollIn(fake, first, 1)).toEqual(queued(1));
     });
 
+    const lineKeepsItsPlace = async (fake: ReturnType<typeof fakeSession>, founder: Awaited<ReturnType<typeof readyFounder>>, first: string) => {
+      const second = await issueToken();
+      expect(await enrollIn(fake, second, 2)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, first, 1)).toEqual(queued(1));
+      const attempt = { token: second, machineId: identity(2).machineId, pairingCredential: founder.pairingCredential };
+      await fake.coordinator.publish({ ...attempt, capability: keyed(2) });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await enrollIn(fake, await issueToken(), 3)).toEqual(queued(1));
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+    };
+
+    it("keeps a claimant whose join failed before it was sent ahead of later arrivals", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const first = await issueToken();
+      fake.connection.error = new Error("Candidate unreachable");
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ failure: { _tag: "Conflict" } });
+      fake.connection.error = null;
+      await lineKeepsItsPlace(fake, founder, first);
+    });
+
+    it("keeps a claimant whose slot lapsed ahead of later arrivals", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '11 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      await lineKeepsItsPlace(fake, founder, first);
+    });
+
+    it("keeps the slot of a sent join when a later retry fails before sending", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      fake.connection.error = new Error("Candidate unreachable");
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ failure: { _tag: "Conflict" } });
+      fake.connection.error = null;
+      expect(await enrollIn(fake, await issueToken(), 2)).toEqual(queued(1));
+    });
+
+    it("keeps the slot of a sent join when an earlier duplicate fails after it", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const first = await issueToken();
+      let stalled!: () => void;
+      let resume!: () => void;
+      const entered = new Promise<void>((resolve) => { stalled = resolve; });
+      const resumed = new Promise<void>((resolve) => { resume = resolve; });
+      let connects = 0;
+      fake.connection.beforeConnect = async () => {
+        connects += 1;
+        if (connects > 1) return;
+        stalled();
+        await resumed;
+        throw new Error("Candidate unreachable");
+      };
+      const original = enrollIn(fake, first, 1);
+      await entered;
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      resume();
+      expect(await original).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await enrollIn(fake, await issueToken(), 2)).toEqual(queued(1));
+    });
+
+    it("keeps the slot of a join that is still publishing past the idle limit", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      const age = (minutes: number) => harness.pool.query(
+        `update machine_enrollment_token set claimed_at = claimed_at - interval '${minutes} minutes' where token_hash = $1`,
+        [hashEnrollmentToken(first)],
+      );
+      await age(9);
+      await fake.coordinator.publish({ token: first, machineId: identity(1).machineId, pairingCredential: founder.pairingCredential, capability: keyed(1) });
+      await age(2);
+      expect(await enrollIn(fake, await issueToken(), 2)).toEqual(queued(1));
+    });
+
     it("does not count the founder's own token as a join", async () => {
       const fake = fakeSession(harness.database);
       await readyFounder(fake);

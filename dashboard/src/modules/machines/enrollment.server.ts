@@ -282,15 +282,11 @@ const requireUnspentClaim = Effect.fn("MachineEnrollment.requireUnspentClaim")(
 
 /** Joins one Organization runs at once behind its founder; the rest wait in line. */
 export const JOIN_SLOTS = 8;
-/**
- * A claim that never completed stops holding a slot after this long. A claim that failed before its
- * join was sent gives its slot back at once; this bound covers the rest, inside the 15 minutes a CLI
- * that predates the line keeps asking.
- */
-const JOIN_CLAIM_STALE = sql`interval '10 minutes'`;
+/** Inside the 15 minutes a CLI that predates the line keeps asking. */
+const JOIN_SLOT_IDLE_LIMIT = sql`interval '10 minutes'`;
 /** A queued token keeps its place while it asks again within this long; asking stamps `updatedAt`. */
 const QUEUED_LIVE = sql`interval '15 seconds'`;
-const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > clock_timestamp() - ${JOIN_CLAIM_STALE}`;
+const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > clock_timestamp() - ${JOIN_SLOT_IDLE_LIMIT}`;
 
 /**
  * Binds the token to one Machine identity before it hands out the Pairing secret. The same identity
@@ -406,7 +402,7 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
       holding: sql<boolean>`coalesce(${own(claimHoldsSlot)}, false)`,
       joining: countWhere(and(claimHoldsSlot, ne(tokens.claimedMachineId, input.founderMachineId))),
       waiting: countWhere(and(
-        isNull(tokens.claimedAt),
+        sql`not coalesce(${claimHoldsSlot}, false)`,
         lt(tokens.queuedAt, place),
         gt(tokens.updatedAt, sql`clock_timestamp() - ${QUEUED_LIVE}`),
       )),
@@ -426,16 +422,41 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
   },
 );
 
-/** A claim that failed before its join was sent keeps its claimant but reads as lapsed, freeing its slot. */
-const releaseJoinSlot = (token: string, machineId: MachineId) => Effect.gen(function* () {
+const renewJoinSlot = Effect.fn("MachineEnrollment.renewJoinSlot")(function* (token: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(schemaMachineEnrollmentToken)
-    .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
-    .where(and(
-      eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
-      eq(schemaMachineEnrollmentToken.claimedMachineId, machineId),
-      isNull(schemaMachineEnrollmentToken.joinedMachineId),
-    ));
+  const renewed = yield* drizzle.update(schemaMachineEnrollmentToken)
+    .set({ claimedAt: sql`now()`, updatedAt: new Date() })
+    .where(and(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)), claimHoldsSlot))
+    .returning({ tokenHash: schemaMachineEnrollmentToken.tokenHash });
+  return renewed.length > 0;
+});
+
+const holdJoinSlot = Effect.fn("MachineEnrollment.holdJoinSlot")(function* (token: string) {
+  if (!(yield* renewJoinSlot(token))) return yield* new Conflict({ message: "The join slot was given up. Ask again." });
+});
+
+const releaseUnsentJoinSlot = (token: string, machineId: MachineId, organizationId: string, pairing: string) => Effect.gen(function* () {
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const scope = eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token));
+    yield* drizzle.select({ tokenHash: schemaMachineEnrollmentToken.tokenHash })
+      .from(schemaMachineEnrollmentToken).where(scope).for("update");
+    // A new statement after the row lock, so it sees an assignment committed by the request that held it.
+    const [allocation] = yield* drizzle.select({ assignments: enrollmentAllocation.assignments }).from(enrollmentAllocation)
+      .where(and(
+        eq(enrollmentAllocation.organizationId, organizationId),
+        eq(enrollmentAllocation.clusterKey, hashEnrollmentToken(pairing)),
+      ));
+    if (allocation?.assignments.some((saved) => saved.machine.id === machineId)) return;
+    yield* drizzle.update(schemaMachineEnrollmentToken)
+      .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
+      .where(and(
+        scope,
+        eq(schemaMachineEnrollmentToken.claimedMachineId, machineId),
+        isNull(schemaMachineEnrollmentToken.joinedMachineId),
+      ));
+  }));
 }).pipe(Effect.ignoreCause({ log: true, message: "Join slot not released" }));
 
 /** A Waiting Server asking for its slot is checking in, so its run does not read it as silent. */
@@ -559,7 +580,9 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.
     if (state.kind === "pending") return state.fresh ? waitForFounder() : yield* unreachable();
     if (state.kind === "queued") {
-      if (token.serverEnrollmentId !== null) yield* recordQueuedCheckIn(token.serverEnrollmentId);
+      if (token.serverEnrollmentId !== null) {
+        yield* recordQueuedCheckIn(token.serverEnrollmentId).pipe(Effect.ignoreCause({ log: true, message: "Queued check-in not recorded" }));
+      }
       return state.material;
     }
 
@@ -597,6 +620,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
           return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
         }
         yield* requireUnspentClaim(input.token, input.identity.machineId);
+        yield* holdJoinSlot(input.token);
         return yield* reserveEnrollmentAssignment({
           organizationId: token.organizationId, pairing: pairing.secret,
           identity: request, snapshot,
@@ -606,7 +630,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     });
     return yield* Effect.scoped(Effect.gen(function* () {
       const { session, assignment } = yield* prepareJoin.pipe(
-        Effect.onError(() => releaseJoinSlot(input.token, input.identity.machineId)),
+        Effect.onError(() => releaseUnsentJoinSlot(input.token, input.identity.machineId, token.organizationId, pairing.secret)),
       );
       // The assignment commits before dispatch; a lost response is never replayed.
       const registration = yield* session.register(assignment);
@@ -660,6 +684,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         return yield* new Conflict({ message: "The founding attempt is no longer current." });
       }
       yield* requireEnrollmentMachine(token.organizationId, pairing, secret, input.machineId, token.claimedPublicKey);
+      yield* renewJoinSlot(input.token);
       const scope = and(
         eq(organizationMachine.organizationId, token.organizationId),
         eq(organizationMachine.machineId, input.machineId),
