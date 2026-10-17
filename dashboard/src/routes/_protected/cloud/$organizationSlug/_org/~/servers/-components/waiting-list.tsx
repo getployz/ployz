@@ -40,7 +40,7 @@ export function WaitingSection({ organizationSlug, token }: { organizationSlug: 
   return <>
     <EnrollmentCounters waiting={servers} attempts={attempts} joining={enrollments.data?.joining ?? 0} />
     <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} attempts={attempts} hasFirst={enrollments.data?.hasFirst ?? true} />
-    <EnrollingList attempts={attempts} joining={enrollments.data?.joining ?? 0} onCancel={(id) => cancel.mutate(id)} />
+    <EnrollingList attempts={attempts} joining={enrollments.data?.joining ?? 0} onCancel={cancel.mutate} />
   </>;
 }
 
