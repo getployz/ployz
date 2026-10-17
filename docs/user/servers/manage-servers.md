@@ -70,7 +70,8 @@ ployz server enroll 'host-*' --name 'web-{n}' --status
 
 Ployz Cloud plans the names, founder and storage. The CLI prints that plan, source IPs and
 anything skipped, then asks before starting. The oldest selected host is the default founder
-when your organization has no cluster. Use `--first host-a` to choose another selected host.
+when your organization has no cluster. Use `--first host-a` with a name glob or `--all` to
+choose another selected host. Put the glob before `--first`.
 Bare `--first` enrolls only the oldest match. `--all` selects every waiting host and prints
 how many came from each provider, including **Unknown**.
 
@@ -83,17 +84,29 @@ and builds.
 
 Add `--yes` to accept the printed plan without a prompt. Without a terminal or with `--json`,
 Ployz requires `--yes` and otherwise returns the plan with `confirmation_required`.
+To enroll every waiting host without a prompt, for example in a script:
+
+```sh
+ployz server enroll --all --yes --json
+```
+
 A command that skips any hosts exits 3 and includes the reasons in its JSON result.
+If Cloud starts different names or roles, or omits a planned host, the CLI reports the
+changes and exits 3. Enrollment continues in Cloud.
 
 `--status` follows each attempt and prints a line when its stage changes. **Queued** means
 the host is still preparing its storage. **In line · 3 servers ahead** means it is waiting
 for a join slot. If Cloud cannot see a current position, the CLI says **Join position unknown**.
 A failed attempt prints the host's error. Ctrl-C stops following while enrollment continues.
+With a selection, `--status` starts matching hosts that are not already enrolling after
+confirmation, then follows both existing and new attempts. Bare `--first --status` stays
+limited to the oldest matching host. An unknown state makes the command exit 3 once the
+other attempts end.
 Resume open attempts without starting new ones:
 
 ```sh
 ployz server enroll --status
-ployz server enroll --all --yes --json
+ployz server enroll --status --json
 ```
 
 To turn away servers you don't want, name them, give a pattern or give one server's id. The start

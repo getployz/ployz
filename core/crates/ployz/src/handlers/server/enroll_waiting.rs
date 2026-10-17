@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, io::IsTerminal, time::Duration};
 
+use chrono::DateTime;
 use clap::{ArgMatches, Command};
 use globset::GlobMatcher;
 use ployz_core::{RpcErrorCode, StorageChoice};
@@ -21,7 +22,7 @@ pub(crate) fn command(command: Command) -> Command {
         .arg(positional("pattern", false).conflicts_with("all"))
         .arg(switch("all", None).help("Select every waiting server"))
         .arg(value("first", None).num_args(0..=1).default_missing_value("").value_name("NAME").help("Enroll only the oldest match, or pick NAME as founder"))
-        .arg(value("name", None).value_name("PATTERN").help("Server name; use {n} to number several servers"))
+        .arg(value("name", None).value_name("PATTERN").help("Server name pattern; put n in braces to number servers"))
         .arg(switch("status", None).help("Follow enrollment stages, or resume open attempts"))
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM).help("Start after printing the plan without asking"))
         .arg(value("storage", None).value_parser(clap::value_parser!(StorageChoice)).help("zfs (default) or none for Docker volumes"))
@@ -36,6 +37,8 @@ struct Plan {
     spread: Spread,
     #[serde(default)]
     waiting_servers: Vec<Value>,
+    #[serde(default)]
+    changes: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -47,7 +50,7 @@ struct Planned {
     storage: Storage,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum Role {
     Founder,
@@ -131,7 +134,10 @@ struct Failure {
 
 impl Attempt {
     fn ended(&self) -> bool {
-        matches!(self.state, State::Joined | State::Failed | State::Cancelled)
+        matches!(
+            self.state,
+            State::Joined | State::Failed | State::Cancelled | State::Unknown
+        )
     }
 
     fn label(&self) -> String {
@@ -171,15 +177,14 @@ impl Attempt {
     }
 }
 
-struct Selection {
-    literal: Option<String>,
-    glob: Option<GlobMatcher>,
-}
+struct Selection(Option<(String, GlobMatcher)>);
 
 impl Selection {
     fn parse(pattern: Option<&str>) -> Result<Self, Error> {
-        let glob = pattern
-            .map(|pattern| globset::Glob::new(pattern).map(|glob| glob.compile_matcher()))
+        let pattern = pattern
+            .map(|pattern| {
+                globset::Glob::new(pattern).map(|glob| (pattern.to_owned(), glob.compile_matcher()))
+            })
             .transpose()
             .map_err(|error| {
                 Error::caused(
@@ -188,15 +193,13 @@ impl Selection {
                     error,
                 )
             })?;
-        Ok(Self {
-            literal: pattern.map(str::to_owned),
-            glob,
-        })
+        Ok(Self(pattern))
     }
 
     fn matches(&self, name: &str) -> bool {
-        self.literal.as_deref() == Some(name)
-            || self.glob.as_ref().is_none_or(|glob| glob.is_match(name))
+        self.0
+            .as_ref()
+            .is_none_or(|(literal, glob)| literal == name || glob.is_match(name))
     }
 }
 
@@ -216,12 +219,14 @@ fn selected<'a>(
                     .is_some_and(|name| selection.matches(name))
         })
         .collect();
-    selected.sort_by(|left, right| {
-        left.raw
-            .get("first_seen_at")
-            .and_then(Value::as_str)
-            .cmp(&right.raw.get("first_seen_at").and_then(Value::as_str))
-            .then_with(|| left.row.id.cmp(&right.row.id))
+    selected.sort_by_cached_key(|host| {
+        (
+            host.raw
+                .get("first_seen_at")
+                .and_then(Value::as_str)
+                .and_then(|at| DateTime::parse_from_rfc3339(at).ok()),
+            host.row.id.as_str(),
+        )
     });
     if first == Some("") {
         selected.truncate(1);
@@ -244,7 +249,7 @@ fn request(matches: &ArgMatches, selected: &[&Waiting]) -> Result<Value, Error> 
                 [host] => &host.row.id,
                 [] => {
                     return Err(Error::usage(
-                        "The first server must match the selection by name.",
+                        "The first server must match the selection by name. Put a name glob before --first, or use --all --first NAME.",
                     ));
                 }
                 _ => {
@@ -352,9 +357,13 @@ fn review(plan: &Plan, selected: &[&Waiting], yes: bool, all: bool) -> Result<()
     }
     if !yes {
         ui::confirm(
-            &format!("Enroll {} waiting servers?", plan.plan.len()),
+            &format!(
+                "Enroll {} waiting server{}?",
+                plan.plan.len(),
+                if plan.plan.len() == 1 { "" } else { "s" }
+            ),
             || {
-                Error::detailed(RpcErrorCode::ConfirmationRequired, "Enrollment needs confirmation. Nothing enrolled.", json!({ "plan": plan.plan, "skipped": plan.skipped, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": { "services": true, "ingress": true, "builds": true } })).hint(Hint::Retry(typed_with(&["--yes"])))
+                Error::detailed(RpcErrorCode::ConfirmationRequired, "Enrollment needs confirmation. Nothing enrolled.", json!({ "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": { "services": true, "ingress": true, "builds": true } })).hint(Hint::Retry(typed_with(&["--yes"])))
             },
             "Nothing enrolled.",
         )?;
@@ -370,7 +379,7 @@ async fn attempts(credential: &Credential) -> Result<Vec<Value>, Error> {
 
 fn finish(rows: &[Value], plan: Option<&Plan>, interrupted: bool) -> Result<(), Error> {
     ui::finish(
-        &json!({ "enrollments": rows, "plan": plan.map(|plan| &plan.plan), "skipped": plan.map(|plan| &plan.skipped), "spread": plan.map(|plan| &plan.spread), "runs": plan.map(|_| json!({ "services": true, "ingress": true, "builds": true })), "waiting_servers": plan.map(|plan| &plan.waiting_servers), "interrupted": interrupted }),
+        &json!({ "enrollments": rows, "plan": plan.map(|plan| &plan.plan), "skipped": plan.map(|plan| &plan.skipped), "changes": plan.map(|plan| &plan.changes), "spread": plan.map(|plan| &plan.spread), "runs": plan.map(|_| json!({ "services": true, "ingress": true, "builds": true })), "waiting_servers": plan.map(|plan| &plan.waiting_servers), "interrupted": interrupted }),
         || {},
     )
 }
@@ -398,7 +407,7 @@ async fn follow(
         if parsed.iter().all(Attempt::ended) {
             finish(&rows, plan, false)?;
             return if parsed.iter().any(|row| row.state != State::Joined)
-                || plan.is_some_and(|plan| !plan.skipped.is_empty())
+                || plan.is_some_and(|plan| !plan.skipped.is_empty() || !plan.changes.is_empty())
             {
                 Err(Error::partial())
             } else {
@@ -444,49 +453,61 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let pattern = matches.get_one::<String>("pattern").map(String::as_str);
     let status = matches.get_flag("status");
-    if pattern.is_none()
-        && !matches.get_flag("all")
-        && !status
-        && matches.get_one::<String>("first").is_none()
+    let first = matches.get_one::<String>("first").map(String::as_str);
+    let has_selection = pattern.is_some() || matches.get_flag("all");
+    if !has_selection
+        && (first.is_some_and(|name| !name.is_empty()) || (!status && first.is_none()))
     {
         return Err(Error::usage(
-            "Select a server name or glob, --all, --first, or resume with --status.",
+            "Select a server name or glob, --all, bare --first, or resume with --status. --first NAME needs a name glob before --first, or --all.",
         ));
     }
+    let resume_only = !has_selection && first.is_none();
     let selection = Selection::parse(pattern)?;
     let runtime = runtime()?;
     let credential = waiting::credential(&runtime, matches)?;
     let listed = runtime.block_on(waiting::fetch(&credential))?;
-    let selected = selected(
-        &listed,
-        &selection,
-        matches.get_one::<String>("first").map(String::as_str),
-    );
-    if status {
-        let existing = runtime.block_on(attempts(&credential))?;
-        let mut open = Vec::new();
-        for raw in existing {
-            let row: Attempt = serde_json::from_value(raw.clone())?;
-            if !row.ended()
-                && (selection.matches(&row.name)
-                    || selected
-                        .iter()
-                        .any(|host| host.row.id == row.waiting_server_id))
-            {
-                open.push(raw);
-            }
-        }
-        if !open.is_empty() {
-            return runtime.block_on(follow(&credential, open, None));
-        }
-        if pattern.is_none()
-            && !matches.get_flag("all")
-            && matches.get_one::<String>("first").is_none()
+    let selected = selected(&listed, &selection, first);
+    let mut open = Vec::new();
+    for raw in runtime.block_on(attempts(&credential))? {
+        let row: Attempt = serde_json::from_value(raw.clone())?;
+        if !matches!(row.state, State::Joined | State::Failed | State::Cancelled)
+            && (resume_only
+                || selected
+                    .iter()
+                    .any(|host| host.row.id == row.waiting_server_id)
+                || (first != Some("") && selection.matches(&row.name)))
         {
-            return ui::done(&json!({ "enrollments": [] }), "No open enrollments.");
+            open.push(raw);
         }
     }
-    if selected.is_empty() {
+    if resume_only {
+        return if open.is_empty() {
+            ui::done(&json!({ "enrollments": [] }), "No open enrollments.")
+        } else {
+            runtime.block_on(follow(&credential, open, None))
+        };
+    }
+    let unstarted: Vec<_> = selected
+        .iter()
+        .copied()
+        .filter(|host| {
+            !open.iter().any(|row| {
+                row.get("waiting_server_id").and_then(Value::as_str) == Some(host.row.id.as_str())
+            })
+        })
+        .collect();
+    if unstarted.is_empty() {
+        if !open.is_empty() {
+            return if status {
+                runtime.block_on(follow(&credential, open, None))
+            } else {
+                ui::done(
+                    &json!({ "enrollments": open }),
+                    "Selected servers are already enrolling.",
+                )
+            };
+        }
         return Err(Error::not_found("No waiting servers match.")
             .hint(Hint::Next("ployz server ls --waiting".into())));
     }
@@ -496,6 +517,22 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let mut body = request(matches, &selected)?;
+    *body
+        .get_mut("ids")
+        .expect("enrollment requests contain ids") = json!(
+        unstarted
+            .iter()
+            .map(|host| &host.row.id)
+            .collect::<Vec<_>>()
+    );
+    if !unstarted
+        .iter()
+        .any(|host| body.get("first").and_then(Value::as_str) == Some(host.row.id.as_str()))
+    {
+        body.as_object_mut()
+            .expect("enrollment request is an object")
+            .remove("first");
+    }
     let mut plan: Plan = runtime.block_on(cloud_account::refusable(
         &credential,
         Method::POST,
@@ -510,7 +547,10 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
         matches.get_flag("all"),
     )?;
     if plan.plan.is_empty() {
-        finish(&[], Some(&plan), false)?;
+        if status && !open.is_empty() {
+            return runtime.block_on(follow(&credential, open, Some(&plan)));
+        }
+        finish(&open, Some(&plan), false)?;
         return Err(Error::partial());
     }
     *body
@@ -521,6 +561,18 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
             .map(|row| &row.waiting_server_id)
             .collect::<Vec<_>>()
     );
+    match plan.plan.iter().find(|row| row.role == Role::Founder) {
+        Some(founder) => {
+            body.as_object_mut()
+                .expect("enrollment request is an object")
+                .insert("first".into(), json!(founder.waiting_server_id));
+        }
+        None => {
+            body.as_object_mut()
+                .expect("enrollment request is an object")
+                .remove("first");
+        }
+    }
     let Started {
         enrollments,
         skipped,
@@ -533,7 +585,13 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
             Some(&body),
         ))
         .map_err(|error| {
-            Error::from(error).hint(Hint::Inspect("ployz server enroll --status".into()))
+            let uncertain = waiting::may_have_acted(&error);
+            let error = Error::from(error);
+            if uncertain {
+                error.hint(Hint::Inspect("ployz server enroll --status".into()))
+            } else {
+                error
+            }
         })?;
     for skip in &skipped {
         let name = selected
@@ -546,25 +604,84 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
             printable(&skip.reason)
         ));
     }
+    for expected in &plan.plan {
+        let actual = enrollments.iter().find(|row| {
+            row.get("waiting_server_id").and_then(Value::as_str)
+                == Some(expected.waiting_server_id.as_str())
+        });
+        let change = match actual {
+            Some(raw) => {
+                let actual: Attempt = serde_json::from_value(raw.clone())?;
+                if actual.name == expected.name && actual.role == expected.role {
+                    continue;
+                }
+                format!(
+                    "{} · Cloud started a different name or role than the confirmed plan. Expected {} as {}, started {} as {}.",
+                    printable(&expected.hostname),
+                    printable(&expected.name),
+                    if expected.role == Role::Founder {
+                        "founder"
+                    } else {
+                        "joiner"
+                    },
+                    printable(&actual.name),
+                    if actual.role == Role::Founder {
+                        "founder"
+                    } else {
+                        "joiner"
+                    }
+                )
+            }
+            None if skipped
+                .iter()
+                .any(|skip| skip.id == expected.waiting_server_id) =>
+            {
+                continue;
+            }
+            None => format!(
+                "{} · Cloud did not return an enrollment for this planned server.",
+                printable(&expected.hostname)
+            ),
+        };
+        ui::warn(&change);
+        plan.changes.push(change);
+    }
+    for raw in &enrollments {
+        let actual: Attempt = serde_json::from_value(raw.clone())?;
+        if !plan
+            .plan
+            .iter()
+            .any(|expected| expected.waiting_server_id == actual.waiting_server_id)
+        {
+            let change = format!(
+                "{} · Cloud returned an enrollment outside the confirmed plan.",
+                printable(&actual.name)
+            );
+            ui::warn(&change);
+            plan.changes.push(change);
+        }
+    }
     plan.skipped.extend(skipped);
     plan.spread = spread;
+    let mut enrollments = enrollments;
+    enrollments.extend(open);
     if status {
         return runtime.block_on(follow(&credential, enrollments, Some(&plan)));
     }
     ui::finish(
-        &json!({ "enrollments": enrollments, "plan": plan.plan, "skipped": plan.skipped, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": { "services": true, "ingress": true, "builds": true } }),
+        &json!({ "enrollments": enrollments, "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": { "services": true, "ingress": true, "builds": true } }),
         || {
             for raw in &enrollments {
                 let name = raw
                     .get("name")
                     .and_then(Value::as_str)
                     .unwrap_or("Unknown server");
-                ui::stream(format_args!("{} · Enrollment started", printable(name)));
+                ui::stream(format_args!("{} · Enrollment active", printable(name)));
             }
             ui::hint(&Hint::Next("ployz server enroll --status".into()));
         },
     )?;
-    if plan.skipped.is_empty() {
+    if plan.skipped.is_empty() && plan.changes.is_empty() {
         Ok(())
     } else {
         Err(Error::partial())

@@ -713,9 +713,12 @@ fn waiting_cloud(
                 "GET /api/cli/enrollments" => {
                     if enrollment_reads > 0 {
                         for row in &mut enrollments {
-                            if row["state"] != "future_state" {
-                                *row.get_mut("state").unwrap() = serde_json::json!("joined");
-                            }
+                            let state = if row.get("state").unwrap() == "future_state" {
+                                "failed"
+                            } else {
+                                "joined"
+                            };
+                            *row.get_mut("state").unwrap() = serde_json::json!(state);
                         }
                     }
                     enrollment_reads += 1;
@@ -2657,6 +2660,7 @@ fn server_enroll_reviews_before_start_and_returns_attempts_as_one_json_object() 
         sent.get("ids").unwrap(),
         &serde_json::json!(["00000000-0000-4000-8000-000000000002"])
     );
+    assert!(sent.get("first").is_none(), "{sent}");
     let count = routes
         .lock()
         .unwrap()
@@ -2740,10 +2744,18 @@ fn server_enroll_surfaces_start_conflict_after_a_successful_preview() {
 fn server_enroll_named_first_requires_an_explicit_selection() {
     for args in [
         ["server", "enroll", "--first", "host-a", "--yes", "--json"],
-        ["server", "enroll", "--first", "host-*", "--status", "--json"],
+        [
+            "server", "enroll", "--first", "host-*", "--status", "--json",
+        ],
     ] {
         let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let cloud = waiting_cloud(routes.clone(), WaitingCloud::of(vec![waiting_row("a", "host-a", "waiting"), waiting_row("b", "host-b", "waiting")]));
+        let cloud = waiting_cloud(
+            routes.clone(),
+            WaitingCloud::of(vec![
+                waiting_row("a", "host-a", "waiting"),
+                waiting_row("b", "host-b", "waiting"),
+            ]),
+        );
         let (code, stdout, _) = run_token_cloud(&cloud, &args);
         let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(code, Some(2), "{json}");
@@ -2777,15 +2789,25 @@ fn server_enroll_explicit_selection_starts_unstarted_hosts_and_follows_both() {
     );
     assert_eq!(code, Some(3), "{stdout} {stderr}");
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let ids: Vec<_> = json["enrollments"]
+    let ids: Vec<_> = json
+        .get("enrollments")
+        .unwrap()
         .as_array()
         .unwrap()
         .iter()
-        .map(|row| row["waiting_server_id"].as_str().unwrap())
+        .map(|row| row.get("waiting_server_id").unwrap().as_str().unwrap())
         .collect();
     assert!(ids.contains(&"a") && ids.contains(&"b"), "{json}");
     assert_eq!(ids.len(), 2, "{json}");
-    assert_eq!(json["skipped"][0]["id"], "c");
+    assert_eq!(
+        json.get("skipped")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .get("id")
+            .unwrap(),
+        "c"
+    );
     let routes = routes.lock().unwrap();
     let sent: serde_json::Value = serde_json::from_str(
         routes
@@ -2794,7 +2816,7 @@ fn server_enroll_explicit_selection_starts_unstarted_hosts_and_follows_both() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(sent["ids"], serde_json::json!(["b"]));
+    assert_eq!(sent.get("ids").unwrap(), &serde_json::json!(["b"]));
 }
 
 #[test]
@@ -2816,9 +2838,28 @@ fn server_enroll_first_status_ignores_newer_open_attempts() {
     );
     assert_eq!(code, Some(0), "{stdout} {stderr}");
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["enrollments"].as_array().unwrap().len(), 1);
-    assert_eq!(json["enrollments"][0]["waiting_server_id"], "a");
-    assert_eq!(json["enrollments"][0]["state"], "joined");
+    assert_eq!(
+        json.get("enrollments").unwrap().as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        json.get("enrollments")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .get("waiting_server_id")
+            .unwrap(),
+        "a"
+    );
+    assert_eq!(
+        json.get("enrollments")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .get("state")
+            .unwrap(),
+        "joined"
+    );
     assert!(
         routes
             .lock()
@@ -2845,7 +2886,10 @@ fn server_enroll_bare_status_resumes_without_starting_new_hosts() {
         run_token_cloud(&cloud, &["server", "enroll", "--status", "--json"]);
     assert_eq!(code, Some(0), "{stdout} {stderr}");
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["enrollments"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        json.get("enrollments").unwrap().as_array().unwrap().len(),
+        2
+    );
     assert!(
         routes
             .lock()
@@ -2858,9 +2902,10 @@ fn server_enroll_bare_status_resumes_without_starting_new_hosts() {
 #[test]
 fn server_enroll_unknown_status_stops_with_partial() {
     let mut row = open_enrollment("a", "host-a");
-    row["state"] = serde_json::json!("future_state");
+    *row.get_mut("state").unwrap() = serde_json::json!("future_state");
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let cloud = waiting_cloud(
-        Default::default(),
+        routes.clone(),
         WaitingCloud {
             enrollments: vec![row],
             ..WaitingCloud::of(Vec::new())
@@ -2870,19 +2915,32 @@ fn server_enroll_unknown_status_stops_with_partial() {
         run_token_cloud(&cloud, &["server", "enroll", "--status", "--json"]);
     assert_eq!(code, Some(3), "{stdout} {stderr}");
     assert!(stderr.contains("Unknown enrollment state"), "{stderr}");
+    assert_eq!(
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|route| route.as_str() == "GET /api/cli/enrollments")
+            .count(),
+        1
+    );
 }
 
 #[test]
 fn server_enroll_reports_changed_or_omitted_starts() {
     for transform in [
         (|rows: &mut Vec<serde_json::Value>| {
-            rows.first_mut().unwrap()["name"] = serde_json::json!("changed-name");
+            *rows.first_mut().unwrap().get_mut("name").unwrap() = serde_json::json!("changed-name");
         }) as fn(&mut Vec<serde_json::Value>),
         |rows| {
-            rows.first_mut().unwrap()["role"] = serde_json::json!("joiner");
+            *rows.first_mut().unwrap().get_mut("role").unwrap() = serde_json::json!("joiner");
         },
         |rows| {
-            rows.first_mut().unwrap()["waiting_server_id"] = serde_json::json!("unplanned");
+            *rows
+                .first_mut()
+                .unwrap()
+                .get_mut("waiting_server_id")
+                .unwrap() = serde_json::json!("unplanned");
         },
         |rows| {
             rows.clear();
@@ -2901,7 +2959,10 @@ fn server_enroll_reports_changed_or_omitted_starts() {
         );
         assert_eq!(code, Some(3), "{stdout} {stderr}");
         let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        assert!(!json["changes"].as_array().unwrap().is_empty(), "{json}");
+        assert!(
+            !json.get("changes").unwrap().as_array().unwrap().is_empty(),
+            "{json}"
+        );
     }
 }
 
@@ -2936,7 +2997,10 @@ fn server_enroll_mixed_selection_requires_confirmation_for_new_hosts() {
     );
     assert_eq!(code, Some(2), "{stdout}");
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["error"]["code"], "confirmation_required");
+    assert_eq!(
+        json.get("error").unwrap().get("code").unwrap(),
+        "confirmation_required"
+    );
     assert!(
         !routes
             .lock()

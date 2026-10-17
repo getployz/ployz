@@ -452,7 +452,7 @@ pub(crate) const SERVER_ADD: Verb = Verb::cloud(
 .docs("servers/add-a-server.md");
 pub(crate) const SERVER_ENROLL: Verb = Verb::cloud(
     "server enroll",
-    Never,
+    Depends,
     server::enroll::waiting_command,
     server::enroll::enroll_waiting,
 )

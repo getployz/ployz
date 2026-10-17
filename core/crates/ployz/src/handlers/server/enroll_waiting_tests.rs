@@ -195,3 +195,10 @@ async fn enroll_waiting_plan_route_has_no_trailing_slash_and_start_refusal_survi
     assert_eq!(error.report().code, RpcErrorCode::Conflict);
     assert!(error.to_string().contains("Use Forget Servers"), "{error}");
 }
+
+#[test]
+fn enroll_waiting_unknown_state_ends_follow_instead_of_waiting_forever() {
+    let row = attempt("future_state", None, false, None);
+    assert!(row.ended());
+    assert!(row.state != State::Joined);
+}
