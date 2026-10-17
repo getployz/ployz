@@ -177,7 +177,7 @@ pub(super) async fn reject(credential: &Credential, ids: &[&str]) -> Result<u64,
                     match total {
             0 => Error::from(error),
             done => Error::from(error).context(format!(
-                "{done} rejected; the outcome of the rest is unknown. Run the same reject again"
+                "Rejected {done}; the outcome of the rest is unknown. Run the same reject again."
             )),
         }
                 })?;

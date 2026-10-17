@@ -145,7 +145,7 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
         .block_on(waiting::fetch(&credential))
         .map_err(|fetch| {
             fetch.context(format!(
-                "No Server matches {selector}, and the servers waiting to join could not be read"
+                "No Server matches {selector}, and the servers waiting to join could not be read."
             ))
         })?;
     let named: Vec<_> = listed

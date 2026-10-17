@@ -97,14 +97,18 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-/// The waiting servers whose name `pattern` matches, or whose id it is, in the list's order.
+/// The waiting server whose id `pattern` is, else those whose name it matches, in the
+/// list's order.
 fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting>, Error> {
+    if let Some(host) = waiting.iter().find(|host| host.row.id == pattern) {
+        return Ok(vec![host]);
+    }
     let glob = Glob::new(pattern)
         .map_err(|error| Error::usage(format!("{pattern} is not a valid glob: {}", error.kind())))?
         .compile_matcher();
     Ok(waiting
         .iter()
-        .filter(|host| host.row.id == pattern || glob.is_match(&host.row.name))
+        .filter(|host| glob.is_match(&host.row.name))
         .collect())
 }
 

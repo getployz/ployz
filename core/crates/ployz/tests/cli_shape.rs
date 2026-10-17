@@ -588,7 +588,8 @@ fn server_clean_signed_in_refuses_another_clusters_servers() {
     }
 }
 
-/// Cloud's waiting-server routes for web-1, web-2, db-1 and two hosts named twin.
+/// Cloud's waiting-server routes for web-1, web-2, db-1, two hosts named twin and one
+/// named after db-1's id.
 /// Answers the list with `waiting`, records each route with the body of a reject, and
 /// answers anything else with 404.
 fn waiting_cloud(
@@ -629,6 +630,11 @@ fn waiting_cloud(
         row("00000000-0000-4000-8000-000000000003", "db-1", "waiting"),
         row("00000000-0000-4000-8000-000000000004", "twin", "waiting"),
         row("00000000-0000-4000-8000-000000000005", "twin", "waiting"),
+        row(
+            "00000000-0000-4000-8000-000000000006",
+            "00000000-0000-4000-8000-000000000003",
+            "waiting",
+        ),
     ]});
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -709,7 +715,18 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
         .iter()
         .map(|row| row["name"].clone())
         .collect();
-    assert_eq!(names, ["web-1", "web-2", "db-1", "twin", "twin"], "{json}");
+    assert_eq!(
+        names,
+        [
+            "web-1",
+            "web-2",
+            "db-1",
+            "twin",
+            "twin",
+            "00000000-0000-4000-8000-000000000003"
+        ],
+        "{json}"
+    );
 
     let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
     assert_eq!(code, Some(0), "{json}");
@@ -1277,6 +1294,6 @@ fn server_show_says_when_the_waiting_list_could_not_be_read() {
     assert_ne!(code, Some(0), "{json}");
     assert_eq!(
         message(&json),
-        "No Server matches nobody, and the servers waiting to join could not be read"
+        "No Server matches nobody, and the servers waiting to join could not be read."
     );
 }
