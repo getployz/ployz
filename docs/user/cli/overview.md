@@ -219,24 +219,37 @@ connect another. `ployz github disconnect <login>` disconnects one from this org
 CI jobs and scripts sign in with a token instead of a browser. Set it as `PLOYZ_TOKEN`:
 
 ```sh
-# On your computer: make a token. It's shown once, so copy it.
-ployz token new ci
+# On your computer: make a token that can deploy only to staging. It's shown once, so copy it.
+ployz token new ci --preset deploy --environment staging
 
 # In CI, with the token stored as the secret PLOYZ_TOKEN
-ployz up --project my-app --env production
+ployz up --project my-app --env staging
 ```
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
 
-The token acts as you in this organization: whoever holds it can deploy and run commands in your
-services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
+A token acts as you in this organization, narrowed by its preset:
+
+| Preset | What it can do |
+| ------ | -------------- |
+| `full` (the default) | Everything you can, and it follows your role if it changes. |
+| `read` | Read what you can read. It can't change anything. |
+| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--environment` names, in any project. |
+
+A deploy token that tries to change another Environment, or something that belongs to none, such
+as the organization's build order, is refused with `This token can deploy only to staging.` and
+nothing changes. A token never does more than your role allows. Tokens made before presets existed
+are `full`. You can also make, see and revoke tokens under **Organization → Tokens** in the
+dashboard.
+
+Whoever holds a `full` token can deploy and run commands in your services. A token expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
 working at once if you leave the organization or are removed from it. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. `ployz token ls` shows each token's KIND: `cli` for
+another that outlives it, or revoke the rest. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
 one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
 answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.

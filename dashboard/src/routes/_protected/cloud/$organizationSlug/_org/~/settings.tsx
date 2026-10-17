@@ -19,12 +19,14 @@ import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlu
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
 import { projectsQuery } from "#/modules/config-store/store-view.queries";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { organizationTokensQueryOptions } from "#/modules/identity/organization-token.queries";
+import { TokensSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/tokens-settings";
 import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { MembersSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/members-settings";
 import { SupportAccessSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/support-access-section";
 import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
-const settingsSectionSchema = Schema.Literals(["general", "members", "github", "builds"]);
+const settingsSectionSchema = Schema.Literals(["general", "members", "tokens", "github", "builds"]);
 
 // Not `tab`: search keys share one type across routes, and the service panel's `tab` means something else.
 const settingsSearchSchema = Schema.Struct({
@@ -42,6 +44,7 @@ export const Route = createFileRoute(
   loaderDeps: ({ search }) => ({ section: search.section, offer: search.offer }),
   loader: ({ params, context, deps }) => prefetchRemoteWithStoreViews(context, params.organizationSlug, [projectsQuery(), BUILD_ORDER_QUERY],
     organizationMembersQueryOptions(params.organizationSlug),
+    ...deps.section === "tokens" ? [organizationTokensQueryOptions(params.organizationSlug)] : [],
     ...deps.section === "github" ? [organizationGithubQueryOptions(params.organizationSlug)] : [],
     ...deps.section === "github" && deps.offer ? [githubOfferQueryOptions(params.organizationSlug, deps.offer)] : []),
   component: RouteComponent,
@@ -56,7 +59,7 @@ function RouteComponent() {
   return (
     <DashboardPage width="content">
       {/* The top bar names the page; the rail, or on phones the strip under the top bar, picks the section. */}
-      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : section === "github" ? (
+      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : section === "members" ? <MembersSettings organizationSlug={organizationSlug} /> : section === "tokens" ? <TokensSettings organizationSlug={organizationSlug} /> : section === "github" ? (
         <GithubSettings
           organizationSlug={organizationSlug}
           notice={connect}
