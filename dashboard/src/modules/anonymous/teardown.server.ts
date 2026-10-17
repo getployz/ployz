@@ -82,15 +82,15 @@ export const readSandboxState = Effect.fn("AnonymousTeardown.readState")(functio
  * One step towards an empty seat, re-deriving the state every time so a retry picks up where a crash left off: a
  * lapsed sandbox loses its Projects, then its Organization with every row that still names it and its agent. Each
  * removal asks the Servers first. When they hold it up, Cloud probes them; once every probe for an hour since the last
- * answer reached none, Cloud forgets them and tries again. A retry never forgets: the answer its failed attempt heard
- * may be one Cloud failed to record, so the next sweep decides. A claim that lands before any removal keeps everything.
+ * answer reached none, Cloud forgets them and tries again, when `mayForget`. A claim that lands before any removal keeps
+ * everything.
  */
-export const tearDownStep = Effect.fn("AnonymousTeardown.step")(function* (organizationId: string, retry: boolean) {
+export const tearDownStep = Effect.fn("AnonymousTeardown.step")(function* (organizationId: string, mayForget: boolean) {
   const found = yield* readSandboxState(organizationId);
   if (found.state !== "lapsed") return step(organizationId, found.state, "nothing");
   const tried = yield* removeSandbox(organizationId, found).pipe(Effect.catchTag("StoreRefused", Effect.succeed));
   if (!(tried instanceof StoreRefused) && tried.did !== "waited_on_servers") return tried;
-  if (yield* waitOnServers(organizationId, retry)) {
+  if (yield* waitOnServers(organizationId, mayForget)) {
     const again = yield* readSandboxState(organizationId);
     if (again.state !== "lapsed") return step(organizationId, again.state, "nothing");
     return yield* removeSandbox(organizationId, again);
@@ -134,7 +134,7 @@ const removeSandbox = Effect.fn("AnonymousTeardown.removeSandbox")(function* (
  * the pairing's removal. Cloud forgets only once the current pairing has been silent an hour, so a pairing made since
  * starts its own hour. A sandbox that has waited a day on Servers that answer warns once.
  */
-const waitOnServers = Effect.fn("AnonymousTeardown.waitOnServers")(function* (organizationId: string, retry: boolean) {
+const waitOnServers = Effect.fn("AnonymousTeardown.waitOnServers")(function* (organizationId: string, mayForget: boolean) {
   const database = yield* Database;
   const waiting = yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -154,7 +154,7 @@ const waitOnServers = Effect.fn("AnonymousTeardown.waitOnServers")(function* (or
   if (waiting === null) return false;
   const { drizzle } = yield* Database;
   const forgetter = { userId: waiting.ownerId, organizationId };
-  const forgets = waiting.due && !retry;
+  const forgets = waiting.due && mayForget;
   const probed = forgets ? yield* forgetServers(forgetter) : yield* checkForgetServers(forgetter);
   if (probed.ok) {
     yield* drizzle.update(anonymousTeardown).set({ silentSince: sql`coalesce(${anonymousTeardown.silentSince}, clock_timestamp())` })

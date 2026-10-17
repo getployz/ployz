@@ -13,7 +13,8 @@ const TeardownRequestedData = Schema.Struct({ organizationId: Schema.String.chec
 
 /**
  * One step of a lapsed sandbox's teardown, then the next as a fresh event once the Projects are gone. Every run
- * re-derives where the Organization stands, so a retry after a crash does the step the crash left.
+ * re-derives where the Organization stands, so a retry after a crash does the step the crash left. A retry never forgets a
+ * Server: the failed attempt may have heard an answer Cloud couldn't record, so the next sweep decides.
  */
 export async function executeTearDownAnonymousOrganization(
   { event, step, attempt }: { event: { data: unknown }; step: StepTools; attempt: number },
@@ -24,7 +25,7 @@ export async function executeTearDownAnonymousOrganization(
     return Option.isSome(decoded) ? decoded.value.organizationId : null;
   });
   if (organizationId === null) return { organizationId: null, state: null, did: "nothing" as const };
-  const result = await step.run("tear-down", () => runEffect(tearDownStep(organizationId, attempt > 0)));
+  const result = await step.run("tear-down", () => runEffect(tearDownStep(organizationId, attempt === 0)));
   if (result.did === "removed_projects") {
     await step.sendEvent("request-next-step", [createAnonymousTeardownRequestedEvent({ organizationId })]);
   }
