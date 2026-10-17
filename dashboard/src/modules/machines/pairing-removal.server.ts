@@ -299,7 +299,8 @@ const ManagementClientCleared = Schema.Struct({
 
 /**
  * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
- * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders.
+ * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders. A Machine that
+ * answers `inspect` but never confirms still holds the pairing, and Cloud records that it answered.
  */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
@@ -307,15 +308,17 @@ const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
     return yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
       const { management_clients: labels } = yield* session.inspect();
-      for (const label of labels) {
-        if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
-      }
-      yield* session.setPushTarget(null).pipe(Effect.catchTag("ServerLacks", () => Effect.void));
-      yield* session.clearManagementClient("cloud");
-      return true;
+      return yield* Effect.gen(function* () {
+        for (const label of labels) {
+          if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
+        }
+        yield* session.setPushTarget(null).pipe(Effect.catchTag("ServerLacks", () => Effect.void));
+        yield* session.clearManagementClient("cloud");
+        return "confirmed" as const;
+      }).pipe(Effect.orElseSucceed(() => "answered" as const));
     })).pipe(Effect.catch((error) => Effect.succeed(
       error._tag === "PloyzProviderError" && error.operation === "connect"
-        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)),
+        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)) ? "confirmed" as const : "silent" as const,
     )));
   },
 );
@@ -334,11 +337,12 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
       if (endpoint.status !== "pending") return;
       const management = yield* decrypt(endpoint.encryptedExpected);
-      if (!(yield* removeEndpointPairing(endpoint.machineId, management))) return;
+      const heard = yield* removeEndpointPairing(endpoint.machineId, management);
+      if (heard === "silent") return;
       yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const current = yield* loadCurrentAttempt(attempt);
-        yield* drizzle.update(organizationPairing).set({
+        yield* drizzle.update(organizationPairing).set(heard === "answered" ? { removalAnsweredAt: sql`clock_timestamp()` } : {
           removalEndpoints: current.removalEndpoints.map((entry) => entry.machineId === endpoint.machineId
             ? { status: "confirmed", machineId: entry.machineId } : entry),
         }).where(eq(organizationPairing.organizationId, organizationId));
