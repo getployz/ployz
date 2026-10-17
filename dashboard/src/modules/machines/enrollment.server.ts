@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { allocateEnrollment, type EnrollmentSnapshot, type MachineId, type RegisterRequest } from "@ployz/sdk";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, ne, or, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
@@ -26,6 +26,7 @@ import {
   setupReportProperties,
   type SetupReport,
   waitForFounder,
+  waitForJoinSlot,
   type EnrollmentIdentity,
   type EnrollmentCallback,
   type MintMachineEnrollmentInput,
@@ -372,6 +373,48 @@ export const reserveEnrollmentAssignment = Effect.fn(
   }));
 });
 
+/** Joins one Organization runs at once behind its founder; the rest wait in line. */
+export const JOIN_SLOTS = 8;
+/** A claim that never completed stops holding a slot after this long. */
+const JOIN_CLAIM_STALE = sql`interval '30 minutes'`;
+/** A queued token keeps its place while it asks again within this long; asking stamps `updatedAt`. */
+const QUEUED_LIVE = sql`interval '15 seconds'`;
+
+const countWhere = (condition: SQL | undefined) => sql<number>`count(*) filter (where ${condition})`.mapWith(Number);
+
+/**
+ * Admits a join while fewer than `slots` other tokens of the Organization are claimed and not yet
+ * joined, after every live waiter that queued first. Runs under the `organization_pairing` row lock,
+ * so admissions serialize. A token held back takes its place in line and learns how many go first.
+ */
+const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
+  function* (token: string, organizationId: string, slots: number) {
+    const { drizzle } = yield* Database;
+    const tokens = schemaMachineEnrollmentToken;
+    const tokenHash = hashEnrollmentToken(token);
+    const place = sql`coalesce((select ${tokens.queuedAt} from ${tokens} where ${tokens.tokenHash} = ${tokenHash}), clock_timestamp())`;
+    const [line] = yield* drizzle.select({
+      joining: countWhere(gt(tokens.claimedAt, sql`clock_timestamp() - ${JOIN_CLAIM_STALE}`)),
+      waiting: countWhere(and(
+        isNull(tokens.claimedAt),
+        lt(tokens.queuedAt, place),
+        gt(tokens.updatedAt, sql`clock_timestamp() - ${QUEUED_LIVE}`),
+      )),
+    }).from(tokens).where(and(
+      eq(tokens.organizationId, organizationId),
+      ne(tokens.tokenHash, tokenHash),
+      isNull(tokens.joinedMachineId),
+      gt(tokens.expiresAt, sql`clock_timestamp()`),
+    ));
+    const first = (line?.joining ?? 0) + (line?.waiting ?? 0);
+    if (first < slots) return null;
+    yield* drizzle.update(tokens)
+      .set({ queuedAt: sql`coalesce(${tokens.queuedAt}, clock_timestamp())`, updatedAt: new Date() })
+      .where(eq(tokens.tokenHash, tokenHash));
+    return waitForJoinSlot(first - slots + 1);
+  },
+);
+
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   function* (input: {
     token: string;
@@ -379,6 +422,8 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     publicKey: string;
     machineId: MachineId;
     role: EnrollmentRole | null;
+    resuming: boolean;
+    joinSlots: number;
   }) {
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
@@ -431,6 +476,9 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           return { kind: "initialize" as const, resumed: true, pairing };
         }
         if (current.founderMachineId) {
+          // A Machine resuming its own claim already holds its slot.
+          const queued = input.resuming ? null : yield* queueForJoinSlot(input.token, input.organizationId, input.joinSlots);
+          if (queued) return { kind: "queued" as const, material: queued };
           yield* claimEnrollmentToken(input.token, input);
           return { kind: "ready" as const, pairing };
         }
@@ -441,7 +489,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
 );
 
 export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
-  function* (input: { token: string; identity: EnrollmentIdentity }) {
+  function* (input: { token: string; identity: EnrollmentIdentity; joinSlots?: number }) {
     const request = registerRequestFromEnrollmentIdentity(input.identity);
     const token = yield* loadEnrollmentToken(input.token);
     if (token.joinedMachineId !== null || (token.claimedMachineId !== null
@@ -454,6 +502,8 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       publicKey: input.identity.publicKey,
       machineId: input.identity.machineId,
       role: token.enrollmentRole,
+      resuming: token.claimedMachineId !== null,
+      joinSlots: input.joinSlots ?? JOIN_SLOTS,
     });
 
     if (state.kind === "initialize") {
@@ -466,6 +516,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     }
     // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.
     if (state.kind === "pending") return state.fresh ? waitForFounder() : yield* unreachable();
+    if (state.kind === "queued") return state.material;
 
     return yield* Effect.scoped(Effect.gen(function* () {
       const access = yield* loadOrganizationConnections(token.organizationId);

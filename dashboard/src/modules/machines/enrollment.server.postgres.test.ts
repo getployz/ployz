@@ -339,7 +339,7 @@ describe("organization enrollment coordinator", () => {
     expect(Result.isFailure(waiter)).toBe(false);
     if (Result.isFailure(resumed) || Result.isFailure(waiter)) return;
     expect(resumed.success).toEqual({ ...first.success, resumed: true });
-    expect(waiter.success).toEqual({ kind: "not_yet", retryAfter: 2 });
+    expect(waiter.success).toEqual({ kind: "not_yet", retryAfter: 2, reason: "founder" });
     expect(fake.observations()).toBe(0);
   });
 
@@ -378,7 +378,7 @@ describe("organization enrollment coordinator", () => {
 
     const waiterTokens = await Promise.all(Array.from({ length: 19 }, () => issueToken()));
     const waiters = await Promise.all(
-      waiterTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index + 1) })),
+      waiterTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index + 1), joinSlots: 20 })),
     );
     expect(
       waiters.every(
@@ -402,7 +402,7 @@ describe("organization enrollment coordinator", () => {
     const calls = fake.registerCalls();
     fake.connection.error = new Error("Candidate unreachable");
     const indeterminate = await coordinator.enroll({
-      token: await issueToken(), identity: identity(31),
+      token: await issueToken(), identity: identity(31), joinSlots: 20,
     });
     expect(indeterminate).toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_UNREACHABLE } });
     expect(fake.registerCalls()).toBe(calls);
@@ -1158,5 +1158,54 @@ describe("organization enrollment coordinator", () => {
         )
       `),
     ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  describe("join line behind the founder", () => {
+    const enrollIn = (fake: ReturnType<typeof fakeSession>, token: string, index: number) =>
+      fake.coordinator.enroll({ token, identity: identity(index), joinSlots: 1 });
+    const queued = (ahead: number) => ({ success: { kind: "not_yet", retryAfter: 5, reason: "queued", ahead } });
+
+    it("lets one join at a time and admits the line in order as joins complete", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const [first, second, third] = [await issueToken(undefined, "joiner"), await issueToken(undefined, "joiner"), await issueToken()];
+
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, second, 2)).toEqual(queued(1));
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(2));
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(2));
+      expect(await enrollIn(fake, second, 2)).toEqual(queued(1));
+
+      const attempt = { token: first, machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+      await fake.coordinator.publish({ ...attempt, capability: keyed(1) });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+      expect(await enrollIn(fake, second, 2)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+    });
+
+    it("never gates a Machine resuming its own claim", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await issueToken(identity(4), "joiner");
+      const resumed = await issueToken(identity(5), "joiner");
+      expect(await enrollIn(fake, resumed, 5)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("drops a waiter that stopped asking and a claim that never completed", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [first, second, third] = [await issueToken(), await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, second, 2)).toEqual(queued(1));
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(2));
+
+      await harness.pool.query("update machine_enrollment_token set updated_at = now() - interval '1 minute' where token_hash = $1", [hashEnrollmentToken(second)]);
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '31 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      expect(await enrollIn(fake, third, 3)).toMatchObject({ success: { kind: "join" } });
+    });
   });
 });
