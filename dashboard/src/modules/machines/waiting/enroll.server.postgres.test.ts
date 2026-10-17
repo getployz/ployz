@@ -165,7 +165,7 @@ it("joins servers added while the first server is on its way, and skips a host a
   expect(meanwhile.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.state])).toEqual([
     [b.id, "joiner", "awaiting_founder"],
   ]);
-  await harness.pool.query("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id) values ($1, '{}'::jsonb, 'k', $2)", [adaOrg, "00000000000000000000000000000001"]);
+  expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize" });
   const paired = await run(enroll([c]));
   expect(paired.attempts.map((attempt) => [attempt.waitingServerId, attempt.role])).toEqual([[c.id, "joiner"]]);
 });
@@ -364,12 +364,24 @@ it("keeps a dead claim's published Server pending removal, and refuses to plan u
   expect((await attempts()).map((row) => row.state)).toEqual(["failed"]);
 });
 
+it("sends Enroll to Forget Servers when the earlier pairing waits only on Machines Cloud can't reach", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  await run(enroll([a]));
+  await claimAsFounder(a, "1".repeat(32));
+  await harness.pool.query(
+    "update organization_pairing set removal_started_at = date_trunc('milliseconds', now()), removal_endpoints = $1::jsonb",
+    [JSON.stringify([{ machineId: "1".repeat(32), status: "unknown" }])],
+  );
+  expect(await failure(enroll([b]))).toMatchObject({ _tag: "Conflict", message: "Cloud can't remove an earlier server's pairing. Use Forget Servers." });
+});
+
 it("lets a host whose founding attempt failed found again on a new enrollment", async () => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
-  await run(enroll([a]));
+  const [first] = (await run(enroll([a]))).attempts;
   expect(await claimAsFounder(a, "1".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
-  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now()");
+  await run(closeServerEnrollment("unbound", "failure", first?.id));
 
   const [again] = (await run(enroll([a]))).attempts;
   expect([again?.role, again?.state]).toEqual(["founder", "instructed"]);
@@ -481,3 +493,120 @@ it("fails an attempt whose run failed before it bound the attempt", async () => 
   });
   expect((await attempts()).map((row) => [row.state, row.ended_at !== null, row.inngest_run_id])).toEqual([["failed", true, null]]);
 });
+
+it("keeps a founding claim while an earlier token for its Machine can still enroll", async () => {
+  const [a] = await waiting("new-host");
+  if (a === undefined) throw new Error("one host");
+  const machineId = "3".repeat(32);
+  expect(await serverAdd(machineId)).toMatchObject({ kind: "initialize", resumed: false });
+  const resumed = await run(insertEnrollmentToken({ organizationId: adaOrg, userId: ada.userId }));
+  expect(await run(enrollMachine({ token: resumed.token, identity: identity(machineId) }))).toMatchObject({ kind: "initialize", resumed: true });
+  await harness.pool.query("update machine_enrollment_token set expires_at = now() - interval '1 second' where id = $1", [resumed.id]);
+  expect((await run(enroll([a]))).attempts.map((attempt) => attempt.role)).toEqual(["joiner"]);
+  expect(await pairings()).toEqual([{ founder_claim_machine_id: machineId }]);
+});
+
+it("keeps a server add resume live after the Machine's Waiting token retries and its attempt is cancelled", async () => {
+  const [a, b] = await waiting("original-host", "replacement-host");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const machineId = "4".repeat(32);
+  const [attempt] = (await run(enroll([a]))).attempts;
+  const instruction = await checkin(a);
+  if (instruction.kind !== "enroll") throw new Error("expected instruction");
+  expect(await run(enrollMachine({ token: instruction.token, identity: identity(machineId) }))).toMatchObject({ kind: "initialize", resumed: false });
+  expect(await serverAdd(machineId)).toMatchObject({ kind: "initialize", resumed: true });
+  expect(await run(enrollMachine({ token: instruction.token, identity: identity(machineId) }))).toMatchObject({ kind: "initialize", resumed: true });
+  await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attempt?.id ?? "" }));
+  expect((await run(enroll([b]))).attempts.map((each) => each.role)).toEqual(["joiner"]);
+  expect(await pairings()).toEqual([{ founder_claim_machine_id: machineId }]);
+});
+
+it("drops a dead server add claim behind an open first server, which then founds", async () => {
+  const [a, b] = await waiting("planned-founder", "later-host");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const [founder] = (await run(enroll([a]))).attempts;
+  const spare = await run(insertEnrollmentToken({ organizationId: adaOrg, userId: ada.userId }));
+  expect(await serverAdd("5".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
+  await harness.pool.query("update machine_enrollment_token set expires_at = now() - interval '1 second' where claimed_machine_id = $1", ["5".repeat(32)]);
+  expect(await claimAsFounder(a, "6".repeat(32))).toMatchObject({ kind: "not_yet" });
+  const later = await run(enroll([b]));
+  expect(later.attempts.map((attempt) => [attempt.role, attempt.state])).toEqual([["joiner", "awaiting_founder"]]);
+  expect(await pairings()).toEqual([]);
+  expect((await attempts()).find((row) => row.id === founder?.id)).toMatchObject({ state: "instructed", ended_at: null });
+  expect(await claimAsFounder(a, "6".repeat(32))).toMatchObject({ kind: "initialize", resumed: false });
+  const { rows } = await harness.pool.query("select 1 from machine_enrollment_token where id = $1", [spare.id]);
+  expect(rows).toHaveLength(1);
+});
+
+const waitFor = async (event: string) => {
+  for (let i = 0; i < 100; i++) {
+    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = $1", [event]);
+    if (rows.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`nothing waited on ${event}`);
+};
+
+it("locks waiting servers in id order when rejecting, so a concurrent enroll does not deadlock", async () => {
+  const [a, b] = await waiting("heap-first-big-id", "heap-second-small-id");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  await harness.pool.query("update waiting_server set id = $1 where id = $2", [big, a.id]);
+  await harness.pool.query("update waiting_server set id = $1 where id = $2", [small, b.id]);
+  a.id = big;
+  b.id = small;
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934123)");
+  await harness.pool.query(`
+    create function pause_reject() returns trigger language plpgsql as $$ begin
+      if new.id = '${big}' and new.rejected_at is not null and old.rejected_at is null then
+        perform pg_advisory_xact_lock(934123);
+      end if;
+      return new;
+    end $$;
+    create trigger pause_reject before update on waiting_server for each row execute function pause_reject();
+  `);
+  try {
+    const rejecting = failure(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id, b.id] }));
+    await waitFor("advisory");
+    const enrolling = failure(enroll([a, b], { first: b.id }));
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934123)");
+    expect(await rejecting).toBeNull();
+    expect(await enrolling).toMatchObject({ _tag: "Validation", message: "The first server can't enroll: Not waiting." });
+  } finally {
+    await gate.query("select pg_advisory_unlock(934123)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_reject on waiting_server; drop function pause_reject()");
+  }
+}, 15_000);
+
+it("keeps a waiting server whose attempt an enroll committed while a Fleet Token revoke waited on it", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  const [token] = (await harness.pool.query<{ id: string }>("select id from fleet_token")).rows;
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934123)");
+  await harness.pool.query(`
+    create function pause_enroll() returns trigger language plpgsql as $$ begin
+      perform pg_advisory_xact_lock(934123);
+      return new;
+    end $$;
+    create trigger pause_enroll before insert on server_enrollment for each row execute function pause_enroll();
+  `);
+  try {
+    const enrolling = run(enroll([a]));
+    await waitFor("advisory");
+    const revoking = run(revokeFleetToken(ada, { organizationSlug: "ada", id: token?.id ?? "" }));
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934123)");
+    const [started, revoked] = await Promise.all([enrolling, revoking]);
+    expect(revoked).toEqual({ waitingRemoved: 0 });
+    expect((await attempts()).map((row) => row.id)).toEqual(started.attempts.map((attempt) => attempt.id));
+  } finally {
+    await gate.query("select pg_advisory_unlock(934123)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_enroll on server_enrollment; drop function pause_enroll()");
+  }
+}, 15_000);

@@ -161,23 +161,29 @@ export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpe
 });
 
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
   const now = Date.now();
   const failed = yield* endAndRevokeTokens(
     and(open, lt(serverEnrollment.requestedAt, new Date(now - ENROLLMENT_STALE_MS))),
     { state: "failed", failure: { stage: null, message: "Enrollment stopped" } },
   );
-  const removed = yield* drizzle.delete(waitingServer).where(and(
-    notExists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
-      eq(serverEnrollment.waitingServerId, waitingServer.id),
-      open,
-    ))),
-    exists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+  const removed = yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const keptLongEnough = exists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
       eq(serverEnrollment.waitingServerId, waitingServer.id),
       eq(serverEnrollment.state, "joined"),
       lt(serverEnrollment.endedAt, new Date(now - JOINED_WAITING_KEEP_MS)),
-    ))),
-  )).returning({ id: waitingServer.id });
+    )));
+    const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(keptLongEnough).orderBy(waitingServer.id).for("update");
+    if (locked.length === 0) return [];
+    return yield* drizzle.delete(waitingServer).where(and(
+      inArray(waitingServer.id, locked.map((row) => row.id)),
+      notExists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+        eq(serverEnrollment.waitingServerId, waitingServer.id),
+        open,
+      ))),
+    )).returning({ id: waitingServer.id });
+  }));
   return { failed, removed: removed.length };
 });
 

@@ -15,16 +15,14 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const rejected = yield* drizzle
-      .update(waitingServer)
-      .set({ rejectedAt: new Date() })
-      .where(and(
-        eq(waitingServer.organizationId, organization.id),
-        inArray(waitingServer.id, [...input.ids]),
-        isNull(waitingServer.rejectedAt),
-      ))
-      .returning({ id: waitingServer.id });
+    const rejected = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(and(
+      eq(waitingServer.organizationId, organization.id),
+      inArray(waitingServer.id, [...input.ids]),
+      isNull(waitingServer.rejectedAt),
+    )).orderBy(waitingServer.id).for("update");
     if (rejected.length > 0) {
+      yield* drizzle.update(waitingServer).set({ rejectedAt: new Date() })
+        .where(inArray(waitingServer.id, rejected.map((row) => row.id)));
       const open = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
         inArray(serverEnrollment.waitingServerId, rejected.map((row) => row.id)),
         isNull(serverEnrollment.endedAt),

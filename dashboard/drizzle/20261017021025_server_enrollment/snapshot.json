@@ -3034,19 +3034,6 @@
       "table": "organization_pairing"
     },
     {
-      "type": "uuid",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "founder_claim_token_id",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "organization_pairing"
-    },
-    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,

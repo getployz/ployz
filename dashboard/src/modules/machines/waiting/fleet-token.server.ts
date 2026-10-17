@@ -111,6 +111,9 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
       .update(fleetToken)
       .set({ revokedAt: new Date() })
       .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
+    // Locked first so the delete below starts after any Enroll on these rows commits, and sees its attempt.
+    yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
+      .where(eq(waitingServer.fleetTokenId, found.id)).orderBy(waitingServer.id).for("update");
     const removed = yield* drizzle
       .delete(waitingServer)
       .where(and(

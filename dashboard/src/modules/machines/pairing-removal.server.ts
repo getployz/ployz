@@ -9,7 +9,6 @@ import {
   enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
 import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
-import { serverEnrollment } from "#/modules/machines/waiting/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -50,26 +49,18 @@ const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens"
   yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
 });
 
-const unrecordedClaimLive = Effect.fn("PairingRemoval.unrecordedClaimLive")(function* (pairing: Pairing) {
+/** A claim lives while any unspent, unexpired founding token its Machine holds with its key could still complete it. */
+const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function* (pairing: Pairing) {
   const { drizzle } = yield* Database;
   const [live] = yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
     eq(machineEnrollmentToken.organizationId, pairing.organizationId),
     eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
+    pairing.founderPublicKey === null ? undefined : eq(machineEnrollmentToken.claimedPublicKey, pairing.founderPublicKey),
+    sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
     isNull(machineEnrollmentToken.joinedMachineId),
     gt(machineEnrollmentToken.expiresAt, sql`now()`),
   )).limit(1);
   return live !== undefined;
-});
-
-const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function* (pairing: Pairing) {
-  if (pairing.founderClaimTokenId === null) return yield* unrecordedClaimLive(pairing);
-  const { drizzle } = yield* Database;
-  const [token] = yield* drizzle.select({
-    live: sql<boolean>`${machineEnrollmentToken.expiresAt} > now() and ${serverEnrollment.endedAt} is null`,
-  }).from(machineEnrollmentToken)
-    .leftJoin(serverEnrollment, eq(serverEnrollment.id, machineEnrollmentToken.serverEnrollmentId))
-    .where(eq(machineEnrollmentToken.id, pairing.founderClaimTokenId));
-  return token?.live === true;
 });
 
 /** Move usable credentials out of ordinary lookup before doing any remote work. */
@@ -115,7 +106,8 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
         // Every device's capability goes at once; clearing each Server's `cli-*` holders below confirms it.
         yield* drizzle.delete(serverAccess).where(eq(serverAccess.organizationId, organizationId));
-        yield* deleteEnrollmentTokens(organizationId);
+        // A dead claim's own tokens are spent or expired, so other tokens and open attempts stay for the next first server.
+        if (!deadClaim) yield* deleteEnrollmentTokens(organizationId);
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
       return { attempt, generation };

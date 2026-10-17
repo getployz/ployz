@@ -304,9 +304,8 @@ const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
           ),
         ),
       ))
-      .returning({ id: schemaMachineEnrollmentToken.id });
+      .returning({ organizationId: schemaMachineEnrollmentToken.organizationId });
     if (!claimed) return yield* new Unauthorized();
-    return claimed.id;
   },
 );
 
@@ -373,12 +372,6 @@ export const reserveEnrollmentAssignment = Effect.fn(
   }));
 });
 
-const recordFounderClaim = Effect.fn("MachineEnrollment.recordFounderClaim")(function* (organizationId: string, tokenId: string) {
-  const { drizzle } = yield* Database;
-  yield* drizzle.update(schemaOrganizationPairing).set({ founderClaimTokenId: tokenId, updatedAt: new Date() })
-    .where(eq(schemaOrganizationPairing.organizationId, organizationId));
-});
-
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
   function* (input: {
     token: string;
@@ -407,7 +400,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             organizationId: schemaOrganizationPairing.organizationId,
           });
         if (claimed) {
-          yield* recordFounderClaim(input.organizationId, yield* claimEnrollmentToken(input.token, input));
+          yield* claimEnrollmentToken(input.token, input);
           return {
             kind: "initialize" as const,
             resumed: false,
@@ -433,7 +426,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
         if (!joiner && current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
-          yield* recordFounderClaim(input.organizationId, yield* claimEnrollmentToken(input.token, input));
+          yield* claimEnrollmentToken(input.token, input);
           return { kind: "initialize" as const, resumed: true, pairing };
         }
         if (current.founderMachineId) {

@@ -175,7 +175,6 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
   const [pairing] = yield* drizzle.select({ founderMachineId: organizationPairing.founderMachineId })
     .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pairing === undefined || pairing.founderMachineId !== null) return;
-  if ((yield* openFounderAttempt(organizationId)) !== undefined) return;
   yield* revokeOrganizationPairing(organizationId, { deadClaimOnly: true });
 });
 
@@ -191,12 +190,18 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [pairing] = yield* drizzle
-      .select({ founderMachineId: organizationPairing.founderMachineId, removalStartedAt: organizationPairing.removalStartedAt })
+      .select({ founderMachineId: organizationPairing.founderMachineId, removalEndpoints: organizationPairing.removalEndpoints })
       .from(organizationPairing)
       .where(eq(organizationPairing.organizationId, organization.id))
       .for("update");
-    if (pairing !== undefined && pairing.removalStartedAt !== null) {
-      return yield* new Conflict({ message: "Cloud can't reach an earlier server to remove its pairing yet. Try again, or use Forget Servers.", userFacing: true });
+    if (pairing !== undefined && pairing.removalEndpoints !== null) {
+      const retryable = pairing.removalEndpoints.some((endpoint) => endpoint.status === "pending");
+      return yield* new Conflict({
+        message: retryable
+          ? "Cloud can't reach an earlier server to remove its pairing yet. Try again, or use Forget Servers."
+          : "Cloud can't remove an earlier server's pairing. Use Forget Servers.",
+        userFacing: true,
+      });
     }
     const founded = pairing !== undefined && pairing.founderMachineId !== null;
     const founding = founded ? undefined : yield* openFounderAttempt(organization.id);
