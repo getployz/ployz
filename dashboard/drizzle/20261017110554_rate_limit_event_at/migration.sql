@@ -1,0 +1,1 @@
+CREATE INDEX "rate_limit_event_at_idx" ON "rate_limit_event" ("at");

@@ -1,9 +1,12 @@
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
-import { createOrganizationToken, listCredentials, revokeCredential } from "#/modules/identity/organization-token.server";
+import { resolveCaller } from "#/modules/identity/caller.server";
+import { createOrganizationToken, listCredentials, mintOrganizationTokenUnchecked, revokeCredential } from "#/modules/identity/organization-token.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
+import { Auth, type AuthService } from "#/server/auth.server";
 import type { Database } from "#/server/database.server";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
@@ -88,5 +91,19 @@ describe("organization tokens", () => {
       Effect.as("revoked"),
       Effect.catchTag("NotFound", () => Effect.succeed("not_found")),
     ))).toBe("not_found");
+  });
+
+  it("acts as its maker until the expiry it was minted with, then reads as no credential", async () => {
+    const noSession = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(null) });
+    const presented = async (expiresAt: Date) => {
+      const { secret } = await run(mintOrganizationTokenUnchecked({ organizationId: ACME, userId: ids.eve, name: "agent", kind: "agent", expiresAt }));
+      return run(resolveCaller(new Headers({ authorization: `Bearer ${secret}` })).pipe(
+        Effect.map((caller) => caller.userId),
+        Effect.catchTag("Unauthorized", () => Effect.succeed("unauthorized")),
+        Effect.provideService(Auth, noSession),
+      ));
+    };
+    expect(await presented(new Date(Date.now() + 60_000))).toBe(ids.eve);
+    expect(await presented(new Date(Date.now() - 1_000))).toBe("unauthorized");
   });
 });

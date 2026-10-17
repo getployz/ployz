@@ -30,6 +30,7 @@ import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from '.
 import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
+import { Route as ApiAgentSignupRouteImport } from './routes/api/agent/signup'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCheckinIndexRouteImport } from './routes/api/checkin/index'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
@@ -192,6 +193,11 @@ const ProtectedCloudOrganizationSlugRouteRoute =
     path: '/$organizationSlug',
     getParentRoute: () => ProtectedCloudRouteRoute,
   } as any)
+const ApiAgentSignupRoute = ApiAgentSignupRouteImport.update({
+  id: '/api/agent/signup',
+  path: '/api/agent/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -558,6 +564,7 @@ export interface FileRoutesByFullPath {
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -629,6 +636,7 @@ export interface FileRoutesByTo {
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -701,6 +709,7 @@ export interface FileRoutesById {
   '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -778,6 +787,7 @@ export interface FileRouteTypes {
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -849,6 +859,7 @@ export interface FileRouteTypes {
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -920,6 +931,7 @@ export interface FileRouteTypes {
     | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -994,6 +1006,7 @@ export interface RootRouteChildren {
   DevSettingsRowsRoute: typeof DevSettingsRowsRoute
   InviteTokenRoute: typeof InviteTokenRoute
   DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
+  ApiAgentSignupRoute: typeof ApiAgentSignupRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
@@ -1171,6 +1184,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugRouteRouteImport
       parentRoute: typeof ProtectedCloudRouteRoute
+    }
+    '/api/agent/signup': {
+      id: '/api/agent/signup'
+      path: '/api/agent/signup'
+      fullPath: '/api/agent/signup'
+      preLoaderRoute: typeof ApiAgentSignupRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/auth/$': {
       id: '/api/auth/$'
@@ -1777,6 +1797,7 @@ const rootRouteChildren: RootRouteChildren = {
   InviteTokenRoute: InviteTokenRoute,
   DotwellKnownOauthProtectedResourceMcpRoute:
     DotwellKnownOauthProtectedResourceMcpRoute,
+  ApiAgentSignupRoute: ApiAgentSignupRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,

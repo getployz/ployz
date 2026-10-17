@@ -29,6 +29,12 @@ export class Validation extends Data.TaggedError("Validation")<{
   readonly publicErrorCategory = "validation" as const;
 }
 
+export class RateLimited extends Data.TaggedError("RateLimited")<{
+  readonly message: string;
+} & UserFacing> {
+  readonly publicErrorCategory = "rate-limited" as const;
+}
+
 export class Forbidden extends Data.TaggedError("Forbidden")<{
   readonly message: string;
 }> {
@@ -52,6 +58,7 @@ export const PublicErrorCategory = Schema.Literals([
   "forbidden",
   "not-found",
   "conflict",
+  "rate-limited",
   "build-grant-unavailable",
   "server-lacks",
   "internal",
@@ -186,6 +193,12 @@ export function encodePublicError(cause: unknown): PublicErrorData {
         code: "CONFLICT",
         message: userFacingMessage(cause, "The request conflicts with the current state."),
       });
+    case "rate-limited":
+      return encode({
+        _tag: "PublicError",
+        code: "RATE_LIMITED",
+        message: userFacingMessage(cause, "Too many requests. Try again later."),
+      });
     case "build-grant-unavailable":
       return encode({
         _tag: "PublicError",
@@ -228,6 +241,8 @@ export function statusForPublicError(error: PublicErrorData): number {
     case "CONFLICT":
     case "SERVER_LACKS":
       return 409;
+    case "RATE_LIMITED":
+      return 429;
     case "BUILD_GRANT_UNAVAILABLE":
       return 503;
     case "INTERNAL":
