@@ -61,7 +61,7 @@ function RouteComponent() {
           <EmptyHeader>
             <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
             <EmptyTitle>Add your first server</EmptyTitle>
-            <EmptyDescription>Run one line on any Linux servers. They wait here until you say they join.</EmptyDescription>
+            <EmptyDescription>Run one line on any Linux servers. They wait here for you to review.</EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (

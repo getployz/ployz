@@ -22,7 +22,27 @@ your other servers on a private network.
 
 You don't need Docker: Ployz installs it if it's missing.
 
-## Add a server
+## Add one server that joins right away
+
+From your own machine, signed in with `ployz login`:
+
+```sh
+ployz server add --command
+```
+
+It prints a line to paste on the server and an enrollment token beside it, then waits until the
+server joins. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste
+the token when it asks. The prompt doesn't show what you paste, so the token never enters the
+server's shell history or process list. The token works for 24 hours.
+
+The server takes its hostname as its name; to choose another, add `--name web-1`. When it
+finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
+it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
+
+Add more servers the same way, even at different providers. Nothing moves onto a new server until
+you deploy; see [Scaling](../services/scaling.md#add-a-server).
+
+## Add servers from the dashboard
 
 1. Go to **Servers** and click **Add servers**. While you have no server, the bottom bar of your
    environment offers it too.
@@ -42,7 +62,7 @@ and Ployz and shows up under **Waiting** on the **Servers** page within seconds,
 servers. New ones go to the bottom of the list, and the list never reorders while you look at it.
 
 A waiting server doesn't join yet: Ployz can't let it in, so it can't run your apps. To add a
-server you can deploy to now, use [`ployz server add`](#add-one-server-that-joins-right-away).
+server you can deploy to now, use [`ployz server add`](#add-one-server-that-joins-right-away) above.
 
 Each row shows the server's name, the IP address Ployz Cloud saw it check in from, its provider,
 size, disks and storage, and its status. **Installing Docker** and **Building ZFS** mean it is
@@ -61,26 +81,6 @@ checking in, and asking again with the same token gets it turned away.
 how many joined, when each expires and when it was last used. **Revoke** stops a token at once
 and drops the servers still waiting on it; the message after says how many. Servers that already
 joined stay.
-
-### Add one server that joins right away
-
-From your own machine, signed in with `ployz login`:
-
-```sh
-ployz server add --command
-```
-
-It prints a line to paste on the server and an enrollment token beside it, then waits until the
-server joins. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste
-the token when it asks. The prompt doesn't show what you paste, so the token never enters the
-server's shell history or process list. The token works for 24 hours.
-
-The server takes its hostname as its name; to choose another, add `--name web-1`. When it
-finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
-it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
-
-Add more servers the same way, even at different providers. Nothing moves onto a new server until
-you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
 ## Add many servers with a Fleet Token
 

@@ -72,7 +72,7 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
     >
       <DialogHeader>
         <DialogTitle>New fleet token</DialogTitle>
-        <DialogDescription>Run it on as many servers as you like. They show up here.</DialogDescription>
+        <DialogDescription>Run it on as many servers as you like. They wait under Servers.</DialogDescription>
       </DialogHeader>
       <label className="flex flex-col gap-1.5 text-sm">
         <span className="text-muted-foreground">Name</span>

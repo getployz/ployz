@@ -182,6 +182,53 @@ it("probes a selection once it stops changing, and asks again once a refused win
   expect(probe).toHaveBeenCalledTimes(2);
 });
 
+it("retries only the current selection when an older probe answers after the selection moved on", async () => {
+  vi.useFakeTimers();
+  renderList([host("a"), host("b"), host("c")]);
+  // Cloud refuses any selection holding a host whose window is still open.
+  const openUntil = new Map<string, number>();
+  let answerStale: (value: { probing: number }) => void = () => {};
+  probe.mockImplementation(({ data }) => {
+    if (data.ids.length === 2) return new Promise((resolve) => { answerStale = resolve; });
+    if (data.ids.some((id) => (openUntil.get(id) ?? 0) > Date.now())) return Promise.resolve({ probing: 0 });
+    for (const id of data.ids) openUntil.set(id, Date.now() + PROBE_RETRY_MS);
+    return Promise.resolve({ probing: data.ids.length });
+  });
+
+  fireEvent.click(pick("a"));
+  await settle(PROBE_SETTLE_MS);
+  fireEvent.click(pick("b"));
+  await settle(PROBE_SETTLE_MS);
+  fireEvent.click(pick("c"));
+  await act(async () => answerStale({ probing: 0 }));
+  await settle(PROBE_SETTLE_MS);
+  await settle(PROBE_RETRY_MS * 4);
+
+  expect(probe.mock.calls.map(([call]) => call?.data.ids)).toEqual([
+    ["id-a"],
+    ["id-a", "id-b"],
+    ["id-a", "id-b", "id-c"],
+    ["id-a", "id-b", "id-c"],
+  ]);
+  await expect(probe.mock.results.at(-1)?.value).resolves.toEqual({ probing: 3 });
+});
+
+it("asks nothing more once the list is gone, even when a pending probe comes back refused", async () => {
+  vi.useFakeTimers();
+  let answer: (value: { probing: number }) => void = () => {};
+  probe.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
+  renderList([host("a")]);
+
+  fireEvent.click(pick("a"));
+  await settle(PROBE_SETTLE_MS);
+  expect(probe).toHaveBeenCalledOnce();
+  cleanup();
+  await act(async () => answer({ probing: 0 }));
+  await settle(PROBE_RETRY_MS * 3);
+
+  expect(probe).toHaveBeenCalledOnce();
+});
+
 it("shows every token when the one it was asked for has no waiting servers", () => {
   renderList([host("a"), host("b")], "no-such-token");
 

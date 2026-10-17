@@ -58,7 +58,7 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
     && (provider === "" || providerOf(server) === provider)
     && (shownToken === "" || server.fleetToken === shownToken)
     && matches(server));
-  const chosen = rows.filter((server) => picked.has(server.id) && selectable(server)).slice(0, SELECTION_MAX).map((server) => server.id);
+  const chosen = rows.filter((server) => picked.has(server.id) && selectable(server)).map((server) => server.id);
   const pickedIds = new Set(chosen);
   const full = chosen.length >= SELECTION_MAX;
   const pickable = rows.filter(selectable);

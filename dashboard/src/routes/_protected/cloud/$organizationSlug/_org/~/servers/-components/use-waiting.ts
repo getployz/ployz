@@ -39,16 +39,20 @@ export const PROBE_RETRY_MS = PROBE_WINDOW_MS + 1_000;
 
 /**
  * Probes a selection once it stops changing. Cloud won't reopen over a host whose window is still running,
- * so a selection it turns away is asked again once that window has closed.
+ * so a selection it turns away is asked again once that window has closed, if it is still the selection.
  */
 export function useSettledProbe(organizationSlug: string, ids: readonly string[]) {
   const selection = [...ids].sort().join(",");
   useEffect(() => {
     if (selection === "") return;
+    let current = true;
     let timer = setTimeout(async function ask(retry = true) {
       const opened = await openProbeSelectionServerFn({ data: { organizationSlug, ids: selection.split(",") } }).catch(() => null);
-      if (retry && opened?.probing === 0) timer = setTimeout(() => ask(false), PROBE_RETRY_MS);
+      if (current && retry && opened?.probing === 0) timer = setTimeout(() => ask(false), PROBE_RETRY_MS);
     }, PROBE_SETTLE_MS);
-    return () => clearTimeout(timer);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
   }, [organizationSlug, selection]);
 }

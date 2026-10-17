@@ -835,6 +835,22 @@ it("leaves an ended token's last use alone", async () => {
   expect((await harness.pool.query("select last_used_at from fleet_token")).rows).toEqual([{ last_used_at: null }]);
 });
 
+it("leaves an ended token's last use alone while one of its hosts is still enrolling", async () => {
+  const { token, id } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host);
+  const [listed] = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  await harness.pool.query(
+    `insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
+     values ($1, $2, $3, 'joiner', '{}', gen_random_uuid(), 'running')`,
+    [adaOrg, listed?.id, id],
+  );
+  await harness.pool.query("update fleet_token set last_used_at = null, expires_at = now() - interval '1 second' where id = $1", [id]);
+
+  expect(await send(token, host)).not.toMatchObject({ kind: "stop" });
+  expect((await harness.pool.query("select last_used_at from fleet_token")).rows).toEqual([{ last_used_at: null }]);
+});
+
 it("reads status from the last check-in and the report", () => {
   const now = new Date("2026-10-16T00:01:00Z");
   const recent = new Date("2026-10-16T00:00:50Z");
