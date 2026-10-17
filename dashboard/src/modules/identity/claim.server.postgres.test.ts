@@ -159,7 +159,7 @@ it.live("the claim page reads the sandbox while it waits, answers the owner's sl
     expect(yield* readClaim(agent.secret, null)).toEqual({ state: "expired" });
   })));
 
-it.live("claiming again answers the same slug and moves the sessions again; a wrong, spent or expired secret is refused", () =>
+it.live("a second visit after the claim changes nothing: claiming again answers the same slug and moves the sessions again; a wrong, spent or expired secret is refused", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
     const ada = yield* person("Ada", "ada@example.test");
@@ -168,12 +168,23 @@ it.live("claiming again answers the same slug and moves the sessions again; a wr
 
     yield* claimOrganization(ada.actor, agent.secret);
     const { drizzle } = yield* Database;
+    const snapshot = () => Effect.all({
+      organization: drizzle.select().from(organization).where(eq(organization.id, agent.organization.id)),
+      members: membersOf(agent.organization.id),
+      tokens: drizzle.select().from(organizationToken).where(eq(organizationToken.organizationId, agent.organization.id)),
+      users: drizzle.select({ id: user.id }).from(user).orderBy(user.id),
+    });
+    const claimed = yield* snapshot();
     yield* drizzle.update(session).set({ activeOrganizationId: null, activeOrganizationSlug: null }).where(eq(session.userId, ada.actor.userId));
     expect(yield* claimOrganization(ada.actor, agent.secret)).toEqual({ slug: agent.organization.slug });
-    expect(yield* membersOf(agent.organization.id)).toEqual([{ userId: ada.actor.userId, role: "owner" }]);
+    expect(yield* readClaim(agent.secret, ada.actor)).toEqual({ state: "claimed", organization: { slug: agent.organization.slug } });
+    expect(yield* readClaim(agent.secret, bob.actor)).toEqual({ state: "expired" });
+    expect((yield* Effect.flip(claimOrganization(bob.actor, agent.secret)))._tag).toBe("NotFound");
+    expect(yield* snapshot()).toEqual(claimed);
+    expect(claimed.organization[0]?.claimSecretHash).toBeNull();
+    expect(claimed.members).toEqual([{ userId: ada.actor.userId, role: "owner" }]);
     expect(yield* drizzle.select({ activeOrganizationId: session.activeOrganizationId }).from(session).where(eq(session.userId, ada.actor.userId)))
       .toEqual([{ activeOrganizationId: agent.organization.id }]);
-    expect((yield* Effect.flip(claimOrganization(bob.actor, agent.secret)))._tag).toBe("NotFound");
 
     const lapsed = yield* sandbox();
     yield* drizzle.update(organizationToken).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.organizationId, lapsed.organization.id));
