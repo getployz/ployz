@@ -26,6 +26,7 @@ import {
   cancelServerEnrollment,
   readServerEnrollments,
   type ServerEnrollmentView,
+  previewServerEnrollment,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
@@ -233,6 +234,22 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         spread: started.spread,
       };
     }
+    case "POST enrollments/:id": {
+      if (id !== "plan") return yield* new NotFound({ message: "Not found." });
+      const body = yield* decodeBody(EnrollServers, request, "Enrolling takes 1 to 1000 waiting server ids, storage, names and what the servers run.");
+      const plan = yield* previewServerEnrollment(caller, { organizationSlug: caller.organization.slug, ...enrollInput(body) });
+      return {
+        plan: plan.rows.map((row) => ({
+          waiting_server_id: row.waitingServerId,
+          hostname: row.hostname,
+          role: row.role,
+          name: row.instruction.name,
+          storage: row.instruction.storage,
+        })),
+        skipped: plan.skipped,
+        spread: plan.spread,
+      };
+    }
     case "GET enrollments":
       return { enrollments: (yield* readServerEnrollments(caller, { organizationSlug: caller.organization.slug })).map(cliEnrollment) };
     case "GET enrollments/:id": {
@@ -426,6 +443,7 @@ function cliEnrollment(enrollment: ServerEnrollmentView) {
     state: enrollment.state,
     stage: enrollment.stage,
     queued: enrollment.queued,
+    ahead: enrollment.ahead,
     machine_id: enrollment.machineId,
     failure: enrollment.failure,
     requested_at: enrollment.requestedAt,

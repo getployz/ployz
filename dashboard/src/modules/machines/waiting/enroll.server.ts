@@ -4,8 +4,8 @@ import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
-import { insertEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { insertEnrollmentToken, readJoinLine } from "#/modules/machines/enrollment.server";
+import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import {
@@ -39,6 +39,7 @@ export type EnrollCandidate = {
 export type PlannedEnrollment = {
   readonly waitingServerId: string;
   readonly fleetTokenId: string;
+  readonly hostname: string;
   readonly role: EnrollmentRole;
   readonly instruction: EnrollInstruction;
 };
@@ -124,6 +125,7 @@ export function planServerEnrollment(
   const rows = ordered.map(({ row, storage }, index): PlannedEnrollment => ({
     waitingServerId: row.id,
     fleetTokenId: row.fleetTokenId,
+    hostname: row.report.hostname,
     role: row.id === founder ? "founder" : "joiner",
     instruction: {
       name: names.kind === "hostnames" ? row.report.hostname : names.pattern.replaceAll("{n}", String(index + 1)),
@@ -142,9 +144,9 @@ export function planServerEnrollment(
   };
 }
 
-const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organizationId: string, ids: ReadonlyArray<string>) {
+const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organizationId: string, ids: ReadonlyArray<string>, lock: boolean) {
   const { drizzle } = yield* Database;
-  return yield* drizzle
+  const select = drizzle
     .select({
       id: waitingServer.id,
       fleetTokenId: waitingServer.fleetTokenId,
@@ -157,8 +159,8 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))
     .where(and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids])))
-    .orderBy(waitingServer.id)
-    .for("update", { of: waitingServer });
+    .orderBy(waitingServer.id);
+  return lock ? yield* select.for("update", { of: waitingServer }) : yield* select;
 });
 
 const openFounderAttempt = Effect.fn("ServerEnrollment.openFounder")(function* (organizationId: string) {
@@ -189,6 +191,48 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
   }));
 });
 
+const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
+  organizationId: string,
+  input: EnrollInput,
+  mode: "start" | "preview",
+) {
+  const { drizzle } = yield* Database;
+  const select = drizzle.select().from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+  const [persisted] = mode === "start" ? yield* select.for("update") : yield* select;
+  const pairing = persisted?.founderMachineId === null && persisted.removalEndpoints?.every((endpoint) => endpoint.status === "confirmed")
+    ? undefined
+    : persisted;
+  if (pairing !== undefined && pairing.removalEndpoints !== null) {
+    const retryable = pairing.removalEndpoints.some((endpoint) => endpoint.status === "pending");
+    return yield* new Conflict({
+      message: retryable
+        ? "Cloud can't reach an earlier server to remove its pairing yet. Try again, or use Forget Servers."
+        : "Cloud can't remove an earlier server's pairing. Use Forget Servers.",
+      userFacing: true,
+    });
+  }
+  const founded = pairing !== undefined && pairing.founderMachineId !== null;
+  const founding = founded ? undefined : yield* openFounderAttempt(organizationId);
+  const paired = pairing !== undefined && !(mode === "preview" && (yield* isDeadFoundingClaim(pairing)));
+  const ids = input.ids.filter((id) => /^[0-9a-f-]{36}$/u.test(id));
+  const plan = planServerEnrollment(
+    input,
+    ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
+    { hasFirst: paired || founding !== undefined },
+  );
+  if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
+  return { ...plan, founded };
+});
+
+export const previewServerEnrollment = Effect.fn("ServerEnrollment.preview")(function* (
+  actor: Actor,
+  input: { readonly organizationSlug: string } & EnrollInput,
+) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
+  const { rows, skipped, spread } = yield* planEnrollment(organization.id, input, "preview");
+  return { rows, skipped, spread };
+});
+
 export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string } & EnrollInput,
@@ -196,33 +240,11 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   const encryption = yield* SecretEncryption;
-  const ids = input.ids.filter((id) => /^[0-9a-f-]{36}$/u.test(id));
   yield* releaseDeadClaim(organization.id);
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockOrganizationEnrollment(organization.id);
+    const plan = yield* planEnrollment(organization.id, input, "start");
     const { drizzle } = yield* Database;
-    const [pairing] = yield* drizzle
-      .select({ founderMachineId: organizationPairing.founderMachineId, removalEndpoints: organizationPairing.removalEndpoints })
-      .from(organizationPairing)
-      .where(eq(organizationPairing.organizationId, organization.id))
-      .for("update");
-    if (pairing !== undefined && pairing.removalEndpoints !== null) {
-      const retryable = pairing.removalEndpoints.some((endpoint) => endpoint.status === "pending");
-      return yield* new Conflict({
-        message: retryable
-          ? "Cloud can't reach an earlier server to remove its pairing yet. Try again, or use Forget Servers."
-          : "Cloud can't remove an earlier server's pairing. Use Forget Servers.",
-        userFacing: true,
-      });
-    }
-    const founded = pairing !== undefined && pairing.founderMachineId !== null;
-    const founding = founded ? undefined : yield* openFounderAttempt(organization.id);
-    const plan = planServerEnrollment(
-      input,
-      ids.length === 0 ? [] : yield* candidatesOf(organization.id, ids),
-      { hasFirst: pairing !== undefined || founding !== undefined },
-    );
-    if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
     const attempts = [];
     for (const row of plan.rows) {
       const id = randomUUID();
@@ -231,7 +253,7 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
         userId: actor.userId,
         attempt: { role: row.role, serverEnrollmentId: id },
       });
-      const state: EnrollmentState = row.role === "founder" || founded ? "instructed" : "awaiting_founder";
+      const state: EnrollmentState = row.role === "founder" || plan.founded ? "instructed" : "awaiting_founder";
       yield* drizzle.insert(serverEnrollment).values({
         id,
         organizationId: organization.id,
@@ -282,6 +304,8 @@ export type ServerEnrollmentView = {
   readonly stage: string | null;
   /** Instructed, but its host isn't ready for its storage yet: Cloud keeps answering `wait`. */
   readonly queued: boolean;
+  /** Waiting for a join slot: the joins that must finish before it goes. Null when it isn't in the join line. */
+  readonly ahead: number | null;
   readonly machineId: string | null;
   readonly failure: { readonly stage: string | null; readonly message: string } | null;
   readonly requestedAt: string;
@@ -315,11 +339,13 @@ export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function
       input.id === undefined ? isNull(waitingServer.rejectedAt) : eq(serverEnrollment.id, input.id),
     ))
     .orderBy(asc(serverEnrollment.requestedAt), asc(serverEnrollment.id));
+  const line = yield* readJoinLine(organization.id);
   return rows.map(({ instruction, report, ...row }): ServerEnrollmentView => ({
     ...row,
     name: instruction.name,
     storage: instruction.storage,
     queued: row.state === "instructed" && !isReadyFor(report, instruction.storage),
+    ahead: row.endedAt === null ? line.get(row.id) ?? null : null,
     requestedAt: row.requestedAt.toISOString(),
     endedAt: row.endedAt?.toISOString() ?? null,
   }));

@@ -422,6 +422,37 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
   },
 );
 
+/**
+ * Where each attempt waiting in an Organization's join line stands, keyed by attempt: the joins that must finish
+ * before it goes, counted the way {@link queueForJoinSlot} answers it, and 0 once a slot is free for its next ask.
+ */
+export const readJoinLine = Effect.fn("MachineEnrollment.readJoinLine")(function* (organizationId: string, joinSlots = JOIN_SLOTS) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select({ founderMachineId: schemaOrganizationPairing.founderMachineId })
+    .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  const line = new Map<string, number>();
+  const founder = pairing?.founderMachineId ?? null;
+  if (founder === null) return line;
+  const tokens = schemaMachineEnrollmentToken;
+  const holding = sql`coalesce(${claimHoldsSlot}, false)`;
+  const waiter = sql`not ${holding} and ${tokens.queuedAt} is not null and ${tokens.updatedAt} > clock_timestamp() - ${QUEUED_LIVE}`;
+  const rows = yield* drizzle.select({
+    serverEnrollmentId: tokens.serverEnrollmentId,
+    waiter: sql<boolean>`${waiter}`,
+    joining: sql<boolean>`${holding} and ${tokens.claimedMachineId} <> ${founder}`,
+    before: sql<number>`rank() over (partition by ${waiter} order by ${tokens.queuedAt}) - 1`.mapWith(Number),
+  }).from(tokens).where(and(
+    eq(tokens.organizationId, organizationId),
+    isNull(tokens.joinedMachineId),
+    gt(tokens.expiresAt, sql`clock_timestamp()`),
+  ));
+  const joining = rows.filter((row) => row.joining).length;
+  for (const row of rows) {
+    if (row.waiter && row.serverEnrollmentId !== null) line.set(row.serverEnrollmentId, Math.max(0, joining + row.before - joinSlots + 1));
+  }
+  return line;
+});
+
 const renewJoinSlot = Effect.fn("MachineEnrollment.renewJoinSlot")(function* (token: string) {
   const { drizzle } = yield* Database;
   const renewed = yield* drizzle.update(schemaMachineEnrollmentToken)

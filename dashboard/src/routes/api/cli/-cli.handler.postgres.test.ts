@@ -27,7 +27,7 @@ import { callStore, readStore } from "#/modules/config-store/config-store.server
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { fleetToken } from "#/modules/machines/waiting/tables";
+import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
@@ -1496,6 +1496,73 @@ it.live(
 
         const approvals = yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status }).from(operationApprovals);
         assert.sameDeepMembers(approvals, [{ id: removalId, status: "pending" }, { id: cleanId, status: "pending" }]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "POST enrollments/plan answers what POST enrollments then starts, writes nothing, and plans only the caller's own servers",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
+          ?? assert.fail("no fleet token");
+        const report = {
+          hostname: "web", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8.0", arch: "x86_64", virt: "kvm", cpuCount: 4,
+          memoryTotalBytes: 8_589_934_592, disks: [], docker: { kind: "absent" as const }, cgroup: "v2" as const,
+          zfs: { kind: "eligible" as const, targets: [{ kind: "main_disk" as const }] }, blockers: [], warnings: [], cliVersion: "0.3.1",
+        };
+        const hosts = yield* database.drizzle.insert(waitingServer).values(["web-a", "web-b", "web-c"].map((hostname, index) => ({
+          organizationId: alice.organization.id,
+          fleetTokenId: fleet.id,
+          checkinKey: String(index).repeat(64),
+          report: { ...report, hostname },
+          observedIp: "203.0.113.7",
+        }))).returning({ id: waitingServer.id, hostname: sql<string>`${waitingServer.report}->>'hostname'` });
+        const byName = new Map(hosts.map((row) => [row.hostname, row.id]));
+        const [a, b, c] = [byName.get("web-a"), byName.get("web-b"), byName.get("web-c")];
+        const body = {
+          ids: [a, b, c].map((id) => id ?? assert.fail("no host")),
+          first: b ?? assert.fail("no host"),
+          storage: { kind: "zfs", use_spare_disk: false, fallback_to_docker: false },
+          names: { kind: "pattern", pattern: "node-{n}" },
+          runs: { services: true, ingress: true, builds: false },
+        };
+
+        const planned = yield* cli("POST", "enrollments/plan", alice, body);
+        assert.strictEqual(planned.status, 200);
+        assert.deepStrictEqual(JSON.parse(planned.text), {
+          plan: [
+            { waiting_server_id: b, hostname: "web-b", role: "founder", name: "node-1", storage: { kind: "zfs" } },
+            { waiting_server_id: a, hostname: "web-a", role: "joiner", name: "node-2", storage: { kind: "zfs" } },
+            { waiting_server_id: c, hostname: "web-c", role: "joiner", name: "node-3", storage: { kind: "zfs" } },
+          ],
+          skipped: [],
+          spread: { providers: 1, networks: 1 },
+        });
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverEnrollment), []);
+
+        const outsider = yield* cli("POST", "enrollments/plan", bob, body);
+        assert.strictEqual(outsider.status, 422);
+        assert.notInclude(outsider.text, "web-b");
+        assert.strictEqual((yield* cli("POST", "enrollments/other", alice, body)).status, 404);
+
+        const started = yield* cli("POST", "enrollments", alice, body);
+        const plan = JSON.parse(planned.text) as { plan: Array<{ waiting_server_id: string; role: string; name: string }> };
+        const attempts = (JSON.parse(started.text) as { enrollments: Array<{ id: string; waiting_server_id: string; role: string; name: string }> }).enrollments;
+        assert.deepStrictEqual(
+          attempts.map((row) => [row.waiting_server_id, row.role, row.name]),
+          plan.plan.map((row) => [row.waiting_server_id, row.role, row.name]),
+        );
+        const listed = JSON.parse((yield* cli("GET", "enrollments", alice)).text) as { enrollments: Array<{ ahead: number | null }> };
+        assert.deepStrictEqual(listed.enrollments.map((row) => row.ahead), [null, null, null]);
+        const one = JSON.parse((yield* cli("GET", `enrollments/${attempts[0]?.id}`, alice)).text) as { enrollment: { ahead: number | null } };
+        assert.strictEqual(one.enrollment.ahead, null);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
