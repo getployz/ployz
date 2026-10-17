@@ -642,7 +642,11 @@ fn status_record(status: &Status) -> Fields {
             title: headline,
             ended,
         } = checkin.headline();
-        let tone = if ended { Tone::Bad } else { Tone::Change };
+        let tone = match (checkin.answer, ended) {
+            (crate::checkin::Seen::Joined, _) => Tone::Good,
+            (_, true) => Tone::Bad,
+            (_, false) => Tone::Change,
+        };
         record.push("this server", Cell::status(headline, tone));
         for blocker in &checkin.blockers {
             record.push("blocked", Cell::status(&blocker.message, Tone::Bad));

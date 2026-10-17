@@ -556,9 +556,14 @@ struct AmazonCase {
     expected: Option<&'static str>,
 }
 
-const AMAZON_CASES: [AmazonCase; 3] = [
+const AMAZON_CASES: [AmazonCase; 4] = [
     AmazonCase {
         name: "success",
+        via_storage: false,
+        expected: None,
+    },
+    AmazonCase {
+        name: "prepared",
         via_storage: false,
         expected: None,
     },
@@ -597,6 +602,7 @@ fn zfs_amazon_linux_contract() {
                 fs::read(root.join("tarball")).unwrap()
             };
             prepare_amazon_zfs(
+                &root.join("prepared"),
                 &paths.modules_load_dir,
                 &os,
                 AMAZON_KERNEL,
@@ -656,6 +662,14 @@ done"#,
             symlink(format!("/usr/bin/{tool}"), commands.join(tool)).unwrap();
         }
         write_zfs_probes(&commands);
+        if case.name == "prepared" {
+            let built = root.join("prepared/zfs-2.4.4");
+            fs::create_dir_all(&built).unwrap();
+            Command::new(commands.join("make"))
+                .current_dir(&built)
+                .status()
+                .unwrap();
+        }
         run_contract_child_with_environment(
             "installer::storage::tests::zfs_amazon_linux_contract",
             root,
@@ -672,19 +686,36 @@ done"#,
             .lines()
             .filter(|line| line.starts_with("install "))
             .collect();
-        if name != "success" {
+        if case.expected.is_some() {
             assert!(installs.is_empty(), "{name} installed packages:\n{dnf}");
             assert_eq!(boot_load, None, "{name}");
             continue;
         }
         assert_eq!(boot_load.as_deref(), Some("zfs\n"));
-        let [dependencies, packages] = installs.as_slice() else {
-            panic!("unexpected dnf installs:\n{dnf}");
+        let packages = if name == "prepared" {
+            assert_eq!(
+                read_log(root, "curl.log"),
+                "",
+                "the prepared build is not downloaded"
+            );
+            let [packages] = installs.as_slice() else {
+                panic!("the prepared build is installed without its build dependencies:\n{dnf}");
+            };
+            assert!(
+                packages.contains(&root.join("prepared/zfs-2.4.4").display().to_string()),
+                "{packages}"
+            );
+            packages
+        } else {
+            let [dependencies, packages] = installs.as_slice() else {
+                panic!("unexpected dnf installs:\n{dnf}");
+            };
+            assert!(
+                dependencies.contains(&format!("kernel-devel-uname-r = {AMAZON_KERNEL}")),
+                "{dependencies}"
+            );
+            packages
         };
-        assert!(
-            dependencies.contains(&format!("kernel-devel-uname-r = {AMAZON_KERNEL}")),
-            "{dependencies}"
-        );
         let mut rpms: Vec<&str> = packages
             .split(' ')
             .filter_map(|word| word.rsplit('/').next())

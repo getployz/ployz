@@ -4,9 +4,12 @@
 //! The probe side reads `ployzd install --probe --json` and its preparation
 //! `state.json`, which serialize with serde defaults.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
+use ployz_core::CloudEnrollToken;
 use serde::{Deserialize, Serialize};
+
+use crate::cloud_enroll::EnrollStage;
 
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
@@ -21,6 +24,52 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) report: &'a HostReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prep: Option<Prep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) attempt: Option<&'a Attempt>,
+}
+
+/// The enroll attempt this host is running, or last ran, for Cloud's instruction `attempt_id`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Attempt {
+    pub(crate) attempt_id: String,
+    pub(crate) stage: EnrollStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) failure: Option<AttemptFailure>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub(crate) struct AttemptFailure {
+    pub(crate) stage: EnrollStage,
+    pub(crate) message: String,
+}
+
+/// Cloud's instruction to run `server add` here. The token lives only in memory.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnrollInstruction {
+    pub(crate) attempt_id: String,
+    pub(crate) token: CloudEnrollToken,
+    pub(crate) name: String,
+    pub(crate) storage: EnrollStorage,
+    pub(crate) policy: EnrollPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub(crate) enum EnrollStorage {
+    None,
+    Zfs,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EnrollPolicy {
+    #[serde(default)]
+    pub(crate) labels: BTreeMap<String, String>,
+    pub(crate) accepts_builds: bool,
+    pub(crate) accepts_services: bool,
+    pub(crate) accepts_ingress: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,7 +176,7 @@ pub(crate) enum ZfsPrep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Answer {
     Wait(Duration),
-    Enroll,
+    Enroll(Box<EnrollInstruction>),
     Stop(StopReason, String),
 }
 
@@ -158,7 +207,7 @@ pub(super) fn answer(body: &[u8]) -> Answer {
             #[serde(rename = "retryAfter")]
             retry_after: f64,
         },
-        Enroll {},
+        Enroll(EnrollInstruction),
         Stop {
             reason: StopReason,
             #[serde(default)]
@@ -167,7 +216,7 @@ pub(super) fn answer(body: &[u8]) -> Answer {
     }
     match serde_json::from_slice::<Wire>(body) {
         Ok(Wire::Wait { retry_after }) => Answer::Wait(wait_for(retry_after)),
-        Ok(Wire::Enroll {}) => Answer::Enroll,
+        Ok(Wire::Enroll(instruction)) => Answer::Enroll(Box::new(instruction)),
         Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
         Err(_) => Answer::Wait(UNKNOWN_WAIT),
     }

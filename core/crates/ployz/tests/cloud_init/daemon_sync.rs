@@ -24,7 +24,8 @@ fn recording_installer(
     daemon: JoinDaemon,
     outcome: InstallOutcome,
     calls: Arc<AtomicUsize>,
-) -> impl Fn(ployz_core::StorageChoice) -> std::future::Ready<Result<(), ployz::handlers::Error>> {
+) -> impl Fn(ployz::handlers::Installation) -> std::future::Ready<Result<(), ployz::handlers::Error>>
+{
     move |_| {
         calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(match outcome {
@@ -61,7 +62,7 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
 async fn run_enroll(
     matches: ArgMatches,
     install: impl Fn(
-        ployz_core::StorageChoice,
+        ployz::handlers::Installation,
     ) -> std::future::Ready<Result<(), ployz::handlers::Error>>
     + Send
     + 'static,

@@ -95,9 +95,13 @@ impl ZfsRoute {
                 Self::Debian { codename, keyring } => {
                     prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
                 }
-                Self::AmazonLinux => {
-                    prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
-                }
+                Self::AmazonLinux => prepare_amazon_zfs(
+                    &super::prepare::prepare_dir(paths).join("zfs"),
+                    &paths.modules_load_dir,
+                    os,
+                    kernel,
+                    OPENZFS_SHA256,
+                ),
             },
         )
     }
@@ -359,24 +363,32 @@ pub(super) fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), E
     Ok(())
 }
 
-/// Builds the pinned OpenZFS into DKMS and userspace RPMs and installs them; DKMS builds the
-/// module. `sha256` is the tarball's expected checksum.
+/// Installs the pinned OpenZFS as DKMS and userspace RPMs, reusing the ones host preparation
+/// built in `prepared` and building them otherwise; DKMS builds the module. `sha256` is the
+/// tarball's expected checksum.
 fn prepare_amazon_zfs(
+    prepared: &Path,
     modules_load_dir: &Path,
     os: &OsRelease,
     kernel: &str,
     sha256: &str,
 ) -> Result<(), Error> {
     build_zfs_module(os, kernel, || {
-        let scratch = staging_directory(Path::new("/var/tmp"))
-            .map_err(failed("staging the OpenZFS build"))?;
-        let tarball = download_openzfs(scratch.path(), sha256)?;
-        let mut dependencies = Command::new("dnf");
-        dependencies
-            .args(["install", "-y", &kernel_devel(kernel)])
-            .args(OPENZFS_BUILD_DEPENDENCIES);
-        run_step("installing build dependencies", &mut dependencies)?;
-        let rpms = make_openzfs_rpms(scratch.path(), &tarball)?;
+        let scratch;
+        let rpms = match built_rpms(&prepared.join(format!("zfs-{OPENZFS_VERSION}"))) {
+            Ok(rpms) => rpms,
+            Err(_) => {
+                scratch = staging_directory(Path::new("/var/tmp"))
+                    .map_err(failed("staging the OpenZFS build"))?;
+                let tarball = download_openzfs(scratch.path(), sha256)?;
+                let mut dependencies = Command::new("dnf");
+                dependencies
+                    .args(["install", "-y", &kernel_devel(kernel)])
+                    .args(OPENZFS_BUILD_DEPENDENCIES);
+                run_step("installing build dependencies", &mut dependencies)?;
+                make_openzfs_rpms(scratch.path(), &tarball)?
+            }
+        };
         // zfs-dkms's install builds and installs the module for the running kernel.
         let mut install = Command::new("dnf");
         install.args(["install", "-y"]).args(rpms);

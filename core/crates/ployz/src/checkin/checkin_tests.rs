@@ -81,6 +81,18 @@ impl Host for FakeHost {
     fn stale_ployzd(&self) -> Option<String> {
         self.stale.clone()
     }
+
+    async fn enroll(
+        &self,
+        _: &crate::checkin::EnrollInstruction,
+        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<(), String> {
+        Err("this fake does not enroll".to_owned())
+    }
+
+    async fn discard_zfs_build(&self) -> Result<(), String> {
+        Err("this fake does not discard".to_owned())
+    }
 }
 
 fn paths(dir: &tempfile::TempDir) -> Paths {
@@ -493,10 +505,10 @@ fn a_fleet_token_file_must_hold_one_token() {
 }
 
 #[tokio::test]
-async fn enroll_waits_ten_seconds_and_says_why() {
+async fn a_check_in_is_signed_and_its_answer_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let (url, server) = cloud("200 OK", r#"{"kind":"enroll","instruction":{}}"#).await;
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":10}"#).await;
     let host = FakeHost::default();
     let now = at("2026-10-16T00:00:00Z");
     let next = pass(&host, &mut client(&url), &key(), &paths, now).await;
@@ -504,7 +516,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
         next,
         Next::Wait {
             after: Duration::from_secs(10),
-            log: Some(ENROLL_LINE)
+            log: None
         }
     );
     let request = server.await.unwrap();
@@ -529,7 +541,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
 
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::Enroll);
+    assert_eq!(status.answer, Seen::Wait);
     assert_eq!(status.at, now);
     assert_eq!(status.blockers.first().unwrap().code, "kernel_too_old");
     assert_eq!(
@@ -584,6 +596,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
             blockers: Vec::new(),
             prepare_retries: 0,
             prepare_started: None,
+            attempt: None,
             refused: Some(Refusal {
                 token: sending(token).fingerprint(),
                 date: at,
@@ -1406,6 +1419,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
             prepare_retries: PREPARE_TRIES,
             prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
             refused: None,
+            attempt: None,
         },
         &paths,
     );
@@ -1491,6 +1505,7 @@ fn the_headline_says_where_the_host_stands() {
         prepare_retries: 0,
         prepare_started: None,
         refused: None,
+        attempt: None,
     };
     assert_eq!(
         status.headline(),

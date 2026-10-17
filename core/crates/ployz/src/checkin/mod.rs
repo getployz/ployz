@@ -6,6 +6,7 @@
 //! and `status.json` only remembers the last answer for `ployz status`.
 
 mod client;
+mod enroll;
 pub(crate) mod unit;
 mod wire;
 
@@ -21,10 +22,10 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
 use wire::{Answer, CheckinRequest, PrepState};
-pub(crate) use wire::{DockerPrep, Issue, Prep, Probe, StopReason, ZfsPrep};
+pub(crate) use wire::{
+    Attempt, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason, ZfsPrep,
+};
 
-pub(crate) const ENROLL_LINE: &str = "Enroll needs a newer ployz. Waiting.";
-const ENROLL_WAIT: Duration = Duration::from_secs(10);
 const PREPARE_RETRY: Duration = Duration::from_secs(10 * 60);
 const PREPARE_TRIES: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -71,6 +72,8 @@ pub(crate) enum CheckinEnd {
     Stopped(StopReason),
     /// The token file changed as the loop stopped. The loop stays enabled to restart with it.
     TokenChanged,
+    /// Cloud's enroll instruction ran to completion, so this host is a Server now.
+    Enrolled,
 }
 
 pub(crate) trait Host {
@@ -81,11 +84,20 @@ pub(crate) trait Host {
     async fn disable_loop(&self) -> Result<(), String>;
     /// Why the ployzd this loop runs with should be replaced, when it is older than this CLI.
     fn stale_ployzd(&self) -> Option<String>;
+    /// Run `server add` here as `instruction` says, telling `progress` each stage it starts.
+    async fn enroll(
+        &self,
+        instruction: &EnrollInstruction,
+        progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<(), String>;
+    /// Remove the ZFS build preparation left ready, for a Server enrolled without storage.
+    async fn discard_zfs_build(&self) -> Result<(), String>;
 }
 
 pub(crate) struct System {
     pub(crate) ployzd: PathBuf,
     pub(crate) stale: Option<String>,
+    pub(crate) cloud: String,
 }
 
 impl System {
@@ -93,6 +105,7 @@ impl System {
         Self {
             ployzd,
             stale: None,
+            cloud: String::new(),
         }
     }
 }
@@ -161,6 +174,18 @@ impl Host for System {
     fn stale_ployzd(&self) -> Option<String> {
         self.stale.clone()
     }
+
+    async fn enroll(
+        &self,
+        instruction: &EnrollInstruction,
+        progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<(), String> {
+        enroll::server_add(self, instruction, progress).await
+    }
+
+    async fn discard_zfs_build(&self) -> Result<(), String> {
+        enroll::discard_zfs_build(&self.ployzd).await
+    }
 }
 
 /// Kills the probe's whole process group, so a hung `docker` or `lsblk` under
@@ -228,6 +253,7 @@ pub(crate) enum Next {
     },
     Stop(StopReason, String),
     ClockOff(String),
+    Enrolled,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -235,6 +261,7 @@ pub(crate) enum Next {
 pub(crate) enum Seen {
     Wait,
     Enroll,
+    Joined,
     Stop,
     Refused,
     Unreachable,
@@ -262,6 +289,9 @@ pub(crate) struct LocalCheckin {
     pub(crate) prepare_started: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refused: Option<Refusal>,
+    /// The enroll attempt Cloud last instructed, sent on every check-in until Cloud replaces it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) attempt: Option<Attempt>,
 }
 
 /// Cloud's first refusal of a token, dated by Cloud's clock. A second refusal of the same token
@@ -314,7 +344,15 @@ impl LocalCheckin {
                 | Seen::Outdated
                 | Seen::ProbeFailed
                 | Seen::NoPloyzd
-        )
+        ) || self.enroll_failed()
+    }
+
+    fn enroll_failed(&self) -> bool {
+        self.answer == Seen::Wait
+            && self
+                .attempt
+                .as_ref()
+                .is_some_and(|attempt| attempt.failure.is_some())
     }
 
     pub(crate) fn headline(&self) -> Headline {
@@ -326,8 +364,14 @@ impl LocalCheckin {
             Seen::Outdated => Headline::open("Needs a newer ployz"),
             Seen::ProbeFailed => Headline::open("Can't inspect this host"),
             Seen::NoPloyzd => Headline::open("No ployzd"),
-            Seen::Enroll => Headline::open("Enroll needs a newer ployz"),
+            Seen::Enroll => Headline::open(
+                self.attempt
+                    .as_ref()
+                    .map_or("Enrolling", |attempt| enroll::title(attempt.stage)),
+            ),
+            Seen::Joined => Headline::open("Joined"),
             Seen::Wait if !self.blockers.is_empty() => Headline::open("Blocked"),
+            Seen::Wait if self.enroll_failed() => Headline::open("Enroll failed"),
             Seen::Wait => match self.prep {
                 Some(prep) if prep.docker == DockerPrep::Installing => {
                     Headline::open("Installing Docker")
@@ -396,6 +440,7 @@ pub(crate) async fn run<H: Host>(
                 ));
                 tokio::time::sleep(client::BACKOFF).await;
             }
+            Next::Enrolled => return enroll::finish(host, paths).await,
         }
     }
 }
@@ -503,6 +548,7 @@ async fn pass_from<H: Host>(
         .and_then(|status| status.refused.clone())
         .filter(|refusal| refusal.token == client.fingerprint());
     let mut prepare_retries = previous.as_ref().map_or(0, |status| status.prepare_retries);
+    let attempt = previous.as_ref().and_then(|status| status.attempt.clone());
     let mut prepare_started = previous.and_then(|status| status.prepare_started);
     let stale = host.stale_ployzd().map(|message| Issue {
         code: STALE_PLOYZD.to_owned(),
@@ -562,6 +608,7 @@ async fn pass_from<H: Host>(
         prepare_retries,
         prepare_started,
         refused: None,
+        attempt,
     };
     status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
@@ -592,18 +639,41 @@ async fn pass_from<H: Host>(
         cli_version: env!("CARGO_PKG_VERSION"),
         report: &report,
         prep: Some(prep),
+        attempt: status.attempt.as_ref(),
     };
     let next = match client.post(key, &request).await {
         client::Reply::Answer(Answer::Wait(after)) => {
             status.answer = Seen::Wait;
+            if status.enroll_failed() {
+                status.message = status
+                    .attempt
+                    .as_ref()
+                    .and_then(|attempt| attempt.failure.as_ref())
+                    .map(enroll::failure_line);
+            }
             Next::Wait { after, log: None }
         }
-        client::Reply::Answer(Answer::Enroll) => {
-            status.answer = Seen::Enroll;
+        client::Reply::Answer(Answer::Enroll(_)) if installing => {
+            status.answer = Seen::Wait;
             Next::Wait {
-                after: ENROLL_WAIT,
-                log: Some(ENROLL_LINE),
+                after: Duration::ZERO,
+                log: Some(enroll::LOOP_ENROLLS),
             }
+        }
+        client::Reply::Answer(Answer::Enroll(instruction)) => {
+            return enroll::attempt(
+                host,
+                client,
+                key,
+                paths,
+                &enroll::Report {
+                    report: &report,
+                    prep,
+                },
+                &instruction,
+                status,
+            )
+            .await;
         }
         client::Reply::Answer(Answer::Stop(reason, message)) => {
             status.answer = Seen::Stop;
@@ -674,8 +744,9 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
         prep: previous.as_ref().and_then(|status| status.prep),
         blockers: Vec::new(),
         prepare_retries: previous.as_ref().map_or(0, |status| status.prepare_retries),
-        prepare_started: previous.and_then(|status| status.prepare_started),
+        prepare_started: previous.as_ref().and_then(|status| status.prepare_started),
         refused: None,
+        attempt: previous.and_then(|status| status.attempt),
     };
     record(&status, paths);
 }

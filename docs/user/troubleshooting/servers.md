@@ -233,6 +233,16 @@ prepares Docker and ZFS meanwhile.
    answers, trying the one install chose, then PATH, then its own copy, and doesn't prepare Docker
    or ZFS with it. `No ployzd` means there is none at all: the loop exits until the same command
    installs one.
+10. Once you approve the server, the loop enrolls it and the **this server** line walks through
+    `Installing`, `Setting up ZFS`, `Enrolling`, `Queued to join`, `Joining` and `Publishing`,
+    the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
+    fleet first. When it reads `Joined`, the loop turns itself off and deletes
+    `/etc/ployz/fleet-token`.
+11. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
+    example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
+    and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
+    Cloud. If the loop restarts mid-enroll, it picks up the same attempt rather than starting a
+    second one.
 
 ## Ployz stops over a leftover network
 

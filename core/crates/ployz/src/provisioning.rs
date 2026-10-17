@@ -180,6 +180,15 @@ pub(crate) fn announce_storage(storage: StorageChoice) {
     }
 }
 
+/// What enrollment asks its installer to do on this host.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Installation {
+    /// Prepare the host and install the daemon, with `storage`.
+    Host(StorageChoice),
+    /// Replace only the daemon binary with this CLI's version.
+    Daemon,
+}
+
 enum Preparation<'user> {
     Host {
         storage: StorageChoice,
@@ -593,8 +602,39 @@ async fn install_local(
     preparation: Preparation<'_>,
 ) -> Result<(), ProvisionError> {
     bootstrap.verify_local_version().await?;
+    run_installer(bootstrap.daemon(), version, preparation).await
+}
+
+/// Carry out `installation` with the daemon already at `daemon`, which must report this
+/// CLI's version, so nothing is downloaded.
+///
+/// # Errors
+///
+/// Returns [`ProvisionError::NotRoot`] without root, or the installer's spawn or exit failure.
+pub(crate) async fn install_with(
+    daemon: &Path,
+    installation: Installation,
+) -> Result<(), ProvisionError> {
+    if !process_is_root() {
+        return Err(ProvisionError::NotRoot);
+    }
+    let preparation = match installation {
+        Installation::Host(storage) => Preparation::Host {
+            storage,
+            group_user: None,
+        },
+        Installation::Daemon => Preparation::SoftwareOnly,
+    };
+    run_installer(daemon, env!("CARGO_PKG_VERSION"), preparation).await
+}
+
+async fn run_installer(
+    daemon: &Path,
+    version: &str,
+    preparation: Preparation<'_>,
+) -> Result<(), ProvisionError> {
     installer_status(
-        tokio::process::Command::new(bootstrap.daemon())
+        tokio::process::Command::new(daemon)
             .args(install_arguments(version, preparation))
             .stdout(std::io::stderr())
             .status()
