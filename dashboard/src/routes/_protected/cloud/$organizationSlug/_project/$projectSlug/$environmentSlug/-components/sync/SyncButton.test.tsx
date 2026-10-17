@@ -25,7 +25,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); docume
 const fixApi = { project: "shop", environment: "fix-api" };
 const summary = (name: string) => ({ id: `id-${name}`, project: "shop", name, revision: 1 });
 const listing = (name: string, extra: Partial<EnvironmentListing> = {}): EnvironmentListing =>
-  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], protected: false, ...extra });
+  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], protected: false, protections: 0, ...extra });
 const branchView = (extra: Partial<BranchView> = {}): BranchView => ({
   environment: summary("fix-api"), parent: "production", kept: false, setup: [], live: [], to_parent: 3,
   closes_at: Date.now() / 1000 + 5 * 24 * 60 * 60 - 60, pull_request: null, ...extra,

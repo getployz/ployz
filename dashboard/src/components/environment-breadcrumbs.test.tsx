@@ -22,7 +22,7 @@ function TopBar() {
 }
 
 const listing = (name: string, extra: Partial<EnvironmentListing> = {}): EnvironmentListing =>
-  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], protected: false, ...extra });
+  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], protected: false, protections: 0, ...extra });
 
 async function renderAt(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
