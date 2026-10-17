@@ -62,6 +62,8 @@ agent-browser --session $S screenshot "$PWD/.verify/evidence/<name>.png"
 - Inspector textboxes save on Enter, not on blur. A `fill` that you never commit is gone after a reload.
 - After any write, `reload` and snapshot again. That proves the write persisted rather than living only in optimistic UI.
 - To see a page as another role, run `scripts/verify/as.sh ada|grace|linus`. It sets that person's cookie in the session and opens `/cloud`. Their cookies stay valid across reseeds, and Ada's `up.sh` lines still sign her back in. For the CLI, set `PLOYZ_TOKEN=$(jq -r .graceToken .verify/run/seed.json)` (or `.linusToken`, `.cliToken`) and `PLOYZ_CLOUD_URL` to the instance.
+- Grace and Linus each belong to two organizations, their personal one and `ada`. The seeded sessions pin `ada`, but a fresh sign-in as either picks one with an unordered query, so it can land in the personal organization. Pick `ada` in the switcher before you trust what the page shows.
+- grace@example.com and linus@example.com are already members of `ada`. To test inviting someone new, use another address.
 
 ## Evidence
 
