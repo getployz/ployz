@@ -193,7 +193,7 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   actor: Actor,
   input: { readonly organizationSlug: string } & EnrollInput,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   const encryption = yield* SecretEncryption;
   const ids = input.ids.filter((id) => /^[0-9a-f-]{36}$/u.test(id));
@@ -258,7 +258,7 @@ export const cancelServerEnrollment = Effect.fn("ServerEnrollment.cancel")(funct
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -292,7 +292,7 @@ export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id?: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
     .select({

@@ -20,14 +20,14 @@ const StageInput = Schema.Struct({
 export const listPlacementsServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Organization))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
     Effect.flatMap(({ organization }) => listPlacements(organization.id)),
   )));
 
 export const stagePlacementServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(StageInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     // Clearing a staged placement starts no run, so it stays open while the gate is closed.
     Effect.flatMap(({ organization }) => data.staged === null
       ? stagePlacement(organization.id, data)
@@ -37,21 +37,21 @@ export const stagePlacementServerFn = createServerFn({ method: "POST" })
 export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(VolumeInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(({ organization }) => discardPlacement(organization.id, context.actor.userId, data.volumeId, data.environment)),
   )));
 
 export const stageRestoreServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(StageRestoreInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(({ organization }) => unlessPlacementRefused(organization.id, stageRestore(organization.id, context.actor.userId, data))),
   )));
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ ...Organization.fields, server: Machine, accepting: Schema.Array(Machine) })))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
     Effect.flatMap(({ organization }) => placementRefusal(organization.id).pipe(Effect.flatMap((refusal) => refusal === null
       ? stageOffServer(organization.id, data.server, data.accepting)
       : Effect.fail(new Conflict({ userFacing: true, message: refusal.message }))))),
@@ -60,6 +60,6 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(DeleteCopyInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:delete-copy").pipe(
     Effect.flatMap(({ organization }) => unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, context.actor.userId, data))),
   )));

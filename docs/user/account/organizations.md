@@ -31,13 +31,17 @@ In the sidebar, click **Organization** for its settings:
 
 ## Invite people
 
-Everyone in an organization has one role:
+Everyone in an organization has one role: **Owner**, **Admin** or **Member**. Each role can do
+everything the role below it can, and more:
 
-- **Owner**: everything, including deleting the organization and making other owners.
-- **Admin**: everything an owner can do, except deleting the organization. Only an owner can
-  make or remove an owner.
-- **Member**: deploys and changes projects and servers, but can't invite, change roles, remove
-  anyone, turn support access on or off, or forget servers.
+| Role   | Can do |
+| ------ | ------ |
+| Member | See the organization, its members, projects, servers, volumes, variables, logs and metrics. Create projects and environments, edit projects, stage changes, deploy, destroy and merge them, restart and stop services, answer approvals, and make their own organization tokens. |
+| Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, protect environments, delete volume copies, and add, operate, open a shell on and remove servers. |
+| Owner  | Also manage billing, delete the organization, and make or remove an owner. |
+
+When you try something your role can't do, Ployz says who can: "Only an owner or admin of this
+Organization can do this." or "Only an owner of this Organization can do this."
 
 To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
 **Admin**, add their email, and click **Make link**. When Ployz Cloud has email on, it emails the

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { can, type Permission } from "#/modules/organization/permissions";
 import type { SupportShows } from "#/modules/support-access/support-access";
 
 export const Actor = Schema.Struct({
@@ -27,3 +28,6 @@ export type Caller = Actor & {
   readonly support: SupportShows | null;
   readonly via: "dashboard" | "cli" | "agent";
 };
+
+/** Whether the Caller's member role holds `permission`. Support has no member role, so it holds none here. */
+export const callerCan = (caller: Pick<Caller, "role">, permission: Permission) => caller.role !== null && can(caller.role, permission);

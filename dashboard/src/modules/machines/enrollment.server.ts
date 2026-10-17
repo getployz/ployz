@@ -76,7 +76,7 @@ function credentialsMatch(expected: string, actual: string) {
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
 )(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:add");
   return { organization, userId: actor.userId };
 });
 

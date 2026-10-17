@@ -97,7 +97,7 @@ export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(fu
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const inOrganization = eq(serverUpgradeAttempt.organizationId, organization.id);
   const rows = yield* drizzle.selectDistinctOn([serverUpgradeAttempt.machineId], {
@@ -123,7 +123,7 @@ export const requestServerUpgrade = Effect.fn("ServerUpgrade.request")(function*
   actor: Actor,
   input: RequestServerUpgradeInput,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
   yield* sendInngestEvent(createServerUpgradeRequestedEvent({
     organizationId: organization.id,
     machineId: input.machineId,

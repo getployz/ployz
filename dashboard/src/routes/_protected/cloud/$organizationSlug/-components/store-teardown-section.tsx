@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
 import type { DeploymentStatus, EnvironmentListing, Removal } from "@ployz/sdk";
@@ -13,6 +14,8 @@ import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/mo
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { can } from "#/modules/organization/permissions";
 import { deploymentDestination } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployments/run-search";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 
@@ -29,7 +32,7 @@ function ended(status: DeploymentStatus) {
  * didn't finish shows here, with its Deployment, until it's tried again.
  */
 export function StoreTeardownSection({ organizationSlug, target, environments, name, place, title, description, actionLabel,
-  disabledReason, headingId, onCompleted }: {
+  disabledReason: blocked, headingId, onCompleted }: {
   organizationSlug: string;
   target: TeardownTarget;
   /** The Project's Environments, as the Store lists them now. */
@@ -47,6 +50,10 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const writer = useStoreWriter(organizationSlug);
   const [open, setOpen] = useState(false);
   const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
+  // Support has no row here; the Store still checks it.
+  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  const refused = yourRole !== undefined && !can(yourRole, target.environment === null ? "project:delete" : "environment:delete");
+  const disabledReason = refused ? "Only an owner or admin can delete it." : blocked;
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
   const commit = (command: Parameters<typeof writer.commit>[0], handles: readonly string[]) =>
     writer.commit(command, handles).isPersisted.promise;

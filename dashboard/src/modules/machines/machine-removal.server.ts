@@ -289,7 +289,7 @@ export const cancelMachineRemoveAttemptActivity = Effect.fn(
 
 export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
   function* (actor: Actor, input: LoadMachineDataLossInput) {
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:remove");
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(organization.id);
     if (session.status !== "connected") {
@@ -319,7 +319,7 @@ export const loadMachineDataLoss = Effect.fn("MachineRemoval.loadDataLoss")(
 
 export const enqueueMachineRemove = Effect.fn("MachineRemoval.enqueue")(
   function* (actor: Actor, input: EnqueueMachineRemoveInput) {
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:remove");
     // The same frame check an agent's removal runs: a Server Cloud doesn't see is never sent a removal.
     const plan = yield* planRemove(organization.id, input.machineId, input.confirmDataLoss);
     if (plan === null) {
@@ -351,7 +351,7 @@ export const startMachineRemove = Effect.fn("MachineRemoval.start")(
 
 export const getMachineRemoveAttempt = Effect.fn("MachineRemoval.getAttempt")(
   function* (actor: Actor, input: GetMachineRemoveAttemptInput) {
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
     const attempt = yield*
       loadAuthorizedMachineRemoveAttempt({
         attemptId: input.attemptId,

@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
-import type { Caller, TokenKind } from "#/modules/identity/actor";
+import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -60,7 +60,7 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
 /** Owners and admins reach every token in the Organization; anyone else only their own. */
 const tokensReachableBy = (caller: Caller) => {
   const inOrganization = eq(organizationToken.organizationId, caller.organization.id);
-  return caller.role === "owner" || caller.role === "admin" ? inOrganization : and(inOrganization, eq(organizationToken.userId, caller.userId));
+  return callerCan(caller, "tokens:manage") ? inOrganization : and(inOrganization, eq(organizationToken.userId, caller.userId));
 };
 
 /** The tokens the Caller can revoke, expired ones included, and the Caller's own signed-in devices. */
