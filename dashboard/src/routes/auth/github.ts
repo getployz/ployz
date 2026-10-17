@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Data, Effect } from "effect";
 import { getAuthSessionEffect, signInGithubEffect } from "#/auth/auth.server";
+import { claimSignInCookie } from "#/modules/identity/claim-sign-in.server";
 import { runAppEffect } from "#/server/run.server";
 
 // Sign in and Deploy on the marketing site link here: one click from the page to GitHub's consent screen.
@@ -27,7 +28,13 @@ const githubSignIn = Effect.fn("Auth.githubSignIn")(function* (request: Request)
   const response = yield* signInGithubEffect(request.headers, callbackURL);
   const location = response.headers.get("location");
   if (!response.ok || location === null) return yield* new GithubSignInRefused({ status: response.status });
-  return seeOther(location);
+  const redirect = seeOther(location);
+  // Only the claim page's own button marks the sign-in, so a link from another site cannot claim for the visitor.
+  const claim = request.headers.get("sec-fetch-site") === "same-origin"
+    ? claimSignInCookie(callbackURL, new Date(), new URL(request.url).protocol === "https:")
+    : null;
+  if (claim !== null) redirect.headers.append("set-cookie", claim);
+  return redirect;
 });
 
 export function handleGithubSignIn(request: Request) {

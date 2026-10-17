@@ -2,16 +2,15 @@ import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, Navigate, redirect, useLocation, useNavigate } from "@tanstack/react-router";
 import { useAuth } from "#/auth/auth.hooks";
 import { PloyzMark } from "#/components/icons/ployz-logo";
-import { RelativeTime } from "#/components/relative-time";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
-import { plural } from "#/lib/plural";
 import { prefetchRemote } from "#/collections/route-data";
 import { claimOrganizationServerFn } from "#/modules/identity/claim.functions";
 import { type Claim, claimQueryOptions } from "#/modules/identity/claim.queries";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
+import { ClaimSummary } from "#/routes/claim/-components/claim-summary";
 
 export const Route = createFileRoute("/claim/$secret")({
   loader: async ({ params, context }) => {
@@ -82,26 +81,18 @@ function Taken({ signedIn }: { signedIn: boolean }) {
   );
 }
 
-function Summary({ claim }: { claim: Pending }) {
-  return (
-    <p className="text-sm text-muted-foreground">
-      {plural(claim.servers, "Server")} and {plural(claim.projects, "Project")}, gone <RelativeTime date={claim.expiresAt} /> unless someone keeps it.
-    </p>
-  );
-}
-
 function ClaimSignIn({ claim }: { claim: Pending }) {
   const callbackURL = useLocation({ select: (location) => location.href });
   return (
     <div className="flex flex-col gap-6">
       <LoginPanel
-        title={`An agent built ${claim.organization.name}`}
+        title={`Keep ${claim.organization.name}`}
         description="Sign in with GitHub to keep it."
         action="Continue with GitHub"
         callbackURL={callbackURL}
       />
       <div className="text-center">
-        <Summary claim={claim} />
+        <ClaimSummary claim={claim} />
       </div>
     </div>
   );
@@ -119,8 +110,8 @@ function Keep({ claim, email }: { claim: Pending; email: string }) {
     <div className="flex flex-col items-center gap-6 text-center">
       <PloyzMark className="size-11" decorative />
       <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold">An agent built {claim.organization.name}</h1>
-        <Summary claim={claim} />
+        <h1 className="text-xl font-semibold">Keep {claim.organization.name}</h1>
+        <ClaimSummary claim={claim} />
         <p className="text-sm text-muted-foreground">You're signed in as {email}.</p>
       </div>
       <Button className="w-full" disabled={keep.isPending || keep.isSuccess} onClick={() => keep.mutate()}>

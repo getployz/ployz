@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { member, user } from "#/modules/identity/tables";
+import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
@@ -50,9 +51,17 @@ export const claimUrlForSecret = Effect.fn("Identity.claimUrlForSecret")(functio
   return new URL(`/claim/${secret}`, config.app.url).href;
 });
 
-/** The URL a person opens to claim the Organization. */
+/**
+ * The URL a person opens to claim the Organization. After the encryption secret rotates, the stored hash still names the
+ * old secret; this moves it to the current one, so the URL handed out is the one that claims.
+ */
 export const claimUrlFor = Effect.fn("Identity.claimUrlFor")(function* (organizationId: string) {
-  return yield* claimUrlForSecret(yield* claimSecretFor(organizationId));
+  const secret = yield* claimSecretFor(organizationId);
+  const hash = hashClaimSecret(secret);
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(organization).set({ claimSecretHash: hash })
+    .where(and(eq(organization.id, organizationId), sql`${organization.claimSecretHash} is distinct from ${hash}`));
+  return yield* claimUrlForSecret(secret);
 });
 
 /** Refuses `claim_required` while the Organization is anonymous, naming the claim URL a person opens first. */

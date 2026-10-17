@@ -22,16 +22,28 @@ export const getPostHogBrowserConfig = createIsomorphicFn()
  */
 const SECRET_PATHS = ["/invite", "/claim", "/device"];
 
-const isSecretPath = (pathname: string) => SECRET_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+const isSecretPath = (pathname: string) => {
+  const path = pathname.toLowerCase();
+  return SECRET_PATHS.some((secret) => path === secret || path.startsWith(`${secret}/`));
+};
 
-const isSecretUrl = (value: string) => URL.canParse(value, window.location.origin) &&
-  isSecretPath(new URL(value, window.location.origin).pathname);
+/** An absolute URL or a rooted path; any other text, like a button's "Invite", is not a URL. */
+const isSecretUrl = (value: string) => (value.startsWith("/") || URL.canParse(value)) &&
+  URL.canParse(value, window.location.origin) && isSecretPath(new URL(value, window.location.origin).pathname);
+
+const JSON_STRING = /"(?:[^"\\]|\\.)*"/g;
+
+/** Checks every string in a replay batch, however deep: rrweb nests URLs in meta events and DOM snapshots. */
+const carriesSecretUrl = (snapshotData: Properties[string]) =>
+  JSON.stringify(snapshotData ?? null).match(JSON_STRING)?.some((literal: string) => isSecretUrl(String(JSON.parse(literal)))) ?? false;
 
 const withoutSecretUrls = (properties: Properties | undefined) =>
   properties === undefined ? undefined : Object.fromEntries(Object.entries(properties).filter(([, value]) => !isSecretUrl(String(value))));
 
+/** A replay batch naming a secret page holds that page's DOM too, so the whole batch goes, not just the URL. */
 function dropSecretUrls(event: CaptureResult | null): CaptureResult | null {
-  if (event === null || isSecretPath(window.location.pathname) || isSecretUrl(String(event.properties["$current_url"]))) return null;
+  if (event === null || isSecretPath(window.location.pathname) || isSecretUrl(String(event.properties["$current_url"])) ||
+    carriesSecretUrl(event.properties["$snapshot_data"])) return null;
   return {
     ...event,
     properties: withoutSecretUrls(event.properties) ?? {},
@@ -60,18 +72,19 @@ export function startPostHog(config: PostHogBrowserConfig, session: AuthSession 
   }
 }
 
-let pausedOnSecretPage = false;
+let resumeReplayAfterSecretPage = false;
 
-/** Called before each client navigation: the replay pauses for a secret page and resumes once it is left. */
+/**
+ * Called before each client navigation: the replay stops for a secret page and resumes once it is left, if it was on.
+ * It stops even when not yet recording, since a replay waiting on remote config would otherwise start on the secret page.
+ */
 export function followPostHogNavigation(pathname: string) {
   if (!posthog.__loaded) return;
   if (isSecretPath(pathname)) {
-    if (!pausedOnSecretPage && posthog.sessionRecordingStarted()) {
-      pausedOnSecretPage = true;
-      posthog.stopSessionRecording();
-    }
-  } else if (pausedOnSecretPage) {
-    pausedOnSecretPage = false;
+    resumeReplayAfterSecretPage ||= !posthog.config.disable_session_recording;
+    posthog.stopSessionRecording();
+  } else if (resumeReplayAfterSecretPage) {
+    resumeReplayAfterSecretPage = false;
     posthog.startSessionRecording();
   }
 }

@@ -1,26 +1,24 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, count, eq, inArray, ne, sql } from "drizzle-orm";
-import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
+import crypto from "node:crypto";
+import { and, asc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Actor } from "#/modules/identity/actor";
-import { hashClaimSecret } from "#/modules/identity/claim-required.server";
-import { invitation, member, organizationToken, user } from "#/modules/identity/tables";
-import { organizationBillingState } from "#/modules/billing/tables";
-import { organizationGithubInstallation } from "#/modules/github/tables";
+import { claimSecretFor, hashClaimSecret } from "#/modules/identity/claim-required.server";
+import type { ClaimSignIn } from "#/modules/identity/claim-sign-in.server";
+import { member, organizationToken, user } from "#/modules/identity/tables";
 import { countOrganizationMachines } from "#/modules/machines/connections.server";
 import { machineEnrollmentToken, machineRemoveAttempt, serverAccess } from "#/modules/machines/tables";
-import { fleetToken } from "#/modules/machines/waiting/tables";
-import { personalOrganizationName } from "#/modules/organization/organization-state";
+import { fleetToken, serverEnrollment } from "#/modules/machines/waiting/tables";
 import { updateActorSessionsOrganization } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
-import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
 /** `ployz login` tokens default to 90 days; the claimed agent's token gets the same. */
 const CLAIMED_TOKEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
 
 /** What the claim page shows for a secret, to a viewer who may be signed in. */
 export type Claim =
@@ -29,7 +27,8 @@ export type Claim =
     readonly organization: { readonly name: string; readonly slug: string };
     readonly servers: number;
     readonly projects: number;
-    readonly expiresAt: Date;
+    /** Whole hours until teardown, counted on the server so the first paint already says it. */
+    readonly hoursLeft: number;
   }
   | { readonly state: "claimed"; readonly organization: { readonly slug: string } }
   | { readonly state: "taken" }
@@ -38,15 +37,23 @@ export type Claim =
 const unknown = () => new NotFound({ message: "This claim link is unknown." });
 const taken = () => new Conflict({ message: "Someone already kept this sandbox.", userFacing: true });
 
-/** The Organization under this secret, its anonymous owners (none once a person kept it), and when their tokens lapse. */
+const sameSecret = (a: string, b: string) => crypto.timingSafeEqual(
+  crypto.createHash("sha256").update(a).digest(),
+  crypto.createHash("sha256").update(b).digest(),
+);
+
+/**
+ * The Organization under this secret, its anonymous owners (none once a person kept it), and when their tokens lapse.
+ * The secret must also be the one the current encryption secret derives, so rotating it retires every outstanding URL.
+ */
 const findBySecret = Effect.fn("Identity.findClaimOrganization")(function* (secret: string) {
   const { drizzle } = yield* Database;
   const [found] = yield* drizzle
-    .select({ id: organization.id, name: organization.name, slug: organization.slug, createdAt: organization.createdAt })
+    .select({ id: organization.id, name: organization.name, slug: organization.slug })
     .from(organization)
     .where(eq(organization.claimSecretHash, hashClaimSecret(secret)))
     .limit(1);
-  if (found === undefined) return null;
+  if (found === undefined || !sameSecret(secret, yield* claimSecretFor(found.id))) return null;
   const owners = yield* drizzle
     .select({ userId: member.userId })
     .from(member)
@@ -85,17 +92,17 @@ export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: stri
     organization: { name: found.name, slug: found.slug },
     servers,
     projects: projects.length,
-    expiresAt: found.expiresAt,
+    hoursLeft: Math.ceil((found.expiresAt.getTime() - Date.now()) / HOUR_MS),
   } satisfies Claim;
 });
 
 /**
  * The person keeps the Organization in one transaction: they become its sole owner, every row the anonymous agent
- * made now names them, the agent's token runs 90 more days, the anonymous user goes, their sessions act in it, and the
- * empty Organization their sign-in just made goes too. The secret keeps naming the Organization, so the owner claiming
- * again changes nothing and anyone else hears it was kept.
+ * made now names them, the agent's token runs 90 more days, the anonymous user goes, and their sessions act in it.
+ * When the claim page started their sign-in, the empty Organization that sign-in made goes too. The secret keeps
+ * naming the Organization, so the owner claiming again changes nothing and anyone else hears it was kept.
  */
-export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: Actor, secret: string) {
+export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: Actor, secret: string, signIn?: ClaimSignIn) {
   // The Store makes its tables when it opens, and the cleanup reads them.
   yield* cloudStore;
   const database = yield* Database;
@@ -130,55 +137,66 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
       .where(inArray(machineEnrollmentToken.createdByUserId, anonymousIds));
     yield* drizzle.update(fleetToken).set({ createdByUserId: actor.userId })
       .where(inArray(fleetToken.createdByUserId, anonymousIds));
+    yield* drizzle.update(serverEnrollment).set({ requestedByUserId: actor.userId })
+      .where(inArray(serverEnrollment.requestedByUserId, anonymousIds));
     yield* drizzle.delete(user).where(inArray(user.id, anonymousIds));
     yield* updateActorSessionsOrganization(actor, id, found.slug);
-    yield* removeSignInOrganization(actor, found);
+    if (signIn !== undefined) yield* removeSignInOrganization(actor, id, signIn);
     return { slug: found.slug };
   }));
 });
 
 /**
- * The Organization sign-in made for a person who signed up to claim this sandbox, if nothing ever happened in it:
- * their account is newer than the sandbox, it is their only other Organization, it carries its auto-created name, they
- * are its only member, and it has no Pairing, token, invite, billing, GitHub installation or Config Store rows.
+ * Back from the GitHub sign-in the claim page started: the person keeps the sandbox without a second click. A claim
+ * that cannot go through (taken, expired, unknown) leaves the page to say so.
  */
-const removeSignInOrganization = Effect.fn("Identity.removeSignInOrganization")(function* (actor: Actor, sandbox: { id: string; createdAt: Date }) {
-  const { drizzle } = yield* Database;
-  const [person] = yield* drizzle.select({ id: user.id, name: user.name, email: user.email, createdAt: user.createdAt }).from(user).where(eq(user.id, actor.userId));
-  if (person === undefined || person.createdAt <= sandbox.createdAt) return;
-  const others = yield* drizzle
-    .select({ id: organization.id, name: organization.name })
-    .from(member)
-    .innerJoin(organization, eq(organization.id, member.organizationId))
-    .where(and(eq(member.userId, actor.userId), ne(organization.id, sandbox.id)))
-    .for("update", { of: organization });
-  const [only] = others;
-  if (others.length !== 1 || only === undefined || only.name !== personalOrganizationName(person)) return;
-  if (!(yield* isUntouched(only.id))) return;
-  yield* drizzle.delete(organization).where(eq(organization.id, only.id));
+export const finishClaimSignIn = Effect.fn("Identity.finishClaimSignIn")(function* (secret: string, actor: Actor, signIn: ClaimSignIn) {
+  yield* claimOrganization(actor, secret, signIn).pipe(
+    Effect.catchTags({ NotFound: () => Effect.void, Conflict: () => Effect.void }),
+  );
+  return yield* readClaim(secret, actor);
 });
 
-/** The Config Store tables an Organization's removal clears, so no row in them means the Store holds nothing for it. */
-const STORE_TABLES = ["config_project", "config_create", "config_branch", "config_check_suite", "config_build_order", "config_pull_request", "config_sync_receipt"];
+/**
+ * The Organization the claim's own sign-in made, if nothing ever happened in it: the person's account and that
+ * Organization both date from after the claim page started the sign-in, it is their only other Organization, and
+ * no table that names an Organization holds a row for it beyond their membership.
+ */
+const removeSignInOrganization = Effect.fn("Identity.removeSignInOrganization")(function* (actor: Actor, sandboxId: string, signIn: ClaimSignIn) {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.select({ createdAt: user.createdAt }).from(user).where(eq(user.id, actor.userId));
+  if (person === undefined || person.createdAt < signIn.startedAt) return;
+  const others = yield* drizzle
+    .select({ id: organization.id, createdAt: organization.createdAt })
+    .from(member)
+    .innerJoin(organization, eq(organization.id, member.organizationId))
+    .where(and(eq(member.userId, actor.userId), ne(organization.id, sandboxId)))
+    .for("update", { of: organization });
+  const [only] = others;
+  if (others.length !== 1 || only === undefined || only.createdAt < signIn.startedAt) return;
+  if (!(yield* isUntouched(only.id))) return;
+  yield* drizzle.delete(organization).where(and(eq(organization.id, only.id), gte(organization.createdAt, signIn.startedAt)));
+});
 
+/**
+ * One member and no row in any other table with an `organization_id` column, read from the schema so new tables count.
+ * The change log is left out: its rows only record writes to the other tables, and making the Organization wrote some.
+ */
 const isUntouched = Effect.fn("Identity.isUntouchedOrganization")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  const rowsIn = (table: PgTable, organizationColumn: AnyPgColumn) =>
-    drizzle.select({ rows: count() }).from(table).where(eq(organizationColumn, organizationId)).pipe(
-      Effect.map((result) => result[0]?.rows ?? 0),
-    );
-  const [members, ...others] = yield* Effect.all([
-    rowsIn(member, member.organizationId),
-    rowsIn(organizationPairing, organizationPairing.organizationId),
-    rowsIn(organizationToken, organizationToken.organizationId),
-    rowsIn(invitation, invitation.organizationId),
-    rowsIn(fleetToken, fleetToken.organizationId),
-    rowsIn(machineEnrollmentToken, machineEnrollmentToken.organizationId),
-    rowsIn(organizationBillingState, organizationBillingState.organizationId),
-    rowsIn(organizationGithubInstallation, organizationGithubInstallation.organizationId),
-  ]);
-  if (members !== 1 || others.some((rows) => rows !== 0)) return false;
-  const stored = sql.join(STORE_TABLES.map((table) => sql`select 1 from ${sql.identifier(table)} where organization_id = ${organizationId}`), sql` union all `);
-  const [row] = yield* drizzle.execute<{ stored: boolean }>(sql`select exists (${stored}) as stored`, "objects");
-  return row?.stored === false;
+  const tables = yield* drizzle.execute<{ name: string }>(sql`
+    select c.table_name as name
+    from information_schema.columns c
+    join information_schema.tables t on t.table_schema = c.table_schema and t.table_name = c.table_name
+    where c.table_schema = current_schema() and c.column_name = 'organization_id' and t.table_type = 'BASE TABLE'
+      and c.table_name not in ('member', 'organization_change')`, "objects");
+  const rows = sql.join(
+    [
+      sql`(select 1 from member where organization_id = ${organizationId} offset 1)`,
+      ...tables.map(({ name }) => sql`(select 1 from ${sql.identifier(name)} where organization_id = ${organizationId})`),
+    ],
+    sql` union all `,
+  );
+  const [row] = yield* drizzle.execute<{ touched: boolean }>(sql`select exists (${rows}) as touched`, "objects");
+  return row?.touched === false;
 });

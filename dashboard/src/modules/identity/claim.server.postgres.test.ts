@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
-import { eq } from "drizzle-orm";
-import { Effect, Exit, Layer } from "effect";
+import { eq, sql } from "drizzle-orm";
+import { Effect, Exit, Layer, Redacted } from "effect";
 import { expect } from "vitest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
@@ -9,14 +9,16 @@ import { githubInstallation, organizationGithubInstallation } from "#/modules/gi
 import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { type ClaimedAction, claimUrlFor, isAnonymousOrganization, requireClaimed } from "#/modules/identity/claim-required.server";
-import { claimOrganization, readClaim } from "#/modules/identity/claim.server";
+import { claimOrganization, finishClaimSignIn, readClaim } from "#/modules/identity/claim.server";
 import { member, organizationToken, session, user } from "#/modules/identity/tables";
-import { machineEnrollmentToken, machineRemoveAttempt } from "#/modules/machines/tables";
+import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { fleetToken } from "#/modules/machines/waiting/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
 import { organization } from "#/modules/organization/tables";
 import { AuthLive } from "#/server/auth.server";
+import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { machineId } from "#/test/ids";
 import { storeTestCloud } from "#/test/store-cloud";
 
@@ -109,8 +111,9 @@ it.live("a person who claims the sandbox becomes its sole owner and the agent's 
 it.live("the claim removes the empty Organization sign-in made and moves the person's sessions onto the sandbox", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
+    const signIn = { startedAt: new Date() };
     const ada = yield* person("Ada", "ada@example.test");
-    yield* claimOrganization(ada.actor, agent.secret);
+    yield* claimOrganization(ada.actor, agent.secret, signIn);
     const { drizzle } = yield* Database;
     expect(yield* drizzle.select({ id: organization.id }).from(organization)).toEqual([{ id: agent.organization.id }]);
     const sessions = yield* drizzle.select({ activeOrganizationId: session.activeOrganizationId, activeOrganizationSlug: session.activeOrganizationSlug })
@@ -121,23 +124,25 @@ it.live("the claim removes the empty Organization sign-in made and moves the per
 it.live("a returning person keeps an Organization they used", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
+    const signIn = { startedAt: new Date() };
     const ada = yield* person("Ada", "ada@example.test");
     const store = yield* cloudStore;
     yield* Effect.promise(() => store.write(ada.personalOrganizationId, {
       command: "create_project", id: "00000000-0000-4000-8000-00000000c602", name: "shop", default_environment: "00000000-0000-4000-8000-00000000c603",
     }));
-    yield* claimOrganization(ada.actor, agent.secret);
+    yield* claimOrganization(ada.actor, agent.secret, signIn);
     const { drizzle } = yield* Database;
     const ids = (yield* drizzle.select({ id: organization.id }).from(organization)).map((row) => row.id).sort();
     expect(ids).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
     expect(yield* membersOf(ada.personalOrganizationId)).toEqual([{ userId: ada.actor.userId, role: "owner" }]);
   })));
 
-it.live("a person whose account predates the sandbox keeps their Organization even when nothing ever happened in it", () =>
+it.live("a person whose account predates the claim's sign-in keeps their Organization even when nothing ever happened in it", () =>
   inCloud(Effect.gen(function* () {
+    const signIn = { startedAt: new Date() };
     const ada = yield* returning("Ada", "ada@example.test");
     const agent = yield* sandbox();
-    yield* claimOrganization(ada.actor, agent.secret);
+    yield* claimOrganization(ada.actor, agent.secret, signIn);
     expect(yield* organizationIds()).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
   })));
 
@@ -145,6 +150,7 @@ it.live("a new person's Organization with billing state or a GitHub installation
   inCloud(Effect.gen(function* () {
     const first = yield* sandbox();
     const second = yield* sandbox();
+    const signIn = { startedAt: new Date() };
     const ada = yield* person("Ada", "ada@example.test");
     const bob = yield* person("Bob", "bob@example.test");
     const { drizzle } = yield* Database;
@@ -153,22 +159,23 @@ it.live("a new person's Organization with billing state or a GitHub installation
     yield* drizzle.insert(organizationGithubInstallation).values({
       organizationId: bob.personalOrganizationId, installationId: 4242, connectedByUserId: bob.actor.userId, connectedGithubLogin: "bob",
     });
-    yield* claimOrganization(ada.actor, first.secret);
-    yield* claimOrganization(bob.actor, second.secret);
+    yield* claimOrganization(ada.actor, first.secret, signIn);
+    yield* claimOrganization(bob.actor, second.secret, signIn);
     expect(yield* organizationIds()).toEqual([first.organization.id, second.organization.id, ada.personalOrganizationId, bob.personalOrganizationId].sort());
   })));
 
 it.live("a repeat claim deletes nothing, even once the person's own Organization has emptied", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
+    const signIn = { startedAt: new Date() };
     const ada = yield* person("Ada", "ada@example.test");
     const { drizzle } = yield* Database;
     yield* drizzle.insert(fleetToken).values({
       organizationId: ada.personalOrganizationId, name: "fleet", tokenHash: "c".repeat(64), expiresAt: new Date(Date.now() + DAY_MS), createdByUserId: ada.actor.userId,
     });
-    yield* claimOrganization(ada.actor, agent.secret);
+    yield* claimOrganization(ada.actor, agent.secret, signIn);
     yield* drizzle.delete(fleetToken).where(eq(fleetToken.organizationId, ada.personalOrganizationId));
-    yield* claimOrganization(ada.actor, agent.secret);
+    yield* claimOrganization(ada.actor, agent.secret, signIn);
     expect(yield* organizationIds()).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
   })));
 
@@ -218,12 +225,100 @@ it.live("every row the agent made now names the person, so deleting the anonymou
     yield* drizzle.insert(machineRemoveAttempt).values({
       organizationId: agent.organization.id, requestedByUserId: agent.userId, machineId: machineId("0"), confirmDataLoss: [],
     });
+    const encryption = yield* SecretEncryption;
+    yield* drizzle.insert(organizationMachine).values({
+      organizationId: agent.organization.id, machineId: machineId("0"), clusterKey: "e".repeat(64),
+      encryptedCapability: encryption.encrypt("ployz1:cloud:0"), isDialEntry: false,
+    });
+    yield* drizzle.insert(serverAccess).values({
+      organizationId: agent.organization.id, machineId: machineId("0"), credentialId: crypto.randomUUID(), credentialKind: "token", userId: agent.userId, revokedAt: new Date(),
+    });
+    const [fleet] = yield* drizzle.select({ id: fleetToken.id }).from(fleetToken);
+    yield* drizzle.execute(sql`
+      with waiting as (
+        insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+        values (${agent.organization.id}, ${fleet?.id}, 'key', '{}', '192.0.2.1') returning id
+      )
+      insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, requested_by_user_id)
+      select ${agent.organization.id}, waiting.id, ${fleet?.id}, 'founder', '{}', ${crypto.randomUUID()}, 'requested', ${agent.userId} from waiting`);
 
     yield* claimOrganization(ada.actor, agent.secret);
 
     expect(yield* drizzle.select({ by: fleetToken.createdByUserId }).from(fleetToken)).toEqual([{ by: ada.actor.userId }]);
     expect(yield* drizzle.select({ by: machineEnrollmentToken.createdByUserId }).from(machineEnrollmentToken)).toEqual([{ by: ada.actor.userId }]);
     expect(yield* drizzle.select({ by: machineRemoveAttempt.requestedByUserId }).from(machineRemoveAttempt)).toEqual([{ by: ada.actor.userId }]);
+    expect(yield* drizzle.select({ by: serverAccess.userId }).from(serverAccess)).toEqual([{ by: ada.actor.userId }]);
+    expect(yield* drizzle.execute<{ by: string }>(sql`select requested_by_user_id as by from server_enrollment`, "objects")).toEqual([{ by: ada.actor.userId }]);
+  })));
+
+it.live("a claim leaves alone an Organization the person made outside the sign-in the claim page started", () =>
+  inCloud(Effect.gen(function* () {
+    const agent = yield* sandbox();
+    const ada = yield* person("Ada", "ada@example.test");
+    yield* claimOrganization(ada.actor, agent.secret);
+    const bob = yield* person("Bob", "bob@example.test");
+    const later = yield* sandbox();
+    yield* claimOrganization(bob.actor, later.secret, { startedAt: new Date() });
+    expect(yield* organizationIds()).toEqual([agent.organization.id, later.organization.id, ada.personalOrganizationId, bob.personalOrganizationId].sort());
+  })));
+
+it.live("an Organization with a row in any table that names an Organization survives the claim", () =>
+  inCloud(Effect.gen(function* () {
+    const agent = yield* sandbox();
+    const signIn = { startedAt: new Date() };
+    const ada = yield* person("Ada", "ada@example.test");
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`create table claim_probe (organization_id uuid not null)`);
+    yield* drizzle.execute(sql`insert into claim_probe values (${ada.personalOrganizationId})`);
+    yield* claimOrganization(ada.actor, agent.secret, signIn);
+    expect(yield* organizationIds()).toEqual([agent.organization.id, ada.personalOrganizationId].sort());
+  })));
+
+it.live("back from the GitHub sign-in the claim page started, the person owns the sandbox with no second click", () =>
+  inCloud(Effect.gen(function* () {
+    const agent = yield* sandbox();
+    const signIn = { startedAt: new Date() };
+    const ada = yield* person("Ada", "ada@example.test");
+    expect(yield* finishClaimSignIn(agent.secret, ada.actor, signIn)).toEqual({ state: "claimed", organization: { slug: agent.organization.slug } });
+    expect(yield* membersOf(agent.organization.id)).toEqual([{ userId: ada.actor.userId, role: "owner" }]);
+    expect(yield* organizationIds()).toEqual([agent.organization.id]);
+  })));
+
+it.live("an anonymous token minted while the claim runs moves to the person instead of blocking or vanishing", () =>
+  inCloud(Effect.gen(function* () {
+    const agent = yield* sandbox();
+    const ada = yield* person("Ada", "ada@example.test");
+    const database = yield* Database;
+    const minted = database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(organizationToken).values({
+        organizationId: agent.organization.id, userId: agent.userId, name: "late", secretHash: "d".repeat(64), expiresAt: new Date(Date.now() + DAY_MS),
+      });
+      yield* Effect.sleep("300 millis");
+    }));
+    const claimed = Effect.sleep("100 millis").pipe(Effect.andThen(claimOrganization(ada.actor, agent.secret)));
+    const [mint, claim] = yield* Effect.all([Effect.exit(minted), Effect.exit(claimed)], { concurrency: "unbounded" });
+    expect(Exit.isSuccess(mint)).toBe(true);
+    expect(Exit.isSuccess(claim)).toBe(true);
+    const { drizzle } = yield* Database;
+    expect(yield* drizzle.select({ userId: organizationToken.userId }).from(organizationToken).where(eq(organizationToken.name, "late")))
+      .toEqual([{ userId: ada.actor.userId }]);
+  })));
+
+it.live("rotating the encryption secret retires every outstanding claim URL, and the next refusal names one that claims", () =>
+  inCloud(Effect.gen(function* () {
+    const agent = yield* sandbox();
+    const config = yield* AppConfig;
+    const rotated = Effect.provideService(AppConfig, { ...config, encryptionSecret: Redacted.make("rotated-encryption-secret-0123456789") });
+    expect(yield* readClaim(agent.secret, null).pipe(rotated)).toEqual({ state: "expired" });
+    const ada = yield* person("Ada", "ada@example.test");
+    expect((yield* Effect.flip(claimOrganization(ada.actor, agent.secret).pipe(rotated)))._tag).toBe("NotFound");
+    const refusal = yield* Effect.flip(requireClaimed(agent.organization.id, "billing").pipe(rotated));
+    const claimUrl = String((refusal as { details?: { claim_url?: string } }).details?.claim_url);
+    const secret = new URL(claimUrl).pathname.split("/").at(-1) ?? "";
+    expect(secret).not.toBe(agent.secret);
+    expect(yield* readClaim(secret, null).pipe(rotated)).toMatchObject({ state: "pending" });
+    expect(yield* claimOrganization(ada.actor, secret).pipe(rotated)).toEqual({ slug: agent.organization.slug });
   })));
 
 it.live("the claim page reads the sandbox while it waits, answers the owner's slug after, says it was taken to anyone else, and knows no wrong secret", () =>
@@ -234,7 +329,7 @@ it.live("the claim page reads the sandbox while it waits, answers the owner's sl
       command: "create_project", id: "00000000-0000-4000-8000-00000000c612", name: "shop", default_environment: "00000000-0000-4000-8000-00000000c613",
     }));
     expect(yield* readClaim(agent.secret, null)).toEqual({
-      state: "pending", organization: { name: "Agent sandbox", slug: agent.organization.slug }, servers: 0, projects: 1, expiresAt: agent.expiresAt,
+      state: "pending", organization: { name: "Agent sandbox", slug: agent.organization.slug }, servers: 0, projects: 1, hoursLeft: 24,
     });
     expect(yield* readClaim("not-a-secret", null)).toEqual({ state: "expired" });
 
@@ -299,18 +394,24 @@ it.live("two people claiming at once: one keeps the sandbox, the other hears it 
     expect(yield* drizzle.select().from(user).where(eq(user.isAnonymous, true))).toEqual([]);
   })));
 
-it.live("claims 20 sandboxes with a p95 under 200 ms", () =>
+it.live("a claim back from the claim page's sign-in has a p95 under 200 ms", () =>
   inCloud(Effect.gen(function* () {
-    const timings: number[] = [];
-    for (let i = 0; i < 20; i++) {
-      const agent = yield* sandbox();
-      const claimer = yield* person(`Person ${i}`, `person-${i}@example.test`);
-      const started = performance.now();
-      yield* claimOrganization(claimer.actor, agent.secret);
-      timings.push(performance.now() - started);
+    const warmup = 5;
+    const measured = 60;
+    const signIn = { startedAt: new Date() };
+    const pairs = [];
+    for (let i = 0; i < warmup + measured; i++) {
+      pairs.push({ agent: yield* sandbox(), claimer: yield* person(`Person ${i}`, `person-${i}@example.test`) });
     }
+    const timings: number[] = [];
+    for (const [i, { agent, claimer }] of pairs.entries()) {
+      const started = performance.now();
+      yield* claimOrganization(claimer.actor, agent.secret, signIn);
+      if (i >= warmup) timings.push(performance.now() - started);
+    }
+    expect(yield* organizationIds()).toHaveLength(warmup + measured);
     const sorted = [...timings].sort((a, b) => a - b);
-    const p95 = sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0;
-    console.log(`claim timings ms: p50=${sorted[9]?.toFixed(1)} p95=${p95.toFixed(1)} max=${sorted.at(-1)?.toFixed(1)}`);
-    expect(p95).toBeLessThan(200);
-  })));
+    const at = (q: number) => sorted[Math.ceil(sorted.length * q) - 1] ?? 0;
+    console.log(`claim timings ms: p50=${at(0.5).toFixed(1)} p95=${at(0.95).toFixed(1)} max=${at(1).toFixed(1)}`);
+    expect(at(0.95)).toBeLessThan(200);
+  })), 120_000);
