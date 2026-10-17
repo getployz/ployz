@@ -48,8 +48,6 @@ pub(super) fn enroll(
 
 /// Run token enrollment, installing this CLI's daemon version with `install`.
 ///
-/// Tests substitute `install` to avoid provisioning a real daemon.
-///
 /// # Errors
 ///
 /// Returns the same CLI failure as `ployz server add` given an enrollment token.
@@ -215,7 +213,6 @@ where
     }
 }
 
-/// This host's copy of the assigned Machine, once a join has started or finished here.
 fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Option<&'a Machine> {
     matches!(
         details.phase,
@@ -681,7 +678,6 @@ where
             install(Installation::Host(StorageChoice::None)).await?;
             wait_client(matches).await
         }
-        // A resumed enroll can land while the joining daemon restarts.
         Err(error) if error.is_setup_retryable() && dials_this_host(matches) => {
             wait_client(matches).await
         }

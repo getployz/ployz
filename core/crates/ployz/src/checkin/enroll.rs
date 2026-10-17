@@ -134,7 +134,6 @@ async fn heartbeat(
     attempt.stage = *moved.borrow_and_update();
 }
 
-/// Ends the loop for good: the Fleet Token has done its job.
 pub(super) async fn finish<H: Host>(host: &H, paths: &Paths) -> CheckinEnd {
     if let Err(error) = fs::remove_file(&paths.token_file)
         && error.kind() != std::io::ErrorKind::NotFound
@@ -182,7 +181,6 @@ pub(super) async fn server_add(
     .map_err(|error| failure_message(&error))
 }
 
-/// The sentence and its `cause:` lines, as `ployz server add` prints them.
 fn failure_message(error: &crate::handlers::Error) -> String {
     let mut message = error.to_string();
     for cause in error.causes() {

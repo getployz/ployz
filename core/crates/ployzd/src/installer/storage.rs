@@ -182,18 +182,16 @@ fn run_step(step: &'static str, command: &mut Command) -> Result<(), BuildFailur
     run_command(step, command).map(drop).map_err(failed(step))
 }
 
-/// Runs `build`, then checks `kernel` has ZFS. `compiles` warns that the build takes minutes.
-///
 /// # Errors
 ///
 /// Names the OS, kernel and failing step, and points at `--storage none`.
 fn build_zfs_module(
     os: &OsRelease,
     kernel: &str,
-    compiles: bool,
+    warn_slow_build: bool,
     build: impl FnOnce() -> Result<(), BuildFailure>,
 ) -> Result<(), Error> {
-    if compiles {
+    if warn_slow_build {
         eprintln!(
             "WARNING: {} doesn't include ZFS, so Ployz is building it for kernel {kernel}. This can take up to 20 minutes on small Servers. Ubuntu includes ZFS and sets up in seconds.",
             os.display()
@@ -391,15 +389,12 @@ pub(super) fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), E
     Ok(())
 }
 
-/// Installs the pinned OpenZFS as DKMS and userspace RPMs, reusing the ones host preparation
-/// built in `prepared` and building them otherwise; DKMS builds the module. `sha256` is the
-/// tarball's expected checksum.
 fn prepare_amazon_zfs(
     prepared: &Path,
     modules_load_dir: &Path,
     os: &OsRelease,
     kernel: &str,
-    sha256: &str,
+    tarball_sha256: &str,
 ) -> Result<(), Error> {
     build_zfs_module(os, kernel, true, || {
         let scratch;
@@ -408,7 +403,7 @@ fn prepare_amazon_zfs(
             Err(_) => {
                 scratch = staging_directory(Path::new("/var/tmp"))
                     .map_err(failed("staging the OpenZFS build"))?;
-                let tarball = download_openzfs(scratch.path(), sha256)?;
+                let tarball = download_openzfs(scratch.path(), tarball_sha256)?;
                 let mut dependencies = Command::new("dnf");
                 dependencies
                     .args(["install", "-y", &kernel_devel(kernel)])

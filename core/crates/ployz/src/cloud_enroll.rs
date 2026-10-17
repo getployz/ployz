@@ -207,7 +207,6 @@ pub(crate) enum Response {
     },
 }
 
-/// What a `not_yet` answer waits on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Waiting {
     Founder,

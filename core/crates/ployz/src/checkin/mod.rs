@@ -72,7 +72,6 @@ pub(crate) enum CheckinEnd {
     Stopped(StopReason),
     /// The token file changed as the loop stopped. The loop stays enabled to restart with it.
     TokenChanged,
-    /// Cloud's enroll instruction ran to completion, so this host is a Server now.
     Enrolled,
 }
 
@@ -90,7 +89,6 @@ pub(crate) trait Host {
         instruction: &EnrollInstruction,
         progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
     ) -> Result<(), String>;
-    /// Remove the ZFS build preparation left ready, for a Server enrolled without storage.
     async fn discard_zfs_build(&self) -> Result<(), String>;
 }
 

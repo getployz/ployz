@@ -33,7 +33,6 @@ const PROBE: &str = r#"{
 }"#;
 const WAIT: &str = r#"{"kind":"wait","retryAfter":30}"#;
 
-/// Answers each check-in in turn, then WAIT, and keeps every body it was sent.
 struct Cloud {
     url: String,
     bodies: Arc<Mutex<Vec<Value>>>,
@@ -93,7 +92,6 @@ impl Cloud {
         stages
     }
 
-    /// Waits until Cloud has been told the attempt reached `stage`.
     async fn told(&self, stage: EnrollStage) {
         let mut seen = self.seen.clone();
         let stage: &str = stage.into();
@@ -130,8 +128,6 @@ async fn read_body(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     }
 }
 
-/// An enrollment that moves through `stages`, each once Cloud has heard the last, then ends
-/// with `result`.
 struct Scripted {
     stages: Vec<EnrollStage>,
     result: Result<(), String>,

@@ -44,7 +44,6 @@ pub(crate) struct AttemptFailure {
     pub(crate) message: String,
 }
 
-/// Cloud's instruction to run `server add` here. The token lives only in memory.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnrollInstruction {
