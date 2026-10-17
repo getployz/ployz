@@ -106,6 +106,7 @@ export interface AuthService {
     headers: Headers,
     callbackURL: string,
   ) => Effect.Effect<Response, AuthenticationUnavailable>;
+  /** The person behind the browser session. An agent's anonymous user never acts through one, so it is signed out here. */
   readonly resolveActor: (
     headers: Headers,
   ) => Effect.Effect<
@@ -395,7 +396,7 @@ const makeAuth = Effect.gen(function* () {
     }),
     resolveActor: Effect.fn("Auth.resolveActor")(function* (headers: Headers) {
       const authSession = yield* getSession(headers);
-      if (authSession === null) return yield* new Unauthorized();
+      if (authSession === null || authSession.user.isAnonymous === true) return yield* new Unauthorized();
       return yield* Schema.decodeUnknownEffect(Actor)({
         userId: authSession.user.id,
       }, { onExcessProperty: "error" });

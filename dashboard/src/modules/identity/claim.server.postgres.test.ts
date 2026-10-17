@@ -159,7 +159,7 @@ it.live("the claim page reads the sandbox while it waits, answers the owner's sl
     expect(yield* readClaim(agent.secret, null)).toEqual({ state: "expired" });
   })));
 
-it.live("claiming again answers the same slug; a wrong, spent or expired secret is refused", () =>
+it.live("claiming again answers the same slug and moves the sessions again; a wrong, spent or expired secret is refused", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
     const ada = yield* person("Ada", "ada@example.test");
@@ -167,12 +167,15 @@ it.live("claiming again answers the same slug; a wrong, spent or expired secret 
     expect((yield* Effect.flip(claimOrganization(ada.actor, "not-a-secret")))._tag).toBe("NotFound");
 
     yield* claimOrganization(ada.actor, agent.secret);
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(session).set({ activeOrganizationId: null, activeOrganizationSlug: null }).where(eq(session.userId, ada.actor.userId));
     expect(yield* claimOrganization(ada.actor, agent.secret)).toEqual({ slug: agent.organization.slug });
     expect(yield* membersOf(agent.organization.id)).toEqual([{ userId: ada.actor.userId, role: "owner" }]);
+    expect(yield* drizzle.select({ activeOrganizationId: session.activeOrganizationId }).from(session).where(eq(session.userId, ada.actor.userId)))
+      .toEqual([{ activeOrganizationId: agent.organization.id }]);
     expect((yield* Effect.flip(claimOrganization(bob.actor, agent.secret)))._tag).toBe("NotFound");
 
     const lapsed = yield* sandbox();
-    const { drizzle } = yield* Database;
     yield* drizzle.update(organizationToken).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.organizationId, lapsed.organization.id));
     expect(yield* readClaim(lapsed.secret, null)).toEqual({ state: "expired" });
     const refused = yield* Effect.flip(claimOrganization(bob.actor, lapsed.secret));

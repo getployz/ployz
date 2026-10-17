@@ -5,7 +5,7 @@ import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { session as sessionTable, verification } from "#/modules/identity/tables";
+import { session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
 import { eq } from "drizzle-orm";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -91,6 +91,15 @@ it.live(
         assert.strictEqual(anonymous._tag, "Failure");
         if (anonymous._tag === "Failure") {
           assert.instanceOf(Cause.squash(anonymous.cause), Unauthorized);
+        }
+
+        const { drizzle } = yield* Database;
+        yield* drizzle.update(userTable).set({ isAnonymous: true }).where(eq(userTable.id, actor.userId));
+        assert.strictEqual((yield* auth.getSession(new Headers({ cookie })))?.user.isAnonymous, true);
+        const agent = yield* Effect.exit(auth.resolveActor(new Headers({ cookie })));
+        assert.strictEqual(agent._tag, "Failure");
+        if (agent._tag === "Failure") {
+          assert.instanceOf(Cause.squash(agent.cause), Unauthorized);
         }
       }).pipe(Effect.provide(layer));
     }),

@@ -1,5 +1,5 @@
 import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, Link, redirect, useLocation, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, Navigate, redirect, useLocation, useNavigate } from "@tanstack/react-router";
 import { useAuth } from "#/auth/auth.hooks";
 import { PloyzMark } from "#/components/icons/ployz-logo";
 import { RelativeTime } from "#/components/relative-time";
@@ -31,13 +31,17 @@ function ClaimPage() {
   const { secret } = Route.useParams();
   const claim = useSuspenseQuery(claimQueryOptions(secret)).data;
   const session = useAuth();
+  // The loader's prefetch does not wait on client navigation, so a claimed state can arrive here instead.
+  if (claim.state === "claimed") return <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug: claim.organization.slug }} replace />;
+  // An agent's anonymous session is signed out here, as on the sign-in routes: only a person keeps an Organization.
+  const person = session !== null && session.user.isAnonymous !== true ? session : null;
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
-        {claim.state !== "pending" ? (
-          <Expired signedIn={session !== null} />
-        ) : session ? (
-          <Keep claim={claim} email={session.user.email} />
+        {claim.state === "expired" ? (
+          <Expired signedIn={person !== null} />
+        ) : person ? (
+          <Keep claim={claim} email={person.user.email} />
         ) : (
           <ClaimSignIn claim={claim} />
         )}

@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import crypto from "node:crypto";
 import { and, asc, count, eq, inArray } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect } from "effect";
@@ -67,10 +68,16 @@ const findClaimedOrganization = Effect.fn("Identity.findClaimedOrganization")(fu
     .innerJoin(organization, eq(organization.id, member.organizationId))
     .where(eq(member.userId, viewer.userId));
   for (const membership of memberships) {
-    if ((yield* claimSecretFor(membership.id)) === secret) return membership;
+    if (secretMatches(yield* claimSecretFor(membership.id), secret)) return membership;
   }
   return null;
 });
+
+const secretMatches = (expected: string, given: string) => {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(given);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
 
 /** A sandbox with no live anonymous token has lapsed: nobody can act in it until it is claimed, and teardown is near. */
 const live = (expiresAt: Date | null): expiresAt is Date => expiresAt !== null && expiresAt.getTime() > Date.now();
@@ -95,7 +102,8 @@ export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: stri
 /**
  * The person keeps the Organization: they become its sole owner, every row the anonymous agent made now names them,
  * the agent's token runs 90 more days, and the anonymous user goes. Their own empty auto-created Organization goes
- * too, and their sessions act in the claimed one. Claiming again answers the same slug.
+ * too, and their sessions act in the claimed one. Those last two steps run after the transaction commits, and again on
+ * every repeat claim, so a claim whose cleanup failed heals on retry.
  */
 export const claimOrganization = Effect.fn("Identity.claimOrganization")(function* (actor: Actor, secret: string) {
   const database = yield* Database;
@@ -108,7 +116,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
       .for("update");
     if (locked === undefined) {
       const already = yield* findClaimedOrganization(actor, secret);
-      return already === null ? yield* spent() : { slug: already.slug, kind: "repeat" as const };
+      return already === null ? yield* spent() : already;
     }
     yield* drizzle.select({ userId: member.userId }).from(member)
       .where(eq(member.organizationId, locked.id)).orderBy(asc(member.userId)).for("update");
@@ -131,12 +139,10 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
       .where(inArray(fleetToken.createdByUserId, anonymousIds));
     yield* drizzle.update(organization).set({ claimSecretHash: null }).where(eq(organization.id, id));
     yield* drizzle.delete(user).where(inArray(user.id, anonymousIds));
-    return { id, slug: pending.slug, kind: "claimed" as const };
+    return { id, slug: pending.slug };
   }));
-  if (claimed.kind === "claimed") {
-    yield* removeEmptyPersonalOrganizations(actor, claimed.id);
-    yield* updateActorSessionsOrganization(actor, claimed.id, claimed.slug);
-  }
+  yield* updateActorSessionsOrganization(actor, claimed.id, claimed.slug);
+  yield* removeEmptyPersonalOrganizations(actor, claimed.id);
   return { slug: claimed.slug };
 });
 
