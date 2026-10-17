@@ -3,6 +3,7 @@ import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { InngestClient } from "#/modules/inngest/client";
 import { member, user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
@@ -11,6 +12,7 @@ import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/
 import { Ployz, type PloyzService } from "#/modules/runtime/ployz.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
 
 const LAB = "00000000-0000-4000-8000-00000000c001";
 const STORE_OPENED = "the Store was opened";
@@ -24,6 +26,7 @@ const removeAs = (who: keyof typeof ids) => harness.runEffect(Effect.exit(remove
   Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
   Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
   Effect.provideService(SupportStaff, supportStaffOf([ids.support])),
+  Effect.provideService(InngestClient, sendsNowhere()),
 )));
 
 beforeAll(async () => {

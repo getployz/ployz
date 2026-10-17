@@ -43,18 +43,23 @@ const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
   });
 });
 
+/** The advisory lock class of {@link lockOrganizationEnrollment}; the two-key form keeps it apart from every one-key lock. */
+const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
+
 /**
- * Serializes every writer that creates, cancels or deletes an Organization's enrollments, tokens or pairing: Enroll,
- * a legacy claim, Forget Servers, a pairing removal and a dead-claim release. The pairing row can't do it, since it
- * doesn't exist before the first server founds. Taken first in its transaction; the order after it is the pairing row,
- * then `waiting_server` rows, then `server_enrollment` rows (each in id order), then enrollment tokens.
+ * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
+ * a legacy claim, Forget Servers, a pairing removal, a dead-claim release and Organization removal. The pairing row
+ * can't do it, since it doesn't exist before the first server founds. Taken first in its transaction; the order after
+ * it is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows (each in id order), then
+ * enrollment tokens, then the Organization row. Cancel and the run and sweep closers only end attempts; they skip this
+ * lock and start at `server_enrollment`.
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`organization-enrollment:${organizationId}`}))`);
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
 });
 
-const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
+export const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   yield* cancelOpenServerEnrollments(organizationId);
   yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));

@@ -4,6 +4,8 @@ import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
+import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
@@ -67,7 +69,7 @@ describe("protected pairing removal", () => {
         });
       },
     });
-    const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption));
+    const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption), Layer.succeed(InngestClient, sendsNowhere()));
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
     return { endpoint, dialed, cleared, mutations: () => mutations, makeRuntime };
   }

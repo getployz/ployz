@@ -25,7 +25,8 @@ import { organizationPairing } from "#/modules/runtime/tables";
 import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 
 /** An Inngest client whose sends succeed without leaving the process. */
-const sendsNowhere = () => {
+/** An Inngest client whose sends succeed and go nowhere. */
+export const sendsNowhere = () => {
   const inngest = new Inngest({ id: "store-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
   return inngest;

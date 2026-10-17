@@ -17,11 +17,12 @@ import {
   readServerEnrollments,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
-import { closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
+import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
@@ -756,4 +757,46 @@ it("holds Enroll behind Forget Servers before the first server founds, so no att
     gate.release();
     await harness.pool.query("drop trigger pause_forget on machine_enrollment_token; drop function pause_forget()");
   }
+}, 15_000);
+
+const removeUnpairedOrganizationWhile = async (close: (attemptId: string) => Effect.Effect<unknown, unknown, Needs>, bound: boolean) => {
+  const [a] = await waiting("unclaimed-founder");
+  if (a === undefined) throw new Error("one host");
+  const attempt = (await run(enroll([a]))).attempts[0];
+  if (attempt === undefined) throw new Error("one attempt");
+  if (bound) await run(bindServerEnrollment({ attemptId: attempt.id, organizationId: adaOrg }, "org-removal-run"));
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934129)");
+  await harness.pool.query(`
+    create function pause_token_delete() returns trigger language plpgsql as $$ begin
+      perform pg_advisory_xact_lock(934129);
+      return old;
+    end $$;
+    create trigger pause_token_delete after delete on machine_enrollment_token for each row execute function pause_token_delete();
+  `);
+  const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  try {
+    const removing = failure(removeOrganization({ ...ada, organization: { id: adaOrg, slug: "ada" }, role: "owner" }, "ada").pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+    ));
+    await waitFor("advisory");
+    const closing = failure(close(attempt.id));
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934129)");
+    expect(await Promise.all([removing, closing])).toEqual([null, null]);
+    expect((await harness.pool.query("select 1 from organization")).rows).toEqual([]);
+    expect(await outbox()).toContain("server/enrollment.cancel");
+  } finally {
+    await gate.query("select pg_advisory_unlock(934129)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_token_delete on machine_enrollment_token; drop function pause_token_delete()");
+  }
+};
+
+it("ends an unpaired Organization's attempts before its tokens when removing it, so a run's cancellation does not deadlock", async () => {
+  await removeUnpairedOrganizationWhile(() => closeServerEnrollment("org-removal-run", "cancellation"), true);
+}, 15_000);
+
+it("ends an unpaired Organization's attempts before its tokens when removing it, so a public Cancel does not deadlock", async () => {
+  await removeUnpairedOrganizationWhile((id) => cancelServerEnrollment(ada, { organizationSlug: "ada", id }), false);
 }, 15_000);

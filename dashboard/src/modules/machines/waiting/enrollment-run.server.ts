@@ -2,10 +2,12 @@ import "@tanstack/react-start/server-only";
 import { and, eq, exists, inArray, isNotNull, isNull, lt, notExists, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
+import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
 import type { MachineId } from "#/db/tables";
 import { machineEnrollmentToken } from "#/modules/machines/tables";
 import { ENROLLMENT_STAGES, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
 import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 
@@ -79,7 +81,7 @@ type Ending =
   | { readonly state: "cancelled" };
 
 const endAndRevokeTokens = (where: ReturnType<typeof and>, ending: Ending) =>
-  Effect.flatMap(Database, (database) => database.transaction(endAndRevokeTokensNow(where, ending)));
+  Effect.flatMap(Database, (database) => database.transaction(endAndRevokeTokensNow(where, ending))).pipe(Effect.map((ended) => ended.length));
 
 // Every bulk end locks its attempts in id order first, so two of them over the same attempts can't deadlock.
 const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
@@ -88,7 +90,7 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
     .where(where)
     .orderBy(serverEnrollment.id)
     .for("update");
-  if (locked.length === 0) return 0;
+  if (locked.length === 0) return [];
   const now = new Date();
   const ended = yield* drizzle.update(serverEnrollment).set({
     state: ending.state,
@@ -103,7 +105,7 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
       isNull(machineEnrollmentToken.joinedMachineId),
     ));
   }
-  return ended.length;
+  return ended.map((row) => row.id);
 });
 
 export const endServerEnrollment = Effect.fn("ServerEnrollment.endRun")(function* (attemptId: string, runId: string, ending: Ending) {
@@ -153,7 +155,8 @@ export const closeUnboundServerEnrollments = Effect.fn("ServerEnrollment.closeUn
 });
 
 export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpen")(function* (organizationId: string) {
-  yield* endAndRevokeTokensNow(and(eq(serverEnrollment.organizationId, organizationId), open), { state: "cancelled" });
+  const ended = yield* endAndRevokeTokensNow(and(eq(serverEnrollment.organizationId, organizationId), open), { state: "cancelled" });
+  for (const attemptId of ended) yield* enqueueEvent(createServerEnrollmentCancelEvent({ attemptId }));
 });
 
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {
