@@ -106,10 +106,11 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
         // Every device's capability goes at once; clearing each Server's `cli-*` holders below confirms it.
         yield* drizzle.delete(serverAccess).where(eq(serverAccess.organizationId, organizationId));
-        // A dead claim's own tokens are spent or expired, so other tokens and open attempts stay for the next first server.
-        if (!deadClaim) yield* deleteEnrollmentTokens(organizationId);
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
+      // A dead claim's own tokens are spent or expired, so other tokens and open attempts stay for the next first server.
+      // A full removal clears them even when it resumes a removal a dead-claim release started.
+      if (options.deadClaimOnly !== true) yield* deleteEnrollmentTokens(organizationId);
       return { attempt, generation };
     }));
     if (disabled === "kept") return disabled;

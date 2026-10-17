@@ -175,7 +175,17 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
   const [pairing] = yield* drizzle.select({ founderMachineId: organizationPairing.founderMachineId })
     .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pairing === undefined || pairing.founderMachineId !== null) return;
-  yield* revokeOrganizationPairing(organizationId, { deadClaimOnly: true });
+  if ((yield* revokeOrganizationPairing(organizationId, { deadClaimOnly: true })).confirmed) return;
+  // A first server can't found while the earlier pairing waits on removal, so it ends now rather than failing hours later.
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [current] = yield* drizzle.select({ removalStartedAt: organizationPairing.removalStartedAt })
+      .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId)).for("update");
+    if (current?.removalStartedAt == null) return;
+    const founding = yield* openFounderAttempt(organizationId);
+    if (founding !== undefined) yield* cancelAttempts(organizationId, [founding.id]);
+  }));
 });
 
 export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(function* (

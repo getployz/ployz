@@ -15,7 +15,7 @@ import {
   readServerEnrollments,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
-import { closeServerEnrollment, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
@@ -538,6 +538,39 @@ it("drops a dead server add claim behind an open first server, which then founds
   expect(rows).toHaveLength(1);
 });
 
+it("ends an open first server when the dead claim's published Server can't be reached", async () => {
+  const [a, b] = await waiting("planned-founder", "later-host");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const [founder] = (await run(enroll([a]))).attempts;
+  const machineId = "5".repeat(32);
+  expect(await serverAdd(machineId)).toMatchObject({ kind: "initialize", resumed: false });
+  await harness.pool.query(
+    "insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, is_dial_entry) values ($1, $2, $3, $4, true)",
+    [adaOrg, machineId, "a".repeat(64), encryption.encrypt("ployz1:published")],
+  );
+  await harness.pool.query("update machine_enrollment_token set expires_at = now() - interval '1 second' where claimed_machine_id = $1", [machineId]);
+  expect(await failure(enroll([b]))).toMatchObject({ _tag: "Conflict" });
+  expect((await attempts()).map((row) => [row.id, row.state])).toEqual([[founder?.id, "cancelled"]]);
+  expect(await outbox()).toContain("server/enrollment.cancel");
+});
+
+it("clears the Organization's tokens when a full removal resumes a stuck dead-claim release", async () => {
+  const [b] = await waiting("later-host");
+  if (b === undefined) throw new Error("one host");
+  const machineId = "5".repeat(32);
+  expect(await serverAdd(machineId)).toMatchObject({ kind: "initialize", resumed: false });
+  await harness.pool.query(
+    "insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, is_dial_entry) values ($1, $2, $3, $4, true)",
+    [adaOrg, machineId, "a".repeat(64), encryption.encrypt("ployz1:published")],
+  );
+  await harness.pool.query("update machine_enrollment_token set expires_at = now() - interval '1 second' where claimed_machine_id = $1", [machineId]);
+  const spare = await run(insertEnrollmentToken({ organizationId: adaOrg, userId: ada.userId }));
+  expect(await failure(enroll([b]))).toMatchObject({ _tag: "Conflict" });
+  expect((await harness.pool.query("select 1 from machine_enrollment_token where id = $1", [spare.id])).rows).toHaveLength(1);
+  expect(await run(revokeOrganizationPairing(adaOrg))).toMatchObject({ confirmed: false });
+  expect((await harness.pool.query("select 1 from machine_enrollment_token")).rows).toEqual([]);
+});
+
 const waitFor = async (event: string) => {
   for (let i = 0; i < 100; i++) {
     const { rows } = await harness.pool.query("select 1 from pg_stat_activity where datname = current_database() and wait_event = $1", [event]);
@@ -608,5 +641,76 @@ it("keeps a waiting server whose attempt an enroll committed while a Fleet Token
     await gate.query("select pg_advisory_unlock(934123)");
     gate.release();
     await harness.pool.query("drop trigger pause_enroll on server_enrollment; drop function pause_enroll()");
+  }
+}, 15_000);
+
+it("locks attempts in id order when the stale sweep ends them, so a concurrent Forget does not deadlock", async () => {
+  const [a, b] = await waiting("founder", "joiner");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const started = await run(enroll([a, b], { first: a.id }));
+  expect(await claimAsFounder(a, "7".repeat(32))).toMatchObject({ kind: "initialize" });
+  const seen = (await run(seeCluster(adaOrg))).seen;
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  for (const [id, attempt] of [[big, started.attempts[0]?.id], [small, started.attempts[1]?.id]]) {
+    await harness.pool.query("update server_enrollment set id = $1, requested_at = now() - interval '10 hours' where id = $2", [id, attempt]);
+    await harness.pool.query("update machine_enrollment_token set server_enrollment_id = $1 where server_enrollment_id = $2", [id, attempt]);
+  }
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934124)");
+  await harness.pool.query(`
+    create function pause_stale() returns trigger language plpgsql as $$ begin
+      if new.id = '${big}' and new.state = 'failed' then
+        perform pg_advisory_xact_lock(934124);
+      end if;
+      return new;
+    end $$;
+    create trigger pause_stale before update on server_enrollment for each row execute function pause_stale();
+  `);
+  try {
+    const sweeping = failure(closeStaleServerEnrollments());
+    await waitFor("advisory");
+    const forgetting = failure(forgetEmptiedPairing(adaOrg, seen.generation ?? ""));
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934124)");
+    expect(await Promise.all([sweeping, forgetting])).toEqual([null, null]);
+  } finally {
+    await gate.query("select pg_advisory_unlock(934124)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_stale on server_enrollment; drop function pause_stale()");
+  }
+}, 15_000);
+
+it("keeps an attempt an enroll committed while an expired-token check-in waited on it", async () => {
+  const [a] = await waiting("expiry-race");
+  if (a === undefined) throw new Error("one host");
+  await harness.pool.query("update fleet_token set expires_at = clock_timestamp() + interval '1 second'");
+  const gate = await harness.pool.connect();
+  await gate.query("select pg_advisory_lock(934125)");
+  await harness.pool.query(`
+    create function pause_expiring_enroll() returns trigger language plpgsql as $$ begin
+      perform pg_advisory_xact_lock(934125);
+      return new;
+    end $$;
+    create trigger pause_expiring_enroll before insert on server_enrollment for each row execute function pause_expiring_enroll();
+  `);
+  try {
+    const enrolling = run(enroll([a]));
+    await waitFor("advisory");
+    for (let i = 0; i < 100; i++) {
+      const { rows } = await harness.pool.query<{ expired: boolean }>("select expires_at < clock_timestamp() as expired from fleet_token");
+      if (rows[0]?.expired === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const checking = checkin(a);
+    await waitFor("transactionid");
+    await gate.query("select pg_advisory_unlock(934125)");
+    const [started, answer] = await Promise.all([enrolling, checking]);
+    expect((await attempts()).map((row) => row.id)).toEqual(started.attempts.map((attempt) => attempt.id));
+    expect(answer.kind).toBe("enroll");
+  } finally {
+    await gate.query("select pg_advisory_unlock(934125)");
+    gate.release();
+    await harness.pool.query("drop trigger pause_expiring_enroll on server_enrollment; drop function pause_expiring_enroll()");
   }
 }, 15_000);

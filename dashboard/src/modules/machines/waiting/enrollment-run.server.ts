@@ -81,8 +81,14 @@ type Ending =
 const endAndRevokeTokens = (where: ReturnType<typeof and>, ending: Ending) =>
   Effect.flatMap(Database, (database) => database.transaction(endAndRevokeTokensNow(where, ending)));
 
+// Every bulk end locks its attempts in id order first, so two of them over the same attempts can't deadlock.
 const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
   const { drizzle } = yield* Database;
+  const locked = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment)
+    .where(where)
+    .orderBy(serverEnrollment.id)
+    .for("update");
+  if (locked.length === 0) return 0;
   const now = new Date();
   const ended = yield* drizzle.update(serverEnrollment).set({
     state: ending.state,
@@ -90,7 +96,7 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
     failure: ending.state === "failed" ? ending.failure : null,
     encryptedToken: null,
     endedAt: now,
-  }).where(where).returning({ id: serverEnrollment.id, enrollTokenId: serverEnrollment.enrollTokenId });
+  }).where(and(inArray(serverEnrollment.id, locked.map((row) => row.id)), where)).returning({ id: serverEnrollment.id, enrollTokenId: serverEnrollment.enrollTokenId });
   if (ending.state !== "joined" && ended.length > 0) {
     yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: now }).where(and(
       inArray(machineEnrollmentToken.id, ended.map((row) => row.enrollTokenId)),
@@ -147,17 +153,7 @@ export const closeUnboundServerEnrollments = Effect.fn("ServerEnrollment.closeUn
 });
 
 export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpen")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment)
-    .where(and(eq(serverEnrollment.organizationId, organizationId), open))
-    .orderBy(serverEnrollment.id)
-    .for("update");
-  if (rows.length === 0) return;
-  yield* endAndRevokeTokensNow(and(
-    eq(serverEnrollment.organizationId, organizationId),
-    inArray(serverEnrollment.id, rows.map((row) => row.id)),
-    open,
-  ), { state: "cancelled" });
+  yield* endAndRevokeTokensNow(and(eq(serverEnrollment.organizationId, organizationId), open), { state: "cancelled" });
 });
 
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {

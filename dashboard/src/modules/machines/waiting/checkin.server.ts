@@ -107,17 +107,22 @@ const OWNERSHIP_CHANGED = Symbol("ownershipChanged");
 const endedBy = (live: { readonly revoked: boolean; readonly expired: boolean } | undefined) =>
   live === undefined || live.revoked ? "token_revoked" : live.expired ? "token_expired" : null;
 
-const endWaiting = Effect.fn("Checkin.endWaiting")(function* (
+// An ended token stops its host only once no Enroll holds an attempt for it. Locking the row first waits out an Enroll
+// that holds it, and the read after the lock sees what that Enroll committed.
+const endUnlessEnrolling = Effect.fn("Checkin.endUnlessEnrolling")(function* (
   token: { readonly id: string; readonly organizationId: string },
   checkinKey: string,
   reason: CheckinStopReason,
 ) {
   const { drizzle } = yield* Database;
-  yield* drizzle.delete(waitingServer).where(and(
+  const mine = and(
     eq(waitingServer.organizationId, token.organizationId),
     eq(waitingServer.checkinKey, checkinKey),
     eq(waitingServer.fleetTokenId, token.id),
-  ));
+  );
+  yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(mine).for("update");
+  if (yield* hasOpenEnrollment(token, checkinKey)) return null;
+  yield* drizzle.delete(waitingServer).where(mine);
   return stop(reason);
 });
 
@@ -140,7 +145,8 @@ const admit = Effect.fn("Checkin.admit")(function* (
   const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;
   const live = yield* lockTokenAgainstRevoke(token.id, takingLastSlots ? "update" : "share");
   const ended = endedBy(live);
-  if (ended !== null && !(yield* hasOpenEnrollment(token, request.checkinKey))) return yield* endWaiting(token, request.checkinKey, ended);
+  const stopped = ended === null ? null : yield* endUnlessEnrolling(token, request.checkinKey, ended);
+  if (stopped !== null) return stopped;
   if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
   if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
     return yield* new CheckinRefused({
@@ -265,7 +271,8 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   const request = parsed.value;
 
   const ended = endedBy(token);
-  if (ended !== null && !(yield* hasOpenEnrollment(token, request.checkinKey))) return yield* endWaiting(token, request.checkinKey, ended);
+  const stopped = ended === null ? null : yield* database.transaction(endUnlessEnrolling(token, request.checkinKey, ended));
+  if (stopped !== null) return stopped;
 
   yield* sometimesPruneStaleRateLimits;
   const tooMany = new CheckinRefused({ status: 429, message: "Too many check-ins." });
