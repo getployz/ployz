@@ -173,12 +173,14 @@ pub(super) fn answer(body: &[u8]) -> Answer {
         },
     }
     match serde_json::from_slice::<Wire>(body) {
-        Ok(Wire::Wait { retry_after, probe }) => {
-            match probe.and_then(|probe| serde_json::from_value(probe).ok()) {
-                Some(handout) => Answer::Probe(wait_for(retry_after), handout),
-                None => Answer::Wait(wait_for(retry_after)),
+        Ok(Wire::Wait { retry_after, probe }) => match probe.map(serde_json::from_value) {
+            Some(Ok(handout)) => Answer::Probe(wait_for(retry_after), handout),
+            Some(Err(why)) => {
+                crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
+                Answer::Wait(wait_for(retry_after))
             }
-        }
+            None => Answer::Wait(wait_for(retry_after)),
+        },
         Ok(Wire::Enroll {}) => Answer::Enroll,
         Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
         Err(_) => Answer::Wait(UNKNOWN_WAIT),

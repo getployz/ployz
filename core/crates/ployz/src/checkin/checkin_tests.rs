@@ -625,6 +625,59 @@ async fn a_probe_handout_opens_a_window_and_every_later_check_in_reports_it() {
     );
 }
 
+#[tokio::test]
+async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_reports_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let body = format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":1500,"listen":["tcp:{port}"],"send":[]}}}}"#
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), body, 2).await;
+    let host = FakeHost::default();
+    let greeted = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                let mut read = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut read)
+                    .await
+                    .unwrap();
+                return read.len();
+            }
+            assert!(tokio::time::Instant::now() < deadline, "nothing listened");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+
+    install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    assert_eq!(greeted.await.unwrap(), 22);
+
+    let mut restarted = Probes::resume(last_probe(&paths));
+    pass_from(
+        &host,
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut restarted,
+    )
+    .await;
+    let requests = server.await.unwrap();
+    assert!(
+        requests
+            .last()
+            .unwrap()
+            .contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+        "{requests:?}"
+    );
+}
+
 fn sending(token: &str) -> CheckinClient {
     CheckinClient::new("http://127.0.0.1:9", FleetToken::literal(token)).unwrap()
 }
@@ -647,6 +700,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
                 token: sending(token).fingerprint(),
                 date: at,
             }),
+            probe: None,
         },
         paths,
     );
@@ -1465,6 +1519,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
             prepare_retries: PREPARE_TRIES,
             prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
             refused: None,
+            probe: None,
         },
         &paths,
     );
@@ -1550,6 +1605,7 @@ fn the_headline_says_where_the_host_stands() {
         prepare_retries: 0,
         prepare_started: None,
         refused: None,
+        probe: None,
     };
     assert_eq!(
         status.headline(),

@@ -1,3 +1,6 @@
+//! The probe window a waiting host opens when Cloud hands one out: it greets Cloud on the TCP
+//! ports, trades a nonce with its peers over UDP, and reports what it heard on every check-in.
+
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -25,6 +28,7 @@ const RESEND: Duration = Duration::from_millis(500);
 const GREETING_CHARS: usize = 22;
 const CLOUD_READS_FOR: Duration = Duration::from_millis(500);
 const DATAGRAM_BUFFER: usize = 2048;
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -77,7 +81,7 @@ struct Target {
     port: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Report {
     handout: String,
@@ -92,6 +96,14 @@ pub(super) struct Probes {
 }
 
 impl Probes {
+    /// A loop that restarts keeps reporting the last window, since Cloud hands each one out once.
+    pub(super) fn resume(report: Option<Report>) -> Self {
+        Self {
+            report: report.map(|report| Arc::new(Mutex::new(report))),
+            window: None,
+        }
+    }
+
     pub(super) async fn open(&mut self, handout: Handout, key: &CheckinKey) {
         self.close().await;
         let report = Arc::new(Mutex::new(Report {
@@ -114,6 +126,13 @@ impl Probes {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
         })
+    }
+
+    /// Waits out the window, for a process that exits before the window would end.
+    pub(super) async fn finish(&mut self) {
+        if let Some(window) = self.window.take() {
+            let _ = window.await;
+        }
     }
 
     pub(super) async fn close(&mut self) {
@@ -201,8 +220,12 @@ fn greeting(handout: &str, checkin_key: &str, port: u16) -> String {
 
 async fn greet(listener: &TcpListener, greeting: Vec<u8>) {
     loop {
-        if let Ok((mut stream, _)) = listener.accept().await {
-            let _ = tokio::time::timeout(CLOUD_READS_FOR, stream.write_all(&greeting)).await;
+        match listener.accept().await {
+            Ok((mut stream, _)) => {
+                let _ = tokio::time::timeout(CLOUD_READS_FOR, stream.write_all(&greeting)).await;
+            }
+            // Out of descriptors, accept fails at once: back off rather than spin.
+            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
         }
     }
 }

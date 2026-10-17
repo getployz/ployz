@@ -264,6 +264,8 @@ pub(crate) struct LocalCheckin {
     pub(crate) prepare_started: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refused: Option<Refusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    probe: Option<probe::Report>,
 }
 
 /// Cloud's first refusal of a token, dated by Cloud's clock. A second refusal of the same token
@@ -360,7 +362,7 @@ pub(crate) async fn run<H: Host>(
     paths: &Paths,
 ) -> CheckinEnd {
     let mut last_log = None;
-    let mut probes = Probes::default();
+    let mut probes = Probes::resume(last_probe(paths));
     loop {
         match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after, log } => {
@@ -567,6 +569,7 @@ async fn pass_from<H: Host>(
         prepare_retries,
         prepare_started,
         refused: None,
+        probe: None,
     };
     status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
@@ -606,6 +609,9 @@ async fn pass_from<H: Host>(
         }
         client::Reply::Answer(Answer::Probe(after, handout)) => {
             probes.open(handout, key).await;
+            if installing {
+                probes.finish().await;
+            }
             status.answer = Seen::Wait;
             Next::Wait { after, log: None }
         }
@@ -672,8 +678,16 @@ async fn pass_from<H: Host>(
             }
         }
     };
+    status.probe = probes.report();
     record(&status, paths);
     next
+}
+
+fn last_probe(paths: &Paths) -> Option<probe::Report> {
+    LocalCheckin::read(&paths.status())
+        .ok()
+        .flatten()
+        .and_then(|status| status.probe)
 }
 
 /// Says in status.json why the loop can't start, keeping what the last pass saw of the host.
@@ -687,8 +701,9 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
         prep: previous.as_ref().and_then(|status| status.prep),
         blockers: Vec::new(),
         prepare_retries: previous.as_ref().map_or(0, |status| status.prepare_retries),
-        prepare_started: previous.and_then(|status| status.prepare_started),
+        prepare_started: previous.as_ref().and_then(|status| status.prepare_started),
         refused: None,
+        probe: previous.and_then(|status| status.probe),
     };
     record(&status, paths);
 }
