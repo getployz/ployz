@@ -681,6 +681,11 @@ where
             wait_client(matches).await
         }
         Err(error) if error.is_setup_retryable() && dials_this_host(matches) => {
+            if local_selection(matches)?.connections.iter().any(|connection| {
+                matches!(connection.transport(), Transport::Unix(path) if !path.exists())
+            }) {
+                install(Installation::Host(StorageChoice::None)).await?;
+            }
             wait_client(matches).await
         }
         Err(error) => Err(error.into()),

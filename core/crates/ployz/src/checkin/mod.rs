@@ -304,6 +304,8 @@ pub(crate) enum Seen {
 pub(crate) struct LocalCheckin {
     pub(crate) answer: Seen,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) token_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<StopReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) message: Option<String>,
@@ -571,11 +573,10 @@ async fn pass_from<H: Host>(
     installing: bool,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
-    if !installing
-        && previous
-            .as_ref()
-            .is_some_and(|status| status.answer == Seen::Joined)
-    {
+    let enrollment = previous.as_ref().filter(|status| {
+        status.token_fingerprint.as_deref() == Some(client.fingerprint().as_str())
+    });
+    if !installing && enrollment.is_some_and(|status| status.answer == Seen::Joined) {
         return Next::Enrolled;
     }
     let refusal = previous
@@ -584,7 +585,7 @@ async fn pass_from<H: Host>(
         .and_then(|status| status.refused.clone())
         .filter(|refusal| refusal.token == client.fingerprint());
     let mut prepare_retries = previous.as_ref().map_or(0, |status| status.prepare_retries);
-    let attempt = previous.as_ref().and_then(|status| status.attempt.clone());
+    let attempt = enrollment.and_then(|status| status.attempt.clone());
     let mut prepare_started = previous.and_then(|status| status.prepare_started);
     let stale = host.stale_ployzd().map(|message| Issue {
         code: STALE_PLOYZD.to_owned(),
@@ -636,6 +637,7 @@ async fn pass_from<H: Host>(
     );
     let mut status = LocalCheckin {
         answer: Seen::ProbeFailed,
+        token_fingerprint: Some(client.fingerprint()),
         reason: None,
         message: None,
         at: now,
@@ -785,6 +787,9 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     let status = LocalCheckin {
         answer: Seen::NoPloyzd,
+        token_fingerprint: previous
+            .as_ref()
+            .and_then(|status| status.token_fingerprint.clone()),
         reason: None,
         message: Some(why.to_owned()),
         at: now,

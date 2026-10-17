@@ -88,10 +88,10 @@ pub(super) async fn attempt<H: Host>(
                 ZfsPrep::Installing | ZfsPrep::Ready | ZfsPrep::Failed
             )
         });
-    let (stages, mut moved) = watch::channel(attempt.stage);
+    let (stages, mut moved) = watch::channel(EnrollStage::Installing);
     let progress = |stage| {
         stages.send_if_modified(|current| {
-            if stage > *current {
+            if stage != *current {
                 *current = stage;
                 true
             } else {
@@ -108,33 +108,33 @@ pub(super) async fn attempt<H: Host>(
         host.enroll(instruction, &progress).await
     };
     tokio::pin!(enrolling);
-    let mut rejected = None;
+    let mut rejected: Option<String> = None;
     let outcome = loop {
-        if rejected.is_some()
+        if let Some(message) = &rejected
             && matches!(
                 *moved.borrow(),
                 EnrollStage::Enrolling | EnrollStage::Queued
             )
         {
-            break None;
+            break Err(message.clone());
         }
         if rejected.is_some() {
             tokio::select! {
-                outcome = &mut enrolling => break Some(outcome),
+                outcome = &mut enrolling => break outcome,
                 _ = moved.changed() => {}
             }
         } else {
             tokio::select! {
-                outcome = &mut enrolling => break Some(outcome),
+                outcome = &mut enrolling => break outcome,
                 message = heartbeat(client, key, paths, report, &mut status, &mut attempt, &mut moved) => {
                     rejected = message;
                 }
             }
         }
     };
-    attempt.stage = *moved.borrow();
+    attempt.stage = attempt.stage.max(*moved.borrow());
     match outcome {
-        Some(Ok(committed)) => {
+        Ok(committed) => {
             if let Some(message) = &committed.follow_up {
                 tracing::warn!(%message, "Enrollment committed; follow-up failed");
                 crate::ui::note(format!("Enrolled, but follow-up failed: {message}"));
@@ -154,9 +154,9 @@ pub(super) async fn attempt<H: Host>(
             record(&status, paths);
             Next::Stop(StopReason::Rejected, message)
         }
-        Some(Err(message)) => {
+        Err(message) => {
             let failure = AttemptFailure {
-                stage: attempt.stage,
+                stage: *moved.borrow(),
                 message,
             };
             let line = failure_line(&failure);
@@ -171,7 +171,6 @@ pub(super) async fn attempt<H: Host>(
                 log: None,
             }
         }
-        None => unreachable!("only a rejection cancels enrollment"),
     }
 }
 
@@ -205,7 +204,7 @@ async fn heartbeat(
         | client::Reply::Outdated(_) => {}
     }
     let _ = tokio::time::timeout(HEARTBEAT, moved.changed()).await;
-    attempt.stage = *moved.borrow_and_update();
+    attempt.stage = attempt.stage.max(*moved.borrow_and_update());
     None
 }
 
@@ -288,6 +287,8 @@ pub(super) fn add_arguments(
         "server",
         "add",
         "--yes",
+        "--connect",
+        &format!("unix://{}", crate::connect::DEFAULT_LOCAL_SOCKET),
         "--name",
         &instruction.name,
         "--storage",

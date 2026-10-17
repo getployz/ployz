@@ -153,6 +153,7 @@ struct Scripted {
     follow_up: Option<String>,
     pace: Option<Duration>,
     first: EnrollStage,
+    installer: Option<std::path::PathBuf>,
 }
 
 impl Scripted {
@@ -168,6 +169,7 @@ impl Scripted {
             follow_up: None,
             pace: None,
             first: EnrollStage::Installing,
+            installer: None,
         }
     }
 
@@ -209,6 +211,17 @@ impl Host for Scripted {
     ) -> Result<crate::checkin::Committed, String> {
         assert_eq!(instruction.token.as_str(), TOKEN);
         self.events.lock().unwrap().push("enroll");
+        progress(self.first);
+        if let Some(installer) = &self.installer {
+            assert!(
+                tokio::process::Command::new(installer)
+                    .status()
+                    .await
+                    .unwrap()
+                    .success()
+            );
+            self.events.lock().unwrap().push("installed");
+        }
         if self.pace.is_none() {
             self.cloud.told(self.first).await;
         }
@@ -436,6 +449,11 @@ async fn an_attempt_cut_short_is_sent_again_so_cloud_serves_it_to_resume() {
     record(
         &LocalCheckin {
             answer: Seen::Enroll,
+            token_fingerprint: Some(
+                CheckinClient::new("https://cloud.example", FleetToken::literal(FLEET))
+                    .unwrap()
+                    .fingerprint(),
+            ),
             reason: None,
             message: None,
             at: Utc::now(),
@@ -557,6 +575,8 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
             "server",
             "add",
             "--yes",
+            "--connect",
+            "unix:///run/ployz/ployz.sock",
             "--name",
             "web-1",
             "--storage",
@@ -600,6 +620,11 @@ fn previous(fixture: &Fixture, answer: Seen, stage: EnrollStage) {
     record(
         &LocalCheckin {
             answer,
+            token_fingerprint: Some(
+                CheckinClient::new("https://cloud.example", FleetToken::literal(FLEET))
+                    .unwrap()
+                    .fingerprint(),
+            ),
             reason: None,
             message: None,
             at: Utc::now(),
@@ -701,6 +726,7 @@ async fn rejection_after_storage_allows_committed_work_to_finish() {
         );
         previous(&fixture, Seen::Enroll, stage);
         let mut host = Scripted::new(&cloud, vec![EnrollStage::Publishing], Ok(()));
+        host.first = stage;
         host.pace = Some(Duration::from_millis(250));
         let end = run(
             &host,
@@ -727,6 +753,7 @@ async fn rejection_after_joining_reports_stop_if_uncommitted_work_fails() {
     );
     previous(&fixture, Seen::Enroll, EnrollStage::Joining);
     let mut host = Scripted::new(&cloud, vec![], Err("Publish failed".to_owned()));
+    host.first = EnrollStage::Joining;
     host.pace = Some(Duration::from_millis(250));
     let next = pass(
         &host,
@@ -872,7 +899,7 @@ async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
 }
 
 #[test]
-fn the_zfs_device_survives_decoding_and_default_disk_install_arguments_are_explicit() {
+fn the_zfs_device_survives_decoding_until_device_selection_is_supported() {
     let answer = wire::answer(
         instruction("zfs")
             .replace(
@@ -894,5 +921,170 @@ fn the_zfs_device_survives_decoding_and_default_disk_install_arguments_are_expli
         add_arguments(&instruction, "https://cloud.example", true)
             .windows(2)
             .any(|pair| pair == ["--storage", "zfs"])
+    );
+}
+
+async fn reject_resumed_installer(saved: EnrollStage) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new("ready");
+    previous(&fixture, Seen::Enroll, saved);
+    let cloud = Arc::new(
+        Cloud::delaying(
+            vec![
+                instruction("zfs"),
+                r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#.to_owned(),
+            ],
+            Duration::from_millis(50),
+        )
+        .await,
+    );
+    let installed = fixture._dir.path().join("installed");
+    let script = fixture._dir.path().join("installer");
+    fs::write(
+        &script,
+        format!("#!/bin/sh\nsleep 0.25\ntouch '{}'\n", installed.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
+    host.installer = Some(script);
+    host.pace = Some(Duration::from_millis(100));
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+
+    assert_eq!(
+        next,
+        Next::Stop(StopReason::Rejected, "Rejected by owner".to_owned()),
+        "saved {saved:?}"
+    );
+    assert!(
+        installed.exists(),
+        "saved {saved:?} returned before the child finished"
+    );
+    assert_eq!(host.events(), ["enroll", "installed"]);
+    assert!(fixture.paths.token_file.exists());
+}
+
+#[tokio::test]
+async fn resumed_rejection_awaits_the_installer_and_stops_before_storage() {
+    for saved in [
+        EnrollStage::Installing,
+        EnrollStage::Enrolling,
+        EnrollStage::Queued,
+    ] {
+        reject_resumed_installer(saved).await;
+    }
+}
+
+#[tokio::test]
+async fn resumed_rejection_from_saved_storage_stops_at_live_enrolling() {
+    reject_resumed_installer(EnrollStage::Storage).await;
+}
+
+async fn replace_token(installing: bool) {
+    for answer in [Seen::Joined, Seen::Enroll] {
+        let fixture = Fixture::new("ready");
+        previous(&fixture, answer, EnrollStage::Publishing);
+        let cloud = Arc::new(Cloud::answering(vec![]).await);
+        let mut host = Scripted::new(&cloud, vec![], Ok(()));
+        host.participating = true;
+        let new_token = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        fs::write(&fixture.paths.token_file, new_token).unwrap();
+        let mut client = CheckinClient::new(&cloud.url, FleetToken::literal(new_token)).unwrap();
+        let next = super::super::pass_from(
+            &host,
+            &mut client,
+            &fixture.key,
+            &fixture.paths,
+            Utc::now(),
+            installing,
+        )
+        .await;
+        assert_eq!(
+            next,
+            Next::Wait {
+                after: Duration::from_secs(30),
+                log: None
+            },
+            "{answer:?}, install {installing}"
+        );
+        assert!(cloud.attempts().is_empty());
+        assert!(fixture.status().attempt.is_none());
+        assert_eq!(fixture.status().answer, Seen::Wait);
+        assert_eq!(
+            fixture.status().token_fingerprint,
+            Some(client.fingerprint())
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.paths.token_file).unwrap(),
+            new_token
+        );
+        assert_eq!(host.disables.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            pass(&host, &mut client, &fixture.key, &fixture.paths, Utc::now()).await,
+            Next::Wait {
+                after: Duration::from_secs(30),
+                log: None
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_new_fleet_token_does_not_reuse_joined_or_an_old_attempt_without_install() {
+    replace_token(false).await;
+}
+
+#[tokio::test]
+async fn a_new_fleet_token_does_not_reuse_joined_or_an_old_attempt_with_install() {
+    replace_token(true).await;
+}
+
+#[test]
+fn the_host_adapter_overrides_remote_context_and_connection_environment() {
+    const CHILD: &str = "PLOYZ_TEST_HOST_ADAPTER";
+    if std::env::var_os(CHILD).is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("remote.yaml");
+        fs::write(&config, "current_context: remote\ncontexts:\n  remote:\n    connections:\n      - tcp: 127.0.0.1:9\n").unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "checkin::enroll::tests::the_host_adapter_overrides_remote_context_and_connection_environment", "--nocapture"])
+            .env(CHILD, "1")
+            .env("PLOYZ_CONFIG", &config)
+            .env("PLOYZ_CONTEXT", "remote")
+            .env("PLOYZ_CONNECT", "tcp://127.0.0.1:9")
+            .status().unwrap();
+        assert!(result.success());
+        return;
+    }
+    let Answer::Enroll(instruction) = wire::answer(instruction("none").as_bytes()) else {
+        panic!("enroll");
+    };
+    let root = crate::cli::command()
+        .try_get_matches_from(add_arguments(&instruction, "https://cloud.example", true))
+        .unwrap();
+    let matches = root
+        .subcommand_matches("server")
+        .unwrap()
+        .subcommand_matches("add")
+        .unwrap();
+    let selected = crate::connect::resolve_connections(
+        Path::new(matches.get_one::<String>("ployz-config").unwrap()),
+        matches.get_one::<String>("connect").map(String::as_str),
+        None,
+        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .unwrap();
+    assert_eq!(selected.connections.len(), 1);
+    assert_eq!(
+        selected.connections.first().unwrap().to_string(),
+        "unix:///run/ployz/ployz.sock"
     );
 }

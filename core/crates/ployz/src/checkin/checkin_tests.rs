@@ -592,6 +592,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
     let at = Utc::now() - ago;
     record(
         &LocalCheckin {
+            token_fingerprint: None,
             answer: Seen::Refused,
             reason: None,
             message: Some(REFUSED_ONCE.to_owned()),
@@ -1414,6 +1415,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
     .unwrap();
     record(
         &LocalCheckin {
+            token_fingerprint: None,
             answer: Seen::Wait,
             reason: None,
             message: None,
@@ -1497,6 +1499,7 @@ async fn a_running_preparation_is_left_alone() {
 #[test]
 fn the_headline_says_where_the_host_stands() {
     let mut status = LocalCheckin {
+        token_fingerprint: None,
         answer: Seen::Wait,
         reason: None,
         message: None,

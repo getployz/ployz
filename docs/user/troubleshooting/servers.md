@@ -225,7 +225,7 @@ prepares Docker and ZFS meanwhile.
    boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
-   again. A rejected server stays rejected. If the token file goes missing, the loop stops the
+   again. A new Fleet Token clears the rejection. If the token file goes missing, the loop stops the
    next time it starts.
 9. A `blocked` line saying `ployzd ... is older than this ployz` means you upgraded `ployz` but
    not `ployzd`. The loop keeps checking in with the older one, and Cloud shows the server as
