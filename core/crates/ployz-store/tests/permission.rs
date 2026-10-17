@@ -7,10 +7,10 @@ use std::collections::BTreeSet;
 
 use ployz_core::{RpcError, ServiceName};
 use ployz_store::{
-    Actor, Admit, Cancel, CancelRemoval, Change, ConfigStore, CreateProject, CreateService, Deploy,
-    DeploymentId, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef,
-    OrganizationId, Permission, Principal, ProjectId, ProjectName, Removal, Remove, RemoveService,
-    RenameProject, ServiceLineageId, SetBuildOrder, SettingPath, Trusted,
+    Actor, Admit, Cancel, CancelRemoval, Change, Command, ConfigStore, CreateProject,
+    CreateService, Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
+    EnvironmentRef, OrganizationId, Permission, Principal, ProjectId, ProjectName, Removal, Remove,
+    RemoveService, RenameProject, ServiceLineageId, SetBuildOrder, SetPrPlan, SettingPath, Trusted,
 };
 use serde_json::json;
 
@@ -178,6 +178,10 @@ fn a_named_caller_with_no_permission_set_holds_none() {
         .write_trusted(&ada, &set_replicas(2), &Trusted::default())
         .unwrap_err();
     needs(&refused, "changes:stage");
+    let refused = store
+        .commit(&ada, &Command::Edit(set_replicas(2)), &Trusted::default())
+        .unwrap_err();
+    needs(&refused, "changes:stage");
     assert_eq!(revision(&store, &system), before);
     store
         .write_trusted(
@@ -273,8 +277,25 @@ fn deploying_a_staged_destroy_needs_changes_destroy() {
 }
 
 #[test]
-fn the_build_order_and_a_project_rename_name_their_own_permissions() {
+fn the_build_order_a_project_rename_and_a_pr_plan_name_their_own_permissions() {
     let (store, who) = shop();
+    let refused = store
+        .write_trusted(
+            &who,
+            &SetPrPlan {
+                project: None,
+                repository: backend::repo_name("acme/web"),
+                enabled: Some(true),
+                start_from: None,
+                copy: None,
+                setup: None,
+                remove_on_close: None,
+                include_bots: None,
+            },
+            &everything_but(Permission::ProjectEdit),
+        )
+        .unwrap_err();
+    needs(&refused, "project:edit");
     let refused = store
         .write_trusted(
             &who,

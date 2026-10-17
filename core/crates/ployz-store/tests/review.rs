@@ -573,7 +573,18 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
             .unwrap(),
         before
     );
-    discard(&store, &who, Some("web"), None).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Head,
+                path: Some(SettingPath::parse("web").unwrap()),
+                version: None,
+            },
+            &held,
+        )
+        .unwrap();
     assert_eq!(
         store
             .read(&who, &ployz_store::HistoryQuery::default())
