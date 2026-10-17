@@ -31,6 +31,7 @@ import {
   setMemberRoleServerFn,
 } from "#/modules/organization/members.functions";
 import { membersKey, organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { can } from "#/modules/organization/permissions";
 
 type Role = "owner" | "admin" | "member";
 type InviteRole = Exclude<Role, "owner">;
@@ -95,7 +96,7 @@ export function MembersSettings({ organizationSlug }: { organizationSlug: string
   });
 
   const yourRole = data.members.find((row) => row.you)?.role ?? null;
-  const manager = yourRole === "owner" || yourRole === "admin";
+  const manager = yourRole !== null && can(yourRole, "members:manage");
   const roles: readonly Role[] = yourRole === "owner" ? ["owner", "admin", "member"] : ["admin", "member"];
 
   return (

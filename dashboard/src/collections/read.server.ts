@@ -34,7 +34,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
   if (actor.userId !== data.userId) {
     return yield* new CollectionReadDenied({ message: "Collection not found." });
   }
-  const { organization } = yield* requireAccess(actor, data.organizationSlug, "operate").pipe(
+  const { organization } = yield* requireAccess(actor, data.organizationSlug, "org:read").pipe(
     Effect.mapError((cause) => cause._tag === "NotFound" || cause._tag === "Forbidden"
       ? new CollectionReadDenied({ message: "Organization not found." })
       : new CollectionReadFailure({ cause })),

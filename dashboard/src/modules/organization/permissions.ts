@@ -57,4 +57,6 @@ function holdings(role: RankedRole): ReadonlySet<Permission> {
   return new Set(LEAST_ROLE.filter(([, least]) => RANK[least] <= RANK[role]).map(([permission]) => permission));
 }
 
-export const can = (role: PermissionRole, permission: Permission): boolean => ROLE_PERMISSIONS[role].has(permission);
+// member.role is unchecked text, so a stored role outside the four holds nothing rather than throwing.
+export const can = (role: PermissionRole, permission: Permission): boolean =>
+  Object.hasOwn(ROLE_PERMISSIONS, role) && ROLE_PERMISSIONS[role].has(permission);

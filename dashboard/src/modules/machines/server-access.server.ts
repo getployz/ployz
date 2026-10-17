@@ -4,7 +4,7 @@ import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { MachineId } from "#/db/tables";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
@@ -45,7 +45,7 @@ type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "sess
  * Only an owner or admin gets one: a holder is full control of the Server.
  */
 export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: ServerAccessCaller) {
-  if (caller.role !== "owner" && caller.role !== "admin") {
+  if (!callerCan(caller, "servers:shell")) {
     const slug = caller.organization.slug;
     return { ok: false as const, refusal: {
       code: "forbidden",

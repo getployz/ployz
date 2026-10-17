@@ -41,7 +41,7 @@ const siteRow = Effect.fn("WebAnalyticsView.site")(function* (organizationId: st
 
 /** An Environment's analytics for one range: nothing past the plan gate is read unless the gate is open. */
 export const readAnalyticsView = Effect.fn("WebAnalyticsView.read")(function* (actor: Actor, input: ReadAnalyticsViewInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const plan = yield* analyticsPlan();
   const open = analyticsGate(plan, plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
   if (open.gate !== "on") return { gate: open.gate } as const;
@@ -103,7 +103,7 @@ export type AnalyticsView = Effect.Success<ReturnType<typeof readAnalyticsView>>
 
 /** The API and Errors views' common ground: the same gate as the Web view, the window as instants, and its services. */
 const openRequests = Effect.fn("WebAnalyticsView.openRequests")(function* (actor: Actor, input: ReadRequestViewInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const plan = yield* analyticsPlan();
   const open = analyticsGate(plan, plan === "self-host-off" ? undefined : yield* siteRow(organization.id, input.environmentId));
   if (open.gate !== "on") return { gate: open.gate } as const;
@@ -177,7 +177,7 @@ export const turnOnAnalytics = Effect.fn("WebAnalyticsView.turnOn")(function* (
   actor: Actor,
   input: TurnOnAnalyticsInput,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "manage");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "org:settings");
   const plan = yield* analyticsPlan();
   if (plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is off on this Cloud." });
   const site = yield* siteRow(organization.id, input.environmentId);
@@ -186,7 +186,7 @@ export const turnOnAnalytics = Effect.fn("WebAnalyticsView.turnOn")(function* (
 });
 
 const requireSite = Effect.fn("WebAnalyticsView.requireSite")(function* (actor: Actor, organizationSlug: string, environmentId: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "metrics:read");
   const plan = yield* analyticsPlan();
   if (plan === "self-host-off") return yield* new Forbidden({ message: "Analytics is off on this Cloud." });
   const site = yield* siteRow(organization.id, environmentId);

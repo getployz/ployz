@@ -4,7 +4,7 @@ import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.se
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { requireAccess } from "#/modules/organization/access.server";
-import type { Actor, Caller } from "#/modules/identity/actor";
+import { type Actor, type Caller, callerCan } from "#/modules/identity/actor";
 import { deleteEnrollmentTokens, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { eq } from "drizzle-orm";
@@ -30,7 +30,7 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* (ca
       details: { next: `ployz org use ${slug}` },
     });
   }
-  if (caller.role !== "owner") {
+  if (!callerCan(caller, "org:delete")) {
     return refused({ code: "forbidden", message: "Only an owner of this Organization can remove it. No changes made.", details: null });
   }
   const refusal = yield* cloudStore.pipe(
@@ -58,7 +58,7 @@ const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ 
 
 /** The dashboard's Delete organization: the same removal, by an owner of the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
-  const access = yield* requireAccess(actor, organizationSlug, "own").pipe(
+  const access = yield* requireAccess(actor, organizationSlug, "org:delete").pipe(
     // A server function answers every Forbidden with one generic sentence; a refusal reaches the dialog as written.
     Effect.catchTag("Forbidden", (error) => Effect.succeed(refused({ code: "forbidden", message: error.message, details: null }))),
   );

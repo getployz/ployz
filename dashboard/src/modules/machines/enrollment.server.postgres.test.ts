@@ -507,12 +507,20 @@ describe("organization enrollment coordinator", () => {
     expect(minted.token).toMatch(/^pmet_/u);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "pending" } });
     expect(await fake.coordinator.read(minted.id, "00000000-0000-4000-8000-000000000499")).toMatchObject({ failure: {} });
+    const plainMember = "00000000-0000-4000-8000-000000000497";
+    await harness.pool.query(`
+      insert into "user" (id, email, name) values ('${plainMember}', 'member@example.com', 'Member');
+      insert into member (id, organization_id, user_id, role, created_at)
+      values (gen_random_uuid(), '${organizationId}', '${plainMember}', 'member', now());
+    `);
+    expect(await fake.coordinator.read(minted.id, plainMember)).toMatchObject({ success: { status: "pending" } });
 
     const attempt = await pendingFounder(fake, minted.token);
     const founder = attempt;
     await fake.coordinator.publish({ ...attempt, capability });
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: founder.machineId } });
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
+    expect(await fake.coordinator.read(minted.id, plainMember)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
 
     await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() - interval '1 second' where id = $1", [minted.id]);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "expired" } });

@@ -103,7 +103,7 @@ export const getBillingState = Effect.fn("Billing.getState")(function* (
   input: { readonly organizationSlug: string },
 ) {
   yield* requireHostedPolar();
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "org:read");
   const database = yield* Database;
   const rows = yield* database.drizzle
     .select({
@@ -141,7 +141,7 @@ const billingPage = (appUrl: URL, organizationSlug: string) =>
 export const createCustomerPortal = Effect.fn("Billing.createPortal")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
     const polar = yield* requireHostedPolar();
-    yield* requireAccess(actor, input.organizationSlug, "operate");
+    yield* requireAccess(actor, input.organizationSlug, "org:read");
     const config = yield* AppConfig;
     return yield* polar.createCustomerPortal({
       externalCustomerId: actor.userId,

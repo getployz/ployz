@@ -76,7 +76,7 @@ function credentialsMatch(expected: string, actual: string) {
 const authorizeEnrollmentOrganization = Effect.fn(
   "MachineEnrollment.authorizeOrganization",
 )(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:add");
   return { organization, userId: actor.userId };
 });
 
@@ -149,7 +149,7 @@ export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli"
 export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
   function* (actor: Actor, input: ReadMachineEnrollmentInput) {
     const { drizzle } = yield* Database;
-    const { organization } = yield* authorizeEnrollmentOrganization(actor, input.organizationSlug);
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
     const [row] = yield* drizzle
       .select({
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,

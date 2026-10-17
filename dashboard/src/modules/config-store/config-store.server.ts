@@ -11,6 +11,7 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
+import type { Permission } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -326,7 +327,7 @@ export const callStore = <C extends StoreCall>(
  * when the actor is a member of it (the same Organization gate as the Org Store's reads).
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
-  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const access = yield* requireAccess(actor, organizationSlug, "project:read");
   return yield* callStoreWith(access, actor, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
@@ -340,7 +341,7 @@ const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: 
  * the write. A query of another Environment, past `MAX_SHOWN_VIEWS`, or whose reread fails, is dropped; the tab refetches those.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
-  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const access = yield* requireAccess(actor, organizationSlug, writePermission(command));
   const result = yield* callStoreWith(access, actor, { operation: "write", command });
   if (!result.ok) return result satisfies StoreWriteResult;
   const keys = new Set(commandEnvironments(command).map(environmentKey));
@@ -356,6 +357,12 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
   { concurrency: SHOWN_VIEW_READS });
   return { ...result, answers: answers.flat() } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
+
+/** Deleting an Environment or a Project takes its delete permission; every other write only staging. */
+const writePermission = (command: ConfigCommand): Permission => {
+  if (command.command !== "remove") return "changes:stage";
+  return command.environment == null ? "project:delete" : "environment:delete";
+};
 
 /** How many shown views one write rereads at once. */
 const SHOWN_VIEW_READS = 4;

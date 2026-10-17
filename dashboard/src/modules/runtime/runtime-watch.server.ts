@@ -26,7 +26,7 @@ export const openRuntimeWatch = Effect.fn("Runtime.openWatch")(function* (input:
   request: Request;
   organizationSlug: string;
 }) {
-  const access = yield* authorizeRequest(input.request.headers, input.organizationSlug, "operate");
+  const access = yield* authorizeRequest(input.request.headers, input.organizationSlug, "project:read");
   return yield* openRuntimeWatchForOrganization({
     request: input.request,
     organizationId: access.organization.id,

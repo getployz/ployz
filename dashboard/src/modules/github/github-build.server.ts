@@ -127,7 +127,7 @@ const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(fu
 
 export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositories")(
   function* (actor: Actor, input: { organizationSlug: string }) {
-    const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "project:read");
     const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
     return yield* Effect.forEach(repositories, (repository) =>
       checkGithubBuildWorkflow(organizationAccess(organization.id, repository.installationId), repository.repositoryId).pipe(
