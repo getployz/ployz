@@ -4,16 +4,16 @@
 use chrono::{DateTime, Utc};
 use clap::ArgMatches;
 use clap::parser::ValueSource;
+use ployz_core::RpcErrorCode;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
 use super::signed_in;
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
 use crate::handlers::{Error, runtime};
-use crate::ui::{self, Cell, Fields, Table, Tone};
+use crate::ui::{self, Cell, Fields, Hint, Table, Tone, printable};
 
 /// One waiting server: the row Cloud sent, which `--json` prints, and the fields read from it.
 /// Both keep Cloud's strings; only what a person reads goes through [`printable`].
@@ -141,20 +141,6 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
         .collect()
 }
 
-/// `text` with every control and format character replaced. A host names itself, so an
-/// escape sequence or a bidi override in its report must not reach the terminal.
-pub(super) fn printable(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            if c.is_control() || c.general_category() == GeneralCategory::Format {
-                '\u{FFFD}'
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
 /// Cloud takes at most this many ids in one reject.
 const REJECT_BATCH: usize = 1000;
 
@@ -164,16 +150,12 @@ pub(super) struct Rejection<'a> {
     pub(super) stopped: Option<Stopped<'a>>,
 }
 
-/// A batch failed after earlier ones went through. Its `uncertain` ids may or may not be
-/// rejected, and the `unattempted` ones after it were never sent.
 pub(super) struct Stopped<'a> {
     pub(super) error: Error,
     pub(super) uncertain: &'a [&'a str],
     pub(super) unattempted: &'a [&'a str],
 }
 
-/// Reject `ids` in batches Cloud takes. A failure on the first batch is the command's error;
-/// a later one stops the run and is reported with what went through before it.
 pub(super) async fn reject<'a>(
     credential: &Credential,
     ids: &'a [&'a str],
@@ -196,10 +178,9 @@ pub(super) async fn reject<'a>(
         .await
         {
             Ok(reply) => rejected += reply.rejected,
-            Err(error) if rest.len() == ids.len() => return Err(error.into()),
             Err(error) => {
                 let stopped = Stopped {
-                    error: error.into(),
+                    error: Error::from(error).context("Could not reject the waiting servers."),
                     uncertain: batch,
                     unattempted: after,
                 };
@@ -217,12 +198,72 @@ pub(super) async fn reject<'a>(
     })
 }
 
+const ID_PREFIX_MIN: usize = 8;
+
+pub(super) fn named<'a>(listed: &'a [Waiting], selector: &str) -> Result<Vec<&'a Waiting>, Error> {
+    if let Some(host) = listed.iter().find(|host| host.row.id == selector) {
+        return Ok(vec![host]);
+    }
+    let named: Vec<_> = listed
+        .iter()
+        .filter(|host| host.row.name == selector)
+        .collect();
+    if !named.is_empty() || selector.chars().count() < ID_PREFIX_MIN {
+        return Ok(named);
+    }
+    let started: Vec<_> = listed
+        .iter()
+        .filter(|host| host.row.id.starts_with(selector))
+        .collect();
+    if started.len() > 1 {
+        return Err(ambiguous(
+            format!(
+                "{} waiting servers have an id starting {}. Use more of the id",
+                started.len(),
+                printable(selector)
+            ),
+            &started,
+        ));
+    }
+    Ok(started)
+}
+
+pub(super) fn ambiguous(sentence: String, hosts: &[&Waiting]) -> Error {
+    let ids = hosts
+        .iter()
+        .map(|host| format!("{} ({})", printable(&host.row.id), printable(host.row.ip())))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Error::detailed(
+        RpcErrorCode::Ambiguous,
+        format!("{sentence}: {ids}"),
+        json!({
+            "waiting_servers": hosts
+                .iter()
+                .map(|host| json!({ "id": host.row.id, "ip": host.row.ip() }))
+                .collect::<Vec<_>>(),
+        }),
+    )
+}
+
+pub(super) fn copied_hint(selector: &str) -> Option<Hint> {
+    selector
+        .contains(ui::REPLACED)
+        .then(|| Hint::Inspect("ployz server ls --waiting --json".into()))
+}
+
 /// Whether `--context` or `--connect` was typed on the command line. `PLOYZ_CONTEXT` and
 /// `PLOYZ_CONNECT` in the environment don't count: the waiting list lives in Cloud alone.
 pub(super) fn points_elsewhere(matches: &ArgMatches) -> bool {
     ["connect", "context"]
         .into_iter()
         .any(|id| matches.value_source(id) == Some(ValueSource::CommandLine))
+}
+
+pub(super) fn inherits_a_connection(matches: &ArgMatches) -> bool {
+    ["connect", "context"]
+        .into_iter()
+        .any(|id| matches.value_source(id) == Some(ValueSource::EnvVariable))
 }
 
 /// The credential a waiting-list command runs under. `--context` and `--connect` are
@@ -489,15 +530,6 @@ pub(super) mod tests {
         );
         assert_eq!(readiness("waiting", None), "Ready");
         assert_eq!(readiness("enrolling", None), "Unknown");
-    }
-
-    #[test]
-    fn a_host_cannot_print_escape_sequences_or_reorder_text() {
-        assert_eq!(printable("web\u{1b}[2J-1"), "web\u{FFFD}[2J-1");
-        assert_eq!(printable("a\u{7}b"), "a\u{FFFD}b");
-        assert_eq!(printable("evil\u{202E}1-bew"), "evil\u{FFFD}1-bew");
-        assert_eq!(printable("we\u{200B}b"), "we\u{FFFD}b");
-        assert_eq!(printable("wéb-1 · 東京"), "wéb-1 · 東京");
     }
 
     #[test]

@@ -138,7 +138,9 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     let missing = report.code == RpcErrorCode::NotFound;
     let unreachable =
         report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
-    if !(missing || unreachable) || waiting::points_elsewhere(leaf) {
+    if !(missing || unreachable || waiting::inherits_a_connection(leaf))
+        || waiting::points_elsewhere(leaf)
+    {
         return Err(error);
     }
     let runtime = runtime()?;
@@ -147,44 +149,21 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     };
     let listed = match runtime.block_on(waiting::fetch(&credential)) {
         Ok(listed) => listed,
-        Err(fetch) if missing => {
-            return Err(fetch.context(format!(
-                "No Server matches {selector}, and the servers waiting to join could not be read."
-            )));
+        Err(fetch) => {
+            ui::warn_cause("The servers waiting to join could not be read", &fetch);
+            return Err(error);
         }
-        Err(_) => return Err(error),
     };
-    let named: Vec<_> = match listed.iter().find(|host| host.row.id == *selector) {
-        Some(host) => vec![host],
-        None => listed
-            .iter()
-            .filter(|host| host.row.name == *selector)
-            .collect(),
-    };
-    match named.as_slice() {
-        [] => Err(error),
+    match waiting::named(&listed, selector)?.as_slice() {
+        [] => Err(error.hint(waiting::copied_hint(selector))),
         [host] => waiting::show(host),
-        hosts => Err(Error::detailed(
-            RpcErrorCode::Ambiguous,
+        hosts => Err(waiting::ambiguous(
             format!(
-                "{} waiting servers are named {selector}. Show one by its id: {}",
+                "{} waiting servers are named {}. Show one by its id",
                 hosts.len(),
-                hosts
-                    .iter()
-                    .map(|host| format!(
-                        "{} ({})",
-                        waiting::printable(&host.row.id),
-                        waiting::printable(host.row.ip())
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                ui::printable(selector)
             ),
-            json!({
-                "waiting_servers": hosts
-                    .iter()
-                    .map(|host| json!({ "id": host.row.id, "ip": host.row.ip() }))
-                    .collect::<Vec<_>>(),
-            }),
+            hosts,
         )),
     }
 }

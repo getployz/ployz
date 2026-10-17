@@ -57,13 +57,17 @@ blocking it:
 ployz server show web-3
 ```
 
-`ployz server show` shows a server in your cluster the same way, so one command covers both.
+`ployz server show` shows a server in your cluster the same way, so one command covers both. It
+also takes a waiting server's id, or the start of one at least 8 characters long, such as the
+start the list prints. If two waiting servers share a name or the start you typed, it lists their
+ids instead.
 
-To turn away servers you don't want, name them, give a pattern or give one server's id from
-`ployz server ls --waiting --json`. A name rejects every waiting server with that name. Patterns
-match names only, and case matters. An exact id wins over a server whose name is that id, and a
-server named exactly what you typed wins over the pattern it spells, so `db[1]` means that name.
-Ployz lists what matches with each one's id and asks before it does anything:
+To turn away servers you don't want, name them, give a pattern or give one server's id. The start
+of an id works too, at least 8 characters long and matching only one server. A name rejects every
+waiting server with that name. Patterns match names only, and case matters. An exact id wins over
+a server whose name is that id, a server named exactly what you typed wins over an id that starts
+that way, and either wins over the pattern it spells, so `db[1]` means that name. Ployz lists what
+matches with each one's id and asks before it does anything:
 
 ```sh
 ployz server reject 'web-*'
@@ -75,6 +79,14 @@ out every server that holds a Fleet Token, revoke the token. If one left the lis
 Cloud got to it, the count says so, as in `1 of 2 rejected; the rest had already left the list.`
 Add `--yes` to skip the question, for example in a script. Without `--yes` outside a terminal it
 fails with `confirmation_required` and rejects nothing.
+
+If Ployz Cloud fails partway through, the reject stops and prints how many went through, which
+ones may or may not have been rejected and how many it never sent. Run the same reject again to
+finish.
+
+A name with characters a terminal would act on, such as color codes, prints with `�` in their place.
+Copying it back from the screen won't match, so take the id or the exact name from
+`ployz server ls --waiting --json`.
 
 ## See what runs on a server
 

@@ -3,6 +3,7 @@
 
 use std::{borrow::Cow, io};
 
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 use unicode_width::UnicodeWidthStr as _;
 
 use super::Tone;
@@ -239,9 +240,26 @@ impl Fields {
     }
 }
 
-/// An ID as `docker ps` shows it: the first 12 characters. `--json` and selectors take the whole one.
 pub(crate) fn short_id(id: &str) -> &str {
     id.get(..12).unwrap_or(id)
+}
+
+pub(crate) fn unprintable(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c.general_category(),
+            GeneralCategory::Format
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+        )
+}
+
+pub(crate) const REPLACED: char = '\u{FFFD}';
+
+pub(crate) fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if unprintable(c) { REPLACED } else { c })
+        .collect()
 }
 
 #[cfg(test)]
@@ -271,6 +289,16 @@ mod tests {
             Cell::status("crashed", Tone::Bad),
         ]);
         table
+    }
+
+    #[test]
+    fn a_host_cannot_print_escape_sequences_or_reorder_text() {
+        assert_eq!(printable("web\u{1b}[2J-1"), "web\u{FFFD}[2J-1");
+        assert_eq!(printable("a\u{7}b"), "a\u{FFFD}b");
+        assert_eq!(printable("evil\u{202E}1-bew"), "evil\u{FFFD}1-bew");
+        assert_eq!(printable("we\u{200B}b"), "we\u{FFFD}b");
+        assert_eq!(printable("web\u{2028}1\u{2029}"), "web\u{FFFD}1\u{FFFD}");
+        assert_eq!(printable("wéb-1 · 東京"), "wéb-1 · 東京");
     }
 
     #[test]

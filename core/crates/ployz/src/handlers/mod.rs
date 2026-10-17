@@ -360,14 +360,33 @@ pub(super) fn config_flag(matches: &ArgMatches) -> Option<[&str; 2]> {
         .map(|config| ["--ployz-config", config.as_str()])
 }
 
-/// The command as typed, plus `extra`.
 pub(crate) fn typed_with(extra: &[&str]) -> String {
-    let typed = std::env::args().skip(1);
-    shell_words::join(
-        std::iter::once("ployz".to_owned())
-            .chain(typed)
-            .chain(extra.iter().map(|arg| (*arg).to_owned())),
-    )
+    std::iter::once("ployz".to_owned())
+        .chain(std::env::args().skip(1))
+        .chain(extra.iter().map(|arg| (*arg).to_owned()))
+        .map(|arg| shell_word(&arg).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_word(arg: &str) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    if !arg.chars().any(crate::ui::unprintable) {
+        return shell_words::quote(arg);
+    }
+    let mut word = String::from("$'");
+    for c in arg.chars() {
+        let code = u32::from(c);
+        let _ = match c {
+            '\\' | '\'' => write!(word, "\\{c}"),
+            c if !crate::ui::unprintable(c) => write!(word, "{c}"),
+            _ if code < 0x80 => write!(word, "\\x{code:02x}"),
+            _ if code <= 0xFFFF => write!(word, "\\u{code:04x}"),
+            _ => write!(word, "\\U{code:08x}"),
+        };
+    }
+    word.push('\'');
+    word.into()
 }
 
 fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
@@ -463,6 +482,15 @@ pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_retry_line_escapes_what_would_steer_the_terminal() {
+        assert_eq!(shell_word("web-*"), "'web-*'");
+        assert_eq!(shell_word("web-1"), "web-1");
+        assert_eq!(shell_word("web\u{1b}[31m'1"), "$'web\\x1b[31m\\'1'");
+        assert_eq!(shell_word("evil\u{202E}1\\"), "$'evil\\u202e1\\\\'");
+        assert_eq!(shell_word("a\u{85}\u{E0001}"), "$'a\\u0085\\U000e0001'");
+    }
 
     #[test]
     fn a_context_typed_before_the_last_subcommand_is_caught() {
