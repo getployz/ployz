@@ -6,12 +6,14 @@ import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
+import type { Actor } from "#/modules/identity/actor";
+import { requireAccess } from "#/modules/organization/access.server";
 import { firstRuntimeFrame, type OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { placementBlockers, placementUpgradeMessage } from "#/modules/volume-placement/daemon-release";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
-import { discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
+import { deleteOldCopy, discardPlacement, RESTORE_FAILED, restoreSettled, stagePlacement, view } from "#/modules/volume-placement/volume-placement.server";
 import {
-  appliedMirrors, changeKey, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
+  appliedMirrors, changeKey, type DeleteCopyInput, drainPlacement, dropChange, nextPlacementStep, observePlacement, type Placement, placementChanges, type PlacementStep, type PlacementVolume,
   sameChange,
 } from "#/modules/volume-placement/volume-placement";
 import { type CopyAsk, type MemberObserver, type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-placement/mirror-sync.server";
@@ -318,6 +320,16 @@ export const unlessPlacementRefused = <A, E, R>(organizationId: string, write: E
     if (refusal !== null) return { ok: false, refusal } as const;
     return yield* write;
   });
+
+/** Delete on an old copy in the volume drawer. */
+export const deleteCopy = Effect.fn("VolumePlacement.deleteCopy")(function* (
+  actor: Actor,
+  input: typeof DeleteCopyInput.Type,
+  read: BlockerReader = readPlacementBlockers,
+) {
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "volumes:delete-copy");
+  return yield* unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, actor.userId, input), read);
+});
 
 const NO_COPIES: CopyObservation["copies"] = [];
 

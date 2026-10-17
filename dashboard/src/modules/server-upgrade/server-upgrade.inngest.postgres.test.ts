@@ -847,7 +847,8 @@ describe("roll-out-server-upgrade", () => {
     });
   });
 
-  it("a plain member can Upgrade one Server or every Server behind, and reads each Server's latest attempt", async () => {
+  it("an admin can Upgrade one Server or every Server behind, and reads each Server's latest attempt", async () => {
+    await harness.pool.query(`update member set role = 'admin' where user_id = '${userId}'`);
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId }));
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId: null }));
     expect(send.mock.calls).toEqual([

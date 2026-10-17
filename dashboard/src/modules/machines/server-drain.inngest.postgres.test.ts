@@ -156,9 +156,9 @@ describe("drain-server", () => {
     await harness.pool.query(`
       truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
-      insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
+      insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
       insert into member (id, organization_id, user_id, role, created_at)
-      values (gen_random_uuid(), '${organizationId}', '${userId}', 'member', now());
+      values (gen_random_uuid(), '${organizationId}', '${userId}', 'owner', now());
     `);
   });
 

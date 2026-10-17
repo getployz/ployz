@@ -2,8 +2,8 @@ import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { requireAccess } from "#/modules/organization/access.server";
-import { placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
-import { deleteOldCopy, discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
+import { deleteCopy, placementRefusal, stageOffServer, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { discardPlacement, listPlacements, stagePlacement, stageRestore } from "#/modules/volume-placement/volume-placement.server";
 import { DeleteCopyInput, StageRestoreInput, VolumeInput } from "#/modules/volume-placement/volume-placement";
 import { Conflict } from "#/server/public-error";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
@@ -60,6 +60,4 @@ export const stageOffServerServerFn = createServerFn({ method: "POST" })
 export const deleteCopyServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(DeleteCopyInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:delete-copy").pipe(
-    Effect.flatMap(({ organization }) => unlessPlacementRefused(organization.id, deleteOldCopy(organization.id, context.actor.userId, data))),
-  )));
+  .handler(({ context, data }) => runActor(context, deleteCopy(context.actor, data)));

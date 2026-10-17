@@ -1,6 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { defineCommand } from "#/modules/commands/command.server";
+import { defineCommand, refused } from "#/modules/commands/command.server";
+import { callerCan } from "#/modules/identity/actor";
+import { refusalOf } from "#/modules/organization/access.server";
 import { RELEASE_CHANNELS, ServerUpgradeSettingsChange } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgradeSettings, setServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.server";
 
@@ -37,7 +39,9 @@ export const serverUpgradePolicySet = defineCommand({
   input: ServerUpgradeSettingsChange,
   output: UpgradePolicy,
   render: "record",
-  run: (caller, change) => setServerUpgradeSettings(caller.organization.id, change).pipe(
-    Effect.map(({ channel, automatic }) => ({ ok: true, output: { channel, automatic } }) as const),
-  ),
+  run: (caller, change) => !callerCan(caller, "servers:operate")
+    ? Effect.succeed(refused("forbidden", refusalOf("servers:operate")))
+    : setServerUpgradeSettings(caller.organization.id, change).pipe(
+      Effect.map(({ channel, automatic }) => ({ ok: true, output: { channel, automatic } }) as const),
+    ),
 });

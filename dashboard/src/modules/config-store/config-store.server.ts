@@ -361,7 +361,7 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
 /** Deleting an Environment or a Project takes its delete permission; every other write only staging. */
 const writePermission = (command: ConfigCommand): Permission => {
   if (command.command !== "remove") return "changes:stage";
-  return command.environment === null ? "project:delete" : "environment:delete";
+  return command.environment == null ? "project:delete" : "environment:delete";
 };
 
 /** How many shown views one write rereads at once. */
