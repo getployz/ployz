@@ -59,9 +59,21 @@ by hand for every project:
 
 ```sh
 claude mcp add -s user ployz -- ployz mcp
+ployz mcp login
 ```
 
-For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
+For Codex, run `codex mcp add ployz -- ployz mcp`. `ployz mcp` doesn't use your sign-in. It acts
+with its own agent token, which `ployz mcp login` makes in your current organization and keeps
+on this computer. Until you run it, every tool call fails and names the command. The token acts
+as you in that organization, expires after 365 days, and shows as `agent` under KIND in
+`ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. An agent
+token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
+in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
+for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
+calls as the agent's.
+
+The tools create
 Projects, read and stage changes in them, review and deploy them (or save them for the next deploy), restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
@@ -83,7 +95,8 @@ or release a copy or remove a mirror, and removing an organization member or inv
 removal, such as `service_remove`, deletes nothing until the next deploy, so it isn't marked. When
 one of them needs your approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
-the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
+the agent's app shows you what it would remove and asks you to approve or deny it. Your answer
+goes to Ployz Cloud with your own sign-in, not the agent's token. Removing a
 Project, an Environment or a Server also asks you to type its name. Approve and the call goes
 ahead. Leave Approve unticked and Ployz denies the approval; any reason you type goes back to the
 agent, which is told nothing changed. Declining or closing the dialog denies it too, without a
@@ -212,7 +225,9 @@ offline, run it again once that server is back. Owners and admins see and can re
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. A token you make outlives the login you made it
+another that outlives it, or revoke the rest. `ployz token ls` shows each token's KIND: `cli` for
+one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
+answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.
 
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying

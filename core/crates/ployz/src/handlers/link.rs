@@ -81,15 +81,20 @@ impl Scope {
         }
     }
 
-    /// Fill what flags and environment variables left open from the directory link.
-    fn linked(mut self, config: &Path) -> Result<Self, Error> {
+    /// Fill what flags and environment variables left open from the directory link,
+    /// once `check` accepts the link's Organization.
+    fn linked(
+        mut self,
+        config: &Path,
+        check: impl FnOnce(&str, &Link) -> Result<(), Error>,
+    ) -> Result<Self, Error> {
         if self.project.is_some() && self.environment.is_some() {
             return Ok(self);
         }
         let Some((directory, link)) = find(config)? else {
             return Ok(self);
         };
-        check_organization(config, &directory, &link)?;
+        check(&directory, &link)?;
         let project = self.project.get_or_insert(Named {
             name: link.project.clone(),
             source: Source::Link,
@@ -112,14 +117,31 @@ impl Scope {
 
 /// The scope a command acts on.
 pub(crate) fn scope(matches: &ArgMatches) -> Result<Scope, Error> {
-    given(matches)?.linked(&config_path(matches)?)
+    let config = config_path(matches)?;
+    given(matches)?.linked(&config, |directory, link| {
+        check_organization(&config, directory, link)
+    })
 }
 
 /// The scope from `PLOYZ_PROJECT`, `PLOYZ_ENV` and the directory link alone, for
 /// shell completion, which sees no flags.
 pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
+    from_env()?.linked(config, |directory, link| {
+        check_organization(config, directory, link)
+    })
+}
+
+/// [`scope_from_env`] for a caller whose credential acts in the Organization with ID
+/// `acting`, such as `ployz mcp`'s agent token, rather than in this device's sign-in.
+pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Error> {
+    from_env()?.linked(config, |directory, link| {
+        check_acting_in(acting, directory, link)
+    })
+}
+
+fn from_env() -> Result<Scope, Error> {
     let named = |name: &str| std::env::var(name).ok();
-    Scope {
+    Ok(Scope {
         project: named(env::PROJECT)
             .map(|name| ProjectName::parse(name).map(env_named))
             .transpose()?,
@@ -127,8 +149,7 @@ pub(crate) fn scope_from_env(config: &Path) -> Result<Scope, Error> {
             .map(|name| EnvironmentName::parse(name).map(env_named))
             .transpose()?,
         link: None,
-    }
-    .linked(config)
+    })
 }
 
 fn env_named<T>(name: T) -> Named<T> {
@@ -279,6 +300,35 @@ fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(),
             linked.slug, acting.slug
         ),
         json!({ "link": directory, "linked": linked.slug, "acting": acting.slug }),
+    )
+    .hint(Hint::Next(next)))
+}
+
+/// A link made in another Organization than `acting` would send its names to the
+/// wrong Organization, so it stops the call.
+fn check_acting_in(acting: &str, directory: &str, link: &Link) -> Result<(), Error> {
+    let Some(linked) = &link.organization else {
+        return Ok(());
+    };
+    if linked.id == acting {
+        return Ok(());
+    }
+    let next = if linked.id == LOCAL_ORGANIZATION {
+        format!("Link {directory} again.")
+    } else {
+        format!(
+            "Run `ployz org use {}`, then `ployz mcp login`, or link {directory} again.",
+            linked.slug
+        )
+    };
+    Err(Error::detailed(
+        RpcErrorCode::Conflict,
+        format!(
+            "{directory} is linked in Organization {}, but `ployz mcp` acts in another \
+             Organization. {next}",
+            linked.slug
+        ),
+        json!({ "link": directory, "linked": linked.slug }),
     )
     .hint(Hint::Next(next)))
 }
@@ -747,4 +797,42 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         Some(context) => via("context", Some(context)),
         None => via("local", None),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn linked_in(id: &str, slug: &str) -> Link {
+        Link {
+            organization: Some(Organization {
+                id: id.to_owned(),
+                slug: slug.to_owned(),
+            }),
+            project: ProjectName::parse("shop".to_owned()).unwrap(),
+            environment: EnvironmentName::parse("production".to_owned()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_link_from_another_organization_than_the_credential_s_stops_the_call() {
+        let link = linked_in("org_globex", "globex");
+        let refused = check_acting_in("org_acme", "/src/shop", &link).unwrap_err();
+        let message = refused.to_string();
+        assert!(
+            message.contains("linked in Organization globex"),
+            "{message}"
+        );
+        assert!(message.contains("ployz org use globex"), "{message}");
+        check_acting_in("org_globex", "/src/shop", &link).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_names_no_organization_is_not_checked() {
+        let link = Link {
+            organization: None,
+            ..linked_in("org_globex", "globex")
+        };
+        check_acting_in("org_acme", "/src/shop", &link).unwrap();
+    }
 }

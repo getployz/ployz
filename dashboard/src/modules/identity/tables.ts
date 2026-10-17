@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
-import { createdAt, updatedAt } from "#/db/tables";
+import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
+import { TOKEN_KINDS, type TokenKind } from "#/modules/identity/actor";
 
 import { organization } from "#/modules/organization/tables";
 
-import { boolean, index, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -184,6 +185,7 @@ export const organizationToken = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    kind: text("kind").$type<TokenKind>().notNull().default("cli"),
     secretHash: text("secret_hash").notNull(),
     expiresAt: timestamp("expires_at", {
       mode: "date",
@@ -193,5 +195,6 @@ export const organizationToken = pgTable(
   (table) => [
     unique().on(table.secretHash),
     index("organization_token_organization_id_idx").on(table.organizationId),
+    check("organization_token_kind_check", sql`${table.kind} in (${sqlStringLiterals(TOKEN_KINDS)})`),
   ],
 );
