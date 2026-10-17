@@ -39,6 +39,7 @@ mod helpers;
 mod init;
 mod inspect;
 mod remove;
+pub(super) mod token;
 mod upgrade;
 
 use add::add;

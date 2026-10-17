@@ -64,6 +64,37 @@ doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
+## Add many servers with a Fleet Token
+
+A Fleet Token lets any number of hosts ask to join. Make one from your machine:
+
+```sh
+ployz server token create --expires 7d
+```
+
+It prints the token once, with the line to run on each host:
+
+```sh
+curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
+```
+
+- **Hosts wait for you.** A host that runs the line waits until you accept it. Add
+  `--auto --max 5` to let up to five hosts in on their own; anyone holding that token can add
+  servers, so keep it secret.
+- **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
+- **Expiry and revoke stop new hosts only.** Servers already in stay.
+
+List your tokens, and revoke one by name:
+
+```sh
+ployz server token ls
+ployz server token revoke amber-falcon
+```
+
+Revoking also drops the hosts still waiting on that token. The install line puts the token in the
+host's process list while it runs; a Fleet Token is short-lived and you can revoke it, so that
+exposure ends when you do.
+
 ## Start without ZFS
 
 The command sets up managed volumes with ZFS, so every [volume](../services/volumes.md) gets a
