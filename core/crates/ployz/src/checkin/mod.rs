@@ -224,8 +224,7 @@ pub(crate) enum Next {
         after: Duration,
         why: String,
     },
-    /// Cloud refused the token once. A second refusal a minute later confirms it.
-    Refused {
+    RefusedOnce {
         after: Duration,
     },
     Stop(StopReason, String),
@@ -374,7 +373,7 @@ pub(crate) async fn run<H: Host>(
                 crate::ui::note(format!("{why} Trying again in {}s.", after.as_secs()));
                 tokio::time::sleep(after).await;
             }
-            Next::Refused { after } => {
+            Next::RefusedOnce { after } => {
                 last_log = None;
                 crate::ui::note(format!(
                     "{REFUSED_ONCE}. Trying again in {}s.",
@@ -639,7 +638,7 @@ async fn pass_from<H: Host>(
                 status.answer = Seen::Refused;
                 status.message = Some(REFUSED_ONCE.to_owned());
                 status.refused = Some(first);
-                Next::Refused {
+                Next::RefusedOnce {
                     after: client::BACKOFF
                         .saturating_sub(waited)
                         .max(Duration::from_secs(1)),

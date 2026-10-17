@@ -155,9 +155,8 @@ FLEET_TOKEN_FILE=$TMP/etc/ployz/fleet-token
 export PLOYZ_TEST_ROOT=$TMP CHECKIN_LOG=$TMP/checkin.log STTY_LOG=$TMP/stty.log
 enroll() {
     rm -rf "${TMP:?}/etc" "$CHECKIN_LOG" "$STTY_LOG" "$TMP/install/ployz"
-    # shellcheck disable=SC2086
     env PATH="$TMP/bin:$PATH" FAKE_OS=Linux FAKE_ARCH=x86_64 FAKE_RELEASE="$TMP/release" INSTALL_BIN_DIR="$TMP/install" \
-        PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" ${ENROLL_FLAG:-} 1.2.3 > "$TMP/out" 2> "$TMP/err"
+        PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" ${ENROLL_FLAG:+"$ENROLL_FLAG"} 1.2.3 > "$TMP/out" 2> "$TMP/err"
 }
 installed_only() {
     printf '%s\n' 'ployz_linux_amd64.tar.gz: OK' "Installed ployz to $TMP/install/ployz" | diff - "$TMP/out"
@@ -185,7 +184,6 @@ printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE" enr
     "token=$TOKEN" | diff - "$CHECKIN_LOG"
 [ ! -e "$STTY_LOG" ]
 
-# --enroll reads the token from the terminal with echo off, so it never reaches sudo's arguments.
 mkdir -p "$TMP/dev"
 printf '%s\n' "$TOKEN" > "$TMP/dev/tty"
 ENROLL_FLAG=--enroll enroll
@@ -203,7 +201,6 @@ grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- --enroll' 
 [ ! -e "$TMP/install/ployz" ]
 [ ! -e "$FLEET_TOKEN_FILE" ]
 
-# A token of the wrong shape stops the script before it installs or writes anything.
 for value in "${TOKEN%?}" "${TOKEN}0" "${TOKEN%?}!"; do
     for flag in '' --enroll; do
         printf '%s\n' "$value" > "$TMP/dev/tty"

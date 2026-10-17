@@ -76,9 +76,8 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     }
     let runtime = runtime()?;
     if matches.get_flag("install") {
-        // A token that can't be used leaves the running loop alone.
         let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
-        runtime.block_on(stop_old_loop())?;
+        let token = runtime.block_on(stop_old_loop(token))?;
         let (key, mut client) = connect(&paths, &cloud_url, token)?;
         return runtime.block_on(install(&mut client, &key, &paths, &cloud_url));
     }
@@ -150,15 +149,13 @@ async fn install(
     if let Next::Stop(reason, _) = next {
         checkin::stop(&host, client, paths, reason).await;
     }
-    first_pass(next, cloud_url)?;
+    install_outcome(next, cloud_url)?;
     systemd(&["enable", "--now", unit::CHECKIN]).await?;
     crate::ui::stream("Waiting for approval");
     Ok(())
 }
 
-/// Whether the install leaves the loop running after its one check-in. A refusal ends the install
-/// at once, though the loop would ask once more, since someone is there to fix the token.
-fn first_pass(next: Next, cloud_url: &str) -> Result<(), Error> {
+fn install_outcome(next: Next, cloud_url: &str) -> Result<(), Error> {
     match next {
         Next::Wait { log, .. } => {
             if let Some(line) = log {
@@ -170,7 +167,7 @@ fn first_pass(next: Next, cloud_url: &str) -> Result<(), Error> {
             crate::ui::warn(format!("{why} The loop keeps trying."));
             Ok(())
         }
-        Next::Refused { .. } => Err(Error::coded(
+        Next::RefusedOnce { .. } => Err(Error::coded(
             RpcErrorCode::Unauthenticated,
             format!(
                 "Cloud at {cloud_url} refused this Fleet Token. Check the token, and PLOYZ_CLOUD_URL if you run your own Cloud, then run the install again."
@@ -194,12 +191,12 @@ fn first_pass(next: Next, cloud_url: &str) -> Result<(), Error> {
     }
 }
 
-async fn stop_old_loop() -> Result<(), Error> {
-    if !Path::new(UNIT_DIR).join(unit::CHECKIN).exists() {
-        return Ok(());
+async fn stop_old_loop(token: FleetToken) -> Result<FleetToken, Error> {
+    if Path::new(UNIT_DIR).join(unit::CHECKIN).exists() {
+        // Disabled too, so an install that fails from here leaves no loop to start at boot.
+        systemd(&["disable", "--now", unit::CHECKIN]).await?;
     }
-    // Disabled too, so an install that fails from here leaves no loop to start at boot.
-    systemd(&["disable", "--now", unit::CHECKIN]).await
+    Ok(token)
 }
 
 /// The ployzd the loop runs with, and why it should be replaced when it is older than this CLI.

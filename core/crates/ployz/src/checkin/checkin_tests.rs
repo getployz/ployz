@@ -624,7 +624,7 @@ async fn refused_pass(
 
 fn retries_after(next: &Next, seconds: u64) {
     assert!(
-        matches!(next, Next::Refused { after } if *after == Duration::from_secs(seconds)),
+        matches!(next, Next::RefusedOnce { after } if *after == Duration::from_secs(seconds)),
         "{next:?}"
     );
 }
@@ -809,7 +809,7 @@ async fn one_refusal_keeps_the_token_and_a_success_after_it_clears_it() {
     pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     let (url, _server) = unauthorized_cloud(4, 1).await;
     let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    assert!(matches!(next, Next::Refused { .. }), "{next:?}");
+    assert!(matches!(next, Next::RefusedOnce { .. }), "{next:?}");
     assert!(paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
 }
