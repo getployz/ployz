@@ -396,6 +396,7 @@ pub(super) fn protect(root: &ArgMatches) -> Result<(), Error> {
             environment: Some(name.clone()),
         },
         protected,
+        seen: None,
     };
     let listed = store(root)?.write(&set)?;
     let sentence = if protected {

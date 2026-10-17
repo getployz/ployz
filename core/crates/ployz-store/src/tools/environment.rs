@@ -258,6 +258,7 @@ impl Tool for EnvironmentProtect {
         let written = cx.write(&SetEnvironmentProtected {
             environment: scope.clone(),
             protected: self.protected,
+            seen: None,
         })?;
         let listing = written
             .environments

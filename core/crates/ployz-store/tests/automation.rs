@@ -50,7 +50,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
             default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
-        ..Trusted::default()
+        ..backend::cloud()
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
@@ -397,7 +397,7 @@ fn saved_loss_of(orphaned: bool) -> (ConfigStore, Actor) {
             },
             &Trusted {
                 volumes: Some(held_on_a()),
-                ..Trusted::default()
+                ..backend::cloud()
             },
         )
     };
@@ -430,7 +430,7 @@ fn deletes_of(
             event,
             &Trusted {
                 volumes,
-                ..Trusted::default()
+                ..backend::cloud()
             },
         )
         .unwrap()
@@ -695,7 +695,7 @@ fn an_approval_that_made_no_pr_environment_stays_listed_to_approve_again() {
     };
     let serverless = Trusted {
         servers: Some(0),
-        ..Trusted::default()
+        ..backend::cloud()
     };
     let stalled = store.write_trusted(&who, &approval, &serverless).unwrap();
     assert!(stalled.admitted.is_empty(), "{stalled:?}");
@@ -783,7 +783,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
     let refused = store
@@ -866,7 +866,7 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
     );
     // A compare from a stale head is refused, so an older head never comes back.
     let error = store
-        .system(&org(), &push(Some(H1), Some(H3), None), &Trusted::default())
+        .system(&org(), &push(Some(H1), Some(H3), None), &backend::cloud())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.details["head"], H2);
@@ -903,7 +903,7 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
         .system(
             &org(),
             &push(Some(H3), Some(H1), Some(&["../etc"])),
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
@@ -1026,7 +1026,7 @@ fn wait_for_ci_holds_a_deploy_until_every_suite_passes() {
 #[test]
 fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
     let (store, who) = shop();
-    let trusted = Trusted::default();
+    let trusted = backend::cloud();
     let hostname = ployz_store::Hostname::parse("shop.example.com").unwrap();
     store
         .write_trusted(
@@ -1042,7 +1042,7 @@ fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
         )
         .unwrap();
     publish(&store, &who);
-    let mut published = Trusted::default();
+    let mut published = backend::cloud();
     published
         .domains
         .published

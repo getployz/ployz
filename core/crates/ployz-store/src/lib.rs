@@ -102,7 +102,8 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment, SetEnvironmentProtected,
+    ProjectListing, ProjectsQuery, ProjectsView, SeenProtection, SetDefaultEnvironment,
+    SetEnvironmentProtected,
 };
 pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 
@@ -188,13 +189,18 @@ impl ConfigStore {
     }
 
     /// Apply `command` — a [`Command`], or one of its payloads for its own result —
-    /// in one transaction: all of it, or none.
+    /// in one transaction: all of it, or none. Without Cloud's evidence this is the
+    /// hidden local Store, whose one user owns everything, so it may protect.
     ///
     /// # Errors
     /// Returns an RPC error: `invalid_argument`, `not_found`, `ambiguous` or `conflict`
     /// for what the command asks, or a storage error.
     pub fn write<C: Tell>(&self, who: &Actor, command: &C) -> Result<C::Written, RpcError> {
-        self.write_trusted(who, command, &Trusted::default())
+        let owner = Trusted {
+            may_protect: true,
+            ..Trusted::default()
+        };
+        self.write_trusted(who, command, &owner)
     }
 
     /// [`write`](Self::write) with evidence Cloud gathered itself, such as which
@@ -209,7 +215,7 @@ impl ConfigStore {
         trusted: &Trusted,
     ) -> Result<C::Written, RpcError> {
         let trusted = trusted.held_by(who);
-        self.acting(who, &trusted, |tx| {
+        self.acting(&trusted, |tx| {
             command.apply(&mut Call {
                 tx,
                 who,
@@ -219,17 +225,15 @@ impl ConfigStore {
         })
     }
 
-    /// Run `work` in one write transaction acting for `who`, which may protect only
-    /// when it is the Store's own work or Cloud found its role may.
+    /// Run `work` in one write transaction, which may protect only when `trusted`
+    /// says so, whoever acts: Cloud found their role may, or Cloud itself writes.
     fn acting<T>(
         &self,
-        who: &Actor,
         trusted: &Trusted,
         work: impl FnOnce(&mut dyn storage::Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
-        let may = who.principal.is_none() || trusted.may_protect;
         self.storage.write(|tx| {
-            if may {
+            if trusted.may_protect {
                 work(tx)
             } else {
                 work(&mut storage::Unprotecting(tx))
@@ -249,7 +253,7 @@ impl ConfigStore {
         trusted: &Trusted,
     ) -> Result<Committed, RpcError> {
         let trusted = trusted.held_by(who);
-        self.acting(who, &trusted, |tx| {
+        self.acting(&trusted, |tx| {
             let written = command.apply(&mut Call {
                 tx,
                 who,

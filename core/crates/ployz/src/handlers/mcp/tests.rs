@@ -1827,6 +1827,7 @@ fn removed_but_unswept() -> ConfigStore {
             &SetEnvironmentProtected {
                 environment: production(),
                 protected: false,
+                seen: None,
             },
         )
         .unwrap();

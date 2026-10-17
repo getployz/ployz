@@ -15,7 +15,7 @@ use ployz_store::{
     Actor, Batch, BatchCommand, Change, ConfigStore, CreateBranch, CreateProject, CreateService,
     DiffQuery, DiffView, Discard, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
     EnvironmentRef, HintSource, NeverSync, OrganizationId, ProjectId, ProjectName, Publish,
-    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take, Trusted,
+    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Take,
 };
 use serde_json::{Value, json};
 
@@ -575,7 +575,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
         accept_volume_loss: Vec::new(),
     };
     store
-        .write_trusted(&who, &publish, &Trusted::default())
+        .write_trusted(&who, &publish, &backend::cloud())
         .unwrap();
     let history = store
         .read(
@@ -633,7 +633,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
                 message: None,
                 accept_volume_loss: Vec::new(),
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
     assert!(diff(&store, &who, "fix-web").published);

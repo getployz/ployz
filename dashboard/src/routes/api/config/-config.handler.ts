@@ -49,14 +49,15 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (!approval.ok) return refusal(approval.refusal);
   // `ployz mcp` unprotecting an Environment waits for a human, as the sidebar does; a person at the CLI decided already.
   const unprotect = call.operation === "write" && caller.via === "agent" ? yield* unprotectAsked(caller.organization.id, call.command) : null;
-  if (unprotect !== null) {
+  if (unprotect?.asked) {
     // Only someone who may protect gets a human asked on their behalf.
     if (!(yield* mayProtect(caller.organization.id, caller.userId))) return refusal(protectorOnly);
-    const gated = yield* gateOperation(caller, request.headers.get("x-ployz-approval"), unprotect);
+    const gated = yield* gateOperation(caller, request.headers.get("x-ployz-approval"), unprotect.asked);
     if (!gated.ok) return refusal(gated.refusal);
   }
   const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller) } as const;
-  const result = yield* callStore(caller.organization.id, caller.userId, call, { source: "cli", agent }, gate);
+  const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
+  const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {
     return refusal(yield* requestApproval(caller, call.command, result.refusal));

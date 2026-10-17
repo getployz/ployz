@@ -539,6 +539,112 @@ it.live(
   60_000,
 );
 
+/**
+ * Has the agent's owner protect production anew just before the Store sees its unprotect, as another
+ * write landing after Cloud decided whether to ask.
+ */
+const protectedAgainFirst = Effect.fn(function* (organizationId: string) {
+  const store = yield* cloudStore;
+  const write = store.write.bind(store);
+  let landed = false;
+  vi.spyOn(store, "write").mockImplementation(async (organization, command, trusted, principal) => {
+    if (!landed && command.command === "set_environment_protected" && !command.protected) {
+      landed = true;
+      const current = await store.read(organizationId, { query: "environments", project: "shop" });
+      const protectedNow = current.view === "environments" && current.environments.some((environment) => environment.protected);
+      if (protectedNow) await write(organization, protect(false), trusted, null);
+      await write(organization, protect(true), trusted, null);
+    }
+    return write(organization, command, trusted, principal);
+  });
+  return () => landed;
+});
+const refusedCode = (answer: Effect.Success<ReturnType<typeof runAgentCall>>) =>
+  "outcome" in answer && "refusal" in answer.outcome ? answer.outcome.refusal.code : JSON.stringify(answer);
+
+it.live(
+  "an agent's unprotect the protection changed under after Cloud decided is refused, approved or not",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, slug, protection } = yield* protectedShop();
+        const agent = { ...alice, via: "agent" as const };
+
+        // Approved for the first protection; production is unprotected and protected again before the write lands.
+        const asked = yield* runAgentCall(agent, unprotectByAgent("raced", null));
+        if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
+        const { approval } = asked.asking.refusal.details as { approval: string };
+        assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, asked.asking.approvalId, { approve: { digest: approval } })).ok);
+        const landed = yield* protectedAgainFirst(organizationId);
+        assert.strictEqual(refusedCode(yield* runAgentCall(agent, unprotectByAgent("raced", asked.asking.approvalId))), "conflict");
+        assert.isTrue(landed());
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        vi.restoreAllMocks();
+
+        // Unprotected, so no one is asked; a person protects it before the write lands.
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(false))).ok);
+        const unasked = yield* protectedAgainFirst(organizationId);
+        assert.strictEqual(refusedCode(yield* runAgentCall(agent, unprotectByAgent("unasked", null))), "conflict");
+        assert.isTrue(unasked());
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        vi.restoreAllMocks();
+
+        // The same from `ployz mcp`.
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(false))).ok);
+        const fromMcp = yield* protectedAgainFirst(organizationId);
+        const headers = signedIn(session);
+        headers.set("x-ployz-via", "agent");
+        const mcp = yield* send("write", headers, protect(false));
+        assert.strictEqual(mcp.json.error?.code, "conflict", JSON.stringify(mcp.json));
+        assert.isTrue(fromMcp());
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        vi.restoreAllMocks();
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "someone no longer a member may not protect, and Cloud's own write still may",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { bob, organizationId, protection, role } = yield* protectedShop();
+        yield* role("admin");
+        const { drizzle } = yield* Database;
+        yield* drizzle.delete(member).where(eq(member.userId, bob.userId));
+        const gone = yield* callStore(organizationId, bob.userId, { operation: "write", command: protect(false) }, { source: "cli", agent: null });
+        assert.deepStrictEqual(refusalOf(gone), ["forbidden", adminOnly]);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+
+        assert.isTrue((yield* callStore(organizationId, null, { operation: "write", command: protect(false) })).ok, "Cloud itself unprotects");
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a member's repository change in a Protected Environment is refused before Cloud asks GitHub about it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { bob, slug } = yield* protectedShop();
+        const asked = () => github.calls.filter((call) => call.path.startsWith("/repos/acme/down")).length;
+        const before = asked();
+        const down: ConfigCommand = {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.repository", value: "acme/down" }],
+        };
+        assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, down)), ["forbidden", adminOnly]);
+        assert.strictEqual(asked(), before, "GitHub was never asked");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
 it.live(
   "Store writes reach Cloud's change log once committed, and a refused write logs nothing",
   () =>
