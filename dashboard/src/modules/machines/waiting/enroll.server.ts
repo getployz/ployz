@@ -155,7 +155,8 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
     })
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))
-    .where(and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids])));
+    .where(and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids])))
+    .for("update", { of: waitingServer });
 });
 
 export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(function* (
@@ -172,14 +173,15 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
       .select({ founded: sql<boolean>`${organizationPairing.founderMachineId} is not null` })
       .from(organizationPairing)
       .where(eq(organizationPairing.organizationId, organization.id));
-    const [founding] = pairing !== undefined ? [] : yield* drizzle
+    const founded = pairing?.founded === true;
+    const [founding] = founded ? [] : yield* drizzle
       .select({ id: serverEnrollment.id })
       .from(serverEnrollment)
       .where(and(eq(serverEnrollment.organizationId, organization.id), eq(serverEnrollment.role, "founder"), isNull(serverEnrollment.endedAt)));
     const plan = planServerEnrollment(
       input,
       ids.length === 0 ? [] : yield* candidatesOf(organization.id, ids),
-      { hasFirst: pairing !== undefined || founding !== undefined },
+      { hasFirst: founded || founding !== undefined },
     );
     if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
     const attempts = [];
@@ -190,7 +192,7 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
         userId: actor.userId,
         attempt: { role: row.role, serverEnrollmentId: id },
       });
-      const state: EnrollmentState = row.role === "founder" || pairing?.founded === true ? "instructed" : "awaiting_founder";
+      const state: EnrollmentState = row.role === "founder" || founded ? "instructed" : "awaiting_founder";
       yield* drizzle.insert(serverEnrollment).values({
         id,
         organizationId: organization.id,

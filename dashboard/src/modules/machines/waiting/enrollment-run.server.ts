@@ -55,7 +55,7 @@ export const releaseJoiner = Effect.fn("ServerEnrollment.release")(function* (at
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.update(serverEnrollment).set({ state: "instructed" }).where(and(
     eq(serverEnrollment.id, attemptId),
-    eq(serverEnrollment.state, "awaiting_founder"),
+    inArray(serverEnrollment.state, ["awaiting_founder", "instructed"]),
     ownedBy(runId),
   )).returning({ id: serverEnrollment.id });
   return rows.length === 1;
@@ -78,7 +78,10 @@ type Ending =
   | { readonly state: "failed"; readonly failure: EnrollmentFailure }
   | { readonly state: "cancelled" };
 
-const endAndRevokeTokens = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
+const endAndRevokeTokens = (where: ReturnType<typeof and>, ending: Ending) =>
+  Effect.flatMap(Database, (database) => database.transaction(endAndRevokeTokensNow(where, ending)));
+
+const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
   const { drizzle } = yield* Database;
   const now = new Date();
   const ended = yield* drizzle.update(serverEnrollment).set({

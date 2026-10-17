@@ -12,6 +12,7 @@ import {
   readServerEnrollments,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
+import { closeServerEnrollment, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { type EnrollInput, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
@@ -224,6 +225,61 @@ it("cancels a rejected host's open attempt", async () => {
   await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [a.id ?? ""] }));
   expect((await attempts()).map((row) => [row.state, row.ended_at !== null])).toEqual([["cancelled", true]]);
   expect(await outbox()).toContain("server/enrollment.cancel");
+});
+
+it("plans a first server when the Organization's pairing was claimed but never founded and no first server is on its way", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  await harness.pool.query("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id) values ($1, '{}'::jsonb, 'k', $2)", [adaOrg, "00000000000000000000000000000001"]);
+  const started = await run(enroll([a, b], { first: a.id }));
+  expect(started.attempts.map((attempt) => [attempt.waitingServerId, attempt.role, attempt.state])).toEqual([
+    [a.id, "founder", "instructed"],
+    [b.id, "joiner", "awaiting_founder"],
+  ]);
+});
+
+it("waits for a reject in flight before planning, and skips the host it rejected", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const rejecting = await harness.pool.connect();
+  try {
+    await rejecting.query("begin");
+    await rejecting.query("update waiting_server set rejected_at = now() where id = $1", [a.id]);
+    const planning = run(enroll([a, b], { first: b.id }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await rejecting.query("commit");
+    const started = await planning;
+    expect(started.attempts.map((attempt) => attempt.waitingServerId)).toEqual([b.id]);
+    expect(started.skipped).toEqual([{ id: a.id, reason: "Not waiting" }]);
+  } finally {
+    rejecting.release();
+  }
+});
+
+it("leaves an attempt open when revoking its enroll token fails", async () => {
+  const [a] = await waiting("web-a");
+  if (a === undefined) throw new Error("one host");
+  const [started] = (await run(enroll([a]))).attempts;
+  await harness.pool.query(`
+    create function refuse_token_update() returns trigger language plpgsql as $$ begin raise exception 'token store down'; end $$;
+    create trigger refuse_token_update before update on machine_enrollment_token for each row execute function refuse_token_update();
+  `);
+  try {
+    expect(await failure(closeServerEnrollment("run-1", "cancellation", started?.id))).not.toBeNull();
+  } finally {
+    await harness.pool.query("drop trigger refuse_token_update on machine_enrollment_token; drop function refuse_token_update();");
+  }
+  expect((await attempts()).map((row) => [row.state, row.ended_at])).toEqual([["instructed", null]]);
+});
+
+it("releases a joiner again when a retried release step finds it already released", async () => {
+  const [a, b] = await waiting("web-a", "web-b");
+  if (a === undefined || b === undefined) throw new Error("two hosts");
+  const joiner = (await run(enroll([a, b], { first: a.id }))).attempts[1];
+  await harness.pool.query("update server_enrollment set inngest_run_id = 'run-1'");
+  expect(await run(releaseJoiner(joiner?.id ?? "", "run-1"))).toBe(true);
+  expect(await run(releaseJoiner(joiner?.id ?? "", "run-1"))).toBe(true);
+  expect(await run(releaseJoiner(joiner?.id ?? "", "run-2"))).toBe(false);
 });
 
 it("closes a cancelled attempt no run has bound, and says when there was nothing to cancel", async () => {

@@ -72,12 +72,13 @@ export async function executeServerEnrollment({ event, step, runId }: Ctx, runEf
 
   if (bound.state === "awaiting_founder") {
     let released = false;
-    for (let round = 0; round < FOUNDER_ROUNDS && !released; round += 1) {
+    for (let round = 0; round <= FOUNDER_ROUNDS && !released; round += 1) {
       if (await step.run(`founded-${round}`, () => runEffect(organizationFounded(organizationId)))) {
         released = await step.run("release", () => runEffect(releaseJoiner(attemptId, runId)));
         if (!released) return { attemptId, state: "settled" as const };
         break;
       }
+      if (round === FOUNDER_ROUNDS) break;
       const heard = await heardFor(`founder-wait-${round}`, FOUNDER_WAIT);
       if (heard !== undefined && "failure" in heard && heard.failure !== undefined) {
         return fail(`fail-founder-${round}`, heard.failure.stage, heard.failure.message);

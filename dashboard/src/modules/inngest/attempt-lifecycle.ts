@@ -13,7 +13,9 @@ type RunCancelOn = Parameters<PloyzInngest["createFunction"]>[0]["cancelOn"];
 
 export type RunEnd = "failure" | "cancellation";
 
-const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ run_id: Schema.String }) }));
+const decodeFailedRun = Schema.decodeUnknownOption(
+  Schema.Struct({ data: Schema.Struct({ run_id: Schema.String, event: Schema.optional(Schema.Unknown) }) }),
+);
 
 export function attemptLifecycle<Result, More extends object, Triggering = never>(workflow: {
   readonly run: {
@@ -48,7 +50,10 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
         onFailure: async ({ event }) => {
           // `inngest/function.failed` names the failed run.
           const failed = decodeFailedRun(event);
-          if (Option.isSome(failed)) await runEffect(closeRun(failed.value.data.run_id, "failure", Option.none()));
+          if (Option.isSome(failed)) {
+            const { run_id: runId, event: triggering } = failed.value.data;
+            await runEffect(closeRun(runId, "failure", decodeTriggering(triggering)));
+          }
         },
       },
       async ({ event, step, runId }) => run.handler({ event, step, runId }, runEffect),

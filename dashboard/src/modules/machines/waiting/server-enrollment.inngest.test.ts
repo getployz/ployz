@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { type createServerEnrollmentFoundedEvent, serverEnrollmentReportedEvent } from "#/modules/inngest/events";
-import { executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
+import { executeServerEnrollment, FOUNDER_ROUNDS } from "#/modules/machines/waiting/server-enrollment.inngest";
 import type { runInngestEffect } from "#/server/run.server";
 
 const attemptId = "00000000-0000-4000-8000-0000000000f1";
@@ -84,5 +84,20 @@ describe("executeServerEnrollment", () => {
       name: serverEnrollmentReportedEvent,
       data: { attemptId: joinerId, founded: true },
     }]]);
+  });
+
+  it("releases a joiner whose founder joins during the last founder wait", async () => {
+    const rounds = Object.fromEntries(Array.from({ length: FOUNDER_ROUNDS }, (_, round) => [`founded-${round}`, false]));
+    const { ended } = await enroll({
+      "normalize-request": data,
+      "bind-run": { kind: "bound", role: "joiner", state: "awaiting_founder" },
+      ...rounds,
+      [`founded-${FOUNDER_ROUNDS}`]: true,
+      release: true,
+      "report-0": heard({ completed: true }),
+      "check-0": { kind: "joined", machineId },
+      "join-0": true,
+    });
+    expect(ended).toEqual({ attemptId, state: "joined", machineId });
   });
 });
