@@ -10,7 +10,7 @@ import {
   type CheckinStopReason,
   type StoredReport,
 } from "#/modules/machines/waiting/checkin-wire";
-import { createServerEnrollmentReportedEvent, type ServerEnrollmentReportedEventData } from "#/modules/inngest/events";
+import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
@@ -193,7 +193,7 @@ const enrolling = Effect.fn("Checkin.enrolling")(function* (
 });
 
 /** What the host's attempt changed, for its run to hear; a stage it already reported is not news. */
-function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentReportedEventData | null {
+function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentCheckinReport | null {
   if (open.instruction.storage.kind === "zfs" && request.prep?.zfs === "failed") {
     return { attemptId: open.id, stage: "storage", failure: { stage: "storage", message: ZFS_BUILD_FAILED } };
   }

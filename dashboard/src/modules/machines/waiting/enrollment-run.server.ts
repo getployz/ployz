@@ -44,6 +44,17 @@ export const organizationFounded = Effect.fn("ServerEnrollment.founded")(functio
   return pairing?.founderMachineId != null;
 });
 
+/** The joiners the founder's run tells it joined. */
+export const awaitingJoiners = Effect.fn("ServerEnrollment.awaitingJoiners")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+    eq(serverEnrollment.organizationId, organizationId),
+    eq(serverEnrollment.state, "awaiting_founder"),
+    open,
+  ));
+  return rows.map((row) => row.id);
+});
+
 /** The founder joined: a waiting joiner may now get its instruction. */
 export const releaseJoiner = Effect.fn("ServerEnrollment.release")(function* (attemptId: string, runId: string) {
   const { drizzle } = yield* Database;

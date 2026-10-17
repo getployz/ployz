@@ -92,9 +92,7 @@ export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
 export const serverEnrollmentRequestedEvent = "server/enrollment.requested";
 export const serverEnrollmentReportedEvent = "server/enrollment.reported";
-export const serverEnrollmentCompletedEvent = "server/enrollment.completed";
 export const serverEnrollmentCancelEvent = "server/enrollment.cancel";
-export const organizationFoundedEvent = "organization/founded";
 export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
@@ -164,22 +162,18 @@ export type ServerEnrollmentRequestedEventData = {
 };
 
 /** What a check-in said about an attempt: the host's stage, or why it failed. */
-export type ServerEnrollmentReportedEventData = {
-  attemptId: string;
-  stage: string | null;
-  failure?: { stage: string | null; message: string };
-};
+export type ServerEnrollmentCheckinReport = { attemptId: string; stage: string | null; failure?: { stage: string | null; message: string } };
 
-/** The attempt's Machine completed enrollment through its per-attempt token. */
-export type ServerEnrollmentCompletedEventData = {
-  attemptId: string;
-  machineId: MachineId;
-};
+/**
+ * News for one attempt's run, on the one event it waits for: a check-in's stage or failure, its Machine completing
+ * enrollment through the per-attempt token, or its Organization's founder joining.
+ */
+export type ServerEnrollmentReportedEventData =
+  | ServerEnrollmentCheckinReport
+  | { attemptId: string; completed: true }
+  | { attemptId: string; founded: true };
 
 export type ServerEnrollmentCancelEventData = { attemptId: string };
-
-/** The Organization's founder joined through a Server Enrollment; its waiting joiners may go. */
-export type OrganizationFoundedEventData = { organizationId: string };
 
 /** A web traffic change was requested: its row is written. `organizationId` keys the Organization's one-at-a-time changes. */
 export type ServerWebTrafficRequestedEventData = {
@@ -330,17 +324,9 @@ export const serverEnrollmentReportedEventType = eventType(
   serverEnrollmentReportedEvent,
   { schema: staticSchema<ServerEnrollmentReportedEventData>() },
 );
-export const serverEnrollmentCompletedEventType = eventType(
-  serverEnrollmentCompletedEvent,
-  { schema: staticSchema<ServerEnrollmentCompletedEventData>() },
-);
 export const serverEnrollmentCancelEventType = eventType(
   serverEnrollmentCancelEvent,
   { schema: staticSchema<ServerEnrollmentCancelEventData>() },
-);
-export const organizationFoundedEventType = eventType(
-  organizationFoundedEvent,
-  { schema: staticSchema<OrganizationFoundedEventData>() },
 );
 export const serverWebTrafficRequestedEventType = eventType(
   serverWebTrafficRequestedEvent,
@@ -494,17 +480,18 @@ export function createServerEnrollmentReportedEvent(data: ServerEnrollmentReport
   return { id: `server-enrollment-reported-${crypto.randomUUID()}`, name: serverEnrollmentReportedEvent, data } as const;
 }
 
-export function createServerEnrollmentCompletedEvent(data: ServerEnrollmentCompletedEventData) {
-  return { id: `server-enrollment-completed-${data.attemptId}`, name: serverEnrollmentCompletedEvent, data } as const;
+/** Keyed by the attempt: a retried completion is one signal. */
+export function createServerEnrollmentCompletedEvent(attemptId: string) {
+  return { id: `server-enrollment-completed-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, completed: true } } as const;
 }
 
 export function createServerEnrollmentCancelEvent(data: ServerEnrollmentCancelEventData) {
   return { id: `server-enrollment-cancel-${data.attemptId}`, name: serverEnrollmentCancelEvent, data } as const;
 }
 
-/** Keyed by the founder's attempt: a later founding after a reset sends its own. */
-export function createOrganizationFoundedEvent(founderAttemptId: string, data: OrganizationFoundedEventData) {
-  return { id: `organization-founded-${founderAttemptId}`, name: organizationFoundedEvent, data } as const;
+/** Keyed by the founder's attempt and the joiner: a later founding after a reset sends its own. */
+export function createServerEnrollmentFoundedEvent(founderAttemptId: string, attemptId: string) {
+  return { id: `organization-founded-${founderAttemptId}-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, founded: true } } as const;
 }
 
 /** Keyed by the change's row: sending it again for the same request runs nothing new. */
@@ -705,7 +692,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerEnrollmentReportedEvent>
   | ReturnType<typeof createServerEnrollmentCompletedEvent>
   | ReturnType<typeof createServerEnrollmentCancelEvent>
-  | ReturnType<typeof createOrganizationFoundedEvent>
+  | ReturnType<typeof createServerEnrollmentFoundedEvent>
   | ReturnType<typeof createServerWebTrafficRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>

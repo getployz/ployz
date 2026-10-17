@@ -663,7 +663,7 @@ export const completeMachineEnrollment = Effect.fn(
         yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId, token.claimedPublicKey);
       }));
       yield* recordJoined(input.token, machineId, { founder: false });
-      yield* reportAttemptCompleted(token.serverEnrollmentId, machineId);
+      yield* reportAttemptCompleted(token.serverEnrollmentId);
       return { machineId };
     }
     // Past this, `machineId` is the founder (a retried completion may have founded it already).
@@ -681,16 +681,16 @@ export const completeMachineEnrollment = Effect.fn(
     yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
-    yield* reportAttemptCompleted(token.serverEnrollmentId, machineId);
+    yield* reportAttemptCompleted(token.serverEnrollmentId);
     return { machineId };
   },
 );
 
 /** A Server Enrollment's run ends joined on this; a lost send is caught when its next round reads the token. */
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
-  function* (serverEnrollmentId: string | null, machineId: MachineId) {
+  function* (serverEnrollmentId: string | null) {
     if (serverEnrollmentId === null) return;
-    yield* sendInngestEvent(createServerEnrollmentCompletedEvent({ attemptId: serverEnrollmentId, machineId })).pipe(
+    yield* sendInngestEvent(createServerEnrollmentCompletedEvent(serverEnrollmentId)).pipe(
       Effect.catch((error) => Effect.logWarning("Server Enrollment completion was not sent; its run reads the token.", error)),
     );
   },

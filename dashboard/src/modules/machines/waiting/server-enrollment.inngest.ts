@@ -1,18 +1,16 @@
 import { Option, Schema } from "effect";
-import type { GroupTools } from "inngest";
 import type { MachineId } from "#/db/tables";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
 import type { PloyzStepTools } from "#/modules/inngest/client";
 import {
-  createOrganizationFoundedEvent,
-  organizationFoundedEvent,
+  createServerEnrollmentFoundedEvent,
   serverEnrollmentCancelEvent,
-  serverEnrollmentCompletedEvent,
   serverEnrollmentReportedEvent,
   serverEnrollmentRequestedEventType,
 } from "#/modules/inngest/events";
 import {
   asStage,
+  awaitingJoiners,
   bindServerEnrollment,
   checkServerEnrollment,
   closeServerEnrollment,
@@ -41,25 +39,28 @@ const Requested = Schema.Struct({
   organizationId: Schema.String.check(Schema.isNonEmpty()),
 });
 
-const Reported = Schema.Struct({
+const Heard = Schema.Struct({
   name: Schema.Literal(serverEnrollmentReportedEvent),
-  data: Schema.Struct({
-    stage: Schema.NullOr(Schema.String),
-    failure: Schema.optionalKey(Schema.Struct({ stage: Schema.NullOr(Schema.String), message: Schema.String })),
-  }),
+  data: Schema.Union([
+    Schema.Struct({
+      stage: Schema.NullOr(Schema.String),
+      failure: Schema.optionalKey(Schema.Struct({ stage: Schema.NullOr(Schema.String), message: Schema.String })),
+    }),
+    Schema.Struct({ completed: Schema.Literal(true) }),
+    Schema.Struct({ founded: Schema.Literal(true) }),
+  ]),
 });
-const Completed = Schema.Struct({ name: Schema.Literal(serverEnrollmentCompletedEvent) });
-const Heard = Schema.Union([Reported, Completed]);
 const decodeHeard = Schema.decodeUnknownOption(Heard);
 
-type Ctx = { event: { data: unknown }; step: StepTools; runId: string; group: Pick<GroupTools, "parallel"> };
+type Ctx = { event: { data: unknown }; step: StepTools; runId: string };
 
 /**
  * One Server Enrollment: bind the run → a joiner waits for its Organization's founder → follow the host's check-ins
  * until its Machine completes, it reports a failure, or it goes quiet. Check-in answers the host from the row; this run
- * is the row's only writer after it is planned.
+ * is the row's only writer after it is planned. Every signal for the attempt arrives as its one reported event, so
+ * each round waits on a single event.
  */
-export async function executeServerEnrollment({ event, step, runId, group }: Ctx, runEffect: EffectRunner) {
+export async function executeServerEnrollment({ event, step, runId }: Ctx, runEffect: EffectRunner) {
   const request = await step.run("normalize-request", () => {
     const decoded = Schema.decodeUnknownOption(Requested)(event.data, { onExcessProperty: "preserve" });
     return Option.isSome(decoded) ? decoded.value : null;
@@ -72,8 +73,10 @@ export async function executeServerEnrollment({ event, step, runId, group }: Ctx
   const fail = (id: string, stage: string | null, message: string) =>
     step.run(id, () => runEffect(endServerEnrollment(attemptId, runId, { state: "failed", failure: { stage: asStage(stage), message } })))
       .then(() => ({ attemptId, state: "failed" as const, message }));
-  const reportedFor = (id: string, timeout: string) =>
-    step.waitForEvent(id, { event: serverEnrollmentReportedEvent, if: `async.data.attemptId == '${attemptId}'`, timeout });
+  const heardFor = async (id: string, timeout: string) => {
+    const heard = await step.waitForEvent(id, { event: serverEnrollmentReportedEvent, if: `async.data.attemptId == '${attemptId}'`, timeout });
+    return heard === null ? undefined : Option.getOrUndefined(decodeHeard(heard))?.data;
+  };
 
   if (bound.state === "awaiting_founder") {
     let released = false;
@@ -83,15 +86,9 @@ export async function executeServerEnrollment({ event, step, runId, group }: Ctx
         if (!released) return { attemptId, state: "settled" as const };
         break;
       }
-      const heard = await group.parallel({ mode: "race" }, () => Promise.race([
-        step.waitForEvent(`founder-wait-${round}`, {
-          event: organizationFoundedEvent, if: `async.data.organizationId == '${organizationId}'`, timeout: FOUNDER_WAIT,
-        }),
-        reportedFor(`founder-report-${round}`, FOUNDER_WAIT),
-      ]));
-      const failure = heard === null ? undefined : Option.getOrUndefined(decodeHeard(heard));
-      if (failure?.name === serverEnrollmentReportedEvent && failure.data.failure !== undefined) {
-        return fail(`fail-founder-${round}`, failure.data.failure.stage, failure.data.failure.message);
+      const heard = await heardFor(`founder-wait-${round}`, FOUNDER_WAIT);
+      if (heard !== undefined && "failure" in heard && heard.failure !== undefined) {
+        return fail(`fail-founder-${round}`, heard.failure.stage, heard.failure.message);
       }
     }
     if (!released) return fail("fail-no-founder", null, "First server didn't finish");
@@ -99,15 +96,10 @@ export async function executeServerEnrollment({ event, step, runId, group }: Ctx
 
   let quiet = 0;
   for (let heardCount = 0; heardCount < MAX_EVENTS && quiet < QUIET_ROUNDS; heardCount += 1) {
-    const heard = await group.parallel({ mode: "race" }, () => Promise.race([
-      reportedFor(`report-${heardCount}`, QUIET_WAIT),
-      step.waitForEvent(`complete-${heardCount}`, {
-        event: serverEnrollmentCompletedEvent, if: `async.data.attemptId == '${attemptId}'`, timeout: QUIET_WAIT,
-      }),
-    ]));
-    const decoded = heard === null ? undefined : Option.getOrUndefined(decodeHeard(heard));
-    if (decoded === undefined || decoded.name === serverEnrollmentCompletedEvent) {
-      if (decoded === undefined) quiet += 1;
+    const heard = await heardFor(`report-${heardCount}`, QUIET_WAIT);
+    if (heard !== undefined && "founded" in heard) continue;
+    if (heard === undefined || "completed" in heard) {
+      if (heard === undefined) quiet += 1;
       // The token records the Machine that joined, so a completion is read from it rather than from the event.
       const found = await step.run(`check-${heardCount}`, () => runEffect(checkServerEnrollment(attemptId)));
       if (found.kind === "gone") return { attemptId, state: "settled" as const };
@@ -115,16 +107,18 @@ export async function executeServerEnrollment({ event, step, runId, group }: Ctx
       if (found.kind === "silent") return fail(`fail-silent-${heardCount}`, null, "Server stopped checking in");
       continue;
     }
-    const { failure } = decoded.data;
-    if (failure !== undefined) return fail(`fail-${heardCount}`, failure.stage, failure.message);
-    await step.run(`stage-${heardCount}`, () => runEffect(recordStage(attemptId, runId, decoded.data.stage)));
+    if (heard.failure !== undefined) return fail(`fail-${heardCount}`, heard.failure.stage, heard.failure.message);
+    await step.run(`stage-${heardCount}`, () => runEffect(recordStage(attemptId, runId, heard.stage)));
   }
   return fail("fail-timeout", null, "Enrollment timed out");
 
   async function join(id: string, machineId: MachineId) {
     const joined = await step.run(id, () => runEffect(endServerEnrollment(attemptId, runId, { state: "joined", machineId })));
     if (joined && bound.kind === "bound" && bound.role === "founder") {
-      await step.sendEvent("send-founded", createOrganizationFoundedEvent(attemptId, { organizationId }));
+      const joiners = await step.run("awaiting-joiners", () => runEffect(awaitingJoiners(organizationId)));
+      if (joiners.length > 0) {
+        await step.sendEvent("send-founded", joiners.map((joiner) => createServerEnrollmentFoundedEvent(attemptId, joiner)));
+      }
     }
     return { attemptId, state: "joined" as const, machineId };
   }
