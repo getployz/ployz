@@ -24,7 +24,7 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
 /** What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
-  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove" : "Deploy";
+  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove" : command === "shut_down" ? "Shut down" : "Deploy";
   return { verb, name: review.diff.environment.name };
 }
 
@@ -43,7 +43,8 @@ export function approvalBadge(command: string, { effects }: ApprovalReview) {
 
 /** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
 export function approvalCommand(command: ConfigCommand) {
-  return command.command === "admit" && command.admit === "retry" ? "retry" : command.command;
+  if (command.command === "admit" && (command.admit === "retry" || command.admit === "shut_down")) return command.admit;
+  return command.command;
 }
 
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
