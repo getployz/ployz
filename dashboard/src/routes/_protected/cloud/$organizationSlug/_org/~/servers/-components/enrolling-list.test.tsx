@@ -97,3 +97,13 @@ it("keeps a fifty-host enrollment list within the ten-row rendering budget", () 
   expect(rows().length).toBeLessThanOrEqual(14);
   expect(screen.getByText("0 of 50 joined")).toBeTruthy();
 });
+
+it("fills the expanded viewport when a second batch appends to a short list", () => {
+  const onCancel = vi.fn();
+  const view = render(<EnrollingList attempts={[attempt(1)]} joining={0} onCancel={onCancel} />);
+  const original = rows()[0];
+  view.rerender(<EnrollingList attempts={Array.from({ length: 50 }, (_, n) => attempt(n + 1))} joining={0} onCancel={onCancel} />);
+  expect(rows()).toHaveLength(12);
+  expect(rows()[0]).toBe(original);
+  expect(screen.getByRole("button", { name: "Cancel web-10" })).toBeTruthy();
+});
