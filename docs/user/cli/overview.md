@@ -169,7 +169,8 @@ Any member can run `ployz org member ls`. Pending invites name who was invited, 
 
 Commands that talk to your servers directly need an owner or admin too: `exec`, `logs`, `ps`,
 `metrics`, `service start`, `service stop`, `service restart`, `service port-forward`,
-`server ls`, `server inspect`, `server logs`, `server set` and `server drain`. A member gets
+`server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
+`server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
 `Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 

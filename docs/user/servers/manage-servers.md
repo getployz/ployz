@@ -129,8 +129,9 @@ An entry marked **Not in any Project** is left over from a deleted project or en
 
 Some CLI commands talk to your servers directly, so only owners and admins can run them:
 `exec`, `logs`, `ps`, `metrics`, `service start`, `service stop`, `service restart`,
-`service port-forward`, `server ls`, `server inspect`, `server logs`, `server set` and
-`server drain`. A member who runs one gets this, and the command exits 1:
+`service port-forward`, `server ls`, `server show`, `server logs`, `server set`,
+`server drain`, `server upgrade`, `server rm`, `server forget <server>` and `server clean`
+without a namespace. A member who runs one gets this, and the command exits 1:
 
 ```text
 Server access needs an admin. Ask an owner or admin of acme.
