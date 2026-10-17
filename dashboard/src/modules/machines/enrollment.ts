@@ -285,7 +285,10 @@ export type NotYetEnrollMaterial = {
   kind: "not_yet";
   retryAfter: number;
   reason?: "founder" | "queued";
-  /** Joins that must finish before this one may start. */
+  /**
+   * An estimate of the joins that must finish before this one may start. It can rise again when a
+   * waiter that went quiet returns to its old place.
+   */
   ahead?: number;
 };
 

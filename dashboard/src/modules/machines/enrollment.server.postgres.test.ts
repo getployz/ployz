@@ -31,6 +31,7 @@ import {
   recordMachineSetupReport,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
+import { checkServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -153,6 +154,7 @@ function enrollmentTestClient(
     publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
       Effect.result(publishMachineEnrollment(input)),
     ),
+    check: (attemptId: string) => runtime.runPromise(checkServerEnrollment(attemptId)),
     connections: (id = organizationId) => runtime.runPromise(loadOrganizationConnections(id)),
     open: (id = organizationId) => runtime.runPromise(Effect.scoped(
       Effect.gen(function* () { return yield* (yield* OrganizationRuntime).open(id); }),
@@ -1204,8 +1206,81 @@ describe("organization enrollment coordinator", () => {
       await harness.pool.query("update machine_enrollment_token set updated_at = now() - interval '1 minute' where token_hash = $1", [hashEnrollmentToken(second)]);
       expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
 
-      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '31 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '11 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
       expect(await enrollIn(fake, third, 3)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("gives back the slots of joins that failed before they were sent", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      fake.connection.error = new Error("Candidate unreachable");
+      for (let index = 1; index <= 8; index += 1) {
+        expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(index) }))
+          .toMatchObject({ failure: { _tag: "Conflict" } });
+      }
+      fake.connection.error = null;
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(20) }))
+        .toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("sends a resumed claim whose slot lapsed back into the line", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '11 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      expect(await enrollIn(fake, await issueToken(), 2)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, first, 1)).toEqual(queued(1));
+    });
+
+    it("does not count the founder's own token as a join", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await harness.pool.query("update machine_enrollment_token set joined_machine_id = null where claimed_machine_id = $1", [founderMachineId]);
+      expect(await enrollIn(fake, await issueToken(), 1)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("answers a full line without waiting on the Organization's lock", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await issueToken(identity(4), "joiner");
+      const waiting = await issueToken();
+      const holder = await harness.pool.connect();
+      try {
+        await holder.query("begin");
+        await holder.query("select 1 from organization_pairing where organization_id = $1 for update", [organizationId]);
+        const blocked = new Promise((resolve) => setTimeout(() => resolve("blocked"), 2_000));
+        expect(await Promise.race([enrollIn(fake, waiting, 5), blocked])).toEqual(queued(1));
+      } finally {
+        await holder.query("rollback");
+        holder.release();
+      }
+    });
+
+    it("counts a queued Waiting Server's ask as a check-in", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await issueToken(identity(4), "joiner");
+      const waiting = await issueToken(undefined, "joiner");
+      const { rows: [attempt] } = await harness.pool.query<{ id: string }>(`
+        with fleet as (
+          insert into fleet_token (organization_id, name, token_hash, expires_at, created_by_user_id)
+          values ($1, 'fleet', 'fleet-hash', now() + interval '1 day', $2) returning id
+        ), server as (
+          insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip, last_check_in_at)
+          select $1, id, 'key', '{}'::jsonb, '203.0.113.9', now() - interval '6 minutes' from fleet returning id, fleet_token_id
+        )
+        insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
+        select $1, server.id, server.fleet_token_id, 'joiner', '{}'::jsonb, token.id, 'running'
+        from server, machine_enrollment_token token where token.token_hash = $3
+        returning id
+      `, [organizationId, userId, hashEnrollmentToken(waiting)]);
+      if (!attempt) throw new Error("No Server Enrollment");
+      await harness.pool.query("update machine_enrollment_token set server_enrollment_id = $1 where token_hash = $2", [attempt.id, hashEnrollmentToken(waiting)]);
+      expect(await fake.coordinator.check(attempt.id)).toEqual({ kind: "silent" });
+
+      expect(await enrollIn(fake, waiting, 5)).toEqual(queued(1));
+      expect(await fake.coordinator.check(attempt.id)).toEqual({ kind: "waiting" });
     });
   });
 });
