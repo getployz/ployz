@@ -234,7 +234,10 @@ prepares Docker and ZFS meanwhile.
    or ZFS with it. `No ployzd` means there is none at all: the loop exits until the same command
    installs one.
 10. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
-    at most 10 seconds, then closes them. Nothing stays listening after that. **Open** means Cloud
+    at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
+    while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
+    A server that restarts while it listens reports nothing for that check, so its ports read
+    Unknown: check again. **Open** means Cloud
     reached the port and the server answered. **Closed** means the server listened but Cloud's
     connection was refused, so a firewall in front of it turns the port away. **Unknown · port
     busy** means another program, such as a web server, already holds that port, so Ployz couldn't

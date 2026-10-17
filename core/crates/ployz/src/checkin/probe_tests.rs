@@ -1,4 +1,7 @@
-use std::net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
+use std::{
+    cell::Cell,
+    net::{TcpListener as StdTcpListener, UdpSocket as StdUdpSocket},
+};
 
 use tokio::{
     io::AsyncReadExt as _,
@@ -16,10 +19,22 @@ fn key() -> CheckinKey {
 
 const PATIENCE: Duration = Duration::from_secs(3);
 
+thread_local! {
+    /// Stands in for `net.ipv6.bindv6only=1`, which makes every IPv6 socket IPv6-only by default.
+    pub(super) static ONLY_V6_BY_DEFAULT: Cell<bool> = const { Cell::new(false) };
+}
+
 fn free_port() -> u16 {
-    let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    StdUdpSocket::bind(("127.0.0.1", port)).map_or_else(|_| free_port(), |_| port)
+    loop {
+        let port = StdTcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        if bindable(port) {
+            return port;
+        }
+    }
 }
 
 fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Handout {
@@ -47,7 +62,9 @@ async fn eventually(mut check: impl FnMut() -> bool) {
 }
 
 fn bindable(port: u16) -> bool {
-    StdTcpListener::bind(("0.0.0.0", port)).is_ok() && StdUdpSocket::bind(("0.0.0.0", port)).is_ok()
+    ["0.0.0.0", "::"].into_iter().all(|any| {
+        StdTcpListener::bind((any, port)).is_ok() && StdUdpSocket::bind((any, port)).is_ok()
+    })
 }
 
 async fn greeting_from(port: u16) -> Vec<u8> {
@@ -232,6 +249,79 @@ async fn a_new_handout_replaces_the_window_even_with_the_same_nonce() {
     let report = probes.report().unwrap();
     assert_eq!(report.handout, "second");
     assert!(report.bind_failed.is_empty());
+}
+
+#[tokio::test]
+async fn an_ipv6_only_default_still_listens_and_reports_busy_ports_over_ipv4() {
+    ONLY_V6_BY_DEFAULT.set(true);
+    let (tcp, udp, held_tcp, held_udp) = (free_port(), free_port(), free_port(), free_port());
+    let _tcp = StdTcpListener::bind(("0.0.0.0", held_tcp)).unwrap();
+    let _udp = StdUdpSocket::bind(("0.0.0.0", held_udp)).unwrap();
+    let mut probes = Probes::default();
+    probes
+        .open(
+            handout(
+                "v6only",
+                5_000,
+                &[
+                    Port::Tcp(tcp),
+                    Port::Udp(udp),
+                    Port::Tcp(held_tcp),
+                    Port::Udp(held_udp),
+                ],
+                &[],
+            ),
+            &key(),
+        )
+        .await;
+
+    assert_eq!(
+        greeting_from(tcp).await,
+        greeting("v6only", key().public_hex(), tcp).into_bytes()
+    );
+    let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    peer.send_to(NONCE.as_bytes(), ("127.0.0.1", udp))
+        .await
+        .unwrap();
+    eventually(|| probes.report().unwrap().heard_from == ["127.0.0.1"]).await;
+    assert_eq!(
+        probes.report().unwrap().bind_failed,
+        [format!("tcp:{held_tcp}"), format!("udp:{held_udp}")]
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_finish_leaves_no_window_holding_the_ports() {
+    let port = free_port();
+    let mut probes = Probes::default();
+    probes
+        .open(
+            handout("cancelled", 10_000, &[Port::Udp(port)], &[]),
+            &key(),
+        )
+        .await;
+
+    let waited = tokio::time::timeout(Duration::from_millis(50), probes.finish()).await;
+    assert!(waited.is_err());
+    drop(probes);
+
+    eventually(|| bindable(port)).await;
+}
+
+#[tokio::test]
+async fn a_window_that_runs_out_is_saved_for_the_next_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("probe.json");
+    let port = free_port();
+    let mut probes = Probes::load(saved.clone());
+    probes
+        .open(handout("short", 300, &[Port::Udp(port)], &[]), &key())
+        .await;
+
+    probes.finish().await;
+
+    assert_eq!(Probes::load(saved).report(), probes.report());
+    assert_eq!(probes.report().unwrap().handout, "short");
 }
 
 #[test]

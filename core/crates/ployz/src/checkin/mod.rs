@@ -66,6 +66,10 @@ impl Paths {
     pub(crate) fn status(&self) -> PathBuf {
         self.checkin_dir.join("status.json")
     }
+
+    fn probe(&self) -> PathBuf {
+        self.checkin_dir.join("probe.json")
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -264,8 +268,6 @@ pub(crate) struct LocalCheckin {
     pub(crate) prepare_started: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) refused: Option<Refusal>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    probe: Option<probe::Report>,
 }
 
 /// Cloud's first refusal of a token, dated by Cloud's clock. A second refusal of the same token
@@ -362,7 +364,7 @@ pub(crate) async fn run<H: Host>(
     paths: &Paths,
 ) -> CheckinEnd {
     let mut last_log = None;
-    let mut probes = Probes::resume(last_probe(paths));
+    let mut probes = Probes::load(paths.probe());
     loop {
         match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after, log } => {
@@ -479,7 +481,16 @@ pub(crate) async fn pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, false, &mut Probes::default()).await
+    pass_from(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        false,
+        &mut Probes::load(paths.probe()),
+    )
+    .await
 }
 
 /// The pass an explicit `--install` makes: a failed preparation starts over at once, with its
@@ -491,7 +502,16 @@ pub(crate) async fn install_pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, true, &mut Probes::default()).await
+    pass_from(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        true,
+        &mut Probes::load(paths.probe()),
+    )
+    .await
 }
 
 async fn pass_from<H: Host>(
@@ -569,7 +589,6 @@ async fn pass_from<H: Host>(
         prepare_retries,
         prepare_started,
         refused: None,
-        probe: probes.report(),
     };
     status.blockers.extend(stale.clone());
     let probed = tokio::time::timeout(PROBE_TIMEOUT, host.probe())
@@ -610,6 +629,10 @@ async fn pass_from<H: Host>(
         client::Reply::Answer(Answer::Probe(after, handout)) => {
             probes.open(handout, key).await;
             if installing {
+                crate::ui::note(format!(
+                    "Listening on the probe ports for up to {}s.",
+                    probe::WINDOW_CAP.as_secs()
+                ));
                 probes.finish().await;
             }
             status.answer = Seen::Wait;
@@ -624,7 +647,6 @@ async fn pass_from<H: Host>(
             }
         }
         client::Reply::Answer(Answer::Stop(reason, message)) => {
-            probes.close().await;
             status.answer = Seen::Stop;
             status.reason = Some(reason);
             status.message = Some(message.clone());
@@ -678,16 +700,11 @@ async fn pass_from<H: Host>(
             }
         }
     };
-    status.probe = probes.report();
+    if matches!(next, Next::Stop(..)) {
+        probes.close().await;
+    }
     record(&status, paths);
     next
-}
-
-fn last_probe(paths: &Paths) -> Option<probe::Report> {
-    LocalCheckin::read(&paths.status())
-        .ok()
-        .flatten()
-        .and_then(|status| status.probe)
 }
 
 /// Says in status.json why the loop can't start, keeping what the last pass saw of the host.
@@ -703,7 +720,6 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
         prepare_retries: previous.as_ref().map_or(0, |status| status.prepare_retries),
         prepare_started: previous.as_ref().and_then(|status| status.prepare_started),
         refused: None,
-        probe: previous.and_then(|status| status.probe),
     };
     record(&status, paths);
 }

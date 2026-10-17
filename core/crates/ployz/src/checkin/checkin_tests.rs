@@ -43,6 +43,7 @@ struct FakeHost {
     disables: AtomicU32,
     preparing: AtomicBool,
     probe_hangs: bool,
+    probe_fails: bool,
     /// A preparation that finishes, writing this state, while its unit is being checked.
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
@@ -52,6 +53,9 @@ impl Host for FakeHost {
     async fn probe(&self) -> Result<Probe, String> {
         if self.probe_hangs {
             std::future::pending::<()>().await;
+        }
+        if self.probe_fails {
+            return Err("ployzd crashed".to_owned());
         }
         Ok(serde_json::from_str(PROBE).unwrap())
     }
@@ -657,7 +661,7 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
     install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     assert_eq!(greeted.await.unwrap(), 22);
 
-    let mut restarted = Probes::resume(last_probe(&paths));
+    let mut restarted = Probes::load(paths.probe());
     pass_from(
         &host,
         &mut client(&url),
@@ -676,6 +680,208 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
             .contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
         "{requests:?}"
     );
+}
+
+fn udp_port() -> u16 {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn handing_out(handout: &str, port: u16, window_ms: u64) -> String {
+    format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n0nce","handout":"{handout}","windowMs":{window_ms},"listen":["udp:{port}"],"send":[]}}}}"#
+    )
+}
+
+async fn handed(paths: &Paths, probes: &mut Probes, handout: &str, port: u16, window_ms: u64) {
+    let (url, server) = answering_cloud(
+        "200 OK".to_owned(),
+        handing_out(handout, port, window_ms),
+        1,
+    )
+    .await;
+    let next = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        paths,
+        Utc::now(),
+        false,
+        probes,
+    )
+    .await;
+    assert!(matches!(next, Next::Wait { .. }), "{next:?}");
+    server.await.unwrap();
+}
+
+/// Sends the window's nonce until the window has heard it.
+async fn heard(probes: &Probes, handout: &str, port: u16) {
+    let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while probes
+            .report()
+            .is_none_or(|report| report == window_report(handout, &[]))
+        {
+            peer.send_to(b"n0nce", ("127.0.0.1", port)).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the window hears the nonce");
+}
+
+fn saved(paths: &Paths) -> Option<probe::Report> {
+    Probes::load(paths.probe()).report()
+}
+
+fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
+    serde_json::from_value(
+        serde_json::json!({"handout": handout, "heardFrom": heard_from, "bindFailed": []}),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn what_a_window_heard_outlives_a_failed_probe_mid_window_and_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = udp_port();
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "h", port, 1_000).await;
+    heard(&probes, "h", port).await;
+
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let next = pass_from(
+        &failing,
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    assert!(matches!(next, Next::Retry { .. }), "{next:?}");
+    probes.finish().await;
+    drop(probes);
+
+    assert_eq!(saved(&paths), Some(window_report("h", &["127.0.0.1"])));
+}
+
+#[tokio::test]
+async fn a_restart_mid_window_resumes_no_report_rather_than_a_partial_or_older_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = udp_port();
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "first", port, 300).await;
+    probes.finish().await;
+    assert_eq!(saved(&paths), Some(window_report("first", &[])));
+
+    handed(&paths, &mut probes, "second", port, 10_000).await;
+    heard(&probes, "second", port).await;
+    drop(probes);
+
+    assert_eq!(saved(&paths), None);
+    let (url, server) = answering_cloud(
+        "200 OK".to_owned(),
+        r#"{"kind":"wait","retryAfter":10}"#.to_owned(),
+        1,
+    )
+    .await;
+    pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    let request = server.await.unwrap().remove(0);
+    assert!(!request.contains(r#""probe""#), "{request}");
+}
+
+#[tokio::test]
+async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(&paths.checkin_dir).unwrap();
+    let kept = window_report("h", &["2001:db8::1"]);
+    fs::write(paths.probe(), serde_json::to_vec(&kept).unwrap()).unwrap();
+    let (url, server) = answering_cloud(
+        "200 OK".to_owned(),
+        r#"{"kind":"wait","retryAfter":10}"#.to_owned(),
+        1,
+    )
+    .await;
+
+    install_pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    let request = server.await.unwrap().remove(0);
+    assert!(
+        request.contains(r#""probe":{"handout":"h","heardFrom":["2001:db8::1"],"bindFailed":[]}"#),
+        "{request}"
+    );
+    assert_eq!(saved(&paths), Some(kept.clone()));
+
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let next = install_pass(
+        &failing,
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    assert!(matches!(next, Next::Retry { .. }), "{next:?}");
+    assert_eq!(saved(&paths), Some(kept));
+}
+
+#[tokio::test]
+async fn a_confirmed_refusal_closes_the_open_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = udp_port();
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "h", port, 10_000).await;
+    refused_once(&paths, OLD, TimeDelta::seconds(90));
+    let (url, _server) = answering_cloud(
+        format!("401 Unauthorized\r\nDate: {}", cloud_now().to_rfc2822()),
+        REFUSAL.to_owned(),
+        1,
+    )
+    .await;
+
+    let next = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    assert!(
+        matches!(next, Next::Stop(StopReason::TokenRevoked, _)),
+        "{next:?}"
+    );
+    assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok());
 }
 
 fn sending(token: &str) -> CheckinClient {
@@ -700,7 +906,6 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
                 token: sending(token).fingerprint(),
                 date: at,
             }),
-            probe: None,
         },
         paths,
     );
@@ -1104,31 +1309,6 @@ async fn a_probe_that_never_finishes_is_cut_off_and_retried() {
     assert!(why.contains("did not finish in 60s"), "{why}");
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.answer, Seen::ProbeFailed);
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_failed_probe_keeps_the_last_window_report_for_the_next_loop() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = paths(&dir);
-    let host = FakeHost {
-        probe_hangs: true,
-        ..FakeHost::default()
-    };
-    let heard: probe::Report =
-        serde_json::from_str(r#"{"handout":"h","heardFrom":["2001:db8::1"],"bindFailed":[]}"#)
-            .unwrap();
-    let mut probes = Probes::resume(Some(heard.clone()));
-    pass_from(
-        &host,
-        &mut client("http://127.0.0.1:9"),
-        &key(),
-        &paths,
-        Utc::now(),
-        false,
-        &mut probes,
-    )
-    .await;
-    assert_eq!(last_probe(&paths), Some(heard));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1544,7 +1724,6 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
             prepare_retries: PREPARE_TRIES,
             prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
             refused: None,
-            probe: None,
         },
         &paths,
     );
@@ -1630,7 +1809,6 @@ fn the_headline_says_where_the_host_stands() {
         prepare_retries: 0,
         prepare_started: None,
         refused: None,
-        probe: None,
     };
     assert_eq!(
         status.headline(),

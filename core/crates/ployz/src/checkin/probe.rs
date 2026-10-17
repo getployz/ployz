@@ -2,8 +2,9 @@
 //! ports, trades a nonce with its peers over UDP, and reports what it heard on every check-in.
 
 use std::{
-    fmt,
+    fmt, fs, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
@@ -13,6 +14,7 @@ use futures_util::future::join_all;
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use socket2::{Domain, Type};
 use tokio::{
     io::AsyncWriteExt as _,
     net::{TcpListener, UdpSocket},
@@ -23,12 +25,12 @@ use tokio::{
 use super::CheckinKey;
 
 pub(super) const WINDOW_CAP: Duration = Duration::from_secs(10);
-const BIND_AFTER_HANDOUT: Duration = Duration::from_secs(1);
 const RESEND: Duration = Duration::from_millis(500);
 const GREETING_CHARS: usize = 22;
 const CLOUD_READS_FOR: Duration = Duration::from_millis(500);
 const DATAGRAM_BUFFER: usize = 2048;
-const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+const SOCKET_BACKOFF: Duration = Duration::from_millis(100);
+const LISTEN_BACKLOG: i32 = 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -93,28 +95,47 @@ pub(super) struct Report {
 pub(super) struct Probes {
     report: Option<Arc<Mutex<Report>>>,
     window: Option<JoinHandle<()>>,
+    saved: Option<PathBuf>,
 }
 
 impl Probes {
-    /// A loop that restarts keeps reporting the last window, since Cloud hands each one out once.
-    pub(super) fn resume(report: Option<Report>) -> Self {
+    /// Picks up the last window that ran to its end, since Cloud hands each one out once. A window
+    /// cut short by a restart left nothing, so Cloud reads no report rather than a partial one.
+    pub(super) fn load(saved: PathBuf) -> Self {
+        let report = fs::read(&saved)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok());
         Self {
             report: report.map(|report| Arc::new(Mutex::new(report))),
             window: None,
+            saved: Some(saved),
         }
     }
 
     pub(super) async fn open(&mut self, handout: Handout, key: &CheckinKey) {
         self.close().await;
+        if let Some(saved) = &self.saved {
+            let _ = fs::remove_file(saved);
+        }
+        let mut sockets = Vec::new();
+        let mut bind_failed = Vec::new();
+        for &port in &handout.listen {
+            match bind(port) {
+                Some(socket) => sockets.push(socket),
+                None => bind_failed.push(port.to_string()),
+            }
+        }
         let report = Arc::new(Mutex::new(Report {
             handout: handout.handout.clone(),
             heard_from: Vec::new(),
-            bind_failed: Vec::new(),
+            bind_failed,
         }));
         self.window = Some(tokio::spawn(window(
             handout,
             key.public_hex().to_owned(),
+            sockets,
             Arc::clone(&report),
+            self.saved.clone(),
         )));
         self.report = Some(report);
     }
@@ -130,15 +151,17 @@ impl Probes {
 
     /// Waits out the window, for a process that exits before the window would end.
     pub(super) async fn finish(&mut self) {
-        if let Some(window) = self.window.take() {
+        if let Some(window) = &mut self.window {
             let _ = window.await;
+            self.window = None;
         }
     }
 
     pub(super) async fn close(&mut self) {
-        if let Some(window) = self.window.take() {
+        if let Some(window) = &mut self.window {
             window.abort();
             let _ = window.await;
+            self.window = None;
         }
     }
 }
@@ -151,24 +174,22 @@ impl Drop for Probes {
     }
 }
 
-async fn window(handout: Handout, checkin_key: String, report: Arc<Mutex<Report>>) {
+async fn window(
+    handout: Handout,
+    checkin_key: String,
+    sockets: Vec<Socket>,
+    report: Arc<Mutex<Report>>,
+    saved: Option<PathBuf>,
+) {
     let opened = Instant::now();
-    let bind_by = opened + BIND_AFTER_HANDOUT;
-    let bound = join_all(handout.listen.iter().map(|&port| bind(port, bind_by))).await;
     let mut listeners = Vec::new();
     let mut udp = Vec::new();
-    let mut failed = Vec::new();
-    for (port, socket) in handout.listen.iter().zip(bound) {
+    for socket in sockets {
         match socket {
-            Some(Socket::Tcp(listener, number)) => listeners.push((listener, number)),
-            Some(Socket::Udp(socket)) => udp.push(socket),
-            None => failed.push(port.to_string()),
+            Socket::Tcp(listener, port) => listeners.push((listener, port)),
+            Socket::Udp(socket) => udp.push(socket),
         }
     }
-    report
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .bind_failed = failed;
     let greet = join_all(listeners.iter().map(|(listener, port)| {
         greet(
             listener,
@@ -180,6 +201,24 @@ async fn window(handout: Handout, checkin_key: String, report: Arc<Mutex<Report>
         () = tokio::time::sleep_until(opened + handout.window()) => {}
         _ = async { tokio::join!(greet, exchange) } => {}
     }
+    let Some(saved) = saved else { return };
+    let finished = report
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    if let Err(error) = save(&saved, &finished) {
+        crate::ui::note(format!("Could not write {}: {error}", saved.display()));
+    }
+}
+
+fn save(path: &Path, report: &Report) -> io::Result<()> {
+    let directory = path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(directory)?;
+    let mut file = tempfile::NamedTempFile::new_in(directory)?;
+    serde_json::to_writer(&mut file, report)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 enum Socket {
@@ -187,26 +226,50 @@ enum Socket {
     Udp(UdpSocket),
 }
 
-async fn bind(port: Port, by: Instant) -> Option<Socket> {
-    let any = |number| {
-        [
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), number),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), number),
-        ]
-    };
-    let bound = async {
-        match port {
-            Port::Tcp(number) => TcpListener::bind(any(number).as_slice())
-                .await
+fn bind(port: Port) -> Option<Socket> {
+    match port {
+        Port::Tcp(number) => {
+            let socket = any_address(number, Type::STREAM)?;
+            socket.listen(LISTEN_BACKLOG).ok()?;
+            TcpListener::from_std(socket.into())
                 .ok()
-                .map(|listener| Socket::Tcp(listener, number)),
-            Port::Udp(number) => UdpSocket::bind(any(number).as_slice())
-                .await
-                .ok()
-                .map(Socket::Udp),
+                .map(|listener| Socket::Tcp(listener, number))
         }
+        Port::Udp(number) => {
+            let socket = any_address(number, Type::DGRAM)?;
+            UdpSocket::from_std(socket.into()).ok().map(Socket::Udp)
+        }
+    }
+}
+
+/// One socket for both families whatever `net.ipv6.bindv6only` says, or IPv4 alone on a host
+/// without IPv6. A port held in either family fails the dual-stack bind, so it reads as busy.
+fn any_address(number: u16, kind: Type) -> Option<socket2::Socket> {
+    match bound(Domain::IPV6, number, kind) {
+        Ok(socket) => Some(socket),
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => None,
+        Err(_) => bound(Domain::IPV4, number, kind).ok(),
+    }
+}
+
+fn bound(domain: Domain, number: u16, kind: Type) -> io::Result<socket2::Socket> {
+    let socket = socket2::Socket::new(domain, kind, None)?;
+    let any = if domain == Domain::IPV6 {
+        #[cfg(test)]
+        if tests::ONLY_V6_BY_DEFAULT.get() {
+            socket.set_only_v6(true)?;
+        }
+        socket.set_only_v6(false)?;
+        IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+    } else {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
     };
-    tokio::time::timeout_at(by, bound).await.ok().flatten()
+    if kind == Type::STREAM {
+        socket.set_reuse_address(true)?;
+    }
+    socket.set_nonblocking(true)?;
+    socket.bind(&SocketAddr::new(any, number).into())?;
+    Ok(socket)
 }
 
 fn greeting(handout: &str, checkin_key: &str, port: u16) -> String {
@@ -225,7 +288,7 @@ async fn greet(listener: &TcpListener, greeting: Vec<u8>) {
                 let _ = tokio::time::timeout(CLOUD_READS_FOR, stream.write_all(&greeting)).await;
             }
             // Out of descriptors, accept fails at once: back off rather than spin.
-            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
+            Err(_) => tokio::time::sleep(SOCKET_BACKOFF).await,
         }
     }
 }
@@ -254,7 +317,10 @@ async fn exchange(socket: &UdpSocket, handout: &Handout, report: &Mutex<Report>)
                 }
             }
             received = socket.recv_from(&mut buffer) => {
-                let Ok((length, source)) = received else { continue };
+                let Ok((length, source)) = received else {
+                    tokio::time::sleep(SOCKET_BACKOFF).await;
+                    continue;
+                };
                 if buffer.get(..length) != Some(handout.nonce.as_bytes()) {
                     continue;
                 }
