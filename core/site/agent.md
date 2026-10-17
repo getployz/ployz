@@ -65,8 +65,15 @@ it. Custom domains, tokens, invites, billing and GitHub wait until then. See
 https://ployz.dev/docs/account/try-without-an-account.
 
 In a sandbox, `ployz mcp login` waits for a claim, because it makes a token. In step 4, skip it
-and give `ployz mcp` the sandbox token instead:
-`claude mcp add -s user -e PLOYZ_TOKEN=ployz_... ployz -- ployz mcp`.
+and register `ployz mcp` with the sandbox token instead. If `ployz` is already registered, remove
+it first with `claude mcp remove -s user ployz`.
+
+```sh
+claude mcp add -s user -e PLOYZ_TOKEN=ployz_... ployz -- ployz mcp
+```
+
+In Codex, run `codex mcp add ployz --env PLOYZ_TOKEN=ployz_... -- ployz mcp` instead, after
+`codex mcp remove ployz` if it is already registered.
 
 ## 4. Add the Ployz tools
 
