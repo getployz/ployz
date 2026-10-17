@@ -763,4 +763,55 @@ mod tests {
 
         assert!(!storage.backing.starts_with(DEFAULT_DATA_DIR));
     }
+
+    fn device_recovery_storage(root: &Path, scan: &str, import: &str) -> PoolStorage {
+        use std::os::unix::fs::PermissionsExt;
+        let program = root.join("zpool");
+        fs::write(&program, format!(
+            "#!/bin/sh\nset -eu\ncase \"$*\" in\n  import) {scan} ;;\n  'import -N ployz-device') {import} ;;\n  'list -Hp -o name,size,allocated,free,health,readonly') [ ! -e '{}/imported' ] || printf 'ployz-device\\t8589934592\\t0\\t8589934592\\tONLINE\\toff\\n' ;;\n  *) echo unexpected command >&2; exit 2 ;;\nesac\n",
+            root.display()
+        )).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        PoolStorage::new(program).with_backing(root.join("machine-pool"))
+    }
+
+    #[tokio::test]
+    async fn recovery_imports_a_device_pool_without_a_backing_file() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = device_recovery_storage(root.path(), "printf '   pool: ployz-device\\n'", &format!("touch '{}/imported'", root.path().display()));
+        let pool = storage.recover(UnlabeledBacking::Remove).await.unwrap().unwrap();
+        assert_eq!(pool.name(), machine_pool::DEVICE_BACKED_POOL_NAME);
+        assert!(!storage.backing.exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_a_device_pool_that_cannot_import() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = device_recovery_storage(root.path(), "printf '   pool: ployz-device\\n'", "echo device-unavailable >&2; exit 1");
+        let failure = storage.recover(UnlabeledBacking::Remove).await.unwrap_err();
+        assert!(failure.to_string().contains("device-unavailable"), "{failure}");
+        assert!(!storage.backing.exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_duplicate_device_pool_names() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = device_recovery_storage(root.path(), "printf '   pool: ployz-device\\n   pool: ployz-device\\n'", "exit 97");
+        let failure = storage.recover(UnlabeledBacking::Remove).await.unwrap_err();
+        assert!(failure.to_string().contains("ambiguous"), "{failure}");
+        assert!(!storage.backing.exists());
+    }
+
+    #[tokio::test]
+    async fn a_missing_device_pool_never_becomes_a_file_backed_pool() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = device_recovery_storage(root.path(), ":", "exit 97");
+        fs::write(storage.backing.with_extension("device"), "ployz-device\n").unwrap();
+        assert!(storage.has_held_a_pool().unwrap());
+        assert!(storage.recover(UnlabeledBacking::Remove).await.is_err());
+        let failure = storage.create(1024).await.err().unwrap();
+        assert!(failure.to_string().contains("device"), "{failure}");
+        assert!(!storage.backing.exists());
+    }
+
 }
