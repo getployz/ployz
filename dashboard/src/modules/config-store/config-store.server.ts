@@ -11,7 +11,7 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
-import type { Permission } from "#/modules/organization/permissions";
+import { type Permission, permissionsOf } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -292,7 +292,7 @@ export const callStore = <C extends StoreCall>(
   userId: string | null,
   call: C,
   source: StoreSource = { source: "dashboard" },
-  gate: Pick<ConfigTrusted, "approval" | "asks"> = { approval: "not_required" },
+  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
@@ -332,9 +332,11 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
   return yield* callStoreWith(access, actor, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
-const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
-  Effect.map(callStore(access.organization.id, actor.userId, call), (result) =>
+const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) => {
+  const permissions = permissionsOf(access.kind === "member" ? access.role : "support");
+  return Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions }), (result) =>
     access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
+};
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or

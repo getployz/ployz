@@ -13,7 +13,7 @@ import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore, type StoreSource } from "#/modules/config-store/config-store.server";
 import type { StoreAnswer, StoreCall, StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import type { JsonObject } from "#/db/tables";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, callerPermissions } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { projectJsonValue } from "#/lib/json";
 import { uuidFrom } from "#/server/uuid-from";
@@ -145,7 +145,7 @@ const runGated = Effect.fn("Agent.runGated")(function* (caller: AgentCaller, ask
   const reviewed = approvalId === null || trusted.approval === "required" ? null : yield* reviewedDiff(caller.organization.id, approvalId);
   const command = approvalId === null ? asked : onceFor(asked, approvalId, reviewed);
   const call = { operation: "write", command } as const;
-  const stored = yield* callStore(caller.organization.id, caller.userId, call, AGENT, { approval: trusted.approval, asks: approvalAsks(caller.via, asked) });
+  const stored = yield* callStore(caller.organization.id, caller.userId, call, AGENT, { approval: trusted.approval, asks: approvalAsks(caller.via, asked), permissions: callerPermissions(caller) });
   const landed = stored.ok || reviewed === null ? null : landedPublish(command, reviewed, stored.refusal);
   if (landed !== null) return { result: { ok: true, value: landed }, nothingDestroyed: false } satisfies Gated;
   const result = shownTo(caller, call, stored);
@@ -185,7 +185,7 @@ const answered = (result: StoreResult<unknown>): Answer =>
   result.ok ? { value: projectJsonValue(result.value) ?? null } : { error: result.refusal };
 
 const storeAnswer = <C extends StoreCall>(caller: AgentCaller, call: C, source?: StoreSource) =>
-  callStore(caller.organization.id, caller.userId, call, source).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
+  callStore(caller.organization.id, caller.userId, call, source, { approval: "not_required", permissions: callerPermissions(caller) }).pipe(Effect.map((result) => answered(shownTo(caller, call, result))));
 
 const agentRead = (caller: AgentCaller) => (ask: Ask) =>
   ask.at === "store"
