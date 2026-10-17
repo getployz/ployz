@@ -276,6 +276,9 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
 
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
 
+export const hasApprover = (organizationId: string) =>
+  isAnonymousOrganization(organizationId).pipe(Effect.map((anonymous) => !anonymous), Effect.orDie);
+
 export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   caller: Caller,
   approvalId: string | null,
@@ -286,8 +289,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
-  // An anonymous agent's Organization has no person to ask; it lives a day, then goes away whole.
-  if (yield* isAnonymousOrganization(caller.organization.id).pipe(Effect.orDie)) return { ok: true, approvalId: null };
+  if (!(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };

@@ -92,7 +92,6 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
   return { provided, write, refusal, caller, userId, store, pending, withApproval, cli };
 });
 
-/** Makes the Organization's owner an anonymous agent, as `POST /api/agent/signup` creates one. */
 const anonymous = (userId: string) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   yield* drizzle.update(user).set({ isAnonymous: true }).where(eq(user.id, userId));

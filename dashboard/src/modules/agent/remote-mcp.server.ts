@@ -65,7 +65,6 @@ type RemoteServices =
 const text = (body: JsonObject, isError: boolean): CallToolResult =>
   ({ isError, content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body });
 
-/** What a person must claim before the agent's anonymous Organization does this, and where they claim it. */
 type Claim = { message: string; url: string };
 
 const resultOf = (result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {

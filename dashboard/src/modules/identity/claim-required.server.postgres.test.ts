@@ -24,13 +24,11 @@ const ACTIONS: ReadonlyArray<ClaimedAction> = ["add_domain", "mint_token", "invi
 const here = { project: null, environment: null };
 const domain = (hostname: string | null): ConfigCommand => ({ command: "add_domain", environment: here, service: "web", hostname, port: null });
 
-/** No Server answers: no claimed action reaches one. */
 const noServers = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
 
 type CliBody = { name: string; expires_in_days: number };
 type Reply = { error?: { code: string; message: string; details: { claim_url?: string; action?: string } | null } };
 
-/** Shop, with a token its owner minted, owned by an anonymous agent when `anonymous` holds. */
 const shop = Effect.fn(function* (anonymous: boolean) {
   const cloud = yield* storeTestCloud();
   const services = yield* Layer.build(Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud, noServers));

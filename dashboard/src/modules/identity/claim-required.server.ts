@@ -9,7 +9,6 @@ import { Database } from "#/server/database.server";
 
 const CLAIM_KEY_PURPOSE = "ployz:claim:v1";
 
-/** What an anonymous Organization can't do until a person claims it, as its refusal words it. */
 export type ClaimedAction = "add_domain" | "mint_token" | "invite" | "billing" | "github_connect";
 
 const wanted = {
@@ -20,7 +19,6 @@ const wanted = {
   github_connect: "connect GitHub",
 } satisfies Record<ClaimedAction, string>;
 
-/** Whether the Organization belongs to an anonymous agent: its owner signed up without an account. */
 export const isAnonymousOrganization = Effect.fn("Identity.isAnonymousOrganization")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
@@ -32,7 +30,6 @@ export const isAnonymousOrganization = Effect.fn("Identity.isAnonymousOrganizati
   return rows.length > 0;
 });
 
-/** The URL a person opens to claim the Organization. Its secret is derived, so every refusal names the same one. */
 export const claimUrlFor = Effect.fn("Identity.claimUrlFor")(function* (organizationId: string) {
   const config = yield* AppConfig;
   const key = crypto.createHash("sha256").update(CLAIM_KEY_PURPOSE).update("\0").update(Redacted.value(config.encryptionSecret)).digest();
@@ -40,7 +37,6 @@ export const claimUrlFor = Effect.fn("Identity.claimUrlFor")(function* (organiza
   return new URL(`/claim/${secret}`, config.app.url).href;
 });
 
-/** Refuses `claim_required` while the Organization is anonymous, naming the claim URL a person opens first. */
 export const requireClaimed = Effect.fn("Identity.requireClaimed")(function* (organizationId: string, action: ClaimedAction) {
   if (!(yield* isAnonymousOrganization(organizationId))) return;
   const claimUrl = yield* claimUrlFor(organizationId);
