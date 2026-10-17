@@ -80,12 +80,14 @@ Cloud got to it, the count says so, as in `1 of 2 rejected; the rest had already
 Add `--yes` to skip the question, for example in a script. Without `--yes` outside a terminal it
 fails with `confirmation_required` and rejects nothing.
 
-If Ployz Cloud refuses the first batch, for example because you are signed out or not a member,
-the reject fails with that error and nothing was rejected. If it fails partway through, the reject
-stops with exit code 3 and prints how many went through, how many may or may not have been rejected
-and how many were not. Only a timeout, a dropped connection or a Cloud error leaves servers
-uncertain. `--json` lists those ids under `uncertain` and `not_rejected`. Run the same reject again
-to finish.
+Ployz Cloud rejects servers in batches of 1000. If it refuses the first batch, for example with a
+403 because you are not a member, the reject fails with that error and nothing was rejected. If a
+timeout, a dropped connection or a Cloud error stops a batch, the reject stops with exit code 3 and
+prints how many went through, how many may or may not have been rejected and how many were not. This
+includes a timeout on the first batch, which leaves that whole batch uncertain. `--json` lists those
+ids under `uncertain` and `not_rejected`. Run the same reject again to finish. If Cloud refuses a
+later batch, the reject also stops with exit code 3, and that batch and the rest count as not
+rejected.
 
 A name with characters a terminal would act on, such as color codes, prints with `�` in their place.
 Copying it back from the screen won't match, so take the id or the exact name from

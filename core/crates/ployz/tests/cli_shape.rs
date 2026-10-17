@@ -1271,6 +1271,19 @@ fn server_reject_counts_a_later_refused_batch_as_not_rejected() {
         &serde_json::json!(sent.get(1).unwrap()),
         "{json}"
     );
+
+    let cloud = waiting_cloud(
+        std::sync::Arc::default(),
+        WaitingCloud {
+            rejects: vec![("200 OK", None), ("400 Bad Request", None)],
+            ..WaitingCloud::of(bulk_rows())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+    let (code, _, stderr) = run_output(&["server", "reject", "bulk-*", "--yes"], &token);
+    assert_eq!(code, Some(3), "{stderr}");
+    assert!(stderr.contains("! 1 were not rejected."), "{stderr}");
+    assert!(!stderr.contains("Run the same reject again"), "{stderr}");
 }
 
 #[test]
