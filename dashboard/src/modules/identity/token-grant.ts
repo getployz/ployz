@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { PERMISSIONS, type Permission } from "#/modules/organization/permissions";
+import { PERMISSIONS, type Permission, reads } from "#/modules/organization/permissions";
 
 export type TokenGrant = {
   readonly permissions: ReadonlyArray<Permission> | null;
@@ -15,8 +15,8 @@ export const EnvironmentName = Schema.String.check(Schema.isPattern(/^[a-z0-9](?
 
 export const FULL_GRANT: TokenGrant = { permissions: null, environments: null };
 
-const READ_PERMISSIONS = PERMISSIONS.filter((permission) => permission.endsWith(":read"));
-const DEPLOY_PERMISSIONS = PERMISSIONS.filter((permission) => permission.endsWith(":read") || permission === "changes:stage" || permission === "changes:deploy");
+const READ_PERMISSIONS = PERMISSIONS.filter(reads);
+const DEPLOY_PERMISSIONS = PERMISSIONS.filter((permission) => reads(permission) || permission === "changes:stage" || permission === "changes:deploy");
 
 export const presetGrant = (choice: TokenPreset): TokenGrant => {
   switch (choice.preset) {

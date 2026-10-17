@@ -1158,6 +1158,11 @@ it.live(
         yield* drizzle.update(organizationToken)
           .set({ permissions: [...permissionsOf("owner").filter((held) => held.endsWith(":read")), "changes:stage", "changes:deploy", "services:control"], environments: ["staging"] })
           .where(eq(organizationToken.id, deployer.id));
+        // Holds each Organization-wide write below, but only for staging: none of them lands in an Environment.
+        const scoped = yield* mint({});
+        yield* drizzle.update(organizationToken)
+          .set({ permissions: ["github:connect", "approvals:answer", "servers:shell"], environments: ["staging"] })
+          .where(eq(organizationToken.id, scoped.id));
 
         const [owner] = yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, alice.organization.id));
         yield* drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
@@ -1167,6 +1172,7 @@ it.live(
         for (const bearer of [reader, deployer.secret]) {
           assert.deepStrictEqual(refusedWith(yield* cli("DELETE", "github/acme", { bearer })), [403, "This token's grant doesn't include github:connect."]);
         }
+        assert.deepStrictEqual(refusedWith(yield* cli("DELETE", "github/acme", { bearer: scoped.secret })), [403, "This token can deploy only to staging."]);
         assert.lengthOf(yield* drizzle.select().from(organizationGithubInstallation), 1);
 
         const production = { project: "shop", environment: "production" };
@@ -1189,11 +1195,15 @@ it.live(
         for (const body of [approve, { reject: {} }]) {
           assert.deepStrictEqual(refusedWith(yield* cli("POST", `approvals/${approvalId}`, { bearer: reader }, body)),
             [403, "This token's grant doesn't include approvals:answer."]);
+          assert.deepStrictEqual(refusedWith(yield* cli("POST", `approvals/${approvalId}`, { bearer: scoped.secret }, body)),
+            [403, "This token can deploy only to staging."]);
         }
         assert.deepStrictEqual(yield* drizzle.select({ status: operationApprovals.status }).from(operationApprovals), [{ status: "pending" }]);
 
         assert.deepStrictEqual(refusedWith(yield* cli("POST", "server-access", { bearer: reader })),
           [403, "This token's grant doesn't include servers:shell."]);
+        assert.deepStrictEqual(refusedWith(yield* cli("POST", "server-access", { bearer: scoped.secret })),
+          [403, "This token can deploy only to staging."]);
         assert.strictEqual(fake.sets(), 0);
         assert.lengthOf(yield* drizzle.select().from(serverAccess), 0);
       }).pipe(Effect.provide(layer));
@@ -1210,7 +1220,9 @@ it.live(
         const alice = yield* signUp("alice");
         const minted = (environment: string) =>
           cli("POST", "tokens", alice, { name: "deploy", expires_in_days: 30, preset: "deploy", environment });
-        assert.strictEqual((yield* minted("Not An Environment")).status, 422);
+        assert.deepStrictEqual(refusedWith(yield* minted("Not An Environment")),
+          [422, "No Project here has an Environment named Not An Environment."]);
+        assert.deepStrictEqual(refusedWith(yield* minted("")), [422, "A Deploy token needs an Environment; pass `--environment`."]);
         const unknown = yield* minted("staging");
         assert.deepStrictEqual(refusedWith(unknown), [422, "No Project here has an Environment named staging."]);
         assert.lengthOf(yield* (yield* Database).drizzle.select().from(organizationToken), 0);

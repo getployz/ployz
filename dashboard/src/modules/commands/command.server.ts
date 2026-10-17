@@ -90,7 +90,8 @@ export function defineCommand<const N extends string, F extends Fields, O extend
     if (unknown.length > 0) return invalidInput(unknown.map((key) => ({ message: `Unknown input ${key}`, path: [key] })));
     const decoded = yield* decode(fields).pipe(Effect.result);
     if (decoded._tag === "Failure") return invalidInput(issues(decoded.failure.issue).issues);
-    const lacking = lacks(caller, def.requires);
+    // Every published write lands in the Organization (none names an Environment), so a token limited to Environments can't make one.
+    const lacking = lacks(caller, def.requires, kind === "read" ? "reads" : "organization");
     if (lacking !== null) return refused("forbidden", lacking);
     if (gate !== "never") {
       const gated = yield* gateOperation(caller, call.approvalId, yield* gate.asked(caller, decoded.success));
