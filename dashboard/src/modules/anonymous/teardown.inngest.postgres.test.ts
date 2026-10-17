@@ -716,6 +716,34 @@ it.live("a Server that authenticates to its pairing removal restarts the silence
   }).pipe(Effect.provide(services));
 }), 60_000);
 
+it.live("a Server's answer that Cloud fails to record fails the run for a retry instead of forgetting the Server", () => Effect.gen(function* () {
+  const server = { answersOnce: false };
+  const services = yield* cloud({
+    connect: async () => {
+      if (!server.answersOnce) throw new Error("no route to the Server");
+      server.answersOnce = false;
+      return asTestDouble<Client>()({
+        inspect: async () => ({ management_clients: ["cloud"] }),
+        setPushTarget: async () => { throw new Error("the connection dropped"); },
+        close: async () => undefined,
+      });
+    },
+  });
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`create function fail_answer() returns trigger language plpgsql as $$ begin raise exception 'answer unrecorded'; end $$`);
+    yield* drizzle.execute(sql`create trigger fail_answer before update of removal_answered_at on organization_pairing for each row execute function fail_answer()`);
+    server.answersOnce = true;
+    expect((yield* tearDown(services)).error).toBeDefined();
+    yield* drizzle.execute(sql`drop trigger fail_answer on organization_pairing`);
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
 it.live("a new pairing starts its own silence clock: the old pairing's hour never forgets it", () => Effect.gen(function* () {
   const services = yield* cloud("unreachable");
   yield* Effect.gen(function* () {
