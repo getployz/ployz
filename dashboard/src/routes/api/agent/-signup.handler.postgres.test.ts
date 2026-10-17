@@ -41,7 +41,9 @@ it.live("signs up an agent with a token that acts as the owner of a fresh sandbo
     expect(body.claimUrl).toBeNull();
     const sandbox = body.organization;
     expect(sandbox.slug).toMatch(/^anon-[a-z2-7]{8}$/);
-    expect(Math.abs(Date.parse(body.expiresAt) - (before + DAY_MS))).toBeLessThan(5_000);
+    const expiresAt = Date.parse(body.expiresAt);
+    expect(expiresAt).toBeGreaterThanOrEqual(before + DAY_MS);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + DAY_MS);
 
     const caller = yield* resolveCaller(bearer(body.token));
     expect(caller.organization).toEqual(sandbox);
