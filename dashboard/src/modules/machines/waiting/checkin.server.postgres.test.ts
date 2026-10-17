@@ -1,9 +1,10 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { Cause, Effect, Exit, Random } from "effect";
-import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { pruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import {
@@ -148,17 +149,105 @@ it("stores prep while the host prepares, and reads a check-in without it as read
   expect(waitingServerStatus(ready.report, new Date(), new Date())).toBe("waiting");
 });
 
-it("keeps the last probe result when a check-in carries none", async () => {
+const storedProbe = async (ip: string) =>
+  (await harness.pool.query("select probe from waiting_server where observed_ip = $1", [ip])).rows[0]?.probe;
+
+const settledTcp = async (ip: string) => {
+  for (let waited = 0; waited < 5000; waited += 20) {
+    const tcp = (await storedProbe(ip))?.tcp;
+    if (tcp !== undefined && tcp["80"].reason !== "pending") return tcp;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`the probe for ${ip} never settled`);
+};
+
+const waitingIds = async () => (await rows()).map((row) => row.id);
+
+it("hands every selected host one shared nonce in its next wait, once", async () => {
+  const { token } = await fleetToken("rack-1");
+  const ips = ["198.51.100.11", "198.51.100.12", "198.51.100.13"];
+  const hosts = ips.map(() => newHost());
+  for (const [n, host] of hosts.entries()) await send(token, host, { ip: ips[n] });
+
+  const opened = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  expect(opened).toMatchObject({ probing: 3 });
+
+  const answers = [];
+  for (const [n, host] of hosts.entries()) answers.push(await send(token, host, { ip: ips[n] }));
+  for (const [n, answer] of answers.entries()) {
+    expect(answer).toMatchObject({ ...wait, probe: { nonce: opened.nonce, listen: ["udp:51820", "tcp:80", "tcp:443"] } });
+    const probe = "probe" in answer ? answer.probe : undefined;
+    expect(probe?.windowMs).toBeLessThanOrEqual(10_000);
+    const targets = probe?.send.map((peer) => peer.target) ?? [];
+    expect(targets.length).toBeLessThanOrEqual(3);
+    expect(targets).not.toContain(ips[n]);
+    expect(new Set(targets)).toEqual(new Set(ips.filter((ip) => ip !== ips[n])));
+  }
+  for (const [n, host] of hosts.entries()) expect(await send(token, host, { ip: ips[n] })).toEqual(wait);
+});
+
+it("never selects another Organization's or a rejected host", async () => {
+  const { token } = await fleetToken("rack-1");
+  const [kept, rejected] = [newHost(), newHost()];
+  await send(token, kept, { ip: "198.51.100.21" });
+  await send(token, rejected, { ip: "198.51.100.22" });
+  const ids = await waitingIds();
+  expect(await harness.runEffect(openProbeSelection(bob, { organizationSlug: "bob", ids }))).toMatchObject({ probing: 0 });
+  await harness.runEffect(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [ids[1] ?? ""] }));
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toMatchObject({ probing: 1 });
+  expect(await storedProbe("198.51.100.22")).toBeNull();
+});
+
+it("records Unknown for a host at a private address without dialling it", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "10.0.0.5" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const pending = { state: "unknown", reason: "pending" };
+  expect((await storedProbe("10.0.0.5"))?.tcp).toEqual({ "80": pending, "443": pending });
+  await send(token, host, { ip: "10.0.0.5" });
+  const privateRange = { state: "unknown", reason: "private_range" };
+  expect(await settledTcp("10.0.0.5")).toEqual({ "80": privateRange, "443": privateRange });
+});
+
+it("answers the check-in before Cloud's connects run, then records what they found", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.1/32");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const host = newHost();
+    await send(token, host, { ip: "127.0.0.1" });
+    await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    const started = performance.now();
+    expect(await send(token, host, { ip: "127.0.0.1" })).toHaveProperty("probe");
+    expect(performance.now() - started).toBeLessThan(900);
+    const tcp = await settledTcp("127.0.0.1");
+    expect([tcp["80"].state, tcp["443"].state]).toEqual(["closed", "closed"]);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("stores a host's report only under its own selection's nonce, and keeps it across check-ins", async () => {
   const first = await fleetToken("rack-1");
   const second = await fleetToken("rack-2");
   const host = newHost();
-  const probe = { nonce: "n1", heardFrom: ["10.0.0.4"], bindFailed: [] };
-  const stored = async () => (await harness.pool.query("select probe from waiting_server")).rows[0]?.probe;
-  await send(first.token, host, { probe });
-  await send(first.token, host);
-  expect(await stored()).toEqual(probe);
-  await send(second.token, host);
-  expect(await stored()).toEqual(probe);
+  const ip = "198.51.100.31";
+  const hostReport = (nonce: string) => ({ nonce, heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] });
+
+  expect(await send(first.token, host, { ip, probe: hostReport("old") })).toEqual(wait);
+  expect(await storedProbe(ip)).toBeNull();
+
+  const { nonce } = await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  expect(await send(first.token, host, { ip, probe: hostReport("old") })).toMatchObject({ probe: { nonce } });
+  expect(await storedProbe(ip)).not.toHaveProperty("host");
+
+  expect(await send(first.token, host, { ip, probe: hostReport(nonce) })).toEqual(wait);
+  const reported = { heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] };
+  expect(await storedProbe(ip)).toMatchObject({ request: { nonce }, host: reported });
+  await send(first.token, host, { ip });
+  expect(await storedProbe(ip)).toMatchObject({ host: reported });
+  await send(second.token, host, { ip });
+  expect(await storedProbe(ip)).toMatchObject({ host: reported });
 });
 
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {

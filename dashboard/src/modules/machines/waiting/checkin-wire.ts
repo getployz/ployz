@@ -76,6 +76,16 @@ export type StoredReport = HostReport & { readonly prep?: Prep };
 
 export type CheckinStopReason = "rejected" | "token_expired" | "token_revoked";
 
+export const PROBE_WINDOW_MS = 10_000;
+
+export const ProbeRequest = Schema.Struct({
+  nonce: Schema.String,
+  windowMs: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: PROBE_WINDOW_MS })),
+  listen: Schema.Array(Schema.Literals(["udp:51820", "tcp:80", "tcp:443"])),
+  send: Schema.Array(Schema.Struct({ target: Schema.String, port: Schema.Literal(51820) })),
+});
+export type ProbeRequest = typeof ProbeRequest.Type;
+
 export type CheckinResponse =
-  | { readonly kind: "wait"; readonly retryAfter: number }
+  | { readonly kind: "wait"; readonly retryAfter: number; readonly probe?: ProbeRequest }
   | { readonly kind: "stop"; readonly reason: CheckinStopReason; readonly message: string };

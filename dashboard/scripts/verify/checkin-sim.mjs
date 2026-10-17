@@ -2,7 +2,7 @@
 // tick to /api/checkin, then the run prints answers, p50, p95 and errors. Run from dashboard/ against up.sh's Cloud:
 //   node scripts/verify/checkin-sim.mjs --token pflt_... [--hosts N] [--ticks N | --once] [--interval ms]
 //     [--bad-signature] [--skew seconds] [--prep docker=installing,zfs=installing] [--hostname name]
-//     [--pad-bytes N] [--ip addr] [--seed text] [--url http://localhost:port]
+//     [--pad-bytes N] [--ip addr] [--seed text] [--probe-report nonce] [--url http://localhost:port]
 // --seed derives each host's key from text, so a later run checks in as the same hosts. Each host claims its own source address through x-forwarded-for (198.18.0.0/15), which dev Cloud trusts; --ip
 // sends every host from one address instead.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
@@ -23,6 +23,7 @@ const { values: flags } = parseArgs({
     "pad-bytes": { type: "string", default: "0" },
     ip: { type: "string" },
     seed: { type: "string" },
+    "probe-report": { type: "string" },
     url: { type: "string" },
   },
 });
@@ -82,6 +83,7 @@ function signed(host) {
     cliVersion: "checkin-sim",
     report: report(host),
     ...(prep === undefined ? {} : { prep }),
+    ...(flags["probe-report"] === undefined ? {} : { probe: { nonce: flags["probe-report"], heardFrom: [], bindFailed: [] } }),
   }));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + Number(flags.skew));
   const stamp = Buffer.alloc(8);
@@ -107,7 +109,11 @@ function signed(host) {
   };
 }
 
-function describe(status, answer) {
+function describe(status, answer, host) {
+  if (status === 200 && answer.kind === "wait" && answer.probe !== undefined) {
+    const { nonce, windowMs, send } = answer.probe;
+    return `wait retryAfter=${answer.retryAfter} probe nonce=${nonce} windowMs=${windowMs} host=${host.ip} peers=${send.map((peer) => peer.target).join(",")}`;
+  }
   if (status === 200 && answer.kind === "wait") return `wait retryAfter=${answer.retryAfter}`;
   if (status === 200 && answer.kind === "stop") return `stop ${answer.reason}`;
   return `${status} ${answer.error ?? answer.message ?? JSON.stringify(answer)}`;
@@ -124,7 +130,7 @@ async function checkIn(host) {
     const response = await fetch(`${baseUrl}/api/checkin`, { method: "POST", body, headers });
     const text = await response.text();
     latencies.push(performance.now() - started);
-    const answer = describe(response.status, JSON.parse(text));
+    const answer = describe(response.status, JSON.parse(text), host);
     if (response.status !== 200) errors += 1;
     answers.set(answer, (answers.get(answer) ?? 0) + 1);
   } catch (error) {

@@ -22,6 +22,7 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { listWaitingServers, showWaitingServer, type WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
@@ -182,6 +183,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST reject-servers": {
       const input = yield* decodeBody(RejectServers, request, "Rejecting takes the ids of 1 to 1000 waiting servers.");
       return yield* rejectWaitingServers(caller, { organizationSlug: caller.organization.slug, ids: input.ids });
+    }
+    case "POST probe-servers": {
+      const input = yield* decodeBody(RejectServers, request, "Probing takes the ids of 1 to 1000 waiting servers.");
+      return yield* openProbeSelection(caller, { organizationSlug: caller.organization.slug, ids: input.ids });
     }
     case "POST logout": {
       if (caller.credential.kind !== "session") {
