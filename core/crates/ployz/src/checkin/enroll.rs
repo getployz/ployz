@@ -58,9 +58,11 @@ pub(super) fn failure_line(failure: &AttemptFailure) -> String {
     )
 }
 
-/// Run `instruction`, posting the attempt's stage to Cloud as it moves and every
-/// [`HEARTBEAT`] between. A failure is recorded for the next check-in to send, and the loop
-/// goes back to polling.
+/// Run `instruction`, reporting monotonic progress on changes and every [`HEARTBEAT`].
+/// Before a saved Joining stage, rejection awaits installation and stops at live
+/// Enrolling or Queued. From saved Joining onward, rejection cannot cancel a committed
+/// resume. A successful join is recorded for cleanup; a failure keeps its live stage
+/// for the next check-in and returns to polling.
 pub(super) async fn attempt<H: Host>(
     host: &H,
     client: &CheckinClient,
@@ -127,7 +129,12 @@ pub(super) async fn attempt<H: Host>(
             tokio::select! {
                 outcome = &mut enrolling => break outcome,
                 message = heartbeat(client, key, paths, report, &mut status, &mut attempt, &mut moved) => {
-                    rejected = message;
+                    match message {
+                        Some(message) if attempt.stage >= EnrollStage::Joining => {
+                            tracing::warn!(%message, "Ignoring rejection of a committed enrollment");
+                        }
+                        message => rejected = message,
+                    }
                 }
             }
         }

@@ -246,8 +246,11 @@ prepares Docker and ZFS meanwhile.
     second one and keeps the last reported stage. If the join committed but a follow-up failed,
     the server stays Joined, the loop cleans up, and its log and status name that follow-up.
 12. Rejecting a server stops enrollment at the next safe point. A package install finishes
-    before stopping at the enroll or queue step. Storage setup and joining finish once they
-    have begun. Expiring or revoking a Fleet Token lets an open enrollment finish.
+    before stopping at the enroll or queue step. Storage setup finishes once begun in the
+    current run. After a restart from storage setup, rejection stops enrollment at the enroll
+    or queue step. Once the saved stage reaches `Joining` or `Publishing`, enrollment finishes
+    despite rejection, including after a restart. Expiring or revoking a Fleet Token lets an
+    open enrollment finish.
 13. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
     disk. Selecting a particular disk on the host is not yet supported.
 14. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for

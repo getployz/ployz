@@ -711,38 +711,56 @@ async fn rejection_during_installing_or_slot_wait_stops_before_storage() {
 
 #[tokio::test]
 async fn rejection_after_storage_allows_committed_work_to_finish() {
-    for stage in [
-        EnrollStage::Storage,
-        EnrollStage::Joining,
-        EnrollStage::Publishing,
-    ] {
+    for stage in [EnrollStage::Joining, EnrollStage::Publishing] {
         let fixture = Fixture::new("ready");
         let cloud = Arc::new(
-            Cloud::answering(vec![
-                instruction("zfs"),
-                r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#.to_owned(),
-            ])
+            Cloud::delaying(
+                vec![
+                    instruction("zfs"),
+                    r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#
+                        .to_owned(),
+                ],
+                Duration::from_millis(350),
+            )
             .await,
         );
         previous(&fixture, Seen::Enroll, stage);
-        let mut host = Scripted::new(&cloud, vec![EnrollStage::Publishing], Ok(()));
-        host.first = stage;
+        let mut host = Scripted::new(
+            &cloud,
+            vec![
+                EnrollStage::Enrolling,
+                EnrollStage::Joining,
+                EnrollStage::Publishing,
+            ],
+            Ok(()),
+        );
         host.pace = Some(Duration::from_millis(250));
-        let end = run(
+        let next = pass(
             &host,
             &mut fixture.client(&cloud),
             &fixture.key,
             &fixture.paths,
+            Utc::now(),
         )
         .await;
-        assert_eq!(end, CheckinEnd::Enrolled);
+        assert_eq!(next, Next::Enrolled, "saved {stage:?}");
         assert!(host.events().contains(&"finished"));
+        assert_eq!(fixture.status().answer, Seen::Joined);
+        assert_eq!(
+            fixture.status().attempt.unwrap().stage,
+            EnrollStage::Publishing
+        );
+        assert!(fixture.paths.token_file.exists());
+        assert_eq!(host.disables.load(Ordering::SeqCst), 0);
+
+        assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
         assert!(!fixture.paths.token_file.exists());
+        assert_eq!(host.disables.load(Ordering::SeqCst), 1);
     }
 }
 
 #[tokio::test]
-async fn rejection_after_joining_reports_stop_if_uncommitted_work_fails() {
+async fn rejected_committed_resume_reports_its_actual_failure() {
     let fixture = Fixture::new("ready");
     let cloud = Arc::new(
         Cloud::answering(vec![
@@ -765,9 +783,18 @@ async fn rejection_after_joining_reports_stop_if_uncommitted_work_fails() {
     .await;
     assert_eq!(
         next,
-        Next::Stop(StopReason::Rejected, "Rejected by owner".to_owned())
+        Next::Wait {
+            after: Duration::ZERO,
+            log: None,
+        }
     );
     assert!(host.events().contains(&"finished"));
+    assert_eq!(fixture.status().answer, Seen::Wait);
+    let failure = fixture.status().attempt.unwrap().failure.unwrap();
+    assert_eq!(failure.stage, EnrollStage::Joining);
+    assert_eq!(failure.message, "Publish failed");
+    assert!(fixture.paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
