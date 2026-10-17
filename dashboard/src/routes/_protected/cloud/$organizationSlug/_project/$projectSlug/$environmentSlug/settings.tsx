@@ -4,6 +4,7 @@ import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { missingStorePrGrantsQueryOptions } from "#/modules/config-store/store-pr-grants.queries";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import { StoreEnvironmentSettings, StoreProjectSettings } from "./-components/store-settings";
 import { StoreRenameLock } from "./-components/StoreRenameLock";
 
@@ -15,9 +16,11 @@ export const Route = createFileRoute(
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
     scope: Schema.optional(settingsSection.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),
-  // The Environment's loader read the Project's Environments; the rest are the PR plans and their GitHub permissions.
+  // The Environment's loader read the Project's Environments; the rest are the PR plans, their GitHub permissions, and
+  // the members, whose roles say who may delete.
   loader: ({ params, context }) => prefetchRemoteWithStoreViews(context, params.organizationSlug,
-    [prPlansQuery(params.projectSlug)], missingStorePrGrantsQueryOptions(params.organizationSlug, params.projectSlug)),
+    [prPlansQuery(params.projectSlug)], missingStorePrGrantsQueryOptions(params.organizationSlug, params.projectSlug),
+    organizationMembersQueryOptions(params.organizationSlug)),
   component: RouteComponent,
 });
 

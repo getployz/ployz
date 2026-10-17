@@ -50,8 +50,9 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   const writer = useStoreWriter(organizationSlug);
   const [open, setOpen] = useState(false);
   const [left, setLeft] = useState<Extract<Removal, { removal: "removing" }> | null>(null);
-  // Support has no row here; the Store still checks it.
-  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  // Support has no row here; the Store still checks it. Until the members load, the role is unknown, so it waits.
+  const members = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members;
+  const yourRole = members?.find((row) => row.you)?.role;
   const refused = yourRole !== undefined && !can(yourRole, target.environment === null ? "project:delete" : "environment:delete");
   const disabledReason = refused ? "Only an owner or admin can delete it." : blocked;
   const inScope = target.environment === null ? environments : environments.filter((row) => row.name === target.environment);
@@ -146,7 +147,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
             label={title}
             hint={description}
             action={
-              <Button variant="destructive" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>
+              <Button variant="destructive" disabled={busy || members === undefined || disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
                 {actionLabel}
               </Button>

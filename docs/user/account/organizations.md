@@ -37,7 +37,7 @@ everything the role below it can, and more:
 | Role   | Can do |
 | ------ | ------ |
 | Member | See the organization, its members, projects, servers, volumes, variables, logs and metrics. Create projects and environments, edit projects, stage changes, deploy, destroy and merge them, restart and stop services, answer approvals, and make their own organization tokens. |
-| Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, protect environments, delete volume copies, and add, operate, open a shell on and remove servers. |
+| Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, delete volume copies, and add, operate, open a shell on and remove servers. |
 | Owner  | Also manage billing, delete the organization, and make or remove an owner. |
 
 When you try something your role can't do, Ployz says who can: "Only an owner or admin of this
