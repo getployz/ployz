@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import { initializeAuthSession } from "./auth/auth-client";
 import type { AuthSession } from "./auth/auth";
-import { getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "./modules/analytics/posthog";
+import { followPostHogNavigation, getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "./modules/analytics/posthog";
 import {
   createRouter as createTanStackRouter,
   useHydrated,
@@ -90,6 +90,7 @@ export function getRouter() {
   // the SSR HTML for its fallback. The Query also carries each change collection's cursor.
   // ponytail: collection rows serialize twice (DB and Query); drop one once DB hydration marks collections ready.
   setupRouterSsrQueryIntegration({ router, queryClient });
+  router.subscribe("onBeforeNavigate", ({ toLocation }) => followPostHogNavigation(toLocation.pathname));
 
   return routerWithDbClient(router, dbClient);
 }
