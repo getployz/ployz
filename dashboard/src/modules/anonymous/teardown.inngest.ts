@@ -16,7 +16,7 @@ const TeardownRequestedData = Schema.Struct({ organizationId: Schema.String.chec
  * re-derives where the Organization stands, so a retry after a crash does the step the crash left.
  */
 export async function executeTearDownAnonymousOrganization(
-  { event, step }: { event: { data: unknown }; step: StepTools },
+  { event, step, attempt }: { event: { data: unknown }; step: StepTools; attempt: number },
   runEffect: TeardownEffectRunner,
 ) {
   const organizationId = await step.run("normalize-organization-id", () => {
@@ -24,7 +24,7 @@ export async function executeTearDownAnonymousOrganization(
     return Option.isSome(decoded) ? decoded.value.organizationId : null;
   });
   if (organizationId === null) return { organizationId: null, state: null, did: "nothing" as const };
-  const result = await step.run("tear-down", () => runEffect(tearDownStep(organizationId)));
+  const result = await step.run("tear-down", () => runEffect(tearDownStep(organizationId, attempt > 0)));
   if (result.did === "removed_projects") {
     await step.sendEvent("request-next-step", [createAnonymousTeardownRequestedEvent({ organizationId })]);
   }
@@ -50,7 +50,7 @@ export const createTearDownAnonymousOrganization = (inngest: PloyzInngest, runEf
       triggers: [{ event: anonymousTeardownRequestedEventType }],
       concurrency: [{ key: "event.data.organizationId", limit: 1 }],
     },
-    async ({ event, step }) => executeTearDownAnonymousOrganization({ event, step }, runEffect),
+    async ({ event, step, attempt }) => executeTearDownAnonymousOrganization({ event, step, attempt }, runEffect),
   );
 
 export const createScheduleAnonymousSweep = (inngest: PloyzInngest, runEffect: TeardownEffectRunner = runInngestEffect) =>
