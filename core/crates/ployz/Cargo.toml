@@ -50,6 +50,7 @@ tonic = { version = "0.13.1", features = ["gzip", "transport"] }
 tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
 ts-rs.workspace = true
+unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"
 unicode-width = { version = "0.2.2", default-features = false }
 uuid = { version = "1.24.0", features = ["v4"] }

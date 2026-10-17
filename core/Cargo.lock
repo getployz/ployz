@@ -3876,6 +3876,7 @@ dependencies = [
  "tower",
  "tracing",
  "ts-rs",
+ "unicode-properties",
  "unicode-segmentation",
  "unicode-width",
  "url",

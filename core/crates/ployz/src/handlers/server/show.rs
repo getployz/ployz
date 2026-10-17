@@ -5,7 +5,7 @@ use ployz_core::{
 };
 use serde_json::{Value, json};
 
-use super::{cloud_runs, waiting, with_client};
+use super::{signed_in, waiting, with_client};
 use crate::{
     connect::TARGET_RPC_TIMEOUT,
     handlers::{Error, leaf_matches, runtime},
@@ -134,20 +134,26 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     let Err(error) = server(root, selector) else {
         return Ok(());
     };
-    if error.report().code != RpcErrorCode::NotFound {
+    let report = error.report();
+    let missing = report.code == RpcErrorCode::NotFound;
+    let unreachable =
+        report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
+    if !(missing || unreachable) || waiting::points_elsewhere(leaf) {
         return Err(error);
     }
     let runtime = runtime()?;
-    let Ok(Some(credential)) = cloud_runs(&runtime, leaf) else {
+    let Ok(Some(credential)) = signed_in(&runtime, leaf) else {
         return Err(error);
     };
-    let listed = runtime
-        .block_on(waiting::fetch(&credential))
-        .map_err(|fetch| {
-            fetch.context(format!(
+    let listed = match runtime.block_on(waiting::fetch(&credential)) {
+        Ok(listed) => listed,
+        Err(fetch) if missing => {
+            return Err(fetch.context(format!(
                 "No Server matches {selector}, and the servers waiting to join could not be read."
-            ))
-        })?;
+            )));
+        }
+        Err(_) => return Err(error),
+    };
     let named: Vec<_> = match listed.iter().find(|host| host.row.id == *selector) {
         Some(host) => vec![host],
         None => listed
@@ -165,7 +171,11 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
                 hosts.len(),
                 hosts
                     .iter()
-                    .map(|host| format!("{} ({})", host.row.id, host.row.ip()))
+                    .map(|host| format!(
+                        "{} ({})",
+                        waiting::printable(&host.row.id),
+                        waiting::printable(host.row.ip())
+                    ))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),

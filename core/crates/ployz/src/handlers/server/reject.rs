@@ -1,5 +1,5 @@
 //! `server reject`: turn away the waiting servers a glob matches. Their check-in loop stops
-//! and the same install never comes back.
+//! and they won't come back under the same Fleet Token.
 
 use std::io::IsTerminal;
 
@@ -8,7 +8,7 @@ use globset::Glob;
 use ployz_core::RpcErrorCode;
 use serde_json::json;
 
-use super::waiting::{self, Waiting};
+use super::waiting::{self, Rejection, Stopped, Waiting, printable};
 use crate::cli::{base, env, positional, switch};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
 use crate::ui::{self, Cell, Hint, Table};
@@ -19,7 +19,8 @@ pub(crate) fn command(command: Command) -> Command {
             "Reject the servers waiting to join whose names match a glob, such as 'web-*', \
              or one by its id. \
              It lists the matches and asks before it rejects them; --yes skips the ask. \
-             A rejected server stops checking in and the same install never comes back. \
+             A rejected server stops checking in and won't come back under the same Fleet Token; \
+             revoke the token to turn away every server that holds it. \
              Outside a terminal without --yes it fails with confirmation_required.",
         )
         .arg(
@@ -56,12 +57,13 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         })
         .collect();
     if !ui::json() {
-        let mut table = Table::new(["NAME", "IP", "TOKEN"], "");
+        let mut table = Table::new(["ID", "NAME", "IP", "TOKEN"], "");
         for host in &matched {
             table.row([
-                Cell::from(host.row.name.clone()),
-                Cell::from(host.row.ip().to_owned()),
-                Cell::from(host.row.fleet_token.clone()),
+                Cell::from(printable(ui::short_id(&host.row.id))),
+                Cell::from(printable(&host.row.name)),
+                Cell::from(printable(host.row.ip())),
+                Cell::from(printable(&host.row.fleet_token)),
             ]);
         }
         let stderr = std::io::stderr();
@@ -86,15 +88,48 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         )?;
     }
     let ids: Vec<&str> = matched.iter().map(|host| host.row.id.as_str()).collect();
-    let rejected = runtime.block_on(waiting::reject(&credential, &ids))?;
-    let sentence = match rejected {
-        1 => "1 rejected. It won't come back.".to_owned(),
-        count => format!("{count} rejected. They won't come back."),
+    let Rejection { rejected, stopped } = runtime.block_on(waiting::reject(&credential, &ids))?;
+    let matched = ids.len();
+    let Some(Stopped {
+        error,
+        uncertain,
+        unattempted,
+    }) = stopped
+    else {
+        let sentence = match (rejected, matched) {
+            (1, 1) => "1 rejected. It won't come back under the same Fleet Token.".to_owned(),
+            (count, _) if count == matched as u64 => {
+                format!("{count} rejected. They won't come back under the same Fleet Token.")
+            }
+            (count, _) => {
+                format!("{count} of {matched} rejected; the rest had already left the list.")
+            }
+        };
+        return ui::done(
+            &json!({ "rejected": rejected, "matched": matched, "waiting_servers": listed }),
+            sentence,
+        );
     };
-    ui::done(
-        &json!({ "rejected": rejected, "waiting_servers": listed }),
-        sentence,
-    )
+    ui::finish(
+        &json!({
+            "rejected": rejected,
+            "matched": matched,
+            "waiting_servers": listed,
+            "uncertain": uncertain,
+            "unattempted": unattempted,
+            "error": error.json(),
+        }),
+        || {
+            ui::stream(format_args!("{rejected} of {matched} rejected."));
+            ui::warn(format!(
+                "Reject stopped: {error}. {} may or may not be rejected and {} were not sent. \
+                 Run the same reject again.",
+                uncertain.len(),
+                unattempted.len()
+            ));
+        },
+    )?;
+    Err(Error::partial())
 }
 
 /// The waiting server whose id `pattern` is, else those named `pattern` exactly, else

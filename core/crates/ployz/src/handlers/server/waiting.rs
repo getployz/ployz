@@ -3,17 +3,20 @@
 
 use chrono::{DateTime, Utc};
 use clap::ArgMatches;
+use clap::parser::ValueSource;
 use reqwest::Method;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
 
-use super::cloud_runs;
+use super::signed_in;
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
 use crate::handlers::{Error, runtime};
 use crate::ui::{self, Cell, Fields, Table, Tone};
 
 /// One waiting server: the row Cloud sent, which `--json` prints, and the fields read from it.
+/// Both keep Cloud's strings; only what a person reads goes through [`printable`].
 pub(super) struct Waiting {
     pub(super) raw: Value,
     pub(super) row: Row,
@@ -132,74 +135,108 @@ pub(super) async fn fetch(credential: &Credential) -> Result<Vec<Waiting>, Error
     waiting_servers
         .into_iter()
         .map(|raw| {
-            let row = serde_json::from_value(printable(raw.clone()))?;
+            let row = serde_json::from_value(raw.clone())?;
             Ok(Waiting { raw, row })
         })
         .collect()
 }
 
-/// `value` with every control character in its strings replaced. A host names itself, so
-/// an escape sequence in its report must not reach the terminal.
-fn printable(value: Value) -> Value {
-    match value {
-        Value::String(text) => Value::String(
-            text.chars()
-                .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.into_iter().map(printable).collect()),
-        Value::Object(fields) => Value::Object(
-            fields
-                .into_iter()
-                .map(|(key, value)| (key, printable(value)))
-                .collect(),
-        ),
-        other @ (Value::Null | Value::Bool(_) | Value::Number(_)) => other,
-    }
+/// `text` with every control and format character replaced. A host names itself, so an
+/// escape sequence or a bidi override in its report must not reach the terminal.
+pub(super) fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || c.general_category() == GeneralCategory::Format {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// Cloud takes at most this many ids in one reject.
 const REJECT_BATCH: usize = 1000;
 
-/// Reject `ids`, answering how many Cloud rejected now.
-pub(super) async fn reject(credential: &Credential, ids: &[&str]) -> Result<u64, Error> {
+/// What a reject did: Cloud's count over the batches it answered, and where it stopped.
+pub(super) struct Rejection<'a> {
+    pub(super) rejected: u64,
+    pub(super) stopped: Option<Stopped<'a>>,
+}
+
+/// A batch failed after earlier ones went through. Its `uncertain` ids may or may not be
+/// rejected, and the `unattempted` ones after it were never sent.
+pub(super) struct Stopped<'a> {
+    pub(super) error: Error,
+    pub(super) uncertain: &'a [&'a str],
+    pub(super) unattempted: &'a [&'a str],
+}
+
+/// Reject `ids` in batches Cloud takes. A failure on the first batch is the command's error;
+/// a later one stops the run and is reported with what went through before it.
+pub(super) async fn reject<'a>(
+    credential: &Credential,
+    ids: &'a [&'a str],
+) -> Result<Rejection<'a>, Error> {
     #[derive(Deserialize)]
     struct Reply {
         rejected: u64,
     }
-    let mut total = 0;
-    for batch in ids.chunks(REJECT_BATCH) {
+    let mut rejected = 0;
+    let mut rest = ids;
+    while !rest.is_empty() {
+        let (batch, after) = rest.split_at(rest.len().min(REJECT_BATCH));
         let body = json!({ "ids": batch });
-        let Reply { rejected } =
-            cloud_account::refusable(credential, Method::POST, "reject-servers", Some(&body))
-                .await
-                .map_err(|error| {
-                    match total {
-            0 => Error::from(error),
-            done => Error::from(error).context(format!(
-                "Rejected {done}; the outcome of the rest is unknown. Run the same reject again."
-            )),
+        match cloud_account::refusable::<Reply>(
+            credential,
+            Method::POST,
+            "reject-servers",
+            Some(&body),
+        )
+        .await
+        {
+            Ok(reply) => rejected += reply.rejected,
+            Err(error) if rest.len() == ids.len() => return Err(error.into()),
+            Err(error) => {
+                let stopped = Stopped {
+                    error: error.into(),
+                    uncertain: batch,
+                    unattempted: after,
+                };
+                return Ok(Rejection {
+                    rejected,
+                    stopped: Some(stopped),
+                });
+            }
         }
-                })?;
-        total += rejected;
+        rest = after;
     }
-    Ok(total)
+    Ok(Rejection {
+        rejected,
+        stopped: None,
+    })
 }
 
-/// The credential a waiting-list command runs under. The list lives in Cloud alone, so
-/// `--context` and `--connect` are refused and signing out asks for `ployz login`.
+/// Whether `--context` or `--connect` was typed on the command line. `PLOYZ_CONTEXT` and
+/// `PLOYZ_CONNECT` in the environment don't count: the waiting list lives in Cloud alone.
+pub(super) fn points_elsewhere(matches: &ArgMatches) -> bool {
+    ["connect", "context"]
+        .into_iter()
+        .any(|id| matches.value_source(id) == Some(ValueSource::CommandLine))
+}
+
+/// The credential a waiting-list command runs under. `--context` and `--connect` are
+/// refused, and signing out asks for `ployz login`.
 pub(super) fn credential(
     runtime: &tokio::runtime::Runtime,
     matches: &ArgMatches,
 ) -> Result<Credential, Error> {
-    if matches.get_one::<String>("connect").is_some()
-        || matches.get_one::<String>("context").is_some()
-    {
+    if points_elsewhere(matches) {
         return Err(Error::usage(
             "servers waiting to join live in Ployz Cloud; drop --context and --connect",
         ));
     }
-    cloud_runs(runtime, matches)?.ok_or_else(|| LoginError::SignedOut.into())
+    signed_in(runtime, matches)?.ok_or_else(|| LoginError::SignedOut.into())
 }
 
 /// `server ls --waiting`: one fixed row per waiting server.
@@ -209,15 +246,16 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     let waiting = runtime.block_on(fetch(&credential))?;
     let now = Utc::now();
     let mut table = Table::new(
-        ["NAME", "PROVIDER", "IP", "STATUS", "AGE"],
+        ["ID", "NAME", "PROVIDER", "IP", "STATUS", "AGE"],
         "No servers waiting.",
     );
     for Waiting { row, .. } in &waiting {
         let (status, tone) = row.readiness();
         table.row([
-            Cell::from(row.name.clone()),
-            Cell::from(row.provider().to_owned()),
-            Cell::from(row.ip().to_owned()),
+            Cell::from(printable(ui::short_id(&row.id))),
+            Cell::from(printable(&row.name)),
+            Cell::from(printable(row.provider())),
+            Cell::from(printable(row.ip())),
             Cell::status(status, tone),
             Cell::from(age(&row.first_seen_at, now)),
         ]);
@@ -232,10 +270,10 @@ pub(super) fn show(waiting: &Waiting) -> Result<(), Error> {
     let report = &row.report;
     let now = Utc::now();
     let (status, _) = row.readiness();
-    let mut record = Fields::new()
-        .field("waiting server", &row.name)
-        .field("status", status)
-        .field(
+    let mut lines = vec![
+        ("waiting server", row.name.clone()),
+        ("status", status.to_owned()),
+        (
             "machine",
             format!(
                 "{} {} · {} · {} CPU · {} · {}",
@@ -246,28 +284,39 @@ pub(super) fn show(waiting: &Waiting) -> Result<(), Error> {
                 size(report.memory_total_bytes),
                 report.virt
             ),
-        )
-        .field("disks", row.disks())
-        .field("docker", row.docker())
-        .field("storage", row.storage())
-        .field(
+        ),
+        ("disks", row.disks()),
+        ("docker", row.docker()),
+        ("storage", row.storage()),
+        (
             "from",
             format!("{} · {} · {}", row.from(), row.provider(), row.fleet_token),
-        )
-        .field(
+        ),
+        (
             "first seen",
             format!("{} ago", age(&row.first_seen_at, now)),
-        )
-        .field(
+        ),
+        (
             "last check-in",
             format!("{} ago", age(&row.last_check_in_at, now)),
-        )
-        .field("id", &row.id);
-    for blocker in &report.blockers {
-        record.push("blocked", &blocker.message);
-    }
-    for warning in &report.warnings {
-        record.push("warning", &warning.message);
+        ),
+        ("id", row.id.clone()),
+    ];
+    lines.extend(
+        report
+            .blockers
+            .iter()
+            .map(|blocker| ("blocked", blocker.message.clone())),
+    );
+    lines.extend(
+        report
+            .warnings
+            .iter()
+            .map(|warning| ("warning", warning.message.clone())),
+    );
+    let mut record = Fields::new();
+    for (label, value) in lines {
+        record.push(label, printable(&value));
     }
     ui::fields(&json!({ "waiting_server": waiting.raw }), &record)
 }
@@ -443,12 +492,12 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_host_cannot_print_escape_sequences() {
-        let raw = json!({ "name": "web\u{1b}[2J-1", "blockers": [{ "message": "a\u{7}b" }] });
-        assert_eq!(
-            printable(raw),
-            json!({ "name": "web\u{FFFD}[2J-1", "blockers": [{ "message": "a\u{FFFD}b" }] })
-        );
+    fn a_host_cannot_print_escape_sequences_or_reorder_text() {
+        assert_eq!(printable("web\u{1b}[2J-1"), "web\u{FFFD}[2J-1");
+        assert_eq!(printable("a\u{7}b"), "a\u{FFFD}b");
+        assert_eq!(printable("evil\u{202E}1-bew"), "evil\u{FFFD}1-bew");
+        assert_eq!(printable("we\u{200B}b"), "we\u{FFFD}b");
+        assert_eq!(printable("wéb-1 · 東京"), "wéb-1 · 東京");
     }
 
     #[test]

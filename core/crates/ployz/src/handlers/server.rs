@@ -114,6 +114,15 @@ pub(super) fn cloud_runs(
     {
         return Ok(None);
     }
+    signed_in(runtime, matches)
+}
+
+/// The signed-in Cloud credential, or `None` when signed out. Nothing on the command line
+/// or in the environment vetoes it.
+pub(super) fn signed_in(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+) -> Result<Option<Credential>, Error> {
     let store = CredentialStore::beside(&super::config_path(matches)?);
     match runtime.block_on(cloud_account::from_env(&store)) {
         Ok(credential) => Ok(Some(credential)),
