@@ -1,19 +1,19 @@
 //! Protected Environments, on SQLite and on Postgres (see `backend`): a new Project's
 //! Default starts Protected, the switch flips either way, only a Project's own
-//! Environments take it, and only a caller who may protect saves one a new repository
+//! Environments take it, and only a caller holding `environments:protect` saves one a new repository
 //! or deploy branch, however it was staged.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, Change, ConfigStore, CreateBranch, CreateEnvironment,
     CreateGitService, CreateProject, CreateService, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentsQuery, OrganizationId, Principal, ProjectId, ProjectName, Publish,
-    Published, PullRequest, SeenProtection, ServiceLineageId, SetDefaultEnvironment,
-    SetEnvironmentProtected, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SystemEvent, Trusted,
-    Written,
+    EnvironmentRef, EnvironmentsQuery, OrganizationId, Permission, Principal, ProjectId,
+    ProjectName, Publish, Published, PullRequest, SeenProtection, ServiceLineageId,
+    SetDefaultEnvironment, SetEnvironmentProtected, SetPrPlan, SettingPath, SyncChanges, SyncQuery,
+    SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ fn acme() -> Trusted {
     };
     Trusted {
         repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
-        ..backend::cloud()
+        ..ployz_store::Trusted::default()
     }
 }
 
@@ -301,7 +301,7 @@ fn person(who: &Actor) -> Actor {
 
 fn fix_web(store: &ConfigStore, who: &Actor) {
     store
-        .write(
+        .write_trusted(
             who,
             &CreateBranch {
                 id: EnvironmentId::parse(uuid(5)).unwrap(),
@@ -313,14 +313,26 @@ fn fix_web(store: &ConfigStore, who: &Actor) {
                 keep: false,
                 fix: None,
             },
+            &acme_as(false),
         )
         .unwrap();
 }
 
-/// Cloud's evidence for `acme`, and whether it found the caller may protect.
-fn acme_as(may_protect: bool) -> Trusted {
+/// The permissions Cloud found the caller holds: every one, or every one but protecting.
+fn holding(protects: bool) -> Option<BTreeSet<Permission>> {
+    Some(
+        Permission::ALL
+            .iter()
+            .copied()
+            .filter(|permission| protects || *permission != Permission::EnvironmentsProtect)
+            .collect(),
+    )
+}
+
+/// Cloud's evidence for `acme`, for a caller who holds `environments:protect` or not.
+fn acme_as(protects: bool) -> Trusted {
     Trusted {
-        may_protect,
+        permissions: holding(protects),
         ..acme()
     }
 }
@@ -331,7 +343,7 @@ fn edit(
     who: &Actor,
     environment: &str,
     changes: &[(&str, Option<Value>)],
-    may_protect: bool,
+    protects: bool,
 ) -> Result<(), RpcError> {
     let changes = changes
         .iter()
@@ -352,12 +364,12 @@ fn edit(
         changes,
     };
     store
-        .write_trusted(who, &edit, &acme_as(may_protect))
+        .write_trusted(who, &edit, &acme_as(protects))
         .map(drop)
 }
 
 /// Sync everything fix-web changed into production.
-fn sync_up(store: &ConfigStore, who: &Actor, may_protect: bool) -> Result<(), RpcError> {
+fn sync_up(store: &ConfigStore, who: &Actor, protects: bool) -> Result<(), RpcError> {
     let view = store
         .read(
             who,
@@ -380,7 +392,7 @@ fn sync_up(store: &ConfigStore, who: &Actor, may_protect: bool) -> Result<(), Rp
                 values: BTreeMap::new(),
                 id: None,
             },
-            &acme_as(may_protect),
+            &acme_as(protects),
         )
         .map(drop)
 }
@@ -389,7 +401,7 @@ fn publish(
     store: &ConfigStore,
     who: &Actor,
     environment: &str,
-    may_protect: bool,
+    protects: bool,
 ) -> Result<Published, RpcError> {
     store.write_trusted(
         who,
@@ -397,18 +409,20 @@ fn publish(
             environment: at(environment),
             ..Publish::default()
         },
-        &acme_as(may_protect),
+        &acme_as(protects),
     )
 }
 
 fn assert_forbidden<T: std::fmt::Debug>(result: Result<T, RpcError>, details: Value) {
     let error = result.unwrap_err();
     assert_eq!(error.code, RpcErrorCode::from("forbidden"));
-    assert_eq!(
-        error.message,
-        "Only an owner or admin of this Organization can do this."
-    );
-    assert_eq!(error.details, details);
+    assert_eq!(error.message, "Needs environments:protect");
+    let mut expected = json!({"permission": "environments:protect"});
+    expected
+        .as_object_mut()
+        .unwrap()
+        .extend(details.as_object().unwrap().clone());
+    assert_eq!(error.details, expected);
 }
 
 /// Whether `result` got past the protection check, refused or not for another reason.
@@ -437,7 +451,7 @@ fn production(store: &ConfigStore, who: &Actor, path: &str) -> Value {
 }
 
 #[test]
-fn a_repository_synced_into_protected_production_needs_whoever_may_protect() {
+fn a_repository_synced_into_protected_production_needs_environments_protect() {
     let (store, system) = shop();
     let who = person(&system);
     fix_web(&store, &who);
@@ -461,7 +475,7 @@ fn a_repository_synced_into_protected_production_needs_whoever_may_protect() {
 }
 
 #[test]
-fn a_git_service_synced_into_protected_production_needs_whoever_may_protect() {
+fn a_git_service_synced_into_protected_production_needs_environments_protect() {
     let (store, system) = shop();
     let who = person(&system);
     fix_web(&store, &who);
@@ -475,7 +489,7 @@ fn a_git_service_synced_into_protected_production_needs_whoever_may_protect() {
                 repository: backend::repo_name("acme/docs"),
                 branch: Some(backend::git_branch("dev")),
             },
-            &acme(),
+            &acme_as(false),
         )
         .unwrap();
 
@@ -484,7 +498,7 @@ fn a_git_service_synced_into_protected_production_needs_whoever_may_protect() {
 }
 
 #[test]
-fn a_protected_services_branch_needs_whoever_may_protect() {
+fn a_protected_services_branch_needs_environments_protect() {
     let (store, system) = shop();
     let who = person(&system);
     let dev = [("web.branch", Some(json!("dev")))];
@@ -497,7 +511,7 @@ fn a_protected_services_branch_needs_whoever_may_protect() {
 }
 
 #[test]
-fn unsetting_a_protected_services_repository_needs_whoever_may_protect() {
+fn unsetting_a_protected_services_repository_needs_environments_protect() {
     let (store, system) = shop();
     let who = person(&system);
     let image = [
@@ -513,7 +527,7 @@ fn unsetting_a_protected_services_repository_needs_whoever_may_protect() {
 }
 
 #[test]
-fn restoring_an_old_branch_from_history_needs_whoever_may_protect() {
+fn restoring_an_old_branch_from_history_needs_environments_protect() {
     let (store, system) = shop();
     edit(
         &store,
@@ -531,7 +545,7 @@ fn restoring_an_old_branch_from_history_needs_whoever_may_protect() {
         action: ployz_store::HistoryAction::Restore,
         change: None,
     };
-    let restore = |may_protect| {
+    let restore = |protects| {
         let preview = store.read(&who, &query).unwrap();
         store.write_trusted(
             &who,
@@ -543,7 +557,7 @@ fn restoring_an_old_branch_from_history_needs_whoever_may_protect() {
                 version: preview.version,
                 accept_overwrite: true,
             },
-            &acme_as(may_protect),
+            &acme_as(protects),
         )
     };
 
@@ -554,7 +568,7 @@ fn restoring_an_old_branch_from_history_needs_whoever_may_protect() {
 }
 
 #[test]
-fn a_source_staged_before_protecting_still_publishes_only_for_whoever_may_protect() {
+fn a_source_staged_before_protecting_still_publishes_only_for_environments_protect() {
     let (store, system) = shop();
     let who = person(&system);
     store.write(&system, &set("production", false)).unwrap();
@@ -580,7 +594,7 @@ fn a_change_leaving_every_repository_and_branch_saves_for_anyone() {
     let (store, system) = shop();
     let who = person(&system);
     store
-        .write(
+        .write_trusted(
             &who,
             &CreateService {
                 id: ServiceLineageId::parse(uuid(6)).unwrap(),
@@ -589,6 +603,7 @@ fn a_change_leaving_every_repository_and_branch_saves_for_anyone() {
                 image: Some("api:1".into()),
                 template: None,
             },
+            &acme_as(false),
         )
         .unwrap();
 
@@ -628,31 +643,23 @@ fn cloud_itself_and_an_unprotected_environment_save_any_branch() {
 }
 
 #[test]
-fn only_whoever_may_protect_flips_protection_even_after_another_protects() {
+fn only_environments_protect_flips_protection_even_after_another_protects() {
     let (store, system) = shop();
     let who = person(&system);
-    let flip = |environment, protected, may_protect| {
+    let flip = |environment, protected, protects| {
         store.write_trusted(
             &who,
             &set(environment, protected),
             &Trusted {
-                may_protect,
+                permissions: holding(protects),
                 ..Trusted::default()
             },
         )
     };
 
-    // Cloud judged the member before an admin protected staging; the Store judges
-    // the flag in the transaction that reads `protected`.
     flip("staging", true, true).unwrap();
-    assert_forbidden(
-        flip("staging", false, false),
-        json!({"project": "shop", "environment": "staging"}),
-    );
-    assert_forbidden(
-        flip("production", true, false),
-        json!({"project": "shop", "environment": "production"}),
-    );
+    assert_forbidden(flip("staging", false, false), json!({}));
+    assert_forbidden(flip("production", true, false), json!({}));
     assert_eq!(
         protection(&store, &who),
         [("production".into(), true), ("staging".into(), true)]
@@ -666,7 +673,7 @@ fn only_whoever_may_protect_flips_protection_even_after_another_protects() {
 fn an_unprotect_decided_on_an_earlier_protection_refuses() {
     let (store, system) = shop();
     let admin = Trusted {
-        may_protect: true,
+        permissions: holding(true),
         ..Trusted::default()
     };
     let unprotect = |seen| {
@@ -744,7 +751,10 @@ fn an_unprotect_decided_on_another_environment_refuses() {
                 protected: false,
                 seen: Some(production),
             },
-            &backend::cloud(),
+            &Trusted {
+                permissions: holding(true),
+                ..Trusted::default()
+            },
         )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
@@ -759,27 +769,8 @@ fn an_unprotect_decided_on_another_environment_refuses() {
 }
 
 #[test]
-fn an_unnamed_caller_cloud_found_no_role_for_may_not_protect() {
-    let (store, system) = shop();
-    // A user Cloud couldn't name (their row is gone) and found no role for is not automation.
-    let unnamed =
-        |protected| store.write_trusted(&system, &set("staging", protected), &Trusted::default());
-
-    assert_forbidden(
-        unnamed(true),
-        json!({"project": "shop", "environment": "staging"}),
-    );
-    store.write(&system, &set("staging", true)).unwrap();
-    assert_forbidden(
-        unnamed(false),
-        json!({"project": "shop", "environment": "staging"}),
-    );
-    assert!(protection(&store, &system).contains(&("staging".into(), true)));
-}
-
-#[test]
-fn removing_a_project_with_a_protected_environment_needs_whoever_may_protect() {
-    let remove = |store: &ConfigStore, who: &Actor, may_protect| {
+fn removing_a_project_with_a_protected_environment_needs_environments_protect() {
+    let remove = |store: &ConfigStore, who: &Actor, protects| {
         store.write_trusted(
             who,
             &ployz_store::Remove {
@@ -790,7 +781,7 @@ fn removing_a_project_with_a_protected_environment_needs_whoever_may_protect() {
                 every_copy: BTreeMap::new(),
             },
             &Trusted {
-                may_protect,
+                permissions: holding(protects),
                 ..Trusted::default()
             },
         )

@@ -62,7 +62,7 @@ fn evidence() -> Trusted {
                 branches: Vec::new(),
             },
         ],
-        ..backend::cloud()
+        ..Trusted::default()
     }
 }
 
@@ -104,7 +104,7 @@ fn values(store: &ConfigStore, who: &Actor) -> Value {
 fn a_repository_needs_cloud_evidence() {
     let (store, who) = shop();
     let error = store
-        .write_trusted(&who, &create("acme/web", None), &backend::cloud())
+        .write_trusted(&who, &create("acme/web", None), &Trusted::default())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details["next"], "ployz github connect");
@@ -162,7 +162,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         .write_trusted(
             &who,
             &Command::CreateGitService(create("ACME/Web", None)),
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     assert_eq!(replayed, Written::Service(created));
@@ -172,7 +172,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         .write_trusted(
             &who,
             &edit(vec![set("web.branch", json!("dev"))]),
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
@@ -195,7 +195,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         value: after.clone(),
     };
     let Written::Edited(edited) = store
-        .write_trusted(&who, &edit(vec![again]), &backend::cloud())
+        .write_trusted(&who, &edit(vec![again]), &Trusted::default())
         .unwrap()
     else {
         panic!("an edit")
@@ -263,7 +263,7 @@ fn a_git_service_round_trips_get_edit_publish() {
                 message: None,
                 accept_volume_loss: Vec::new(),
             },
-            &backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     assert!(published.saved.is_some_and(|saved| saved.0 >= 1));
@@ -287,7 +287,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
-            &backend::cloud(),
+            &ployz_store::Trusted::default(),
         )
         .unwrap();
     id
@@ -452,7 +452,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
                 id: again.clone(),
                 deployment: first.clone(),
             }),
-            &backend::cloud(),
+            &ployz_store::Trusted::default(),
         )
         .unwrap();
     assert_eq!(store.sources(&again).unwrap()[0].commit, Some(a.clone()));
@@ -933,7 +933,7 @@ fn a_source_disconnects_to_empty_and_an_empty_service_connects_a_repository() {
     // Connecting a repository needs Cloud's evidence, then builds its default branch.
     let connect = edit(vec![set("web.repository", json!("acme/web"))]);
     let refused = store
-        .write_trusted(&who, &connect, &backend::cloud())
+        .write_trusted(&who, &connect, &Trusted::default())
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::NotFound);
     store.write_trusted(&who, &connect, &evidence()).unwrap();

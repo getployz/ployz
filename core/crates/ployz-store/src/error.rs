@@ -121,16 +121,6 @@ pub(crate) fn forbidden(message: impl Into<String>, details: Value) -> RpcError 
     error(RpcErrorCode::from("forbidden"), message, details)
 }
 
-/// The caller may not protect Environments, as Cloud found their role, in Cloud's
-/// own words for that refusal.
-pub(crate) fn protector_only(details: Value) -> RpcError {
-    error(
-        RpcErrorCode::from("forbidden"),
-        "Only an owner or admin of this Organization can do this.",
-        details,
-    )
-}
-
 /// Evidence a write needs is missing or incomplete, so it refuses rather than guess.
 pub(crate) fn unobserved(message: impl Into<String>, details: Value) -> RpcError {
     error(RpcErrorCode::Unavailable, message, details)

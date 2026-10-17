@@ -450,6 +450,7 @@ commands! {
         => crate::branch::set_branch_setup(tx, who, c);
     /// Protect a Project's own Environment from removal, or unprotect it.
     SetEnvironmentProtected(crate::SetEnvironmentProtected) -> Protected(crate::EnvironmentsView)
+        needs EnvironmentsProtect
         agent [EnvironmentProtect]
         => crate::teardown::set_protected(tx, who, c);
     /// Remove an Environment or a Project: off the Servers, then out of the Store.

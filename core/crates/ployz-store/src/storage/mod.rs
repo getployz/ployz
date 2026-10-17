@@ -219,48 +219,57 @@ pub(crate) trait Tx {
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError>;
     /// Run a script of parameterless statements, as the driver splits it.
     fn batch(&mut self, sql: &str) -> Result<(), RpcError>;
-    /// Whether the caller this transaction acts for may protect and unprotect
-    /// Environments and choose a Protected one's repository and deploy branch. The
-    /// Store's own work acts for nobody, so it may. Read only by [`admit_protect`].
-    fn may_protect(&self) -> bool {
-        true
+    /// The evidence of the caller this transaction acts for. The Store's own work acts
+    /// for nobody. Read only by [`admit_protect`].
+    fn acting_for(&self) -> Option<&crate::Trusted> {
+        None
     }
 }
 
-/// The one Protected Environment fence. When the caller may not protect, `touches`
-/// says whether this write reaches into a Protected Environment, with the details its
-/// refusal names; it runs in the write's own transaction, so a protect that lands
-/// first still fences the write.
-// ponytail: this fence is Cloud's `may_protect` evidence; P7's `needs` replaces it.
+/// The one Protected Environment fence: a caller without
+/// [`EnvironmentsProtect`](crate::Permission::EnvironmentsProtect) is refused when
+/// `touches` says this write reaches into a Protected Environment, and the refusal's
+/// details name what it reaches. It runs in the write's own transaction, so a protect
+/// that lands first still fences the write.
 pub(crate) fn admit_protect(
     tx: &mut dyn Tx,
     touches: impl FnOnce(&mut dyn Tx) -> Result<Option<serde_json::Value>, RpcError>,
 ) -> Result<(), RpcError> {
-    if tx.may_protect() {
+    let Some(Err(mut refused)) = tx
+        .acting_for()
+        .map(|trusted| trusted.admit(crate::Permission::EnvironmentsProtect))
+    else {
         return Ok(());
+    };
+    let Some(reached) = touches(tx)? else {
+        return Ok(());
+    };
+    if let (serde_json::Value::Object(details), serde_json::Value::Object(reached)) =
+        (&mut refused.details, reached)
+    {
+        details.extend(reached);
     }
-    match touches(tx)? {
-        Some(details) => Err(crate::error::protector_only(details)),
-        None => Ok(()),
-    }
+    Err(refused)
 }
 
-/// A transaction acting for a caller Cloud found may not protect: see
-/// [`admit_protect`].
-pub(crate) struct Unprotecting<'tx>(pub(crate) &'tx mut dyn Tx);
+/// A transaction acting for the caller `trusted` describes: see [`admit_protect`].
+pub(crate) struct Acting<'tx, 'trusted> {
+    pub(crate) tx: &'tx mut dyn Tx,
+    pub(crate) trusted: &'trusted crate::Trusted,
+}
 
-impl Tx for Unprotecting<'_> {
+impl Tx for Acting<'_, '_> {
     fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
-        self.0.execute(sql, params)
+        self.tx.execute(sql, params)
     }
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
-        self.0.query(sql, params)
+        self.tx.query(sql, params)
     }
     fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
-        self.0.batch(sql)
+        self.tx.batch(sql)
     }
-    fn may_protect(&self) -> bool {
-        false
+    fn acting_for(&self) -> Option<&crate::Trusted> {
+        Some(self.trusted)
     }
 }
 

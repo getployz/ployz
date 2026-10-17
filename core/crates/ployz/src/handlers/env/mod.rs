@@ -52,9 +52,11 @@ pub(super) fn default_command(command: Command) -> Command {
 
 pub(super) fn protect_command(command: Command) -> Command {
     command
-        .about("Protect an Environment so it cannot be removed")
+        .about(
+            "Protect an Environment so it cannot be removed and only an owner or admin can change its repository or deploy branch",
+        )
         .arg(positional("name", true))
-        .arg(switch("off", None).help("Unprotect it, so it can be removed"))
+        .arg(switch("off", None).help("Unprotect it, so it can be removed and anyone who can stage can change its repository or deploy branch"))
         .arg(project_arg())
 }
 

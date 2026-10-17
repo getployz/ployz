@@ -56,15 +56,6 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(as = "Option<Asks>", optional)]
     pub asks: Asks,
-    /// Whether the caller may change a Protected Environment's repository or deploy
-    /// branch, flip its protection, or remove its Project, as Cloud found their role.
-    /// The Store judges it against `protected` read in the same transaction, so a
-    /// protect that lands first still fences the write. False refuses whoever acts,
-    /// named or not. The Store's own automation and the hidden local Store's one user
-    /// always may. P7's `needs` replaces this flag.
-    #[serde(default)]
-    #[ts(as = "Option<bool>", optional)]
-    pub may_protect: bool,
 }
 
 /// Whether Cloud asks a human before a publication destroys something, and which

@@ -356,8 +356,6 @@ fn github() -> Trusted {
             default_branch: ployz_store::BranchName::parse("main").unwrap(),
             branches: vec![ployz_store::BranchName::parse("dev").unwrap()],
         }],
-        // The token's owner owns the Organization.
-        may_protect: true,
         ..Trusted::default()
     }
 }

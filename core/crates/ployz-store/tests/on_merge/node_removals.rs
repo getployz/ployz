@@ -3,7 +3,7 @@ use ployz_store::{
     Actor, Automated, ConfigStore, CreateGitService, CreateProject, DiffQuery, EnvironmentId,
     EnvironmentName, EnvironmentQuery, EnvironmentRef, HistoryAction, HistoryPreviewQuery,
     NodeName, OnMergeCheck, OnMergeConclusion, OrganizationId, ProjectId, ProjectName, Ride,
-    ServiceLineageId, SetPrPlan, StageHistory,
+    ServiceLineageId, SetPrPlan, StageHistory, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -680,7 +680,7 @@ fn deploy_by_hand(
                 accept_volume_loss: Vec::new(),
                 message: None,
             }),
-            &crate::backend::cloud(),
+            &Trusted::default(),
         )
         .unwrap();
     id
@@ -1197,7 +1197,7 @@ fn retry(
             id: id.clone(),
             deployment: source.clone(),
         }),
-        &crate::backend::cloud(),
+        &Trusted::default(),
     )?;
     Ok(id)
 }
