@@ -37,7 +37,7 @@ your app's directory.
 Paste this into your coding agent, such as Claude Code or Codex:
 
 ```text
-Set me up for Ployz: https://ployz.sh/agent.md
+Set me up for Ployz: https://ployz.dev/agents.md
 ```
 
 The agent installs the CLI and the Ployz skill, signs you in, and registers the Ployz MCP tools.
@@ -46,7 +46,7 @@ agent afterwards so it loads the skill and the tools.
 From then on you can ask it to deploy, add a database or read logs. The skill points the agent
 to `ployz --help` and `ployz schema --json` for every command and setting.
 
-To set it up by hand, follow the steps in [ployz.sh/agent.md](https://ployz.sh/agent.md)
+To set it up by hand, follow the steps in [ployz.dev/agents.md](https://ployz.dev/agents.md)
 yourself. Run step 2 again to update the skill.
 
 ### Give the agent Ployz tools
@@ -226,6 +226,12 @@ row, so `ployz service ls | cut -f1` prints the names. An empty list prints one 
 stderr, such as `No Services in production yet.`; piped, it also prints the header row on stdout.
 A single record, such as
 `ployz status`, prints one `label = value` line per field when piped.
+
+`ployz status` works signed out too. It shows what it can and says `signed in as no one`. On a
+server waiting for approval, it leads with a **this server** line: `Installing Docker`,
+`Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
+`Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
+it as `blocked` lines. With `--json` this is the `this_server` object.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.

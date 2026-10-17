@@ -511,7 +511,6 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
         &["org", "ls", "--json"],
         &["github", "ls", "--json"],
         // Store and live commands fail the same way instead of naming a config file.
-        &["status", "--json"],
         &["get", "--json"],
         &["deploy", "--json"],
         &["server", "ls", "--json"],
@@ -1308,4 +1307,43 @@ fn server_show_says_when_the_waiting_list_could_not_be_read() {
         message(&json),
         "No Server matches nobody, and the servers waiting to join could not be read."
     );
+}
+
+#[test]
+fn checkin_status_signed_out_says_who_without_a_scope_error() {
+    let (code, json, stderr) = run_json(&["status", "--json"]);
+    assert_eq!(code, Some(0), "{json} {stderr}");
+    assert_eq!(
+        json.get("identity"),
+        Some(&serde_json::Value::Null),
+        "{json}"
+    );
+    assert_eq!(
+        json.get("attention"),
+        Some(&serde_json::json!([])),
+        "{json}"
+    );
+    assert_eq!(
+        json.get("next").and_then(serde_json::Value::as_str),
+        Some("ployz login"),
+        "{json}"
+    );
+}
+
+#[test]
+fn checkin_help_names_install_and_the_token_file() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["server", "checkin", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{stdout}");
+    for needle in [
+        "--install",
+        "--token-file",
+        "/etc/ployz/fleet-token",
+        "--cloud-url",
+    ] {
+        assert!(stdout.contains(needle), "{needle}: {stdout}");
+    }
 }

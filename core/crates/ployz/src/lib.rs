@@ -4,6 +4,7 @@
 mod approval;
 pub mod build;
 mod cancellation;
+mod checkin;
 pub mod cli;
 mod cloud_account;
 mod cloud_enroll;
