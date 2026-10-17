@@ -684,6 +684,35 @@ it.live(
 );
 
 it.live(
+  "an agent's unprotect of an Environment Cloud can't find is refused, even when it's created before the write lands",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, protection } = yield* protectedShop();
+        const agent = { ...alice, via: "agent" as const };
+        const legs = [
+          ["sidebar", "staging", "00000000-0000-4000-8000-000000000091", (environment: string) =>
+            runAgentCall(agent, { ...unprotectByAgent("absent", null), page: { at: "here" as const, project: "shop", environment } }).pipe(Effect.map(refusedCode))],
+          ["mcp", "qa", "00000000-0000-4000-8000-000000000092", (environment: string) =>
+            send("write", asAgent(session, null), { command: "set_environment_protected", environment: { project: "shop", environment }, protected: false })
+              .pipe(Effect.map((answer) => answer.json.error?.code))],
+        ] as const;
+        for (const [surface, name, id, unprotect] of legs) {
+          const created = yield* afterListing(yield* protectedEnvironment(organizationId, id, name));
+          assert.strictEqual(yield* unprotect(name), "not_found", surface);
+          assert.isTrue(created());
+          vi.restoreAllMocks();
+          assert.deepInclude(yield* protection(), [name, true], surface);
+        }
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "someone no longer a member may not protect, and Cloud's own write still may",
   () =>
     Effect.gen(function* () {
