@@ -94,6 +94,7 @@ export function marksOf(command: ConfigCommand | BatchCommand): Mark[] {
     case "set_build_order":
     case "set_default_environment":
     case "set_branch_setup":
+    case "set_environment_protected":
     case "remove":
     case "cancel_removal":
     case "approve_pull_request": return [];

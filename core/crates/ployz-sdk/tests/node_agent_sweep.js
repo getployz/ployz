@@ -181,6 +181,7 @@ const FIXTURES = [
   ["deployment_retry", { request_key: "retry-shop-0001" }],
   ["deployment_retry", { deployment: 2 * U32_MAX, request_key: "retry-shop-0002" }, "not_found"],
   ["environment_pr", { enabled: true, repository: "acme/api" }],
+  ["environment_protect", { protected: true }],
   ["environment_setup", {}],
   ["github_ls", { repository: "acme/api", path: "src" }],
   ["github_connect", {}],

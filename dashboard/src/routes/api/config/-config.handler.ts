@@ -1,8 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
-import { hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
+import { gateOperation, hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
+import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
@@ -46,8 +47,22 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
     : { ok: true, approval: "not_required" } as const;
   if (!approval.ok) return refusal(approval.refusal);
+  // `ployz mcp` unprotecting an Environment waits for a human, as the sidebar does; a person at the CLI decided already.
+  const unprotect = call.operation === "write" && caller.via === "agent"
+    ? yield* unprotectAsked(caller.organization.id, call.command).pipe(
+      Effect.catchTag("StoreRefused", (error) => Effect.succeed({ refused: error.refusal })),
+    )
+    : null;
+  if (unprotect !== null && "refused" in unprotect) return refusal(unprotect.refused);
+  if (unprotect?.asked) {
+    const refused = protectorOnly(caller);
+    if (refused !== null) return refusal(refused);
+    const gated = yield* gateOperation(caller, request.headers.get("x-ployz-approval"), unprotect.asked);
+    if (!gated.ok) return refusal(gated.refusal);
+  }
   const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller) } as const;
-  const result = yield* callStore(caller.organization.id, caller.userId, call, { source: "cli", agent }, gate);
+  const sent: StoreCall = unprotect === null ? call : { operation: "write", command: unprotect.command };
+  const result = yield* callStore(caller.organization.id, caller.userId, sent, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {
     return refusal(yield* requestApproval(caller, call.command, result.refusal));

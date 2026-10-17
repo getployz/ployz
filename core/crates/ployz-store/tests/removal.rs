@@ -19,8 +19,8 @@ use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DueQuery, EnvironmentId, EnvironmentName,
     EnvironmentRef, EnvironmentsQuery, KeepBranch, LeftStatus, Mount, OrganizationId, ProjectId,
     ProjectName, Publish, Removal, RemovalsQuery, Remove, RemovedQuery, RunEvidence, RunnerId,
-    ServiceLineageId, SetDefaultEnvironment, ShutDown, Sweep, SyncChanges, SystemEvent, Trusted,
-    VolumeId, VolumeName, VolumeObservation, Written,
+    ServiceLineageId, SetDefaultEnvironment, SetEnvironmentProtected, ShutDown, Sweep, SyncChanges,
+    SystemEvent, Trusted, VolumeId, VolumeName, VolumeObservation, Written,
 };
 use serde_json::json;
 
@@ -71,6 +71,8 @@ fn shop() -> (ConfigStore, Actor) {
             .unwrap();
     }
     volume(&store, &who, 5, "data");
+    // These tests take `production` off once it is no longer the Default.
+    protect(&store, &who, "production", false);
     store
         .write(
             &who,
@@ -82,6 +84,19 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     (store, who)
+}
+
+fn protect(store: &ConfigStore, who: &Actor, environment: &str, protected: bool) {
+    store
+        .write(
+            who,
+            &SetEnvironmentProtected {
+                environment: at(environment),
+                protected,
+                seen: None,
+            },
+        )
+        .unwrap();
 }
 
 /// Give `production`'s `db` Volume `name`, with ID `uuid(n)`.
@@ -527,6 +542,45 @@ fn environments_list_and_an_undeployed_one_is_removed_without_servers() {
     assert_eq!(
         refusal(store.write(&who, &request(Some("production")))).code,
         RpcErrorCode::NotFound
+    );
+}
+
+#[test]
+fn a_protected_environment_refuses_removal_until_it_is_unprotected() {
+    let (store, who) = shop();
+    protect(&store, &who, "staging", true);
+
+    let refused = refusal(store.write(&who, &request(Some("staging"))));
+    assert_eq!(refused.code, RpcErrorCode::Unsupported);
+    assert_eq!(refused.message, "staging is Protected: unprotect it first");
+    assert_eq!(refused.details["protected"], "staging");
+    assert_eq!(
+        refused.details["next"],
+        json!({
+            "tool": "environment_protect",
+            "input": { "project": "shop", "environment": "staging", "protected": false },
+        })
+    );
+    assert_eq!(listed(&store, &who), ["production*", "staging"]);
+
+    protect(&store, &who, "staging", false);
+    store.write(&who, &request(Some("staging"))).unwrap();
+    assert_eq!(listed(&store, &who), ["production*"]);
+}
+
+#[test]
+fn a_protected_environment_goes_with_its_project() {
+    let (store, who) = shop();
+    protect(&store, &who, "production", true);
+    protect(&store, &who, "staging", true);
+
+    assert!(residuals(store.write(&who, &request(None)).unwrap()).is_empty());
+    assert!(
+        store
+            .read(&who, &ployz_store::ProjectsQuery {})
+            .unwrap()
+            .projects
+            .is_empty()
     );
 }
 

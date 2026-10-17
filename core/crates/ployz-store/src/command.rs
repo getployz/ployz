@@ -448,6 +448,11 @@ commands! {
         needs ProjectEdit
         agent none "No tool works on branches."
         => crate::branch::set_branch_setup(tx, who, c);
+    /// Protect a Project's own Environment from removal, or unprotect it.
+    SetEnvironmentProtected(crate::SetEnvironmentProtected) -> Protected(crate::EnvironmentsView)
+        needs EnvironmentsProtect
+        agent [EnvironmentProtect]
+        => crate::teardown::set_protected(tx, who, c);
     /// Remove an Environment or a Project: off the Servers, then out of the Store.
     Remove(crate::Remove) -> Removal(crate::Removal)
         needs EnvironmentDelete
@@ -688,6 +693,7 @@ impl Written {
             | Self::BuildOrder(_)
             | Self::DefaultEnvironment(_)
             | Self::BranchSetup(_)
+            | Self::Protected(_)
             | Self::Removal(_)
             | Self::RemovalCancelled(_)
             | Self::PrPlans(_) => None,
@@ -759,6 +765,8 @@ pub enum Written {
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.
     BranchSetup(crate::EnvironmentsView),
+    /// An Environment was protected or unprotected: the Project's Environments after it.
+    Protected(crate::EnvironmentsView),
     /// Where a removal stands.
     Removal(crate::Removal),
     RemovalCancelled(crate::RemovalCancelled),

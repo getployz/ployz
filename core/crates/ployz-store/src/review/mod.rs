@@ -18,8 +18,9 @@ use ployz_core::RpcError;
 use ployz_core::config::{
     At, ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, RowId, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceSettingChange,
-    canonicalize_environment_intent, compile_environment_intent, project_environment_changes,
+    SavedServiceIntent, SavedVariableValue, SavedVolumeIntent, ServiceGitBranch,
+    ServiceSettingChange, ServiceSource, canonicalize_environment_intent,
+    compile_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -620,6 +621,8 @@ pub(crate) fn publish(
     {
         return Ok((latest.revision, false));
     }
+    let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
+    guard_source(tx, environment, before, &intent.services)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     let accepted = (!accepted.is_empty())
         .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
@@ -642,6 +645,61 @@ pub(crate) fn publish(
     )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// Refuse a caller who may not protect when `after` changes what a GitHub merge ships
+/// into Protected Environment `environment`: the repository or deploy branch of a
+/// Service in `before`, or a Git Service it adds. Removing a Service is removal's to
+/// approve. Staging and publishing both ask, so no command brings a source in.
+pub(crate) fn guard_source(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    before: &[SavedServiceIntent],
+    after: &[SavedServiceIntent],
+) -> Result<(), RpcError> {
+    crate::storage::admit_protect(tx, |tx| touches_source(tx, environment, before, after))
+}
+
+/// The Services whose source `after` changes in `environment`, when it is Protected.
+pub(crate) fn touches_source(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    before: &[SavedServiceIntent],
+    after: &[SavedServiceIntent],
+) -> Result<Option<serde_json::Value>, RpcError> {
+    let changed: Vec<&str> = after
+        .iter()
+        .filter(
+            |service| match before.iter().find(|old| old.id == service.id) {
+                Some(old) => git_source(old) != git_source(service),
+                None => git_source(service).is_some(),
+            },
+        )
+        .map(|service| service.slug.as_str())
+        .collect();
+    if changed.is_empty()
+        || tx
+            .query(
+                "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
+                &[environment.as_str().into()],
+            )?
+            .is_empty()
+    {
+        return Ok(None);
+    }
+    Ok(Some(json!({ "services": changed })))
+}
+
+/// The repository and deploy branch a GitHub merge ships `service` from, if any.
+fn git_source(service: &SavedServiceIntent) -> Option<(u64, &ServiceGitBranch)> {
+    match &service.config.source {
+        ServiceSource::Git {
+            repository_id,
+            branch,
+            ..
+        } => Some((*repository_id, branch)),
+        ServiceSource::Empty { .. } | ServiceSource::Image { .. } => None,
+    }
 }
 
 /// Replace the consent saved with `revision`, which an unchanged Save renews.
