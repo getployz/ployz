@@ -481,8 +481,8 @@ Cloud's Organization-scoped bearer that authorizes copy-paste founding and joini
 _Avoid_: pairing token, API key, join URL as identity
 
 **Fleet Token**:
-Cloud's Organization-scoped `pflt_` bearer that lets many hosts check in as Waiting Servers. It admits a host to the waiting list, never to a Cluster; a revoked or expired Fleet Token ends every check-in loop that holds it.
-_Avoid_: Cloud Enroll Token, join token, API key
+Cloud's Organization-scoped `pflt_` secret a signed-in member makes so many hosts can carry it and check in as Waiting Servers to ask to join one Organization. It admits a host to the waiting list, never to a Cluster. `ployz server token` makes, lists and revokes it by its two-word name; the secret is shown once. Expiry or revoke stops new hosts and ends every check-in loop that holds it; Servers already in stay. It is not a Cloud Enroll Token or membership.
+_Avoid_: Cloud Enroll Token, Enrollment token, join token, bootstrap token, API key
 
 **Waiting Server**:
 A host that has a Fleet Token and checks in with Cloud over HTTP pull until an operator approves, rejects, or the token ends. It holds no Cluster state and runs no daemon besides preparation; the check-in loop ends at enroll, reject, revoke, or expiry.

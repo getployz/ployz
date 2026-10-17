@@ -524,6 +524,27 @@ pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
 )
 .docs("servers/manage-servers.md")
 .tool(ToolId::ServerUpgrade);
+pub(crate) const SERVER_TOKEN_CREATE: Verb = Verb::cloud(
+    "server token create",
+    Always,
+    server::token::create_command,
+    server::token::create,
+)
+.docs("servers/add-a-server.md");
+pub(crate) const SERVER_TOKEN_LS: Verb = Verb::cloud(
+    "server token ls",
+    Never,
+    server::token::ls_command,
+    server::token::ls,
+)
+.docs("servers/add-a-server.md");
+pub(crate) const SERVER_TOKEN_REVOKE: Verb = Verb::cloud(
+    "server token revoke",
+    Always,
+    server::token::revoke_command,
+    server::token::revoke,
+)
+.docs("servers/add-a-server.md");
 pub(crate) const SERVICE_ADD: Verb = Verb::cloud(
     "service add",
     Never,
@@ -787,6 +808,9 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_RM,
     SERVER_SET,
     SERVER_SHOW,
+    SERVER_TOKEN_CREATE,
+    SERVER_TOKEN_LS,
+    SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
     SERVICE_ADD,
     SERVICE_INSPECT,
@@ -860,6 +884,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "server",
         command: server::group,
+    },
+    Group {
+        path: "server token",
+        command: server::token::group,
     },
     Group {
         path: "service",

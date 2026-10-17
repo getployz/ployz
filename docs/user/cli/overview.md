@@ -73,7 +73,7 @@ Some things are not tools. Run these yourself in a terminal:
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
-- Branches and tokens.
+- Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
 
 Tools that can delete something when they run are marked destructive: `deploy`,

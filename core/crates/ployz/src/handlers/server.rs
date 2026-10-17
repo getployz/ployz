@@ -40,6 +40,7 @@ mod init;
 pub(super) mod reject;
 mod remove;
 mod show;
+pub(super) mod token;
 mod upgrade;
 mod waiting;
 
