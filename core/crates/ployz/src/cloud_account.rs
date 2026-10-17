@@ -148,11 +148,9 @@ pub(crate) struct TokenEntry {
     pub(crate) current: bool,
     #[serde(default)]
     pub(crate) kind: TokenKind,
-    /// What the token may do: Full as you, Read only, or Deploy and its Environment.
     pub(crate) scope: String,
 }
 
-/// What a new token may do, beyond its maker's role. Deploy writes only its Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "preset", rename_all = "snake_case")]
 pub(crate) enum TokenPreset {
