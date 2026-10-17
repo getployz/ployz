@@ -7,6 +7,7 @@ import { disconnectGithub, githubBranches, githubConnection, GithubRepositories 
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { TOKEN_PRESETS, type TokenPreset } from "#/modules/identity/token-grant";
 import {
   createOrganizationToken,
   listCredentials,
@@ -53,7 +54,21 @@ const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
   kind: Schema.optional(Schema.Literals(TOKEN_KINDS)),
+  preset: Schema.optional(Schema.Literals(TOKEN_PRESETS)),
+  environment: Schema.optional(Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64))),
 });
+
+const presetOf = (input: typeof NewToken.Type): Effect.Effect<TokenPreset, Validation> => {
+  const preset = input.preset ?? "full";
+  if (preset === "deploy") {
+    return input.environment === undefined
+      ? Effect.fail(new Validation({ message: "A Deploy token needs an Environment; pass `--environment`.", userFacing: true }))
+      : Effect.succeed({ preset, environment: input.environment });
+  }
+  return input.environment === undefined
+    ? Effect.succeed({ preset })
+    : Effect.fail(new Validation({ message: "Only a Deploy token takes an Environment.", userFacing: true }));
+};
 
 const NewFleetToken = Schema.Struct({
   name: Schema.optional(FleetTokenName),
@@ -166,7 +181,8 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST tokens": {
       const input = yield* decodeBody(NewToken, request,
         "A token needs a name of 1 to 64 characters, an expiry of 1 to 365 days, and a kind of cli or agent.");
-      return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind }).pipe(
+      const preset = yield* presetOf(input);
+      return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind, preset }).pipe(
         Effect.map((token) => ({ token })),
         Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
       );

@@ -23,7 +23,7 @@ import { Database } from "#/server/database.server";
  * with rows of its own to take along or a last check to make under the Organization's lock.
  */
 export const removeOrganization = Effect.fn("Organization.remove")(function* <E = never>(
-  caller: Pick<Caller, "userId" | "organization" | "role">,
+  caller: Pick<Caller, "userId" | "organization" | "role"> & Partial<Pick<Caller, "credential">>,
   slug: string,
   deleting: Deleting<E> = (drop) => drop,
 ) {

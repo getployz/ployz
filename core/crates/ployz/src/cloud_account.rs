@@ -148,6 +148,17 @@ pub(crate) struct TokenEntry {
     pub(crate) current: bool,
     #[serde(default)]
     pub(crate) kind: TokenKind,
+    /// What the token may do: Full as you, Read only, or Deploy and its Environment.
+    pub(crate) scope: String,
+}
+
+/// What a new token may do, beyond its maker's role. Deploy writes only its Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "preset", rename_all = "snake_case")]
+pub(crate) enum TokenPreset {
+    Read,
+    Deploy { environment: String },
+    Full,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -227,6 +238,7 @@ pub(crate) struct NewToken {
     pub(crate) secret: String,
     #[serde(default)]
     pub(crate) kind: TokenKind,
+    pub(crate) scope: String,
 }
 
 /// A revoked token or signed-out device.
@@ -302,14 +314,28 @@ pub(crate) async fn new_token(
     credential: &Credential,
     name: &str,
     kind: TokenKind,
+    preset: &TokenPreset,
     expires_in_days: u16,
 ) -> Result<NewToken, LoginError> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        name: &'a str,
+        kind: TokenKind,
+        expires_in_days: u16,
+        #[serde(flatten)]
+        preset: &'a TokenPreset,
+    }
     #[derive(Deserialize)]
     struct Reply {
         token: NewToken,
     }
-    let body =
-        serde_json::json!({ "name": name, "kind": kind, "expires_in_days": expires_in_days });
+    let body = serde_json::to_value(Body {
+        name,
+        kind,
+        expires_in_days,
+        preset,
+    })
+    .expect("a token request serializes");
     let reply: Reply = call(credential, Method::POST, "tokens", Some(&body)).await?;
     Ok(reply.token)
 }
@@ -1256,22 +1282,30 @@ mod tests {
                 let body: serde_json::Value = serde_json::from_str(body).unwrap();
                 assert_eq!(
                     body,
-                    serde_json::json!({ "name": "ci", "kind": "agent", "expires_in_days": 30 })
+                    serde_json::json!({
+                        "name": "ci", "kind": "agent", "expires_in_days": 30,
+                        "preset": "deploy", "environment": "staging",
+                    })
                 );
                 (
                     200,
                     serde_json::json!({ "token": {
                         "id": "t1", "name": "ci", "organization": "acme",
                         "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new", "kind": "agent",
+                        "scope": "Deploy staging",
                     } }),
                 )
             }
             other => panic!("unexpected {other}"),
         });
-        let made = new_token(&token(&cloud), "ci", TokenKind::Agent, 30)
+        let deploy = TokenPreset::Deploy {
+            environment: "staging".into(),
+        };
+        let made = new_token(&token(&cloud), "ci", TokenKind::Agent, &deploy, 30)
             .await
             .unwrap();
         assert_eq!(made.secret, "ployz_new");
         assert_eq!(made.kind, TokenKind::Agent);
+        assert_eq!(made.scope, "Deploy staging");
     }
 }

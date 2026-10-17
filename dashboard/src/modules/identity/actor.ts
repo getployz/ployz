@@ -35,21 +35,24 @@ export type Caller = Actor & {
   readonly via: "dashboard" | "cli" | "agent";
 };
 
-const heldBy = (caller: Pick<Caller, "role" | "support" | "credential">): Permission[] => {
+/** A caller without a credential, such as a dashboard Actor resolved to a role, holds no grant. */
+type Holder = Pick<Caller, "role" | "support"> & Partial<Pick<Caller, "credential">>;
+
+const heldBy = (caller: Holder): Permission[] => {
   const held = caller.role !== null ? permissionsOf(caller.role) : caller.support !== null ? permissionsOf("support") : [];
-  return caller.credential.kind === "token" ? granted(held, caller.credential.grant) : held;
+  return caller.credential?.kind === "token" ? granted(held, caller.credential.grant) : held;
 };
 
 /** Whether the Caller's member role, narrowed by a token's grant, holds `permission`. Support has no member role, so it holds none here. */
-export const callerCan = (caller: Pick<Caller, "role" | "credential">, permission: Permission) =>
+export const callerCan = (caller: Omit<Holder, "support">, permission: Permission) =>
   caller.role !== null && heldBy({ ...caller, support: null }).includes(permission);
 
 /** `callerCan`, but support with support access holds what the support role does: for the sites that let support act. */
-export const callerOrSupportCan = (caller: Pick<Caller, "role" | "support" | "credential">, permission: Permission) =>
+export const callerOrSupportCan = (caller: Holder, permission: Permission) =>
   heldBy(caller).includes(permission);
 
 /** The Caller's effective permissions, the set the Store checks each command against: their role's, or support's, narrowed by a token's grant. */
-export const callerPermissions = (caller: Pick<Caller, "role" | "support" | "credential">): Permission[] => heldBy(caller);
+export const callerPermissions = (caller: Holder): Permission[] => heldBy(caller);
 
 /** The Environments a token may write, the Store's ceiling; undefined when it may write any. */
 export const callerEnvironments = (caller: Pick<Caller, "credential">): string[] | undefined =>

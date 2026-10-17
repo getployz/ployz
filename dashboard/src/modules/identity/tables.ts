@@ -194,7 +194,7 @@ export const organizationToken = pgTable(
       withTimezone: true,
     }).notNull(),
     // Null is Full as you, and any Environment: see TokenGrant.
-    permissions: text("permissions").array().$type<Permission[]>(),
+    permissions: text("permissions").$type<Permission>().array(),
     environments: text("environments").array(),
   },
   (table) => [

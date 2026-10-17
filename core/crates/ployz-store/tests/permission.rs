@@ -7,10 +7,11 @@ use std::collections::BTreeSet;
 
 use ployz_core::{RpcError, ServiceName};
 use ployz_store::{
-    Actor, Admit, Cancel, CancelRemoval, Change, Command, ConfigStore, CreateProject,
-    CreateService, Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName, EnvironmentQuery,
-    EnvironmentRef, OrganizationId, Permission, Principal, ProjectId, ProjectName, Removal, Remove,
-    RemoveService, RenameProject, ServiceLineageId, SetBuildOrder, SetPrPlan, SettingPath, Trusted,
+    Actor, Admit, Cancel, CancelRemoval, Change, Command, ConfigStore, CreateEnvironment,
+    CreateProject, CreateService, Deploy, DeploymentId, Edit, EnvironmentId, EnvironmentName,
+    EnvironmentQuery, EnvironmentRef, OrganizationId, Permission, Principal, ProjectId,
+    ProjectName, Removal, Remove, RemoveService, RenameProject, ServiceLineageId, SetBuildOrder,
+    SetPrPlan, SettingPath, Trusted,
 };
 use serde_json::json;
 
@@ -386,4 +387,94 @@ fn cancelling_a_removal_needs_changes_deploy_on_either_route() {
         over.message.contains("isn't being removed"),
         "cancelling the Deployment should have ended the removal: {over:?}"
     );
+}
+
+fn staging() -> EnvironmentRef {
+    EnvironmentRef {
+        project: None,
+        environment: Some(EnvironmentName::parse("staging").unwrap()),
+    }
+}
+
+/// A Deploy token for `environments`: it may stage and deploy, but only there.
+fn deploying_to(environments: &[&str]) -> Trusted {
+    Trusted {
+        environments: Some(
+            environments
+                .iter()
+                .map(|name| EnvironmentName::parse(*name).unwrap())
+                .collect(),
+        ),
+        ..holding(&[Permission::ChangesStage, Permission::ChangesDeploy])
+    }
+}
+
+fn with_staging() -> (ConfigStore, Actor) {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                project: None,
+                name: EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    (store, who)
+}
+
+#[test]
+fn a_token_for_one_environment_writes_it_and_is_refused_elsewhere_writing_nothing() {
+    let (store, who) = with_staging();
+    store
+        .write_trusted(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: staging(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+            &deploying_to(&["staging"]),
+        )
+        .unwrap();
+    let before = revision(&store, &who);
+    let refused = store
+        .write_trusted(&who, &set_replicas(2), &deploying_to(&["staging"]))
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(refused.message, "This token can deploy only to staging.");
+    assert_eq!(refused.details, json!({ "environments": ["staging"] }));
+    assert_eq!(revision(&store, &who), before);
+    let refused = store
+        .write_trusted(&who, &deploy_production(1), &deploying_to(&["staging"]))
+        .unwrap_err();
+    assert_eq!(refused.message, "This token can deploy only to staging.");
+    assert_eq!(revision(&store, &who), before);
+    store
+        .write_trusted(
+            &who,
+            &set_replicas(2),
+            &deploying_to(&["production", "staging"]),
+        )
+        .unwrap();
+    assert_eq!(revision(&store, &who), before + 1);
+}
+
+#[test]
+fn a_token_for_an_environment_cannot_write_what_belongs_to_none() {
+    let (store, who) = with_staging();
+    let refused = store
+        .write_trusted(
+            &who,
+            &SetBuildOrder { build_order: None },
+            &Trusted {
+                environments: Some([EnvironmentName::parse("staging").unwrap()].into()),
+                ..Trusted::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refused.message, "This token can deploy only to staging.");
 }
