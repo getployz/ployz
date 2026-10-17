@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import { readClaimServerFn } from "#/routes/claim/-functions";
+import { readClaimServerFn } from "#/modules/identity/claim.functions";
 
 export type Claim = Awaited<ReturnType<typeof readClaimServerFn>>;
 

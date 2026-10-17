@@ -9,8 +9,8 @@ import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { plural } from "#/lib/plural";
 import { prefetchRemote } from "#/collections/route-data";
-import { claimOrganizationServerFn } from "#/routes/claim/-functions";
-import { type Claim, claimQueryOptions } from "#/routes/claim/-queries";
+import { claimOrganizationServerFn } from "#/modules/identity/claim.functions";
+import { type Claim, claimQueryOptions } from "#/modules/identity/claim.queries";
 import { LoginPanel } from "#/routes/_public/-components/LoginPanel";
 
 export const Route = createFileRoute("/claim/$secret")({
