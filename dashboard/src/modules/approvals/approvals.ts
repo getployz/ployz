@@ -24,7 +24,7 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
 /** What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
-  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : "Deploy";
+  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove" : "Deploy";
   return { verb, name: review.diff.environment.name };
 }
 
@@ -49,9 +49,13 @@ export function approvalCommand(command: ConfigCommand) {
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
 
-/** The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, and an agent's retry. */
+const agentDestroys = (via: Caller["via"], command: ConfigCommand) =>
+  via === "agent" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
+
+/** The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, an agent's retry, and an agent's Project or Environment removal or shutdown. */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
-  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy") || agentShips(via, command);
+  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
+    || agentShips(via, command) || agentDestroys(via, command);
 }
 
 /** Which Deploys wait for a human: every Deploy or retry an agent asks for, else only a Deploy that destroys something. */
