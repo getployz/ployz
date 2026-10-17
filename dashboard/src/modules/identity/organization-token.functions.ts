@@ -2,14 +2,15 @@ import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { Effect, Schema } from "effect";
 import { dashboardCaller } from "#/modules/identity/caller.server";
-import { createOrganizationToken, listCredentials, revokeCredential } from "#/modules/identity/organization-token.server";
+import { createOrganizationToken, knownEnvironment, listCredentials, revokeCredential } from "#/modules/identity/organization-token.server";
+import { EnvironmentName } from "#/modules/identity/token-grant";
 import { retireServerAccess } from "#/modules/machines/server-access.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 const Slug = Schema.NonEmptyString;
 const Preset = Schema.Union([
   Schema.Struct({ preset: Schema.Literals(["read", "full"]) }),
-  Schema.Struct({ preset: Schema.Literal("deploy"), environment: Schema.NonEmptyString }),
+  Schema.Struct({ preset: Schema.Literal("deploy"), environment: EnvironmentName }),
 ]);
 
 export const listTokensServerFn = createServerFn({ method: "GET" })
@@ -29,7 +30,9 @@ export const createTokenServerFn = createServerFn({ method: "POST" })
     preset: Preset,
   })))
   .handler(({ context, data }) => runActor(context, dashboardCaller(getRequest().headers, data.organizationSlug).pipe(
-    Effect.flatMap((caller) => createOrganizationToken(caller, { name: data.name, expiresInDays: data.expiresInDays, preset: data.preset })),
+    Effect.flatMap((caller) => knownEnvironment(caller, data.preset).pipe(
+      Effect.flatMap((preset) => createOrganizationToken(caller, { name: data.name, expiresInDays: data.expiresInDays, preset })),
+    )),
   )));
 
 export const revokeTokenServerFn = createServerFn({ method: "POST" })

@@ -21,8 +21,10 @@ import {
   removeServer,
   runVolume,
   setServer,
+  unheld,
   upgradeServer,
 } from "#/modules/operations/operations.server";
+import { OPERATIONS } from "#/modules/operations/operations";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { observeVolumeCopies, rpcErrorCode, sdkFailureMessage } from "#/modules/runtime/ployz.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -240,6 +242,8 @@ const act = Effect.fn("CallCloud.act")(function* (caller: Caller, { attempt, dig
       const found = yield* beforeWrite(findVolume(organizationId, action.volume));
       if (found === null) return noSuch("Volume");
       if (action.run.run === "sync" && !action.run.full) {
+        const unsynced = unheld(caller, OPERATIONS["volume.sync"].requires, found.environment.environment);
+        if (unsynced !== null) return unsynced;
         const synced = yield* refreshMirror({ userId: caller.userId, organizationId }, found.environment, action.volume);
         if (!synced.ok) return synced;
         const now = Math.floor(Date.now() / 1000);

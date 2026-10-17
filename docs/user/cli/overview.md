@@ -174,7 +174,9 @@ Through Ployz Cloud, commands that talk to your servers directly need an owner o
 `metrics`, `service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
 `server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
-`Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. See
+`Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
+`deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
+`This token's grant doesn't include servers:shell.` See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
 Pick a member by email or by name. When two members share a name, the command refuses with
@@ -233,11 +235,11 @@ A token acts as you in this organization, narrowed by its preset:
 | ------ | -------------- |
 | `full` (the default) | Everything you can, and it follows your role if it changes. |
 | `read` | Read what you can read. It can't change anything. |
-| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--environment` names, in any project. |
+| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--environment` names, in any project. That Environment must already exist in one of your projects. |
 
-A deploy token that tries to change another Environment, or something that belongs to none, such
-as the organization's build order, is refused with `This token can deploy only to staging.` and
-nothing changes. A token never does more than your role allows. Tokens made before presets existed
+A deploy token that tries to change another Environment is refused and nothing changes. With the token above, `ployz up --project my-app --env production`
+fails with `This token can deploy only to staging.` A token refused for its preset names what it lacks, such as
+`This token's grant doesn't include servers:shell.` A token never does more than your role allows. Tokens made before presets existed
 are `full`. You can also make, see and revoke tokens under **Organization → Tokens** in the
 dashboard.
 

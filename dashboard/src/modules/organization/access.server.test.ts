@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { admit, refusalOf, type Role } from "#/modules/organization/access.server";
-import { PERMISSIONS, type Permission } from "#/modules/organization/permissions";
+import { presetGrant, type TokenGrant } from "#/modules/identity/token-grant";
+import { PERMISSIONS, type Permission, permissionsOf } from "#/modules/organization/permissions";
 import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
 
 const GRANTS: ReadonlyArray<readonly [permission: Permission, member: boolean, admin: boolean, owner: boolean]> = [
@@ -43,12 +44,13 @@ const GRANTS: ReadonlyArray<readonly [permission: Permission, member: boolean, a
 const organization = { id: "00000000-0000-4000-8000-000000000001", slug: "acme" };
 const userId = "user-1";
 
-const admitted = (role: Role | null, permission: Permission, support = { isStaff: false, allowed: false }) =>
+const admitted = (role: Role | null, permission: Permission, support = { isStaff: false, allowed: false }, grant?: TokenGrant) =>
   admit({
     userId,
     facts: { organization, role, supportAllowed: support.allowed, supportShows: SUPPORT_SHOWS_NONE },
     isStaff: support.isStaff,
     permission,
+    grant,
   });
 
 describe("admit", () => {
@@ -65,22 +67,22 @@ describe("admit", () => {
 
   it.each(cells)("$permission for $role: $held", ({ permission, role, held }) => {
     expect(admitted(role, permission)).toEqual(held
-      ? { kind: "member", userId, role, organization }
-      : { kind: "forbidden", permission });
+      ? { kind: "member", userId, role, organization, permissions: permissionsOf(role), environments: undefined }
+      : { kind: "forbidden", permission, by: "role" });
   });
 
   it.each(GRANTS.map(([permission, , admin]) => ({ permission, admin })))(
     "$permission for support while allowed: $admin",
     ({ permission, admin }) => {
       expect(admitted(null, permission, { isStaff: true, allowed: true })).toEqual(admin
-        ? { kind: "support", userId, organization, shows: SUPPORT_SHOWS_NONE }
-        : { kind: "forbidden", permission });
+        ? { kind: "support", userId, organization, shows: SUPPORT_SHOWS_NONE, permissions: permissionsOf("support"), environments: undefined }
+        : { kind: "forbidden", permission, by: "role" });
     },
   );
 
   it.each(["billing", "constructor", "__proto__"])("forbids a stored role outside the three (%s) without throwing", (stored) => {
     for (const permission of PERMISSIONS) {
-      expect(admitted(stored as Role, permission)).toEqual({ kind: "forbidden", permission });
+      expect(admitted(stored as Role, permission)).toEqual({ kind: "forbidden", permission, by: "role" });
     }
   });
 
@@ -91,6 +93,24 @@ describe("admit", () => {
       expect(admitted(null, permission, { isStaff: false, allowed: true })).toEqual({ kind: "not_found" });
       expect(admit({ userId, facts: null, isStaff: true, permission })).toEqual({ kind: "not_found" });
     }
+  });
+});
+
+describe("admit with a token's grant", () => {
+  const none = { isStaff: false, allowed: false };
+
+  it("holds what the grant leaves of the role, and refuses the rest by the grant", () => {
+    const read = presetGrant({ preset: "read" });
+    expect(admitted("owner", "changes:deploy", none, read)).toEqual({ kind: "forbidden", permission: "changes:deploy", by: "grant" });
+    expect(admitted("member", "servers:shell", none, read)).toEqual({ kind: "forbidden", permission: "servers:shell", by: "role" });
+    const held = admitted("owner", "logs:read", none, read);
+    expect(held).toMatchObject({ kind: "member", environments: undefined });
+    expect("permissions" in held && held.permissions.every((permission) => permission.endsWith(":read"))).toBe(true);
+  });
+
+  it("carries a Deploy token's Environment", () => {
+    expect(admitted("owner", "changes:deploy", none, presetGrant({ preset: "deploy", environment: "staging" })))
+      .toMatchObject({ kind: "member", environments: ["staging"] });
   });
 });
 

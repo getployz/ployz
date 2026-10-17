@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import { PERMISSIONS, type Permission } from "#/modules/organization/permissions";
 
 export type TokenGrant = {
@@ -8,6 +9,9 @@ export type TokenGrant = {
 export const TOKEN_PRESETS = ["read", "deploy", "full"] as const;
 
 export type TokenPreset = { readonly preset: "read" | "full" } | { readonly preset: "deploy"; readonly environment: string };
+
+/** The Store's Environment name: a DNS label. */
+export const EnvironmentName = Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/));
 
 export const FULL_GRANT: TokenGrant = { permissions: null, environments: null };
 
@@ -33,6 +37,13 @@ export const grantLabel = (grant: TokenGrant): string => {
   if (same(grant.permissions, READ_PERMISSIONS)) return "Read only";
   if (same(grant.permissions, DEPLOY_PERMISSIONS)) return grant.environments === null ? "Deploy" : `Deploy ${grant.environments.join(", ")}`;
   return "Custom";
+};
+
+/** A token's refusal to write outside its Environments, worded as the Store words it. */
+export const outsideEnvironments = (environments: ReadonlyArray<string>) => {
+  const names = [...environments].sort();
+  const last = names.pop() ?? "";
+  return `This token can deploy only to ${names.length === 0 ? last : `${names.join(", ")} and ${last}`}.`;
 };
 
 export const granted = (held: ReadonlyArray<Permission>, grant: TokenGrant): Permission[] =>

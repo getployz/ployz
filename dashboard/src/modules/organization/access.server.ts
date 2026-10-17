@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { and, eq, type SQL } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
-import type { Actor } from "#/modules/identity/actor";
+import { type Actor, type Caller, callerOrSupportCan } from "#/modules/identity/actor";
+import { FULL_GRANT, granted, type TokenGrant } from "#/modules/identity/token-grant";
 import { member } from "#/modules/identity/tables";
 import type { SupportShows } from "#/modules/support-access/support-access";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
@@ -9,19 +10,23 @@ import { Auth } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound, Unauthorized } from "#/server/public-error";
-import { can, type Permission } from "./permissions";
+import { can, type Permission, permissionsOf } from "./permissions";
 import { organization } from "./tables";
 
 export type Role = typeof member.$inferSelect.role;
 type OrganizationRef = { readonly id: string; readonly slug: string };
 
+/** What an Access may do: its role's permissions narrowed by a token's grant, and the Environments it may write, if limited. */
+type Held = { readonly permissions: Permission[]; readonly environments: string[] | undefined };
+
 /**
  * A member acting in their Organization, or Ployz support in one that allows it, under the staff member's own user id.
  * Support reads only what `shows` lets it, as of this request.
  */
-export type Access =
+export type Access = Held & (
   | { readonly kind: "member"; readonly userId: string; readonly role: Role; readonly organization: OrganizationRef }
-  | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows };
+  | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows }
+);
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
 type AccessFacts = {
@@ -31,33 +36,52 @@ type AccessFacts = {
   readonly supportShows: SupportShows;
 };
 
-type AccessDecision = Access | { readonly kind: "forbidden"; readonly permission: Permission } | { readonly kind: "not_found" };
+type Refused = { readonly kind: "forbidden"; readonly permission: Permission; readonly by: "role" | "grant" };
+type AccessDecision = Access | Refused | { readonly kind: "not_found" };
 
-/** The one rule: members by role; staff only while the Organization allows support. Outsiders learn nothing. */
+/**
+ * The one rule: members by role; staff only while the Organization allows support. Outsiders learn nothing. A token
+ * holds only what its grant leaves of its maker's role.
+ */
 export const admit = (input: {
   readonly userId: string;
   readonly facts: AccessFacts | null;
   readonly isStaff: boolean;
   readonly permission: Permission;
+  readonly grant?: TokenGrant;
 }): AccessDecision => {
-  const { userId, facts, isStaff, permission } = input;
+  const { userId, facts, isStaff, permission, grant = FULL_GRANT } = input;
   if (facts === null) return { kind: "not_found" };
+  const hold = (role: Role | "support"): Held | Refused => {
+    if (!can(role, permission)) return { kind: "forbidden", permission, by: "role" };
+    const permissions = granted(permissionsOf(role), grant);
+    if (!permissions.includes(permission)) return { kind: "forbidden", permission, by: "grant" };
+    return { permissions, environments: grant.environments === null ? undefined : [...grant.environments] };
+  };
   if (facts.role !== null) {
-    if (!can(facts.role, permission)) return { kind: "forbidden", permission };
-    return { kind: "member", userId, role: facts.role, organization: facts.organization };
+    const held = hold(facts.role);
+    return "kind" in held ? held : { kind: "member", userId, role: facts.role, organization: facts.organization, ...held };
   }
   if (isStaff && facts.supportAllowed) {
-    if (!can("support", permission)) return { kind: "forbidden", permission };
-    return { kind: "support", userId, organization: facts.organization, shows: facts.supportShows };
+    const held = hold("support");
+    return "kind" in held ? held : { kind: "support", userId, organization: facts.organization, shows: facts.supportShows, ...held };
   }
   return { kind: "not_found" };
 };
 
-/** A refusal names the least role that holds `permission`. */
-export const refusalOf = (permission: Permission) =>
-  can("admin", permission)
-    ? "Only an owner or admin of this Organization can do this."
-    : "Only an owner of this Organization can do this.";
+/** A refusal names the least role that holds `permission`, or, when the role holds it, the token's grant that doesn't. */
+export const refusalOf = (permission: Permission, by: "role" | "grant" = "role") =>
+  by === "grant"
+    ? `This token's grant doesn't include ${permission}.`
+    : can("admin", permission)
+      ? "Only an owner or admin of this Organization can do this."
+      : "Only an owner of this Organization can do this.";
+
+/** Why `caller` can't use `permission`, worded for its role or its token's grant, or null when it can. */
+export const lacks = (caller: Pick<Caller, "role" | "support" | "credential">, permission: Permission) => {
+  if (callerOrSupportCan(caller, permission)) return null;
+  return refusalOf(permission, callerOrSupportCan({ role: caller.role, support: caller.support }, permission) ? "grant" : "role");
+};
 
 type SupportStaffService = {
   /** Whether this Cloud has any support staff, so the setting means something. */
@@ -111,13 +135,14 @@ const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, permi
           },
     isStaff: staff.isStaff(actor.userId),
     permission,
+    grant: actor.credential?.kind === "token" ? actor.credential.grant : FULL_GRANT,
   });
   switch (decision.kind) {
     case "member":
     case "support":
       return decision;
     case "forbidden":
-      return yield* new Forbidden({ message: refusalOf(decision.permission) });
+      return yield* new Forbidden({ message: refusalOf(decision.permission, decision.by), userFacing: true });
     case "not_found":
       return yield* new NotFound({ message: "The organization was not found." });
   }
