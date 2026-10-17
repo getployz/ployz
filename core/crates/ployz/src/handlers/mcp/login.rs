@@ -71,26 +71,49 @@ fn save(config: &Path, stored: &Stored) -> Result<(), LoginError> {
 
 pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
     let config = config_path(leaf_matches(root))?;
-    let previous = stored(&config)?;
+    let previous = match stored(&config) {
+        Ok(previous) => previous,
+        Err(error @ LoginError::Corrupt { .. }) => {
+            ui::warn(format!("{error} Replacing it."));
+            None
+        }
+        Err(error) => return Err(error.into()),
+    };
     let (made, replaced) = in_cloud(root, async |_, credential| {
         let made =
             cloud_account::new_token(credential, "ployz mcp", TokenKind::Agent, LIFETIME_DAYS)
                 .await?;
-        save(
-            &config,
-            &Stored {
-                cloud: credential.cloud().to_owned(),
-                id: made.id.clone(),
-                organization: made.organization.clone(),
-                token: Secret::new(made.secret.clone()),
-            },
-        )?;
-        let replaced = match previous {
-            Some(previous) => {
-                let removed = cloud_account::remove_token(credential, &previous.id).await;
-                Some((previous.id, removed.map(drop)))
+        let kept = if made.kind == TokenKind::Agent {
+            save(
+                &config,
+                &Stored {
+                    cloud: credential.cloud().to_owned(),
+                    id: made.id.clone(),
+                    organization: made.organization.clone(),
+                    token: Secret::new(made.secret.clone()),
+                },
+            )
+        } else {
+            Err(LoginError::Reply(format!(
+                "it made a {} token where `ployz mcp` needs an agent token",
+                made.kind.as_str()
+            )))
+        };
+        if let Err(error) = kept {
+            if let Err(revoking) = cloud_account::remove_token(credential, &made.id).await {
+                ui::warn(format!(
+                    "Could not revoke the token {} just made: {revoking}. Run `ployz token rm {}`.",
+                    made.id, made.id
+                ));
             }
-            None => None,
+            return Err(error);
+        }
+        let replaced = match previous {
+            Some(previous) if previous.cloud == credential.cloud() => {
+                let revoked = revoke(credential, &previous.id).await;
+                Some((previous.id, revoked))
+            }
+            _ => None,
         };
         Ok((made, replaced))
     })?;
@@ -111,8 +134,23 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
             "`ployz mcp` now acts with its own agent token {} in Organization {}, expiring {}.",
             made.id, made.organization, made.expires_at
         ));
-        if let Some((id, Ok(()))) = &replaced {
+        if let Some((id, Ok(true))) = &replaced {
             ui::note(format_args!("Revoked the agent token {id} it replaced."));
         }
     })
+}
+
+/// Revoke the token `ployz mcp` held before, only while this Organization lists it as an
+/// agent token, so an edited `mcp.json` never revokes a CLI token.
+async fn revoke(credential: &Credential, id: &str) -> Result<bool, LoginError> {
+    let listed = cloud_account::credentials(credential).await?;
+    if !listed
+        .tokens
+        .iter()
+        .any(|token| token.id == id && token.kind == TokenKind::Agent)
+    {
+        return Ok(false);
+    }
+    cloud_account::remove_token(credential, id).await?;
+    Ok(true)
 }

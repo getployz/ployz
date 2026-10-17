@@ -2,7 +2,7 @@
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ use tokio_util::sync::CancellationToken;
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud_account::{self, Credential, StoreCallError, Via};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud_login::{self, CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
 
@@ -52,6 +52,18 @@ pub(super) fn command(command: Command) -> Command {
 /// Deployment or a Cloud operation goes on after ployz mcp stops waiting for it.
 pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
+/// Where the agent's published commands come from: the Cloud it acts in. Without
+/// `PLOYZ_TOKEN` that is the Cloud `ployz mcp login` stored, not the sign-in's.
+fn publishing_setup(config: &Path, cloud: Option<String>, token: Option<&str>) -> Setup {
+    let setup = Setup::beside(config, cloud);
+    match login::stored(config) {
+        Ok(Some(stored)) if token.is_none_or(str::is_empty) => {
+            setup.in_cloud(stored.credential().cloud())
+        }
+        _ => setup,
+    }
+}
+
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
     let local = if store::local_mode() {
@@ -64,8 +76,10 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         _ => Store::Cloud,
     };
     let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
+    let token = std::env::var(crate::cli::env::TOKEN).ok();
     // Only Cloud runs a published command, so a local Store lists none.
-    let setup = matches!(store, Store::Cloud).then(|| Setup::beside(&config, cloud.clone()));
+    let setup = matches!(store, Store::Cloud)
+        .then(|| publishing_setup(&config, cloud.clone(), token.as_deref()));
     let linked = config.clone();
     // Like each CLI command, each call reads the link, so `ployz link` or
     // `ployz org use` takes effect on the next call.
@@ -80,7 +94,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let server = Server::new(
         Account {
             config,
-            token: std::env::var(crate::cli::env::TOKEN).ok(),
+            token,
             cloud,
             organization: OnceCell::new(),
         },
@@ -587,6 +601,46 @@ impl Server {
         .map_err(|error| Error::from(error).to_string())
     }
 
+    /// The human who answers an approval `agent` asked for: this device's sign-in, else
+    /// `PLOYZ_TOKEN`. The sign-in must be in `agent`'s Cloud and in the Organization the
+    /// approval lives in, since Cloud finds the approval only there.
+    async fn decider(
+        &self,
+        agent: &Credential,
+        verb: Verb,
+        asked: &Asked,
+    ) -> Result<Credential, String> {
+        let signed_in =
+            match cloud_login::signed_in(&CredentialStore::beside(&self.account.config)).await {
+                Ok(signed_in) => signed_in,
+                Err(LoginError::SignedOut) => return self.person().await,
+                Err(error) => return Err(Error::from(error).to_string()),
+            };
+        let what = asked.what(verb);
+        let past = verb.past();
+        if signed_in.cloud != agent.cloud() {
+            return Err(format!(
+                "The approval of {what} is in Ployz Cloud at {cloud}, but this device signed in \
+                 to {device}, so the answer was not recorded and nothing was {past}. It stays \
+                 pending; approve it in Ployz Cloud at {cloud}.",
+                cloud = agent.cloud(),
+                device = signed_in.cloud,
+            ));
+        }
+        if let Some(organization) = asked.organization()
+            && organization != signed_in.organization.slug
+        {
+            return Err(format!(
+                "The approval of {what} is in Organization {organization}, but this device acts \
+                 in {acting}, so the answer was not recorded and nothing was {past}. It stays \
+                 pending; run `ployz org use {organization}` and call the tool again, or \
+                 approve it in Ployz Cloud.",
+                acting = signed_in.organization.slug,
+            ));
+        }
+        Ok(Credential::Device(signed_in))
+    }
+
     /// Which Store a new call reaches. A device can switch Organizations
     /// between calls; an Organization Token cannot.
     async fn store_at(&self, backend: &Backend<'_>) -> Result<StoreAt, String> {
@@ -875,14 +929,14 @@ impl Server {
                 }
                 Step::Write { write } => {
                     if let Some((asked, answer)) = answered.take() {
-                        let Backend::Cloud(_) = call.backend else {
+                        let Backend::Cloud(agent) = call.backend else {
                             return Ok(refused(not_here().message).into());
                         };
-                        let person = match self.person().await {
+                        let verb = verb(call.tool, call.input, &asked);
+                        let person = match self.decider(agent, verb, &asked).await {
                             Ok(person) => person,
                             Err(text) => return Ok(refused(text).into()),
                         };
-                        let verb = verb(call.tool, call.input, &asked);
                         let typed = typed(&write);
                         match self
                             .decide(&person, verb, &asked, typed.as_deref(), answer)

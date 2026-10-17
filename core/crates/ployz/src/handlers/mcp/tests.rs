@@ -716,11 +716,15 @@ struct Approving {
 }
 
 fn approving_with(slow: Duration) -> Approving {
+    approving_as(deploy_asks(), slow)
+}
+
+fn approving_as(asks: Value, slow: Duration) -> Approving {
     let deploy = transcript("deploy", in_org());
     // A second call on the same server reads again before it writes.
     let mut twice = script(&deploy);
     twice.extend(script(&deploy));
-    let fake = fake_cloud(twice, Some(deploy_asks()), slow);
+    let fake = fake_cloud(twice, Some(asks), slow);
     let server = on_cloud(&fake, deploy.place.clone());
     Approving {
         fake,
@@ -932,6 +936,124 @@ async fn ployz_mcp_without_its_own_token_refuses_and_names_ployz_mcp_login() {
     assert!(
         fake.requests().is_empty(),
         "the human's sign-in is never the agent's"
+    );
+}
+
+/// `server` keeps its `PLOYZ_TOKEN` but finds this device's sign-in in `home`.
+fn signed_in_beside(server: Server, home: &tempfile::TempDir) -> Server {
+    Server {
+        account: Account {
+            config: home.path().join("config.toml"),
+            ..server.account
+        },
+        ..server
+    }
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
+    let Approving {
+        fake,
+        server,
+        deploy,
+    } = approving();
+    let home = signed_in_home(&fake, false);
+    let mut client = eliciting(signed_in_beside(server, &home)).await;
+    client
+        .send(&request(
+            2,
+            "tools/call",
+            json!({ "name": "deploy", "arguments": deploy.input }),
+        ))
+        .await;
+    let asking = client.reply().await;
+    assert_eq!(asking["method"], "elicitation/create", "{asking}");
+    let done = reply_to(
+        &mut client,
+        &asking,
+        json!({ "action": "accept", "content": { "approve": true } }),
+    )
+    .await;
+    assert_eq!(done["id"], 2, "{done}");
+    let seen = fake.requests();
+    resent(&seen);
+    let (decided, agent): (Vec<_>, Vec<_>) = seen
+        .iter()
+        .partition(|seen| seen.path.starts_with("/api/cli/approvals/"));
+    let [decided] = decided[..] else {
+        panic!("expected one decision: {seen:?}");
+    };
+    assert_eq!(decided.bearer, "ployz_device", "{seen:?}");
+    assert!(
+        agent.iter().all(|each| each.bearer == "ployz_acme"),
+        "the agent keeps acting with PLOYZ_TOKEN: {seen:?}"
+    );
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn an_approval_in_another_organization_is_not_answered_and_names_the_switch() {
+    let mut asks = deploy_asks();
+    asks["error"]["details"]["organization"] = json!("globex");
+    let Approving {
+        fake,
+        server,
+        deploy,
+    } = approving_as(asks, Duration::ZERO);
+    let home = signed_in_home(&fake, true);
+    let mut client = eliciting(without_token(server, &home)).await;
+    client
+        .send(&request(
+            2,
+            "tools/call",
+            json!({ "name": "deploy", "arguments": deploy.input }),
+        ))
+        .await;
+    let asking = client.reply().await;
+    let done = reply_to(
+        &mut client,
+        &asking,
+        json!({ "action": "accept", "content": { "approve": true } }),
+    )
+    .await;
+    assert_eq!(done["result"]["isError"], true, "{done}");
+    assert!(
+        done.to_string().contains("ployz org use globex"),
+        "names the switch: {done}"
+    );
+    let seen = fake.requests();
+    assert!(decisions(&seen).is_empty(), "{seen:?}");
+    wrote_once(&seen);
+}
+
+#[test]
+fn published_commands_come_from_the_cloud_the_agent_acts_in() {
+    let home = tempfile::tempdir().unwrap();
+    let cloud = json!({
+        "state": "signed_in",
+        "cloud": "https://device.example",
+        "token": "ployz_device",
+        "account": { "id": "usr_ada", "email": "ada@example.com", "name": "Ada" },
+        "organization": { "id": "org", "slug": "acme" },
+    });
+    std::fs::write(home.path().join("cloud.json"), cloud.to_string()).unwrap();
+    let mcp = json!({
+        "cloud": "https://agent.example",
+        "id": "tok_agent",
+        "organization": "acme",
+        "token": "ployz_agent",
+    });
+    std::fs::write(home.path().join("mcp.json"), mcp.to_string()).unwrap();
+    let config = home.path().join("config.toml");
+    assert_eq!(
+        publishing_setup(&config, None, None).cloud,
+        "https://agent.example"
+    );
+    assert_eq!(
+        publishing_setup(&config, None, Some("ployz_token")).cloud,
+        "https://device.example",
+        "PLOYZ_TOKEN acts in the Cloud the environment names"
     );
 }
 
