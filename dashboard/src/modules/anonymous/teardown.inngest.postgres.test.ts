@@ -1,6 +1,6 @@
 import { inspect } from "node:util";
 import { it } from "@effect/vitest";
-import { InngestTestEngine } from "@inngest/test";
+import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { type Client, type ConfigCommand, type MachineId, RpcError } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Effect, Layer, Result } from "effect";
@@ -106,7 +106,7 @@ const owners = Effect.fn(function* (organizationId: string) {
   return rows.map((row) => row.userId);
 });
 
-const tearDown = (services: Services, organizationId = ORGANIZATION) => {
+const tearDown = (services: Services, organizationId = ORGANIZATION, attempt = 0) => {
   const runner: Parameters<typeof createTearDownAnonymousOrganization>[1] =
     makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
   const worker = createTearDownAnonymousOrganization(new Inngest({ id: "anonymous-teardown-test" }), runner);
@@ -114,6 +114,7 @@ const tearDown = (services: Services, organizationId = ORGANIZATION) => {
     function: worker,
     events: [createAnonymousTeardownRequestedEvent({ organizationId })],
     steps: [{ id: "request-next-step", handler: () => ({ ids: ["event-1"] }) }],
+    transformCtx: (ctx) => ({ ...mockCtx(ctx), attempt }),
   }).execute());
 };
 
@@ -716,7 +717,7 @@ it.live("a Server that authenticates to its pairing removal restarts the silence
   }).pipe(Effect.provide(services));
 }), 60_000);
 
-it.live("a Server's answer that Cloud fails to record fails the run for a retry instead of forgetting the Server", () => Effect.gen(function* () {
+it.live("a Server's answer that Cloud fails to record fails the run, and its retry waits instead of forgetting the Server", () => Effect.gen(function* () {
   const server = { answersOnce: false };
   const services = yield* cloud({
     connect: async () => {
@@ -739,6 +740,7 @@ it.live("a Server's answer that Cloud fails to record fails the run for a retry 
     server.answersOnce = true;
     expect((yield* tearDown(services)).error).toBeDefined();
     yield* drizzle.execute(sql`drop trigger fail_answer on organization_pairing`);
+    expect((yield* tearDown(services, ORGANIZATION, 1)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
     expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
     expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
   }).pipe(Effect.provide(services));
