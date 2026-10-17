@@ -28,7 +28,7 @@ function RouteComponent() {
       <div className="flex items-center gap-3">
         <div className="flex flex-col gap-0.5">
           <h1 className="text-lg font-semibold">Fleet tokens</h1>
-          <p className="text-sm text-muted-foreground">Paste one into any server and it waits under Servers for you to add it.</p>
+          <p className="text-sm text-muted-foreground">Paste one into any server and it waits under Servers for you to review.</p>
         </div>
         <div className="ml-auto">
           <AddServersDialog organizationSlug={organizationSlug} label="New token" />
