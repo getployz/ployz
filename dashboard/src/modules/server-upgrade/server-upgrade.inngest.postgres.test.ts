@@ -847,7 +847,7 @@ describe("roll-out-server-upgrade", () => {
     });
   });
 
-  it("an admin can Upgrade one Server or every Server behind, and reads each Server's latest attempt", async () => {
+  it("an admin can Upgrade one Server or every Server behind, and a member reads each Server's latest attempt", async () => {
     await harness.pool.query(`update member set role = 'admin' where user_id = '${userId}'`);
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId }));
     await runEffect(requestServerUpgrade({ userId }, { organizationSlug: "acme", machineId: null }));
@@ -857,6 +857,7 @@ describe("roll-out-server-upgrade", () => {
     ]);
 
     await rollOut();
+    await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
     expect(await runEffect(listLatestServerUpgrades({ userId }, { organizationSlug: "acme" }))).toEqual({
       servers: {
         [machineId]: {

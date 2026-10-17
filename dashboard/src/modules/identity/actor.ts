@@ -29,5 +29,6 @@ export type Caller = Actor & {
   readonly via: "dashboard" | "cli" | "agent";
 };
 
-/** Whether the Caller's member role holds `permission`. Support has no member role, so it holds none here. */
-export const callerCan = (caller: Pick<Caller, "role">, permission: Permission) => caller.role !== null && can(caller.role, permission);
+/** Whether the Caller holds `permission`: by member role, or as support when it acts with support access. */
+export const callerCan = (caller: Pick<Caller, "role" | "support">, permission: Permission) =>
+  caller.role !== null ? can(caller.role, permission) : caller.support !== null && can("support", permission);

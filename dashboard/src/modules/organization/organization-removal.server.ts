@@ -21,7 +21,7 @@ import { Database } from "#/server/database.server";
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
  * rerun confirms it; only then do Cloud's rows go.
  */
-export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization" | "role">, slug: string) {
+export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization" | "role" | "support">, slug: string) {
   const { id, slug: current } = caller.organization;
   if (slug !== current) {
     return refused({
@@ -63,7 +63,7 @@ export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember
     Effect.catchTag("Forbidden", (error) => Effect.succeed(refused({ code: "forbidden", message: error.message, details: null }))),
   );
   if ("ok" in access) return access;
-  return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, organizationSlug);
+  return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner", support: null }, organizationSlug);
 });
 
 /**

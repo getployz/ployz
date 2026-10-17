@@ -194,13 +194,14 @@ describe("drain-server", () => {
       .toEqual([{ event_id: `server-drain-${requestId}`, sent_at: null }]);
   });
 
-  it("asks the Engine once for the services its plan names and stores its partial report as the result", async () => {
+  it("asks the Engine once for the services its plan names and stores its partial report, which a member reads", async () => {
     await request();
     const output = await drain();
 
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ attemptId: requestId, state: "finished" });
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+    await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
     expect(await latest()).toEqual({
       [machineId]: { attemptId: requestId, state: "finished", endedAt: expect.any(String), report: partialReport },
     });

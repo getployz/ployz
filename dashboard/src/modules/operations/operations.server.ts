@@ -4,7 +4,7 @@ import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, Server
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
-import type { Caller } from "#/modules/identity/actor";
+import { callerCan, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
@@ -15,10 +15,12 @@ import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/mach
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_TOOLS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import { refusalOf } from "#/modules/organization/access.server";
 import { requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { admitRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
+import { Conflict, Forbidden, NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 
 export type OperationCall = {
@@ -101,6 +103,16 @@ export const removeServer = (caller: Caller, machineId: MachineId, confirmed: re
 /** Takes Server `machineId` out of the Cluster without a reset, for a Server that is gone. Null when no Server has `machineId`. */
 export const forgetServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
   removal(caller, machineId, null, call);
+
+/** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
+export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
+  Effect.gen(function* () {
+    if (!callerCan(caller, "servers:remove")) return yield* new Forbidden({ message: refusalOf("servers:remove") });
+    const admission = yield* forgetServer(caller, machineId, { key, approvalId: null });
+    if (admission === null) return yield* new NotFound({ message: "The server was not found." });
+    if (admission.ok) return { id: admission.id };
+    return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
+  });
 
 const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
   Effect.gen(function* () {

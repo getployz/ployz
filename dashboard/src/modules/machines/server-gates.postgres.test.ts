@@ -15,6 +15,7 @@ import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/f
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
+import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import { organization } from "#/modules/organization/tables";
 import { requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { deleteCopy } from "#/modules/volume-placement/volume-placement.deploy.server";
@@ -54,6 +55,7 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
   ["removeNamespace", (actor) => removeNamespace(actor, { organizationSlug: SLUG, namespace: "stray", confirmDataLoss: [] }) as never, "Error: Service not found: ployz/CloudStore", []],
   ["loadMachineDataLoss", (actor) => loadMachineDataLoss(actor, at) as never, "Error: Service not found: ployz/OrganizationRuntime", []],
   ["enqueueMachineRemove", (actor) => enqueueMachineRemove(actor, at) as never, "Error: Service not found: ployz/OrganizationRuntime", []],
+  ["forgetServerFromDashboard", (actor) => forgetServerFromDashboard(caller(actor.userId), MACHINE as never, "forget") as never, "Error: Service not found: ployz/OrganizationRuntime", []],
   ["createFleetToken", (actor) => createFleetToken(actor, { organizationSlug: SLUG, name: null, expiresIn: "1d", autoEnroll: null }, () => "lab-token") as never, /^\{"token":"pflt_[\w-]+","id":"[0-9a-f-]{36}","name":"lab-token","expiresAt":"[^"]+"\}$/, []],
   ["revokeFleetToken", (actor) => revokeFleetToken(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such Fleet Token.", []],
   ["openProbeSelection", (actor) => openProbeSelection(actor, { organizationSlug: SLUG, ids: [] }) as never, '{"probing":0}', []],
@@ -114,5 +116,12 @@ describe("Server management and copy deletion", () => {
       outcome instanceof RegExp ? expect.stringMatching(outcome) : outcome,
       events,
     ]);
+  });
+
+  it("lets support set the upgrade policy, as an admin can", async () => {
+    sent.length = 0;
+    const support: Caller = { ...caller(ids.member), role: null, support: { variables: false, configs: false, logs: false } };
+    const outcome = await outcomeOf(() => runCommand(support, "server_upgrade_policy_set", { automatic: false }, { approvalId: null, key: null }) as never, ids.member);
+    expect([outcome, sent]).toEqual([JSON.stringify({ ok: true, output: { channel: "stable", automatic: false } }), []]);
   });
 });
