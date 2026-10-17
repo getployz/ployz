@@ -12,6 +12,7 @@ const DeviceSearch = Schema.Struct({ user_code: Schema.optional(Schema.String) }
 
 // `ployz login` sends the user here with its code (RFC 8628 verification_uri_complete).
 export const Route = createFileRoute("/device")({
+  staticData: { secret: true },
   validateSearch: Schema.toStandardSchemaV1(DeviceSearch),
   head: () => ({ meta: [{ title: "Sign in the Ployz CLI" }] }),
   component: DevicePage,

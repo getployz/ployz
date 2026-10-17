@@ -24,6 +24,7 @@ import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
+import { Route as ClaimSecretRouteImport } from './routes/claim/$secret'
 import { Route as DevSettingsRowsRouteImport } from './routes/dev.settings-rows'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
@@ -158,6 +159,11 @@ const ApiHealthRoute = ApiHealthRouteImport.update({
 const AuthGithubRoute = AuthGithubRouteImport.update({
   id: '/auth/github',
   path: '/auth/github',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ClaimSecretRoute = ClaimSecretRouteImport.update({
+  id: '/claim/$secret',
+  path: '/claim/$secret',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DevSettingsRowsRoute = DevSettingsRowsRouteImport.update({
@@ -560,6 +566,7 @@ export interface FileRoutesByFullPath {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
@@ -632,6 +639,7 @@ export interface FileRoutesByTo {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
@@ -705,6 +713,7 @@ export interface FileRoutesById {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
@@ -783,6 +792,7 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
@@ -855,6 +865,7 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
@@ -927,6 +938,7 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
@@ -1003,6 +1015,7 @@ export interface RootRouteChildren {
   ApiSplatRoute: typeof ApiSplatRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
+  ClaimSecretRoute: typeof ClaimSecretRoute
   DevSettingsRowsRoute: typeof DevSettingsRowsRoute
   InviteTokenRoute: typeof InviteTokenRoute
   DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
@@ -1141,6 +1154,13 @@ declare module '@tanstack/react-router' {
       path: '/auth/github'
       fullPath: '/auth/github'
       preLoaderRoute: typeof AuthGithubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/claim/$secret': {
+      id: '/claim/$secret'
+      path: '/claim/$secret'
+      fullPath: '/claim/$secret'
+      preLoaderRoute: typeof ClaimSecretRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dev/settings-rows': {
@@ -1793,6 +1813,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSplatRoute: ApiSplatRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
+  ClaimSecretRoute: ClaimSecretRoute,
   DevSettingsRowsRoute: DevSettingsRowsRoute,
   InviteTokenRoute: InviteTokenRoute,
   DotwellKnownOauthProtectedResourceMcpRoute:

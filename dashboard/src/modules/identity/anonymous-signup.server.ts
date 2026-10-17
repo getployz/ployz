@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomInt, randomUUID } from "node:crypto";
 import { Effect } from "effect";
+import { claimSecretFor, claimUrlForSecret, hashClaimSecret } from "#/modules/identity/claim-required.server";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -24,12 +25,19 @@ export const signUpAnonymous = Effect.fn("Identity.signUpAnonymous")(function* (
       .values({ email: `${randomUUID()}@anonymous.ployz.invalid`, name: `Agent ${suffix}`, isAnonymous: true })
       .returning({ id: user.id });
     if (created === undefined) return yield* Effect.die("insert returned no row");
+    const id = randomUUID();
+    const claimSecret = yield* claimSecretFor(id);
     const sandbox = yield* allocateUnique({
       tryAttempt: (attempt) =>
         Effect.gen(function* () {
           const [row] = yield* drizzle
             .insert(organization)
-            .values({ name: ANONYMOUS_ORGANIZATION_NAME, slug: `anon-${attempt === 0 ? suffix : base32Suffix()}` })
+            .values({
+              id,
+              name: ANONYMOUS_ORGANIZATION_NAME,
+              slug: `anon-${attempt === 0 ? suffix : base32Suffix()}`,
+              claimSecretHash: hashClaimSecret(claimSecret),
+            })
             .onConflictDoNothing()
             .returning({ id: organization.id, slug: organization.slug });
           return row ?? null;
@@ -44,6 +52,12 @@ export const signUpAnonymous = Effect.fn("Identity.signUpAnonymous")(function* (
       kind: "agent",
       expiresAt: new Date(Date.now() + ANONYMOUS_TOKEN_TTL_MS),
     });
-    return { userId: created.id, organization: sandbox, token: token.secret, expiresAt: token.expiresAt };
+    return {
+      userId: created.id,
+      organization: sandbox,
+      token: token.secret,
+      expiresAt: token.expiresAt,
+      claimUrl: yield* claimUrlForSecret(claimSecret),
+    };
   }));
 });
