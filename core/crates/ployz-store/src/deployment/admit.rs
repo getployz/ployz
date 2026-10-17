@@ -279,6 +279,7 @@ fn deploy(
         environment.working.clone(),
         review.saved.as_ref(),
         (admit.message.as_deref(), &review::lost(losses.clone())),
+        trusted,
     )?;
     let mut frozen = deployment::freeze(
         id,

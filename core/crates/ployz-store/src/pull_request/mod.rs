@@ -684,7 +684,7 @@ pub(crate) fn pull_request(
             .is_some_and(|before| before.head_branch != event.head_branch);
         if renamed {
             for (environment, _) in &current {
-                retrack(tx, who, environment, event)?;
+                retrack(tx, who, environment, (event, trusted))?;
             }
         }
         let retargeted = before
@@ -1051,6 +1051,7 @@ fn create(
         environment.working.clone(),
         latest.as_ref(),
         (None, &[]),
+        trusted,
     )?;
     let saved = review::latest_saved(tx, &id)?.ok_or_else(|| error::corrupt("Saved State"))?;
     let pins = environment
@@ -1131,7 +1132,7 @@ fn retrack(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &EnvironmentId,
-    event: &PullRequest,
+    (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<(), RpcError> {
     let mut environment = scope::lock_id(tx, who, id)?;
     if let Some(latest) = review::latest_saved(tx, id)? {
@@ -1143,6 +1144,7 @@ fn retrack(
             tracked,
             Some(&latest),
             (None, &latest.accepted),
+            trusted,
         )?;
     }
     let tracked = track(environment.working.clone(), event);

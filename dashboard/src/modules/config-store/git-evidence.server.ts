@@ -51,13 +51,30 @@ function wanted(command: typeof GitCommand.Type) {
   return services;
 }
 
-/** The Environment in which `command` connects a repository or changes a deploy branch, a Batch's included; none if it doesn't. */
+const SourceKeys = new Set(["repository", "branch"]);
+const Patch = Schema.Record(Text, Schema.Unknown);
+
+/** Whether `command` connects, changes or clears a Service's repository or deploy branch. */
+function touchesSource(command: typeof GitCommand.Type) {
+  if (command.command === "create_git_service") return true;
+  return command.changes.some((change) => {
+    const [, setting] = change.path.split(".", 2);
+    if (setting !== undefined) return SourceKeys.has(setting);
+    const patch = change.op === "patch" ? Option.getOrUndefined(Schema.decodeUnknownOption(Patch)(change.value)) : undefined;
+    return Object.keys(patch ?? {}).some((key) => SourceKeys.has(key));
+  });
+}
+
+/**
+ * The Environment in which `command` connects, changes or clears a repository or deploy branch, a Batch's included;
+ * none if it doesn't.
+ */
 export function gitSourceEnvironment(command: ConfigCommand | BatchCommand): typeof EnvironmentRef.Type | undefined {
   if (command.command === "batch") {
     return command.commands.some((inner) => gitSourceEnvironment(inner) !== undefined) ? command.environment : undefined;
   }
   const git = Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(command));
-  if (git === undefined || wanted(git).size === 0) return undefined;
+  if (git === undefined || !touchesSource(git)) return undefined;
   return git.environment ?? {};
 }
 

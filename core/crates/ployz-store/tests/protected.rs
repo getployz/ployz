@@ -1,16 +1,20 @@
 //! Protected Environments, on SQLite and on Postgres (see `backend`): a new Project's
-//! Default starts Protected, the switch flips either way, and only a Project's own
-//! Environments take it.
+//! Default starts Protected, the switch flips either way, only a Project's own
+//! Environments take it, and only a caller who may protect saves one a new repository
+//! or deploy branch, however it was staged.
+
+use std::collections::BTreeMap;
 
 use ployz_core::config::ServiceGitAccess;
-use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AuthorizedRepository, Automated, ConfigStore, CreateBranch, CreateEnvironment,
-    CreateGitService, CreateProject, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentsQuery, OrganizationId, ProjectId, ProjectName, PullRequest, ServiceLineageId,
-    SetEnvironmentProtected, SetPrPlan, SystemEvent, Trusted, Written,
+    Actor, AuthorizedRepository, Automated, Change, ConfigStore, CreateBranch, CreateEnvironment,
+    CreateGitService, CreateProject, CreateService, Edit, EnvironmentId, EnvironmentName,
+    EnvironmentRef, EnvironmentsQuery, OrganizationId, Principal, ProjectId, ProjectName, Publish,
+    Published, PullRequest, ServiceLineageId, SetEnvironmentProtected, SetPrPlan, SettingPath,
+    SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 mod backend;
 
@@ -24,6 +28,21 @@ fn at(environment: &str) -> EnvironmentRef {
     EnvironmentRef {
         project: None,
         environment: Some(EnvironmentName::parse(environment).unwrap()),
+    }
+}
+
+/// Cloud's evidence for `acme/web` and `acme/docs`, each with a `dev` branch.
+fn acme() -> Trusted {
+    let repository = |name: &str, n| AuthorizedRepository {
+        repository: backend::repo_name(name),
+        repository_id: backend::repo_id(n),
+        access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+        default_branch: backend::git_branch("main"),
+        branches: vec![backend::git_branch("dev")],
+    };
+    Trusted {
+        repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
+        ..Trusted::default()
     }
 }
 
@@ -42,16 +61,6 @@ fn shop() -> (ConfigStore, Actor) {
             },
         )
         .unwrap();
-    let evidence = Trusted {
-        repositories: vec![AuthorizedRepository {
-            repository: backend::repo_name("acme/web"),
-            repository_id: backend::repo_id(11),
-            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: backend::git_branch("main"),
-            branches: Vec::new(),
-        }],
-        ..Trusted::default()
-    };
     store
         .write_trusted(
             &who,
@@ -62,7 +71,7 @@ fn shop() -> (ConfigStore, Actor) {
                 repository: backend::repo_name("acme/web"),
                 branch: None,
             },
-            &evidence,
+            &acme(),
         )
         .unwrap();
     store
@@ -245,4 +254,229 @@ fn a_pr_environment_cannot_be_protected() {
         "pr-5 is a PR Environment: only a Project's own Environments can be Protected"
     );
     assert!(protection(&store, &who).contains(&("pr-5".into(), false)));
+}
+
+/// `who` as a person, rather than the Store's own automation.
+fn person(who: &Actor) -> Actor {
+    Actor {
+        principal: Some(Principal::parse("nick").unwrap()),
+        ..who.clone()
+    }
+}
+
+fn fix_web(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(5)).unwrap(),
+                from: at("production"),
+                name: EnvironmentName::parse("fix-web").unwrap(),
+                copy: vec![ployz_store::NodeName::parse("web").unwrap()],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: false,
+                fix: None,
+            },
+        )
+        .unwrap();
+}
+
+/// Stage `changes` in `environment`; a change without a value unsets its path.
+fn edit(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Option<Value>)]) {
+    let changes = changes
+        .iter()
+        .map(|(path, value)| {
+            let path = SettingPath::parse(path).unwrap();
+            match value {
+                Some(value) => Change::Set {
+                    path,
+                    value: value.clone(),
+                },
+                None => Change::Unset { path },
+            }
+        })
+        .collect();
+    let edit = Edit {
+        environment: at(environment),
+        expect: None,
+        changes,
+    };
+    store.write_trusted(who, &edit, &acme()).unwrap();
+}
+
+/// Sync everything fix-web changed into production.
+fn sync_up(store: &ConfigStore, who: &Actor) {
+    let view = store
+        .read(
+            who,
+            &SyncQuery {
+                from: at("fix-web"),
+                into: Some(at("production")),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            who,
+            &SyncChanges {
+                from: at("fix-web"),
+                into: Some(at("production")),
+                close_after: false,
+                version: view.version,
+                picks: None,
+                skip: Vec::new(),
+                values: BTreeMap::new(),
+                id: None,
+            },
+        )
+        .unwrap();
+}
+
+fn publish(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+    may_protect: bool,
+) -> Result<Published, RpcError> {
+    store.write_trusted(
+        who,
+        &Publish {
+            environment: at(environment),
+            ..Publish::default()
+        },
+        &Trusted {
+            may_protect,
+            ..Trusted::default()
+        },
+    )
+}
+
+fn assert_forbidden(result: Result<Published, RpcError>, service: &str) {
+    let error = result.unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::from("forbidden"));
+    assert_eq!(
+        error.message,
+        "Only an owner or admin of this Organization can do this."
+    );
+    assert_eq!(error.details, json!({"services": [service]}));
+}
+
+#[test]
+fn a_repository_synced_into_protected_production_saves_only_for_whoever_may_protect() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.repository", Some(json!("acme/docs")))],
+    );
+    sync_up(&store, &who);
+
+    assert_forbidden(publish(&store, &who, "production", false), "web");
+    assert!(publish(&store, &who, "production", true).unwrap().created);
+}
+
+#[test]
+fn a_git_service_synced_into_protected_production_needs_whoever_may_protect() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse(uuid(7)).unwrap(),
+                environment: at("fix-web"),
+                name: ServiceName::parse("docs").unwrap(),
+                repository: backend::repo_name("acme/docs"),
+                branch: Some(backend::git_branch("dev")),
+            },
+            &acme(),
+        )
+        .unwrap();
+    sync_up(&store, &who);
+
+    assert_forbidden(publish(&store, &who, "production", false), "docs");
+}
+
+#[test]
+fn a_protected_services_branch_needs_whoever_may_protect() {
+    let (store, system) = shop();
+    let who = person(&system);
+    edit(
+        &store,
+        &who,
+        "production",
+        &[("web.branch", Some(json!("dev")))],
+    );
+
+    assert_forbidden(publish(&store, &who, "production", false), "web");
+}
+
+#[test]
+fn unsetting_a_protected_services_repository_needs_whoever_may_protect() {
+    let (store, system) = shop();
+    let who = person(&system);
+    edit(
+        &store,
+        &who,
+        "production",
+        &[
+            ("web.repository", None),
+            ("web.image", Some(json!("web:2"))),
+        ],
+    );
+
+    assert_forbidden(publish(&store, &who, "production", false), "web");
+}
+
+#[test]
+fn a_change_leaving_every_repository_and_branch_saves_for_anyone() {
+    let (store, system) = shop();
+    let who = person(&system);
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: at("production"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+
+    assert!(publish(&store, &who, "production", false).unwrap().created);
+}
+
+#[test]
+fn the_stores_own_automation_and_an_unprotected_environment_save_any_branch() {
+    let (store, system) = shop();
+    fix_web(&store, &system);
+    edit(
+        &store,
+        &system,
+        "fix-web",
+        &[("web.repository", Some(json!("acme/docs")))],
+    );
+    sync_up(&store, &system);
+    assert!(
+        publish(&store, &system, "production", false)
+            .unwrap()
+            .created
+    );
+
+    let who = person(&system);
+    store.write(&system, &set("production", false)).unwrap();
+    edit(
+        &store,
+        &who,
+        "production",
+        &[("web.branch", Some(json!("dev")))],
+    );
+    assert!(publish(&store, &who, "production", false).unwrap().created);
 }

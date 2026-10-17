@@ -339,6 +339,13 @@ it.live(
         const { alice, bob, slug, protection, role } = yield* protectedShop();
 
         assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, branch("dev"))), ["forbidden", adminOnly]);
+        const clears: Array<ConfigCommand> = [
+          { command: "edit", environment: here, expect: null, changes: [{ op: "unset", path: "web.repository" }] },
+          { command: "edit", environment: here, expect: null, changes: [{ op: "patch", path: "web", value: { repository: null } }] },
+        ];
+        for (const clear of clears) {
+          assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, clear)), ["forbidden", adminOnly]);
+        }
         const unprotect = yield* Effect.exit(writeStoreAsMember(bob, slug, protect(false)));
         assert.deepInclude(Exit.isFailure(unprotect) ? Cause.squash(unprotect.cause) : null, { _tag: "Forbidden", message: adminOnly });
         assert.deepStrictEqual(yield* protection(), [["production", true]]);
@@ -374,6 +381,42 @@ it.live(
         yield* role("admin");
         assert.isTrue((yield* cli(protect(false))).ok, "an admin unprotects production from the CLI");
         assert.deepStrictEqual(yield* protection(), [["production", false]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a repository a member changes in a Branch and syncs into Protected production saves only for an owner or admin",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, bob, slug, role } = yield* protectedShop();
+        const { drizzle } = yield* Database;
+        yield* drizzle.insert(githubRepositoryCache).values({
+          installationId: 7, repositoryId: 12, name: "docs", fullName: "acme/docs", defaultBranch: "main",
+          private: true, htmlUrl: "https://github.com/acme/docs", repoUpdatedAt: new Date(),
+        });
+        const fixWeb = { project: null, environment: "fix-web" };
+        const production = { project: null, environment: "production" };
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, {
+          command: "create_branch", id: "00000000-0000-4000-8000-000000000005", from: production, name: "fix-web",
+          copy: ["web"], live: [], setup: [], keep: false,
+        })).ok);
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, {
+          command: "edit", environment: fixWeb, expect: null, changes: [{ op: "set", path: "web.repository", value: "acme/docs" }],
+        })).ok, "a member changes the repository in an unprotected Branch");
+        const sync = yield* callStoreAsMember(bob, slug, { operation: "read", query: { query: "sync", from: fixWeb, into: production } });
+        const version = sync.ok && sync.value.view === "sync" ? sync.value.version : assert.fail("no sync");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, { command: "sync", from: fixWeb, into: production, version })).ok);
+
+        const save: ConfigCommand = { command: "publish", environment: production, version: null };
+        assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, save)), ["forbidden", adminOnly]);
+        yield* role("admin");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, save)).ok, "an admin saves it");
+        const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
+        assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { repository: "acme/docs" });
       }).pipe(Effect.provide(layer));
     }),
   60_000,
