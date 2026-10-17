@@ -13,7 +13,9 @@ type RunCancelOn = Parameters<PloyzInngest["createFunction"]>[0]["cancelOn"];
 
 export type RunEnd = "failure" | "cancellation";
 
-const decodeFailedRun = Schema.decodeUnknownOption(Schema.Struct({ data: Schema.Struct({ run_id: Schema.String }) }));
+const decodeFailedRun = Schema.decodeUnknownOption(
+  Schema.Struct({ data: Schema.Struct({ run_id: Schema.String, event: Schema.optional(Schema.Unknown) }) }),
+);
 
 export function attemptLifecycle<Result, More extends object, Triggering = never>(workflow: {
   readonly run: {
@@ -28,6 +30,8 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
   };
   readonly cancelId: string;
   readonly triggeringEvent?: Schema.ConstraintDecoder<Triggering>;
+  /** Hand a failed run's triggering event to `closeRun` too, so it can close a row the run never bound. Off, a failed run closes only rows it bound. */
+  readonly triggeringOnFailure?: boolean;
   readonly closeRun: (runId: string, end: RunEnd, triggering: Option.Option<Triggering>) => Activity<number>;
   readonly sweep: {
     readonly id: string;
@@ -35,7 +39,7 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
     readonly afterSweep?: (step: PloyzStepTools, runEffect: EffectRunner) => Promise<More>;
   };
 }) {
-  const { run, closeRun, sweep, triggeringEvent } = workflow;
+  const { run, closeRun, sweep, triggeringEvent, triggeringOnFailure = false } = workflow;
   const decodeTriggering = triggeringEvent === undefined ? () => Option.none() : Schema.decodeUnknownOption(triggeringEvent);
   const createRun = (inngest: PloyzInngest, runEffect: EffectRunner = runInngestEffect) =>
     inngest.createFunction(
@@ -48,7 +52,10 @@ export function attemptLifecycle<Result, More extends object, Triggering = never
         onFailure: async ({ event }) => {
           // `inngest/function.failed` names the failed run.
           const failed = decodeFailedRun(event);
-          if (Option.isSome(failed)) await runEffect(closeRun(failed.value.data.run_id, "failure", Option.none()));
+          if (Option.isSome(failed)) {
+            const { run_id: runId, event: triggering } = failed.value.data;
+            await runEffect(closeRun(runId, "failure", triggeringOnFailure ? decodeTriggering(triggering) : Option.none()));
+          }
         },
       },
       async ({ event, step, runId }) => run.handler({ event, step, runId }, runEffect),

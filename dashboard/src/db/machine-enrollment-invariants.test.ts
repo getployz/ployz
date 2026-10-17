@@ -45,6 +45,8 @@ describe("organization machine enrollment invariants", () => {
       "claimed_machine_id",
       "claimed_public_key",
       "claimed_at",
+      "enrollment_role",
+      "server_enrollment_id",
       "created_at",
       "updated_at",
     ]);

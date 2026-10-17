@@ -2,7 +2,8 @@
 // tick to /api/checkin, then the run prints answers, p50, p95 and errors. Run from dashboard/ against up.sh's Cloud:
 //   node scripts/verify/checkin-sim.mjs --token pflt_... [--hosts N] [--ticks N | --once] [--interval ms]
 //     [--bad-signature] [--skew seconds] [--prep docker=installing,zfs=installing] [--hostname name]
-//     [--pad-bytes N] [--ip addr] [--seed text] [--probe-report handout] [--url http://localhost:port]
+//     [--pad-bytes N] [--ip addr] [--seed text] [--cli-version 0.3.1] [--zfs-eligible]
+//     [--attempt id:stage[:failure message]] [--probe-report handout] [--url http://localhost:port]
 // --seed derives each host's key from text, so a later run checks in as the same hosts. Each host claims its own source address through x-forwarded-for (198.18.0.0/15), which dev Cloud trusts; --ip
 // sends every host from one address instead.
 import { createHash, createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
@@ -23,6 +24,9 @@ const { values: flags } = parseArgs({
     "pad-bytes": { type: "string", default: "0" },
     ip: { type: "string" },
     seed: { type: "string" },
+    "cli-version": { type: "string", default: "checkin-sim" },
+    "zfs-eligible": { type: "boolean", default: false },
+    attempt: { type: "string" },
     "probe-report": { type: "string" },
     url: { type: "string" },
   },
@@ -38,6 +42,10 @@ const baseUrl = flags.url ?? (() => {
 const hostCount = Number(flags.hosts);
 const ticks = flags.once ? 1 : Number(flags.ticks);
 const interval = Number(flags.interval);
+const attempt = flags.attempt === undefined ? undefined : (() => {
+  const [attemptId, stage, message] = flags.attempt.split(":");
+  return message === undefined ? { attemptId, stage } : { attemptId, stage, failure: { stage, message } };
+})();
 const prep = flags.prep === undefined ? undefined : Object.fromEntries(flags.prep.split(",").map((pair) => pair.split("=")));
 
 const ED25519_PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
@@ -70,7 +78,9 @@ function report(host) {
     disks: [{ path: "/dev/vda", sizeBytes: 85_899_345_920, role: "root" }],
     docker: { kind: "absent" },
     cgroup: "v2",
-    zfs: { kind: "ineligible", code: "no_disk", message: "No empty disk." },
+    zfs: flags["zfs-eligible"]
+      ? { kind: "eligible", targets: [{ kind: "main_disk" }] }
+      : { kind: "ineligible", code: "no_disk", message: "No empty disk." },
     blockers: [],
     warnings: Number(flags["pad-bytes"]) > 0 ? [{ code: "padding", message: "x".repeat(Number(flags["pad-bytes"])) }] : [],
   };
@@ -80,9 +90,10 @@ function signed(host) {
   const body = Buffer.from(JSON.stringify({
     protocolVersion: 1,
     checkinKey: host.key,
-    cliVersion: "checkin-sim",
+    cliVersion: flags["cli-version"],
     report: report(host),
     ...(prep === undefined ? {} : { prep }),
+    ...(attempt === undefined ? {} : { attempt }),
     ...(flags["probe-report"] === undefined ? {} : { probe: { handout: flags["probe-report"], heardFrom: [], bindFailed: [] } }),
   }));
   const timestamp = BigInt(Math.floor(Date.now() / 1000) + Number(flags.skew));
@@ -117,6 +128,9 @@ function describe(status, answer, host) {
   }
   if (status === 200 && answer.kind === "wait") return `wait retryAfter=${answer.retryAfter}`;
   if (status === 200 && answer.kind === "stop") return `stop ${answer.reason}`;
+  if (status === 200 && answer.kind === "enroll") {
+    return `enroll role=${answer.role} name=${answer.name} storage=${answer.storage.kind} token=${answer.token.slice(0, 10)}...`;
+  }
   return `${status} ${answer.error ?? answer.message ?? JSON.stringify(answer)}`;
 }
 

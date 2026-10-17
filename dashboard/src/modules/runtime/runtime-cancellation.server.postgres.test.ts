@@ -4,6 +4,8 @@ import { Duration, Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness } from "#/test/postgres";
+import { sendsNowhere } from "#/test/store-cloud";
+import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import {
@@ -42,6 +44,7 @@ it("closes every Cloud worker's session through the change log only after commit
     const runtime = ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(Layer.mergeAll(
       Layer.succeed(Database, harness.database),
       Layer.succeed(SecretEncryption, encryption),
+      Layer.succeed(InngestClient, sendsNowhere()),
       makePloyzLayer({ connect: async () => {
         const session = { closed: false };
         sessions.push(session);

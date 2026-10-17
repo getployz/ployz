@@ -22,8 +22,15 @@ import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
 import { FLEET_TOKEN_LIFETIMES, FleetTokenName } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import {
+  cancelServerEnrollment,
+  readServerEnrollments,
+  type ServerEnrollmentView,
+  startServerEnrollment,
+} from "#/modules/machines/waiting/enroll.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
+import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import { listWaitingServers, showWaitingServer, type WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
@@ -53,6 +60,32 @@ const NewFleetToken = Schema.Struct({
 });
 
 const WaitingServerIds = Schema.Struct({ ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)) });
+
+const EnrollServers = Schema.Struct({
+  ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
+  first: Schema.optionalKey(Uuid),
+  storage: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("zfs"), use_spare_disk: Schema.Boolean, fallback_to_docker: Schema.Boolean }),
+    Schema.Struct({ kind: Schema.Literal("none") }),
+  ]),
+  names: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("hostnames") }),
+    Schema.Struct({ kind: Schema.Literal("pattern"), pattern: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(63)) }),
+  ]),
+  runs: Schema.Struct({ services: Schema.Boolean, ingress: Schema.Boolean, builds: Schema.Boolean }),
+});
+
+function enrollInput(body: typeof EnrollServers.Type): EnrollInput {
+  const input: EnrollInput = {
+    ids: body.ids,
+    storage: body.storage.kind === "zfs"
+      ? { kind: "zfs", useSpareDisk: body.storage.use_spare_disk, fallbackToDocker: body.storage.fallback_to_docker }
+      : { kind: "none" },
+    names: body.names,
+    runs: body.runs,
+  };
+  return body.first === undefined ? input : { ...input, first: body.first };
+}
 
 const isUpgradeAttemptId = (id: string | undefined): id is string => id !== undefined && /^[0-9a-f]{32}$/.test(id);
 
@@ -108,7 +141,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices, Fleet Tokens and Waiting Servers,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
@@ -184,6 +217,33 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST reject-servers": {
       const input = yield* decodeBody(WaitingServerIds, request, "Rejecting takes the ids of 1 to 1000 waiting servers.");
       return yield* rejectWaitingServers(caller, { organizationSlug: caller.organization.slug, ids: input.ids });
+    }
+    case "POST enrollments": {
+      const body = yield* decodeBody(EnrollServers, request, "Enrolling takes 1 to 1000 waiting server ids, storage, names and what the servers run.");
+      const started = yield* startServerEnrollment(caller, { organizationSlug: caller.organization.slug, ...enrollInput(body) });
+      return {
+        enrollments: started.attempts.map((attempt) => ({
+          id: attempt.id,
+          waiting_server_id: attempt.waitingServerId,
+          role: attempt.role,
+          name: attempt.name,
+          state: attempt.state,
+        })),
+        skipped: started.skipped,
+        spread: started.spread,
+      };
+    }
+    case "GET enrollments":
+      return { enrollments: (yield* readServerEnrollments(caller, { organizationSlug: caller.organization.slug })).map(cliEnrollment) };
+    case "GET enrollments/:id": {
+      if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such enrollment." });
+      const [found] = yield* readServerEnrollments(caller, { organizationSlug: caller.organization.slug, id });
+      if (found === undefined) return yield* new NotFound({ message: "No such enrollment." });
+      return { enrollment: cliEnrollment(found) };
+    }
+    case "POST enrollments/:id/cancel": {
+      if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such enrollment." });
+      return yield* cancelServerEnrollment(caller, { organizationSlug: caller.organization.slug, id });
     }
     case "POST probe-servers": {
       const input = yield* decodeBody(WaitingServerIds, request, "Probing takes the ids of 1 to 1000 waiting servers.");
@@ -351,6 +411,23 @@ function cliWaitingServer(server: WaitingServerView) {
     report: server.report,
     first_seen_at: server.firstSeenAt,
     last_check_in_at: server.lastCheckInAt,
+  };
+}
+
+function cliEnrollment(enrollment: ServerEnrollmentView) {
+  return {
+    id: enrollment.id,
+    waiting_server_id: enrollment.waitingServerId,
+    role: enrollment.role,
+    name: enrollment.name,
+    storage: enrollment.storage,
+    state: enrollment.state,
+    stage: enrollment.stage,
+    queued: enrollment.queued,
+    machine_id: enrollment.machineId,
+    failure: enrollment.failure,
+    requested_at: enrollment.requestedAt,
+    ended_at: enrollment.endedAt,
   };
 }
 

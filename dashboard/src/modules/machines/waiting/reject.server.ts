@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { waitingServer } from "#/modules/machines/waiting/tables";
+import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
+import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
 
@@ -24,6 +25,11 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
     if (rejected.length > 0) {
       yield* drizzle.update(waitingServer).set({ rejectedAt: new Date() })
         .where(inArray(waitingServer.id, rejected.map((row) => row.id)));
+      const open = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+        inArray(serverEnrollment.waitingServerId, rejected.map((row) => row.id)),
+        isNull(serverEnrollment.endedAt),
+      ));
+      yield* cancelServerEnrollments(organization.id, open.map((row) => row.id));
     }
     return { rejected: rejected.length };
   }));

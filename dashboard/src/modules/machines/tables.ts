@@ -18,6 +18,8 @@ import { organization } from "#/modules/organization/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
+import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
+
 import { sql } from "drizzle-orm";
 
 import { boolean, check, foreignKey, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
@@ -437,6 +439,8 @@ export const machineEnrollmentToken = pgTable(
     /** The claimant's WireGuard public key, in the enrollment identity's base64 form. */
     claimedPublicKey: text("claimed_public_key"),
     claimedAt: timestamp("claimed_at", { mode: "date", withTimezone: true }),
+    enrollmentRole: text("enrollment_role").$type<EnrollmentRole>(),
+    serverEnrollmentId: uuid("server_enrollment_id"),
     createdAt,
     updatedAt,
   },

@@ -34,11 +34,17 @@ import {
 } from "#/modules/machines/enrollment";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent, createConfigFirstServerJoinedEvent, createObservePushTargetRequestedEvent } from "#/modules/inngest/events";
+import {
+  createClusterDomainSyncRequestedEvent,
+  createConfigFirstServerJoinedEvent,
+  createObservePushTargetRequestedEvent,
+  createServerEnrollmentCompletedEvent,
+} from "#/modules/inngest/events";
+import type { EnrollmentRole } from "#/modules/machines/waiting/server-enrollment";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
-import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { managementIdentity as managementIdentityOf } from "#/modules/machines/management-identity";
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
@@ -72,32 +78,47 @@ const authorizeEnrollmentOrganization = Effect.fn(
   return { organization, userId: actor.userId };
 });
 
-const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, organizationSlug: string, source: "dashboard" | "cli") {
+export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
+  function* (input: {
+    readonly organizationId: string;
+    readonly userId: string;
+    readonly attempt?: { readonly role: EnrollmentRole; readonly serverEnrollmentId: string };
+  }) {
     const { drizzle } = yield* Database;
-    const authorization = yield* authorizeEnrollmentOrganization(
-      actor,
-      organizationSlug,
-    );
     const { expiresAt, token } = yield* Effect.sync(() => ({
       expiresAt: enrollmentExpiry(new Date()),
       token: randomSecret(TOKEN_PREFIX),
     }));
-
     const [issued] = yield* drizzle.insert(schemaMachineEnrollmentToken).values({
-      organizationId: authorization.organization.id,
-      createdByUserId: authorization.userId,
+      organizationId: input.organizationId,
+      createdByUserId: input.userId,
       tokenHash: hashEnrollmentToken(token),
       expiresAt,
+      enrollmentRole: input.attempt?.role ?? null,
+      serverEnrollmentId: input.attempt?.serverEnrollmentId ?? null,
     }).returning({ id: schemaMachineEnrollmentToken.id });
     if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
+    return { id: issued.id, token, expiresAt };
+  },
+);
+
+const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
+  function* (actor: Actor, organizationSlug: string, source: "dashboard" | "cli") {
+    const authorization = yield* authorizeEnrollmentOrganization(
+      actor,
+      organizationSlug,
+    );
+    const issued = yield* insertEnrollmentToken({
+      organizationId: authorization.organization.id,
+      userId: authorization.userId,
+    });
     yield* (yield* PostHog).capture({
       userId: authorization.userId,
       organizationId: authorization.organization.id,
       event: "server_enrollment_started",
       properties: { source },
     });
-    return { id: issued.id, token, expiresAt };
+    return issued;
   },
 );
 
@@ -214,6 +235,8 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
         claimedMachineId: schemaMachineEnrollmentToken.claimedMachineId,
         claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
+        enrollmentRole: schemaMachineEnrollmentToken.enrollmentRole,
+        serverEnrollmentId: schemaMachineEnrollmentToken.serverEnrollmentId,
       })
       .from(schemaMachineEnrollmentToken)
       .where(and(
@@ -237,7 +260,12 @@ const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
     if (row.claimedMachineId !== machineId) {
       return yield* new Conflict({ message: "The Machine does not own this enrollment attempt." });
     }
-    return { organizationId: row.organizationId, claimedPublicKey: row.claimedPublicKey, spent: row.joinedMachineId !== null };
+    return {
+      organizationId: row.organizationId,
+      claimedPublicKey: row.claimedPublicKey,
+      spent: row.joinedMachineId !== null,
+      serverEnrollmentId: row.serverEnrollmentId,
+    };
   },
 );
 
@@ -345,14 +373,22 @@ export const reserveEnrollmentAssignment = Effect.fn(
 });
 
 const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
-  function* (input: { token: string; organizationId: string; publicKey: string; machineId: MachineId }) {
+  function* (input: {
+    token: string;
+    organizationId: string;
+    publicKey: string;
+    machineId: MachineId;
+    role: EnrollmentRole | null;
+  }) {
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const secret = randomSecret("ppair_");
+    const joiner = input.role === "joiner";
     return yield* database.transaction(
       Effect.gen(function* () {
+        yield* lockOrganizationEnrollment(input.organizationId);
         const { drizzle } = yield* Database;
-        const [claimed] = yield* drizzle
+        const [claimed] = joiner ? [] : yield* drizzle
           .insert(schemaOrganizationPairing)
           .values({
             organizationId: input.organizationId,
@@ -379,8 +415,9 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           .where(
             eq(schemaOrganizationPairing.organizationId, input.organizationId),
           )
-          .limit(1);
+          .for("update");
         if (!current) {
+          if (joiner) return { kind: "pending" as const, fresh: true };
           return yield* Effect.die("Organization enrollment disappeared");
         }
         if (current.removalStartedAt !== null) {
@@ -389,7 +426,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
         const pairing = {
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
-        if (current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
+        if (!joiner && current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId) {
           yield* claimEnrollmentToken(input.token, input);
           return { kind: "initialize" as const, resumed: true, pairing };
         }
@@ -397,7 +434,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           yield* claimEnrollmentToken(input.token, input);
           return { kind: "ready" as const, pairing };
         }
-        return { kind: "pending" as const, fresh: foundingClaimFresh(current) };
+        return { kind: "pending" as const, fresh: joiner || foundingClaimFresh(current) };
       }),
     );
   },
@@ -416,6 +453,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       organizationId: token.organizationId,
       publicKey: input.identity.publicKey,
       machineId: input.identity.machineId,
+      role: token.enrollmentRole,
     });
 
     if (state.kind === "initialize") {
@@ -623,6 +661,7 @@ export const completeMachineEnrollment = Effect.fn(
         yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId, token.claimedPublicKey);
       }));
       yield* recordJoined(input.token, machineId, { founder: false });
+      yield* reportAttemptCompleted(token.serverEnrollmentId);
       return { machineId };
     }
     // Past this, `machineId` is the founder (a retried completion may have founded it already).
@@ -640,7 +679,17 @@ export const completeMachineEnrollment = Effect.fn(
     yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
+    yield* reportAttemptCompleted(token.serverEnrollmentId);
     return { machineId };
+  },
+);
+
+const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
+  function* (serverEnrollmentId: string | null) {
+    if (serverEnrollmentId === null) return;
+    yield* sendInngestEvent(createServerEnrollmentCompletedEvent(serverEnrollmentId)).pipe(
+      Effect.catch((error) => Effect.logWarning("Server Enrollment completion was not sent; its run reads the token.", error)),
+    );
   },
 );
 

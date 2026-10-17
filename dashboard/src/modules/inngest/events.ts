@@ -90,6 +90,9 @@ export const volumeRunTakenEvent = "volume/run.taken";
 
 export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
+export const serverEnrollmentRequestedEvent = "server/enrollment.requested";
+export const serverEnrollmentReportedEvent = "server/enrollment.reported";
+export const serverEnrollmentCancelEvent = "server/enrollment.cancel";
 export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
@@ -151,6 +154,20 @@ export type ServerDrainRequestedEventData = {
   organizationId: string;
   machineId: MachineId;
 };
+
+export type ServerEnrollmentRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
+};
+
+export type ServerEnrollmentCheckinReport = { attemptId: string; stage: string | null; failure?: { stage: string | null; message: string } };
+
+export type ServerEnrollmentReportedEventData =
+  | ServerEnrollmentCheckinReport
+  | { attemptId: string; completed: true }
+  | { attemptId: string; founded: true };
+
+export type ServerEnrollmentCancelEventData = { attemptId: string };
 
 /** A web traffic change was requested: its row is written. `organizationId` keys the Organization's one-at-a-time changes. */
 export type ServerWebTrafficRequestedEventData = {
@@ -293,6 +310,18 @@ export const serverDrainRequestedEventType = eventType(
   serverDrainRequestedEvent,
   { schema: staticSchema<ServerDrainRequestedEventData>() },
 );
+export const serverEnrollmentRequestedEventType = eventType(
+  serverEnrollmentRequestedEvent,
+  { schema: staticSchema<ServerEnrollmentRequestedEventData>() },
+);
+export const serverEnrollmentReportedEventType = eventType(
+  serverEnrollmentReportedEvent,
+  { schema: staticSchema<ServerEnrollmentReportedEventData>() },
+);
+export const serverEnrollmentCancelEventType = eventType(
+  serverEnrollmentCancelEvent,
+  { schema: staticSchema<ServerEnrollmentCancelEventData>() },
+);
 export const serverWebTrafficRequestedEventType = eventType(
   serverWebTrafficRequestedEvent,
   { schema: staticSchema<ServerWebTrafficRequestedEventData>() },
@@ -433,6 +462,27 @@ export function createVolumeRunTakenEvent(data: VolumeRunTakenEventData) {
 /** Keyed by the Drain's row: sending it again for the same request runs nothing new. */
 export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventData) {
   return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
+}
+
+export function createServerEnrollmentRequestedEvent(data: ServerEnrollmentRequestedEventData) {
+  return { id: `server-enrollment-${data.attemptId}`, name: serverEnrollmentRequestedEvent, data } as const;
+}
+
+/** Keyed by the check-in, not the stage: a report the run missed while busy comes again on the next one. */
+export function createServerEnrollmentReportedEvent(data: ServerEnrollmentReportedEventData) {
+  return { id: `server-enrollment-reported-${crypto.randomUUID()}`, name: serverEnrollmentReportedEvent, data } as const;
+}
+
+export function createServerEnrollmentCompletedEvent(attemptId: string) {
+  return { id: `server-enrollment-completed-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, completed: true } } as const;
+}
+
+export function createServerEnrollmentCancelEvent(data: ServerEnrollmentCancelEventData) {
+  return { id: `server-enrollment-cancel-${data.attemptId}`, name: serverEnrollmentCancelEvent, data } as const;
+}
+
+export function createServerEnrollmentFoundedEvent(founderAttemptId: string, attemptId: string) {
+  return { id: `organization-founded-${founderAttemptId}-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, founded: true } } as const;
 }
 
 /** Keyed by the change's row: sending it again for the same request runs nothing new. */
@@ -629,6 +679,11 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
+  | ReturnType<typeof createServerEnrollmentRequestedEvent>
+  | ReturnType<typeof createServerEnrollmentReportedEvent>
+  | ReturnType<typeof createServerEnrollmentCompletedEvent>
+  | ReturnType<typeof createServerEnrollmentCancelEvent>
+  | ReturnType<typeof createServerEnrollmentFoundedEvent>
   | ReturnType<typeof createServerWebTrafficRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>

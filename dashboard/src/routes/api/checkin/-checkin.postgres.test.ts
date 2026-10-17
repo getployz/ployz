@@ -1,5 +1,8 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { Effect } from "effect";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { InngestClient } from "#/modules/inngest/client";
 import { checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
@@ -9,6 +12,8 @@ const ada = { userId: "00000000-0000-4000-8000-000000000701" };
 
 let harness: PostgresTestHarness;
 let token: string;
+const inngest = new Inngest({ id: "checkin-route-test" });
+vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
@@ -32,10 +37,10 @@ beforeEach(async () => {
 });
 
 const post = (body: Buffer, headers: Record<string, string>) =>
-  harness.runEffect(handleCheckin(
+  harness.runEffect(Effect.provideService(handleCheckin(
     new Request("http://cloud.test/api/checkin", { method: "POST", body: body.toString("latin1"), headers }),
     "203.0.113.7",
-  ));
+  ), InngestClient, inngest));
 
 const signed = (bearer: string, body: Uint8Array) => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");

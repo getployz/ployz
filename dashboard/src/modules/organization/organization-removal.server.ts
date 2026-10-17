@@ -5,11 +5,11 @@ import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { requireAccess } from "#/modules/organization/access.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { deleteEnrollmentTokens, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { eq } from "drizzle-orm";
 import { session } from "#/modules/identity/tables";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
-import { machineEnrollmentToken } from "#/modules/machines/tables";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { organization } from "./tables";
@@ -66,16 +66,25 @@ export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember
   return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, organizationSlug);
 });
 
-/** Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. */
+/**
+ * Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. The
+ * cascade follows the Organization enrollment lock order: it locks the rows check-in, Reject and revoke take before it
+ * deletes them, and ends open attempts, with their runs' cancel events, before it deletes their tokens.
+ */
 const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
+  yield* lockOrganizationEnrollment(organizationId);
   const [pending] = yield* drizzle.select({ organizationId: organizationPairing.organizationId })
     .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pending) return yield* new PloyzProviderError({
     operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
   });
   const [domain] = yield* drizzle.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, organizationId));
-  yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+  yield* drizzle.select({ id: fleetToken.id }).from(fleetToken)
+    .where(eq(fleetToken.organizationId, organizationId)).orderBy(fleetToken.id).for("update");
+  yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
+    .where(eq(waitingServer.organizationId, organizationId)).orderBy(waitingServer.id).for("update");
+  yield* deleteEnrollmentTokens(organizationId);
   yield* drizzle.delete(organization).where(eq(organization.id, organizationId));
   // Sessions in it act nowhere now: /cloud offers the next Organization or a new one.
   yield* drizzle.update(session).set({ activeOrganizationId: null, activeOrganizationSlug: null })
