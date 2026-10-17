@@ -681,6 +681,57 @@ it.live(
 );
 
 it.live(
+  "only an owner or admin gets Server access; a member is refused with no holder, and a demoted admin's holder is "
+    + "retired by the sweep",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const machine = ids.machineId("00000000000000000000000000001241");
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const slug = alice.organization.slug;
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true, slots: new Map<string, string>() };
+        fake.servers.set(machine, server);
+        const [personal] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, bob.organization.id));
+        const bobId = personal?.userId ?? assert.fail("no member");
+        yield* database.drizzle.insert(member).values({ userId: bobId, organizationId: alice.organization.id, role: "member" });
+        yield* database.drizzle.update(session).set({ activeOrganizationId: alice.organization.id, activeOrganizationSlug: slug })
+          .where(eq(session.userId, bobId));
+        const device = (yield* cli("GET", "tokens", bob)).json.devices?.[0]?.id ?? assert.fail("no device");
+        const setRole = (role: "admin" | "member") => database.drizzle.update(member).set({ role })
+          .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
+
+        const refused = yield* cli("POST", "server-access", bob);
+        assert.strictEqual(refused.status, 403);
+        assert.deepStrictEqual(JSON.parse(refused.text), { error: {
+          code: "forbidden",
+          message: `Server access needs an admin. Ask an owner or admin of ${slug}.`,
+          details: { organization: slug },
+        } });
+        assert.strictEqual(fake.sets(), 0);
+        assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+
+        yield* setRole("admin");
+        const granted = yield* cli("POST", "server-access", bob);
+        assert.strictEqual(granted.status, 200);
+        const key = granted.json.connections?.[0]?.management ?? assert.fail("no capability");
+        assert.strictEqual(server.slots.get(serverAccessLabel(device)), key);
+
+        yield* setRole("member");
+        yield* retireServerAccess();
+        assert.isFalse(server.slots.has(serverAccessLabel(device)));
+        assert.strictEqual((yield* cli("POST", "server-access", bob)).status, 403);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {

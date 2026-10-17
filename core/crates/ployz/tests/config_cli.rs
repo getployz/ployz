@@ -300,6 +300,14 @@ fn serve(
                 "uninstall_url": "https://github.com/organizations/acme/settings/installations/7",
             }),
         ),
+        (Some(who), "/api/cli/server-access") if who.organization.as_str() == "linus" => (
+            403,
+            json!({ "error": {
+                "code": "forbidden",
+                "message": "Server access needs an admin. Ask an owner or admin of acme.",
+                "details": { "organization": "acme" },
+            } }),
+        ),
         (Some(_), "/api/cli/server-access") => (
             200,
             json!({ "connections": [{ "tcp": engine() }], "unreachable": [] }),
@@ -2491,6 +2499,31 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
         json.pointer("/error/details/next"),
         Some(&json!("ployz login"))
     );
+}
+
+#[test]
+fn a_member_reaching_a_server_is_told_to_ask_an_admin() {
+    let linus = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_linus",
+    };
+    let refused = error(&linus, &["server", "ls"]);
+    assert_eq!(refused["code"], json!("forbidden"), "{refused}");
+    assert_eq!(
+        refused["message"],
+        json!("Server access needs an admin. Ask an owner or admin of acme."),
+        "{refused}"
+    );
+    for args in [&["server", "ls"][..], &["exec", "web", "true"]] {
+        let home = tempfile::tempdir().unwrap();
+        let output = linus.command(home.path()).args(args).output().unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(output.status.code(), Some(1), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains("Server access needs an admin. Ask an owner or admin of acme."),
+            "{args:?}: {stderr}"
+        );
+    }
 }
 
 #[test]

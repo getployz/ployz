@@ -1,0 +1,101 @@
+import { describe, expect, it } from "vitest";
+import { decideAccess, type Need, type Role } from "#/modules/organization/access.server";
+import { can, PERMISSIONS, type Permission, type PermissionRole, ROLE_PERMISSIONS } from "#/modules/organization/permissions";
+import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
+
+const GRANTS: ReadonlyArray<readonly [permission: Permission, member: boolean, admin: boolean, owner: boolean]> = [
+  ["org:read", true, true, true],
+  ["org:settings", false, true, true],
+  ["org:billing", false, false, true],
+  ["org:delete", false, false, true],
+  ["members:read", true, true, true],
+  ["members:manage", false, true, true],
+  ["tokens:create", true, true, true],
+  ["tokens:manage", false, true, true],
+  ["agents:manage", false, true, true],
+  ["github:connect", false, true, true],
+  ["approvals:answer", true, true, true],
+  ["audit:read", false, true, true],
+  ["project:read", true, true, true],
+  ["project:create", true, true, true],
+  ["project:edit", true, true, true],
+  ["project:delete", false, true, true],
+  ["environment:create", true, true, true],
+  ["environment:delete", false, true, true],
+  ["environments:protect", false, true, true],
+  ["changes:stage", true, true, true],
+  ["changes:deploy", true, true, true],
+  ["changes:destroy", true, true, true],
+  ["changes:merge", true, true, true],
+  ["services:control", true, true, true],
+  ["variables:read", true, true, true],
+  ["logs:read", true, true, true],
+  ["metrics:read", true, true, true],
+  ["volumes:read", true, true, true],
+  ["volumes:delete-copy", false, true, true],
+  ["servers:read", true, true, true],
+  ["servers:add", false, true, true],
+  ["servers:operate", false, true, true],
+  ["servers:remove", false, true, true],
+  ["servers:shell", false, true, true],
+];
+
+const ROLES: ReadonlyArray<PermissionRole> = ["member", "admin", "owner", "support"];
+
+describe("ROLE_PERMISSIONS", () => {
+  it("names the 34 permissions in order, for four roles", () => {
+    expect(PERMISSIONS).toEqual(GRANTS.map(([permission]) => permission));
+    expect(PERMISSIONS).toHaveLength(34);
+    expect(Object.keys(ROLE_PERMISSIONS).sort()).toEqual([...ROLES].sort());
+  });
+
+  const cells = GRANTS.flatMap(([permission, member, admin, owner]) => {
+    const held = { member, admin, owner, support: admin } satisfies Record<PermissionRole, boolean>;
+    return ROLES.map((role) => ({ permission, role, held: held[role] }));
+  });
+
+  it.each(cells)("$permission for $role: $held", ({ permission, role, held }) => {
+    expect(can(role, permission)).toBe(held);
+  });
+});
+
+const organization = { id: "00000000-0000-4000-8000-000000000001", slug: "acme" };
+
+const decisionBeforePermissions = (role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
+  if (role !== null) {
+    if (need === "manage" && role === "member") return { kind: "forbidden", need };
+    if (need === "own" && role !== "owner") return { kind: "forbidden", need };
+    return { kind: "member", userId: "user-1", role, organization };
+  }
+  if (isStaff && supportAllowed) {
+    if (need === "own") return { kind: "forbidden", need };
+    return { kind: "support", userId: "user-1", organization, shows: SUPPORT_SHOWS_NONE };
+  }
+  return { kind: "not_found" };
+};
+
+describe("decideAccess through can", () => {
+  const needs: ReadonlyArray<Need> = ["operate", "manage", "own"];
+  const roles: ReadonlyArray<Role | null> = ["owner", "admin", "member", null];
+
+  it("returns what the needs returned for every role, need and support setting", () => {
+    for (const need of needs) {
+      expect(decideAccess({ userId: "user-1", facts: null, isStaff: true, need })).toEqual({ kind: "not_found" });
+      for (const role of roles) {
+        for (const isStaff of [false, true]) {
+          for (const supportAllowed of [false, true]) {
+            const facts = { organization, role, supportAllowed, supportShows: SUPPORT_SHOWS_NONE };
+            const decision = decideAccess({ userId: "user-1", facts, isStaff, need });
+            expect({ role, isStaff, supportAllowed, need, decision }).toEqual({
+              role,
+              isStaff,
+              supportAllowed,
+              need,
+              decision: decisionBeforePermissions(role, isStaff, supportAllowed, need),
+            });
+          }
+        }
+      }
+    }
+  });
+});
