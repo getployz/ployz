@@ -24,6 +24,10 @@ use crate::ui::Hint;
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
 
+#[path = "enroll_waiting.rs"]
+mod waiting;
+pub(crate) use waiting::{command as waiting_command, enroll as enroll_waiting};
+
 pub(crate) fn command(command: Command) -> Command {
     super::provisioning_flags(
         base(command, "Add a Server to your Organization's Cluster")

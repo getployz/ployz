@@ -626,6 +626,7 @@ struct WaitingCloud {
     rejects: Vec<(&'static str, Option<usize>)>,
     /// The body of every reject answered with an error status, instead of a count.
     refusal: Option<serde_json::Value>,
+    enrollment_refusal: Option<serde_json::Value>,
 }
 
 impl WaitingCloud {
@@ -652,6 +653,7 @@ impl WaitingCloud {
             unreachable: Vec::new(),
             rejects: Vec::new(),
             refusal: None,
+            enrollment_refusal: None,
         }
     }
 }
@@ -669,9 +671,11 @@ fn waiting_cloud(
         unreachable,
         rejects,
         refusal,
+        enrollment_refusal,
     } = cloud;
     let listed = serde_json::json!({ "waiting_servers": rows });
     let mut rejects = rejects.into_iter();
+    let mut enrollments = Vec::<serde_json::Value>::new();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -700,6 +704,65 @@ fn waiting_cloud(
                     "200 OK",
                     serde_json::json!({ "connections": [], "unreachable": unreachable }),
                 ),
+                "GET /api/cli/enrollments" => {
+                    for row in &mut enrollments {
+                        *row.get_mut("state").unwrap() = serde_json::json!("joined");
+                    }
+                    ("200 OK", serde_json::json!({ "enrollments": enrollments }))
+                }
+                "POST /api/cli/enrollments/plan" | "POST /api/cli/enrollments" => {
+                    let body: serde_json::Value = serde_json::from_slice(&sent).unwrap();
+                    let mut plan = Vec::new();
+                    let mut skipped = Vec::new();
+                    for id in body.get("ids").unwrap().as_array().unwrap() {
+                        let host = listed
+                            .get("waiting_servers")
+                            .unwrap()
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|host| &host["id"] == id)
+                            .unwrap();
+                        if host["status"] == "blocked" {
+                            skipped.push(
+                                serde_json::json!({ "id": id, "reason": "Port 443 is in use" }),
+                            );
+                            continue;
+                        }
+                        let name = body
+                            .pointer("/names/pattern")
+                            .and_then(serde_json::Value::as_str)
+                            .map_or_else(
+                                || host.get("name").unwrap().as_str().unwrap().to_owned(),
+                                |pattern| pattern.replace("{n}", &(plan.len() + 1).to_string()),
+                            );
+                        plan.push(serde_json::json!({ "waiting_server_id": id, "hostname": host["name"], "role": if Some(id) == body.get("first") { "founder" } else { "joiner" }, "name": name, "storage": { "kind": "none" } }));
+                    }
+                    if route.ends_with("/plan") {
+                        (
+                            "200 OK",
+                            serde_json::json!({ "plan": plan, "skipped": skipped, "spread": { "providers": 1, "networks": 1 } }),
+                        )
+                    } else if let Some(refusal) = &enrollment_refusal {
+                        ("409 Conflict", refusal.clone())
+                    } else {
+                        enrollments = plan
+                            .into_iter()
+                            .map(|mut row| {
+                                let id = row.get("waiting_server_id").unwrap().clone();
+                                row.as_object_mut().unwrap().insert("id".into(), id);
+                                row.as_object_mut()
+                                    .unwrap()
+                                    .insert("state".into(), serde_json::json!("instructed"));
+                                row
+                            })
+                            .collect();
+                        (
+                            "200 OK",
+                            serde_json::json!({ "enrollments": enrollments, "skipped": skipped, "spread": { "providers": 1, "networks": 1 } }),
+                        )
+                    }
+                }
                 "POST /api/cli/reject-servers" => {
                     let sent: serde_json::Value = serde_json::from_slice(&sent).unwrap();
                     let ids = sent
@@ -2494,5 +2557,165 @@ fn server_token_refusals_reach_the_reader_as_cloud_sent_them() {
     assert_eq!(
         message(&json),
         "Only a signed-in person can make or revoke tokens; run `ployz login`."
+    );
+}
+
+#[test]
+fn server_enroll_takes_waiting_selection_and_storage_flags() {
+    for args in [
+        vec![
+            "host-*",
+            "--name",
+            "web-{n}",
+            "--first",
+            "host-a",
+            "--status",
+            "--yes",
+            "--storage",
+            "zfs",
+            "--no-spare-disk",
+            "--no-fallback",
+        ],
+        vec!["--all", "--json"],
+        vec!["--first"],
+        vec!["--status"],
+    ] {
+        ployz::cli::command()
+            .try_get_matches_from(["ployz", "server", "enroll"].into_iter().chain(args))
+            .unwrap();
+    }
+    for args in [vec!["host-*", "--all"], vec!["--all", "--storage", "ext4"]] {
+        assert!(
+            ployz::cli::command()
+                .try_get_matches_from(["ployz", "server", "enroll"].into_iter().chain(args))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn server_enroll_reviews_before_start_and_returns_attempts_as_one_json_object() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", cloud.as_str()),
+    ];
+    let (code, json, _) = run_json_with(
+        &["server", "enroll", "web-*", "--name", "app-{n}", "--json"],
+        &token,
+    );
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "confirmation_required"
+    );
+    assert_eq!(json.pointer("/error/details/plan/0/name").unwrap(), "app-1");
+    assert_eq!(
+        json.pointer("/error/details/skipped/0/reason").unwrap(),
+        "Port 443 is in use"
+    );
+    assert!(
+        !routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|route| route.starts_with("POST /api/cli/enrollments "))
+    );
+    let (code, json, _) = run_json_with(
+        &[
+            "server", "enroll", "web-*", "--name", "app-{n}", "--yes", "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(3), "{json}");
+    assert_eq!(json.pointer("/enrollments/0/name").unwrap(), "app-1");
+    assert_eq!(json.pointer("/enrollments/0/state").unwrap(), "instructed");
+    let sent = routes
+        .lock()
+        .unwrap()
+        .iter()
+        .find_map(|route| route.strip_prefix("POST /api/cli/enrollments "))
+        .map(|body| serde_json::from_str::<serde_json::Value>(body).unwrap())
+        .unwrap();
+    assert_eq!(
+        sent.get("ids").unwrap(),
+        &serde_json::json!(["00000000-0000-4000-8000-000000000002"])
+    );
+    let count = routes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|route| route.starts_with("POST /api/cli/enrollments "))
+        .count();
+    for selector in ["not-found", "00000000-0000-4000-8000-000000000002"] {
+        let (code, json, _) =
+            run_json_with(&["server", "enroll", selector, "--yes", "--json"], &token);
+        assert_eq!(code, Some(1), "{json}");
+        assert_eq!(message(&json), "No waiting servers match.");
+    }
+    assert_eq!(
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|route| route.starts_with("POST /api/cli/enrollments "))
+            .count(),
+        count
+    );
+}
+
+#[test]
+fn server_enroll_status_follows_clouds_stages_to_joined() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud::of(vec![waiting_row(
+            "00000000-0000-4000-8000-000000000002",
+            "host-a",
+            "waiting",
+        )]),
+    );
+    let (code, stdout, stderr) = run_token_cloud(
+        &cloud,
+        &["server", "enroll", "host-*", "--yes", "--status", "--json"],
+    );
+    assert_eq!(code, Some(0), "{stdout} {stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json.pointer("/enrollments/0/state").unwrap(), "joined");
+    assert!(stderr.contains("Joined"), "{stderr}");
+}
+
+#[test]
+fn server_enroll_surfaces_start_conflict_after_a_successful_preview() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            enrollment_refusal: Some(
+                serde_json::json!({ "error": { "code": "conflict", "message": "Cloud cannot remove the earlier pairing. Use Forget Servers.", "details": {} } }),
+            ),
+            ..WaitingCloud::of(vec![waiting_row(
+                "00000000-0000-4000-8000-000000000002",
+                "host-a",
+                "waiting",
+            )])
+        },
+    );
+    let (code, stdout, _) =
+        run_token_cloud(&cloud, &["server", "enroll", "host-a", "--yes", "--json"]);
+    assert_eq!(code, Some(1), "{stdout}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json.pointer("/error/code").unwrap(), "conflict");
+    assert_eq!(
+        message(&json),
+        "Cloud cannot remove the earlier pairing. Use Forget Servers."
+    );
+    assert!(
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|route| route.starts_with("POST /api/cli/enrollments/plan "))
     );
 }
