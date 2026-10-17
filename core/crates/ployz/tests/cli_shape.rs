@@ -1254,6 +1254,49 @@ fn server_token_create_json_carries_the_secret_and_install_line() {
 }
 
 #[test]
+fn server_token_create_auto_json_carries_the_keep_it_secret_warning() {
+    let (cloud, _) = token_cloud(
+        200,
+        r#"{"fleet_token":{"id":"0d6f1f3e-0000-4000-8000-000000000001","name":"blue-heron","token":"pflt_secret","expires_at":"2026-10-17T00:00:00.000Z"}}"#,
+    );
+    let (code, stdout, stderr) = run_token_cloud(
+        &cloud,
+        &[
+            "server", "token", "create", "--auto", "--max", "5", "--json",
+        ],
+    );
+    assert_eq!(code, Some(0), "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        json.pointer("/warnings/0").unwrap(),
+        "Anyone with this token can add servers. Keep it secret.",
+        "{json}"
+    );
+}
+
+#[test]
+fn server_token_forbidden_reads_as_unauthenticated() {
+    let (cloud, _) = token_cloud(
+        403,
+        r#"{"_tag":"PublicError","code":"FORBIDDEN","message":"This token can't manage Fleet Tokens."}"#,
+    );
+    let (code, json, stderr) = run_json_with(
+        &["server", "token", "ls", "--json"],
+        &[
+            ("PLOYZ_TOKEN", "ployz_secret"),
+            ("PLOYZ_CLOUD_URL", cloud.as_str()),
+        ],
+    );
+    assert_ne!(code, Some(0), "{stderr}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unauthenticated",
+        "{json}"
+    );
+    assert_eq!(message(&json), "This token can't manage Fleet Tokens.");
+}
+
+#[test]
 fn server_token_ls_json_keys_the_tokens_by_noun() {
     let (cloud, request) = token_cloud(
         200,

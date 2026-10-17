@@ -941,6 +941,7 @@ pub(crate) fn public_error(body: &[u8]) -> Option<RpcError> {
         "CONFLICT" => ployz_core::RpcErrorCode::Conflict,
         "NOT_FOUND" => ployz_core::RpcErrorCode::NotFound,
         "VALIDATION_FAILED" => ployz_core::RpcErrorCode::InvalidArgument,
+        "UNAUTHORIZED" | "FORBIDDEN" => ployz_core::RpcErrorCode::Unauthenticated,
         _ => ployz_core::RpcErrorCode::Internal,
     };
     Some(RpcError {

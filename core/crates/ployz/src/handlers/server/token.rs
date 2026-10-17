@@ -112,13 +112,13 @@ pub(crate) fn create(root: &ArgMatches) -> Result<(), Error> {
     let created = reply?.fleet_token;
     let install = install_line(&cloud, &created.token);
     let lasts = lasts(expires);
+    if matches.get_flag("auto") {
+        ui::warn("Anyone with this token can add servers. Keep it secret.");
+    }
     ui::finish(
         &json!({ "fleet_token": created, "install": install }),
         || {
             ui::note(format_args!("Created {}", created.name));
-            if matches.get_flag("auto") {
-                ui::warn("Anyone with this token can add servers. Keep it secret.");
-            }
             ui::stream(&created.token);
             ui::note(format_args!("Run on each host:\n  {install}"));
             ui::note(format_args!("Shown once. Expires in {lasts}."));
