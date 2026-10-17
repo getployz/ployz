@@ -197,7 +197,7 @@ whole project still takes it. Environments that existed before Protected shipped
 unprotected.
 
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
-`ployz env protect staging` and `ployz env protect staging --off`. Members see the switch
+`ployz env protect production --off` and `ployz env protect production`. Members see the switch
 disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
 Protected. When an agent turns protection off, it waits for you to approve.
 
