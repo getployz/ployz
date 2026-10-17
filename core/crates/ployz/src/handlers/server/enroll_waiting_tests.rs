@@ -38,8 +38,8 @@ fn enroll_waiting_matches_names_and_globs_never_ids() {
 #[test]
 fn enroll_waiting_first_means_the_oldest_match() {
     let hosts = [
-        host("new", "host-new", "2026-01-02"),
-        host("old", "host-old", "2026-01-01"),
+        host("new", "host-new", "2026-01-01T00:00:00-01:00"),
+        host("old", "host-old", "2026-01-01T00:30:00Z"),
     ];
     let selected = selected(&hosts, &Selection::parse(None).unwrap(), Some(""));
     assert_eq!(selected.len(), 1);
