@@ -96,7 +96,7 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
         }
         Err(error) => return Err(error.into()),
     };
-    let (made, revoked, left) = in_cloud(root, async |_, credential| {
+    let (made, saved, revoked, left) = in_cloud(root, async |_, credential| {
         let made =
             cloud_account::new_token(credential, "ployz mcp", TokenKind::Agent, LIFETIME_DAYS)
                 .await?;
@@ -146,13 +146,10 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
                 }
             },
         };
-        Ok((made, revoked, left))
+        Ok((made, saved, revoked, left))
     })?;
-    if let Some(left) = &left {
-        ui::warn(format!(
-            "The agent token {} this replaced is still live: {}. To revoke it, {}.",
-            left.id, left.why, left.fix
-        ));
+    for warning in warnings(&path(&config), &saved, left.as_ref()) {
+        ui::warn(warning);
     }
     let token = serde_json::json!({
         "id": made.id,
@@ -172,6 +169,26 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// What this login must say it left undone: a new token that may not survive a crash, and
+/// the token before when it stays live. Each stands on its own.
+fn warnings(path: &Path, saved: &Saved, left: Option<&Left>) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if let Saved::Unflushed(error) = saved {
+        warnings.push(format!(
+            "Saved the new agent token to {}, but could not flush its directory ({error}), so \
+             a crash may lose it. If `ployz mcp` can't sign in after one, run `ployz mcp login`.",
+            path.display()
+        ));
+    }
+    if let Some(left) = left {
+        warnings.push(format!(
+            "The agent token {} this replaced is still live: {}. To revoke it, {}.",
+            left.id, left.why, left.fix
+        ));
+    }
+    warnings
+}
+
 /// An agent token this login leaves live, why, and how to revoke it.
 #[derive(Debug)]
 struct Left {
@@ -187,7 +204,10 @@ fn fate(previous: Stored, cloud: &str, organization: &str, saved: &Saved) -> Res
     let (why, fix) = if previous.cloud != cloud {
         (
             format!("it is in Ployz Cloud at {}", previous.cloud),
-            format!("sign in there and run `ployz token rm {id}`"),
+            format!(
+                "sign in there, run `ployz org use {}`, then `ployz token rm {id}`",
+                previous.organization
+            ),
         )
     } else if previous.organization != organization {
         (
@@ -266,7 +286,10 @@ mod tests {
         )
         .unwrap_err();
         assert!(left.why.contains("https://other.example"), "{left:?}");
-        assert_eq!(left.fix, "sign in there and run `ployz token rm tok_old`");
+        assert_eq!(
+            left.fix,
+            "sign in there, run `ployz org use ada`, then `ployz token rm tok_old`"
+        );
     }
 
     #[test]
@@ -274,5 +297,36 @@ mod tests {
         let unflushed = Saved::Unflushed(io::Error::other("disk"));
         let left = fate(held(CLOUD, "ada"), CLOUD, "ada", &unflushed).unwrap_err();
         assert_eq!(left.fix, "run `ployz token rm tok_old`");
+    }
+
+    #[test]
+    fn a_first_login_whose_save_may_not_survive_a_crash_says_so() {
+        let unflushed = Saved::Unflushed(io::Error::other("disk"));
+        let [warning] = &warnings(Path::new("/home/ada/.ployz/mcp.json"), &unflushed, None)[..]
+        else {
+            panic!("expected one warning");
+        };
+        assert!(
+            warning.contains("/home/ada/.ployz/mcp.json")
+                && warning.contains("a crash may lose it"),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn an_unflushed_save_is_reported_beside_a_token_left_in_another_organization() {
+        let unflushed = Saved::Unflushed(io::Error::other("disk"));
+        let left = fate(held(CLOUD, "ada"), CLOUD, "adaside", &unflushed).unwrap_err();
+        let said = warnings(Path::new("mcp.json"), &unflushed, Some(&left));
+        let [unsaved, kept] = &said[..] else {
+            panic!("expected two warnings: {said:?}");
+        };
+        assert!(unsaved.contains("a crash may lose it"), "{said:?}");
+        assert!(kept.contains("ployz org use ada"), "{said:?}");
+    }
+
+    #[test]
+    fn a_durable_first_login_warns_nothing() {
+        assert!(warnings(Path::new("mcp.json"), &Saved::Durable, None).is_empty());
     }
 }
