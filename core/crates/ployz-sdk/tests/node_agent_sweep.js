@@ -123,6 +123,14 @@ const TRUSTED = {
   domains: { cluster_domain: { name: "acme.ployz.app", status: { kind: "ready" } }, certificates: null, ingress_addresses: [], lookups: [] },
   servers: 3,
   approval: "not_required",
+  // A named caller holds what Cloud sends; the sweep's member is an owner.
+  permissions: [
+    "org:read", "org:settings", "org:billing", "org:delete", "members:read", "members:manage", "tokens:create", "tokens:manage",
+    "agents:manage", "github:connect", "approvals:answer", "audit:read", "project:read", "project:create", "project:edit",
+    "project:delete", "environment:create", "environment:delete", "environments:protect", "changes:stage", "changes:deploy",
+    "changes:destroy", "changes:merge", "services:control", "variables:read", "logs:read", "metrics:read", "volumes:read",
+    "volumes:delete-copy", "servers:read", "servers:add", "servers:operate", "servers:remove", "servers:shell",
+  ],
 };
 
 async function call(store, tool, input, key) {

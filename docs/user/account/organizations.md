@@ -41,7 +41,9 @@ everything the role below it can, and more:
 | Owner  | Also manage billing, delete the organization, and make or remove an owner. |
 
 When you try something your role can't do, Ployz says who can: "Only an owner or admin of this
-Organization can do this." or "Only an owner of this Organization can do this."
+Organization can do this." or "Only an owner of this Organization can do this." A change to a
+project's configuration that your role can't make is refused with the permission it needs, such as
+`Needs environment:delete`; `ployz <command> --help` names that permission before you run it.
 
 To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
 **Admin**, add their email, and click **Make link**. When Ployz Cloud has email on, it emails the

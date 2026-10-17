@@ -24,6 +24,7 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { forgetServer } from "#/modules/operations/operations.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
+import { permissionsOf } from "#/modules/organization/permissions";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -830,7 +831,7 @@ it.live(
         assert.strictEqual(other.json.error?.details?.next, "ployz org use elsewhere");
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
-        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command);
+        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
         const created = yield* write({ operation: "write", command: {
           command: "create_project", id: "00000000-0000-4000-8000-000000001260", name: "shop",
           default_environment: "00000000-0000-4000-8000-000000001261",
@@ -1324,7 +1325,7 @@ const ownNamespace = Effect.fn(function* (organizationId: string, userId: string
       command: "create_project", id: "00000000-0000-4000-8000-00000000d401", name: "shop",
       default_environment: "00000000-0000-4000-8000-00000000d402",
     },
-  });
+  }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
   assert.isTrue(created.ok);
   yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id)
     values (${organizationId}, 'shop-production', '00000000-0000-4000-8000-00000000d402')`);

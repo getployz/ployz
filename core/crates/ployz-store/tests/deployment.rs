@@ -17,7 +17,7 @@ use ployz_store::{
     DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentWarning,
     DeploymentsQuery, DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
     EnvironmentRef, FailedAt, IngressAction, IngressFailure, IngressRepair, NamespaceQuery,
-    NodeStatus, OrganizationId, PlanQuery, Principal, ProjectId, ProjectName, Publish,
+    NodeStatus, OrganizationId, Permission, PlanQuery, Principal, ProjectId, ProjectName, Publish,
     PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
     RowState, RowTracker, RunEvidence, RunnerId, ServerRow, ServiceLineageId, ServiceQuery,
     ServicesQuery, SettingPath, Start, Trusted, UploadBase, UploadedSource, View, Written,
@@ -2752,12 +2752,18 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             accept_volume_loss: Vec::new(),
             message: None,
         }));
-        let Written::Deployment(summary) = store.write(who, &command).unwrap() else {
+        // Cloud names who acts and what they hold; the Deployment records them as its
+        // admitter and uploader.
+        let held = Trusted {
+            permissions: Some(Permission::ALL.iter().copied().collect()),
+            ..Trusted::default()
+        };
+        let Written::Deployment(summary) = store.write_trusted(who, &command, &held).unwrap()
+        else {
             panic!("an admit writes a Deployment");
         };
         summary
     };
-    // Cloud names who acts; the Deployment records them as its admitter and uploader.
     let nick = Actor {
         principal: Some(Principal::parse("nick").unwrap()),
         ..who.clone()

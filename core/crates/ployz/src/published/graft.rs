@@ -36,6 +36,7 @@ fn leaf(name: &str, command: &PublishedCommand) -> Command {
     if command.asks() && !command.args.iter().any(|arg| arg.name == "approval") {
         leaf = leaf.arg(crate::cli::approval());
     }
+    let mut help = Vec::new();
     if !command.examples.is_empty() {
         let examples = command
             .examples
@@ -43,7 +44,13 @@ fn leaf(name: &str, command: &PublishedCommand) -> Command {
             .map(|example| format!("  {example}"))
             .collect::<Vec<_>>()
             .join("\n");
-        leaf = leaf.after_help(format!("Examples:\n{examples}"));
+        help.push(format!("Examples:\n{examples}"));
+    }
+    if let Some(permission) = &command.requires {
+        help.push(format!("Needs {permission}"));
+    }
+    if !help.is_empty() {
+        leaf = leaf.after_help(help.join("\n\n"));
     }
     leaf
 }

@@ -38,14 +38,14 @@ export const discardPlacementServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(VolumeInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
-    Effect.flatMap(({ organization }) => discardPlacement(organization.id, context.actor.userId, data.volumeId, data.environment)),
+    Effect.flatMap((access) => discardPlacement(access.organization.id, access, data.volumeId, data.environment)),
   )));
 
 export const stageRestoreServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(StageRestoreInput))
   .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "changes:stage").pipe(
-    Effect.flatMap(({ organization }) => unlessPlacementRefused(organization.id, stageRestore(organization.id, context.actor.userId, data))),
+    Effect.flatMap((access) => unlessPlacementRefused(access.organization.id, stageRestore(access.organization.id, access, data))),
   )));
 
 export const stageOffServerServerFn = createServerFn({ method: "POST" })

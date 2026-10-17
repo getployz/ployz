@@ -7,6 +7,7 @@ import { asRecord, asString, canonicalJson } from "#/lib/json";
 import { type CommandCall, type Ran, refused } from "#/modules/commands/command.server";
 import { COMMANDS, RUNNABLE } from "#/modules/commands/registry.server";
 import type { Caller } from "#/modules/identity/actor";
+import { PERMISSIONS } from "#/modules/organization/permissions";
 
 export type Published = (typeof COMMANDS)[number];
 type Runnable = (typeof RUNNABLE)[number];
@@ -48,6 +49,7 @@ function entry(command: Published): JsonObject {
     path: [...command.path],
     about: command.about,
     examples: [...command.examples],
+    requires: command.requires,
     kind: command.kind,
     gate: command.gate,
     removes: command.removes,
@@ -64,7 +66,7 @@ function entry(command: Published): JsonObject {
 export function manifest() {
   const commands = COMMANDS.map(entry);
   const revision = createHash("sha256").update(canonicalJson(commands)).digest("hex").slice(0, 12);
-  return { format: 1, revision, commands } as const;
+  return { format: 1, revision, permissions: PERMISSIONS, commands } as const;
 }
 
 export const MANIFEST_REVISION = manifest().revision;

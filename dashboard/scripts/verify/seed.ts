@@ -35,6 +35,7 @@ import { InngestClient, type PloyzInngest } from "#/modules/inngest/client";
 import { account, member, session, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
 import { ensurePersonalOrganizationForUser } from "#/modules/organization/organization-state.server";
+import { permissionsOf } from "#/modules/organization/permissions";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -139,7 +140,7 @@ const seed = Effect.gen(function* () {
   const writes: Record<string, string> = {};
   const skipped: string[] = [];
   const write = (label: string, command: ConfigCommand) =>
-    callStore(organizationId, ada.id, { operation: "write", command }).pipe(
+    callStore(organizationId, ada.id, { operation: "write", command }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }).pipe(
       Effect.tap((r) => Effect.sync(() => { writes[label] = r.ok ? "ok" : `refused: ${r.refusal.code} ${r.refusal.message}`; })),
     );
   const at = (environment: string | null) => ({ project: "shop", environment });

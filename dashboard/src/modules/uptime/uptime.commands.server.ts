@@ -121,6 +121,7 @@ const notChecked = (name: string) =>
 
 export const uptimeShow = defineCommand({
   name: "uptime_show",
+  requires: "project:read",
   path: ["uptime", "show"],
   about: "Show a Service's uptime: whether visitors reach it, what each region's check got back, and its incidents",
   examples: ["ployz uptime show web", "ployz uptime show web --project shop --environment staging --from 6h"],
@@ -166,6 +167,7 @@ export const whileChecking = <E, R>(read: Effect.Effect<ServiceUptime | null, E,
 /** Asks for a probe the way Check now does, then waits for the checker to judge the round by `whileChecking`. */
 export const uptimeCheck = defineCommand({
   name: "uptime_check",
+  requires: "project:read",
   path: ["uptime", "check"],
   about: "Check a Service's public address now, from every region, and show what each got back. Changes no setting",
   examples: ["ployz uptime check web", "ployz uptime check web --project shop --environment staging"],

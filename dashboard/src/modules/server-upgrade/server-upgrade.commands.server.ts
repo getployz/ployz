@@ -1,8 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
-import { defineCommand, refused } from "#/modules/commands/command.server";
-import { callerOrSupportCan } from "#/modules/identity/actor";
-import { refusalOf } from "#/modules/organization/access.server";
+import { defineCommand } from "#/modules/commands/command.server";
 import { RELEASE_CHANNELS, ServerUpgradeSettingsChange } from "#/modules/server-upgrade/server-upgrade";
 import { organizationServerUpgradeSettings, setServerUpgradeSettings } from "#/modules/server-upgrade/server-upgrade.server";
 
@@ -10,6 +8,7 @@ const UpgradePolicy = Schema.Struct({ channel: Schema.Literals(RELEASE_CHANNELS)
 
 export const serverUpgradePolicyShow = defineCommand({
   name: "server_upgrade_policy_show",
+  requires: "servers:read",
   path: ["server", "upgrade-policy", "show"],
   about: "Show the Organization's upgrade policy: its Release Channel and whether Servers upgrade automatically",
   examples: ["ployz server upgrade-policy show"],
@@ -27,6 +26,7 @@ export const serverUpgradePolicyShow = defineCommand({
 
 export const serverUpgradePolicySet = defineCommand({
   name: "server_upgrade_policy_set",
+  requires: "servers:operate",
   path: ["server", "upgrade-policy", "set"],
   about: "Change the Organization's upgrade policy: the Release Channel every upgrade follows, or automatic upgrades on or off",
   examples: ["ployz server upgrade-policy set --channel beta", "ployz server upgrade-policy set --automatic true"],
@@ -39,9 +39,7 @@ export const serverUpgradePolicySet = defineCommand({
   input: ServerUpgradeSettingsChange,
   output: UpgradePolicy,
   render: "record",
-  run: (caller, change) => !callerOrSupportCan(caller, "servers:operate")
-    ? Effect.succeed(refused("forbidden", refusalOf("servers:operate")))
-    : setServerUpgradeSettings(caller.organization.id, change).pipe(
-      Effect.map(({ channel, automatic }) => ({ ok: true, output: { channel, automatic } }) as const),
-    ),
+  run: (caller, change) => setServerUpgradeSettings(caller.organization.id, change).pipe(
+    Effect.map(({ channel, automatic }) => ({ ok: true, output: { channel, automatic } }) as const),
+  ),
 });
