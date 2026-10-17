@@ -49,7 +49,7 @@ later.
    ployz deploy
    ```
 
-4. Run `ployz domain ls` for the address.
+4. Run `ployz get web.domains` for the address, like `web.anon-56br6lsh.ployz.app`.
 
 Steps 2 to 4 work from any computer with `PLOYZ_TOKEN` set. A deploy doesn't wait for an
 approval while only the agent owns the organization.
