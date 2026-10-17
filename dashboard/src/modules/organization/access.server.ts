@@ -24,13 +24,13 @@ export type Access =
   | { readonly kind: "support"; readonly userId: string; readonly organization: OrganizationRef; readonly shows: SupportShows };
 
 /** "operate": any member, or support. "manage": an owner or admin, or support. "own": an owner, never support. */
-type Need = "operate" | "manage" | "own";
+export type Need = "operate" | "manage" | "own";
 
+/** "operate" needs no entry: every role, support included, holds org:read. */
 const NEED_TO_PERMISSION = {
-  operate: { permission: "org:read", refused: "Only a member of this Organization can do this." },
   manage: { permission: "org:settings", refused: "Only an owner or admin of this Organization can do this." },
   own: { permission: "org:delete", refused: "Only an owner of this Organization can do this." },
-} satisfies Record<Need, { readonly permission: Permission; readonly refused: string }>;
+} satisfies Record<Exclude<Need, "operate">, { readonly permission: Permission; readonly refused: string }>;
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
 type AccessFacts = {
@@ -40,7 +40,7 @@ type AccessFacts = {
   readonly supportShows: SupportShows;
 };
 
-type AccessDecision = Access | { readonly kind: "forbidden"; readonly need: Need } | { readonly kind: "not_found" };
+type AccessDecision = Access | { readonly kind: "forbidden"; readonly need: Exclude<Need, "operate"> } | { readonly kind: "not_found" };
 
 /** The one rule: members by role; staff only while the Organization allows support. Outsiders learn nothing. */
 export const decideAccess = (input: {
@@ -51,13 +51,12 @@ export const decideAccess = (input: {
 }): AccessDecision => {
   const { userId, facts, isStaff, need } = input;
   if (facts === null) return { kind: "not_found" };
-  const { permission } = NEED_TO_PERMISSION[need];
   if (facts.role !== null) {
-    if (!can(facts.role, permission)) return { kind: "forbidden", need };
+    if (need !== "operate" && !can(facts.role, NEED_TO_PERMISSION[need].permission)) return { kind: "forbidden", need };
     return { kind: "member", userId, role: facts.role, organization: facts.organization };
   }
   if (isStaff && facts.supportAllowed) {
-    if (!can("support", permission)) return { kind: "forbidden", need };
+    if (need !== "operate" && !can("support", NEED_TO_PERMISSION[need].permission)) return { kind: "forbidden", need };
     return { kind: "support", userId, organization: facts.organization, shows: facts.supportShows };
   }
   return { kind: "not_found" };

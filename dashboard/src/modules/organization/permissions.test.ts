@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideAccess, type Role } from "#/modules/organization/access.server";
+import { decideAccess, type Need, type Role } from "#/modules/organization/access.server";
 import { can, PERMISSIONS, type Permission, type PermissionRole, ROLE_PERMISSIONS } from "#/modules/organization/permissions";
 import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
 
@@ -59,23 +59,22 @@ describe("ROLE_PERMISSIONS", () => {
   });
 });
 
-type Need = "operate" | "manage" | "own";
+const organization = { id: "00000000-0000-4000-8000-000000000001", slug: "acme" };
 
-const kindBeforePermissions = (role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
+const decisionBeforePermissions = (role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
   if (role !== null) {
-    if (need === "manage" && role === "member") return "forbidden";
-    if (need === "own" && role !== "owner") return "forbidden";
-    return "member";
+    if (need === "manage" && role === "member") return { kind: "forbidden", need };
+    if (need === "own" && role !== "owner") return { kind: "forbidden", need };
+    return { kind: "member", userId: "user-1", role, organization };
   }
   if (isStaff && supportAllowed) {
-    if (need === "own") return "forbidden";
-    return "support";
+    if (need === "own") return { kind: "forbidden", need };
+    return { kind: "support", userId: "user-1", organization, shows: SUPPORT_SHOWS_NONE };
   }
-  return "not_found";
+  return { kind: "not_found" };
 };
 
 describe("decideAccess through can", () => {
-  const organization = { id: "00000000-0000-4000-8000-000000000001", slug: "acme" };
   const needs: ReadonlyArray<Need> = ["operate", "manage", "own"];
   const roles: ReadonlyArray<Role | null> = ["owner", "admin", "member", null];
 
@@ -87,14 +86,13 @@ describe("decideAccess through can", () => {
           for (const supportAllowed of [false, true]) {
             const facts = { organization, role, supportAllowed, supportShows: SUPPORT_SHOWS_NONE };
             const decision = decideAccess({ userId: "user-1", facts, isStaff, need });
-            expect({ role, isStaff, supportAllowed, need, kind: decision.kind }).toEqual({
+            expect({ role, isStaff, supportAllowed, need, decision }).toEqual({
               role,
               isStaff,
               supportAllowed,
               need,
-              kind: kindBeforePermissions(role, isStaff, supportAllowed, need),
+              decision: decisionBeforePermissions(role, isStaff, supportAllowed, need),
             });
-            if (decision.kind === "forbidden") expect(decision.need).toBe(need);
           }
         }
       }
