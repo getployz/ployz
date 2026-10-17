@@ -34,7 +34,7 @@ pub(crate) fn vouched() -> Trusted {
             default_branch: backend::git_branch("main"),
             branches: vec![backend::git_branch("release")],
         }],
-        ..Trusted::default()
+        ..crate::backend::cloud()
     }
 }
 

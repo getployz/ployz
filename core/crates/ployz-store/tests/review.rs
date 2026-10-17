@@ -118,7 +118,7 @@ fn publish_as(
         },
         &Trusted {
             approval,
-            ..Trusted::default()
+            ..backend::cloud()
         },
     )
 }
@@ -543,7 +543,7 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
     who.principal = Some(ployz_store::Principal::parse("Ada Lovelace").unwrap());
     let held = Trusted {
         permissions: Some(Permission::ALL.iter().copied().collect()),
-        ..Trusted::default()
+        ..backend::cloud()
     };
     let save = |message: &str| {
         store
@@ -1813,7 +1813,7 @@ fn route(store: &ConfigStore, who: &Actor, at: EnvironmentRef, service: &str, ho
                 prefix: None,
                 port: None,
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
 }
@@ -1826,7 +1826,7 @@ fn unroute(store: &ConfigStore, who: &Actor, hostname: &str) {
                 environment: EnvironmentRef::default(),
                 domain: hostname.into(),
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
 }
@@ -1957,7 +1957,7 @@ fn history_refuses_a_generated_domain_another_service_took_since() {
                     prefix: Some(ployz_core::DomainPrefix::parse("shop").unwrap()),
                     port: None,
                 },
-                &Trusted::default(),
+                &backend::cloud(),
             )
             .unwrap();
     };
@@ -2485,7 +2485,7 @@ fn history_undo_custom_and_generated_domains_uses_typed_settings() {
                     prefix: None,
                     port: None,
                 },
-                &Trusted::default(),
+                &backend::cloud(),
             )
             .unwrap();
         publish(&store, &who, None).unwrap();
@@ -2560,7 +2560,7 @@ fn undo_domain_revision_preserves_later_unrelated_route_without_confirmation() {
                     prefix: None,
                     port: None,
                 },
-                &Trusted::default(),
+                &backend::cloud(),
             )
             .unwrap()
     };
@@ -2621,7 +2621,7 @@ fn review_discard_restores_custom_and_generated_domain_changes() {
                     prefix: None,
                     port: None,
                 },
-                &Trusted::default(),
+                &backend::cloud(),
             )
             .unwrap();
         let before = diff(&store, &who);
@@ -3057,7 +3057,7 @@ fn git_edit(store: &ConfigStore, who: &Actor, path: &str, next: Value) {
             default_branch: backend::git_branch("main"),
             branches: vec![backend::git_branch("dev")],
         }],
-        ..Trusted::default()
+        ..backend::cloud()
     };
     let mut changes = Vec::new();
     if path == "web.repository"
@@ -3441,7 +3441,7 @@ fn add_domain(store: &ConfigStore, who: &Actor, hostname: &str) {
                 prefix: None,
                 port: None,
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
 }
@@ -3455,7 +3455,7 @@ fn reorder_routes(store: &ConfigStore, who: &Actor) {
                 environment: EnvironmentRef::default(),
                 domain: "b.example.com".into(),
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
     add_domain(store, who, "b.example.com");
@@ -3608,7 +3608,7 @@ fn removing_a_deployed_service_is_destructive_and_a_new_one_is_not() {
     let (store, who) = shop();
     remove_service(&store, &who, "api");
     assert!(diff(&store, &who).effects.is_empty());
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     remove_service(&store, &who, "web");
     assert_eq!(
         Vec::from_iter(diff(&store, &who).effects),
@@ -3625,7 +3625,7 @@ fn removing_a_deployed_service_is_destructive_and_a_new_one_is_not() {
 fn deleting_a_deployed_volume_is_destructive() {
     let (store, who) = shop();
     mount_data(&store, &who);
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     store
         .write(
             &who,
@@ -3649,7 +3649,7 @@ fn deleting_a_deployed_volume_is_destructive() {
 fn detaching_a_volume_from_a_deployed_service_is_destructive_and_keeps_its_data() {
     let (store, who) = shop();
     mount_data(&store, &who);
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     store
         .write(
             &who,
@@ -3686,10 +3686,10 @@ fn removing_a_deployed_domain_is_destructive() {
                 prefix: None,
                 port: None,
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     store
         .write_trusted(
             &who,
@@ -3697,7 +3697,7 @@ fn removing_a_deployed_domain_is_destructive() {
                 environment: EnvironmentRef::default(),
                 domain: "app.example.com".into(),
             },
-            &Trusted::default(),
+            &backend::cloud(),
         )
         .unwrap();
     let effects = effects(&store, &who);
@@ -3717,7 +3717,7 @@ fn removing_a_deployed_domain_is_destructive() {
             },
             &Trusted {
                 approval: Approval::Required,
-                ..Trusted::default()
+                ..backend::cloud()
             },
         )
         .unwrap_err();
@@ -3742,7 +3742,7 @@ fn an_effect_from_a_cloud_that_names_nothing_still_reads() {
 #[test]
 fn rolling_a_deployed_service_destroys_nothing_and_publishes_unasked() {
     let (store, who) = shop();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     set(&store, &who, "web.image", json!("nginx:2"));
     set(&store, &who, "web.env.MODE", json!("fast"));
     set(&store, &who, "web.replicas", json!(3));
@@ -3753,7 +3753,7 @@ fn rolling_a_deployed_service_destroys_nothing_and_publishes_unasked() {
 #[test]
 fn publishing_a_removal_waits_for_a_human_to_approve_exactly_it() {
     let (store, who) = shop();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     remove_service(&store, &who, "web");
     let refused = publish_as(&store, &who, None, Approval::Required).unwrap_err();
     assert_eq!(refused.code.as_str(), "approval_required");
@@ -3825,7 +3825,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
 #[test]
 fn an_approval_of_an_older_review_is_refused_with_the_fresh_one() {
     let (store, who) = shop();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     remove_service(&store, &who, "web");
     let first = publish_as(&store, &who, None, Approval::Required).unwrap_err();
     let old = first.details["approval"].as_str().unwrap().to_owned();
@@ -3843,7 +3843,7 @@ fn an_approval_of_an_older_review_is_refused_with_the_fresh_one() {
 #[test]
 fn a_published_removal_not_yet_deployed_asks_again_on_the_next_publication() {
     let (store, who) = shop();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     remove_service(&store, &who, "web");
     let first = publish_as(&store, &who, None, Approval::Required).unwrap_err();
     let approved = Approval::Approved(
@@ -3859,7 +3859,7 @@ fn a_published_removal_not_yet_deployed_asks_again_on_the_next_publication() {
 #[test]
 fn a_new_publication_asks_again_for_a_removal_still_queued() {
     let (store, who) = shop();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     remove_service(&store, &who, "web");
     let deploy = |approval| {
         store.write_trusted(
@@ -3875,7 +3875,7 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
             }),
             &Trusted {
                 approval,
-                ..Trusted::default()
+                ..backend::cloud()
             },
         )
     };
@@ -3890,7 +3890,7 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
 #[test]
 fn with_approvals_switched_off_a_removal_publishes_unasked() {
     let (store, who) = shop();
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     remove_service(&store, &who, "web");
     assert!(!diff(&store, &who).effects.is_empty());
     let published = publish_as(&store, &who, None, Approval::NotRequired).unwrap();
@@ -3927,7 +3927,7 @@ fn publish_review_perf() {
             )
             .unwrap();
     }
-    apply_all(&store, &who, &Trusted::default());
+    apply_all(&store, &who, &backend::cloud());
     let rounds = 200_u32;
     let mut spent = std::time::Duration::ZERO;
     for round in 0..rounds {
@@ -3958,7 +3958,7 @@ fn publish_review_perf() {
                     message: None,
                     accept_volume_loss: Vec::new(),
                 },
-                &Trusted::default(),
+                &backend::cloud(),
             )
             .unwrap();
         spent += started.elapsed();

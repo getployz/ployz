@@ -11,8 +11,8 @@ use ployz_store::{
     Actor, AuthorizedRepository, Automated, Change, ConfigStore, CreateBranch, CreateEnvironment,
     CreateGitService, CreateProject, CreateService, Edit, EnvironmentId, EnvironmentName,
     EnvironmentRef, EnvironmentsQuery, OrganizationId, Principal, ProjectId, ProjectName, Publish,
-    Published, PullRequest, ServiceLineageId, SetEnvironmentProtected, SetPrPlan, SettingPath,
-    SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
+    Published, PullRequest, SeenProtection, ServiceLineageId, SetEnvironmentProtected, SetPrPlan,
+    SettingPath, SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -42,7 +42,7 @@ fn acme() -> Trusted {
     };
     Trusted {
         repositories: vec![repository("acme/web", 11), repository("acme/docs", 12)],
-        ..Trusted::default()
+        ..backend::cloud()
     }
 }
 
@@ -114,6 +114,7 @@ fn set(environment: &str, protected: bool) -> SetEnvironmentProtected {
     SetEnvironmentProtected {
         environment: at(environment),
         protected,
+        seen: None,
     }
 }
 
@@ -518,10 +519,10 @@ fn restoring_an_old_branch_from_history_needs_whoever_may_protect() {
         &system,
         "production",
         &[("web.branch", Some(json!("dev")))],
-        false,
+        true,
     )
     .unwrap();
-    publish(&store, &system, "production", false).unwrap();
+    publish(&store, &system, "production", true).unwrap();
     let who = person(&system);
     let query = ployz_store::HistoryPreviewQuery {
         environment: at("production"),
@@ -594,7 +595,7 @@ fn a_change_leaving_every_repository_and_branch_saves_for_anyone() {
 }
 
 #[test]
-fn the_stores_own_automation_and_an_unprotected_environment_save_any_branch() {
+fn cloud_itself_and_an_unprotected_environment_save_any_branch() {
     let (store, system) = shop();
     fix_web(&store, &system);
     edit(
@@ -602,12 +603,12 @@ fn the_stores_own_automation_and_an_unprotected_environment_save_any_branch() {
         &system,
         "fix-web",
         &[("web.repository", Some(json!("acme/docs")))],
-        false,
+        true,
     )
     .unwrap();
-    sync_up(&store, &system, false).unwrap();
+    sync_up(&store, &system, true).unwrap();
     assert!(
-        publish(&store, &system, "production", false)
+        publish(&store, &system, "production", true)
             .unwrap()
             .created
     );
@@ -658,6 +659,78 @@ fn only_whoever_may_protect_flips_protection_even_after_another_protects() {
 
     flip("staging", false, true).unwrap();
     assert!(protection(&store, &who).contains(&("staging".into(), false)));
+}
+
+#[test]
+fn an_unprotect_decided_on_an_earlier_protection_refuses() {
+    let (store, system) = shop();
+    let admin = Trusted {
+        may_protect: true,
+        ..Trusted::default()
+    };
+    let unprotect = |seen| {
+        store.write_trusted(
+            &person(&system),
+            &SetEnvironmentProtected {
+                seen: Some(seen),
+                ..set("staging", false)
+            },
+            &admin,
+        )
+    };
+    let stale = |result: Result<_, RpcError>, protected, protections| {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            error.details,
+            json!({
+                "project": "shop",
+                "environment": "staging",
+                "protected": protected,
+                "protections": protections,
+            })
+        );
+    };
+    let seen = |protected, protections| SeenProtection {
+        protected,
+        protections,
+    };
+
+    // A human approved lifting the first protection; staging was unprotected and
+    // protected again before the agent's write landed.
+    store.write(&system, &set("staging", true)).unwrap();
+    store.write(&system, &set("staging", false)).unwrap();
+    store.write(&system, &set("staging", true)).unwrap();
+    stale(unprotect(seen(true, 1)), true, 2);
+    assert!(protection(&store, &system).contains(&("staging".into(), true)));
+
+    unprotect(seen(true, 2)).unwrap();
+    assert!(protection(&store, &system).contains(&("staging".into(), false)));
+
+    // The agent saw staging unprotected, so no one was asked; a person protected it
+    // before the write landed.
+    store.write(&system, &set("staging", true)).unwrap();
+    stale(unprotect(seen(false, 2)), true, 3);
+    assert!(protection(&store, &system).contains(&("staging".into(), true)));
+}
+
+#[test]
+fn an_unnamed_caller_cloud_found_no_role_for_may_not_protect() {
+    let (store, system) = shop();
+    // A user Cloud couldn't name (their row is gone) and found no role for is not automation.
+    let unnamed =
+        |protected| store.write_trusted(&system, &set("staging", protected), &Trusted::default());
+
+    assert_forbidden(
+        unnamed(true),
+        json!({"project": "shop", "environment": "staging"}),
+    );
+    store.write(&system, &set("staging", true)).unwrap();
+    assert_forbidden(
+        unnamed(false),
+        json!({"project": "shop", "environment": "staging"}),
+    );
+    assert!(protection(&store, &system).contains(&("staging".into(), true)));
 }
 
 #[test]

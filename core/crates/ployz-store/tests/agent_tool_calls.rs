@@ -124,7 +124,7 @@ fn drive(
 ) -> Run {
     drive_as(
         store,
-        (&who(), &Trusted::default()),
+        (&who(), &backend::cloud()),
         at,
         tool,
         input,
@@ -706,7 +706,7 @@ fn a_deploy_with_no_servers_says_nothing_deployed_and_leaves_the_change_staged()
     .ok();
     let none = Trusted {
         servers: Some(0),
-        ..Trusted::default()
+        ..backend::cloud()
     };
     let refused = drive_as(
         &store,
@@ -839,7 +839,7 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
             },
             &ployz_store::Trusted {
                 approval: ployz_store::Approval::NotRequired,
-                ..ployz_store::Trusted::default()
+                ..backend::cloud()
             },
         )
         .unwrap();
@@ -1005,7 +1005,7 @@ fn two_organizations_create_with_the_same_key() {
         let at = StoreAt::Cloud { organization };
         drive_as(
             &store,
-            (&who, &Trusted::default()),
+            (&who, &backend::cloud()),
             at,
             "project_create",
             input.clone(),

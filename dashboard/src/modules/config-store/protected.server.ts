@@ -50,23 +50,27 @@ const listed = Effect.fn("ConfigStore.listed")(function* (ref: typeof Environmen
 });
 
 /**
- * The approval an agent's `command` waits on when it unprotects a Protected Environment, or null when it doesn't: that
- * leaves the Environment removable and its source open to anyone who can stage, so a human says yes first. The preview
- * names which protection it lifts, so a yes holds for that one: protecting it again asks again.
+ * What an agent's `command` waits on when it unprotects a Protected Environment, or null when it doesn't: that leaves the
+ * Environment removable and its source open to anyone who can stage, so a human says yes first. The preview names which
+ * protection it lifts, so a yes holds for that one: protecting it again asks again. `command` is what to write: an
+ * unprotect carries the protection Cloud decided on, so the Store refuses it if another write changed it since.
  */
 export const unprotectAsked = Effect.fn("ConfigStore.unprotectAsked")(function* (organizationId: string, command: ConfigCommand) {
-  if (command.command !== "set_environment_protected" || command.protected) return null;
+  if (command.command !== "set_environment_protected" || command.protected) return { asked: null, command };
   const store = yield* cloudStore;
   // A read the Store refuses asks nothing: the write meets the same refusal.
   const environment = yield* listed(command.environment, (query) => store.read(organizationId, query)).pipe(
     Effect.catchTag("StoreRefused", () => Effect.succeed(undefined)),
   );
-  if (environment?.protected !== true) return null;
-  return {
+  if (environment === undefined) return { asked: null, command };
+  const decided = { ...command, seen: { protected: environment.protected, protections: environment.protections } };
+  if (!environment.protected) return { asked: null, command: decided };
+  const asked = {
     subject: `environment:${environment.id}`,
     verb: "unprotect",
     name: environment.name,
     preview: { project: command.environment.project ?? null, environment: environment.name, protected: false, protection: environment.protections },
     effects: [{ kind: "unprotects_environment", name: environment.name, node: environment.id, path: `${environment.name}.protected` }],
   } satisfies OperationAsked;
+  return { asked, command: decided };
 });

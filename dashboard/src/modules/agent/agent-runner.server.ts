@@ -224,14 +224,14 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
   const { write } = step;
   // Protecting asks no one; unprotecting asks a human once, as Cloud's operations do, then the tool finishes.
   if (write.at === "store" && write.write.command === "set_environment_protected") {
-    const unprotect = yield* unprotectAsked(caller.organization.id, write.write);
-    if (unprotect !== null) {
+    const { asked, command } = yield* unprotectAsked(caller.organization.id, write.write);
+    if (asked !== null) {
       // Only someone who may protect gets a human asked on their behalf.
       if (!(yield* mayProtect(caller.organization.id, caller.userId))) return done({ ok: false, refusal: protectorOnly });
-      const gated = yield* gateOperation(caller, call.approvalId, unprotect);
+      const gated = yield* gateOperation(caller, call.approvalId, asked);
       if (!gated.ok) return asking(gated.refusal) ?? done({ ok: false, refusal: gated.refusal });
     }
-    const written = yield* storeAnswer(caller, { operation: "write", command: write.write }, AGENT);
+    const written = yield* storeAnswer(caller, { operation: "write", command }, AGENT);
     return done(yield* finish(agentResume(state, [written]), read, agentWrite(caller)));
   }
   if (write.at === "store") {

@@ -93,6 +93,7 @@ fn protect(store: &ConfigStore, who: &Actor, environment: &str, protected: bool)
             &SetEnvironmentProtected {
                 environment: at(environment),
                 protected,
+                seen: None,
             },
         )
         .unwrap();
