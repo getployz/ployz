@@ -64,6 +64,7 @@ const notOrganizationOwned = {
   rate_limit: "Request counts per caller and path for auth rate limiting; it belongs to no Organization.",
   server_enrollment: "One host's Server Enrollment, read by its run, the host's check-in and the enrollments route; no view reads it, so it needs no change log.",
   checkin_rate_limit: "Check-in counts per Fleet Token and source address for rate limiting; no view reads it, so it needs no change log.",
+  anonymous_teardown: "How long a lapsed agent sandbox has waited on its Servers, read only by its teardown; no view reads it, so it needs no change log.",
   rate_limit_event: "One admitted request per key, such as an agent signup's source address; it belongs to no Organization.",
 } satisfies Record<string, string>;
 

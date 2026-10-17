@@ -81,6 +81,7 @@ function fakeServers() {
           server.slots.set(label, capability);
           return capability;
         },
+        setPushTarget: async () => undefined,
         clearManagementClient: async (label: string) => { server.slots.delete(label); },
         inspect: async () => ({ management_clients: [...server.slots.keys()] }),
         close: async () => undefined,

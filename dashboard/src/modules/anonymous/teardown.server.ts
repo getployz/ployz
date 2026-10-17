@@ -198,8 +198,8 @@ const removeProject = Effect.fn("AnonymousTeardown.removeProject")(function* (or
   };
   let consent: RemovalConsent = { accept: {}, version: null, everyCopy: {} };
   for (let round = 0; round < CONSENT_ROUNDS; round++) {
-    const answer = yield* Effect.tryPromise({ try: () => removeTarget(commit, { project, environment: null }, consent), catch: (cause) => cause }).pipe(
-      Effect.catch((cause) => cause instanceof StoreRefused ? Effect.fail(cause) : Effect.die(cause)),
+    const answer = yield* Effect.promise(() => removeTarget(commit, { project, environment: null }, consent)).pipe(
+      Effect.catchDefect((defect) => defect instanceof StoreRefused ? Effect.fail(defect) : Effect.die(defect)),
     );
     if ("sent" in answer) return answer.sent;
     consent = answer.ask;
