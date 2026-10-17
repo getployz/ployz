@@ -41,11 +41,14 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  const approval = call.operation === "write" && asksApproval(caller.via, call.command) && (yield* hasApprover(caller.organization.id))
+  // An approval the write names must be this Organization's, even where nobody is asked.
+  const asks = call.operation === "write" && asksApproval(caller.via, call.command);
+  const trusted = asks
     ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
     : { ok: true, approval: "not_required" } as const;
-  if (!approval.ok) return refusal(approval.refusal);
-  const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys" } as const;
+  if (!trusted.ok) return refusal(trusted.refusal);
+  const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";
+  const gate = { approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys" } as const;
   const result = yield* callStore(caller.organization.id, caller.userId, call, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {

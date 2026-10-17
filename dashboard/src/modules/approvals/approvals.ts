@@ -21,11 +21,14 @@ export type ApprovalReview =
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
-/** What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". */
+/**
+ * What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". A Store
+ * write also names its Project, which the card shows and a denial leaves out.
+ */
 export function approvalSubject(command: string, review: ApprovalReview) {
-  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
+  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
   const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove" : command === "shut_down" ? "Shut down" : "Deploy";
-  return { verb, name: review.diff.environment.name };
+  return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
