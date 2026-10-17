@@ -38,6 +38,7 @@ import { createSendMail } from "#/modules/mail/mail.inngest";
 import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.inngest";
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/postgres/web-analytics.inngest";
 import { createDeliverPushTargets } from "#/modules/observe-ingest/push-target.inngest";
+import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
   return [
@@ -77,5 +78,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createCrashMailFunctions(inngest),
     createDeliverPushTargets(inngest),
     ...createWebAnalyticsFunctions(inngest),
+    createTearDownAnonymousOrganization(inngest),
+    createScheduleAnonymousSweep(inngest),
   ];
 }
