@@ -27,7 +27,7 @@ thread_local! {
 }
 
 /// Held to stall every save, the way a slow disk stalls `sync_all`.
-pub(super) static SAVES: Mutex<()> = Mutex::new(());
+pub(in crate::checkin) static SAVES: Mutex<()> = Mutex::new(());
 
 fn free_port() -> u16 {
     loop {
@@ -408,11 +408,116 @@ async fn a_slow_save_holds_no_port_and_no_check_in() {
     assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
     assert!(bindable(tcp) && bindable(udp));
     assert!(!saved.exists());
-    assert_eq!(probes.report().await, None);
+    let report = tokio::time::timeout(Duration::from_millis(500), probes.report())
+        .await
+        .expect("the report waits on no save");
+    assert_eq!(report.unwrap().handout, "slow");
     release.send(()).unwrap();
     disk.join().unwrap();
     probes.finish().await;
     assert_eq!(Probes::load(saved).report().await.unwrap().handout, "slow");
+}
+
+/// Stalls every save until the returned sender drops or `seconds` pass.
+fn stall_saves(seconds: u64) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let disk = std::thread::spawn(move || {
+        let _stalled = SAVES.lock().unwrap();
+        held.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(seconds));
+    });
+    holding.recv().unwrap();
+    (release, disk)
+}
+
+#[tokio::test]
+async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("probe.json");
+    let (old, new) = (free_port(), free_port());
+    let (release, disk) = stall_saves(5);
+    let mut probes = Probes::load(saved.clone());
+    probes
+        .open(handout("old", 200, &[Port::Tcp(old)], &[]), &key())
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let handed = Instant::now();
+    probes
+        .open(handout("new", 400, &[Port::Tcp(new)], &[]), &key())
+        .await;
+
+    assert!(handed.elapsed() < BIND_DEADLINE, "{:?}", handed.elapsed());
+    assert_eq!(
+        greeting_from(new).await,
+        greeting("new", key().public_hex(), new).into_bytes()
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let report = probes.report().await.unwrap();
+    assert_eq!(report.handout, "new");
+    assert!(report.bind_failed.is_empty());
+    drop(release);
+    disk.join().unwrap();
+    probes.finish().await;
+    assert_eq!(Probes::load(saved).report().await.unwrap().handout, "new");
+}
+
+#[tokio::test]
+async fn a_port_not_listening_a_second_after_its_handout_reports_as_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (tcp, udp) = (free_port(), free_port());
+    let (held, holding) = std::sync::mpsc::channel();
+    let slow = std::thread::spawn(move || {
+        let _slow = NEWEST.lock().unwrap();
+        held.send(()).unwrap();
+        std::thread::sleep(BIND_DEADLINE + Duration::from_millis(200));
+    });
+    holding.recv().unwrap();
+    let mut probes = Probes::load(dir.path().join("probe.json"));
+
+    probes
+        .open(
+            handout("late", 1_000, &[Port::Tcp(tcp), Port::Udp(udp)], &[]),
+            &key(),
+        )
+        .await;
+
+    slow.join().unwrap();
+    assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
+    assert!(bindable(tcp) && bindable(udp));
+    probes.finish().await;
+    assert_eq!(
+        probes.report().await.unwrap().bind_failed,
+        [format!("tcp:{tcp}"), format!("udp:{udp}")]
+    );
+}
+
+#[tokio::test]
+async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("probe.json");
+    let port = free_port();
+    let (release, disk) = stall_saves(5);
+    let mut dropped = Probes::load(saved.clone());
+    dropped
+        .open(handout("old", 200, &[Port::Udp(port)], &[]), &key())
+        .await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    drop(dropped);
+
+    let mut probes = Probes::load(saved.clone());
+    probes
+        .open(handout("new", 10_000, &[Port::Udp(port)], &[]), &key())
+        .await;
+    probes.close().await;
+    drop(release);
+    disk.join().unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(SAVES.lock().unwrap());
+
+    assert!(!saved.exists());
+    assert_eq!(Probes::load(saved).report().await, None);
 }
 
 #[test]

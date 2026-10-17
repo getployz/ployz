@@ -605,7 +605,7 @@ async fn pass_from<H: Host>(
             status.message = Some(why.clone());
             record(&status, paths);
             return Next::Retry {
-                after: client::BACKOFF,
+                after: probes.retry_after(client::BACKOFF),
                 why: format!("Could not probe this server: {why}."),
             };
         }
@@ -682,7 +682,7 @@ async fn pass_from<H: Host>(
             status.answer = Seen::Unreachable;
             status.message = Some(why.clone());
             Next::Retry {
-                after,
+                after: probes.retry_after(after),
                 why: format!("Could not reach Ployz Cloud: {why}."),
             }
         }

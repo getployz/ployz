@@ -36,6 +36,7 @@ const PROBE: &str = r#"{
 const OLD: &str = "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const NEW: &str = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 const REFUSAL: &str = r#"{"error":"Authentication is required."}"#;
+const WAIT: &str = r#"{"kind":"wait","retryAfter":10}"#;
 
 #[derive(Default)]
 struct FakeHost {
@@ -743,6 +744,108 @@ fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
 }
 
 #[tokio::test]
+async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_next_check_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::load(paths.probe());
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let disk = std::thread::spawn(move || {
+        let _stalled = probe::tests::SAVES.lock().unwrap();
+        held.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(5));
+    });
+    holding.recv().unwrap();
+    handed(&paths, &mut probes, "old", udp_port(), 200).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let body = format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"new","windowMs":300,"listen":["tcp:{port}"],"send":[]}}}}"#
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), body, 1).await;
+
+    let handed_out = std::time::Instant::now();
+    let next = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+
+    assert!(matches!(next, Next::Wait { .. }), "{next:?}");
+    assert!(
+        handed_out.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        handed_out.elapsed()
+    );
+    server.await.unwrap();
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("the new window listens");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
+    pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
+    assert!(
+        request.contains(r#""probe":{"handout":"new","heardFrom":[],"bindFailed":[]}"#),
+        "{request}"
+    );
+    drop(release);
+    disk.join().unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::default();
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let unreachable = || client("http://127.0.0.1:9");
+    let pass = async |host: &FakeHost, client: &mut CheckinClient, probes: &mut Probes| {
+        pass_from(host, client, &key(), &paths, Utc::now(), false, probes).await
+    };
+
+    retries_after(&pass(&failing, &mut unreachable(), &mut probes).await, 10);
+    retries_after(
+        &pass(&FakeHost::default(), &mut unreachable(), &mut probes).await,
+        10,
+    );
+    retries_after(
+        &pass(&failing, &mut unreachable(), &mut Probes::default()).await,
+        client::BACKOFF.as_secs(),
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
+    pass(&FakeHost::default(), &mut client(&url), &mut probes).await;
+    let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
+    assert!(
+        request.contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+        "{request}"
+    );
+}
+
+#[tokio::test]
 async fn what_a_window_heard_outlives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
@@ -774,12 +877,7 @@ async fn a_restart_mid_window_resumes_no_report_rather_than_a_partial_or_older_o
     drop(probes);
 
     assert_eq!(saved(&paths).await, None);
-    let (url, server) = answering_cloud(
-        "200 OK".to_owned(),
-        r#"{"kind":"wait","retryAfter":10}"#.to_owned(),
-        1,
-    )
-    .await;
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
     pass(
         &FakeHost::default(),
         &mut client(&url),
@@ -799,12 +897,7 @@ async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
     fs::create_dir_all(&paths.checkin_dir).unwrap();
     let kept = window_report("h", &["2001:db8::1"]);
     fs::write(paths.probe(), serde_json::to_vec(&kept).unwrap()).unwrap();
-    let (url, server) = answering_cloud(
-        "200 OK".to_owned(),
-        r#"{"kind":"wait","retryAfter":10}"#.to_owned(),
-        1,
-    )
-    .await;
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
 
     install_pass(
         &FakeHost::default(),

@@ -3,10 +3,14 @@
 //! check-in.
 
 use std::{
+    collections::BTreeMap,
     fmt, fs, io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
-    sync::{Mutex, PoisonError},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
@@ -34,6 +38,18 @@ const CLOUD_READS_FOR: Duration = Duration::from_millis(500);
 const DATAGRAM_BUFFER: usize = 2048;
 const SOCKET_BACKOFF: Duration = Duration::from_millis(100);
 const LISTEN_BACKLOG: i32 = 1024;
+/// A port not listening this soon after its handout reports as failed, since Cloud's first
+/// attempt comes a second in.
+const BIND_DEADLINE: Duration = Duration::from_secs(1);
+/// Cloud settles a probe this long after its window ends.
+const SETTLE_GRACE: Duration = Duration::from_secs(30);
+/// How soon a failed pass tries again while Cloud still waits on a report: its own check-in pace.
+const REPORT_RETRY: Duration = Duration::from_secs(10);
+
+/// The newest window to claim each saved path, whichever `Probes` opened it. A writer saves only
+/// while its window is still the newest, so an older report never lands over a newer window.
+static NEWEST: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
+static WINDOWS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -98,12 +114,25 @@ pub(super) struct Report {
 pub(super) struct Probes {
     finished: Option<Report>,
     window: Option<Window>,
+    saving: Option<JoinHandle<()>>,
     saved: Option<PathBuf>,
+    owed_until: Option<Instant>,
 }
 
 struct Window {
-    task: JoinHandle<Option<Report>>,
+    task: JoinHandle<Option<Ended>>,
     stop: CancellationToken,
+}
+
+impl Drop for Window {
+    fn drop(&mut self) {
+        self.stop.cancel();
+    }
+}
+
+struct Ended {
+    report: Report,
+    saving: Option<JoinHandle<()>>,
 }
 
 impl Probes {
@@ -115,23 +144,27 @@ impl Probes {
             .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok());
         Self {
             finished,
-            window: None,
             saved: Some(saved),
+            ..Self::default()
         }
     }
 
-    /// Waits for a window being cut short to finish saving first, so an older window can't put
-    /// probe.json back after this one removes it.
+    /// Never waits on an older window's save: that writer carries on, and claiming the path stops
+    /// it landing.
     pub(super) async fn open(&mut self, handout: Handout, key: &CheckinKey) {
+        let handed = std::time::Instant::now();
         self.close().await;
         self.finished = None;
-        if let Some(saved) = &self.saved {
-            let _ = fs::remove_file(saved);
-        }
+        self.saving = None;
+        self.owed_until = Some(Instant::now() + handout.window() + SETTLE_GRACE);
+        let saved = self.saved.clone().map(|saved| (claim(&saved), saved));
         let mut sockets = Vec::new();
         let mut bind_failed = Vec::new();
         for &port in &handout.listen {
-            match bind(port) {
+            let socket = (handed.elapsed() <= BIND_DEADLINE)
+                .then(|| bind(port))
+                .flatten();
+            match socket {
                 Some(socket) => sockets.push(socket),
                 None => bind_failed.push(port.to_string()),
             }
@@ -142,7 +175,7 @@ impl Probes {
             key.public_hex().to_owned(),
             sockets,
             bind_failed,
-            self.saved.clone(),
+            saved,
             stop.clone(),
         ));
         self.window = Some(Window { task, stop });
@@ -155,45 +188,66 @@ impl Probes {
             .as_ref()
             .is_some_and(|window| window.task.is_finished())
         {
-            self.finish().await;
+            self.harvest().await;
         }
         self.finished.clone()
     }
 
-    /// Waits out the window, for a process that exits before the window would end.
+    /// Waits out the window and its save, for a process that exits before the window would end.
     pub(super) async fn finish(&mut self) {
-        if let Some(window) = &mut self.window {
-            self.finished = (&mut window.task).await.ok().flatten();
-            self.window = None;
+        self.harvest().await;
+        if let Some(saving) = self.saving.take() {
+            let _ = saving.await;
         }
     }
 
+    /// Never waits on a save, which carries on and lands unless a newer window claims the path.
     pub(super) async fn close(&mut self) {
         if let Some(window) = &self.window {
             window.stop.cancel();
         }
-        self.finish().await;
+        self.harvest().await;
     }
-}
 
-impl Drop for Probes {
-    fn drop(&mut self) {
-        if let Some(window) = &self.window {
-            window.stop.cancel();
+    /// A failed pass tries again within Cloud's settle, while it still waits on this report.
+    pub(super) fn retry_after(&self, after: Duration) -> Duration {
+        match self.owed_until {
+            Some(until) if Instant::now() < until => after.min(REPORT_RETRY),
+            _ => after,
+        }
+    }
+
+    async fn harvest(&mut self) {
+        if let Some(window) = &mut self.window {
+            let ended = (&mut window.task).await.ok().flatten();
+            self.window = None;
+            if let Some(ended) = ended {
+                self.finished = Some(ended.report);
+                self.saving = ended.saving;
+            }
         }
     }
 }
 
-/// Returns the report of a window that ran out, after its sockets close and it is saved. A
-/// stopped window returns nothing and saves nothing.
+/// Makes `saved` belong to a new window: from here no older window's writer can land on it.
+fn claim(saved: &Path) -> u64 {
+    let generation = WINDOWS.fetch_add(1, Ordering::Relaxed);
+    let mut newest = NEWEST.lock().unwrap_or_else(PoisonError::into_inner);
+    newest.insert(saved.to_owned(), generation);
+    let _ = fs::remove_file(saved);
+    generation
+}
+
+/// Returns the report of a window that ran out once its sockets close, with its save under way.
+/// A stopped window returns nothing and saves nothing.
 async fn window(
     handout: Handout,
     checkin_key: String,
     sockets: Vec<Socket>,
     bind_failed: Vec<String>,
-    saved: Option<PathBuf>,
+    saved: Option<(u64, PathBuf)>,
     stop: CancellationToken,
-) -> Option<Report> {
+) -> Option<Ended> {
     let opened = Instant::now();
     let report = Mutex::new(Report {
         handout: handout.handout.clone(),
@@ -217,24 +271,25 @@ async fn window(
         }));
         let exchange = join_all(udp.iter().map(|socket| exchange(socket, &handout, &report)));
         tokio::select! {
-            () = stop.cancelled() => return None,
+            biased;
             () = tokio::time::sleep_until(opened + handout.window()) => {}
+            () = stop.cancelled() => return None,
             _ = async { tokio::join!(greet, exchange) } => {}
         }
     }
     let report = report.into_inner().unwrap_or_else(PoisonError::into_inner);
-    if let Some(saved) = saved {
+    let saving = saved.map(|(generation, saved)| {
         let written = report.clone();
-        let shown = saved.display().to_string();
-        let outcome = tokio::task::spawn_blocking(move || save(&saved, &written)).await;
-        if let Err(error) = outcome.map_err(io::Error::other).and_then(|saving| saving) {
-            crate::ui::note(format!("Could not write {shown}: {error}"));
-        }
-    }
-    Some(report)
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = save(&saved, &written, generation) {
+                crate::ui::note(format!("Could not write {}: {error}", saved.display()));
+            }
+        })
+    });
+    Some(Ended { report, saving })
 }
 
-fn save(path: &Path, report: &Report) -> io::Result<()> {
+fn save(path: &Path, report: &Report, generation: u64) -> io::Result<()> {
     #[cfg(test)]
     let _held = tests::SAVES.lock().unwrap_or_else(PoisonError::into_inner);
     let directory = path.parent().unwrap_or(Path::new("."));
@@ -242,7 +297,10 @@ fn save(path: &Path, report: &Report) -> io::Result<()> {
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
     serde_json::to_writer(&mut file, report)?;
     file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
+    let newest = NEWEST.lock().unwrap_or_else(PoisonError::into_inner);
+    if newest.get(path) == Some(&generation) {
+        file.persist(path).map_err(|error| error.error)?;
+    }
     Ok(())
 }
 
@@ -378,4 +436,4 @@ async fn exchange(socket: &UdpSocket, handout: &Handout, report: &Mutex<Report>)
 
 #[cfg(test)]
 #[path = "probe_tests.rs"]
-mod tests;
+pub(super) mod tests;
