@@ -13,6 +13,7 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import type { Actor } from "#/modules/identity/actor";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { can } from "#/modules/organization/permissions";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { createGithubRepositoriesSyncRequestedEvent } from "#/modules/inngest/events";
@@ -72,6 +73,7 @@ const settingsPath = (organizationSlug: string, search: { connect: ConnectNotice
 export const startGithubConnect = Effect.fn("GithubConnect.start")(function* (actor: Actor, organizationSlug: string, existing: boolean) {
   const config = yield* AppConfig;
   const { organization } = yield* requireAccess(actor, organizationSlug, "github:connect");
+  yield* requireClaimed(organization.id, "github_connect");
   const state = yield* sign(STATE, { organizationId: organization.id, userId: actor.userId, expiresAt: Date.now() + TOKEN_TTL_MS, existing });
   if (!existing) return `${getGithubAppInstallUrl(config.github)}?${new URLSearchParams({ state }).toString()}`;
   return `${config.github.origins.web}/login/oauth/authorize?${new URLSearchParams({

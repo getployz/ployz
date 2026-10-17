@@ -6,6 +6,7 @@ import { decideApproval } from "#/modules/approvals/approvals.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import {
   createOrganizationToken,
   listCredentials,
@@ -165,7 +166,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST tokens": {
       const input = yield* decodeBody(NewToken, request,
         "A token needs a name of 1 to 64 characters, an expiry of 1 to 365 days, and a kind of cli or agent.");
-      return { token: yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind }) };
+      return yield* createOrganizationToken(caller, { name: input.name, expiresInDays: input.expires_in_days, kind: input.kind }).pipe(
+        Effect.map((token) => ({ token })),
+        Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+      );
     }
     case "DELETE tokens/:id": {
       if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such token or signed-in device." });
@@ -353,7 +357,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return access.ok ? access.value : refusal(access.refusal);
     }
     case "GET github":
-      return yield* githubConnection(caller);
+      return yield* requireClaimed(caller.organization.id, "github_connect").pipe(
+        Effect.andThen(githubConnection(caller)),
+        Effect.catchTag("StoreRefused", (refused) => Effect.succeed(refusal(refused.refusal))),
+      );
     case "GET github/:id": {
       const query = new URL(request.url).searchParams;
       const repository = query.get("repository");

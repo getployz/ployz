@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { Effect } from "effect";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { invitation, member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
@@ -33,6 +34,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
   inviterId: string,
   input: { readonly email: string | null; readonly role: InviteRole },
 ) {
+  yield* requireClaimed(organizationId, "invite");
   const { drizzle } = yield* Database;
   const email = input.email?.trim().toLowerCase() || null;
   if (email !== null) {

@@ -510,9 +510,17 @@ pub enum Source {
 pub enum Fix {
     UseCloud,
     ConnectServers,
-    OpenDashboard { page: DashboardPage },
+    OpenDashboard {
+        page: DashboardPage,
+    },
     UpdateClient,
-    ServerRemove { server: ServerName },
+    ServerRemove {
+        server: ServerName,
+    },
+    /// A person opens `url` and signs in to claim the agent's Organization.
+    Claim {
+        url: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

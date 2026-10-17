@@ -280,12 +280,13 @@ impl Tool for EnvironmentSetup {
             ])?
             .into_iter();
         let servers = cx.cloud::<ServersAnswer>(answers.next())?;
-        let github = cx.cloud::<GithubAnswer>(answers.next())?;
+        let github_unless_unclaimed = cx.cloud::<GithubAnswer>(answers.next());
         let services = cx.view::<ServicesQuery>(answers.next())?;
         let builds = services
             .services
             .iter()
             .any(|listing| listing.source == SourceKind::Git);
+        let unconnected = builds && !github_unless_unclaimed?.connected;
         let needs = [
             (
                 servers.servers.is_empty(),
@@ -297,11 +298,7 @@ impl Tool for EnvironmentSetup {
                 "cluster domain",
                 DashboardPage::Servers,
             ),
-            (
-                builds && !github.connected,
-                "GitHub connection",
-                DashboardPage::Github,
-            ),
+            (unconnected, "GitHub connection", DashboardPage::Github),
         ]
         .into_iter()
         .filter(|(missing, ..)| *missing)

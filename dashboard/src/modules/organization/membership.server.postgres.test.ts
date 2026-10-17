@@ -1,5 +1,5 @@
 import { and, asc, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -11,7 +11,9 @@ import { serverAccessRetireRequestedEvent } from "#/modules/inngest/events";
 import { removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
+import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
 const ACME = "00000000-0000-4000-8000-00000000b001";
@@ -37,8 +39,10 @@ let gus: string;
 let hal: string;
 let ivy: string;
 
-const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | Auth>) =>
-  harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(Auth, noSession)));
+const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: "postgres://unused@localhost/unused" } }))));
+
+const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | Auth | AppConfig>) =>
+  harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(Auth, noSession), Effect.provide(config)));
 
 const remove = (organizationId: string, userId: string, by: string) => run(removeMembership(organizationId, userId, by).pipe(
   Effect.as("removed"),
