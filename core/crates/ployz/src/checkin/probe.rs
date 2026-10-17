@@ -11,7 +11,7 @@ use std::{
         Mutex, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -38,9 +38,10 @@ const CLOUD_READS_FOR: Duration = Duration::from_millis(500);
 const DATAGRAM_BUFFER: usize = 2048;
 const SOCKET_BACKOFF: Duration = Duration::from_millis(100);
 const LISTEN_BACKLOG: i32 = 1024;
-/// A port not listening this soon after its handout reports as failed, since Cloud's first
-/// attempt comes a second in.
-const BIND_DEADLINE: Duration = Duration::from_secs(1);
+/// Cloud tries each TCP port every 1.5 s until its window ends, so a port listening this long
+/// before the end still meets an attempt even when the handout reached the host 1.5 s late. A port
+/// not listening by then reports as failed, so Cloud never reads its refusals as a firewall.
+const LATE_LEAD: Duration = Duration::from_secs(3);
 /// Cloud settles a probe this long after its window ends.
 const SETTLE_GRACE: Duration = Duration::from_secs(30);
 /// How soon a failed pass tries again while Cloud still waits on a report: its own check-in pace.
@@ -142,8 +143,10 @@ impl Probes {
         let finished = fs::read(&saved)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Report>(&bytes).ok());
+        let owed_until = finished.as_ref().and_then(|_| settled_at(&saved));
         Self {
             finished,
+            owed_until,
             saved: Some(saved),
             ..Self::default()
         }
@@ -158,13 +161,16 @@ impl Probes {
         self.saving = None;
         self.owed_until = Some(Instant::now() + handout.window() + SETTLE_GRACE);
         let saved = self.saved.clone().map(|saved| (claim(&saved), saved));
+        let deadline = bind_deadline(handout.window());
+        let in_time = || handed.elapsed() <= deadline;
         let mut sockets = Vec::new();
         let mut bind_failed = Vec::new();
         for &port in &handout.listen {
-            let socket = (handed.elapsed() <= BIND_DEADLINE)
+            match in_time()
                 .then(|| bind(port))
-                .flatten();
-            match socket {
+                .flatten()
+                .filter(|_| in_time())
+            {
                 Some(socket) => sockets.push(socket),
                 None => bind_failed.push(port.to_string()),
             }
@@ -229,10 +235,28 @@ impl Probes {
     }
 }
 
+fn bind_deadline(window: Duration) -> Duration {
+    #[cfg(test)]
+    let lead = tests::LEAD.get();
+    #[cfg(not(test))]
+    let lead = LATE_LEAD;
+    window.saturating_sub(lead)
+}
+
+/// When Cloud stops waiting on a saved report, from the file's mtime, which is when its window
+/// ended. A restart loses the deadline `open` set.
+fn settled_at(saved: &Path) -> Option<Instant> {
+    let ended = fs::metadata(saved).and_then(|meta| meta.modified()).ok()?;
+    let left = (ended + SETTLE_GRACE)
+        .duration_since(SystemTime::now())
+        .ok()?;
+    Some(Instant::now() + left.min(SETTLE_GRACE))
+}
+
 /// Makes `saved` belong to a new window: from here no older window's writer can land on it.
 fn claim(saved: &Path) -> u64 {
-    let generation = WINDOWS.fetch_add(1, Ordering::Relaxed);
     let mut newest = NEWEST.lock().unwrap_or_else(PoisonError::into_inner);
+    let generation = WINDOWS.fetch_add(1, Ordering::Relaxed);
     newest.insert(saved.to_owned(), generation);
     let _ = fs::remove_file(saved);
     generation
@@ -310,6 +334,8 @@ enum Socket {
 }
 
 fn bind(port: Port) -> Option<Socket> {
+    #[cfg(test)]
+    std::thread::sleep(tests::BIND_STALL.get());
     match port {
         Port::Tcp(number) => {
             let socket = any_address(number, Type::STREAM)?;

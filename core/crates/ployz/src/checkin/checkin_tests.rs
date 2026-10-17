@@ -846,6 +846,43 @@ async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle
 }
 
 #[tokio::test]
+async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let pass = async |probes: &mut Probes| {
+        pass_from(
+            &failing,
+            &mut client("http://127.0.0.1:9"),
+            &key(),
+            &paths,
+            Utc::now(),
+            false,
+            probes,
+        )
+        .await
+    };
+
+    retries_after(&pass(&mut Probes::load(paths.probe())).await, 10);
+    std::fs::File::options()
+        .write(true)
+        .open(paths.probe())
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(31))
+        .unwrap();
+    retries_after(
+        &pass(&mut Probes::load(paths.probe())).await,
+        client::BACKOFF.as_secs(),
+    );
+}
+
+#[tokio::test]
 async fn what_a_window_heard_outlives_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);

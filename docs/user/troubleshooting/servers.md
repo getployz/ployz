@@ -240,8 +240,9 @@ prepares Docker and ZFS meanwhile.
     listens tells Cloud nothing for that check, so its ports read Unknown: check again. **Open**
     means Cloud reached the port and the server answered. **Closed** means the server listened but
     Cloud's connection was refused, so a firewall in front of it turns the port away. **Unknown ·
-    port busy** means another program, such as a web server, already holds that port, so Ployz
-    couldn't listen on it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check again. A
+    port busy** means Ployz couldn't listen on that port in time. Usually another program, such as
+    a web server, already holds it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check
+    again. If nothing holds it, the server was too busy to listen in time, so check again. A
     server running a `ployz` older than this feature leaves every port Unknown.
 
 ## Ployz stops over a leftover network

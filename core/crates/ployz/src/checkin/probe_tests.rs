@@ -24,9 +24,14 @@ thread_local! {
     pub(super) static ONLY_V6_BY_DEFAULT: Cell<bool> = const { Cell::new(false) };
     /// Fails every IPv6 bind with this errno.
     pub(super) static IPV6_FAILS_WITH: Cell<Option<i32>> = const { Cell::new(None) };
+    /// How long before its window ends a port must listen. Zero lets short test windows bind.
+    pub(super) static LEAD: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    /// Delays every bind by this long, the way a loaded host delays `open`.
+    pub(super) static BIND_STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
 }
 
-/// Held to stall every save, the way a slow disk stalls `sync_all`.
+/// Held to stall every save, the way a slow disk stalls `sync_all`. It is process-wide, so a test
+/// holding it stalls saves in every test sharing the process; nextest runs each test alone.
 pub(in crate::checkin) static SAVES: Mutex<()> = Mutex::new(());
 
 fn free_port() -> u16 {
@@ -448,7 +453,11 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
         .open(handout("new", 400, &[Port::Tcp(new)], &[]), &key())
         .await;
 
-    assert!(handed.elapsed() < BIND_DEADLINE, "{:?}", handed.elapsed());
+    assert!(
+        handed.elapsed() < Duration::from_millis(200),
+        "{:?}",
+        handed.elapsed()
+    );
     assert_eq!(
         greeting_from(new).await,
         greeting("new", key().public_hex(), new).into_bytes()
@@ -463,34 +472,51 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
     assert_eq!(Probes::load(saved).report().await.unwrap().handout, "new");
 }
 
+#[test]
+fn a_port_must_listen_three_seconds_before_the_window_ends() {
+    LEAD.set(LATE_LEAD);
+    assert_eq!(bind_deadline(WINDOW_CAP), Duration::from_secs(7));
+}
+
 #[tokio::test]
-async fn a_port_not_listening_a_second_after_its_handout_reports_as_failed() {
+async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let (tcp, udp) = (free_port(), free_port());
-    let (held, holding) = std::sync::mpsc::channel();
-    let slow = std::thread::spawn(move || {
-        let _slow = NEWEST.lock().unwrap();
-        held.send(()).unwrap();
-        std::thread::sleep(BIND_DEADLINE + Duration::from_millis(200));
-    });
-    holding.recv().unwrap();
+    let tcp = free_port();
+    LEAD.set(Duration::from_millis(700));
+    BIND_STALL.set(Duration::from_millis(500));
     let mut probes = Probes::load(dir.path().join("probe.json"));
 
     probes
-        .open(
-            handout("late", 1_000, &[Port::Tcp(tcp), Port::Udp(udp)], &[]),
-            &key(),
-        )
+        .open(handout("late", 1_000, &[Port::Tcp(tcp)], &[]), &key())
         .await;
 
-    slow.join().unwrap();
     assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
-    assert!(bindable(tcp) && bindable(udp));
+    assert!(bindable(tcp));
     probes.finish().await;
     assert_eq!(
         probes.report().await.unwrap().bind_failed,
-        [format!("tcp:{tcp}"), format!("udp:{udp}")]
+        [format!("tcp:{tcp}")]
     );
+}
+
+#[tokio::test]
+async fn a_bind_stalled_past_a_second_still_listens_inside_the_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let tcp = free_port();
+    LEAD.set(Duration::from_secs(1));
+    BIND_STALL.set(Duration::from_millis(1_200));
+    let mut probes = Probes::load(dir.path().join("probe.json"));
+
+    probes
+        .open(handout("slow", 2_500, &[Port::Tcp(tcp)], &[]), &key())
+        .await;
+
+    assert_eq!(
+        greeting_from(tcp).await,
+        greeting("slow", key().public_hex(), tcp).into_bytes()
+    );
+    probes.finish().await;
+    assert!(probes.report().await.unwrap().bind_failed.is_empty());
 }
 
 #[tokio::test]
