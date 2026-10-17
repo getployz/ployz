@@ -292,7 +292,7 @@ export const callStore = <C extends StoreCall>(
   userId: string | null,
   call: C,
   source: StoreSource = { source: "dashboard" },
-  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions"> = { approval: "not_required" },
+  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "environments"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
