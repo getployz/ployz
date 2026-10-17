@@ -26,18 +26,11 @@ export type Access =
 /** "operate": any member, or support. "manage": an owner or admin, or support. "own": an owner, never support. */
 type Need = "operate" | "manage" | "own";
 
-/** Temporary: each need answers through the permission that holds for exactly the roles it lets in. */
 const NEED_TO_PERMISSION = {
-  operate: "org:read",
-  manage: "org:settings",
-  own: "org:delete",
-} satisfies Record<Need, Permission>;
-
-/** Names who holds what was refused: a refused member or support always sits below owner, and maybe below admin. */
-const forbiddenMessage = (need: Need) =>
-  can("admin", NEED_TO_PERMISSION[need])
-    ? "Only an owner or admin of this Organization can do this."
-    : "Only an owner of this Organization can do this.";
+  operate: { permission: "org:read", refused: "Only a member of this Organization can do this." },
+  manage: { permission: "org:settings", refused: "Only an owner or admin of this Organization can do this." },
+  own: { permission: "org:delete", refused: "Only an owner of this Organization can do this." },
+} satisfies Record<Need, { readonly permission: Permission; readonly refused: string }>;
 
 /** What the gate reads about one Organization for one user. `role` is null when they aren't a member. */
 type AccessFacts = {
@@ -58,7 +51,7 @@ export const decideAccess = (input: {
 }): AccessDecision => {
   const { userId, facts, isStaff, need } = input;
   if (facts === null) return { kind: "not_found" };
-  const permission = NEED_TO_PERMISSION[need];
+  const { permission } = NEED_TO_PERMISSION[need];
   if (facts.role !== null) {
     if (!can(facts.role, permission)) return { kind: "forbidden", need };
     return { kind: "member", userId, role: facts.role, organization: facts.organization };
@@ -128,7 +121,7 @@ const gate = Effect.fn("Access.gate")(function* (actor: Actor, which: SQL, need:
     case "support":
       return decision;
     case "forbidden":
-      return yield* new Forbidden({ message: forbiddenMessage(decision.need) });
+      return yield* new Forbidden({ message: NEED_TO_PERMISSION[decision.need].refused });
     case "not_found":
       return yield* new NotFound({ message: "The organization was not found." });
   }

@@ -1,7 +1,8 @@
-/** The roles that hold permissions. Support is Ployz staff in an Organization that allows it. */
+/** Support is Ployz staff acting in an Organization that allows support. */
 export type PermissionRole = "owner" | "admin" | "member" | "support";
 
-/** Each permission and the least role that holds it. Every role holds what the roles below it hold. */
+type RankedRole = Exclude<PermissionRole, "support">;
+
 const LEAST_ROLE = [
   ["org:read", "member"],
   ["org:settings", "admin"],
@@ -37,23 +38,22 @@ const LEAST_ROLE = [
   ["servers:operate", "admin"],
   ["servers:remove", "admin"],
   ["servers:shell", "admin"],
-] as const satisfies ReadonlyArray<readonly [string, "member" | "admin" | "owner"]>;
+] as const satisfies ReadonlyArray<readonly [string, RankedRole]>;
 
 export type Permission = (typeof LEAST_ROLE)[number][0];
 
 export const PERMISSIONS: ReadonlyArray<Permission> = LEAST_ROLE.map(([permission]) => permission);
 
-/** Support keeps the set an admin holds, so it passes every gate today's "manage" passes and never "own". */
-const RANK = { member: 0, admin: 1, support: 1, owner: 2 } satisfies Record<PermissionRole, number>;
+const RANK = { member: 0, admin: 1, owner: 2 } satisfies Record<RankedRole, number>;
 
 export const ROLE_PERMISSIONS = {
   owner: holdings("owner"),
   admin: holdings("admin"),
   member: holdings("member"),
-  support: holdings("support"),
+  support: holdings("admin"),
 } as const satisfies Record<PermissionRole, ReadonlySet<Permission>>;
 
-function holdings(role: PermissionRole): ReadonlySet<Permission> {
+function holdings(role: RankedRole): ReadonlySet<Permission> {
   return new Set(LEAST_ROLE.filter(([, least]) => RANK[least] <= RANK[role]).map(([permission]) => permission));
 }
 

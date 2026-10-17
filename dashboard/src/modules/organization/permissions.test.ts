@@ -3,8 +3,7 @@ import { decideAccess, type Role } from "#/modules/organization/access.server";
 import { can, PERMISSIONS, type Permission, type PermissionRole, ROLE_PERMISSIONS } from "#/modules/organization/permissions";
 import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
 
-// Appendix D of the permissions plan, row for row: member, admin, owner. Support holds what an admin holds.
-const APPENDIX_D: ReadonlyArray<readonly [Permission, boolean, boolean, boolean]> = [
+const GRANTS: ReadonlyArray<readonly [permission: Permission, member: boolean, admin: boolean, owner: boolean]> = [
   ["org:read", true, true, true],
   ["org:settings", false, true, true],
   ["org:billing", false, false, true],
@@ -44,13 +43,13 @@ const APPENDIX_D: ReadonlyArray<readonly [Permission, boolean, boolean, boolean]
 const ROLES: ReadonlyArray<PermissionRole> = ["member", "admin", "owner", "support"];
 
 describe("ROLE_PERMISSIONS", () => {
-  it("names the 34 permissions of Appendix D in its order, for four roles", () => {
-    expect(PERMISSIONS).toEqual(APPENDIX_D.map(([permission]) => permission));
+  it("names the 34 permissions in order, for four roles", () => {
+    expect(PERMISSIONS).toEqual(GRANTS.map(([permission]) => permission));
     expect(PERMISSIONS).toHaveLength(34);
     expect(Object.keys(ROLE_PERMISSIONS).sort()).toEqual([...ROLES].sort());
   });
 
-  const cells = APPENDIX_D.flatMap(([permission, member, admin, owner]) => {
+  const cells = GRANTS.flatMap(([permission, member, admin, owner]) => {
     const held = { member, admin, owner, support: admin } satisfies Record<PermissionRole, boolean>;
     return ROLES.map((role) => ({ permission, role, held: held[role] }));
   });
@@ -62,8 +61,7 @@ describe("ROLE_PERMISSIONS", () => {
 
 type Need = "operate" | "manage" | "own";
 
-// decideAccess as trunk (a51a30280) wrote it, before it answered through `can`.
-const trunkKind = (role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
+const kindBeforePermissions =(role: Role | null, isStaff: boolean, supportAllowed: boolean, need: Need) => {
   if (role !== null) {
     if (need === "manage" && role === "member") return "forbidden";
     if (need === "own" && role !== "owner") return "forbidden";
@@ -81,7 +79,7 @@ describe("decideAccess through can", () => {
   const needs: ReadonlyArray<Need> = ["operate", "manage", "own"];
   const roles: ReadonlyArray<Role | null> = ["owner", "admin", "member", null];
 
-  it("returns what trunk returned for every role, need and support setting", () => {
+  it("returns what the needs returned for every role, need and support setting", () => {
     for (const need of needs) {
       expect(decideAccess({ userId: "user-1", facts: null, isStaff: true, need })).toEqual({ kind: "not_found" });
       for (const role of roles) {
@@ -94,7 +92,7 @@ describe("decideAccess through can", () => {
               isStaff,
               supportAllowed,
               need,
-              kind: trunkKind(role, isStaff, supportAllowed, need),
+              kind: kindBeforePermissions(role, isStaff, supportAllowed, need),
             });
             if (decision.kind === "forbidden") expect(decision.need).toBe(need);
           }
