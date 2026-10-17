@@ -3,7 +3,7 @@ import { ProbeRequest } from "#/modules/machines/waiting/checkin-wire";
 
 export const PortProbe = Schema.Union([
   Schema.Struct({ state: Schema.Literals(["open", "closed"]) }),
-  Schema.Struct({ state: Schema.Literal("unknown"), reason: Schema.Literals(["pending", "private_range", "no_address"]) }),
+  Schema.Struct({ state: Schema.Literal("unknown"), reason: Schema.Literals(["pending", "private_range", "no_address", "no_answer"]) }),
 ]);
 export type PortProbe = typeof PortProbe.Type;
 

@@ -64,6 +64,10 @@ describe("connectOnce", () => {
     expect((await connectOnce("127.0.0.1", port)).state).toBe("closed");
   });
 
+  it("is unknown when nothing answers the connect", async () => {
+    expect((await connectOnce("192.0.2.1", 80, { timeoutMs: 50 })).state).toBe("unknown");
+  });
+
   it("never follows a redirect", async () => {
     let followed = 0;
     const elsewhere = await listen(() => (followed += 1));

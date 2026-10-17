@@ -48,12 +48,12 @@ export function refusedTarget(ip: string, allow: BlockList = devOnlyProbeAllowLi
 }
 
 export function connectOnce(host: string, port: number, options: { readonly timeoutMs?: number; readonly greetingMs?: number } = {}) {
-  return new Promise<{ readonly state: "open" | "closed"; readonly bytesRead: number }>((resolve) => {
+  return new Promise<{ readonly state: "open" | "closed" | "unknown"; readonly bytesRead: number }>((resolve) => {
     let bytesRead = 0;
-    let connected = false;
+    let state: "open" | "closed" | "unknown" = "unknown";
     const finish = () => {
       socket.destroy();
-      resolve({ state: connected ? "open" : "closed", bytesRead });
+      resolve({ state, bytesRead });
     };
     const socket = connect({
       host,
@@ -68,10 +68,13 @@ export function connectOnce(host: string, port: number, options: { readonly time
       },
     });
     socket.setTimeout(options.timeoutMs ?? CONNECT_TIMEOUT_MS, finish);
-    socket.once("error", finish);
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (state === "unknown" && error.code === "ECONNREFUSED") state = "closed";
+      finish();
+    });
     socket.once("close", finish);
     socket.once("connect", () => {
-      connected = true;
+      state = "open";
       socket.setTimeout(options.greetingMs ?? GREETING_WAIT_MS, finish);
     });
   });
@@ -80,7 +83,7 @@ export function connectOnce(host: string, port: number, options: { readonly time
 const probePort = (ip: string, port: number) =>
   Effect.promise(() => connectOnce(unmapped(ip), port)).pipe(
     Effect.tap(({ state, bytesRead }) => Effect.logInfo(`Probe ${ip}:${port} ${state}, read ${bytesRead} bytes`)),
-    Effect.map(({ state }): PortProbe => ({ state })),
+    Effect.map(({ state }): PortProbe => (state === "unknown" ? { state, reason: "no_answer" } : { state })),
   );
 
 const recordTcp = Effect.fn("Probe.recordTcp")(function* (id: string, nonce: string, tcp: ProbeResults["tcp"]) {

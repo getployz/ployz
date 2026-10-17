@@ -144,7 +144,8 @@ const admit = Effect.fn("Checkin.admit")(function* (
     });
   }
   const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-  const fresh = { report, observedIp, probe: request.probe === undefined ? sql`${waitingServer.probe}` : withHostReport(request.probe), lastCheckInAt: sql`now()` };
+  const storedProbe = request.probe === undefined ? sql`${waitingServer.probe}` : withHostReport(request.probe);
+  const fresh = { report, observedIp, probe: storedProbe, lastCheckInAt: sql`now()` };
   // The capacity decision above holds only while the row is as it was read, so a changed row goes back through it.
   const [row] = newToToken
     ? yield* drizzle
