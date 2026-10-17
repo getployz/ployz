@@ -91,6 +91,15 @@ it("classifies every table as organization-owned or excluded with a reason", asy
   expect(tables.rows.map((row) => row.relname)).toEqual(classified.sort());
 });
 
+it("lists a table as belonging to no Organization only when it has no organization_id", async () => {
+  const columns = await harness.pool.query<{ table_name: string }>(`
+    select table_name from information_schema.columns
+    where table_schema = 'public' and column_name = 'organization_id' and table_name = any($1::text[])
+    order by table_name
+  `, [Object.keys(notOrganizationOwned)]);
+  expect(columns.rows.map((row) => row.table_name)).toEqual([]);
+});
+
 it("stores a non-null Organization on every organization-owned table", async () => {
   const columns = await harness.pool.query<{ table_name: string; column_name: string }>(`
     select table_name, column_name from information_schema.columns

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ConfigTrusted, Connection } from "@ployz/sdk";
+import type { ConfigTrusted, Connection, MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { vi } from "vitest";
@@ -104,11 +104,11 @@ export const seedAnonymousStoreOrganization = Effect.fn(function* (id: string, e
 });
 
 /** Pair Organization `id` with Cloud and enroll one Server, unreachable, so the Store admits Deployments there. */
-export const enrollStoreServer = Effect.fn(function* (id: string) {
+export const enrollStoreServer = Effect.fn(function* (
+  id: string, { secret, server }: { secret: string; server: MachineId } = { secret: "ppair_fixture_store", server: machineId("0") },
+) {
   const { drizzle } = yield* Database;
   const encryption = yield* SecretEncryption;
-  const server = machineId("0");
-  const secret = "ppair_fixture_store";
   yield* drizzle.insert(organizationPairing).values({
     organizationId: id, encryptedPairingSecret: encryption.encrypt(secret), founderPublicKey: "founder-key", founderClaimMachineId: server,
   });

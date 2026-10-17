@@ -14,6 +14,7 @@ import { claimSecretFor, hashClaimSecret } from "#/modules/identity/claim-requir
 import { claimOrganization } from "#/modules/identity/claim.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { createAnonymousTeardownRequestedEvent } from "#/modules/inngest/events";
+import { forgetServers } from "#/modules/machines/forget-servers.server";
 import { organizationMachine } from "#/modules/machines/tables";
 import { crashEvent, observeIngestCursor } from "#/modules/observe-ingest/tables";
 import { organization, organizationChange } from "#/modules/organization/tables";
@@ -43,9 +44,10 @@ const here = { project: null, environment: null };
 type Services = Effect.Success<ReturnType<typeof cloud>>;
 type Store = Effect.Success<typeof cloudStore>;
 
-const cloud = (servers: "answering" | "unreachable" | { answers: boolean }) => Effect.gen(function* () {
+const cloud = (servers: "answering" | "unreachable" | { answers: boolean } | { connect: () => Promise<Client> }) => Effect.gen(function* () {
   const ployz = makePloyzLayer({
     connect: async () => {
+      if (servers !== "answering" && servers !== "unreachable" && "connect" in servers) return servers.connect();
       if (servers === "unreachable" || (servers !== "answering" && !servers.answers)) throw new Error("no route to the Server");
       return asTestDouble<Client>()({ close: async () => undefined });
     },
@@ -659,6 +661,48 @@ it.live("two runs at once both wait on a Server that answers and keep it", () =>
       { organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" },
       { organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" },
     ]);
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a Server that answers its pairing removal restarts the silence clock, even when it drops before confirming", () => Effect.gen(function* () {
+  const server = { answersOnce: false, inspected: 0 };
+  const services = yield* cloud({
+    connect: async () => {
+      if (!server.answersOnce) throw new Error("no route to the Server");
+      server.answersOnce = false;
+      return asTestDouble<Client>()({
+        inspect: async () => { server.inspected++; return { management_clients: ["cloud"] }; },
+        setPushTarget: async () => { throw new Error("the connection dropped"); },
+        close: async () => undefined,
+      });
+    },
+  });
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    server.answersOnce = true;
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect(server.inspected).toBe(1);
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
+it.live("a new pairing starts its own silence clock: the old pairing's hour never forgets it", () => Effect.gen(function* () {
+  const services = yield* cloud("unreachable");
+  yield* Effect.gen(function* () {
+    const { userId } = yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    expect((yield* forgetServers({ userId, organizationId: ORGANIZATION })).ok).toBe(true);
+    expect(yield* pairingRows).toEqual([]);
+    yield* enrollStoreServer(ORGANIZATION, { secret: "ppair_replacement_generation", server: machineId("1") });
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(organizationPairing).set({ founderMachineId: machineId("1") });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
     expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
     expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
   }).pipe(Effect.provide(services));
