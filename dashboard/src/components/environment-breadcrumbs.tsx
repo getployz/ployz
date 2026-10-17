@@ -2,7 +2,7 @@ import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { CreateEnvironmentDialog } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, LockIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import {
   getDashboardDestination,
   getDashboardSectionLabel,
@@ -11,6 +11,7 @@ import {
 } from "#/components/dashboard-navigation-model";
 import { BranchIndent } from "#/components/environment-tree";
 import { useDashboardSection } from "#/components/use-dashboard-section";
+import { Badge } from "#/components/ui/badge";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -89,12 +90,13 @@ export function SwitcherLoading({ isPending, retry, children }: { isPending: boo
 
 /**
  * `project / environment`, each crumb a switcher; places other than Architecture add their name. A Branch reads
- * `project / parent ⑂ branch`, and its Parent's crumb opens the Parent.
+ * `project / parent ⑂ branch`, and its Parent's crumb opens the Parent. A Protected Environment says so beside its name.
  */
 export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
   const section = useDashboardSection();
   const environments = useStoreEnvironments(scope);
-  const parent = environments.data.find((row) => row.name === scope.environmentSlug)?.parent;
+  const current = environments.data.find((row) => row.name === scope.environmentSlug);
+  const parent = current?.parent;
   return <Crumbs flush branchAt={parent ? 2 : undefined} items={[
     <ProjectCrumb key="project" scope={scope} />,
     ...parent ? [
@@ -103,7 +105,10 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
         <span className="truncate">{parent}</span>
       </Link>,
     ] : [],
-    <EnvironmentCrumb key={`environment:${scope.projectSlug}/${scope.environmentSlug}`} scope={scope} />,
+    <Fragment key={`environment:${scope.projectSlug}/${scope.environmentSlug}`}>
+      <EnvironmentCrumb scope={scope} />
+      {current?.protected ? <Badge variant="secondary"><LockIcon />Protected</Badge> : null}
+    </Fragment>,
     ...section === "architecture" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;
 }

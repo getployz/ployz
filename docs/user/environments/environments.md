@@ -190,12 +190,19 @@ another under **Default environment** in **Settings → Project**.
 
 ### Protect an environment
 
-A new project's default environment starts Protected. A Protected environment can't be deleted
-until you unprotect it. Deleting the whole project still takes it.
+A new project's default environment starts Protected, and its header shows a **Protected** lock.
+In a Protected environment, only an owner or admin can connect a repository, change a service's
+deploy branch, or turn protection off. It can't be deleted until you unprotect it. Deleting the
+whole project still takes it. Environments that existed before Protected shipped start
+unprotected.
 
-Run `ployz env protect staging` to protect another environment, and `ployz env protect staging
---off` to unprotect it. `ployz env ls` shows which are Protected. Branches and preview
-environments can't be Protected.
+To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
+`ployz env protect staging` and `ployz env protect staging --off`. Members see the switch
+disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
+Protected. When an agent turns protection off, it waits for you to approve.
+
+A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
+[GitHub branch protection](../deploy/github.md#protected-environments).
 
 ### Delete an environment
 

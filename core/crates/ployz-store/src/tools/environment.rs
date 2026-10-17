@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
-use super::step::{Ask, CloudQuery, DashboardPage};
+use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::catalog::NODE_NAME;
 use crate::{
     ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery,
@@ -245,6 +245,8 @@ pub(crate) struct EnvironmentProtect {
 impl Tool for EnvironmentProtect {
     const NAME: &'static str = "environment_protect";
     const DESCRIPTION: &'static str = "Protect a Project's own Environment so it cannot be removed, or unprotect it. Branches and PR Environments cannot be Protected.";
+    /// Cloud asks a human before an agent unprotects one.
+    const GATE: Gate = Gate::Cloud;
     const EFFECT: Effect = Effect::Change;
 
     fn example() -> Value {

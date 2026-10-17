@@ -58,6 +58,14 @@ ployz deploy
 Each environment has its own settings, so production can follow `main` while staging follows
 `develop`. See [Environments and branches](../environments/environments.md).
 
+### Protected environments
+
+In a [Protected environment](../environments/environments.md#protect-an-environment), only an
+owner or admin can connect a repository or change the branch. Merging into that branch still
+deploys: Ployz doesn't decide who can merge. Use
+[GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
+on the branch to require reviews before a merge.
+
 ## Deploy on push
 
 **Auto-deploy** is on for every new service. Each push to the service's Git branch deploys it, in
