@@ -39,14 +39,25 @@ pub(super) fn prepare_storage(
         StoragePreparation::Zfs {
             device: Some(device),
         } => {
-            let device = Path::new(device);
-            if existing_device_pool(device)? {
-                return Ok(());
+            let device = device.as_path();
+            if paths.zfs_module.is_dir() && existing_device_pool(device)? {
+                return remember_device_pool(paths);
             }
             super::assess::empty_device(device)?;
             prepare_zfs(paths)?;
             if !existing_device_pool(device)? {
-                let device = super::assess::empty_device(device)?;
+                let assessed = super::assess::empty_device(device)?;
+                remember_device_pool(paths)?;
+                let resolved = fs::canonicalize(device).map_err(|source| Error::Io {
+                    stage: "resolve ZFS device before creation",
+                    source,
+                })?;
+                if resolved != assessed {
+                    return Err(refuse(
+                        STAGE,
+                        "the selected device path changed during assessment",
+                    ));
+                }
                 let mut create = Command::new("zpool");
                 create
                     .args([
@@ -59,15 +70,16 @@ pub(super) fn prepare_storage(
                         "canmount=off",
                         DEVICE_BACKED_POOL_NAME,
                     ])
-                    .arg(&device);
+                    .arg(device);
                 run_command("create device Machine Pool", &mut create)?;
-                if !existing_device_pool(&device)? {
+                if !existing_device_pool(device)? {
                     return Err(refuse(
                         STAGE,
                         "the device Machine Pool was not imported after creation",
                     ));
                 }
             }
+            remember_device_pool(paths)?;
             println!(
                 "Machine Pool {DEVICE_BACKED_POOL_NAME} is ready on {}",
                 device.display()
@@ -75,6 +87,14 @@ pub(super) fn prepare_storage(
             Ok(())
         }
     }
+}
+
+fn remember_device_pool(paths: &InstallPaths) -> Result<(), Error> {
+    write_file_atomically(
+        &paths.device_pool_marker,
+        "ployz-device\n",
+        "remember device Machine Pool",
+    )
 }
 
 fn existing_device_pool(device: &Path) -> Result<bool, Error> {

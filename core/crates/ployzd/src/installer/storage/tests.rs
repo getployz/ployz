@@ -42,6 +42,114 @@ fn storage_refuses_missing_or_non_block_device_before_preparing_zfs() {
 }
 
 #[test]
+fn named_storage_refuses_a_missing_device_before_querying_an_unloaded_zfs_module() {
+    const CASE: &str = "PLOYZ_DEVICE_UNLOADED_CONTRACT";
+    if env::var_os(CASE).is_some() {
+        let root = contract_root();
+        let storage =
+            StoragePreparation::parse(format!("zfs:{}", root.join("missing").display())).unwrap();
+        let failure = prepare_storage(&storage, &InstallPaths::at(&root)).unwrap_err();
+        assert!(
+            matches!(
+                failure,
+                Error::Io {
+                    stage: "resolve ZFS device",
+                    ..
+                }
+            ),
+            "{failure}"
+        );
+        assert!(!root.join("queried-zpool").exists());
+        fs::write(root.join("child-completed"), "missing-device").unwrap();
+        return;
+    }
+    let root = fixture("device-unloaded");
+    let commands = root.path().join("commands");
+    fs::create_dir(&commands).unwrap();
+    write_script(
+        &commands.join("zpool"),
+        r#": > "$PLOYZ_INSTALLER_CONTRACT_ROOT/queried-zpool"; echo 'module unavailable' >&2; exit 1"#,
+    );
+    run_contract_child_with_environment(
+        "installer::storage::tests::named_storage_refuses_a_missing_device_before_querying_an_unloaded_zfs_module",
+        root.path(),
+        CASE.into(),
+        "1".into(),
+        "missing-device",
+        [],
+    );
+}
+
+#[test]
+fn named_storage_accepts_only_validated_absolute_device_paths() {
+    assert!(ployz_core::ZfsDevice::parse("vdb").is_err());
+    assert!(ployz_core::ZfsDevice::parse("").is_err());
+    let device = ployz_core::ZfsDevice::parse("/dev/disk/by-id/spare").unwrap();
+    assert_eq!(device.as_path(), Path::new("/dev/disk/by-id/spare"));
+}
+
+#[test]
+fn named_storage_retries_only_the_same_unambiguous_device_pool() {
+    const CASE: &str = "PLOYZ_EXISTING_DEVICE_POOL_CONTRACT";
+    if let Ok(case) = env::var(CASE) {
+        let root = contract_root();
+        let paths = InstallPaths::at(&root);
+        let storage =
+            StoragePreparation::parse(format!("zfs:{}", root.join("device").display())).unwrap();
+        let result = prepare_storage(&storage, &paths);
+        if case == "same" {
+            result.unwrap();
+            assert!(paths.device_pool_marker.exists());
+        } else {
+            let failure = result.unwrap_err().to_string();
+            let expected = match case.as_str() {
+                "foreign" => "already exists",
+                "ambiguous" => "ambiguous",
+                "other-device" => "not backed solely",
+                _ => unreachable!(),
+            };
+            assert!(failure.contains(expected), "{failure}");
+            assert!(!paths.device_pool_marker.exists());
+        }
+        fs::write(root.join("child-completed"), case).unwrap();
+        return;
+    }
+    for case in ["same", "foreign", "ambiguous", "other-device"] {
+        let root = fixture("existing-device-pool");
+        fs::create_dir_all(root.path().join("sys/module/zfs")).unwrap();
+        fs::create_dir(root.path().join("commands")).unwrap();
+        fs::write(root.path().join("device"), "existing disk").unwrap();
+        write_script(
+            &root.path().join("commands/zpool"),
+            r#"
+case "$1" in
+  list)
+    if [ "$PLOYZ_EXISTING_DEVICE_POOL_CONTRACT" != foreign ]; then
+      printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n'
+    fi
+    case "$PLOYZ_EXISTING_DEVICE_POOL_CONTRACT" in
+      foreign|ambiguous) printf 'tank\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+    esac ;;
+  status)
+    backing="$PLOYZ_INSTALLER_CONTRACT_ROOT/device"
+    [ "$PLOYZ_EXISTING_DEVICE_POOL_CONTRACT" != other-device ] || backing=/dev/another
+    printf '  pool: ployz-device\nconfig:\n  NAME STATE\n  ployz-device ONLINE\n    %s ONLINE\n' "$backing" ;;
+  *) echo unexpected host change >&2; exit 97 ;;
+esac
+"#,
+        );
+        run_contract_child_with_environment(
+            "installer::storage::tests::named_storage_retries_only_the_same_unambiguous_device_pool",
+            root.path(),
+            CASE.into(),
+            case.into(),
+            case,
+            [],
+        );
+    }
+}
+
+#[test]
 fn smoke_pool_cleanup_preserves_backing_until_absence_is_proven() {
     const CASE: &str = "PLOYZ_SMOKE_CLEANUP_CASE";
     const ROOT: &str = "PLOYZ_SMOKE_CLEANUP_ROOT";

@@ -1,4 +1,4 @@
-//! Root-backed Machine Pool creation and cleanup.
+//! Machine Pool recovery and root-backed creation and cleanup.
 
 use std::{
     collections::BTreeMap,
@@ -230,22 +230,48 @@ impl PoolStorage {
             .map_err(|error| ployz_core::error_chain::inline(&error))?)
     }
 
-    /// Whether this Machine has held a Pool, imported or not: the file-backed Pool's
-    /// backing file, or the Volume mount root that ZFS leaves behind when any Pool's
-    /// Volumes unmount or the Pool is exported.
+    /// Whether a device Pool marker, backing file, or retained Volume mount root exists.
     ///
     /// # Errors
-    /// Returns an error when either path cannot be inspected.
+    /// Returns an error when any path cannot be inspected.
     pub(super) fn has_held_a_pool(&self) -> Result<bool> {
-        Ok(path_exists(&self.backing, "Machine Pool backing file")?
+        Ok(self.has_device_pool()?
+            || path_exists(&self.backing, "Machine Pool backing file")?
             || path_exists(&self.volume_root, "Volume mount root")?)
     }
 
-    /// Imports this host's valid backing Pool and optionally reclaims an unlabeled stale file.
+    /// Imports the device Pool or valid backing Pool, preserving device ownership when absent.
     ///
     /// # Errors
     /// Returns an error for ambiguous or destroyed labels, failed import, or failed cleanup.
     pub(super) async fn recover(&self, unlabeled: UnlabeledBacking) -> Result<Option<MachinePool>> {
+        let device_pool = machine_pool::DEVICE_BACKED_POOL_NAME;
+        let output = match run_command(&self.zpool, &["import"]).await {
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !self.has_device_pool()? => {
+                return Ok(None);
+            }
+            output => checked_output(&self.zpool, &["import"], output)?,
+        };
+        let pools = machine_pool::importable_names(&output)
+            .map_err(|error| ployz_core::error_chain::inline(&error))?;
+        let devices = pools.iter().filter(|name| **name == device_pool).count();
+        if devices > 1 {
+            return Err("ambiguous device Machine Pool labels; refusing to choose one".into());
+        }
+        if devices == 1 {
+            fs::write(self.backing.with_extension("device"), "ployz-device\n")
+                .map_err(|error| format!("could not remember device Machine Pool: {error}"))?;
+            checked_command(&self.zpool, &["import", "-N", device_pool]).await?;
+            return match self.one_usable().await? {
+                Some(pool) if pool.name() == device_pool => Ok(Some(pool)),
+                _ => Err("imported device Machine Pool, but ZFS did not report it as the sole usable Pool".into()),
+            };
+        }
+        if self.has_device_pool()? {
+            return Err(
+                "device Machine Pool is unavailable; refusing to create a root-backed Pool".into(),
+            );
+        }
         if !path_exists(&self.backing, "Machine Pool backing file")? {
             return Ok(None);
         }
@@ -302,6 +328,13 @@ impl PoolStorage {
         }
     }
 
+    fn has_device_pool(&self) -> Result<bool> {
+        path_exists(
+            &self.backing.with_extension("device"),
+            "device Machine Pool marker",
+        )
+    }
+
     fn backing_text(&self) -> Result<&str> {
         self.backing.to_str().ok_or_else(|| {
             format!(
@@ -318,6 +351,11 @@ impl PoolStorage {
     ///
     /// Returns an error when reserve, allocation, Pool creation, or verification fails.
     pub(super) async fn create(&self, requested: u64) -> Result<CreatedPool<'_>> {
+        if self.has_device_pool()? {
+            return Err(
+                "device Machine Pool is unavailable; refusing to create a root-backed Pool".into(),
+            );
+        }
         let capacity = ployz_core::storage_with_headroom(requested)?;
         let host = self.check_host_root(capacity).await?;
         let ashift = self.host_root_ashift(&host)?;
@@ -767,10 +805,23 @@ mod tests {
     fn device_recovery_storage(root: &Path, scan: &str, import: &str) -> PoolStorage {
         use std::os::unix::fs::PermissionsExt;
         let program = root.join("zpool");
-        fs::write(&program, format!(
-            "#!/bin/sh\nset -eu\ncase \"$*\" in\n  import) {scan} ;;\n  'import -N ployz-device') {import} ;;\n  'list -Hp -o name,size,allocated,free,health,readonly') [ ! -e '{}/imported' ] || printf 'ployz-device\\t8589934592\\t0\\t8589934592\\tONLINE\\toff\\n' ;;\n  *) echo unexpected command >&2; exit 2 ;;\nesac\n",
-            root.display()
-        )).unwrap();
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+case "$*" in
+  import) {scan} ;;
+  'import -N ployz-device') {import} ;;
+  'list -Hp -o name,size,allocated,free,health,readonly')
+    [ ! -e '{}/imported' ] || printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+  *) echo unexpected command >&2; exit 2 ;;
+esac
+"#,
+                root.display()
+            ),
+        )
+        .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
         PoolStorage::new(program).with_backing(root.join("machine-pool"))
     }
@@ -778,8 +829,16 @@ mod tests {
     #[tokio::test]
     async fn recovery_imports_a_device_pool_without_a_backing_file() {
         let root = tempfile::tempdir().unwrap();
-        let storage = device_recovery_storage(root.path(), "printf '   pool: ployz-device\\n'", &format!("touch '{}/imported'", root.path().display()));
-        let pool = storage.recover(UnlabeledBacking::Remove).await.unwrap().unwrap();
+        let storage = device_recovery_storage(
+            root.path(),
+            "printf '   pool: ployz-device\\n'",
+            &format!("touch '{}/imported'", root.path().display()),
+        );
+        let pool = storage
+            .recover(UnlabeledBacking::Remove)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(pool.name(), machine_pool::DEVICE_BACKED_POOL_NAME);
         assert!(!storage.backing.exists());
     }
@@ -787,16 +846,27 @@ mod tests {
     #[tokio::test]
     async fn recovery_refuses_a_device_pool_that_cannot_import() {
         let root = tempfile::tempdir().unwrap();
-        let storage = device_recovery_storage(root.path(), "printf '   pool: ployz-device\\n'", "echo device-unavailable >&2; exit 1");
+        let storage = device_recovery_storage(
+            root.path(),
+            "printf '   pool: ployz-device\\n'",
+            "echo device-unavailable >&2; exit 1",
+        );
         let failure = storage.recover(UnlabeledBacking::Remove).await.unwrap_err();
-        assert!(failure.to_string().contains("device-unavailable"), "{failure}");
+        assert!(
+            failure.to_string().contains("device-unavailable"),
+            "{failure}"
+        );
         assert!(!storage.backing.exists());
     }
 
     #[tokio::test]
     async fn recovery_refuses_duplicate_device_pool_names() {
         let root = tempfile::tempdir().unwrap();
-        let storage = device_recovery_storage(root.path(), "printf '   pool: ployz-device\\n   pool: ployz-device\\n'", "exit 97");
+        let storage = device_recovery_storage(
+            root.path(),
+            "printf '   pool: ployz-device\\n   pool: ployz-device\\n'",
+            "exit 97",
+        );
         let failure = storage.recover(UnlabeledBacking::Remove).await.unwrap_err();
         assert!(failure.to_string().contains("ambiguous"), "{failure}");
         assert!(!storage.backing.exists());
@@ -813,5 +883,4 @@ mod tests {
         assert!(failure.to_string().contains("device"), "{failure}");
         assert!(!storage.backing.exists());
     }
-
 }

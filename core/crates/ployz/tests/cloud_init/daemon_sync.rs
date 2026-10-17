@@ -91,7 +91,7 @@ async fn cloud_enroll_retains_a_named_device_through_the_legacy_cloud_reply() {
         *prepared.lock().unwrap(),
         [ployz::handlers::Installation::Host(
             ployz_core::StoragePreparation::Zfs {
-                device: Some("/dev/vdb".into())
+                device: Some(ployz_core::ZfsDevice::parse("/dev/vdb").unwrap())
             }
         )]
     );

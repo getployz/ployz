@@ -5,6 +5,9 @@ use std::num::NonZeroU64;
 /// The file a root-backed Machine Pool lives in, on the host root filesystem.
 pub const BACKING_FILE: &str = "/var/lib/ployz-machine-pool";
 
+/// Survives a missing device so recovery cannot replace its Pool with a root-backed Pool.
+pub const DEVICE_POOL_MARKER: &str = "/var/lib/ployz-machine-pool.device";
+
 /// The Pool whose file backing the volume plugin can grow.
 pub const ROOT_BACKED_POOL_NAME: &str = "ployz";
 

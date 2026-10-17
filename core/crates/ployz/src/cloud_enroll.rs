@@ -656,7 +656,7 @@ mod tests {
             assert_eq!(
                 storage,
                 ployz_core::StoragePreparation::Zfs {
-                    device: device.map(str::to_owned)
+                    device: device.map(|device| ployz_core::ZfsDevice::parse(device).unwrap())
                 }
             );
         }

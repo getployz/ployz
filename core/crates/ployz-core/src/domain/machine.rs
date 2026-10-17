@@ -257,13 +257,48 @@ impl FromStr for StorageChoice {
     }
 }
 
+/// An absolute device path chosen for ZFS preparation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZfsDevice(std::path::PathBuf);
+
+impl ZfsDevice {
+    /// Validates an absolute device path without resolving it on the caller's host.
+    ///
+    /// # Errors
+    /// Returns an error when the path is not absolute.
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
+        let value = value.as_ref();
+        let path = std::path::Path::new(value);
+        if !path.is_absolute() {
+            return Err(ValueError::new(
+                "ZFS device",
+                value,
+                "an absolute device path",
+            ));
+        }
+        Ok(Self(path.to_owned()))
+    }
+
+    /// The chosen device path, retaining stable symlinks.
+    #[must_use]
+    pub fn as_path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl fmt::Display for ZfsDevice {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display().fmt(formatter)
+    }
+}
+
 /// Installer intent. The backing device stays outside durable Machine RPC records.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum StoragePreparation {
     #[default]
     None,
     Zfs {
-        device: Option<String>,
+        device: Option<ZfsDevice>,
     },
 }
 
@@ -287,8 +322,8 @@ impl StoragePreparation {
             "none" => Ok(Self::None),
             "zfs" => Ok(Self::Zfs { device: None }),
             _ => match value.strip_prefix("zfs:") {
-                Some(device) if std::path::Path::new(device).is_absolute() => Ok(Self::Zfs {
-                    device: Some(device.to_owned()),
+                Some(device) => Ok(Self::Zfs {
+                    device: Some(ZfsDevice::parse(device)?),
                 }),
                 _ => Err(ValueError::new(
                     "Storage Preparation",
