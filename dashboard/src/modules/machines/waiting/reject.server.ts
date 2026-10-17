@@ -11,7 +11,7 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
   actor: Actor,
   input: { readonly organizationSlug: string; readonly ids: ReadonlyArray<string> },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;

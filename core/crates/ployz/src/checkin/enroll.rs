@@ -192,6 +192,7 @@ async fn heartbeat(
         report: report.report,
         prep: Some(report.prep),
         attempt: Some(attempt),
+        probe: None,
     };
     match client.post(key, &request).await {
         client::Reply::Answer(Answer::Stop(StopReason::Rejected, message)) => return Some(message),
@@ -199,6 +200,7 @@ async fn heartbeat(
             crate::ui::note(format!("Could not report the enroll stage: {why}"));
         }
         client::Reply::Answer(_)
+        | client::Reply::RateLimited(_)
         | client::Reply::Refused(_)
         | client::Reply::ClockOff(_)
         | client::Reply::Outdated(_) => {}

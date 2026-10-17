@@ -79,7 +79,7 @@ export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(functio
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { organization: { id } } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization: { id } } = yield* requireAccess(actor, input.organizationSlug, "org:read");
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: id })).pipe(
     Effect.catchTag("InngestEventSendError", (error) => Effect.logWarning("Cluster Domain sync request failed.", error).pipe(
       Effect.andThen(Effect.fail(new Conflict({ message: "The domain couldn’t be checked. Try again shortly." }))),

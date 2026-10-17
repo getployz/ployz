@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::cloud_enroll::EnrollStage;
 
+use super::probe;
+
 pub(super) const PROTOCOL_VERSION: u8 = 1;
 pub(super) const UNKNOWN_WAIT: Duration = Duration::from_secs(60);
 pub(super) const WAIT_CAP: Duration = Duration::from_secs(60 * 60);
@@ -24,6 +26,8 @@ pub(super) struct CheckinRequest<'a> {
     pub(super) report: &'a HostReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prep: Option<Prep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) probe: Option<probe::Report>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) attempt: Option<&'a Attempt>,
 }
@@ -178,6 +182,7 @@ pub(crate) enum ZfsPrep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Answer {
     Wait(Duration),
+    Probe(Duration, probe::Handout),
     Enroll(Box<EnrollInstruction>),
     Stop(StopReason, String),
 }
@@ -208,6 +213,8 @@ pub(super) fn answer(body: &[u8]) -> Answer {
         Wait {
             #[serde(rename = "retryAfter")]
             retry_after: f64,
+            #[serde(default)]
+            probe: Option<serde_json::Value>,
         },
         Enroll(EnrollInstruction),
         Stop {
@@ -217,7 +224,14 @@ pub(super) fn answer(body: &[u8]) -> Answer {
         },
     }
     match serde_json::from_slice::<Wire>(body) {
-        Ok(Wire::Wait { retry_after }) => Answer::Wait(wait_for(retry_after)),
+        Ok(Wire::Wait { retry_after, probe }) => match probe.map(serde_json::from_value) {
+            Some(Ok(handout)) => Answer::Probe(wait_for(retry_after), handout),
+            Some(Err(why)) => {
+                crate::ui::note(format!("Could not read Cloud's probe handout: {why}"));
+                Answer::Wait(wait_for(retry_after))
+            }
+            None => Answer::Wait(wait_for(retry_after)),
+        },
         Ok(Wire::Enroll(instruction)) => Answer::Enroll(Box::new(instruction)),
         Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
         Err(_) => Answer::Wait(UNKNOWN_WAIT),

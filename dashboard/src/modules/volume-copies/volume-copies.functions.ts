@@ -10,13 +10,13 @@ const VolumeRef = Schema.Struct({ organizationSlug: Schema.NonEmptyString, volum
 export const refreshMirrorServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(RefreshMirrorInput))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "services:control").pipe(
     Effect.flatMap(({ organization }) => refreshMirror({ userId: context.actor.userId, organizationId: organization.id }, data.environment, data.volumeId)),
   )));
 
 export const mirrorStatusesServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(VolumeRef))
-  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "operate").pipe(
+  .handler(({ context, data }) => runActor(context, requireAccess(context.actor, data.organizationSlug, "volumes:read").pipe(
     Effect.flatMap(({ organization }) => mirrorStatuses(organization.id, data.volumeId)),
   )));

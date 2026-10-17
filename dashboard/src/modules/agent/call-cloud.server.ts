@@ -6,6 +6,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { findService, owners } from "#/modules/config-store/store-lookup.server";
 import { githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { UNREACHABLE_MESSAGE } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
@@ -113,6 +114,7 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
   const organizationId = caller.organization.id;
   switch (query.query) {
     case "github_connection":
+      yield* requireClaimed(organizationId, "github_connect");
       return yield* githubConnection(caller).pipe(Effect.map(({ ready, repositories, connect_url }) => answer({
         connected: ready,
         repositories: repositories.map(({ repository }) => repository),

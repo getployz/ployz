@@ -167,6 +167,13 @@ Roles are `owner`, `admin` and `member`. Only an owner can make, change or remov
 Any member can run `ployz org member ls`. Pending invites name who was invited, so
 `ployz org invite ls` refuses anyone but an owner or admin.
 
+Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`, `logs`, `ps`,
+`metrics`, `service start`, `service stop`, `service restart`, `service port-forward`,
+`server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
+`server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
+`Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. See
+[Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
+
 Pick a member by email or by name. When two members share a name, the command refuses with
 `ambiguous`, lists both emails and exits 2, so name the one you mean by email.
 

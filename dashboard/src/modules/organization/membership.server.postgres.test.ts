@@ -1,9 +1,12 @@
+import { it as effectIt } from "@effect/vitest";
 import { and, asc, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
+import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { claimOrganization } from "#/modules/identity/claim.server";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { member, organizationToken, session, user } from "#/modules/identity/tables";
 import { InngestClient } from "#/modules/inngest/client";
@@ -11,8 +14,11 @@ import { serverAccessRetireRequestedEvent } from "#/modules/inngest/events";
 import { removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { organization } from "#/modules/organization/tables";
 import { Auth, type AuthService } from "#/server/auth.server";
-import type { Database } from "#/server/database.server";
+import { AppConfig } from "#/server/config.server";
+import { Database } from "#/server/database.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
+import { storeTestCloud } from "#/test/store-cloud";
 
 const ACME = "00000000-0000-4000-8000-00000000b001";
 const OTHER = "00000000-0000-4000-8000-00000000b002";
@@ -37,8 +43,10 @@ let gus: string;
 let hal: string;
 let ivy: string;
 
-const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | Auth>) =>
-  harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(Auth, noSession)));
+const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: "postgres://unused@localhost/unused" } }))));
+
+const run = <A, E>(effect: Effect.Effect<A, E, Database | InngestClient | Auth | AppConfig>) =>
+  harness.runEffect(effect.pipe(Effect.provideService(InngestClient, inngest), Effect.provideService(Auth, noSession), Effect.provide(config)));
 
 const remove = (organizationId: string, userId: string, by: string) => run(removeMembership(organizationId, userId, by).pipe(
   Effect.as("removed"),
@@ -220,4 +228,23 @@ describe("setMemberRole", () => {
     const owners = await harness.db.select().from(member).where(and(eq(member.organizationId, PAIR), eq(member.role, "owner")));
     expect(owners).toHaveLength(1);
   });
+});
+
+describe("claimOrganization", () => {
+  effectIt.live("leaves the claimed Organization with exactly one owner, the person, after two people claim it at once", () => Effect.gen(function* () {
+    const cloud = yield* storeTestCloud();
+    yield* Effect.gen(function* () {
+      const agent = yield* signUpAnonymous();
+      const secret = new URL(agent.claimUrl).pathname.split("/").at(-1) ?? "";
+      const { drizzle } = yield* Database;
+      const people = (yield* drizzle.insert(user).values([{ email: "eve@example.test", name: "Eve" }, { email: "finn@example.test", name: "Finn" }])
+        .returning({ id: user.id })).map((row) => row.id);
+      yield* drizzle.insert(member).values({ userId: people[1] ?? "", organizationId: agent.organization.id, role: "member" });
+      yield* Effect.all(people.map((userId) => Effect.exit(claimOrganization({ userId }, secret))), { concurrency: "unbounded" });
+      const owners = yield* drizzle.select({ userId: member.userId }).from(member)
+        .where(and(eq(member.organizationId, agent.organization.id), eq(member.role, "owner")));
+      expect(owners).toHaveLength(1);
+      expect(people).toContain(owners[0]?.userId);
+    }).pipe(Effect.provide(cloud));
+  }));
 });

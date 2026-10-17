@@ -13,8 +13,7 @@ import {
   getMachineRemoveAttempt,
   loadMachineDataLoss,
 } from "#/modules/machines/machine-removal.server";
-import { forgetServer } from "#/modules/operations/operations.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import {
   actorMiddleware,
   publicErrorMiddleware,
@@ -58,9 +57,6 @@ export const forgetServerServerFn = createServerFn({
   .handler(({ context, data }) =>
     runActor(context, Effect.gen(function* () {
       const caller = yield* dashboardCaller(getRequest().headers, data.organizationSlug);
-      const admission = yield* forgetServer(caller, data.machineId, { key: data.requestId, approvalId: null });
-      if (admission === null) return yield* new NotFound({ message: "The server was not found." });
-      if (admission.ok) return { id: admission.id };
-      return yield* new Conflict({ userFacing: true, message: admission.refusal.message });
+      return yield* forgetServerFromDashboard(caller, data.machineId, data.requestId);
     })),
   );

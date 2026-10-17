@@ -31,6 +31,7 @@ import {
   recordMachineSetupReport,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
+import { checkServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -153,6 +154,7 @@ function enrollmentTestClient(
     publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
       Effect.result(publishMachineEnrollment(input)),
     ),
+    check: (attemptId: string) => runtime.runPromise(checkServerEnrollment(attemptId)),
     connections: (id = organizationId) => runtime.runPromise(loadOrganizationConnections(id)),
     open: (id = organizationId) => runtime.runPromise(Effect.scoped(
       Effect.gen(function* () { return yield* (yield* OrganizationRuntime).open(id); }),
@@ -339,7 +341,7 @@ describe("organization enrollment coordinator", () => {
     expect(Result.isFailure(waiter)).toBe(false);
     if (Result.isFailure(resumed) || Result.isFailure(waiter)) return;
     expect(resumed.success).toEqual({ ...first.success, resumed: true });
-    expect(waiter.success).toEqual({ kind: "not_yet", retryAfter: 2 });
+    expect(waiter.success).toEqual({ kind: "not_yet", retryAfter: 2, reason: "founder" });
     expect(fake.observations()).toBe(0);
   });
 
@@ -378,7 +380,7 @@ describe("organization enrollment coordinator", () => {
 
     const waiterTokens = await Promise.all(Array.from({ length: 19 }, () => issueToken()));
     const waiters = await Promise.all(
-      waiterTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index + 1) })),
+      waiterTokens.map((token, index) => coordinator.enroll({ token, identity: identity(index + 1), joinSlots: 20 })),
     );
     expect(
       waiters.every(
@@ -402,7 +404,7 @@ describe("organization enrollment coordinator", () => {
     const calls = fake.registerCalls();
     fake.connection.error = new Error("Candidate unreachable");
     const indeterminate = await coordinator.enroll({
-      token: await issueToken(), identity: identity(31),
+      token: await issueToken(), identity: identity(31), joinSlots: 20,
     });
     expect(indeterminate).toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_UNREACHABLE } });
     expect(fake.registerCalls()).toBe(calls);
@@ -505,12 +507,20 @@ describe("organization enrollment coordinator", () => {
     expect(minted.token).toMatch(/^pmet_/u);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "pending" } });
     expect(await fake.coordinator.read(minted.id, "00000000-0000-4000-8000-000000000499")).toMatchObject({ failure: {} });
+    const plainMember = "00000000-0000-4000-8000-000000000497";
+    await harness.pool.query(`
+      insert into "user" (id, email, name) values ('${plainMember}', 'member@example.com', 'Member');
+      insert into member (id, organization_id, user_id, role, created_at)
+      values (gen_random_uuid(), '${organizationId}', '${plainMember}', 'member', now());
+    `);
+    expect(await fake.coordinator.read(minted.id, plainMember)).toMatchObject({ success: { status: "pending" } });
 
     const attempt = await pendingFounder(fake, minted.token);
     const founder = attempt;
     await fake.coordinator.publish({ ...attempt, capability });
     expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: founder.machineId } });
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
+    expect(await fake.coordinator.read(minted.id, plainMember)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
 
     await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() - interval '1 second' where id = $1", [minted.id]);
     expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "expired" } });
@@ -1158,5 +1168,207 @@ describe("organization enrollment coordinator", () => {
         )
       `),
     ).rejects.toMatchObject({ code: "23514" });
+  });
+
+  describe("join line behind the founder", () => {
+    const enrollIn = (fake: ReturnType<typeof fakeSession>, token: string, index: number) =>
+      fake.coordinator.enroll({ token, identity: identity(index), joinSlots: 1 });
+    const queued = (ahead: number) => ({ success: { kind: "not_yet", retryAfter: 5, reason: "queued", ahead } });
+
+    it("lets one join at a time and admits the line in order as joins complete", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const [first, second, third] = [await issueToken(undefined, "joiner"), await issueToken(undefined, "joiner"), await issueToken()];
+
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, second, 2)).toEqual(queued(1));
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(2));
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(2));
+      expect(await enrollIn(fake, second, 2)).toEqual(queued(1));
+
+      const attempt = { token: first, machineId: identity(1).machineId, pairingCredential: founder.pairingCredential };
+      await fake.coordinator.publish({ ...attempt, capability: keyed(1) });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+      expect(await enrollIn(fake, second, 2)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+    });
+
+    it("never gates a Machine resuming its own claim", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await issueToken(identity(4), "joiner");
+      const resumed = await issueToken(identity(5), "joiner");
+      expect(await enrollIn(fake, resumed, 5)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("drops a waiter that stopped asking and a claim that never completed", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const [first, second, third] = [await issueToken(), await issueToken(), await issueToken()];
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, second, 2)).toEqual(queued(1));
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(2));
+
+      await harness.pool.query("update machine_enrollment_token set updated_at = now() - interval '1 minute' where token_hash = $1", [hashEnrollmentToken(second)]);
+      expect(await enrollIn(fake, third, 3)).toEqual(queued(1));
+
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '11 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      expect(await enrollIn(fake, third, 3)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("gives back the slots of joins that failed before they were sent", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      fake.connection.error = new Error("Candidate unreachable");
+      for (let index = 1; index <= 8; index += 1) {
+        expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(index) }))
+          .toMatchObject({ failure: { _tag: "Conflict" } });
+      }
+      fake.connection.error = null;
+      expect(await fake.coordinator.enroll({ token: await issueToken(), identity: identity(20) }))
+        .toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("sends a resumed claim whose slot lapsed back into the line", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '11 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      expect(await enrollIn(fake, await issueToken(), 2)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, first, 1)).toEqual(queued(1));
+    });
+
+    const lineKeepsItsPlace = async (fake: ReturnType<typeof fakeSession>, founder: Awaited<ReturnType<typeof readyFounder>>, first: string) => {
+      const second = await issueToken();
+      expect(await enrollIn(fake, second, 2)).toMatchObject({ success: { kind: "join" } });
+      expect(await enrollIn(fake, first, 1)).toEqual(queued(1));
+      const attempt = { token: second, machineId: identity(2).machineId, pairingCredential: founder.pairingCredential };
+      await fake.coordinator.publish({ ...attempt, capability: keyed(2) });
+      expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: attempt.machineId } });
+      expect(await enrollIn(fake, await issueToken(), 3)).toEqual(queued(1));
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+    };
+
+    it("keeps a claimant whose join failed before it was sent ahead of later arrivals", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const first = await issueToken();
+      fake.connection.error = new Error("Candidate unreachable");
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ failure: { _tag: "Conflict" } });
+      fake.connection.error = null;
+      await lineKeepsItsPlace(fake, founder, first);
+    });
+
+    it("keeps a claimant whose slot lapsed ahead of later arrivals", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '11 minutes' where token_hash = $1", [hashEnrollmentToken(first)]);
+      await lineKeepsItsPlace(fake, founder, first);
+    });
+
+    it("keeps the slot of a sent join when a later retry fails before sending", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      fake.connection.error = new Error("Candidate unreachable");
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ failure: { _tag: "Conflict" } });
+      fake.connection.error = null;
+      expect(await enrollIn(fake, await issueToken(), 2)).toEqual(queued(1));
+    });
+
+    it("keeps the slot of a sent join when an earlier duplicate fails after it", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      const first = await issueToken();
+      let stalled!: () => void;
+      let resume!: () => void;
+      const entered = new Promise<void>((resolve) => { stalled = resolve; });
+      const resumed = new Promise<void>((resolve) => { resume = resolve; });
+      let connects = 0;
+      fake.connection.beforeConnect = async () => {
+        connects += 1;
+        if (connects > 1) return;
+        stalled();
+        await resumed;
+        throw new Error("Candidate unreachable");
+      };
+      const original = enrollIn(fake, first, 1);
+      await entered;
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      resume();
+      expect(await original).toMatchObject({ failure: { _tag: "Conflict" } });
+      expect(await enrollIn(fake, await issueToken(), 2)).toEqual(queued(1));
+    });
+
+    it("keeps the slot of a join that is still publishing past the idle limit", async () => {
+      const fake = fakeSession(harness.database);
+      const founder = await readyFounder(fake);
+      const first = await issueToken();
+      expect(await enrollIn(fake, first, 1)).toMatchObject({ success: { kind: "join" } });
+      const age = (minutes: number) => harness.pool.query(
+        `update machine_enrollment_token set claimed_at = claimed_at - interval '${minutes} minutes' where token_hash = $1`,
+        [hashEnrollmentToken(first)],
+      );
+      await age(9);
+      await fake.coordinator.publish({ token: first, machineId: identity(1).machineId, pairingCredential: founder.pairingCredential, capability: keyed(1) });
+      await age(2);
+      expect(await enrollIn(fake, await issueToken(), 2)).toEqual(queued(1));
+    });
+
+    it("does not count the founder's own token as a join", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await harness.pool.query("update machine_enrollment_token set joined_machine_id = null where claimed_machine_id = $1", [founderMachineId]);
+      expect(await enrollIn(fake, await issueToken(), 1)).toMatchObject({ success: { kind: "join" } });
+    });
+
+    it("answers a full line without waiting on the Organization's lock", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await issueToken(identity(4), "joiner");
+      const waiting = await issueToken();
+      const holder = await harness.pool.connect();
+      try {
+        await holder.query("begin");
+        await holder.query("select 1 from organization_pairing where organization_id = $1 for update", [organizationId]);
+        const blocked = new Promise((resolve) => setTimeout(() => resolve("blocked"), 2_000));
+        expect(await Promise.race([enrollIn(fake, waiting, 5), blocked])).toEqual(queued(1));
+      } finally {
+        await holder.query("rollback");
+        holder.release();
+      }
+    });
+
+    it("counts a queued Waiting Server's ask as a check-in", async () => {
+      const fake = fakeSession(harness.database);
+      await readyFounder(fake);
+      await issueToken(identity(4), "joiner");
+      const waiting = await issueToken(undefined, "joiner");
+      const { rows: [attempt] } = await harness.pool.query<{ id: string }>(`
+        with fleet as (
+          insert into fleet_token (organization_id, name, token_hash, expires_at, created_by_user_id)
+          values ($1, 'fleet', 'fleet-hash', now() + interval '1 day', $2) returning id
+        ), server as (
+          insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip, last_check_in_at)
+          select $1, id, 'key', '{}'::jsonb, '203.0.113.9', now() - interval '6 minutes' from fleet returning id, fleet_token_id
+        )
+        insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
+        select $1, server.id, server.fleet_token_id, 'joiner', '{}'::jsonb, token.id, 'running'
+        from server, machine_enrollment_token token where token.token_hash = $3
+        returning id
+      `, [organizationId, userId, hashEnrollmentToken(waiting)]);
+      if (!attempt) throw new Error("No Server Enrollment");
+      await harness.pool.query("update machine_enrollment_token set server_enrollment_id = $1 where token_hash = $2", [attempt.id, hashEnrollmentToken(waiting)]);
+      expect(await fake.coordinator.check(attempt.id)).toEqual({ kind: "silent" });
+
+      expect(await enrollIn(fake, waiting, 5)).toEqual(queued(1));
+      expect(await fake.coordinator.check(attempt.id)).toEqual({ kind: "waiting" });
+    });
   });
 });

@@ -1,32 +1,105 @@
 import { describe, expect, it } from "vitest";
-import { decideAccess, type Role } from "#/modules/organization/access.server";
+import { admit, refusalOf, type Role } from "#/modules/organization/access.server";
+import { PERMISSIONS, type Permission } from "#/modules/organization/permissions";
 import { SUPPORT_SHOWS_NONE } from "#/modules/support-access/support-access";
+
+const GRANTS: ReadonlyArray<readonly [permission: Permission, member: boolean, admin: boolean, owner: boolean]> = [
+  ["org:read", true, true, true],
+  ["org:settings", false, true, true],
+  ["org:billing", false, false, true],
+  ["org:delete", false, false, true],
+  ["members:read", true, true, true],
+  ["members:manage", false, true, true],
+  ["tokens:create", true, true, true],
+  ["tokens:manage", false, true, true],
+  ["agents:manage", false, true, true],
+  ["github:connect", false, true, true],
+  ["approvals:answer", true, true, true],
+  ["audit:read", false, true, true],
+  ["project:read", true, true, true],
+  ["project:create", true, true, true],
+  ["project:edit", true, true, true],
+  ["project:delete", false, true, true],
+  ["environment:create", true, true, true],
+  ["environment:delete", false, true, true],
+  ["environments:protect", false, true, true],
+  ["changes:stage", true, true, true],
+  ["changes:deploy", true, true, true],
+  ["changes:destroy", true, true, true],
+  ["changes:merge", true, true, true],
+  ["services:control", true, true, true],
+  ["variables:read", true, true, true],
+  ["logs:read", true, true, true],
+  ["metrics:read", true, true, true],
+  ["volumes:read", true, true, true],
+  ["volumes:delete-copy", false, true, true],
+  ["servers:read", true, true, true],
+  ["servers:add", false, true, true],
+  ["servers:operate", false, true, true],
+  ["servers:remove", false, true, true],
+  ["servers:shell", false, true, true],
+];
 
 const organization = { id: "00000000-0000-4000-8000-000000000001", slug: "acme" };
 const userId = "user-1";
-const decide = (role: Role | null, supportAllowed: boolean, isStaff: boolean, need: "operate" | "manage" | "own" = "operate") =>
-  decideAccess({ userId, facts: { organization, role, supportAllowed, supportShows: SUPPORT_SHOWS_NONE }, isStaff, need }).kind;
 
-describe("decideAccess", () => {
-  it("lets members in by role, staff only while support is allowed, and never outsiders", () => {
-    expect(decide("owner", false, false)).toBe("member");
-    expect(decide(null, true, true)).toBe("support");
-    expect(decide(null, false, true)).toBe("not_found");
-    expect(decide(null, true, false)).toBe("not_found");
+const admitted = (role: Role | null, permission: Permission, support = { isStaff: false, allowed: false }) =>
+  admit({
+    userId,
+    facts: { organization, role, supportAllowed: support.allowed, supportShows: SUPPORT_SHOWS_NONE },
+    isStaff: support.isStaff,
+    permission,
   });
 
-  it("lets only owners own the Organization, never admins, members or support", () => {
-    expect(decide("owner", false, false, "own")).toBe("member");
-    expect(decide("admin", false, false, "own")).toBe("forbidden");
-    expect(decide("member", false, false, "own")).toBe("forbidden");
-    expect(decide(null, true, true, "own")).toBe("forbidden");
-    expect(decide(null, false, false, "own")).toBe("not_found");
+describe("admit", () => {
+  it("covers the 34 permissions in order", () => {
+    expect(PERMISSIONS).toEqual(GRANTS.map(([permission]) => permission));
+    expect(PERMISSIONS).toHaveLength(34);
   });
 
-  it("lets owners, admins and support manage, not members", () => {
-    expect(decide("owner", false, false, "manage")).toBe("member");
-    expect(decide("admin", false, false, "manage")).toBe("member");
-    expect(decide("member", false, false, "manage")).toBe("forbidden");
-    expect(decide(null, true, true, "manage")).toBe("support");
+  const cells = GRANTS.flatMap(([permission, member, admin, owner]) => [
+    { permission, role: "member" as const, held: member },
+    { permission, role: "admin" as const, held: admin },
+    { permission, role: "owner" as const, held: owner },
+  ]);
+
+  it.each(cells)("$permission for $role: $held", ({ permission, role, held }) => {
+    expect(admitted(role, permission)).toEqual(held
+      ? { kind: "member", userId, role, organization }
+      : { kind: "forbidden", permission });
+  });
+
+  it.each(GRANTS.map(([permission, , admin]) => ({ permission, admin })))(
+    "$permission for support while allowed: $admin",
+    ({ permission, admin }) => {
+      expect(admitted(null, permission, { isStaff: true, allowed: true })).toEqual(admin
+        ? { kind: "support", userId, organization, shows: SUPPORT_SHOWS_NONE }
+        : { kind: "forbidden", permission });
+    },
+  );
+
+  it.each(["billing", "constructor", "__proto__"])("forbids a stored role outside the three (%s) without throwing", (stored) => {
+    for (const permission of PERMISSIONS) {
+      expect(admitted(stored as Role, permission)).toEqual({ kind: "forbidden", permission });
+    }
+  });
+
+  it("tells outsiders, staff in an Organization that doesn't allow support, and a missing Organization nothing", () => {
+    for (const permission of PERMISSIONS) {
+      expect(admitted(null, permission)).toEqual({ kind: "not_found" });
+      expect(admitted(null, permission, { isStaff: true, allowed: false })).toEqual({ kind: "not_found" });
+      expect(admitted(null, permission, { isStaff: false, allowed: true })).toEqual({ kind: "not_found" });
+      expect(admit({ userId, facts: null, isStaff: true, permission })).toEqual({ kind: "not_found" });
+    }
+  });
+});
+
+describe("refusalOf", () => {
+  it("names owners and admins for an admin permission and owners alone for an owner one", () => {
+    for (const [permission, , admin] of GRANTS) {
+      expect(refusalOf(permission)).toBe(admin
+        ? "Only an owner or admin of this Organization can do this."
+        : "Only an owner of this Organization can do this.");
+    }
   });
 });

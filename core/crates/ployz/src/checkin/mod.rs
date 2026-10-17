@@ -7,6 +7,7 @@
 
 mod client;
 mod enroll;
+mod probe;
 pub(crate) mod unit;
 mod wire;
 
@@ -22,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
 pub(crate) use enroll::Committed;
+use probe::Probes;
 use wire::{Answer, CheckinRequest, PrepState};
 pub(crate) use wire::{
     Attempt, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason, ZfsPrep,
@@ -65,6 +67,10 @@ impl Paths {
 
     pub(crate) fn status(&self) -> PathBuf {
         self.checkin_dir.join("status.json")
+    }
+
+    fn probe(&self) -> PathBuf {
+        self.checkin_dir.join("probe.json")
     }
 }
 
@@ -433,8 +439,9 @@ pub(crate) async fn run<H: Host>(
     paths: &Paths,
 ) -> CheckinEnd {
     let mut last_log = None;
+    let mut probes = Probes::load(paths.probe());
     loop {
-        match pass(host, client, key, paths, Utc::now()).await {
+        match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after, log } => {
                 if let Some(line) = log.filter(|line| last_log != Some(*line)) {
                     crate::ui::note(line);
@@ -542,6 +549,7 @@ pub(crate) async fn stop<H: Host>(
     CheckinEnd::Stopped(reason)
 }
 
+#[cfg(test)]
 pub(crate) async fn pass<H: Host>(
     host: &H,
     client: &mut CheckinClient,
@@ -549,7 +557,16 @@ pub(crate) async fn pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, false).await
+    pass_from(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        false,
+        &mut Probes::load(paths.probe()),
+    )
+    .await
 }
 
 /// The pass an explicit `--install` makes: a failed preparation starts over at once, with its
@@ -561,7 +578,16 @@ pub(crate) async fn install_pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, true).await
+    pass_from(
+        host,
+        client,
+        key,
+        paths,
+        now,
+        true,
+        &mut Probes::load(paths.probe()),
+    )
+    .await
 }
 
 async fn pass_from<H: Host>(
@@ -571,6 +597,7 @@ async fn pass_from<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
     installing: bool,
+    probes: &mut Probes,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     let enrollment = previous.as_ref().filter(|status| {
@@ -663,7 +690,7 @@ async fn pass_from<H: Host>(
             status.message = Some(why.clone());
             record(&status, paths);
             return Next::Retry {
-                after: client::BACKOFF,
+                after: probes.retry_after(client::BACKOFF),
                 why: format!("Could not probe this server: {why}."),
             };
         }
@@ -678,8 +705,14 @@ async fn pass_from<H: Host>(
         report: &report,
         prep: Some(prep),
         attempt: status.attempt.as_ref(),
+        probe: probes.report().await,
     };
-    let next = match client.post(key, &request).await {
+    let sent = tokio::time::Instant::now();
+    let reply = client.post(key, &request).await;
+    if request.probe.is_some() && matches!(&reply, client::Reply::Answer(_)) {
+        probes.reported();
+    }
+    let next = match reply {
         client::Reply::Answer(Answer::Wait(_))
             if !installing
                 && status
@@ -691,7 +724,7 @@ async fn pass_from<H: Host>(
             status.answer = Seen::Joined;
             Next::Enrolled
         }
-        client::Reply::Answer(Answer::Wait(after)) => {
+        client::Reply::Answer(Answer::Wait(after)) | client::Reply::RateLimited(after) => {
             status.answer = Seen::Wait;
             if status.enroll_failed() {
                 status.message = status
@@ -702,7 +735,20 @@ async fn pass_from<H: Host>(
             }
             Next::Wait { after, log: None }
         }
+        client::Reply::Answer(Answer::Probe(after, handout)) => {
+            probes.open(handout, key, sent).await;
+            if installing {
+                crate::ui::note(format!(
+                    "Listening on the probe ports for up to {}s.",
+                    probe::WINDOW_CAP.as_secs()
+                ));
+                probes.finish().await;
+            }
+            status.answer = Seen::Wait;
+            Next::Wait { after, log: None }
+        }
         client::Reply::Answer(Answer::Enroll(_)) if installing => {
+            probes.close().await;
             status.answer = Seen::Wait;
             Next::Wait {
                 after: Duration::ZERO,
@@ -710,6 +756,7 @@ async fn pass_from<H: Host>(
             }
         }
         client::Reply::Answer(Answer::Enroll(instruction)) => {
+            probes.close().await;
             return enroll::attempt(
                 host,
                 client,
@@ -760,7 +807,7 @@ async fn pass_from<H: Host>(
             status.answer = Seen::Unreachable;
             status.message = Some(why.clone());
             Next::Retry {
-                after,
+                after: probes.retry_after(after),
                 why: format!("Could not reach Ployz Cloud: {why}."),
             }
         }
@@ -778,6 +825,9 @@ async fn pass_from<H: Host>(
             }
         }
     };
+    if matches!(next, Next::Stop(..) | Next::Enrolled) {
+        probes.close().await;
+    }
     record(&status, paths);
     next
 }

@@ -1005,6 +1005,7 @@ async fn replace_token(installing: bool) {
             &fixture.paths,
             Utc::now(),
             installing,
+            &mut super::super::Probes::load(fixture.paths.probe()),
         )
         .await;
         assert_eq!(
@@ -1054,14 +1055,24 @@ fn the_host_adapter_overrides_remote_context_and_connection_environment() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("remote.yaml");
         fs::write(&config, "current_context: remote\ncontexts:\n  remote:\n    connections:\n      - tcp: 127.0.0.1:9\n").unwrap();
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "checkin::enroll::tests::the_host_adapter_overrides_remote_context_and_connection_environment", "--nocapture"])
             .env(CHILD, "1")
             .env("PLOYZ_CONFIG", &config)
             .env("PLOYZ_CONTEXT", "remote")
             .env("PLOYZ_CONNECT", "tcp://127.0.0.1:9")
-            .status().unwrap();
-        assert!(result.success());
+            .output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("running 1 test\n"),
+            "the child did not run exactly one test: {stdout}"
+        );
+        assert!(
+            stdout.contains("1 passed;"),
+            "the child did not pass its test: {stdout}"
+        );
         return;
     }
     let Answer::Enroll(instruction) = wire::answer(instruction("none").as_bytes()) else {
@@ -1087,4 +1098,90 @@ fn the_host_adapter_overrides_remote_context_and_connection_environment() {
         selected.connections.first().unwrap().to_string(),
         "unix:///run/ployz/ployz.sock"
     );
+}
+
+#[tokio::test]
+async fn a_check_in_reports_the_saved_probe_and_token_bound_attempt_together() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![WAIT.to_owned()]).await);
+    let host = Scripted::new(&cloud, Vec::new(), Ok(()));
+    let mut client = fixture.client(&cloud);
+    let attempt = serde_json::json!({
+        "attemptId": "att_1",
+        "stage": "enrolling",
+        "failure": {"stage": "enrolling", "message": "Docker is not running"}
+    });
+    let status = serde_json::from_value(serde_json::json!({
+        "answer": "wait",
+        "token_fingerprint": client.fingerprint(),
+        "at": Utc::now(),
+        "attempt": attempt
+    }))
+    .unwrap();
+    record(&status, &fixture.paths);
+    let probe = serde_json::json!({
+        "handout": "completed-window",
+        "heardFrom": ["192.0.2.1"],
+        "bindFailed": ["tcp:443"]
+    });
+    fs::write(fixture.paths.probe(), serde_json::to_vec(&probe).unwrap()).unwrap();
+
+    let next = pass(&host, &mut client, &fixture.key, &fixture.paths, Utc::now()).await;
+
+    assert!(matches!(next, Next::Wait { .. }));
+    let bodies = cloud.bodies.lock().unwrap();
+    let body = bodies.first().unwrap();
+    assert_eq!(body["attempt"], attempt);
+    assert_eq!(body["probe"], probe);
+    assert_eq!(fixture.status().headline(), Headline::open("Enroll failed"));
+}
+
+#[tokio::test]
+async fn an_enroll_instruction_closes_the_probe_ports_on_install_and_loop_passes() {
+    use super::super::{Probes, pass_from};
+
+    for installing in [true, false] {
+        let fixture = Fixture::new("ready");
+        let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
+        let host = Scripted::new(&cloud, Vec::new(), Ok(()));
+        let port = std::net::UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let handout = serde_json::from_value(serde_json::json!({
+            "nonce": "nonce",
+            "handout": "open-window",
+            "windowMs": 10000,
+            "listen": [format!("udp:{port}")],
+            "send": []
+        }))
+        .unwrap();
+        let mut probes = Probes::load(fixture.paths.probe());
+        probes
+            .open(handout, &fixture.key, tokio::time::Instant::now())
+            .await;
+        assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_err());
+
+        let next = pass_from(
+            &host,
+            &mut fixture.client(&cloud),
+            &fixture.key,
+            &fixture.paths,
+            Utc::now(),
+            installing,
+            &mut probes,
+        )
+        .await;
+
+        assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok());
+        assert!(probes.report().await.is_none());
+        if installing {
+            assert!(matches!(next, Next::Wait { after, .. } if after.is_zero()));
+            assert!(host.events().is_empty());
+        } else {
+            assert_eq!(next, Next::Enrolled);
+            assert_eq!(fixture.status().answer, Seen::Joined);
+        }
+    }
 }

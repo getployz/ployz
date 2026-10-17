@@ -2,7 +2,8 @@ import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
-import type { Caller, TokenKind } from "#/modules/identity/actor";
+import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { organizationToken, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -27,40 +28,51 @@ export const requireSignedIn = (caller: Caller) =>
     ? Effect.void
     : Effect.fail(new Validation({ message: "Only a signed-in person can make or revoke tokens; run `ployz login`.", userFacing: true }));
 
+export const mintOrganizationTokenUnchecked = Effect.fn("OrganizationToken.mint")(function* (input: {
+  readonly organizationId: string;
+  readonly userId: string;
+  readonly name: string;
+  readonly kind: TokenKind;
+  readonly expiresAt: Date;
+}) {
+  const database = yield* Database;
+  const secret = `${ORGANIZATION_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+  const [created] = yield* database.drizzle
+    .insert(organizationToken)
+    .values({ ...input, secretHash: hashOrganizationTokenSecret(secret) })
+    .returning({ id: organizationToken.id, kind: organizationToken.kind, expiresAt: organizationToken.expiresAt });
+  if (created === undefined) return yield* Effect.die("insert returned no row");
+  return { id: created.id, kind: created.kind, expiresAt: created.expiresAt, secret };
+});
+
 /** Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. */
 export const createOrganizationToken = Effect.fn("OrganizationToken.create")(function* (
   caller: Caller,
   input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind },
 ) {
+  yield* requireClaimed(caller.organization.id, "mint_token");
   yield* requireSignedIn(caller);
-  const database = yield* Database;
-  const secret = `${ORGANIZATION_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-  const [created] = yield* database.drizzle
-    .insert(organizationToken)
-    .values({
-      organizationId: caller.organization.id,
-      userId: caller.userId,
-      name: input.name,
-      kind: caller.via === "agent" ? "agent" : (input.kind ?? "cli"),
-      secretHash: hashOrganizationTokenSecret(secret),
-      expiresAt: new Date(Date.now() + input.expiresInDays * DAY_MS),
-    })
-    .returning({ id: organizationToken.id, kind: organizationToken.kind, expiresAt: organizationToken.expiresAt });
-  if (created === undefined) return yield* Effect.die("insert returned no row");
-  return {
-    id: created.id,
+  const minted = yield* mintOrganizationTokenUnchecked({
+    organizationId: caller.organization.id,
+    userId: caller.userId,
     name: input.name,
-    kind: created.kind,
+    kind: caller.via === "agent" ? "agent" : (input.kind ?? "cli"),
+    expiresAt: new Date(Date.now() + input.expiresInDays * DAY_MS),
+  });
+  return {
+    id: minted.id,
+    name: input.name,
+    kind: minted.kind,
     organization: caller.organization.slug,
-    expires_at: created.expiresAt.toISOString(),
-    secret,
+    expires_at: minted.expiresAt.toISOString(),
+    secret: minted.secret,
   };
 });
 
 /** Owners and admins reach every token in the Organization; anyone else only their own. */
 const tokensReachableBy = (caller: Caller) => {
   const inOrganization = eq(organizationToken.organizationId, caller.organization.id);
-  return caller.role === "owner" || caller.role === "admin" ? inOrganization : and(inOrganization, eq(organizationToken.userId, caller.userId));
+  return callerCan(caller, "tokens:manage") ? inOrganization : and(inOrganization, eq(organizationToken.userId, caller.userId));
 };
 
 /** The tokens the Caller can revoke, expired ones included, and the Caller's own signed-in devices. */

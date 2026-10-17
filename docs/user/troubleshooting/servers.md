@@ -225,8 +225,9 @@ prepares Docker and ZFS meanwhile.
    boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
-   again. A new Fleet Token clears the rejection. If the token file goes missing, the loop stops the
-   next time it starts.
+   again to start a new check-in attempt. A non-rejection response clears the local rejection
+   status, but Cloud can still reject the server. If the token file goes missing, the loop stops
+   the next time it starts.
 9. A `blocked` line saying `ployzd ... is older than this ployz` means you upgraded `ployz` but
    not `ployzd`. The loop keeps checking in with the older one, and Cloud shows the server as
    blocked until you run `sudo ployz server checkin --install`. It uses the first older one that
@@ -249,6 +250,18 @@ prepares Docker and ZFS meanwhile.
     have begun. Expiring or revoking a Fleet Token lets an open enrollment finish.
 13. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
     disk. Selecting a particular disk on the host is not yet supported.
+14. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
+    at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
+    while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
+    The server tells Cloud what it heard only after it closes the ports. One that restarts while it
+    listens tells Cloud nothing for that check, so its ports read Unknown: check again. **Open**
+    means Cloud reached the port and the server answered. **Closed** means the server listened but
+    Cloud's connection was refused, so a firewall in front of it turns the port away. **Unknown ·
+    port busy** means Ployz couldn't listen on that port in time. Usually another program, such as
+    a web server, already holds it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check
+    again. If nothing holds it, a delayed check-in reply or a busy server may have left too little
+    time to listen, so check again. A server running a `ployz` older than this feature leaves every
+    port Unknown.
 
 ## Ployz stops over a leftover network
 

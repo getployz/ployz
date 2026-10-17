@@ -13,7 +13,7 @@ import { environmentCanvasNodePosition } from "./tables";
  * the Store creates it, in an Environment only the Store knows.
  */
 export const updateCanvasPosition = Effect.fn("Canvas.updatePosition")(function* (actor: Actor, input: UpdateCanvasPositionInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "project:edit");
   return yield* withMutationResult(Effect.gen(function* () {
     const database = yield* Database;
     const x = Math.round(input.x);

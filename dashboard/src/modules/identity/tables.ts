@@ -19,6 +19,7 @@ export const user = pgTable(
     name: text("name").notNull(),
     image: text("image"),
     openStartedDeployments: boolean("open_started_deployments").default(true).notNull(),
+    isAnonymous: boolean("is_anonymous").default(false).notNull(),
   },
   (table) => [unique().on(table.email)],
 );
