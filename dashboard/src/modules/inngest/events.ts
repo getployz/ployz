@@ -105,6 +105,7 @@ export const serverAccessRetireRequestedEvent = "server-access/retire.requested"
 export const observePushTargetRequestedEvent = "observe/push-target.requested";
 export const configFirstServerJoinedEvent = "config/first-server.joined";
 export const configSweepRequestedEvent = "config/sweep.requested";
+export const anonymousTeardownRequestedEvent = "anonymous/teardown.requested";
 export const mailSendRequestedEvent = "mail/send";
 
 export type MailSendRequestedEventData = MailMessage;
@@ -208,6 +209,11 @@ export type ConfigFirstServerJoinedEventData = {
 
 /** A Config Store write closed a Branch at once (nothing on a Server): its Store sweeps it away now. */
 export type ConfigSweepRequestedEventData = {
+  organizationId: string;
+};
+
+/** An anonymous agent's Organization is past its token: tear it down one step further. */
+export type AnonymousTeardownRequestedEventData = {
   organizationId: string;
 };
 
@@ -357,6 +363,10 @@ export const configFirstServerJoinedEventType = eventType(
 export const configSweepRequestedEventType = eventType(
   configSweepRequestedEvent,
   { schema: staticSchema<ConfigSweepRequestedEventData>() },
+);
+export const anonymousTeardownRequestedEventType = eventType(
+  anonymousTeardownRequestedEvent,
+  { schema: staticSchema<AnonymousTeardownRequestedEventData>() },
 );
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
@@ -512,6 +522,10 @@ export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoined
 
 export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventData) {
   return { name: configSweepRequestedEvent, data } as const;
+}
+
+export function createAnonymousTeardownRequestedEvent(data: AnonymousTeardownRequestedEventData) {
+  return { name: anonymousTeardownRequestedEvent, data } as const;
 }
 
 export function createObserveCrashReceivedEvent(data: ObserveCrashReceivedEventData, crashEventId: string) {
@@ -703,7 +717,8 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubPullRequestReceivedEvent>
-  | ReturnType<typeof createGithubBuildRunCompletedEvent>;
+  | ReturnType<typeof createGithubBuildRunCompletedEvent>
+  | ReturnType<typeof createAnonymousTeardownRequestedEvent>;
 
 /**
  * A dispatched GitHub build run completed, whatever its conclusion, or its runner's final report

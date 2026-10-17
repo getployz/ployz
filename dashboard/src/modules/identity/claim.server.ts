@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { Actor } from "#/modules/identity/actor";
-import { claimSecretFor, hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { claimSecretFor, hashClaimSecret, tokenRuns } from "#/modules/identity/claim-required.server";
 import { takeClaimSignInOrganization } from "#/modules/identity/claim-sign-in.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { countOrganizationMachines } from "#/modules/machines/connections.server";
@@ -61,11 +61,11 @@ const findBySecret = Effect.fn("Identity.findClaimOrganization")(function* (secr
     .where(and(eq(member.organizationId, found.id), eq(member.role, "owner"), eq(user.isAnonymous, true)));
   const anonymousIds = owners.map((owner) => owner.userId);
   const tokens = anonymousIds.length === 0 ? [] : yield* drizzle
-    .select({ expiresAt: organizationToken.expiresAt })
+    .select({ expiresAt: organizationToken.expiresAt, live: tokenRuns.mapWith(Boolean) })
     .from(organizationToken)
     .where(and(eq(organizationToken.organizationId, found.id), inArray(organizationToken.userId, anonymousIds)));
   const expiresAt = tokens.reduce<Date | null>((latest, token) => latest === null || token.expiresAt > latest ? token.expiresAt : latest, null);
-  return { ...found, anonymousIds, expiresAt };
+  return { ...found, anonymousIds, expiresAt, live: tokens.some((token) => token.live) };
 });
 
 const isMember = Effect.fn("Identity.isClaimMember")(function* (actor: Actor, organizationId: string) {
@@ -75,9 +75,6 @@ const isMember = Effect.fn("Identity.isClaimMember")(function* (actor: Actor, or
   return rows.length > 0;
 });
 
-/** A sandbox with no live anonymous token has lapsed: nobody can act in it until it is claimed, and teardown is near. */
-const live = (expiresAt: Date | null): expiresAt is Date => expiresAt !== null && expiresAt.getTime() > Date.now();
-
 export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: string, viewer: Actor | null) {
   const found = yield* findBySecret(secret);
   if (found === null) return { state: "expired" } satisfies Claim;
@@ -85,7 +82,7 @@ export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: stri
     const mine = viewer !== null && (yield* isMember(viewer, found.id));
     return (mine ? { state: "claimed", organization: { slug: found.slug } } : { state: "taken" }) satisfies Claim;
   }
-  if (!live(found.expiresAt)) return { state: "expired" } satisfies Claim;
+  if (!found.live || found.expiresAt === null) return { state: "expired" } satisfies Claim;
   const [servers, { projects }] = yield* Effect.all([countOrganizationMachines(found.id), readStore(found.id, { query: "projects" })]);
   return {
     state: "pending",
@@ -122,7 +119,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
       if (yield* isMember(actor, found.id)) return { slug: found.slug };
       return yield* taken();
     }
-    if (!live(found.expiresAt)) return yield* new Conflict({ message: "This sandbox expired.", userFacing: true });
+    if (!found.live) return yield* new Conflict({ message: "This sandbox expired.", userFacing: true });
     const { id, anonymousIds } = found;
     yield* drizzle.insert(member).values({ userId: actor.userId, organizationId: id, role: "owner" })
       .onConflictDoUpdate({ target: [member.userId, member.organizationId], set: { role: "owner" } });

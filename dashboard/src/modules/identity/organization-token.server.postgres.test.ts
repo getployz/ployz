@@ -1,5 +1,5 @@
 import { ConfigProvider, Effect, Layer } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
@@ -109,5 +109,19 @@ describe("organization tokens", () => {
     };
     expect(await presented(new Date(Date.now() + 60_000))).toBe(ids.eve);
     expect(await presented(new Date(Date.now() - 1_000))).toBe("unauthorized");
+  });
+
+  it("decides a token's expiry by the database clock, so a process clock running behind keeps no lapsed token alive", async () => {
+    const noSession = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(null) });
+    const { secret } = await run(mintOrganizationTokenUnchecked({ organizationId: ACME, userId: ids.eve, name: "agent", kind: "agent", expiresAt: new Date(Date.now() - 1_000) }));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() - 2 * 3_600_000);
+    try {
+      expect(await run(resolveCaller(new Headers({ authorization: `Bearer ${secret}` })).pipe(
+        Effect.map((caller) => caller.userId),
+        Effect.catchTag("Unauthorized", () => Effect.succeed("unauthorized")),
+        Effect.provideService(Auth, noSession),
+      ))).toBe("unauthorized");
+    } finally { vi.useRealTimers(); }
   });
 });

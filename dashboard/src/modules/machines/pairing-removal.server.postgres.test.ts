@@ -4,7 +4,7 @@ import { Layer, ManagedRuntime } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
-import { sendsNowhere } from "#/test/store-cloud";
+import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud";
 import { InngestClient } from "#/modules/inngest/client";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -43,6 +43,7 @@ describe("protected pairing removal", () => {
     // The authenticated endpoint distinguishes a cleared Management Client from a replaced client key.
     const endpoint = { paired: true, online: true, loseAck: false, replaced: false, devices: new Set<string>() };
     const cleared: string[] = [];
+    const calls: string[] = [];
     const dialed: ConnectOptions[] = [];
     let mutations = 0;
     const ployz = makePloyzLayer({
@@ -59,19 +60,21 @@ describe("protected pairing removal", () => {
           inspect: async () => ({ management_clients: ["cloud", ...endpoint.devices] }),
           clearManagementClient: async (label: string) => {
             cleared.push(label);
+            calls.push(label);
             if (endpoint.devices.delete(label)) return;
             if (label !== "cloud") throw new Error(`unexpected Management Client ${label}`);
             mutations += 1;
             endpoint.paired = false;
             if (endpoint.loseAck) throw new Error("Rotation closed the old stream");
           },
+          setPushTarget: async (target: string | null) => { calls.push(`push:${target}`); },
           close: async () => undefined,
         });
       },
     });
     const layer = Layer.mergeAll(ployz, Layer.succeed(Database, harness.database), Layer.succeed(SecretEncryption, encryption), Layer.succeed(InngestClient, sendsNowhere()));
     const makeRuntime = () => ManagedRuntime.make(OrganizationRuntimeLive.pipe(Layer.provideMerge(layer)));
-    return { endpoint, dialed, cleared, mutations: () => mutations, makeRuntime };
+    return { endpoint, dialed, cleared, calls, mutations: () => mutations, makeRuntime };
   }
 
   it.each([
@@ -136,6 +139,20 @@ describe("protected pairing removal", () => {
     } finally { await runtime.dispose(); }
   });
 
+  it("revokes a lapsed sandbox's pairing and leaves its anonymous owner to the teardown", async () => {
+    await harness.pool.query("truncate organization cascade");
+    const { userId } = await harness.runEffect(seedAnonymousStoreOrganization(organizationId, new Date(Date.now() - 1000)));
+    await seedPairing();
+    const fake = fixture();
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect(fake.mutations()).toBe(1);
+      expect((await harness.pool.query("select * from organization_pairing")).rows).toEqual([]);
+      expect((await harness.pool.query("select is_anonymous from \"user\" where id=$1", [userId])).rows).toEqual([{ is_anonymous: true }]);
+    } finally { await runtime.dispose(); }
+  });
+
   it("clears every device holder before Cloud's own slot", async () => {
     const fake = fixture();
     fake.endpoint.devices = new Set(["cli-a", "cli-b"]);
@@ -143,6 +160,16 @@ describe("protected pairing removal", () => {
     try {
       expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
       expect(fake.cleared).toEqual(["cli-a", "cli-b", "cloud"]);
+    } finally { await runtime.dispose(); }
+  });
+
+  it("stops the Server pushing to Cloud before Cloud gives up its own slot", async () => {
+    const fake = fixture();
+    fake.endpoint.devices = new Set(["cli-a", "cli-b"]);
+    const runtime = fake.makeRuntime();
+    try {
+      expect((await runtime.runPromise(revokeOrganizationPairing(organizationId))).confirmed).toBe(true);
+      expect(fake.calls).toEqual(["cli-a", "cli-b", "push:null", "cloud"]);
     } finally { await runtime.dispose(); }
   });
 
