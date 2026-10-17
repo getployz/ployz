@@ -23,7 +23,7 @@ import { cleanPlan, drainPlan, freshApproval, freshPendingApprovals, removePlan 
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
-import { user } from "#/modules/identity/tables";
+import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
@@ -95,6 +95,12 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
 const anonymous = (userId: string) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   yield* drizzle.update(user).set({ isAnonymous: true }).where(eq(user.id, userId));
+});
+
+const personOwner = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.insert(user).values({ email: "grace@example.test", name: "Grace" }).returning();
+  yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
 });
 
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
@@ -572,6 +578,14 @@ it.live("an anonymous agent's destructive operation runs without asking and reco
     yield* provided(anonymous(userId));
     expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
     expect(yield* rows).toEqual([]);
+  }));
+
+it.live("an agent's destructive operation still asks once a person also owns the Organization", () =>
+  Effect.gen(function* () {
+    const { provided, userId, gate } = yield* operationCloud();
+    yield* provided(anonymous(userId));
+    yield* provided(personOwner);
+    expect(refusedWith(yield* gate(drainOf(["shop.web"]))).approval).toBe(operationDigest(drainOf(["shop.web"])));
   }));
 
 it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>

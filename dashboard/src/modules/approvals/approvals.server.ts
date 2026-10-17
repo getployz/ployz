@@ -16,7 +16,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { isAnonymousOrganization } from "#/modules/identity/claim-required.server";
+import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
@@ -277,7 +277,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
 
 export const hasApprover = (organizationId: string) =>
-  isAnonymousOrganization(organizationId).pipe(Effect.map((anonymous) => !anonymous), Effect.orDie);
+  isOwnedOnlyByAgents(organizationId).pipe(Effect.map((agentsOnly) => !agentsOnly), Effect.orDie);
 
 export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   caller: Caller,

@@ -19,16 +19,21 @@ const wanted = {
   github_connect: "connect GitHub",
 } satisfies Record<ClaimedAction, string>;
 
-export const isAnonymousOrganization = Effect.fn("Identity.isAnonymousOrganization")(function* (organizationId: string) {
+const ownerKinds = Effect.fn("Identity.ownerKinds")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
-    .select({ id: member.id })
+    .selectDistinct({ anonymous: user.isAnonymous })
     .from(member)
     .innerJoin(user, eq(user.id, member.userId))
-    .where(and(eq(member.organizationId, organizationId), eq(member.role, "owner"), eq(user.isAnonymous, true)))
-    .limit(1);
-  return rows.length > 0;
+    .where(and(eq(member.organizationId, organizationId), eq(member.role, "owner")));
+  return rows.map((row) => row.anonymous);
 });
+
+export const isAnonymousOrganization = (organizationId: string) =>
+  ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true)));
+
+export const isOwnedOnlyByAgents = (organizationId: string) =>
+  ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true) && !kinds.includes(false)));
 
 export const claimUrlFor = Effect.fn("Identity.claimUrlFor")(function* (organizationId: string) {
   const config = yield* AppConfig;
