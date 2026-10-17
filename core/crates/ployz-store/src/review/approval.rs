@@ -13,7 +13,7 @@ use ts_rs::TS;
 use crate::error;
 use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
 use crate::review::{DiffView, Head, Review, Shipping};
-use crate::{Actor, Approval, Asks, Trusted};
+use crate::{Actor, Approval, Asks, Permission, Trusted};
 
 /// One thing a publication destroys, by the node it changes and the row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize, TS)]
@@ -276,6 +276,9 @@ pub(crate) fn approve(
     };
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
+    }
+    if !effects.is_empty() {
+        trusted.admit(Permission::ChangesDestroy)?;
     }
     let mut bound = bound(who, environment, effects);
     if let Shipping::Deploy { services, upload } = shipping

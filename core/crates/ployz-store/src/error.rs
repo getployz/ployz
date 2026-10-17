@@ -117,6 +117,10 @@ pub(crate) fn approval_required(message: impl Into<String>, details: Value) -> R
     error(RpcErrorCode::from("approval_required"), message, details)
 }
 
+pub(crate) fn forbidden(message: impl Into<String>, details: Value) -> RpcError {
+    error(RpcErrorCode::from("forbidden"), message, details)
+}
+
 /// Evidence a write needs is missing or incomplete, so it refuses rather than guess.
 pub(crate) fn unobserved(message: impl Into<String>, details: Value) -> RpcError {
     error(RpcErrorCode::Unavailable, message, details)

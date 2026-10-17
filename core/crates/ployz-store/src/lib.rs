@@ -19,6 +19,7 @@ mod git;
 mod github;
 mod id;
 mod names;
+mod permission;
 mod policy;
 mod project;
 mod pull_request;
@@ -78,6 +79,7 @@ pub use github::{
     GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
 };
 pub use id::*;
+pub use permission::Permission;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{

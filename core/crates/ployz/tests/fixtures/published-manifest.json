@@ -1,6 +1,42 @@
 {
   "format": 1,
-  "revision": "d1ec13e6d34a",
+  "revision": "55469fe0a0be",
+  "permissions": [
+    "org:read",
+    "org:settings",
+    "org:billing",
+    "org:delete",
+    "members:read",
+    "members:manage",
+    "tokens:create",
+    "tokens:manage",
+    "agents:manage",
+    "github:connect",
+    "approvals:answer",
+    "audit:read",
+    "project:read",
+    "project:create",
+    "project:edit",
+    "project:delete",
+    "environment:create",
+    "environment:delete",
+    "environments:protect",
+    "changes:stage",
+    "changes:deploy",
+    "changes:destroy",
+    "changes:merge",
+    "services:control",
+    "variables:read",
+    "logs:read",
+    "metrics:read",
+    "volumes:read",
+    "volumes:delete-copy",
+    "servers:read",
+    "servers:add",
+    "servers:operate",
+    "servers:remove",
+    "servers:shell"
+  ],
   "commands": [
     {
       "name": "server_upgrade_policy_show",
@@ -13,6 +49,7 @@
       "examples": [
         "ployz server upgrade-policy show"
       ],
+      "requires": "servers:read",
       "kind": "read",
       "gate": "never",
       "removes": false,
@@ -59,6 +96,7 @@
         "ployz server upgrade-policy set --channel beta",
         "ployz server upgrade-policy set --automatic true"
       ],
+      "requires": "servers:operate",
       "kind": "write",
       "gate": "never",
       "removes": false,
@@ -117,6 +155,7 @@
       "examples": [
         "ployz org approval ls"
       ],
+      "requires": "approvals:answer",
       "kind": "read",
       "gate": "never",
       "removes": false,
@@ -179,6 +218,7 @@
       "examples": [
         "ployz org approval show 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"
       ],
+      "requires": "approvals:answer",
       "kind": "read",
       "gate": "never",
       "removes": false,
@@ -268,6 +308,7 @@
       "examples": [
         "ployz org approval approve 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"
       ],
+      "requires": "approvals:answer",
       "kind": "write",
       "gate": "never",
       "removes": false,
@@ -357,6 +398,7 @@
       "examples": [
         "ployz org approval deny 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e --reason \"not during the demo\""
       ],
+      "requires": "approvals:answer",
       "kind": "write",
       "gate": "never",
       "removes": false,
@@ -451,6 +493,7 @@
       "examples": [
         "ployz org member ls"
       ],
+      "requires": "members:read",
       "kind": "read",
       "gate": "never",
       "removes": false,
@@ -513,6 +556,7 @@
         "ployz org member invite bob@example.com",
         "ployz org member invite bob@example.com --role admin"
       ],
+      "requires": "members:manage",
       "kind": "write",
       "gate": "never",
       "removes": false,
@@ -597,6 +641,7 @@
         "ployz org member role bob@example.com admin",
         "ployz org member role Bob member"
       ],
+      "requires": "members:manage",
       "kind": "write",
       "gate": "ask",
       "removes": false,
@@ -665,6 +710,7 @@
         "ployz org member rm bob@example.com",
         "ployz org member rm Bob"
       ],
+      "requires": "members:manage",
       "kind": "write",
       "gate": "ask",
       "removes": true,
@@ -712,6 +758,7 @@
       "examples": [
         "ployz org invite ls"
       ],
+      "requires": "members:manage",
       "kind": "read",
       "gate": "never",
       "removes": false,
@@ -775,6 +822,7 @@
       "examples": [
         "ployz org invite revoke bob@example.com"
       ],
+      "requires": "members:manage",
       "kind": "write",
       "gate": "ask",
       "removes": true,
@@ -829,6 +877,7 @@
         "ployz uptime show web",
         "ployz uptime show web --project shop --environment staging --from 6h"
       ],
+      "requires": "project:read",
       "kind": "read",
       "gate": "never",
       "removes": false,
@@ -1081,6 +1130,7 @@
         "ployz uptime check web",
         "ployz uptime check web --project shop --environment staging"
       ],
+      "requires": "project:read",
       "kind": "read",
       "gate": "never",
       "removes": false,

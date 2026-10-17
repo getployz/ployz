@@ -1,6 +1,8 @@
 //! Evidence Cloud gathers outside the Store and passes in-process with a write. It is
 //! never caller testimony: `read` and `write` over HTTPS carry none, only what Cloud found.
 
+use std::collections::BTreeSet;
+
 use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, RpcError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -8,6 +10,7 @@ use ts_rs::TS;
 use crate::domain::DomainEvidence;
 use crate::git::AuthorizedRepository;
 use crate::id::{ApprovalDigest, GithubUserId};
+use crate::permission::Permission;
 
 /// What Cloud checked for one write. Empty unless Cloud supplies it.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -36,6 +39,12 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub members: Option<Vec<GithubUserId>>,
+    /// The permissions the caller holds, as Cloud grants them by role: a command
+    /// refuses unless the one it names is among them. None when no one checked, which
+    /// is only the hidden local Store, whose caller owns everything in it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub permissions: Option<BTreeSet<Permission>>,
     /// Whether a human must approve a publication that destroys something, and what they
     /// approved.
     #[serde(default)]
@@ -90,6 +99,16 @@ impl Trusted {
     /// Cloud counted no Server: nothing runs, and nothing is left on one.
     pub(crate) const fn no_servers(&self) -> bool {
         matches!(self.servers, Some(0))
+    }
+
+    pub(crate) fn admit(&self, permission: Permission) -> Result<(), RpcError> {
+        match &self.permissions {
+            Some(held) if !held.contains(&permission) => Err(crate::error::forbidden(
+                format!("Needs {permission}"),
+                serde_json::json!({ "permission": permission }),
+            )),
+            _ => Ok(()),
+        }
     }
 }
 
