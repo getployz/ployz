@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import type { ConfigCommand, ConfigQuery, MachineId } from "@ployz/sdk";
+import { type ConfigCommand, type ConfigQuery, type MachineId, RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -705,6 +705,41 @@ it.live(
           vi.restoreAllMocks();
           assert.deepInclude(yield* protection(), [name, true], surface);
         }
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an agent's unprotect is refused with the listing's own refusal when Cloud can't list Environments, and writes nothing",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, protection } = yield* protectedShop();
+        const store = yield* cloudStore;
+        const read = store.read.bind(store);
+        const details = { next: "retry the listing" };
+        vi.spyOn(store, "read").mockImplementation(async (organization, query) => {
+          if (query.query === "environments") throw new RpcError({ code: "unavailable", message: "Environment listing refused", details });
+          return read(organization, query);
+        });
+        const writes = vi.spyOn(store, "write");
+
+        const sidebar = yield* runAgentCall({ ...alice, via: "agent" }, unprotectByAgent("refused-listing", null));
+        assert.deepStrictEqual(sidebar, { outcome: { ok: false, refusal: { code: "unavailable", message: "Environment listing refused", details } } });
+        const mcp = yield* send("write", asAgent(session, null), protect(false));
+        assert.strictEqual(mcp.status, 503);
+        assert.deepStrictEqual(
+          [mcp.json.error?.code, mcp.json.error?.message, mcp.json.error?.details],
+          ["unavailable", "Environment listing refused", details],
+        );
+        assert.strictEqual(writes.mock.calls.length, 0);
+        vi.restoreAllMocks();
+
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
         const { drizzle } = yield* Database;
         assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
       }).pipe(Effect.provide(layer));
