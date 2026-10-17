@@ -227,6 +227,10 @@ pub(crate) enum Next {
     RefusedOnce {
         after: Duration,
     },
+    Held {
+        after: Duration,
+        why: String,
+    },
     Stop(StopReason, String),
     ClockOff(String),
     NotCloud(String),
@@ -239,6 +243,7 @@ pub(crate) enum Seen {
     Enroll,
     Stop,
     Refused,
+    Held,
     Unreachable,
     NotCloud,
     ClockOff,
@@ -313,6 +318,7 @@ impl LocalCheckin {
             self.answer,
             Seen::Stop
                 | Seen::Refused
+                | Seen::Held
                 | Seen::NotCloud
                 | Seen::ClockOff
                 | Seen::Outdated
@@ -325,6 +331,7 @@ impl LocalCheckin {
         match self.answer {
             Seen::Stop => Headline::ended(self.reason.map_or("Stopped", StopReason::title)),
             Seen::Refused => Headline::open("Token refused"),
+            Seen::Held => Headline::open("Held by Cloud"),
             Seen::Unreachable => Headline::open("Can't reach Cloud"),
             Seen::NotCloud => Headline::open("Not Ployz Cloud"),
             Seen::ClockOff => Headline::open("Clock is off"),
@@ -372,7 +379,7 @@ pub(crate) async fn run<H: Host>(
                 last_log = log;
                 tokio::time::sleep(after).await;
             }
-            Next::Retry { after, why } => {
+            Next::Retry { after, why } | Next::Held { after, why } => {
                 last_log = None;
                 crate::ui::note(format!("{why} Trying again in {}s.", after.as_secs()));
                 tokio::time::sleep(after).await;
@@ -640,6 +647,14 @@ async fn pass_from<H: Host>(
                         .saturating_sub(waited)
                         .max(Duration::from_secs(1)),
                 }
+            }
+        }
+        client::Reply::Held(after, why) => {
+            status.answer = Seen::Held;
+            status.message = Some(why.clone());
+            Next::Held {
+                after,
+                why: format!("Cloud held this check-in back: {why}"),
             }
         }
         client::Reply::Unreachable(after, why) => {

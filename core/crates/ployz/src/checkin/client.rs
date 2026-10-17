@@ -165,6 +165,7 @@ pub(super) enum Reply {
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
+    Held(Duration, String),
     /// The URL answered, and the answer can't have come from Ployz Cloud.
     NotCloud(String),
     ClockOff(String),
@@ -192,7 +193,7 @@ impl CheckinClient {
         self.token = token;
     }
 
-    pub(super) fn sends(&self, token: &FleetToken) -> bool {
+    pub(crate) fn sends(&self, token: &FleetToken) -> bool {
         self.token == *token
     }
 
@@ -251,10 +252,16 @@ impl CheckinClient {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
             .map(|cloud| cloud.to_utc());
-        let body = response.bytes().await.unwrap_or_default();
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => return Reply::Unreachable(BACKOFF, error.without_url().to_string()),
+        };
         let reply = reply(status, retry_after, cloud, &body);
         if let Reply::NotCloud(why) = &reply {
-            return Reply::NotCloud(format!("{} {why}, so it isn't Ployz Cloud", self.url));
+            return Reply::NotCloud(format!(
+                "{} {why}, which isn't how Ployz Cloud answers. A proxy or firewall in between may have answered instead",
+                self.url
+            ));
         }
         reply
     }
@@ -287,18 +294,31 @@ pub(super) fn reply(
     if status == StatusCode::PAYLOAD_TOO_LARGE {
         return Reply::Outdated(format!("Cloud couldn't take this check-in ({status})"));
     }
+    let said = cloud_error(body);
     if status == StatusCode::TOO_MANY_REQUESTS {
-        let after = retry_after
-            .unwrap_or(Duration::from_secs(1))
-            .min(wire::WAIT_CAP);
-        return Reply::Answer(Answer::Wait(after));
+        let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
+        return match said {
+            Some(why) => Reply::Held(after, why),
+            None => Reply::Unreachable(after, format!("Cloud answered {status}")),
+        };
     }
-    // Cloud answers these, and a timeout says nothing about who answered. Any other 4xx means
-    // the URL reached something else.
+    if let Some(why) = said {
+        return Reply::Unreachable(BACKOFF, format!("Cloud answered {status}: {why}"));
+    }
     if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
         return Reply::NotCloud(format!("answered {status}"));
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
+}
+
+fn cloud_error(body: &[u8]) -> Option<String> {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let text = |field: &str| body.get(field).and_then(serde_json::Value::as_str);
+    let message = match text("_tag") {
+        Some("PublicError") => text("code").and(text("message")),
+        _ => text("error"),
+    };
+    message.map(str::to_owned)
 }
 
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well

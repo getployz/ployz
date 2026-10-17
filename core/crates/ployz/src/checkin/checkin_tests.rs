@@ -186,6 +186,46 @@ fn an_answer_cloud_could_not_have_sent_is_not_cloud() {
             Reply::NotCloud(format!("answered {status}"))
         );
     }
+    for (status, body, why) in [
+        (
+            StatusCode::FORBIDDEN,
+            r#"{"_tag":"PublicError","code":"forbidden","message":"Not allowed."}"#,
+            "Not allowed.",
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            r#"{"_tag":"PublicError","code":"not_found","message":"No such fleet."}"#,
+            "No such fleet.",
+        ),
+        (
+            StatusCode::CONFLICT,
+            r#"{"error":"Already enrolled."}"#,
+            "Already enrolled.",
+        ),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"_tag":"PublicError","code":"invalid","message":"Bad host."}"#,
+            "Bad host.",
+        ),
+    ] {
+        assert_eq!(
+            client::reply(status, None, None, body.as_bytes()),
+            Reply::Unreachable(
+                Duration::from_secs(60),
+                format!("Cloud answered {status}: {why}")
+            )
+        );
+    }
+    for body in [
+        &br#"{"_tag":"PublicError","message":"no code"}"#[..],
+        br#"{"error":7}"#,
+        br#"{"detail":"Forbidden"}"#,
+    ] {
+        assert_eq!(
+            client::reply(StatusCode::FORBIDDEN, None, None, body),
+            Reply::NotCloud("answered 403 Forbidden".to_owned())
+        );
+    }
     for status in [
         StatusCode::REQUEST_TIMEOUT,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -244,7 +284,7 @@ fn only_cloud_refusing_with_agreeing_clocks_counts_against_the_token() {
 }
 
 #[test]
-fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
+fn an_unreadable_check_in_waits_for_a_newer_ployz() {
     assert!(matches!(
         client::reply(StatusCode::BAD_REQUEST, None, None, b""),
         Reply::Outdated(why) if why.ends_with("Install a newer ployz")
@@ -253,32 +293,111 @@ fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
         client::reply(StatusCode::PAYLOAD_TOO_LARGE, None, None, b""),
         Reply::Outdated("Cloud couldn't take this check-in (413 Payload Too Large)".to_owned())
     );
-    assert_eq!(
-        client::reply(
-            StatusCode::TOO_MANY_REQUESTS,
-            Some(Duration::from_secs(9)),
-            None,
-            b""
-        ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(9)))
-    );
-    assert_eq!(
-        client::reply(
-            StatusCode::TOO_MANY_REQUESTS,
-            Some(Duration::from_secs(u64::MAX)),
-            None,
-            b""
-        ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(3600)))
-    );
-    assert_eq!(
-        client::reply(StatusCode::TOO_MANY_REQUESTS, None, None, b""),
-        Reply::Answer(Answer::Wait(Duration::from_secs(1)))
-    );
     assert!(matches!(
         client::reply(StatusCode::BAD_GATEWAY, None, None, b""),
         Reply::Unreachable(after, _) if after == Duration::from_secs(60)
     ));
+}
+
+#[test]
+fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
+    let held = |after, body: &str| {
+        client::reply(StatusCode::TOO_MANY_REQUESTS, after, None, body.as_bytes())
+    };
+    for message in [
+        "This Fleet Token already has 5 waiting servers.",
+        "Too many check-ins.",
+        "Busy, retry.",
+    ] {
+        assert_eq!(
+            held(
+                Some(Duration::from_secs(1)),
+                &format!(r#"{{"error":"{message}"}}"#)
+            ),
+            Reply::Held(Duration::from_secs(1), message.to_owned())
+        );
+    }
+    assert_eq!(
+        held(
+            Some(Duration::from_secs(u64::MAX)),
+            r#"{"error":"Busy, retry."}"#
+        ),
+        Reply::Held(Duration::from_secs(3600), "Busy, retry.".to_owned())
+    );
+    for body in [
+        "",
+        "<html>Slow down</html>",
+        r#"{"message":"rate limited"}"#,
+    ] {
+        assert_eq!(
+            held(Some(Duration::from_secs(9)), body),
+            Reply::Unreachable(
+                Duration::from_secs(9),
+                "Cloud answered 429 Too Many Requests".to_owned()
+            ),
+            "{body}"
+        );
+    }
+    assert!(matches!(
+        held(None, ""),
+        Reply::Unreachable(after, _) if after == Duration::from_secs(60)
+    ));
+}
+
+#[tokio::test]
+async fn a_check_in_cloud_held_back_names_its_reason_in_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, _server) = answering_cloud(
+        "429 Too Many Requests\r\nRetry-After: 1".to_owned(),
+        r#"{"error":"This Fleet Token already has 5 waiting servers."}"#.to_owned(),
+        1,
+    )
+    .await;
+    let host = FakeHost::default();
+    let Next::Held { after, why } =
+        pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
+    else {
+        panic!("Cloud's 429 holds the check-in back");
+    };
+    assert_eq!(after, Duration::from_secs(1));
+    assert_eq!(
+        why,
+        "Cloud held this check-in back: This Fleet Token already has 5 waiting servers."
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline(), Headline::open("Held by Cloud"));
+    assert!(status.says_why());
+}
+
+#[tokio::test]
+async fn a_body_cut_off_before_its_length_is_unreachable_not_another_service() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0; 16384];
+        let _ = stream.read(&mut buf).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"kind\"")
+            .await
+            .unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let next = pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    server.await.unwrap();
+    assert!(
+        matches!(&next, Next::Retry { after, .. } if *after == Duration::from_secs(60)),
+        "{next:?}"
+    );
 }
 
 #[tokio::test]
@@ -1194,7 +1313,12 @@ async fn a_url_that_is_not_cloud_is_retried_and_named_in_status() {
         why.starts_with(&format!("{url}/api/checkin answered 404 Not Found")),
         "{why}"
     );
-    assert!(why.ends_with("so it isn't Ployz Cloud"), "{why}");
+    assert!(
+        why.ends_with(
+            "which isn't how Ployz Cloud answers. A proxy or firewall in between may have answered instead"
+        ),
+        "{why}"
+    );
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.headline(), Headline::open("Not Ployz Cloud"));
     assert!(status.says_why());
