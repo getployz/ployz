@@ -1,10 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "0d6690da-8181-42f1-8c24-7e6d4515b159",
+  "id": "8dac8547-918d-4258-906a-237185ff3481",
   "prevIds": [
-    "1ceaed96-1292-4f97-9b08-30e9a415aad8",
-    "c1f5f7aa-7b2e-4495-9890-8b1e152225a1"
+    "3470c8cc-a486-4928-bb38-f71685dc7a72"
   ],
   "ddl": [
     {
@@ -1157,6 +1156,19 @@
       "generated": null,
       "identity": null,
       "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_token"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'cli'",
+      "generated": null,
+      "identity": null,
+      "name": "kind",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_token"
@@ -13048,6 +13060,13 @@
       "schema": "public",
       "table": "invitation",
       "entityType": "uniques"
+    },
+    {
+      "value": "\"kind\" in ('cli','agent')",
+      "name": "organization_token_kind_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "organization_token"
     },
     {
       "value": "\n      (\"removal_started_at\" is null and \"removal_endpoints\" is null)\n      or (\"removal_started_at\" is not null and \"removal_endpoints\" is not null and jsonb_typeof(\"removal_endpoints\") = 'array')\n    ",
