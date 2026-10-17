@@ -7,7 +7,6 @@ import type { ButtonVariants } from "#/components/ui/button-variants";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
-import { Switch } from "#/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { toErrorMessage } from "#/lib/error-message";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
@@ -19,7 +18,7 @@ import { CopyBlock } from "./copy-block";
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
-type Minted = { readonly name: string; readonly token: string; readonly cloudOrigin: string; readonly expiresIn: FleetTokenLifetime; readonly autoMax: number | null };
+type Minted = { readonly name: string; readonly token: string; readonly cloudOrigin: string; readonly expiresIn: FleetTokenLifetime };
 
 export function AddServersDialog({ organizationSlug, label = "Add servers", variant = "ink" }: {
   organizationSlug: string;
@@ -46,29 +45,19 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [expiresIn, setExpiresIn] = useState<FleetTokenLifetime>("1d");
-  const [auto, setAuto] = useState(false);
-  const [max, setMax] = useState("10");
-  const maxServers = Number.parseInt(max, 10);
   const nameOk = name.trim() === "" || NAME_PATTERN.test(name.trim());
-  const maxOk = !auto || (Number.isInteger(maxServers) && maxServers >= 1 && maxServers <= 1000);
   const mint = useMutation({
-    mutationFn: () => createFleetTokenServerFn({
-      data: {
-        organizationSlug,
-        name: name.trim() === "" ? null : name.trim(),
-        expiresIn,
-        autoEnroll: auto ? { maxServers } : null,
-      },
-    }),
+    mutationFn: (input: { name: string | null; expiresIn: FleetTokenLifetime }) =>
+      createFleetTokenServerFn({ data: { organizationSlug, ...input, autoEnroll: null } }),
     onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't create the token.")),
     onSettled: () => queryClient.invalidateQueries({ queryKey: fleetTokenKeys.all }),
   });
 
-  if (mint.data !== undefined) {
+  if (mint.data !== undefined && mint.variables !== undefined) {
     return (
       <MintDone
         organizationSlug={organizationSlug}
-        minted={{ ...mint.data, expiresIn, autoMax: auto ? maxServers : null }}
+        minted={{ ...mint.data, expiresIn: mint.variables.expiresIn }}
         onDone={onDone}
       />
     );
@@ -78,7 +67,7 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
       className="flex flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
-        if (nameOk && maxOk) mint.mutate();
+        if (nameOk) mint.mutate({ name: name.trim() === "" ? null : name.trim(), expiresIn });
       }}
     >
       <DialogHeader>
@@ -112,30 +101,9 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
           ))}
         </div>
       </div>
-      <div className="flex items-start gap-3 text-sm">
-        <Switch id="enroll-on-arrival" className="mt-0.5" checked={auto} onCheckedChange={setAuto} />
-        <div className="flex flex-col gap-0.5">
-          <label htmlFor="enroll-on-arrival" className="font-medium">Enroll on arrival</label>
-          <span className="text-muted-foreground">Skip the review. They join as they arrive.</span>
-          {auto ? (
-            <span className="mt-2 flex items-center gap-2 text-muted-foreground">
-              Up to
-              <Input
-                aria-label="Up to how many servers"
-                inputMode="numeric"
-                value={max}
-                onChange={(event) => setMax(event.target.value)}
-                aria-invalid={!maxOk}
-                className="h-7 w-16"
-              />
-              servers
-            </span>
-          ) : null}
-        </div>
-      </div>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onDone}>Cancel</Button>
-        <Button type="submit" variant="ink" disabled={!nameOk || !maxOk || mint.isPending}>
+        <Button type="submit" variant="ink" disabled={!nameOk || mint.isPending}>
           {mint.isPending ? <Spinner data-icon="inline-start" /> : null}
           Create
         </Button>
@@ -150,7 +118,7 @@ function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: stri
     <div className="flex flex-col gap-3">
       <DialogHeader>
         <DialogTitle className="font-mono">{minted.name}</DialogTitle>
-        <DialogDescription>{minted.autoMax === null ? "Waits for you" : `Enrolls on arrival, up to ${minted.autoMax}`}</DialogDescription>
+        <DialogDescription>Waits for you</DialogDescription>
       </DialogHeader>
       <Tabs defaultValue="shell">
         <TabsList>
@@ -163,11 +131,8 @@ function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: stri
         <TabsContent value="terraform"><CopyBlock value={lines.terraform} /></TabsContent>
       </Tabs>
       <div className="flex flex-col gap-0.5 text-sm">
-        <p className="text-muted-foreground">
-          {minted.autoMax === null
-            ? "Installs Docker and Ployz. Nothing joins until you say so."
-            : `Installs Docker and Ployz, then joins. Stops after ${minted.autoMax}.`}
-        </p>
+        <p className="text-muted-foreground">Installs Docker and Ployz. Nothing joins until you say so.</p>
+        <p className="text-muted-foreground">To deploy now, add a server with <code className="font-mono text-foreground">ployz server add --command</code>.</p>
         <p className="text-warning">Shown once. Expires in {cliLifetimeLabel(minted.expiresIn)}.</p>
       </div>
       <Arrivals organizationSlug={organizationSlug} token={minted.name} onDone={onDone} />

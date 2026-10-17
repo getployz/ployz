@@ -63,3 +63,25 @@ it("reads a one-day token's lifetime in hours", async () => {
 
   expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
 });
+
+it("describes the token it submitted, not the form as it reads after", async () => {
+  let resolve: (minted: Awaited<ReturnType<typeof fleetTokenFunctions.createFleetTokenServerFn>>) => void = () => {};
+  vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn").mockReturnValue(new Promise((settle) => { resolve = settle; }));
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <AddServersDialog organizationSlug="ada" />
+    </QueryClientProvider>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  fireEvent.click(screen.getByRole("button", { name: "7 days" }));
+  await act(async () => resolve({
+    token: TOKEN,
+    id: "token-1",
+    name: "brisk-otter",
+    expiresAt: "2026-10-18T10:00:00Z",
+    cloudOrigin: "https://ployz.dev",
+  }));
+
+  expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
+});

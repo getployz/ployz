@@ -275,18 +275,20 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   if (Option.isNone(parsed)) return yield* new CheckinRefused({ status: 400, message: "Invalid check-in." });
   const request = parsed.value;
 
-  // Every check-in of a token shares this row, so a fresh stamp is left alone and the update locks nothing.
-  yield* database.drizzle
-    .update(fleetToken)
-    .set({ lastUsedAt: sql`now()` })
-    .where(and(
-      eq(fleetToken.id, token.id),
-      or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`now() - interval '1 minute'`)),
-    ));
-
   const ended = endedBy(token);
   const stopped = ended === null ? null : yield* database.transaction(endUnlessEnrolling(token, request.checkinKey, ended));
   if (stopped !== null) return stopped;
+
+  // Every check-in of a token shares this row, so a fresh stamp is left alone and the update locks nothing.
+  if (ended === null) {
+    yield* database.drizzle
+      .update(fleetToken)
+      .set({ lastUsedAt: sql`now()` })
+      .where(and(
+        eq(fleetToken.id, token.id),
+        or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`now() - interval '1 minute'`)),
+      ));
+  }
 
   yield* sometimesPruneStaleRateLimits;
   const tooMany = new CheckinRefused({ status: 429, message: "Too many check-ins." });

@@ -5,8 +5,9 @@ import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { cn } from "#/lib/utils";
+import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { useOpenProbe, useRejectWaiting, useWaitingServers } from "./use-waiting";
+import { useRejectWaiting, useSettledProbe, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
   disksText,
@@ -45,22 +46,23 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
   const reject = useRejectWaiting(organizationSlug);
-  const probe = useOpenProbe(organizationSlug);
 
   const counts = new Map<ReadinessFilter, number>([["all", servers.length]]);
   for (const server of servers) counts.set(readiness(server), (counts.get(readiness(server)) ?? 0) + 1);
   const providers = [...new Set(servers.map(providerOf))].sort();
   const tokens = [...new Set(servers.map((server) => server.fleetToken))].sort();
+  const shownToken = tokens.includes(tokenFilter) ? tokenFilter : "";
   const matches = hostnameOrIpMatcher(query);
   const rows = servers.filter((server) =>
     (filter === "all" || readiness(server) === filter)
     && (provider === "" || providerOf(server) === provider)
-    && (tokenFilter === "" || server.fleetToken === tokenFilter)
+    && (shownToken === "" || server.fleetToken === shownToken)
     && matches(server));
-  const chosen = servers.filter((server) => picked.has(server.id) && selectable(server)).map((server) => server.id);
+  const chosen = rows.filter((server) => picked.has(server.id) && selectable(server)).slice(0, SELECTION_MAX).map((server) => server.id);
   const pickedIds = new Set(chosen);
+  const full = chosen.length >= SELECTION_MAX;
   const pickable = rows.filter(selectable);
-  const allPicked = pickable.length > 0 && pickable.every((server) => picked.has(server.id));
+  const allPicked = pickable.length > 0 && pickable.slice(0, SELECTION_MAX).every((server) => pickedIds.has(server.id));
   const open = servers.find((server) => server.id === openId) ?? null;
   const scroller = useRef<HTMLDivElement>(null);
   // Only the rows in view render, so a long wait list costs no more to draw than the box holds.
@@ -78,19 +80,13 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
   const padTop = items[0]?.start ?? 0;
   const padBottom = virtual.getTotalSize() - (items.at(-1)?.end ?? 0);
 
-  const choose = (next: ReadonlySet<string>) => {
-    setPicked(next);
-    if (next.size > 0) probe.mutate([...next]);
-  };
+  useSettledProbe(organizationSlug, openId === null ? chosen : [openId]);
+
   const toggle = (id: string, on: boolean) => {
     const next = new Set(chosen);
     if (on) next.add(id);
     else next.delete(id);
-    choose(next);
-  };
-  const show = (id: string) => {
-    setOpenId(id);
-    probe.mutate([id]);
+    setPicked(next);
   };
   const rejectIds = (ids: readonly string[]) => {
     reject.mutate(ids);
@@ -121,7 +117,7 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
             <NativeSelectOption value="">All providers</NativeSelectOption>
             {providers.map((name) => <NativeSelectOption key={name} value={name}>{name}</NativeSelectOption>)}
           </NativeSelect>
-          <NativeSelect size="sm" aria-label="Token" value={tokenFilter} onChange={(event) => setTokenFilter(event.target.value)}>
+          <NativeSelect size="sm" aria-label="Token" value={shownToken} onChange={(event) => setTokenFilter(event.target.value)}>
             <NativeSelectOption value="">All tokens</NativeSelectOption>
             {tokens.map((name) => <NativeSelectOption key={name} value={name}>{name}</NativeSelectOption>)}
           </NativeSelect>
@@ -142,7 +138,7 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
                 aria-label="Select all"
                 checked={allPicked}
                 disabled={pickable.length === 0}
-                onCheckedChange={(on) => choose(on ? new Set(pickable.map((server) => server.id)) : new Set())}
+                onCheckedChange={(on) => setPicked(on ? new Set(pickable.slice(0, SELECTION_MAX).map((server) => server.id)) : new Set())}
               />
             </span>
             <span role="columnheader">Name</span>
@@ -168,8 +164,9 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
                       server={server}
                       now={now}
                       picked={pickedIds.has(server.id)}
+                      full={full}
                       onPick={(on) => toggle(server.id, on)}
-                      onOpen={() => show(server.id)}
+                      onOpen={() => setOpenId(server.id)}
                     />
                   );
                 })}
@@ -181,6 +178,7 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
       {chosen.length > 0 ? (
         <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-primary py-2 pr-2 pl-4 text-sm text-primary-foreground shadow-lg">
           <span className="tabular-nums">{chosen.length} selected</span>
+          {full ? <span className="text-primary-foreground/70">{SELECTION_MAX} max</span> : null}
           <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
           <Button size="sm" variant="destructive" onClick={() => rejectIds(chosen)}>Reject</Button>
         </div>
@@ -195,10 +193,11 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
   );
 }
 
-function WaitingRow({ server, now, picked, onPick, onOpen }: {
+function WaitingRow({ server, now, picked, full, onPick, onOpen }: {
   server: WaitingServerView;
   now: number;
   picked: boolean;
+  full: boolean;
   onPick: (on: boolean) => void;
   onOpen: () => void;
 }) {
@@ -220,7 +219,7 @@ function WaitingRow({ server, now, picked, onPick, onOpen }: {
         <Checkbox
           aria-label={`Select ${report.hostname}`}
           checked={picked}
-          disabled={!selectable(server)}
+          disabled={!selectable(server) || (full && !picked)}
           onCheckedChange={(on) => onPick(on)}
         />
       </span>

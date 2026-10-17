@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
+import { PROBE_WINDOW_MS } from "#/modules/machines/waiting/checkin-wire";
 import { openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { fleetTokenKeys, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
@@ -32,8 +34,21 @@ export function useRejectWaiting(organizationSlug: string) {
   });
 }
 
-export function useOpenProbe(organizationSlug: string) {
-  return useMutation({
-    mutationFn: (ids: readonly string[]) => openProbeSelectionServerFn({ data: { organizationSlug, ids } }),
-  });
+export const PROBE_SETTLE_MS = 800;
+export const PROBE_RETRY_MS = PROBE_WINDOW_MS + 1_000;
+
+/**
+ * Probes a selection once it stops changing. Cloud won't reopen over a host whose window is still running,
+ * so a selection it turns away is asked again once that window has closed.
+ */
+export function useSettledProbe(organizationSlug: string, ids: readonly string[]) {
+  const selection = [...ids].sort().join(",");
+  useEffect(() => {
+    if (selection === "") return;
+    let timer = setTimeout(async function ask(retry = true) {
+      const opened = await openProbeSelectionServerFn({ data: { organizationSlug, ids: selection.split(",") } }).catch(() => null);
+      if (retry && opened?.probing === 0) timer = setTimeout(() => ask(false), PROBE_RETRY_MS);
+    }, PROBE_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [organizationSlug, selection]);
 }

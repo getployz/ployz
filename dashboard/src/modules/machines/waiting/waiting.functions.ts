@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
-import { OpenProbeSelectionInput } from "#/modules/machines/waiting/probe";
+import { OpenProbeSelectionInput, SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { listWaitingServers, showWaitingServer } from "#/modules/machines/waiting/waiting-servers.server";
@@ -12,7 +12,7 @@ const ListWaitingServersInput = Schema.Struct({ organizationSlug: OrganizationSl
 const ShowWaitingServerInput = Schema.Struct({ organizationSlug: OrganizationSlug, id: Schema.String.check(Schema.isUUID()) });
 const RejectWaitingServersInput = Schema.Struct({
   organizationSlug: OrganizationSlug,
-  ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
+  ids: Schema.Array(Schema.String.check(Schema.isUUID())).check(Schema.isMinLength(1), Schema.isMaxLength(SELECTION_MAX)),
 });
 
 export const openProbeSelectionServerFn = createServerFn({ method: "POST" })

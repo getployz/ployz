@@ -323,7 +323,7 @@ while `ployz service ls` shows the target running.
 
 Your organization has no server, so nothing can deploy.
 
-[Add a server](../servers/add-a-server.md). Your projects and settings are kept. Once it joins,
+[Add a server with `ployz server add`](../servers/add-a-server.md#add-one-server-that-joins-right-away). Your projects and settings are kept. Once it joins,
 **Deploy** is back and Ployz deploys your environments to it. Staged changes stay in the bottom
 bar.
 

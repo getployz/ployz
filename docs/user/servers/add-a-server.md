@@ -28,12 +28,9 @@ You don't need Docker: Ployz installs it if it's missing.
    environment offers it too.
 2. Name the token, or leave the name blank and Ployz picks one. Choose how long it works: 1 day,
    7 days or 30 days.
-3. Leave **Enroll on arrival** off and each server waits until you let it in. Turn it on to let
-   up to the number you set in on their own; anyone holding that token can then add servers, so
-   keep it secret.
-4. Click **Create**. The dialog shows the install line with the token in it, under
+3. Click **Create**. The dialog shows the install line with the token in it, under
    **Shown once. Expires in 24h.** Copy it now: Ployz can't show the token again.
-5. Open a shell on the server, as root or as a user with `sudo`, and paste the line. To put it in
+4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. To put it in
    user data instead, take it from the **cloud-init** or **Terraform** tab; each holds the same
    token. Not on Ubuntu, Debian or Amazon Linux, or can't run ZFS? See
    [Start without ZFS](#start-without-zfs).
@@ -42,12 +39,15 @@ You don't need Docker: Ployz installs it if it's missing.
 
 Run the same line on as many servers as you like while the token works. Each one installs Docker
 and Ployz and shows up under **Waiting** on the **Servers** page within seconds, above your other
-servers. New ones join the bottom of the list, and the list never reorders while you look at it.
+servers. New ones go to the bottom of the list, and the list never reorders while you look at it.
+
+A waiting server doesn't join yet: Ployz can't let it in, so it can't run your apps. To add a
+server you can deploy to now, use [`ployz server add`](#add-one-server-that-joins-right-away).
 
 Each row shows the server's name, the IP address Ployz Cloud saw it check in from, its provider,
 size, disks and storage, and its status. **Installing Docker** and **Building ZFS** mean it is
-still getting ready, and **Ready** means it can join. **Blocked** rows say what stops the server
-from joining, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`, and
+still getting ready, and **Ready** means it has everything it needs. **Blocked** rows say what
+is wrong with the server, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`, and
 **Offline** means it stopped checking in. Filter the list by provider and by status, or search
 by name or IP address.
 
@@ -84,7 +84,8 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
 ## Add many servers with a Fleet Token
 
-A Fleet Token lets any number of hosts ask to join. Make one from your machine:
+A Fleet Token lets any number of hosts register and wait under **Waiting**. Ployz can't let them
+join yet. Make one from your machine:
 
 ```sh
 ployz server token create --expires 7d
@@ -96,9 +97,7 @@ It prints the token once, with the line to run on each host:
 curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
 ```
 
-- **Hosts wait for you.** A host that runs the line waits until you accept it. Add
-  `--auto --max 5` to let up to five hosts in on their own; anyone holding that token can add
-  servers, so keep it secret.
+- **Hosts wait.** A host that runs the line checks in and waits; it doesn't join.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
 - **Expiry and revoke stop new hosts only.** Servers already in stay.
 

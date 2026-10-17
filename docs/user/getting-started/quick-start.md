@@ -48,23 +48,33 @@ The address goes live on your first deploy.
 
 ## Add a server
 
-While you have no server, the bottom bar shows **Add servers** where **Deploy** would be.
+While you have no server, the bottom bar shows **Add servers** where **Deploy** would be. Add
+this first server from your terminal, so it joins and can take the deploy.
 
-1. Click **Add servers** in the bottom bar, then **Create**.
-2. Copy the install line under **Shown once. Expires in 24h.** Ployz can't show it again.
+1. [Install the CLI](../cli/overview.md#install-the-cli) and sign in:
+
+   ```sh
+   curl -fsSL https://ployz.sh | sh
+   ployz login
+   ```
+
+2. Run `ployz server add --command`. It prints a line to paste on the server and an enrollment
+   token beside it, then waits.
 3. Connect to your server with `ssh root@203.0.113.10` (your server's IP), paste the line and
-   press Enter.
-4. The server shows up under **Waiting** on the **Servers** page within seconds. Not on Ubuntu,
-   Debian or Amazon Linux? See [Start without ZFS](../servers/add-a-server.md#start-without-zfs).
-
-![The Add servers dialog with its install line](../images/add-servers-dialog.png)
+   press Enter. Paste the token when it asks.
+4. When the command finishes, the server shows on the **Servers** page. Not on Ubuntu, Debian or
+   Amazon Linux? See [Start without ZFS](../servers/add-a-server.md#start-without-zfs).
 
 The command installs Ployz and adds the server to your organization. If your provider puts a
 firewall in front of it, open [these ports](../servers/add-a-server.md#open-the-firewall).
 
+**Add servers** in the bottom bar makes a Fleet Token instead. A server that runs its install
+line shows up under **Waiting** on the **Servers** page, but Ployz can't let a waiting server join
+yet, so it can't take a deploy.
+
 ## Deploy
 
-When the server joins, **Deploy** appears in the bottom bar, next to **Apply 2 changes**: the new
+Once the server has joined, **Deploy** appears in the bottom bar, next to **Apply 2 changes**: the new
 service and its address.
 
 1. Click **Deploy**. The deployment page opens.

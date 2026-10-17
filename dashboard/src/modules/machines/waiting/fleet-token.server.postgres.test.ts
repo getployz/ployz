@@ -103,7 +103,7 @@ it("refuses to revoke another Organization's token", async () => {
   expect(await revokedAt(created.id)).toBeNull();
 });
 
-it("counts each token's hosts still waiting and the ones that joined, and names who made it", async () => {
+it("counts each token's hosts still waiting, not enrolling or joined, and the ones that joined, and names who made it", async () => {
   const created = await create("rack-1");
   const org = "00000000-0000-4000-8000-000000000511";
   await harness.pool.query(`
@@ -111,10 +111,12 @@ it("counts each token's hosts still waiting and the ones that joined, and names 
       ('00000000-0000-4000-8000-000000000601', '${org}', '${created.id}', 'a', '{}', '203.0.113.1', null),
       ('00000000-0000-4000-8000-000000000602', '${org}', '${created.id}', 'b', '{}', '203.0.113.2', null),
       ('00000000-0000-4000-8000-000000000603', '${org}', '${created.id}', 'c', '{}', '203.0.113.3', now()),
-      ('00000000-0000-4000-8000-000000000604', '${org}', '${created.id}', 'd', '{}', '203.0.113.4', null);
+      ('00000000-0000-4000-8000-000000000604', '${org}', '${created.id}', 'd', '{}', '203.0.113.4', null),
+      ('00000000-0000-4000-8000-000000000605', '${org}', '${created.id}', 'e', '{}', '203.0.113.5', null);
     insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, ended_at) values
       ('${org}', '00000000-0000-4000-8000-000000000604', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'joined', now()),
-      ('${org}', '00000000-0000-4000-8000-000000000602', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'failed', now());
+      ('${org}', '00000000-0000-4000-8000-000000000602', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'failed', now()),
+      ('${org}', '00000000-0000-4000-8000-000000000605', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'running', null);
   `);
   const [listed] = await harness.runEffect(listFleetTokens(ada, { organizationSlug: "ada" }));
   expect(listed).toMatchObject({ name: "rack-1", createdBy: "Ada", waiting: 2, joined: 1 });

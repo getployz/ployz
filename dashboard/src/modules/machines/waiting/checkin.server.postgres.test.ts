@@ -809,6 +809,32 @@ it("lists and shows waiting hosts only to their own Organization", async () => {
   expect(await run(rejectWaitingServers(bob, { organizationSlug: "bob", ids: [id] }))).toEqual({ rejected: 0 });
 });
 
+it("drops a host from the list once it is enrolling or joined, and brings it back when an attempt fails", async () => {
+  const { token, id: tokenId } = await fleetToken("rack-1");
+  await send(token, newHost());
+  const [listed] = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  const enroll = (state: string, ended: boolean) => harness.pool.query(
+    `insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, ended_at)
+     values ($1, $2, $3, 'joiner', '{}', gen_random_uuid(), $4, ${ended ? "now()" : "null"})`,
+    [adaOrg, listed?.id, tokenId, state],
+  );
+  const shown = async () => (await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((server) => server.id);
+
+  await enroll("running", false);
+  expect(await shown()).toEqual([]);
+  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now()");
+  expect(await shown()).toEqual([listed?.id]);
+  await enroll("joined", true);
+  expect(await shown()).toEqual([]);
+});
+
+it("leaves an ended token's last use alone", async () => {
+  const { token, id } = await fleetToken("rack-1");
+  await harness.pool.query("update fleet_token set expires_at = now() - interval '1 second' where id = $1", [id]);
+  expect(await send(token, newHost())).toMatchObject({ kind: "stop", reason: "token_expired" });
+  expect((await harness.pool.query("select last_used_at from fleet_token")).rows).toEqual([{ last_used_at: null }]);
+});
+
 it("reads status from the last check-in and the report", () => {
   const now = new Date("2026-10-16T00:01:00Z");
   const recent = new Date("2026-10-16T00:00:50Z");

@@ -14,6 +14,7 @@ import { lockOrganizationEnrollment } from "#/modules/machines/pairing-removal.s
 import { generateTokenName } from "#/modules/machines/waiting/names";
 import { user } from "#/modules/identity/tables";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { stillWaiting } from "#/modules/machines/waiting/waiting-servers.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -85,8 +86,7 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
       createdAt: fleetToken.createdAt,
       createdBy: user.name,
       waiting: sql<number>`(select count(*) from ${waitingServer} where ${waitingServer.fleetTokenId} = ${fleetToken.id}
-        and ${waitingServer.rejectedAt} is null and not exists (select 1 from ${serverEnrollment}
-        where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined'))`.mapWith(Number),
+        and ${waitingServer.rejectedAt} is null and ${stillWaiting})`.mapWith(Number),
       joined: sql<number>`(select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${fleetToken.id}
         and ${serverEnrollment.state} = 'joined')`.mapWith(Number),
     })

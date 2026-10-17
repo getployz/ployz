@@ -1,12 +1,29 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, expect, it } from "vitest";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Prep, StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import type { WaitingServerStatus, WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
+import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
+import * as waitingFunctions from "#/modules/machines/waiting/waiting.functions";
+import { PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
 import { ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
 
-afterEach(cleanup);
+let probe: ReturnType<typeof stubProbe>;
+let reject: ReturnType<typeof stubReject>;
+const stubProbe = () => vi.spyOn(waitingFunctions, "openProbeSelectionServerFn").mockResolvedValue({ probing: 1 });
+const stubReject = () => vi.spyOn(waitingFunctions, "rejectWaitingServersServerFn").mockResolvedValue({ rejected: 0 });
+
+beforeEach(() => {
+  probe = stubProbe();
+  reject = stubReject();
+  vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
+});
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 const NOW = Date.parse("2026-10-17T10:00:00Z");
 
@@ -41,11 +58,11 @@ function host(hostname: string, options: { status?: WaitingServerStatus; prep?: 
   };
 }
 
-function renderList(servers: readonly WaitingServerView[]) {
+function renderList(servers: readonly WaitingServerView[], token?: string) {
   const queryClient = new QueryClient();
   const ui = (rows: readonly WaitingServerView[]) => (
     <QueryClientProvider client={queryClient}>
-      <WaitingList organizationSlug="ada" servers={rows} now={NOW} />
+      <WaitingList organizationSlug="ada" servers={rows} now={NOW} token={token} />
     </QueryClientProvider>
   );
   const view = render(ui(servers));
@@ -124,4 +141,62 @@ it("draws only the rows the box shows, not every waiting server", () => {
   expect(drawn.length).toBeGreaterThanOrEqual(VISIBLE_ROWS);
   expect(drawn.length).toBeLessThan(20);
   expect(screen.getAllByText("200").length).toBeGreaterThan(0);
+});
+
+const filterBy = (text: string) => fireEvent.change(screen.getByRole("textbox", { name: "Filter" }), { target: { value: text } });
+const settle = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+it("rejects only the picked rows the filter still shows", async () => {
+  renderList([host("web-1"), host("web-2"), host("db-1")]);
+  fireEvent.click(pick("web-1"));
+  fireEvent.click(pick("db-1"));
+
+  filterBy("web");
+  expect(screen.getByText("1 selected")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+
+  await vi.waitFor(() => expect(reject).toHaveBeenCalledOnce());
+  expect(reject.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "ada", ids: ["id-web-1"] } });
+});
+
+it("probes a selection once it stops changing, and asks again once a refused window has closed", async () => {
+  vi.useFakeTimers();
+  renderList([host("a"), host("b"), host("c")]);
+  probe.mockResolvedValueOnce({ probing: 0 });
+
+  fireEvent.click(pick("a"));
+  await settle(PROBE_SETTLE_MS / 2);
+  fireEvent.click(pick("b"));
+  await settle(PROBE_SETTLE_MS / 2);
+  fireEvent.click(pick("c"));
+  await settle(PROBE_SETTLE_MS);
+
+  expect(probe).toHaveBeenCalledOnce();
+  expect(probe.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "ada", ids: ["id-a", "id-b", "id-c"] } });
+
+  await settle(PROBE_RETRY_MS);
+  expect(probe).toHaveBeenCalledTimes(2);
+  expect(probe.mock.calls[1]?.[0]).toEqual(probe.mock.calls[0]?.[0]);
+
+  await settle(PROBE_RETRY_MS * 3);
+  expect(probe).toHaveBeenCalledTimes(2);
+});
+
+it("shows every token when the one it was asked for has no waiting servers", () => {
+  renderList([host("a"), host("b")], "no-such-token");
+
+  expect(rowNames()).toEqual(["a", "b"]);
+  expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Token" }).value).toBe("");
+});
+
+it("selects at most the cap, says so, and rejects no more than that", async () => {
+  renderList(Array.from({ length: SELECTION_MAX + 5 }, (_, index) => host(`h${index}`)));
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "Select all" }));
+
+  expect(screen.getByText(`${SELECTION_MAX} selected`)).toBeTruthy();
+  expect(screen.getByText(`${SELECTION_MAX} max`)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+  await vi.waitFor(() => expect(reject).toHaveBeenCalledOnce());
+  expect(reject.mock.calls[0]?.[0]?.data.ids).toHaveLength(SELECTION_MAX);
 });

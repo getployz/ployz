@@ -57,7 +57,7 @@ function Detail({ server, now, onReject }: { server: WaitingServerView; now: num
       </div>
       <SheetFooter>
         <Button variant="destructive" onClick={() => onReject(server.id)}>Reject</Button>
-        <p className="text-xs text-muted-foreground">It stops checking in and won't come back.</p>
+        <p className="text-xs text-muted-foreground">It stops checking in. Asking again with the same token gets it turned away.</p>
       </SheetFooter>
     </>
   );
