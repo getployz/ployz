@@ -31,7 +31,11 @@ pub(super) fn prepare_storage(
 ) -> Result<(), Error> {
     match storage {
         StoragePreparation::None => Ok(()),
-        StoragePreparation::Zfs { device: None } => prepare_zfs(paths),
+        StoragePreparation::Zfs { device: None } => {
+            prepare_zfs(paths)?;
+            println!("ZFS storage preparation validated; no Machine Pool was created");
+            Ok(())
+        }
         StoragePreparation::Zfs {
             device: Some(device),
         } => {
@@ -64,6 +68,10 @@ pub(super) fn prepare_storage(
                     ));
                 }
             }
+            println!(
+                "Machine Pool {DEVICE_BACKED_POOL_NAME} is ready on {}",
+                device.display()
+            );
             Ok(())
         }
     }
@@ -118,7 +126,27 @@ fn device_pool_matches(status: &str, device: &Path) -> bool {
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .filter(|name| name.starts_with('/'));
-    devices.next().is_some_and(|name| Path::new(name) == device) && devices.next().is_none()
+    devices.next().is_some_and(|name| {
+        let backing = Path::new(name);
+        backing == device || partition_of(backing, device)
+    }) && devices.next().is_none()
+}
+
+fn partition_of(partition: &Path, disk: &Path) -> bool {
+    let (Some(partition), Some(disk)) = (partition.file_name(), disk.file_name()) else {
+        return false;
+    };
+    let partition = Path::new("/sys/class/block").join(partition);
+    if !partition.join("partition").exists() {
+        return false;
+    }
+    let (Ok(partition), Ok(disk)) = (
+        fs::canonicalize(partition),
+        fs::canonicalize(Path::new("/sys/class/block").join(disk)),
+    ) else {
+        return false;
+    };
+    partition.parent() == Some(disk.as_path())
 }
 
 pub(super) const STAGE: &str = "prepare ZFS storage";
@@ -221,7 +249,6 @@ fn prepare_zfs(paths: &InstallPaths) -> Result<(), Error> {
     run_host("load ZFS kernel module", "modprobe", ["zfs"])?;
     set_and_verify_zfs_arc_max(cap)?;
     validate_zfs()?;
-    println!("ZFS storage preparation validated; no Machine Pool was created");
     Ok(())
 }
 
