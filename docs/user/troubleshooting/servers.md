@@ -213,7 +213,7 @@ prepares Docker and ZFS meanwhile.
    refusal from a server whose clock is that far off doesn't count against the token until the
    clock is right. Set the clock right, for example with
    `timedatectl set-ntp true`, and the running loop checks in again within a minute. If the
-   install itself said so, it changed nothing: fix the clock and run the install again.
+   install itself said so, it started nothing: fix the clock and run the install again.
 6. `Not Ployz Cloud` means `PLOYZ_CLOUD_URL` reaches something that answers but isn't Ployz
    Cloud, such as a 404 or a web page. The loop tries again every minute. Point the URL at your
    Ployz Cloud and run the install again.
@@ -223,7 +223,7 @@ prepares Docker and ZFS meanwhile.
    minute has passed on Cloud's clock since that refusal, even across a restart, and goes on as
    before if Cloud accepts it. A new token in the file starts over with its own two chances. A
    refusal during the install itself ends it with an error instead, since the token was only just
-   given, and leaves the host as it was.
+   given, and starts nothing.
 9. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
    `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
    boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or

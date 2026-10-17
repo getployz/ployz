@@ -161,9 +161,9 @@ the install still ends that way and the host keeps trying every minute.
 - **A `PLOYZ_CLOUD_URL` that isn't Ployz Cloud**, one that answers with a 404 or a web page, ends
   the install with `… so it isn't Ployz Cloud. Check PLOYZ_CLOUD_URL, then run the install again.`
 
-An install that ends with an error changes nothing on the host. On a first install no check-in
-service is set up and preparation never starts. On a host that already checks in, the running
-service keeps its old token and goes on as before.
+An install that ends with an error installs only the `ployz` CLI and starts nothing. On a first
+install no check-in service is set up and preparation never starts. On a host that already checks
+in, the running service keeps its old token and goes on as before.
 
 Without `--enroll`, the script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. For
 any other value it says so and only installs the CLI, as it does without a token. If the host
