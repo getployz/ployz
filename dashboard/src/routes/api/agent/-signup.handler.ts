@@ -33,7 +33,7 @@ export const handleAgentSignup = Effect.fn("Agent.signup")(function* (clientIp: 
     {
       token: signup.token,
       organization: signup.organization,
-      claimUrl: null,
+      claimUrl: signup.claimUrl,
       expiresAt: signup.expiresAt.toISOString(),
     },
     { status: 201, headers: noStore },

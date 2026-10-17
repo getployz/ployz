@@ -35,13 +35,27 @@ export const isAnonymousOrganization = (organizationId: string) =>
 export const isOwnedOnlyByAgents = (organizationId: string) =>
   ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true) && !kinds.includes(false)));
 
-export const claimUrlFor = Effect.fn("Identity.claimUrlFor")(function* (organizationId: string) {
+/** The secret in the Organization's claim URL. Derived from its id, so every refusal names the same one. */
+export const claimSecretFor = Effect.fn("Identity.claimSecretFor")(function* (organizationId: string) {
   const config = yield* AppConfig;
   const key = crypto.createHash("sha256").update(CLAIM_KEY_PURPOSE).update("\0").update(Redacted.value(config.encryptionSecret)).digest();
-  const secret = crypto.createHmac("sha256", key).update(organizationId).digest("base64url");
+  return crypto.createHmac("sha256", key).update(organizationId).digest("base64url");
+});
+
+/** What `organization.claim_secret_hash` holds, so the claim page finds the Organization without the secret at rest. */
+export const hashClaimSecret = (secret: string) => crypto.createHash("sha256").update(secret).digest("hex");
+
+export const claimUrlForSecret = Effect.fn("Identity.claimUrlForSecret")(function* (secret: string) {
+  const config = yield* AppConfig;
   return new URL(`/claim/${secret}`, config.app.url).href;
 });
 
+/** The URL a person opens to claim the Organization. */
+export const claimUrlFor = Effect.fn("Identity.claimUrlFor")(function* (organizationId: string) {
+  return yield* claimUrlForSecret(yield* claimSecretFor(organizationId));
+});
+
+/** Refuses `claim_required` while the Organization is anonymous, naming the claim URL a person opens first. */
 export const requireClaimed = Effect.fn("Identity.requireClaimed")(function* (organizationId: string, action: ClaimedAction) {
   if (!(yield* isAnonymousOrganization(organizationId))) return;
   const claimUrl = yield* claimUrlFor(organizationId);

@@ -17,7 +17,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 interface SignupBody {
   readonly token: string;
   readonly organization: { readonly id: string; readonly slug: string };
-  readonly claimUrl: string | null;
+  readonly claimUrl: string;
   readonly expiresAt: string;
 }
 
@@ -40,8 +40,8 @@ it.live("signs up an agent with a token that acts as the owner of a fresh sandbo
     const { status, headers, body } = yield* signUp("203.0.113.1");
     expect(status).toBe(201);
     expect(headers.get("cache-control")).toBe("no-store");
-    expect(body.claimUrl).toBeNull();
     const sandbox = body.organization;
+    expect(body.claimUrl).toMatch(/\/claim\/[A-Za-z0-9_-]{43}$/);
     expect(sandbox.slug).toMatch(/^anon-[a-z2-7]{8}$/);
     const expiresAt = Date.parse(body.expiresAt);
     expect(expiresAt).toBeGreaterThanOrEqual(before + DAY_MS);
