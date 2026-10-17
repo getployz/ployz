@@ -201,8 +201,14 @@ fn a_claim_refusal_carries_the_claim_url() {
     let refusal = from_store(error, &call, Writes::None);
     assert_eq!(refusal.code, RpcErrorCode::from("claim_required"));
     assert_eq!(
-        refusal.details,
-        json!({ "url": "https://ployz.app/claim/abc" })
+        refusal.fix(),
+        Some(Fix::Claim {
+            url: "https://ployz.app/claim/abc".into()
+        })
+    );
+    assert!(
+        !refusal.retries(),
+        "the same call fails until a person claims"
     );
 }
 
