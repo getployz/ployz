@@ -51,6 +51,19 @@ check that the code matches, and click **Approve**. Then wait for the approval:
 ployz login --wait
 ```
 
+If the user has no Ployz account, or isn't there to approve, start in a sandbox instead. One call
+gives you a token and an organization of your own, with no sign-in.
+
+```sh
+curl -fsS -X POST https://ployz.dev/api/agent/signup
+```
+
+Export the `token` from the reply as `PLOYZ_TOKEN`, and every `ployz` command acts in the
+sandbox. Give the user the `claimUrl`. They open it and sign in with GitHub to keep what you
+built. Ployz removes the sandbox and its projects 24 hours after the call unless someone keeps
+it. Custom domains, tokens, invites, billing and GitHub wait until then. See
+https://ployz.dev/docs/account/try-without-an-account.
+
 ## 4. Add the Ployz tools
 
 `ployz mcp` serves the Ployz tools over MCP. Register it with the agent you are running in:

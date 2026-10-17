@@ -1,0 +1,87 @@
+---
+title: Try Ployz without an account
+description: An agent gets its own organization with one call, deploys to your server, and hands you a link to keep it.
+---
+
+An agent can start on Ployz before anyone signs in. One call gives it a token and an
+organization of its own, named Agent sandbox. It can add a server and deploy right away. To keep
+what it built, a person opens the claim link and signs in with GitHub within 24 hours.
+
+## Get a sandbox
+
+1. Ask Ployz for a sandbox.
+
+   ```sh
+   curl -fsS -X POST https://ployz.dev/api/agent/signup
+   ```
+
+   The reply holds a `token`, the `organization`, a `claimUrl` and `expiresAt`, 24 hours from now.
+2. Give the token to `ployz`. Every command after this acts in the sandbox.
+
+   ```sh
+   export PLOYZ_TOKEN=ployz_...
+   ```
+
+One address gets 5 sandboxes an hour and 20 a day. Past that, the call answers `429`. Try again
+later.
+
+## Add a server and deploy
+
+1. On the server, as root, set the token, install Ployz and add the server.
+
+   ```sh
+   export PLOYZ_TOKEN=ployz_...
+   curl -fsSL https://ployz.sh | sh
+   ployz server add
+   ```
+
+2. Make a project with one service, and give it an https address on the port the image listens on.
+
+   ```sh
+   ployz project new demo
+   ployz service add web --image nginx:1.29-alpine
+   ployz domain add web --port 80
+   ```
+
+3. Deploy.
+
+   ```sh
+   ployz deploy
+   ```
+
+4. Run `ployz domain ls` for the address.
+
+Steps 2 to 4 work from any computer with `PLOYZ_TOKEN` set. A deploy doesn't wait for an
+approval while only the agent owns the organization.
+
+## Hand over the claim link
+
+Send the person the `claimUrl`. They open it, sign in with GitHub and click **Keep this
+Organization**. The organization, its servers and its projects are theirs now, and they become
+its owner. The agent's token keeps working for 90 more days.
+
+If the link says **This sandbox expired**, the 24 hours are up. Run the agent again for a new
+sandbox. If someone already kept it, its owner can invite you.
+
+## What waits for a claim
+
+Until someone keeps the sandbox, these wait for a claim.
+
+- add a custom domain
+- create a token
+- invite a member
+- manage billing
+- connect GitHub
+
+Each one stops with **Claim this Organization** and the claim link. Open it, sign in, and try
+again. Generated addresses work before a claim. Once a person owns the organization, an agent's
+deploy asks them first, as in any organization. See [Approve a deploy](connect-an-agent.md#approve-a-deploy).
+
+## When nobody claims it
+
+A sandbox nobody keeps ends 24 hours after the call. Within 15 minutes, Ployz removes its
+projects and the organization, and its servers leave it. A server that doesn't answer holds this
+up. An hour past the end, Ployz forgets that server and removes the organization without it. A
+claim and a removal never run at once.
+
+**Next:** [connect an agent to Ployz Cloud](connect-an-agent.md) once you have an account.

@@ -44,7 +44,9 @@ it's back. Read the
   or arm64. Ubuntu LTS, Debian 12–13 or Amazon Linux 2023 is best: there, your volumes get size
   limits. Other Linux distributions with systemd work without them. Ployz installs Docker if the server doesn't have it. See
   [Add a server](../servers/add-a-server.md).
-- **A GitHub account.** You sign in with GitHub, and Ployz deploys your GitHub repositories.
+- **A GitHub account.** You sign in with GitHub, and Ployz deploys your GitHub repositories. An
+  agent can start before you have one, in a sandbox you keep by signing in within a day. See
+  [Try Ployz without an account](../account/try-without-an-account.md).
 
 ## What it costs
 
