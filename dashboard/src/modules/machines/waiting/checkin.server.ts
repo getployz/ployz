@@ -140,7 +140,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
   const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;
   const live = yield* lockTokenAgainstRevoke(token.id, takingLastSlots ? "update" : "share");
   const ended = endedBy(live);
-  if (ended !== null && !(yield* enrolling(token, request.checkinKey))) return yield* endWaiting(token, request.checkinKey, ended);
+  if (ended !== null && !(yield* hasOpenEnrollment(token, request.checkinKey))) return yield* endWaiting(token, request.checkinKey, ended);
   if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
   if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
     return yield* new CheckinRefused({
@@ -173,8 +173,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
 
 const WAIT: CheckinResponse = { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS };
 
-/** A key whose Fleet Token ended keeps checking in while its enrollment is open, so the attempt can finish. */
-const enrolling = Effect.fn("Checkin.enrolling")(function* (
+const hasOpenEnrollment = Effect.fn("Checkin.hasOpenEnrollment")(function* (
   token: { readonly id: string; readonly organizationId: string },
   checkinKey: string,
 ) {
@@ -192,7 +191,6 @@ const enrolling = Effect.fn("Checkin.enrolling")(function* (
   return row !== undefined;
 });
 
-/** What the host's attempt changed, for its run to hear; a stage it already reported is not news. */
 function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentCheckinReport | null {
   if (open.instruction.storage.kind === "zfs" && request.prep?.zfs === "failed") {
     return { attemptId: open.id, stage: "storage", failure: { stage: "storage", message: ZFS_BUILD_FAILED } };
@@ -203,7 +201,6 @@ function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentC
   return attempt.stage === open.stage ? null : { attemptId: open.id, stage: attempt.stage };
 }
 
-/** Cloud answers `enroll` once the host can carry its attempt's storage, and keeps answering it while the attempt runs. */
 const answerAttempt = Effect.fn("Checkin.answerAttempt")(function* (
   waitingServerId: string,
   request: CheckinRequest,
@@ -266,7 +263,7 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   const request = parsed.value;
 
   const ended = endedBy(token);
-  if (ended !== null && !(yield* enrolling(token, request.checkinKey))) return yield* endWaiting(token, request.checkinKey, ended);
+  if (ended !== null && !(yield* hasOpenEnrollment(token, request.checkinKey))) return yield* endWaiting(token, request.checkinKey, ended);
 
   yield* sometimesPruneStaleRateLimits;
   const tooMany = new CheckinRefused({ status: 429, message: "Too many check-ins." });

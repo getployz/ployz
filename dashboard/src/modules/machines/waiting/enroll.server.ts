@@ -25,7 +25,6 @@ import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
-/** A waiting row as the planner sees it. */
 export type EnrollCandidate = {
   readonly id: string;
   readonly fleetTokenId: string;
@@ -75,7 +74,6 @@ function network(ip: string) {
   return v4 === null ? address.split(":").slice(0, 2).join(":") : `${v4[1]}.${v4[2]}`;
 }
 
-/** The Enroll sheet's plan: who founds, each row's name and storage, and why the rest are left waiting. */
 export function planServerEnrollment(
   input: EnrollInput,
   candidates: ReadonlyArray<EnrollCandidate>,
@@ -160,7 +158,6 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
     .where(and(eq(waitingServer.organizationId, organizationId), inArray(waitingServer.id, [...ids])));
 });
 
-/** Plans the Enroll sheet's rows and starts one run per row, each with its own role-bound enrollment token. */
 export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string } & EnrollInput,
@@ -175,7 +172,6 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
       .select({ founded: sql<boolean>`${organizationPairing.founderMachineId} is not null` })
       .from(organizationPairing)
       .where(eq(organizationPairing.organizationId, organization.id));
-    // A first server still on its way counts: servers added meanwhile join it.
     const [founding] = pairing !== undefined ? [] : yield* drizzle
       .select({ id: serverEnrollment.id })
       .from(serverEnrollment)
@@ -217,7 +213,6 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
   );
 });
 
-/** Stops open attempts: their runs cancel, and one that hasn't started closes here. */
 export const cancelAttempts = Effect.fn("ServerEnrollment.cancelAttempts")(function* (
   organizationId: string,
   attemptIds: ReadonlyArray<string>,
@@ -261,7 +256,6 @@ export type ServerEnrollmentView = {
   readonly endedAt: string | null;
 };
 
-/** The Organization's attempts, oldest first; `id` narrows to one. */
 export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id?: string },

@@ -439,7 +439,6 @@ export const machineEnrollmentToken = pgTable(
     /** The claimant's WireGuard public key, in the enrollment identity's base64 form. */
     claimedPublicKey: text("claimed_public_key"),
     claimedAt: timestamp("claimed_at", { mode: "date", withTimezone: true }),
-    /** Set on a Server Enrollment's token: a joiner never takes the Founding Claim. Null races as `server add` does. */
     enrollmentRole: text("enrollment_role").$type<EnrollmentRole>(),
     serverEnrollmentId: uuid("server_enrollment_id"),
     createdAt,

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNotNull, isNull, lt, notExists, or } from "drizzle-orm";
 import { Effect } from "effect";
 import type { RunEnd } from "#/modules/inngest/attempt-lifecycle";
 import type { MachineId } from "#/db/tables";
@@ -9,11 +9,8 @@ import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tabl
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 
-/** Past this the host stopped checking in, so it will never pick up its instruction. */
 export const CHECKIN_SILENCE_MS = 5 * 60_000;
-/** Outlives the longest run (2 h for the founder, 12 rounds of 30 m), so the sweep only meets lost runs. */
 export const ENROLLMENT_STALE_MS = 9 * 60 * 60_000;
-/** A waiting row whose host joined stays this long so its page can still show where it went. */
 export const JOINED_WAITING_KEEP_MS = 7 * 24 * 60 * 60_000;
 
 export type EnrollmentRequest = { readonly attemptId: string; readonly organizationId: string };
@@ -44,7 +41,6 @@ export const organizationFounded = Effect.fn("ServerEnrollment.founded")(functio
   return pairing?.founderMachineId != null;
 });
 
-/** The joiners the founder's run tells it joined. */
 export const awaitingJoiners = Effect.fn("ServerEnrollment.awaitingJoiners")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
@@ -55,7 +51,6 @@ export const awaitingJoiners = Effect.fn("ServerEnrollment.awaitingJoiners")(fun
   return rows.map((row) => row.id);
 });
 
-/** The founder joined: a waiting joiner may now get its instruction. */
 export const releaseJoiner = Effect.fn("ServerEnrollment.release")(function* (attemptId: string, runId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.update(serverEnrollment).set({ state: "instructed" }).where(and(
@@ -83,8 +78,7 @@ type Ending =
   | { readonly state: "failed"; readonly failure: EnrollmentFailure }
   | { readonly state: "cancelled" };
 
-/** Ends one attempt. The token goes with it: a joined attempt's token is spent, an unjoined one's is expired. */
-const endWhere = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
+const endAndRevokeTokens = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
   const { drizzle } = yield* Database;
   const now = new Date();
   const ended = yield* drizzle.update(serverEnrollment).set({
@@ -104,10 +98,9 @@ const endWhere = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<
 });
 
 export const endServerEnrollment = Effect.fn("ServerEnrollment.endRun")(function* (attemptId: string, runId: string, ending: Ending) {
-  return (yield* endWhere(and(eq(serverEnrollment.id, attemptId), ownedBy(runId)), ending)) === 1;
+  return (yield* endAndRevokeTokens(and(eq(serverEnrollment.id, attemptId), ownedBy(runId)), ending)) === 1;
 });
 
-/** What a quiet round found: the host joined while no event said so, went silent, or is still at it. */
 export const checkServerEnrollment = Effect.fn("ServerEnrollment.check")(function* (attemptId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({
@@ -129,20 +122,18 @@ const RUN_ENDS = {
   failure: { state: "failed", failure: { stage: null, message: "Enrollment stopped" } },
 } satisfies Record<RunEnd, Ending>;
 
-/** The lifecycle's closer: the run's own attempt, or one whose run never bound it. */
 export const closeServerEnrollment = Effect.fn("ServerEnrollment.closeRun")(function* (runId: string, end: RunEnd, attemptId?: string) {
   const unbound = attemptId === undefined
     ? undefined
     : and(eq(serverEnrollment.id, attemptId), isNull(serverEnrollment.inngestRunId), open);
-  return yield* endWhere(or(ownedBy(runId), unbound), RUN_ENDS[end]);
+  return yield* endAndRevokeTokens(or(ownedBy(runId), unbound), RUN_ENDS[end]);
 });
 
-/** A cancel that lands before the run binds: no run will see the cancel event, so close it here. */
 export const closeUnboundServerEnrollments = Effect.fn("ServerEnrollment.closeUnbound")(function* (
   organizationId: string,
   attemptIds: ReadonlyArray<string>,
 ) {
-  return yield* endWhere(and(
+  return yield* endAndRevokeTokens(and(
     eq(serverEnrollment.organizationId, organizationId),
     inArray(serverEnrollment.id, [...attemptIds]),
     isNull(serverEnrollment.inngestRunId),
@@ -150,28 +141,27 @@ export const closeUnboundServerEnrollments = Effect.fn("ServerEnrollment.closeUn
   ), { state: "cancelled" });
 });
 
-/** The hourly sweep: an attempt open past every run's limit lost its run; a joined host's waiting row expires. */
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {
   const { drizzle } = yield* Database;
   const now = Date.now();
-  const failed = yield* endWhere(
+  const failed = yield* endAndRevokeTokens(
     and(open, lt(serverEnrollment.requestedAt, new Date(now - ENROLLMENT_STALE_MS))),
     { state: "failed", failure: { stage: null, message: "Enrollment stopped" } },
   );
   const removed = yield* drizzle.delete(waitingServer).where(and(
-    // Spelled out: a delete renders its columns unqualified, which inside a subquery would name the subquery's.
-    sql`not exists (select 1 from server_enrollment where server_enrollment.waiting_server_id = waiting_server.id and server_enrollment.ended_at is null)`,
-    sql`exists (
-      select 1 from server_enrollment
-      where server_enrollment.waiting_server_id = waiting_server.id
-        and server_enrollment.state = 'joined'
-        and server_enrollment.ended_at < ${new Date(now - JOINED_WAITING_KEEP_MS)}
-    )`,
+    notExists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+      eq(serverEnrollment.waitingServerId, waitingServer.id),
+      open,
+    ))),
+    exists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+      eq(serverEnrollment.waitingServerId, waitingServer.id),
+      eq(serverEnrollment.state, "joined"),
+      lt(serverEnrollment.endedAt, new Date(now - JOINED_WAITING_KEEP_MS)),
+    ))),
   )).returning({ id: waitingServer.id });
   return { failed, removed: removed.length };
 });
 
-/** A key's open attempt, as check-in reads it. */
 export const openAttemptFor = Effect.fn("ServerEnrollment.openFor")(function* (waitingServerId: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({

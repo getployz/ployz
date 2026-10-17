@@ -29,10 +29,6 @@ export type EnrollInstruction = {
 
 export type EnrollmentFailure = { readonly stage: EnrollmentStage | null; readonly message: string };
 
-/**
- * The first CLI that runs the `enroll` instruction. C7 owns the number; a host reporting an older
- * version can't update itself into it, so the planner skips it with "Update ployz".
- */
 export const ENROLL_MIN_CLI_VERSION = "0.3.1";
 
 export const ZFS_BUILD_FAILED = "ZFS build failed";
@@ -52,7 +48,6 @@ export const EnrollInput = Schema.Struct({
 });
 export type EnrollInput = typeof EnrollInput.Type;
 
-/** Cloud answers `enroll` only once the host's prep can carry the storage it was told to use. */
 export function isReadyFor(report: StoredReport, storage: EnrollStorage) {
   if (report.blockers.length > 0) return false;
   const { prep } = report;

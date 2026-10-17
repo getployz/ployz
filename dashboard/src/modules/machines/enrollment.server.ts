@@ -78,7 +78,6 @@ const authorizeEnrollmentOrganization = Effect.fn(
   return { organization, userId: actor.userId };
 });
 
-/** A Server Enrollment's token carries its role and attempt; `server add` leaves both null. */
 export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
   function* (input: {
     readonly organizationId: string;
@@ -388,7 +387,6 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     return yield* database.transaction(
       Effect.gen(function* () {
         const { drizzle } = yield* Database;
-        // A joiner never takes the Founding Claim; founder and `server add` tokens race for it as before.
         const [claimed] = joiner ? [] : yield* drizzle
           .insert(schemaOrganizationPairing)
           .values({
@@ -417,7 +415,6 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             eq(schemaOrganizationPairing.organizationId, input.organizationId),
           )
           .limit(1);
-        // A joiner waits on its founder's run, which settles the attempt either way.
         if (!current) {
           if (joiner) return { kind: "pending" as const, fresh: true };
           return yield* Effect.die("Organization enrollment disappeared");
@@ -686,7 +683,6 @@ export const completeMachineEnrollment = Effect.fn(
   },
 );
 
-/** A Server Enrollment's run ends joined on this; a lost send is caught when its next round reads the token. */
 const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
   function* (serverEnrollmentId: string | null) {
     if (serverEnrollmentId === null) return;

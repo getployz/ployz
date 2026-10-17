@@ -25,10 +25,8 @@ import type { runInngestEffect } from "#/server/run.server";
 type StepTools = Pick<PloyzStepTools, "run" | "waitForEvent" | "sendEvent">;
 type EffectRunner = typeof runInngestEffect;
 
-/** Joiners wait this long for the founder: 12 rounds of 10 m. */
 export const FOUNDER_ROUNDS = 12;
 const FOUNDER_WAIT = "10m";
-/** Quiet rounds before the attempt gives up: 12 of 30 m. */
 export const QUIET_ROUNDS = 12;
 const QUIET_WAIT = "30m";
 /** A bound on reported stages, so a host that loops its stages can't run the step budget out. */
@@ -54,12 +52,6 @@ const decodeHeard = Schema.decodeUnknownOption(Heard);
 
 type Ctx = { event: { data: unknown }; step: StepTools; runId: string };
 
-/**
- * One Server Enrollment: bind the run → a joiner waits for its Organization's founder → follow the host's check-ins
- * until its Machine completes, it reports a failure, or it goes quiet. Check-in answers the host from the row; this run
- * is the row's only writer after it is planned. Every signal for the attempt arrives as its one reported event, so
- * each round waits on a single event.
- */
 export async function executeServerEnrollment({ event, step, runId }: Ctx, runEffect: EffectRunner) {
   const request = await step.run("normalize-request", () => {
     const decoded = Schema.decodeUnknownOption(Requested)(event.data, { onExcessProperty: "preserve" });
@@ -100,7 +92,6 @@ export async function executeServerEnrollment({ event, step, runId }: Ctx, runEf
     if (heard !== undefined && "founded" in heard) continue;
     if (heard === undefined || "completed" in heard) {
       if (heard === undefined) quiet += 1;
-      // The token records the Machine that joined, so a completion is read from it rather than from the event.
       const found = await step.run(`check-${heardCount}`, () => runEffect(checkServerEnrollment(attemptId)));
       if (found.kind === "gone") return { attemptId, state: "settled" as const };
       if (found.kind === "joined") return join(`join-${heardCount}`, found.machineId);

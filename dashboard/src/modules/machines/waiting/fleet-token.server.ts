@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, notExists } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import {
@@ -11,7 +11,7 @@ import {
   type ListFleetTokensInput,
 } from "#/modules/machines/waiting/fleet-token";
 import { generateTokenName } from "#/modules/machines/waiting/names";
-import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
+import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -115,8 +115,10 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
       .delete(waitingServer)
       .where(and(
         eq(waitingServer.fleetTokenId, found.id),
-        // An enrolling host keeps its row so its attempt can finish; spelled out, as a delete renders columns unqualified.
-        sql`not exists (select 1 from server_enrollment where server_enrollment.waiting_server_id = waiting_server.id and server_enrollment.ended_at is null)`,
+        notExists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+          eq(serverEnrollment.waitingServerId, waitingServer.id),
+          isNull(serverEnrollment.endedAt),
+        ))),
       ))
       .returning({ id: waitingServer.id });
     return { waitingRemoved: removed.length };

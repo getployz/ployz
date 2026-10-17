@@ -19,7 +19,6 @@ type StepAnswer =
   | { readonly kind: string; readonly role?: string; readonly state?: string; readonly machineId?: string };
 type FoundedEvent = ReturnType<typeof createServerEnrollmentFoundedEvent>;
 
-/** Runs the handler with each named step answering from `answers`, and records what it waited for and sent. */
 async function enroll(answers: Readonly<Record<string, StepAnswer>>) {
   const waitedFor: string[] = [];
   const sent: FoundedEvent[][] = [];

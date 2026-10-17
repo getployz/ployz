@@ -62,7 +62,6 @@ export const waitingServer = pgTable(
   ],
 );
 
-/** One try at enrolling one waiting host. Sole writer after insert: the server-enrollment run. */
 export const serverEnrollment = pgTable(
   "server_enrollment",
   {
@@ -77,14 +76,12 @@ export const serverEnrollment = pgTable(
     role: text("role").notNull().$type<EnrollmentRole>(),
     instruction: jsonb("instruction").notNull().$type<EnrollInstruction>(),
     enrollTokenId: uuid("enroll_token_id").notNull(),
-    /** Dropped when the attempt ends. */
     encryptedToken: jsonb("encrypted_token").$type<EncryptedSecretValue>(),
     state: text("state").notNull().$type<EnrollmentState>(),
     stage: text("stage").$type<EnrollmentStage>(),
     machineId: text("machine_id").$type<MachineId>(),
     failure: jsonb("failure").$type<EnrollmentFailure>(),
     inngestRunId: text("inngest_run_id"),
-    /** Null when the Fleet Token enrolled the host on arrival. */
     requestedByUserId: uuid("requested_by_user_id"),
     requestedAt: timestamp("requested_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
     endedAt: timestamp("ended_at", { mode: "date", withTimezone: true }),
