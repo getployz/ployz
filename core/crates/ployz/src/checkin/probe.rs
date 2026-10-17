@@ -38,10 +38,6 @@ const CLOUD_READS_FOR: Duration = Duration::from_millis(500);
 const DATAGRAM_BUFFER: usize = 2048;
 const SOCKET_BACKOFF: Duration = Duration::from_millis(100);
 const LISTEN_BACKLOG: i32 = 1024;
-/// Cloud tries each TCP port every 1.5 s until its window ends, so a port listening this long
-/// before the end still meets an attempt even when the handout reached the host 1.5 s late. A port
-/// not listening by then reports as failed, so Cloud never reads its refusals as a firewall.
-const LATE_LEAD: Duration = Duration::from_secs(3);
 /// Cloud settles a probe this long after its window ends.
 const SETTLE_GRACE: Duration = Duration::from_secs(30);
 /// How soon a failed pass tries again while Cloud still waits on a report: its own check-in pace.
@@ -152,17 +148,17 @@ impl Probes {
         }
     }
 
-    /// Never waits on an older window's save: that writer carries on, and claiming the path stops
-    /// it landing.
-    pub(super) async fn open(&mut self, handout: Handout, key: &CheckinKey) {
-        let handed = std::time::Instant::now();
+    /// Counts the bind budget and window from before the check-in request was sent, so delayed
+    /// replies cannot start listeners after Cloud's last attempt. Never waits on an older save.
+    pub(super) async fn open(&mut self, handout: Handout, key: &CheckinKey, sent: Instant) {
+        let expires = sent + handout.window();
+        let deadline = sent + bind_deadline(handout.window());
         self.close().await;
         self.finished = None;
         self.saving = None;
-        self.owed_until = Some(Instant::now() + handout.window() + SETTLE_GRACE);
+        self.owed_until = Some(expires + SETTLE_GRACE);
         let saved = self.saved.clone().map(|saved| (claim(&saved), saved));
-        let deadline = bind_deadline(handout.window());
-        let in_time = || handed.elapsed() <= deadline;
+        let in_time = || Instant::now() <= deadline;
         let mut sockets = Vec::new();
         let mut bind_failed = Vec::new();
         for &port in &handout.listen {
@@ -183,6 +179,7 @@ impl Probes {
             bind_failed,
             saved,
             stop.clone(),
+            expires,
         ));
         self.window = Some(Window { task, stop });
     }
@@ -223,6 +220,10 @@ impl Probes {
         }
     }
 
+    pub(super) fn reported(&mut self) {
+        self.owed_until = None;
+    }
+
     async fn harvest(&mut self) {
         if let Some(window) = &mut self.window {
             let ended = (&mut window.task).await.ok().flatten();
@@ -235,16 +236,17 @@ impl Probes {
     }
 }
 
+/// D8 hands out ten-second windows and tries TCP at 1, 2.5, 4, 5.5, 7 and 8.5 seconds.
+/// Reserve the last 30% for observing listeners; shorter windows scale the same budget.
 fn bind_deadline(window: Duration) -> Duration {
+    let lead = window * 3 / 10;
     #[cfg(test)]
-    let lead = tests::LEAD.get();
-    #[cfg(not(test))]
-    let lead = LATE_LEAD;
+    let lead = tests::LEAD.get().unwrap_or(lead);
     window.saturating_sub(lead)
 }
 
 /// When Cloud stops waiting on a saved report, from the file's mtime, which is when its window
-/// ended. A restart loses the deadline `open` set.
+/// ended. This is best effort across wall-clock changes and reboots, which lose `open`'s deadline.
 fn settled_at(saved: &Path) -> Option<Instant> {
     let ended = fs::metadata(saved).and_then(|meta| meta.modified()).ok()?;
     let left = (ended + SETTLE_GRACE)
@@ -271,8 +273,8 @@ async fn window(
     bind_failed: Vec<String>,
     saved: Option<(u64, PathBuf)>,
     stop: CancellationToken,
+    expires: Instant,
 ) -> Option<Ended> {
-    let opened = Instant::now();
     let report = Mutex::new(Report {
         handout: handout.handout.clone(),
         heard_from: Vec::new(),
@@ -296,7 +298,7 @@ async fn window(
         let exchange = join_all(udp.iter().map(|socket| exchange(socket, &handout, &report)));
         tokio::select! {
             biased;
-            () = tokio::time::sleep_until(opened + handout.window()) => {}
+            () = tokio::time::sleep_until(expires) => {}
             () = stop.cancelled() => return None,
             _ = async { tokio::join!(greet, exchange) } => {}
         }

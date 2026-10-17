@@ -621,13 +621,18 @@ async fn pass_from<H: Host>(
         prep: Some(prep),
         probe: probes.report().await,
     };
-    let next = match client.post(key, &request).await {
+    let sent = tokio::time::Instant::now();
+    let reply = client.post(key, &request).await;
+    if request.probe.is_some() && matches!(&reply, client::Reply::Answer(_)) {
+        probes.reported();
+    }
+    let next = match reply {
         client::Reply::Answer(Answer::Wait(after)) => {
             status.answer = Seen::Wait;
             Next::Wait { after, log: None }
         }
         client::Reply::Answer(Answer::Probe(after, handout)) => {
-            probes.open(handout, key).await;
+            probes.open(handout, key, sent).await;
             if installing {
                 crate::ui::note(format!(
                     "Listening on the probe ports for up to {}s.",

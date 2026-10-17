@@ -24,8 +24,8 @@ thread_local! {
     pub(super) static ONLY_V6_BY_DEFAULT: Cell<bool> = const { Cell::new(false) };
     /// Fails every IPv6 bind with this errno.
     pub(super) static IPV6_FAILS_WITH: Cell<Option<i32>> = const { Cell::new(None) };
-    /// How long before its window ends a port must listen. Zero lets short test windows bind.
-    pub(super) static LEAD: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    /// Overrides the proportional bind budget for deadline fault tests.
+    pub(super) static LEAD: Cell<Option<Duration>> = const { Cell::new(None) };
     /// Delays every bind by this long, the way a loaded host delays `open`.
     pub(super) static BIND_STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     pub(super) static STALL_PORT: Cell<Option<Port>> = const { Cell::new(None) };
@@ -108,7 +108,11 @@ async fn each_accept_reads_its_own_port_greeting_and_never_the_nonce() {
     let port = free_port();
     let mut probes = Probes::default();
     probes
-        .open(handout("h4ndout", 5_000, &[Port::Tcp(port)], &[]), &key())
+        .open(
+            handout("h4ndout", 5_000, &[Port::Tcp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     for _ in 0..2 {
@@ -127,7 +131,11 @@ async fn a_longer_window_is_clamped_to_ten_seconds() {
     let opened = Instant::now();
     let mut probes = Probes::default();
     probes
-        .open(handout("long", 60_000, &[Port::Udp(port)], &[]), &key())
+        .open(
+            handout("long", 60_000, &[Port::Udp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     probes.finish().await;
@@ -144,6 +152,7 @@ async fn every_socket_closes_when_the_window_ends_and_the_report_stays() {
         .open(
             handout("short", 300, &[Port::Tcp(tcp), Port::Udp(udp)], &[]),
             &key(),
+            Instant::now(),
         )
         .await;
     greeting_from(tcp).await;
@@ -160,6 +169,7 @@ async fn close_frees_every_port_before_it_returns() {
         .open(
             handout("closing", 10_000, &[Port::Tcp(tcp), Port::Udp(udp)], &[]),
             &key(),
+            Instant::now(),
         )
         .await;
     greeting_from(tcp).await;
@@ -184,6 +194,7 @@ async fn a_port_another_process_holds_goes_to_bind_failed() {
                 &[],
             ),
             &key(),
+            Instant::now(),
         )
         .await;
 
@@ -200,10 +211,18 @@ async fn peers_hear_each_other_once_by_address() {
     let (a, b) = (free_port(), free_port());
     let (mut first, mut second) = (Probes::default(), Probes::default());
     first
-        .open(handout("a", 1_500, &[Port::Udp(a)], &[b]), &key())
+        .open(
+            handout("a", 1_500, &[Port::Udp(a)], &[b]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     second
-        .open(handout("b", 1_500, &[Port::Udp(b)], &[a]), &key())
+        .open(
+            handout("b", 1_500, &[Port::Udp(b)], &[a]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     tokio::join!(first.finish(), second.finish());
@@ -217,7 +236,11 @@ async fn only_the_exact_nonce_counts_as_heard() {
     let port = free_port();
     let mut probes = Probes::default();
     probes
-        .open(handout("nonce", 1_000, &[Port::Udp(port)], &[]), &key())
+        .open(
+            handout("nonce", 1_000, &[Port::Udp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     let wrong = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let target = ("127.0.0.1", port);
@@ -244,12 +267,20 @@ async fn a_new_handout_replaces_the_window_even_with_the_same_nonce() {
     let port = free_port();
     let mut probes = Probes::default();
     probes
-        .open(handout("first", 10_000, &[Port::Tcp(port)], &[]), &key())
+        .open(
+            handout("first", 10_000, &[Port::Tcp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     greeting_from(port).await;
 
     probes
-        .open(handout("second", 1_000, &[Port::Tcp(port)], &[]), &key())
+        .open(
+            handout("second", 1_000, &[Port::Tcp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     assert_eq!(
@@ -283,6 +314,7 @@ async fn an_ipv6_only_default_still_listens_and_reports_busy_ports_over_ipv4() {
                 &[],
             ),
             &key(),
+            Instant::now(),
         )
         .await;
 
@@ -310,7 +342,11 @@ async fn only_a_host_without_ipv6_falls_back_to_ipv4() {
 
     IPV6_FAILS_WITH.set(Some(Errno::ACCESS.raw_os_error()));
     probes
-        .open(handout("denied", 1_000, &[Port::Tcp(refused)], &[]), &key())
+        .open(
+            handout("denied", 1_000, &[Port::Tcp(refused)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     assert!(TcpStream::connect(("127.0.0.1", refused)).await.is_err());
     probes.finish().await;
@@ -321,7 +357,11 @@ async fn only_a_host_without_ipv6_falls_back_to_ipv4() {
 
     IPV6_FAILS_WITH.set(Some(Errno::AFNOSUPPORT.raw_os_error()));
     probes
-        .open(handout("v4", 1_000, &[Port::Tcp(unsupported)], &[]), &key())
+        .open(
+            handout("v4", 1_000, &[Port::Tcp(unsupported)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     assert_eq!(
         greeting_from(unsupported).await,
@@ -336,7 +376,11 @@ async fn a_window_still_open_reports_nothing_and_close_forgets_it() {
     let port = free_port();
     let mut probes = Probes::default();
     probes
-        .open(handout("open", 10_000, &[Port::Udp(port)], &[]), &key())
+        .open(
+            handout("open", 10_000, &[Port::Udp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     peer.send_to(NONCE.as_bytes(), ("127.0.0.1", port))
@@ -357,6 +401,7 @@ async fn a_cancelled_finish_leaves_no_window_holding_the_ports() {
         .open(
             handout("cancelled", 10_000, &[Port::Udp(port)], &[]),
             &key(),
+            Instant::now(),
         )
         .await;
 
@@ -374,7 +419,11 @@ async fn a_window_that_runs_out_is_saved_for_the_next_process() {
     let port = free_port();
     let mut probes = Probes::load(saved.clone());
     probes
-        .open(handout("short", 300, &[Port::Udp(port)], &[]), &key())
+        .open(
+            handout("short", 300, &[Port::Udp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     probes.finish().await;
@@ -402,6 +451,7 @@ async fn a_slow_save_holds_no_port_and_no_check_in() {
         .open(
             handout("slow", 200, &[Port::Tcp(tcp), Port::Udp(udp)], &[]),
             &key(),
+            Instant::now(),
         )
         .await;
 
@@ -445,13 +495,21 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
     let (release, disk) = stall_saves(5);
     let mut probes = Probes::load(saved.clone());
     probes
-        .open(handout("old", 200, &[Port::Tcp(old)], &[]), &key())
+        .open(
+            handout("old", 200, &[Port::Tcp(old)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let handed = Instant::now();
     probes
-        .open(handout("new", 400, &[Port::Tcp(new)], &[]), &key())
+        .open(
+            handout("new", 400, &[Port::Tcp(new)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     assert!(
@@ -475,7 +533,6 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
 
 #[test]
 fn a_port_must_listen_three_seconds_before_the_window_ends() {
-    LEAD.set(LATE_LEAD);
     assert_eq!(bind_deadline(WINDOW_CAP), Duration::from_secs(7));
 }
 
@@ -484,7 +541,7 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
     let (udp, first, second) = (free_port(), free_port(), free_port());
     STALL_PORT.set(Some(Port::Tcp(second)));
     BIND_STALL.set(Duration::from_millis(800));
-    LEAD.set(Duration::from_millis(300));
+    LEAD.set(Some(Duration::from_millis(300)));
     let started = std::time::Instant::now();
     let observer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
@@ -508,6 +565,7 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
                 &[],
             ),
             &key(),
+            Instant::now(),
         )
         .await;
     probes.finish().await;
@@ -530,7 +588,11 @@ async fn shorter_windows_still_greet_cloud_on_a_free_port() {
         let port = free_port();
         let mut probes = Probes::default();
         probes
-            .open(handout("shorter", millis, &[Port::Tcp(port)], &[]), &key())
+            .open(
+                handout("shorter", millis, &[Port::Tcp(port)], &[]),
+                &key(),
+                Instant::now(),
+            )
             .await;
         assert_eq!(
             greeting_from(port).await,
@@ -544,12 +606,16 @@ async fn shorter_windows_still_greet_cloud_on_a_free_port() {
 async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_refused() {
     let dir = tempfile::tempdir().unwrap();
     let tcp = free_port();
-    LEAD.set(Duration::from_millis(700));
+    LEAD.set(Some(Duration::from_millis(700)));
     BIND_STALL.set(Duration::from_millis(500));
     let mut probes = Probes::load(dir.path().join("probe.json"));
 
     probes
-        .open(handout("late", 1_000, &[Port::Tcp(tcp)], &[]), &key())
+        .open(
+            handout("late", 1_000, &[Port::Tcp(tcp)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     assert!(TcpStream::connect(("127.0.0.1", tcp)).await.is_err());
@@ -565,12 +631,16 @@ async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_ref
 async fn a_bind_stalled_past_a_second_still_listens_inside_the_deadline() {
     let dir = tempfile::tempdir().unwrap();
     let tcp = free_port();
-    LEAD.set(Duration::from_secs(1));
+    LEAD.set(Some(Duration::from_secs(1)));
     BIND_STALL.set(Duration::from_millis(1_200));
     let mut probes = Probes::load(dir.path().join("probe.json"));
 
     probes
-        .open(handout("slow", 2_500, &[Port::Tcp(tcp)], &[]), &key())
+        .open(
+            handout("slow", 2_500, &[Port::Tcp(tcp)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
 
     assert_eq!(
@@ -589,14 +659,22 @@ async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
     let (release, disk) = stall_saves(5);
     let mut dropped = Probes::load(saved.clone());
     dropped
-        .open(handout("old", 200, &[Port::Udp(port)], &[]), &key())
+        .open(
+            handout("old", 200, &[Port::Udp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     tokio::time::sleep(Duration::from_millis(400)).await;
     drop(dropped);
 
     let mut probes = Probes::load(saved.clone());
     probes
-        .open(handout("new", 10_000, &[Port::Udp(port)], &[]), &key())
+        .open(
+            handout("new", 10_000, &[Port::Udp(port)], &[]),
+            &key(),
+            Instant::now(),
+        )
         .await;
     probes.close().await;
     drop(release);

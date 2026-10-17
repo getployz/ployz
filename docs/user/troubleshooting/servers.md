@@ -242,8 +242,9 @@ prepares Docker and ZFS meanwhile.
     Cloud's connection was refused, so a firewall in front of it turns the port away. **Unknown ·
     port busy** means Ployz couldn't listen on that port in time. Usually another program, such as
     a web server, already holds it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check
-    again. If nothing holds it, the server was too busy to listen in time, so check again. A
-    server running a `ployz` older than this feature leaves every port Unknown.
+    again. If nothing holds it, a delayed check-in reply or a busy server may have left too little
+    time to listen, so check again. A server running a `ployz` older than this feature leaves every
+    port Unknown.
 
 ## Ployz stops over a leftover network
 

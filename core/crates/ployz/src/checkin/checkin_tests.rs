@@ -353,7 +353,7 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
     let cloud = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut buf = vec![0; 16_384];
-        stream.read(&mut buf).await.unwrap();
+        assert!(stream.read(&mut buf).await.unwrap() > 0);
         let observer = std::thread::spawn(move || {
             let started = std::time::Instant::now();
             for at in [1_000, 2_500, 4_000, 5_500, 7_000, 8_500] {
@@ -395,8 +395,11 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
     );
     let report = serde_json::to_value(probes.report().await.unwrap()).unwrap();
     assert_eq!(
-        report["bindFailed"],
-        serde_json::json!([format!("tcp:{port}"), format!("udp:{port}")])
+        report.get("bindFailed"),
+        Some(&serde_json::json!([
+            format!("tcp:{port}"),
+            format!("udp:{port}")
+        ]))
     );
 }
 
