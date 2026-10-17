@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { runWithRequestState } from "@better-auth/core/context";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
@@ -189,7 +190,14 @@ const bearerSetsNoCookie = {
  * sign-up it ends in can bind the Organization it made to that claim. The callback URL alone is client-supplied.
  */
 const decodeCallbackURL = Schema.decodeUnknownOption(Schema.Struct({ callbackURL: Schema.String }));
-const decodeClaimSignInContext = Schema.decodeUnknownOption(Schema.Struct({ claimSecretHash: Schema.NullOr(Schema.String) }));
+const decodeClaimSignInContext = Schema.decodeUnknownOption(Schema.Struct({ claimSecretHash: Schema.String }));
+
+/**
+ * better-auth keeps per-request state in AsyncLocalStorage and reuses any store it inherits. A pooled database
+ * connection resumes fibers in the context it was opened in, so without a fresh store one request can inherit
+ * another's, OAuth state included.
+ */
+const isolated = async <A>(run: () => Promise<A>): Promise<A> => await runWithRequestState(new WeakMap(), run);
 
 const claimSignInContext = {
   id: "claim-sign-in-context",
@@ -197,10 +205,11 @@ const claimSignInContext = {
     before: [{
       matcher: (context) => context.path === "/sign-in/social",
       handler: createAuthMiddleware(async (context) => {
-        const callbackURL = Option.map(decodeCallbackURL(context.body), (body) => body.callbackURL);
-        // Written even when null: request state can outlive its request through Effect's scheduler, and a stale hash
-        // from another sign-in must not ride along.
-        await addOAuthServerContext({ claimSecretHash: Option.match(callbackURL, { onNone: () => null, onSome: claimSecretHashOf }) });
+        const claimSecretHash = Option.match(decodeCallbackURL(context.body), {
+          onNone: () => null,
+          onSome: (body) => claimSecretHashOf(body.callbackURL),
+        });
+        if (claimSecretHash !== null) await addOAuthServerContext({ claimSecretHash });
       }),
     }],
   },
@@ -319,18 +328,21 @@ const makeAuth = Effect.gen(function* () {
     databaseHooks: {
       user: {
         create: {
-          after: (createdUser, context) =>
-            runHook(handleUserCreated(createdUser).pipe(
-              // Only the OAuth callback has just read its state from the provider redirect; other sign-ups bind nothing.
-              Effect.tap((organizationId) => context?.path.startsWith("/callback/") !== true ? Effect.void : Effect.promise(getOAuthState).pipe(
-                Effect.flatMap((state) => bindClaimSignInOrganization(
-                  createdUser.id,
-                  organizationId,
-                  Option.match(decodeClaimSignInContext(state?.serverContext), { onNone: () => null, onSome: (claim) => claim.claimSecretHash }),
-                )),
-              )),
+          after: async (createdUser, context) => {
+            // Read before the first database step: after it, the fiber resumes in the async context of whichever
+            // connection answered, which can hold another request's state. Only the OAuth callback has just read its
+            // state from the provider redirect; other sign-ups bind nothing.
+            const claimSecretHash = context?.path.startsWith("/callback/") === true
+              ? Option.match(decodeClaimSignInContext((await getOAuthState())?.serverContext), {
+                onNone: () => null,
+                onSome: (claim) => claim.claimSecretHash,
+              })
+              : null;
+            await runHook(handleUserCreated(createdUser).pipe(
+              Effect.tap((organizationId) => bindClaimSignInOrganization(createdUser.id, organizationId, claimSecretHash)),
               Effect.andThen(recordSignUp(createdUser)),
-            )),
+            ));
+          },
         },
       },
       session: {
@@ -392,12 +404,12 @@ const makeAuth = Effect.gen(function* () {
         catch: (cause) => new AuthenticationUnavailable({ cause }),
       }),
       consent: (headers, { oauthQuery, accept }, choice) => Effect.tryPromise({
-        try: () => withConsentChoice(choice, () => instance.api.oauth2Consent({
+        try: () => isolated(() => withConsentChoice(choice, () => instance.api.oauth2Consent({
           headers,
           request: new Request(`${endpoints.issuer}/oauth2/consent`, { method: "POST", headers }),
           asResponse: false,
           body: { accept, oauth_query: oauthQuery },
-        })),
+        }))),
         catch: (cause) => new AuthenticationUnavailable({ cause }),
       }),
     }
@@ -407,7 +419,7 @@ const makeAuth = Effect.gen(function* () {
     const signedIn = new Headers(headers);
     if (accepts?.bearer !== true) signedIn.delete("authorization");
     const authSession = yield* Effect.tryPromise({
-      try: () => instance.api.getSession({ headers: signedIn }),
+      try: () => isolated(() => instance.api.getSession({ headers: signedIn })),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
     });
     if (authSession === null) return null;
@@ -416,16 +428,16 @@ const makeAuth = Effect.gen(function* () {
 
   return {
     handler: (request) => Effect.tryPromise({
-      try: () => instance.handler(request),
+      try: () => isolated(() => instance.handler(request)),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
     }),
     getSession,
     signInGithub: (headers, callbackURL) => Effect.tryPromise({
-      try: () => instance.api.signInSocial({
+      try: () => isolated(() => instance.api.signInSocial({
         headers,
         body: { provider: "github", callbackURL, newUserCallbackURL: callbackURL === "/cloud" ? "/cloud?welcome=true" : callbackURL },
         asResponse: true,
-      }),
+      })),
       catch: (cause) => new AuthenticationUnavailable({ cause }),
     }),
     resolveActor: Effect.fn("Auth.resolveActor")(function* (headers: Headers) {

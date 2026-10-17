@@ -352,3 +352,59 @@ it.live(
     }),
   60_000,
 );
+
+it.live(
+  "binds each claim sign-up to its own claim when GitHub sign-ins overlap, and nothing to the ordinary ones",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        // Routes read the database before they reach Auth, so they resume on a pooled connection. A connection keeps
+        // the async context it was opened in, and on a fresh worker the first one opens inside a claim sign-in.
+        const afterQuery = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          drizzle.select({ id: userTable.id }).from(userTable).limit(1).pipe(Effect.andThen(effect));
+        const start = (index: number) => Effect.gen(function* () {
+          const callbackURL = index % 2 === 0 ? `/claim/overlap-${index}` : "/cloud";
+          const started = yield* (index === 0 ? auth.signInGithub(new Headers({ origin }), callbackURL)
+            : afterQuery(auth.signInGithub(new Headers({ origin }), callbackURL)));
+          const state = new URL(String((yield* Effect.promise(() => started.json() as Promise<{ url: string }>)).url)).searchParams.get("state");
+          const cookie = started.headers.getSetCookie().map((line) => line.split(";", 1)[0]).join("; ");
+          return { index, state, cookie };
+        });
+        const flows = [yield* start(0), ...yield* Effect.forEach([1, 2, 3, 4, 5, 6, 7], start, { concurrency: "unbounded" })];
+        const real = globalThis.fetch;
+        const github = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+          const request = new Request(input, init);
+          if (request.url.startsWith("https://github.com/login/oauth/access_token")) {
+            return Response.json({ access_token: new URLSearchParams(await request.text()).get("code"), token_type: "bearer", scope: "read:user,user:email" });
+          }
+          const login = `overlap-${request.headers.get("authorization")?.match(/code-(\d+)/)?.[1]}`;
+          const githubId = 2000 + Number(login.slice("overlap-".length));
+          if (request.url === "https://api.github.com/user") return Response.json({ id: githubId, login, name: login, email: `${login}@example.test`, avatar_url: null });
+          if (request.url === "https://api.github.com/user/emails") return Response.json([{ email: `${login}@example.test`, primary: true, verified: true }]);
+          return real(input, init);
+        });
+        try {
+          const callbacks = yield* Effect.forEach(flows, ({ index, state, cookie }) =>
+            afterQuery(auth.handler(new Request(`${origin}/api/auth/callback/github?code=code-${index}&state=${state}`, { headers: { cookie } }))), { concurrency: "unbounded" });
+          assert.deepStrictEqual(callbacks.map((back) => back.status), flows.map(() => 302));
+        } finally {
+          github.mockRestore();
+        }
+        const bound = [];
+        const expected = [];
+        for (const { index } of flows) {
+          const [person] = yield* drizzle.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, `overlap-${index}@example.test`));
+          const userId = person?.id ?? assert.fail(`no user for flow ${index}`);
+          const bindings = yield* drizzle.select({ identifier: verification.identifier }).from(verification)
+            .where(like(verification.identifier, `claim-sign-in:${userId}:%`));
+          bound.push({ index, identifiers: bindings.map(({ identifier }) => identifier) });
+          expected.push({ index, identifiers: index % 2 === 0 ? [`claim-sign-in:${userId}:${hashClaimSecret(`overlap-${index}`)}`] : [] });
+        }
+        assert.deepStrictEqual(bound, expected);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
