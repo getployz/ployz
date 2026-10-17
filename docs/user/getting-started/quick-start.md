@@ -48,18 +48,16 @@ The address goes live on your first deploy.
 
 ## Add a server
 
-While you have no server, the bottom bar shows **Add a server** where **Deploy** would be.
+While you have no server, the bottom bar shows **Add servers** where **Deploy** would be.
 
-1. Click **Add a server** in the bottom bar.
-2. Not on Ubuntu, Debian or Amazon Linux? Click **Start without it** first; see
-   [Start without ZFS](../servers/add-a-server.md#start-without-zfs).
-3. Click **Copy** next to the command under **Run this as root**. It works for 24 hours.
-4. Connect to your server with `ssh root@203.0.113.10` (your server's IP), paste the command and
+1. Click **Add servers** in the bottom bar, then **Create**.
+2. Copy the install line under **Shown once. Expires in 24h.** Ployz can't show it again.
+3. Connect to your server with `ssh root@203.0.113.10` (your server's IP), paste the line and
    press Enter.
-5. When it asks for the enrollment token, copy the token under **Paste the token when asked** and
-   paste it.
+4. The server shows up under **Waiting** on the **Servers** page within seconds. Not on Ubuntu,
+   Debian or Amazon Linux? See [Start without ZFS](../servers/add-a-server.md#start-without-zfs).
 
-![The Add a server dialog with its command](../images/add-server-dialog.png)
+![The Add servers dialog with its install line](../images/add-servers-dialog.png)
 
 The command installs Ployz and adds the server to your organization. If your provider puts a
 firewall in front of it, open [these ports](../servers/add-a-server.md#open-the-firewall).

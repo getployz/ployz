@@ -1,0 +1,234 @@
+import { useState, type ReactNode } from "react";
+import { Button } from "#/components/ui/button";
+import { Checkbox } from "#/components/ui/checkbox";
+import { Input } from "#/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
+import { cn } from "#/lib/utils";
+import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
+import { useOpenProbe, useRejectWaiting, useWaitingServers } from "./use-waiting";
+import { WaitingDetailSheet } from "./waiting-detail-sheet";
+import {
+  disksText,
+  hostnameOrIpMatcher,
+  providerOf,
+  READINESS_FILTERS,
+  readiness,
+  type ReadinessFilter,
+  selectable,
+  sizeText,
+  statusCell,
+  volumesText,
+} from "./waiting-row";
+
+export const ROW_PX = 52;
+export const VISIBLE_ROWS = 10;
+const GRID = "grid grid-cols-[20px_minmax(0,1fr)_130px_92px_150px_150px_160px] items-center gap-3 px-3";
+
+export function WaitingSection({ organizationSlug, token }: { organizationSlug: string; token: string | undefined }) {
+  const { data, dataUpdatedAt } = useWaitingServers(organizationSlug);
+  if (data === undefined || data.length === 0) return null;
+  return <WaitingList organizationSlug={organizationSlug} servers={data} now={dataUpdatedAt} token={token} />;
+}
+
+export function WaitingList({ organizationSlug, servers, now, token }: {
+  organizationSlug: string;
+  servers: readonly WaitingServerView[];
+  now: number;
+  token?: string | undefined;
+}) {
+  const [filter, setFilter] = useState<ReadinessFilter>("all");
+  const [provider, setProvider] = useState("");
+  const [tokenFilter, setTokenFilter] = useState(token ?? "");
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const [openId, setOpenId] = useState<string | null>(null);
+  const reject = useRejectWaiting(organizationSlug);
+  const probe = useOpenProbe(organizationSlug);
+
+  const counts = new Map<ReadinessFilter, number>([["all", servers.length]]);
+  for (const server of servers) counts.set(readiness(server), (counts.get(readiness(server)) ?? 0) + 1);
+  const providers = [...new Set(servers.map(providerOf))].sort();
+  const tokens = [...new Set(servers.map((server) => server.fleetToken))].sort();
+  const matches = hostnameOrIpMatcher(query);
+  const rows = servers.filter((server) =>
+    (filter === "all" || readiness(server) === filter)
+    && (provider === "" || providerOf(server) === provider)
+    && (tokenFilter === "" || server.fleetToken === tokenFilter)
+    && matches(server));
+  const chosen = servers.filter((server) => picked.has(server.id) && selectable(server)).map((server) => server.id);
+  const pickable = rows.filter(selectable);
+  const allPicked = pickable.length > 0 && pickable.every((server) => picked.has(server.id));
+  const open = servers.find((server) => server.id === openId) ?? null;
+
+  const choose = (next: ReadonlySet<string>) => {
+    setPicked(next);
+    if (next.size > 0) probe.mutate([...next]);
+  };
+  const toggle = (id: string, on: boolean) => {
+    const next = new Set(chosen);
+    if (on) next.add(id);
+    else next.delete(id);
+    choose(next);
+  };
+  const show = (id: string) => {
+    setOpenId(id);
+    probe.mutate([id]);
+  };
+  const rejectIds = (ids: readonly string[]) => {
+    reject.mutate(ids);
+    setPicked(new Set());
+    setOpenId(null);
+  };
+
+  return (
+    <section aria-labelledby="waiting-heading" className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <h2 id="waiting-heading" className="text-sm font-semibold">Waiting</h2>
+        <span className="text-xs text-muted-foreground tabular-nums">{servers.length}</span>
+        <div className="ml-auto flex flex-wrap items-center gap-1">
+          <div role="group" aria-label="Readiness" className="flex items-center gap-1">
+            {READINESS_FILTERS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={filter === option.value}
+                onClick={() => setFilter(option.value)}
+                className="h-7 rounded-md border border-transparent px-2.5 text-[13px] text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
+              >
+                {option.label} <span className="text-muted-foreground tabular-nums">{counts.get(option.value) ?? 0}</span>
+              </button>
+            ))}
+          </div>
+          <NativeSelect size="sm" aria-label="Provider" value={provider} onChange={(event) => setProvider(event.target.value)}>
+            <NativeSelectOption value="">All providers</NativeSelectOption>
+            {providers.map((name) => <NativeSelectOption key={name} value={name}>{name}</NativeSelectOption>)}
+          </NativeSelect>
+          <NativeSelect size="sm" aria-label="Token" value={tokenFilter} onChange={(event) => setTokenFilter(event.target.value)}>
+            <NativeSelectOption value="">All tokens</NativeSelectOption>
+            {tokens.map((name) => <NativeSelectOption key={name} value={name}>{name}</NativeSelectOption>)}
+          </NativeSelect>
+          <Input
+            aria-label="Filter"
+            placeholder="Filter, or hz-fsn1-*"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="h-7 w-40 text-[13px]"
+          />
+        </div>
+      </div>
+      <div className="overflow-x-auto rounded-lg border">
+        <div role="table" aria-label="Waiting servers" className="min-w-[860px] text-[13px]">
+          <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
+            <span role="columnheader">
+              <Checkbox
+                aria-label="Select all"
+                checked={allPicked}
+                disabled={pickable.length === 0}
+                onCheckedChange={(on) => choose(on ? new Set(pickable.map((server) => server.id)) : new Set())}
+              />
+            </span>
+            <span role="columnheader">Name</span>
+            <span role="columnheader">Source IP</span>
+            <span role="columnheader">Size</span>
+            <span role="columnheader">Disks</span>
+            <span role="columnheader">Volumes</span>
+            <span role="columnheader">Status</span>
+          </div>
+          <div role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: ROW_PX * VISIBLE_ROWS }}>
+            {rows.length === 0 ? (
+              <div role="row" className={cn(GRID, "border-t text-muted-foreground")} style={{ height: ROW_PX }}>
+                <span />
+                <span role="cell">Nothing matches</span>
+              </div>
+            ) : rows.map((server) => (
+              <WaitingRow
+                key={server.id}
+                server={server}
+                now={now}
+                picked={chosen.includes(server.id)}
+                onPick={(on) => toggle(server.id, on)}
+                onOpen={() => show(server.id)}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+      {chosen.length > 0 ? (
+        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-primary py-2 pr-2 pl-4 text-sm text-primary-foreground shadow-lg">
+          <span className="tabular-nums">{chosen.length} selected</span>
+          <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
+          <Button size="sm" variant="destructive" onClick={() => rejectIds(chosen)}>Reject</Button>
+        </div>
+      ) : null}
+      <WaitingDetailSheet
+        server={open}
+        now={now}
+        onOpenChange={(next) => { if (!next) setOpenId(null); }}
+        onReject={(id) => rejectIds([id])}
+      />
+    </section>
+  );
+}
+
+function WaitingRow({ server, now, picked, onPick, onOpen }: {
+  server: WaitingServerView;
+  now: number;
+  picked: boolean;
+  onPick: (on: boolean) => void;
+  onOpen: () => void;
+}) {
+  const { report } = server;
+  const status = statusCell(server, now);
+  const disks = disksText(report);
+  const volumes = volumesText(report);
+  const state = readiness(server);
+  return (
+    <div
+      role="row"
+      data-state={state}
+      aria-selected={picked}
+      onClick={onOpen}
+      className={cn(GRID, "cursor-pointer border-t hover:bg-muted/50", picked && "bg-muted")}
+      style={{ height: ROW_PX }}
+    >
+      <span role="cell" onClick={(event) => event.stopPropagation()}>
+        <Checkbox
+          aria-label={`Select ${report.hostname}`}
+          checked={picked}
+          disabled={!selectable(server)}
+          onCheckedChange={(on) => onPick(on)}
+        />
+      </span>
+      <TwoLineCell>
+        <button type="button" className="truncate text-left font-medium outline-none focus-visible:underline" onClick={(event) => { event.stopPropagation(); onOpen(); }}>
+          {report.hostname}
+        </button>
+        <span>{report.os.id} {report.os.version}</span>
+      </TwoLineCell>
+      <TwoLineCell>
+        <span className="font-mono">{server.observedIp}</span>
+        <span>{providerOf(server)}</span>
+      </TwoLineCell>
+      <span role="cell" className="truncate text-muted-foreground">{sizeText(report)}</span>
+      <span role="cell" className="truncate">
+        {disks.main}
+        {disks.spare === "" ? null : <span className="text-muted-foreground"> {disks.spare}</span>}
+      </span>
+      <TwoLineCell><span>{volumes.bold}</span><span>{volumes.detail}</span></TwoLineCell>
+      <TwoLineCell>
+        <span className={cn("font-medium", state === "blocked" && "text-destructive")}>{status.bold}</span>
+        <span>{status.detail}</span>
+      </TwoLineCell>
+    </div>
+  );
+}
+
+function TwoLineCell({ children }: { children: [ReactNode, ReactNode] }) {
+  const [first, second] = children;
+  return (
+    <div role="cell" className="flex min-w-0 flex-col leading-tight">
+      <span className="truncate">{first}</span>
+      <span className="truncate text-xs text-muted-foreground">{second}</span>
+    </div>
+  );
+}

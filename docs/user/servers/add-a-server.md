@@ -24,42 +24,60 @@ You don't need Docker: Ployz installs it if it's missing.
 
 ## Add a server
 
-1. Go to **Servers** and click **Add server**. While you have no server, the bottom bar of your
-   environment offers **Add a server** too.
-2. Not on Ubuntu, Debian or Amazon Linux, or can't run ZFS? Click **Start without it** in the dialog first; see
+1. Go to **Servers** and click **Add servers**. While you have no server, the bottom bar of your
+   environment offers it too.
+2. Name the token, or leave the name blank and Ployz picks one. Choose how long it works: 1 day,
+   7 days or 30 days.
+3. Leave **Enroll on arrival** off and each server waits until you let it in. Turn it on to let
+   up to the number you set in on their own; anyone holding that token can then add servers, so
+   keep it secret.
+4. Click **Create**. The dialog shows the install line with the token in it, under
+   **Shown once. Expires in 24h.** Copy it now: Ployz can't show the token again.
+5. Open a shell on the server, as root or as a user with `sudo`, and paste the line. To put it in
+   user data instead, take it from the **cloud-init** or **Terraform** tab; each holds the same
+   token. Not on Ubuntu, Debian or Amazon Linux, or can't run ZFS? See
    [Start without ZFS](#start-without-zfs).
-3. Click **Copy** next to the command under **Run this as root**.
-4. Open a shell on the server, as root or as a user with `sudo`, and paste the command. The
-   server takes its hostname as its name; to choose another, add `--name web-1` to the end.
-5. When it asks for the enrollment token, click **Copy** under **Paste the token when asked**
-   and paste it.
 
-![The Add a server dialog with its command](../images/add-server-dialog.png)
+![The Add servers dialog with its install line](../images/add-servers-dialog.png)
 
-The command looks like this:
+Run the same line on as many servers as you like while the token works. Each one installs Docker
+and Ployz and shows up under **Waiting** on the **Servers** page within seconds, below your other
+servers. New ones join the bottom of the list, and the list never reorders while you look at it.
+
+Each row shows the server's name, the IP address Ployz Cloud saw it check in from, its provider,
+size, disks and storage, and its status. **Installing Docker** and **Building ZFS** mean it is
+still getting ready, and **Ready** means it can join. **Blocked** rows say what stops the server
+from joining, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`, and
+**Offline** means it stopped checking in. Filter the list by provider and by status, or search
+by name or IP address.
+
+Click a row to see the server in full, with its CPU, memory, disks, Docker, the storage it would
+get, its open ports and anything blocking it. **Reject** there turns the server away: it stops
+checking in, and asking again with the same token gets it turned away.
+
+### Your tokens
+
+**Tokens** on the **Servers** page lists your Fleet Tokens with how many servers wait on each and
+how many joined, when each expires and when it was last used. **Revoke** stops a token at once
+and drops the servers still waiting on it; the message after says how many. Servers that already
+joined stay.
+
+### Add one server that joins right away
+
+From your own machine, signed in with `ployz login`:
 
 ```sh
-curl -fsSL https://ployz.sh/ | sh && sudo ployz server add
+ployz server add --command
 ```
 
-The command carries no token. `ployz server add` asks for it, and the prompt doesn't show what you
-paste. The token never enters your shell history or the server's process list, whatever your
-shell's history settings. If the server's root user is signed in to Cloud with `ployz login`, it
-doesn't ask: it enrolls into the organization it's signed in to.
+It prints a line to paste on the server and an enrollment token beside it, then waits until the
+server joins. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste
+the token when it asks. The prompt doesn't show what you paste, so the token never enters the
+server's shell history or process list. The token works for 24 hours.
 
-To enroll a server from a script, give `ployz server add` the token one of three ways:
-
-- `--token-stdin` reads it from standard input.
-- `--token-file <path>` reads it from a file, such as one your provisioning tool wrote.
-- The `PLOYZ_ENROLL_TOKEN` environment variable, set in the root shell or the service that runs
-  `ployz server add`. Don't write `sudo PLOYZ_ENROLL_TOKEN=... ployz`: that puts the token in the
-  process list.
-
-Use one of them, not two.
-
-When it finishes, the server shows on the **Servers** page, ready for builds, services and web
-traffic. The command works for 24 hours; open the dialog again for a new one. If the server
-doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
+The server takes its hostname as its name; to choose another, add `--name web-1`. When it
+finishes, the server shows on the **Servers** page, ready for builds, services and web traffic. If
+it doesn't show up, see [Troubleshooting servers](../troubleshooting/servers.md).
 
 Add more servers the same way, even at different providers. Nothing moves onto a new server until
 you deploy; see [Scaling](../services/scaling.md#add-a-server).
@@ -91,7 +109,7 @@ ployz server token ls
 ployz server token revoke amber-falcon
 ```
 
-Revoking also drops the hosts still waiting on that token. The install line puts the token in the
+The [Tokens](#your-tokens) page on **Servers** shows the same list. Revoking also drops the hosts still waiting on that token. The install line puts the token in the
 host's process list while it runs; a Fleet Token is short-lived and you can revoke it, so that
 exposure ends when you do.
 
@@ -109,9 +127,9 @@ On Ubuntu, ZFS comes ready-made. On Debian and Amazon Linux, the server builds i
 takes longer: 15–20 minutes on a 2-vCPU Amazon Linux Server, a few minutes on Debian. The build
 tools stay installed, so ZFS can be rebuilt when the kernel updates.
 
-If your server can't run ZFS, click **Start without it** under "Other Linux, or can't run ZFS?"
-in the dialog. The command then ends in `--storage none`, and **Use ZFS instead** switches
-back.
+If your server can't run ZFS, put `PLOYZ_SKIP_ZFS=1` after `sudo` in the install line, as in
+`curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 PLOYZ_ENROLL_TOKEN=pflt_… sh`. With
+`ployz server add`, add `--storage none`.
 
 The server then shows **Docker only**. If none of your servers has managed volumes, every new volume,
 a database's included, fails to deploy until you open it and tick **Use a plain Docker volume

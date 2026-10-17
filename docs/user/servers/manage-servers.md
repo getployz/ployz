@@ -364,7 +364,7 @@ warns about services still running there and prints the drain command.
 Otherwise services that ran only on that server stop. Your next deploy replaces its replicas on your other
 servers, except for services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)). Removing your last
-server stops everything; your projects and settings stay, and the bottom bar shows **Add a server**
+server stops everything; your projects and settings stay, and the bottom bar shows **Add servers**
 until you [add one](add-a-server.md).
 
 The reset first stops every copy in progress on the server. If one doesn't stop within 30 seconds,

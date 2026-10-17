@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, eq, gt, isNull, notExists } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import {
@@ -12,6 +12,7 @@ import {
 } from "#/modules/machines/waiting/fleet-token";
 import { lockOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
 import { generateTokenName } from "#/modules/machines/waiting/names";
+import { user } from "#/modules/identity/tables";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
@@ -82,8 +83,15 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
       autoEnrollMax: fleetToken.autoEnrollMax,
       lastUsedAt: fleetToken.lastUsedAt,
       createdAt: fleetToken.createdAt,
+      createdBy: user.name,
+      waiting: sql<number>`(select count(*) from ${waitingServer} where ${waitingServer.fleetTokenId} = ${fleetToken.id}
+        and ${waitingServer.rejectedAt} is null and not exists (select 1 from ${serverEnrollment}
+        where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined'))`.mapWith(Number),
+      joined: sql<number>`(select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${fleetToken.id}
+        and ${serverEnrollment.state} = 'joined')`.mapWith(Number),
     })
     .from(fleetToken)
+    .innerJoin(user, eq(user.id, fleetToken.createdByUserId))
     .where(and(eq(fleetToken.organizationId, organization.id), isNull(fleetToken.revokedAt)))
     .orderBy(asc(fleetToken.createdAt), asc(fleetToken.id));
   const now = new Date();
@@ -95,6 +103,9 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
     autoEnrollMax: row.autoEnrollMax,
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    waiting: row.waiting,
+    joined: row.joined,
   }));
 });
 
