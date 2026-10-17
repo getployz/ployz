@@ -71,19 +71,21 @@ pub struct SetEnvironmentProtected {
     #[serde(default)]
     pub environment: EnvironmentRef,
     pub protected: bool,
-    /// The protection Cloud read when it decided whether a human must say yes to an
-    /// agent's unprotect: refused `conflict` when another write changed it since.
+    /// The Environment and protection Cloud read when it decided whether a human must
+    /// say yes to an agent's unprotect: refused `conflict` when `environment` now names
+    /// another Environment or another write changed its protection since.
     /// None applies to whatever protection is there, as a person deciding directly does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub seen: Option<SeenProtection>,
 }
 
-/// An Environment's protection as a reader saw it: whether it was Protected, and in
-/// which protection.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// An Environment's protection as a reader saw it: which Environment, whether it was
+/// Protected, and in which protection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SeenProtection {
+    pub environment: EnvironmentId,
     pub protected: bool,
     pub protections: u32,
 }
@@ -204,7 +206,7 @@ pub(crate) fn set_protected(
             json!({ "project": summary.project, "environment": summary.name }),
         ))
     })?;
-    if let Some(seen) = set.seen {
+    if let Some(seen) = &set.seen {
         unchanged(tx, &environment, seen)?;
     }
     let kind = if crate::pull_request::of(tx, &summary.id)?.is_some() {
@@ -247,24 +249,34 @@ pub(crate) fn set_protected(
     )
 }
 
-/// Refuse `conflict` unless `environment`'s protection is still what was `seen`: a
-/// human's yes, or no ask at all, was decided on that protection.
+/// Refuse `conflict` unless `environment` is the one `seen` and its protection is still
+/// what was seen: a human's yes, or no ask at all, was decided on that one protection.
 fn unchanged(
     tx: &mut dyn Tx,
     environment: &scope::Environment,
-    seen: SeenProtection,
+    seen: &SeenProtection,
 ) -> Result<(), RpcError> {
     let summary = &environment.summary;
+    if summary.id != seen.environment {
+        return Err(error::conflict(
+            format!(
+                "{} isn't the Environment this was decided on; read it and ask again",
+                summary.name
+            ),
+            json!({ "project": summary.project, "environment": summary.name }),
+        ));
+    }
     let rows = tx.query(
         "SELECT protected, protections FROM config_environment WHERE id = ?1",
         &[summary.id.as_str().into()],
     )?;
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
     let now = SeenProtection {
+        environment: summary.id.clone(),
         protected: row.int(0)? != 0,
         protections: u32::try_from(row.int(1)?).map_err(|_| error::corrupt("Environment"))?,
     };
-    if now == seen {
+    if now == *seen {
         return Ok(());
     }
     Err(error::conflict(

@@ -11,8 +11,9 @@ use ployz_store::{
     Actor, AuthorizedRepository, Automated, Change, ConfigStore, CreateBranch, CreateEnvironment,
     CreateGitService, CreateProject, CreateService, Edit, EnvironmentId, EnvironmentName,
     EnvironmentRef, EnvironmentsQuery, OrganizationId, Principal, ProjectId, ProjectName, Publish,
-    Published, PullRequest, SeenProtection, ServiceLineageId, SetEnvironmentProtected, SetPrPlan,
-    SettingPath, SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
+    Published, PullRequest, SeenProtection, ServiceLineageId, SetDefaultEnvironment,
+    SetEnvironmentProtected, SetPrPlan, SettingPath, SyncChanges, SyncQuery, SystemEvent, Trusted,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -692,6 +693,7 @@ fn an_unprotect_decided_on_an_earlier_protection_refuses() {
         );
     };
     let seen = |protected, protections| SeenProtection {
+        environment: EnvironmentId::parse(uuid(4)).unwrap(),
         protected,
         protections,
     };
@@ -712,6 +714,48 @@ fn an_unprotect_decided_on_an_earlier_protection_refuses() {
     store.write(&system, &set("staging", true)).unwrap();
     stale(unprotect(seen(false, 2)), true, 3);
     assert!(protection(&store, &system).contains(&("staging".into(), true)));
+}
+
+#[test]
+fn an_unprotect_decided_on_another_environment_refuses() {
+    let (store, system) = shop();
+    // Both Protected once, so only which Environment it is tells them apart.
+    store.write(&system, &set("staging", true)).unwrap();
+    let production = SeenProtection {
+        environment: EnvironmentId::parse(uuid(2)).unwrap(),
+        protected: true,
+        protections: 1,
+    };
+    // A human approved unprotecting the Default, production; staging became the
+    // Default before the agent's write landed.
+    store
+        .write(
+            &system,
+            &SetDefaultEnvironment {
+                environment: at("staging"),
+            },
+        )
+        .unwrap();
+    let error = store
+        .write_trusted(
+            &person(&system),
+            &SetEnvironmentProtected {
+                environment: EnvironmentRef::default(),
+                protected: false,
+                seen: Some(production),
+            },
+            &backend::cloud(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        error.details,
+        json!({"project": "shop", "environment": "staging"})
+    );
+    assert_eq!(
+        protection(&store, &system),
+        vec![("production".into(), true), ("staging".into(), true)]
+    );
 }
 
 #[test]
