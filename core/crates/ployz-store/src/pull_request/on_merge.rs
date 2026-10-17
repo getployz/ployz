@@ -605,13 +605,7 @@ pub(crate) fn land(
     for landing in landings {
         let into = landing.into.summary.clone();
         let landed = storage::attempt(tx, |tx| {
-            land_one(
-                tx,
-                who,
-                &from,
-                landing,
-                (&pull_request, merge.target, merge.trusted),
-            )
+            land_one(tx, who, &from, landing, (&pull_request, merge.target))
         });
         match landed {
             Ok(services) => {
@@ -673,7 +667,7 @@ fn land_one(
     who: &Actor,
     from: &Environment,
     landing: Landing,
-    (pull_request, target, trusted): (&PullRequestRef, &BranchName, &Trusted),
+    (pull_request, target): (&PullRequestRef, &BranchName),
 ) -> Result<MergedServices, RpcError> {
     let picks = landing.riding();
     let Landing {
@@ -736,7 +730,6 @@ fn land_one(
         saved.clone(),
         latest.as_ref(),
         (Some(&format!("Merged #{}", pull_request.number)), &consent),
-        trusted,
     )?;
 
     // Working: the nodes arriving as Saved has them, so their IDs match; then each

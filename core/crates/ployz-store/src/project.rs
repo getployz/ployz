@@ -112,7 +112,7 @@ pub(crate) fn create_project(
     let default_environment =
         insert_environment(tx, who, &project, &create.default_environment, name)?;
     tx.execute(
-        "UPDATE config_environment SET protected = 1 WHERE id = ?1",
+        "UPDATE config_environment SET protected = 1, protections = 1 WHERE id = ?1",
         &[create.default_environment.as_str().into()],
     )?;
     Ok(ProjectCreated {
