@@ -1,6 +1,7 @@
 //! Evidence Cloud gathers outside the Store and passes in-process with a write. It is
 //! never caller testimony: `read` and `write` over HTTPS carry none, only what Cloud found.
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, RpcError};
@@ -41,7 +42,8 @@ pub struct Trusted {
     pub members: Option<Vec<GithubUserId>>,
     /// The permissions the caller holds, as Cloud grants them by role: a command
     /// refuses unless the one it names is among them. None when no one checked, which
-    /// is only the hidden local Store, whose caller owns everything in it.
+    /// is only the hidden local Store, whose caller owns everything in it, and Cloud's
+    /// own automation. A named caller with none sent holds none ([`Self::held_by`]).
     #[serde(default)]
     #[ts(optional)]
     pub permissions: Option<BTreeSet<Permission>>,
@@ -99,6 +101,20 @@ impl Trusted {
     /// Cloud counted no Server: nothing runs, and nothing is left on one.
     pub(crate) const fn no_servers(&self) -> bool {
         matches!(self.servers, Some(0))
+    }
+
+    /// This evidence as `who` is checked against it. A named caller with no permission
+    /// set holds none: Cloud sends every user's set, so a missing one is a defect, not
+    /// a grant. Only the Store's own automation and the local Store go unchecked.
+    pub(crate) fn held_by(&self, who: &crate::Actor) -> Cow<'_, Self> {
+        if who.principal.is_some() && self.permissions.is_none() {
+            Cow::Owned(Self {
+                permissions: Some(BTreeSet::new()),
+                ..self.clone()
+            })
+        } else {
+            Cow::Borrowed(self)
+        }
     }
 
     pub(crate) fn admit(&self, permission: Permission) -> Result<(), RpcError> {

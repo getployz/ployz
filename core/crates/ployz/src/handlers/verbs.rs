@@ -333,9 +333,9 @@ pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     Never,
     env::on_merge_command,
     env::pr::on_merge,
-)
-.needs(Permission::ProjectEdit);
+);
 pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
+    .needs(Permission::ProjectEdit)
     .docs("environments/preview-environments.md");
 pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
     "env pr approve",

@@ -299,6 +299,8 @@ export const callStore = <C extends StoreCall>(
   return yield* Effect.gen(function* () {
     const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
+    // Cloud sends every user's set, so a write by a user with none named is a defect, never a grant.
+    if (userId !== null && gate.permissions === undefined) return yield* Effect.die("A user's Store write names no permissions");
     const principal = yield* principalFor(userId).pipe(Effect.orDie);
     const written = yield* writeAdmitted(organizationId, call.command, (command) =>
       storeTry(() => store.write(organizationId, command, trusted, principal)));
@@ -332,11 +334,17 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
   return yield* callStoreWith(access, actor, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
-const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) => {
-  const permissions = permissionsOf(access.kind === "member" ? access.role : "support");
-  return Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions }), (result) =>
+const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
+  Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: permissionsFor(access) }), (result) =>
     access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
-};
+
+/** What `access` holds, as the Store is told it: the member's role, or support's set. */
+const permissionsFor = (access: Access): Permission[] => permissionsOf(access.kind === "member" ? access.role : "support");
+
+/** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
+export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
+  ? callStore(organizationId, null, call)
+  : callStore(organizationId, by.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: permissionsFor(by) });
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or

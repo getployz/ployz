@@ -541,6 +541,10 @@ fn a_compound_settings_row_discards_that_setting() {
 fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
     let (store, mut who) = shop();
     who.principal = Some(ployz_store::Principal::parse("Ada Lovelace").unwrap());
+    let held = Trusted {
+        permissions: Some(Permission::ALL.iter().copied().collect()),
+        ..Trusted::default()
+    };
     let save = |message: &str| {
         store
             .write_trusted(
@@ -549,7 +553,7 @@ fn saved_history_keeps_message_actor_and_no_op_save_immutable() {
                     message: Some(message.into()),
                     ..Publish::default()
                 },
-                &Trusted::default(),
+                &held,
             )
             .unwrap()
     };

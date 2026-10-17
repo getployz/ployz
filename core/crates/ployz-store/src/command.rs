@@ -460,8 +460,8 @@ commands! {
         };
     /// Stop removing an Environment or a Project.
     CancelRemoval(crate::CancelRemoval) -> RemovalCancelled(crate::RemovalCancelled)
-        needs EnvironmentDelete
-        agent none "deployment_cancel on the removal's Deployment stops it instead."
+        needs ChangesDeploy
+        agent none "Stopping a removal is cancelling its Deployment, which deployment_cancel does."
         => crate::removal::cancel_removal(tx, who, c);
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
