@@ -12,8 +12,8 @@ use clap::{ArgMatches, Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{
-    Answered, Install, LoopPloyzd, Token, command, install_outcome, keep_answered_token,
-    loop_ployzd, loop_start, replaces_token, stdin_token,
+    Answered, Install, LoopPloyzd, Token, command, install_outcome, install_start,
+    keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token,
 };
 use crate::checkin::{
     self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Probe,
@@ -596,7 +596,7 @@ fn a_rerun_cloud_cannot_answer_or_holds_back_keeps_the_old_token_and_says_so() {
             .to_string();
         assert!(
             kept.contains(&format!(
-                "{why} Until Cloud takes the new Fleet Token, this host keeps {} and its check-in service. Run the install again.",
+                "{why} Until Cloud takes the new Fleet Token, this install keeps {} and changes nothing else. Run the install again.",
                 token_file.display()
             )),
             "{kept}"
@@ -623,7 +623,7 @@ fn a_rerun_with_a_token_that_has_all_its_waiting_servers_keeps_the_old_token() {
         .to_string();
     assert!(
         kept.contains(&format!(
-            "{why} Cloud didn't take the new Fleet Token, so this host keeps {} and its check-in service. Run the install again with another token, or revoke this one to clear its waiting servers.",
+            "{why} Cloud didn't take the new Fleet Token, so this install keeps {} and changes nothing else. Run the install again with another token, or revoke this one to clear its waiting servers.",
             token_file.display()
         )),
         "{kept}"
@@ -669,7 +669,7 @@ fn a_first_install_or_the_same_token_keeps_trying_while_cloud_is_unreachable() {
 fn only_a_missing_token_file_makes_a_first_install() {
     let dir = tempfile::tempdir().unwrap();
     let new = sending(NEW_TOKEN);
-    let replaces = |path: &Path| replaces_token(path, &new);
+    let replaces = |path: &Path| replaces_token(path, |held| new.sends(held));
     assert!(!replaces(&dir.path().join("new/fleet-token")).unwrap());
     assert!(!replaces(&token_file_holding(&dir, NEW_TOKEN)).unwrap());
     assert!(replaces(&token_file_holding(&dir, "not a token")).unwrap());
@@ -712,7 +712,7 @@ fn a_rerun_over_a_file_that_isnt_a_token_swaps_it_only_once_cloud_takes_the_new_
             .unwrap_err()
             .to_string();
         assert!(
-            kept.contains(&format!("this host keeps {}", token_file.display())),
+            kept.contains(&format!("this install keeps {}", token_file.display())),
             "{kept}"
         );
         assert_eq!(fs::read_to_string(&token_file).unwrap(), "not a token\n");
@@ -754,14 +754,17 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
         .await;
         let key = CheckinKey::load_or_create(&paths.key()).unwrap();
         let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
-        assert!(!replaces_token(&paths.token_file, &client).unwrap());
+        assert!(!replaces_token(&paths.token_file, |held| client.sends(held)).unwrap());
         let next = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
         server.await.unwrap();
         let kept = keep_answered_token(next, &client, &paths.token_file, PIPED)
             .unwrap_err()
             .to_string();
         assert!(
-            kept.contains(&format!("this host keeps {}", paths.token_file.display())),
+            kept.contains(&format!(
+                "this install keeps {}",
+                paths.token_file.display()
+            )),
             "{status}: {kept}"
         );
         assert_eq!(
@@ -770,6 +773,59 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
             "{status}"
         );
     }
+}
+
+#[test]
+fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = dir.path().join("fleet-token");
+    let other = fs::File::open(dir.path()).unwrap();
+    rustix::fs::flock(&other, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let committing = token_file.clone();
+    let install = std::thread::spawn(move || {
+        let next = Next::Retry {
+            after: std::time::Duration::from_secs(60),
+            why: "Could not reach Ployz Cloud: refused.".to_owned(),
+        };
+        keep_answered_token(next, &sending(NEW_TOKEN), &committing, PIPED)
+            .map_err(|error| error.to_string())
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !install.is_finished(),
+        "the install wrote while another held the lock"
+    );
+    fs::write(&token_file, format!("{OLD_TOKEN}\n")).unwrap();
+    drop(other);
+    let kept = install.join().unwrap().unwrap_err();
+    assert!(
+        kept.contains(&format!("this install keeps {}", token_file.display())),
+        "{kept}"
+    );
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{OLD_TOKEN}\n")
+    );
+}
+
+#[test]
+fn a_piped_install_stops_on_an_unreadable_token_file_before_it_writes_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    fs::create_dir(&paths.token_file).unwrap();
+    let piped = fs::File::open(token_file_holding(&tempfile::tempdir().unwrap(), NEW_TOKEN));
+    let Err(error) = install_start(&paths, "http://127.0.0.1:9", Some(piped.unwrap())) else {
+        panic!("an unreadable token file was taken");
+    };
+    let error = error.to_string();
+    assert!(
+        error.contains(&format!("Could not read {}", paths.token_file.display())),
+        "{error}"
+    );
+    assert!(
+        !paths.checkin_dir.exists(),
+        "the install wrote its key first"
+    );
 }
 
 #[test]

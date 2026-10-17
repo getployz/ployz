@@ -161,12 +161,13 @@ it and still exit cleanly, with the service set up and checking in:
 - **Run it again.** The same line on the same host updates its token and keeps it one server.
   The host keeps `/etc/ployz/fleet-token` until Cloud takes the new token, even when that file
   doesn't hold a token. If Cloud can't be reached, is busy, or the probe fails, a rerun with a
-  different token ends with `Until Cloud takes the new Fleet Token, this host keeps
-  /etc/ployz/fleet-token and its check-in service. Run the install again.` and an error. If the
+  different token ends with `Until Cloud takes the new Fleet Token, this install keeps
+  /etc/ployz/fleet-token and changes nothing else. Run the install again.` and an error. If the
   new token already has as many waiting servers as it allows, the rerun ends with `Cloud didn't
-  take the new Fleet Token, so this host keeps /etc/ployz/fleet-token and its check-in service.`
-  and an error. Two installs at once keep whichever token Cloud took. A rerun with the same token
-  keeps trying, as a first install does.
+  take the new Fleet Token, so this install keeps /etc/ployz/fleet-token and changes nothing
+  else.` and an error. Two installs at once take turns writing the file, so a token Cloud didn't
+  take never replaces one it took. A rerun with the same token keeps trying, as a first install
+  does.
 - **A token file it can't read.** If `/etc/ployz/fleet-token` exists but can't be read, the
   install ends with `Could not read /etc/ployz/fleet-token` and an error before it writes
   anything. Fix or remove that file and run the install again.

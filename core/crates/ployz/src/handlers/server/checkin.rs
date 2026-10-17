@@ -83,17 +83,8 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     }
     let runtime = runtime()?;
     if matches.get_flag("install") {
-        let (token, token_source) = if matches.get_flag("token-stdin") {
-            (stdin_token(std::io::stdin())?, Token::Piped)
-        } else {
-            let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
-            (token, Token::InFile)
-        };
-        let (key, mut client) = connect(&paths, &cloud_url, token)?;
-        if let Token::Piped = token_source {
-            // Fails before checking in on a file this can't read. The answer reads it again.
-            replaces_token(&paths.token_file, &client)?;
-        }
+        let piped = matches.get_flag("token-stdin").then(std::io::stdin);
+        let (token_source, key, mut client) = install_start(&paths, &cloud_url, piped)?;
         let url_source = match matches.value_source("cloud-url") {
             Some(ValueSource::CommandLine) => Some("--cloud-url"),
             Some(ValueSource::EnvVariable) => Some(env::CLOUD_URL),
@@ -130,6 +121,26 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     }
 }
 
+fn install_start(
+    paths: &Paths,
+    cloud_url: &str,
+    piped: Option<impl Read + IsTerminal>,
+) -> Result<(Token, CheckinKey, CheckinClient), Error> {
+    let (token, source) = match piped {
+        Some(stdin) => {
+            let token = stdin_token(stdin)?;
+            ensure_token_file_readable(&paths.token_file)?;
+            (token, Token::Piped)
+        }
+        None => (
+            FleetToken::read(&paths.token_file).map_err(key_failure)?,
+            Token::InFile,
+        ),
+    };
+    let (key, client) = connect(paths, cloud_url, token)?;
+    Ok((source, key, client))
+}
+
 fn connect(
     paths: &Paths,
     cloud_url: &str,
@@ -164,12 +175,13 @@ fn stdin_token(mut stdin: impl Read + IsTerminal) -> Result<FleetToken, Error> {
         .ok_or_else(|| Error::usage("stdin doesn't hold a Fleet Token (pflt_…)"))
 }
 
-/// Whether `token_file` holds something other than the token `client` sends. Only a missing
-/// file makes a first install: one that isn't a token may still be what someone wants kept, and
-/// one this can't read may hold the token the running service checks in with.
-fn replaces_token(token_file: &Path, client: &CheckinClient) -> Result<bool, Error> {
+fn ensure_token_file_readable(token_file: &Path) -> Result<(), Error> {
+    replaces_token(token_file, |_| false).map(drop)
+}
+
+fn replaces_token(token_file: &Path, sends: impl Fn(&FleetToken) -> bool) -> Result<bool, Error> {
     match FleetToken::read(token_file) {
-        Ok(held) => Ok(!client.sends(&held)),
+        Ok(held) => Ok(!sends(&held)),
         Err(checkin::KeyError::Token { source, .. })
             if source.kind() == io::ErrorKind::NotFound =>
         {
@@ -253,43 +265,72 @@ fn keep_answered_token(
     install_with: Install<'_>,
 ) -> Result<Answered, Error> {
     let answered = install_outcome(next, install_with)?;
-    if let Answered::Unconfirmed(why) | Answered::Held(_, why) = &answered {
-        // Read now, not before checking in: another install may have written it meanwhile.
-        if let Token::Piped = install_with.token
-            && replaces_token(token_file, client)?
-        {
-            let kept = format!(
-                "this host keeps {} and its check-in service",
-                token_file.display()
-            );
-            let message = if let Answered::Held(Hold::Full, _) = answered {
-                format!(
-                    "{why} Cloud didn't take the new Fleet Token, so {kept}. Run the install again with another token, or revoke this one to clear its waiting servers."
+    let unconfirmed = match &answered {
+        Answered::Waiting => None,
+        Answered::Unconfirmed(why) | Answered::Held(_, why) => Some(why),
+    };
+    match install_with.token {
+        Token::InFile => keep_token_private(token_file)?,
+        Token::Piped => {
+            let _lock = lock_token_file(token_file)?;
+            if let Some(why) = unconfirmed
+                && replaces_token(token_file, |held| client.sends(held))?
+            {
+                let kept = format!(
+                    "this install keeps {} and changes nothing else",
+                    token_file.display()
+                );
+                let message = if let Answered::Held(Hold::Full, _) = answered {
+                    format!(
+                        "{why} Cloud didn't take the new Fleet Token, so {kept}. Run the install again with another token, or revoke this one to clear its waiting servers."
+                    )
+                } else {
+                    format!(
+                        "{why} Until Cloud takes the new Fleet Token, {kept}. Run the install again."
+                    )
+                };
+                return Err(Error::coded(RpcErrorCode::Unavailable, message));
+            }
+            client.write_token(token_file).map_err(|error| {
+                Error::caused(
+                    RpcErrorCode::Internal,
+                    format!(
+                        "Could not write the Fleet Token to {}.",
+                        token_file.display()
+                    ),
+                    error,
                 )
-            } else {
-                format!(
-                    "{why} Until Cloud takes the new Fleet Token, {kept}. Run the install again."
-                )
-            };
-            return Err(Error::coded(RpcErrorCode::Unavailable, message));
+            })?;
         }
+    }
+    if let Some(why) = unconfirmed {
         crate::ui::warn(format!("{why} The check-in service keeps trying."));
     }
-    if let Token::InFile = install_with.token {
-        keep_token_private(token_file)?;
-        return Ok(answered);
-    }
-    client.write_token(token_file).map_err(|error| {
+    Ok(answered)
+}
+
+struct TokenFileLock {
+    _directory: fs::File,
+}
+
+fn lock_token_file(token_file: &Path) -> Result<TokenFileLock, Error> {
+    let directory = token_file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let locked = fs::create_dir_all(directory)
+        .and_then(|()| fs::File::open(directory))
+        .and_then(|handle| {
+            rustix::fs::flock(&handle, rustix::fs::FlockOperation::LockExclusive)?;
+            Ok(TokenFileLock { _directory: handle })
+        });
+    locked.map_err(|error| {
         Error::caused(
             RpcErrorCode::Internal,
-            format!(
-                "Could not write the Fleet Token to {}.",
-                token_file.display()
-            ),
+            format!("Could not lock {}.", directory.display()),
             error,
         )
-    })?;
-    Ok(answered)
+    })
 }
 
 fn install_outcome(next: Next, install_with: Install<'_>) -> Result<Answered, Error> {
