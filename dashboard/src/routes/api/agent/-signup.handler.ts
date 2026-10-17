@@ -1,7 +1,8 @@
 import { Effect } from "effect";
+import ipaddr from "ipaddr.js";
 import { signUpAnonymous } from "#/modules/identity/anonymous-signup.server";
 import { admitWithinWindows, type RateWindow } from "#/modules/machines/waiting/rate-limit.server";
-import { publicErrorResponse, Validation } from "#/server/public-error";
+import { publicErrorResponse, RateLimited, Validation } from "#/server/public-error";
 
 export const SIGNUP_WINDOWS: ReadonlyArray<RateWindow> = [
   { seconds: 60 * 60, limit: 5 },
@@ -10,12 +11,21 @@ export const SIGNUP_WINDOWS: ReadonlyArray<RateWindow> = [
 
 const noStore = { "cache-control": "no-store" };
 
+/** One host rotates freely inside its IPv6 /64, so that prefix is the unit a limit can hold. */
+const rateLimitAddress = (clientIp: string) => {
+  if (!ipaddr.isValid(clientIp)) return clientIp;
+  const address = ipaddr.process(clientIp);
+  if (address.range() === "unspecified") return "unknown";
+  if (address.kind() === "ipv4") return address.toString();
+  return `${ipaddr.IPv6.networkAddressFromCIDR(`${address.toString()}/64`).toString()}/64`;
+};
+
 export const handleAgentSignup = Effect.fn("Agent.signup")(function* (clientIp: string) {
-  const admission = yield* admitWithinWindows(`agent-signup:${clientIp}`, SIGNUP_WINDOWS);
+  const admission = yield* admitWithinWindows(`agent-signup:${rateLimitAddress(clientIp)}`, SIGNUP_WINDOWS);
   if (!admission.admitted) {
     return publicErrorResponse(
-      new Validation({ message: "Too many signups from this address. Try again later.", userFacing: true }),
-      { status: 429, headers: { ...noStore, "retry-after": String(admission.retryAfterSeconds) } },
+      new RateLimited({ message: "Too many signups from this address. Try again later.", userFacing: true }),
+      { headers: { ...noStore, "retry-after": String(admission.retryAfterSeconds) } },
     );
   }
   const signup = yield* signUpAnonymous();

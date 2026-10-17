@@ -6,6 +6,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleAgentSignup, signupMethodNotAllowed } from "#/routes/api/agent/-signup.handler";
+import { observedIp } from "#/routes/api/checkin/-handler";
 import { AuthLive } from "#/server/auth.server";
 import { Database } from "#/server/database.server";
 import { storeTestCloud } from "#/test/store-cloud";
@@ -75,11 +76,34 @@ it.live("admits five signups an hour from one address, then refuses with Retry-A
     const refused = yield* signUp("203.0.113.3");
     expect(refused.status).toBe(429);
     expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(3500);
-    expect(refused.body).toMatchObject({ _tag: "PublicError", code: "VALIDATION_FAILED" });
+    expect(refused.body).toMatchObject({ _tag: "PublicError", code: "RATE_LIMITED" });
 
     const { drizzle } = yield* Database;
     expect(yield* drizzle.select().from(user).where(eq(user.isAnonymous, true))).toHaveLength(5);
     expect((yield* signUp("203.0.113.4")).status).toBe(201);
+  })));
+
+it.live("counts every address in one IPv6 /64 against the same limit, however it is spelled", () =>
+  inCloud(Effect.gen(function* () {
+    for (const ip of ["2001:db8:1:2::1", "2001:DB8:1:2::2", "2001:0db8:0001:0002:0:0:0:3", "2001:db8:1:2:aaaa::4", "2001:db8:1:2::5"]) {
+      expect((yield* signUp(ip)).status).toBe(201);
+    }
+    expect((yield* signUp("2001:db8:1:2:ffff:ffff:ffff:ffff")).status).toBe(429);
+    expect((yield* signUp("2001:db8:1:3::1")).status).toBe(201);
+  })));
+
+it.live("counts an IPv4-mapped IPv6 address, bracketed with a port by a proxy, as the plain IPv4 address", () =>
+  inCloud(Effect.gen(function* () {
+    for (let i = 0; i < 5; i++) expect((yield* signUp("198.51.100.7")).status).toBe(201);
+    const forwarded = new Headers({ "x-forwarded-for": "[::FFFF:198.51.100.7]:80" });
+    expect((yield* signUp(observedIp(forwarded, undefined, "127.0.0.1"))).status).toBe(429);
+  })));
+
+it.live("counts a placeholder 0.0.0.0 or :: with every request that has no address", () =>
+  inCloud(Effect.gen(function* () {
+    for (const ip of ["unknown", "0.0.0.0", "::", "unknown", "0.0.0.0"]) expect((yield* signUp(ip)).status).toBe(201);
+    expect((yield* signUp("::")).status).toBe(429);
+    expect((yield* signUp("203.0.113.9")).status).toBe(201);
   })));
 
 it.live("answers GET with 405 in the public error shape", () =>
