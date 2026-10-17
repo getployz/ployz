@@ -208,6 +208,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   command: ConfigCommand,
   refused: StoreRefusal,
 ) {
+  if (command.command === "remove" && command.environment == null) return yield* requestProjectRemoval(caller, command.project, refused);
   const decoded = Schema.decodeUnknownOption(RefusedReview)(refused.details);
   if (Option.isNone(decoded)) {
     yield* Effect.logWarning("An approval_required refusal named no review; nothing was recorded.");
@@ -236,7 +237,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>` or `service:<environment id>/<name>`. */
+  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>` or `project:<name>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -248,6 +249,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   caller: Caller,
   asked: OperationAsked,
   digest: string,
+  stale: Stale<never> = staleOperation(asked.verb, digest),
 ) {
   const organizationId = caller.organization.id;
   const operation = { verb: asked.verb, name: asked.name };
@@ -266,12 +268,34 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
       set: askedAgain(caller),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
-  }), staleOperation(asked.verb, digest));
+  }), stale);
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
     details: { effects: asked.effects, approval: digest, approval_id: recorded.id, operation, organization: caller.organization.slug },
   } satisfies StoreRefusal;
+});
+
+/** A Project's removal reviews each of its Environments, so it waits as an operation on the Project, keyed by the Store's digest. */
+const ProjectRemovalReview = Schema.Struct({
+  approval: Schema.String,
+  effects: RefusedReview.fields.effects,
+  diff: Schema.Record(Schema.String, RefusedReview.fields.diff),
+});
+
+const requestProjectRemoval = Effect.fn("Approvals.requestProjectRemoval")(function* (
+  caller: Caller,
+  project: string,
+  refused: StoreRefusal,
+) {
+  const decoded = Schema.decodeUnknownOption(ProjectRemovalReview)(refused.details);
+  if (Option.isNone(decoded)) {
+    yield* Effect.logWarning("A Project removal's approval_required named no review; nothing was recorded.");
+    return refused;
+  }
+  const { approval: digest, effects, diff } = decoded.value;
+  const asked: OperationAsked = { subject: `project:${project}`, verb: "remove", name: project, preview: diff, effects };
+  return yield* requestOperationApproval(caller, asked, digest, Effect.succeed(ne(operationApprovals.digest, digest)));
 });
 
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
