@@ -14,6 +14,7 @@ import {
   setupReportProperties,
   setupReportSchema,
   waitForFounder,
+  waitForJoinSlot,
 } from "#/modules/machines/enrollment";
 
 const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -152,7 +153,11 @@ describe("versioned enrollment identity", () => {
   });
 
   it("waits for two seconds without advertising a claim expiry", () => {
-    expect(waitForFounder()).toEqual({ kind: "not_yet", retryAfter: 2 });
+    expect(waitForFounder()).toEqual({ kind: "not_yet", retryAfter: 2, reason: "founder" });
+  });
+
+  it("waits five seconds in line for a join slot", () => {
+    expect(waitForJoinSlot(1)).toEqual({ kind: "not_yet", retryAfter: 5, reason: "queued", ahead: 1 });
   });
 });
 
