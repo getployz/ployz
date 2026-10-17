@@ -157,7 +157,6 @@ enroll() {
         PLOYZ_GITHUB_URL=https://example.invalid "$@" sh "$ROOT/install.sh" 1.2.3 > "$TMP/out" 2> "$TMP/err"
 }
 
-# With no Fleet Token, or a value that isn't one, the script only installs the CLI.
 for value in unset '' cet_abc123 PFLT_abc123; do
     if [ "$value" = unset ]; then enroll; else enroll PLOYZ_ENROLL_TOKEN="$value"; fi
     printf '%s\n' 'ployz_linux_amd64.tar.gz: OK' "Installed ployz to $TMP/install/ployz" | diff - "$TMP/out"
@@ -174,7 +173,6 @@ enroll PLOYZ_ENROLL_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
 printf '%s\n' "argv=server checkin --install --token-file $FLEET_TOKEN_FILE" enroll= skip_zfs=1 mode=600 \
     "token=$TOKEN" | diff - "$CHECKIN_LOG"
 
-# Nothing changes on a server the token can't enroll from.
 if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_UID=1000; then
     echo "enrolled without root" >&2
     exit 1

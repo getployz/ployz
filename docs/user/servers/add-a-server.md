@@ -133,6 +133,10 @@ the CLI, writes the token to `/etc/ployz/fleet-token`, readable by root only, an
 and ZFS install in the background while the host waits, and the host shows on the **Servers**
 page at once.
 
+- **After `sudo`.** Put the token after `sudo`, as shown. Set before it, `sudo` drops the variable
+  and the script only installs the CLI.
+- **On a shared host.** While the install runs, `ps` shows the `sudo` command line, token included,
+  to every local user. Run the line from a root shell, without `sudo`, to keep it out.
 - **Without ZFS.** Add `PLOYZ_SKIP_ZFS=1` next to the token, as `--storage none` does for
   `ployz server add`.
 - **From user data.** cloud-init runs user data as root, so leave out `sudo`:
@@ -148,8 +152,8 @@ page at once.
   script exits with an error. A revoked one says so the same way. Nothing keeps running on the
   host.
 
-The script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. Any other value is left
-to `ployz server add`, and the script only installs the CLI, as it does without a token. If the
+The script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. It ignores any other
+value and only installs the CLI, as it does without a token. If the
 host waits longer than you expect, see
 [A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 
