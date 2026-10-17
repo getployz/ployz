@@ -587,6 +587,533 @@ fn server_clean_signed_in_refuses_another_clusters_servers() {
     }
 }
 
+/// One waiting server as Cloud lists it.
+fn waiting_row(id: &str, name: &str, status: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "status": status,
+        "observed_ip": "203.0.113.9",
+        "fleet_token": "amber-falcon",
+        "report": {
+            "hostname": name,
+            "provider": "hetzner",
+            "os": { "id": "ubuntu", "version": "24.04" },
+            "kernel": "6.8.0",
+            "arch": "x86_64",
+            "virt": "kvm",
+            "cpuCount": 4,
+            "memoryTotalBytes": 8_000_000_000_u64,
+            "disks": [{ "path": "/dev/sda", "sizeBytes": 40_000_000_000_u64, "role": "root" }],
+            "docker": { "kind": "absent" },
+            "cgroup": "v2",
+            "zfs": { "kind": "ineligible", "code": "no_disk", "message": "no spare disk" },
+            "blockers": [{ "code": "port_in_use", "message": "port 443 is in use" }],
+            "warnings": [],
+        },
+        "first_seen_at": "2026-10-16T00:00:00.000Z",
+        "last_check_in_at": "2026-10-16T00:05:00.000Z",
+    })
+}
+
+/// What the fake Cloud answers: the waiting list and its status, the Servers it can't
+/// reach, and, for each reject in turn, a status and an optional short count. A reject
+/// past the end answers 200 with every id it was sent.
+struct WaitingCloud {
+    rows: Vec<serde_json::Value>,
+    list: &'static str,
+    unreachable: Vec<String>,
+    rejects: Vec<(&'static str, Option<usize>)>,
+}
+
+impl WaitingCloud {
+    /// web-1, web-2, db-1, two hosts named twin and one named after db-1's id.
+    fn six() -> Self {
+        Self::of(vec![
+            waiting_row("00000000-0000-4000-8000-000000000001", "web-1", "blocked"),
+            waiting_row("00000000-0000-4000-8000-000000000002", "web-2", "waiting"),
+            waiting_row("00000000-0000-4000-8000-000000000003", "db-1", "waiting"),
+            waiting_row("00000000-0000-4000-8000-000000000004", "twin", "waiting"),
+            waiting_row("00000000-0000-4000-8000-000000000005", "twin", "waiting"),
+            waiting_row(
+                "00000000-0000-4000-8000-000000000006",
+                "00000000-0000-4000-8000-000000000003",
+                "waiting",
+            ),
+        ])
+    }
+
+    fn of(rows: Vec<serde_json::Value>) -> Self {
+        Self {
+            rows,
+            list: "200 OK",
+            unreachable: Vec::new(),
+            rejects: Vec::new(),
+        }
+    }
+}
+
+/// Serve `cloud` on a local port, recording each route with the body of a POST, and
+/// answering anything else with 404.
+fn waiting_cloud(
+    routes: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    cloud: WaitingCloud,
+) -> String {
+    use std::io::{BufRead, Read, Write};
+    let WaitingCloud {
+        rows,
+        list,
+        unreachable,
+        rejects,
+    } = cloud;
+    let listed = serde_json::json!({ "waiting_servers": rows });
+    let mut rejects = rejects.into_iter();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).unwrap();
+            let mut length = 0;
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).unwrap();
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
+            let route = request_line.rsplit_once(' ').unwrap().0.to_owned();
+            let (status, body) = match route.as_str() {
+                "GET /api/cli/waiting-servers" => (list, listed.clone()),
+                "POST /api/cli/server-access" => (
+                    "200 OK",
+                    serde_json::json!({ "connections": [], "unreachable": unreachable }),
+                ),
+                "POST /api/cli/reject-servers" => {
+                    let sent: serde_json::Value = serde_json::from_slice(&sent).unwrap();
+                    let ids = sent
+                        .get("ids")
+                        .and_then(serde_json::Value::as_array)
+                        .unwrap()
+                        .len();
+                    let (status, short) = rejects.next().unwrap_or(("200 OK", None));
+                    (
+                        status,
+                        serde_json::json!({ "rejected": short.unwrap_or(ids) }),
+                    )
+                }
+                _ => ("404 Not Found", serde_json::json!({ "error": "not found" })),
+            };
+            let recorded = match route.starts_with("POST") {
+                true => format!("{route} {}", String::from_utf8_lossy(&sent)),
+                false => route,
+            };
+            routes.lock().unwrap().push(recorded);
+            let body = body.to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+#[test]
+fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+    let posted = || -> Vec<String> {
+        routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|route| route.starts_with("POST /api/cli/reject-servers"))
+            .cloned()
+            .collect()
+    };
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--waiting", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    let names: Vec<_> = json
+        .pointer("/waiting_servers")
+        .and_then(serde_json::Value::as_array)
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].clone())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "web-1",
+            "web-2",
+            "db-1",
+            "twin",
+            "twin",
+            "00000000-0000-4000-8000-000000000003"
+        ],
+        "{json}"
+    );
+
+    let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web-1");
+    assert_eq!(
+        json.pointer("/waiting_server/fleet_token").unwrap(),
+        "amber-falcon"
+    );
+
+    let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+
+    let (code, json, _) = run_json_with(
+        &[
+            "server",
+            "show",
+            "00000000-0000-4000-8000-000000000003",
+            "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "db-1");
+
+    let (code, json, _) = run_json_with(&["server", "show", "twin", "--json"], &token);
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "ambiguous");
+    assert_eq!(
+        message(&json),
+        "2 waiting servers are named twin. Show one by its id: \
+         00000000-0000-4000-8000-000000000004 (203.0.113.9), \
+         00000000-0000-4000-8000-000000000005 (203.0.113.9)"
+    );
+
+    let (code, json, _) = run_json_with(&["server", "reject", "web-*", "--json"], &token);
+    assert_eq!(code, Some(2), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "confirmation_required"
+    );
+    assert_eq!(
+        json.pointer("/error/details/waiting_servers").unwrap(),
+        &serde_json::json!([
+            {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "name": "web-1",
+                "ip": "203.0.113.9",
+                "fleet_token": "amber-falcon",
+            },
+            {
+                "id": "00000000-0000-4000-8000-000000000002",
+                "name": "web-2",
+                "ip": "203.0.113.9",
+                "fleet_token": "amber-falcon",
+            },
+        ])
+    );
+    assert!(posted().is_empty(), "{:?}", posted());
+
+    let (code, json, _) = run_json_with(&["server", "reject", "web-*", "--yes", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.get("rejected"), Some(&serde_json::json!(2)), "{json}");
+    assert_eq!(json.get("matched"), Some(&serde_json::json!(2)), "{json}");
+    assert_eq!(
+        posted(),
+        [concat!(
+            r#"POST /api/cli/reject-servers {"ids":["#,
+            r#""00000000-0000-4000-8000-000000000001","#,
+            r#""00000000-0000-4000-8000-000000000002"]}"#
+        )]
+    );
+
+    let (code, json, _) =
+        run_json_with(&["server", "reject", "nomatch", "--yes", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found");
+    assert_eq!(
+        message(&json),
+        "No waiting server matches nomatch. Nothing rejected."
+    );
+    assert_eq!(posted().len(), 1);
+
+    let (code, json, _) = run_json_with(
+        &[
+            "server",
+            "reject",
+            "00000000-0000-4000-8000-000000000003",
+            "--yes",
+            "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(
+        posted().last().unwrap(),
+        r#"POST /api/cli/reject-servers {"ids":["00000000-0000-4000-8000-000000000003"]}"#
+    );
+
+    let (code, json, _) = run_json_with(
+        &[
+            "server",
+            "ls",
+            "--waiting",
+            "--context",
+            "staging",
+            "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(2), "{json}");
+}
+
+/// Reject requests recorded by [`waiting_cloud`], as the ids each one sent.
+/// Run the binary for human output with `env`; returns (exit code, stdout, stderr).
+fn run_output(args: &[&str], env: &[(&str, &str)]) -> (Option<i32>, Option<String>, String) {
+    let home = tempfile::tempdir().unwrap();
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).ok(),
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+fn rejected_ids(routes: &std::sync::Mutex<Vec<String>>) -> Vec<Vec<String>> {
+    routes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|route| route.strip_prefix("POST /api/cli/reject-servers "))
+        .map(|body| {
+            serde_json::from_str::<serde_json::Value>(body)
+                .unwrap()
+                .get("ids")
+                .and_then(serde_json::Value::as_array)
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn server_reject_matches_only_the_name_that_prints_like_another() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud::of(vec![
+            waiting_row(
+                "00000000-0000-4000-8000-000000000001",
+                "web\u{7}",
+                "waiting",
+            ),
+            waiting_row(
+                "00000000-0000-4000-8000-000000000002",
+                "web\u{FFFD}",
+                "waiting",
+            ),
+        ]),
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--waiting", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_servers/0/name").unwrap(), "web\u{7}");
+
+    let (code, json, _) = run_json_with(&["server", "show", "web\u{7}", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web\u{7}");
+
+    let (code, json, _) = run_json_with(
+        &["server", "reject", "web\u{FFFD}", "--yes", "--json"],
+        &token,
+    );
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(
+        rejected_ids(&routes),
+        [["00000000-0000-4000-8000-000000000002"]]
+    );
+    assert_eq!(
+        json.pointer("/waiting_servers/0/name").unwrap(),
+        "web\u{FFFD}"
+    );
+}
+
+#[test]
+fn server_waiting_commands_ignore_a_context_from_the_environment() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(routes.clone(), WaitingCloud::six());
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", &cloud),
+        ("PLOYZ_CONTEXT", "staging"),
+    ];
+
+    let (code, json, _) = run_json_with(&["server", "ls", "--waiting", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_servers/0/name").unwrap(), "web-1");
+
+    let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web-1");
+
+    let (code, json, _) = run_json_with(&["server", "reject", "web-2", "--yes", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(
+        rejected_ids(&routes),
+        [["00000000-0000-4000-8000-000000000002"]]
+    );
+
+    let (code, stdout, _) = run_output(&["server", "ls", "--waiting"], &token);
+    let stdout = stdout.unwrap();
+    assert_eq!(code, Some(0), "{stdout}");
+    let header: Vec<_> = stdout.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(header, ["ID", "NAME", "PROVIDER", "IP", "STATUS", "AGE"]);
+    let first: Vec<_> = stdout.lines().nth(1).unwrap().split_whitespace().collect();
+    assert_eq!(
+        first.get(..2).unwrap(),
+        ["00000000-000", "web-1"],
+        "{stdout}"
+    );
+
+    let (code, _, stderr) = run_output(&["server", "reject", "web-1", "--yes"], &token);
+    assert_eq!(code, Some(0), "{stderr}");
+    let header: Vec<_> = stderr.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(header, ["ID", "NAME", "IP", "TOKEN"]);
+}
+
+#[test]
+fn server_reject_reports_what_went_through_before_a_batch_failed() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rows = (0..1001)
+        .map(|index| {
+            waiting_row(
+                &format!("00000000-0000-4000-8000-{index:012}"),
+                &format!("bulk-{index}"),
+                "waiting",
+            )
+        })
+        .collect();
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            rejects: vec![("200 OK", None), ("503 Service Unavailable", None)],
+            ..WaitingCloud::of(rows)
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "reject", "bulk-*", "--yes", "--json"], &token);
+    assert_eq!(code, Some(3), "{json}");
+    let sent = rejected_ids(&routes);
+    assert_eq!(sent.iter().map(Vec::len).collect::<Vec<_>>(), [1000, 1]);
+    assert_eq!(json.get("rejected").unwrap(), 1000, "{json}");
+    assert_eq!(json.get("matched").unwrap(), 1001, "{json}");
+    assert_eq!(
+        json.get("uncertain").unwrap(),
+        &serde_json::json!(sent.get(1).unwrap()),
+        "{json}"
+    );
+    assert_eq!(
+        json.get("unattempted").unwrap(),
+        &serde_json::json!([]),
+        "{json}"
+    );
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+}
+
+#[test]
+fn server_reject_short_count_says_the_rest_had_already_left() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            rejects: vec![("200 OK", Some(1)), ("200 OK", Some(1))],
+            ..WaitingCloud::six()
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "reject", "web-*", "--yes", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.get("rejected").unwrap(), 1, "{json}");
+    assert_eq!(json.get("matched").unwrap(), 2, "{json}");
+
+    let human = || {
+        run_output(&["server", "reject", "web-*", "--yes"], &token)
+            .1
+            .unwrap()
+    };
+    let short = human();
+    assert!(
+        short.contains("1 of 2 rejected; the rest had already left the list."),
+        "{short}"
+    );
+    let full = human();
+    assert!(
+        full.contains("2 rejected. They won't come back under the same Fleet Token."),
+        "{full}"
+    );
+}
+
+#[test]
+fn server_show_falls_back_to_the_waiting_list_when_no_server_answers() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            unreachable: vec!["b".repeat(32)],
+            ..WaitingCloud::six()
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "show", "web-1", "--json"], &token);
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "web-1");
+
+    let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
+    assert_eq!(code, Some(1), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+}
+
+#[test]
+fn server_inspect_is_gone_and_show_takes_its_place() {
+    let (code, json, _) = run_json(&["server", "inspect", "web-1", "--json"]);
+    assert_eq!(code, Some(2), "{json}");
+    let command = ployz::cli::command();
+    assert!(
+        command
+            .try_get_matches_from(["ployz", "server", "show", "web-1"])
+            .is_ok()
+    );
+}
+
 #[test]
 fn root_help_ends_with_the_catalog_pointer() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
@@ -1032,6 +1559,25 @@ fn logs_reads_a_window_or_a_deployment_running_or_not() {
         .render_long_help()
         .to_string();
     assert!(help.contains("running or not"), "{help}");
+}
+
+#[test]
+fn server_show_says_when_the_waiting_list_could_not_be_read() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes,
+        WaitingCloud {
+            list: "503 Service Unavailable",
+            ..WaitingCloud::six()
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+    let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
+    assert_ne!(code, Some(0), "{json}");
+    assert_eq!(
+        message(&json),
+        "No Server matches nobody, and the servers waiting to join could not be read."
+    );
 }
 
 #[test]

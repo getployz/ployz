@@ -1,18 +1,21 @@
 use clap::ArgMatches;
 use ployz_core::{
     InspectRequest, MachineObservation, MachineStorageObservation, MachineTarget,
-    MembershipObservation, op,
+    MembershipObservation, RpcErrorCode, op,
 };
 use serde_json::{Value, json};
 
-use super::with_client;
+use super::{signed_in, waiting, with_client};
 use crate::{
     connect::TARGET_RPC_TIMEOUT,
-    handlers::{Error, leaf_matches},
+    handlers::{Error, leaf_matches, runtime},
     ui::{self, Cell, Gaps, Table, Tone},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
+    if leaf_matches(root).get_flag("waiting") {
+        return waiting::list(leaf_matches(root));
+    }
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
@@ -122,14 +125,74 @@ fn size(bytes: u64) -> String {
     }
 }
 
+/// Show a Server, or else a server waiting to join under that name or id.
+pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
+    let leaf = leaf_matches(root);
+    let selector = leaf
+        .get_one::<String>("server")
+        .ok_or_else(|| Error::usage("server is required"))?;
+    let Err(error) = server(root, selector) else {
+        return Ok(());
+    };
+    let report = error.report();
+    let missing = report.code == RpcErrorCode::NotFound;
+    let unreachable =
+        report.code == RpcErrorCode::Unavailable && report.details.get("unreachable").is_some();
+    if !(missing || unreachable) || waiting::points_elsewhere(leaf) {
+        return Err(error);
+    }
+    let runtime = runtime()?;
+    let Ok(Some(credential)) = signed_in(&runtime, leaf) else {
+        return Err(error);
+    };
+    let listed = match runtime.block_on(waiting::fetch(&credential)) {
+        Ok(listed) => listed,
+        Err(fetch) if missing => {
+            return Err(fetch.context(format!(
+                "No Server matches {selector}, and the servers waiting to join could not be read."
+            )));
+        }
+        Err(_) => return Err(error),
+    };
+    let named: Vec<_> = match listed.iter().find(|host| host.row.id == *selector) {
+        Some(host) => vec![host],
+        None => listed
+            .iter()
+            .filter(|host| host.row.name == *selector)
+            .collect(),
+    };
+    match named.as_slice() {
+        [] => Err(error),
+        [host] => waiting::show(host),
+        hosts => Err(Error::detailed(
+            RpcErrorCode::Ambiguous,
+            format!(
+                "{} waiting servers are named {selector}. Show one by its id: {}",
+                hosts.len(),
+                hosts
+                    .iter()
+                    .map(|host| format!(
+                        "{} ({})",
+                        waiting::printable(&host.row.id),
+                        waiting::printable(host.row.ip())
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            json!({
+                "waiting_servers": hosts
+                    .iter()
+                    .map(|host| json!({ "id": host.row.id, "ip": host.row.ip() }))
+                    .collect::<Vec<_>>(),
+            }),
+        )),
+    }
+}
+
 /// Print fresh targeted Machine telemetry, its round-trip times to peers, and its
 /// latest upgrade attempt; list/watch request only storage evidence.
-pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
-    let selector = MachineTarget::parse(
-        leaf_matches(root)
-            .get_one::<String>("server")
-            .ok_or_else(|| Error::usage("server is required"))?,
-    )?;
+fn server(root: &ArgMatches, selector: &str) -> Result<(), Error> {
+    let selector = MachineTarget::parse(selector)?;
     with_client(root, |client| {
         Box::pin(async move {
             let details = client
@@ -146,7 +209,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .await
                 .map_err(|error| {
                     Error::from(error)
-                        .context(format!("Could not inspect Server {}.", selector.as_str()))
+                        .context(format!("Could not show Server {}.", selector.as_str()))
                 })?;
             let mut server = serde_json::to_value(&details)?;
             if let Value::Object(fields) = &mut server {

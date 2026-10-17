@@ -18,6 +18,7 @@ crossterm = "0.29.0"
 dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }
 flate2 = "1.1.9"
 futures-util = "0.3.32"
+globset = { version = "0.4.20", default-features = false }
 hex = "0.4.3"
 http = "1.4.0"
 hyper-util = { version = "0.1.20", features = ["tokio"] }
@@ -49,6 +50,7 @@ tonic = { version = "0.13.1", features = ["gzip", "transport"] }
 tower = { version = "0.5.3", features = ["util"] }
 tracing = "0.1.44"
 ts-rs.workspace = true
+unicode-properties = { version = "0.1.4", default-features = false, features = ["general-category"] }
 unicode-segmentation = "1.13.3"
 unicode-width = { version = "0.2.2", default-features = false }
 uuid = { version = "1.24.0", features = ["v4"] }

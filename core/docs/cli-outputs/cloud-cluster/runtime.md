@@ -1040,10 +1040,10 @@ stdout:
 }
 ```
 
-### server inspect
+### server show
 
 ```console
-$ ployz server inspect machine-1
+$ ployz server show machine-1
 # exit 0
 ```
 
@@ -1121,10 +1121,10 @@ stdout:
 }
 ```
 
-### server inspect --json
+### server show --json
 
 ```console
-$ ployz --json server inspect machine-1
+$ ployz --json server show machine-1
 # exit 0
 ```
 

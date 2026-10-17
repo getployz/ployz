@@ -60,7 +60,7 @@ valid: web, api, postgres, worker
 No such domain in Environment production
 valid: acme.com, web.ada.ployz.test
 
-=== server inspect of an unknown Server  :: $ ployz server inspect nosuch
+=== server show of an unknown Server  :: $ ployz server show nosuch
 No Server named "nosuch"; ployz server ls lists them
 
 === env copy of an unknown node  :: $ ployz env copy nosuch --env fix-api
@@ -134,7 +134,7 @@ WARNING: Live Observation is observer-relative and not globally complete
 === domain rm of an unknown domain --json :: $ ployz --json domain rm nosuch.example.com
 {"error":{"code":"not_found","details":{"valid_children":["acme.com","web.ada.ployz.test"]},"message":"No such domain in Environment production"}}
 
-=== server inspect of an unknown Server --json :: $ ployz --json server inspect nosuch
+=== server show of an unknown Server --json :: $ ployz --json server show nosuch
 {"error":{"code":"invalid_argument","details":null,"message":"No Server named \"nosuch\"; ployz server ls lists them"}}
 
 === env copy of an unknown node --json :: $ ployz --json env copy nosuch --env fix-api
