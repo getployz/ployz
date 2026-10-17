@@ -12,20 +12,19 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
   const database = yield* Database;
-  const selected = and(
-    eq(waitingServer.organizationId, organization.id),
-    inArray(waitingServer.id, [...input.ids]),
-    isNull(waitingServer.rejectedAt),
-  );
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // Every writer of several waiting rows locks them in id order first, so two of them can't deadlock.
-    yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(selected).orderBy(waitingServer.id).for("update");
-    const rejected = yield* drizzle
-      .update(waitingServer)
-      .set({ rejectedAt: new Date() })
-      .where(selected)
-      .returning({ id: waitingServer.id });
+    // It writes only the rows it locked. Re-evaluating the filter could take a row a check-in just un-rejected, out of order.
+    const rejected = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(and(
+      eq(waitingServer.organizationId, organization.id),
+      inArray(waitingServer.id, [...input.ids]),
+      isNull(waitingServer.rejectedAt),
+    )).orderBy(waitingServer.id).for("update");
+    if (rejected.length > 0) {
+      yield* drizzle.update(waitingServer).set({ rejectedAt: new Date() })
+        .where(inArray(waitingServer.id, rejected.map((row) => row.id)));
+    }
     return { rejected: rejected.length };
   }));
 });

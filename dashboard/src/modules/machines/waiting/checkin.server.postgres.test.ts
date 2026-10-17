@@ -545,6 +545,37 @@ it("locks waiting rows in id order in every writer of several, so they can't dea
   }
 }, 20_000);
 
+it("lets two Rejects finish when a check-in un-rejects one of their rows between their lock and their write", async () => {
+  const first = await fleetToken("rack-1");
+  const replacement = await fleetToken("rack-2");
+  const tombstone = newHost();
+  await send(first.token, tombstone, { ip: "198.51.100.88" });
+  await send(first.token, newHost(), { ip: "198.51.100.89" });
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.88'", [small]);
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.89'", [big]);
+  const reject = () => harness.runEffect(Effect.exit(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small, big] })));
+  expect(await harness.runEffect(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small] }))).toEqual({ rejected: 1 });
+
+  const blocker = await harness.pool.connect();
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server where id = $1 for update", [big]);
+    const earlier = reject();
+    await blockedOnRowLock();
+    expect(await send(replacement.token, tombstone, { ip: "198.51.100.88" })).toEqual(wait);
+    const later = reject();
+    await blockedOnRowLocks(2);
+    await blocker.query("commit");
+    const outcomes = await Promise.all([earlier, later]);
+    expect(outcomes.map((exit) => Exit.isSuccess(exit) ? exit.value : Cause.squash(exit.cause)))
+      .toEqual([{ rejected: 1 }, { rejected: 1 }]);
+  } finally {
+    blocker.release();
+  }
+}, 15_000);
+
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {
   const { token } = await fleetToken("rack-1");
   const host = newHost();

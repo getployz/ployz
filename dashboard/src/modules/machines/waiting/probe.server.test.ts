@@ -320,11 +320,11 @@ describe("probePeers", () => {
     try {
       const shared = Array.from({ length: 1000 }, (_, i) => host(`s${i}`, "1.0.0.1"));
       expect([...probePeers(shared).values()].every((send) => send.length === 0)).toBe(true);
-      expect(checks.mock.calls.length).toBeLessThanOrEqual(1);
+      expect(checks).toHaveBeenCalledTimes(1);
       checks.mockClear();
       const lan = Array.from({ length: 1000 }, (_, i) => host(`p${i}`, `10.0.${i >> 8}.${i & 255}`));
       expect([...probePeers(lan).values()].every((send) => send.length === 0)).toBe(true);
-      expect(checks.mock.calls.length).toBeLessThanOrEqual(1000);
+      expect(checks).toHaveBeenCalledTimes(1000);
     } finally {
       checks.mockRestore();
     }

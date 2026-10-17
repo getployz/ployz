@@ -247,7 +247,7 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
     const opened = yield* drizzle
       .update(waitingServer)
       .set({ probe: sql`${JSON.stringify(probes)}::jsonb -> (${waitingServer.id}::text)` })
-      .where(and(selected, inArray(waitingServer.id, hosts.map((host) => host.id)), reopenable))
+      .where(inArray(waitingServer.id, hosts.map((host) => host.id)))
       .returning({ id: waitingServer.id });
     return { probing: opened.length };
   }));
