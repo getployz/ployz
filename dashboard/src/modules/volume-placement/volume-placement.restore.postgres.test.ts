@@ -166,7 +166,8 @@ const byVolume: MemberInspector = (_, _environment, id) => Effect.succeed(id ===
 
 /** Lock waits in the database: a worker blocked on the admission's rows shows here. */
 const lockWaits = (services: Effect.Success<ReturnType<typeof storeTestCloud>>) => Effect.runPromise(Effect.gen(function* () {
-  const [row] = yield* (yield* Database).drizzle.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_locks where not granted`, "objects");
+  const [row] = yield* (yield* Database).drizzle.execute<{ waiting: number }>(sql`select count(*)::int as waiting from pg_locks where not granted
+    and pid in (select pid from pg_stat_activity where datname = current_database())`, "objects");
   return (row?.waiting ?? 0) > 0;
 }).pipe(Effect.provide(services)));
 

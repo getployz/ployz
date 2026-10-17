@@ -435,7 +435,7 @@ it("reopens all of a selection or none of it when one host's window is still run
 
 const blockedOnRowLocks = async (count: number) => {
   for (let waited = 0; waited < 5000; waited += 20) {
-    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock'");
+    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
     if (rows.length >= count) return;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
