@@ -16,6 +16,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
+import { isAnonymousOrganization } from "#/modules/identity/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
@@ -285,6 +286,8 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
+  // An anonymous agent's Organization has no person to ask; it lives a day, then goes away whole.
+  if (yield* isAnonymousOrganization(caller.organization.id).pipe(Effect.orDie)) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };

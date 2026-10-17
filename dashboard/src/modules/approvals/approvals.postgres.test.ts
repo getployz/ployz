@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect, vi } from "vitest";
 import {
@@ -23,6 +23,7 @@ import { cleanPlan, drainPlan, freshApproval, freshPendingApprovals, removePlan 
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
+import { user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
@@ -89,6 +90,12 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
     return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
   }));
   return { provided, write, refusal, caller, userId, store, pending, withApproval, cli };
+});
+
+/** Makes the Organization's owner an anonymous agent, as `POST /api/agent/signup` creates one. */
+const anonymous = (userId: string) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(user).set({ isAnonymous: true }).where(eq(user.id, userId));
 });
 
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
@@ -395,6 +402,18 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
   }));
 
+it.live("an anonymous agent's Organization has no person to ask: its Deploys and destroys go through as not required", () =>
+  Effect.gen(function* () {
+    const { provided, userId, cli, store } = yield* shopRemovingWeb();
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(anonymous(userId));
+    const write = vi.spyOn(store, "write");
+    expect(yield* cli(deploy(1), undefined, "agent")).toMatchObject({ status: 200 });
+    expect(yield* cli(publish)).toMatchObject({ status: 200 });
+    expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.approval]))
+      .toEqual([["admit", "not_required"], ["publish", "not_required"]]);
+  }));
+
 it.live("a retry `ployz mcp` asks for waits on a human as a Retry; the CLI's doesn't", () =>
   Effect.gen(function* () {
     const { provided, cli, store } = yield* shopRemovingWeb(false);
@@ -545,6 +564,14 @@ it.live("a person's destructive operation from the dashboard runs without asking
     const { provided, caller, rows } = yield* operationCloud();
     const person: Caller = { ...caller, via: "dashboard" };
     expect(yield* provided(gateOperation(person, null, drainOf(["shop.web"])))).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
+it.live("an anonymous agent's destructive operation runs without asking and records no approval", () =>
+  Effect.gen(function* () {
+    const { provided, userId, gate, rows } = yield* operationCloud();
+    yield* provided(anonymous(userId));
+    expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
     expect(yield* rows).toEqual([]);
   }));
 
