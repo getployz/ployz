@@ -52,7 +52,7 @@ function RouteComponent() {
         />
       </div>
       {/* Above the list: the skeleton below is a guess at the list's height, and Waiting must not jump when it settles. */}
-      <WaitingSection organizationSlug={organizationSlug} token={token} hasFirst={servers.length > 0} />
+      <WaitingSection organizationSlug={organizationSlug} token={token} />
       {state === "loading" ? (
         <ServersSkeleton />
       ) : state === "unreachable" ? (
