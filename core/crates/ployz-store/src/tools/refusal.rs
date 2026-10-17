@@ -247,6 +247,10 @@ pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusa
             }
         }
     }
+    // Only a person can claim an anonymous Organization; the agent hands them this link.
+    if let Some(url) = details.get("claim_url") {
+        refusal = refusal.with_detail("url", url.clone());
+    }
     if code == RpcErrorCode::ConfirmationRequired {
         // Only a confirmation's retry may accept loss: the one the Store named.
         let mut input = call.input.clone();
