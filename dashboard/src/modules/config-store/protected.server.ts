@@ -54,16 +54,17 @@ const listed = Effect.fn("ConfigStore.listed")(function* (ref: typeof Environmen
  * Environment removable and its source open to anyone who can stage, so a human says yes first. The preview names which
  * protection it lifts, so a yes holds for that one: protecting it again asks again. `command` is what to write: an
  * unprotect carries the Environment and protection Cloud decided on, so the Store refuses it if its reference now names
- * another Environment or another write changed the protection since.
+ * another Environment or another write changed the protection since. An unprotect of an Environment Cloud can't find
+ * is refused here: one created before the write lands was decided on by no one.
  */
 export const unprotectAsked = Effect.fn("ConfigStore.unprotectAsked")(function* (organizationId: string, command: ConfigCommand) {
   if (command.command !== "set_environment_protected" || command.protected) return { asked: null, command };
   const store = yield* cloudStore;
-  // A read the Store refuses asks nothing: the write meets the same refusal.
-  const environment = yield* listed(command.environment, (query) => store.read(organizationId, query)).pipe(
-    Effect.catchTag("StoreRefused", () => Effect.succeed(undefined)),
-  );
-  if (environment === undefined) return { asked: null, command };
+  const ref = command.environment;
+  const environment = yield* listed(ref, (query) => store.read(organizationId, query));
+  if (environment === undefined) {
+    return yield* new StoreRefused({ code: "not_found", message: `No Environment named ${ref.environment ?? "default"}`, details: null });
+  }
   const decided = { ...command, seen: { environment: environment.id, protected: environment.protected, protections: environment.protections } };
   if (!environment.protected) return { asked: null, command: decided };
   const asked = {
