@@ -20,7 +20,7 @@ export const organization = pgTable(
     slug: text("slug").notNull(),
     logo: text("logo"),
     metadata: text("metadata"),
-    /** sha256 hex of the claim secret while an anonymous agent's Organization waits for a person; null once claimed. */
+    /** sha256 hex of the claim secret of an Organization an anonymous agent made, kept after a person claims it so the link says so. */
     claimSecretHash: text("claim_secret_hash"),
     createdAt,
   },

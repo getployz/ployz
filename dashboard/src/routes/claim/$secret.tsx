@@ -40,6 +40,8 @@ function ClaimPage() {
       <div className="w-full max-w-md">
         {claim.state === "expired" ? (
           <Expired signedIn={person !== null} />
+        ) : claim.state === "taken" ? (
+          <Taken signedIn={person !== null} />
         ) : person ? (
           <Keep claim={claim} email={person.user.email} />
         ) : (
@@ -57,6 +59,21 @@ function Expired({ signedIn }: { signedIn: boolean }) {
       <div className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold">This sandbox expired</h1>
         <p className="text-sm text-muted-foreground">An agent's sandbox lasts a day unless someone keeps it. Run the agent again for a new one.</p>
+      </div>
+      <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
+        {signedIn ? "Go to Cloud" : "Sign in"}
+      </Link>
+    </div>
+  );
+}
+
+function Taken({ signedIn }: { signedIn: boolean }) {
+  return (
+    <div className="flex flex-col items-center gap-6 text-center">
+      <PloyzMark className="size-11" decorative />
+      <div className="flex flex-col gap-2">
+        <h1 className="text-xl font-semibold">Someone already kept this sandbox</h1>
+        <p className="text-sm text-muted-foreground">Its owner can invite you to it.</p>
       </div>
       <Link to={signedIn ? "/cloud" : "/auth"} className={buttonVariants({ variant: "outline" })}>
         {signedIn ? "Go to Cloud" : "Sign in"}
