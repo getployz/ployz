@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Signs this checkout's agent-browser session in as one of the seeded people of organization ada, with the session
-# cookie seed.ts wrote for them, and opens /cloud/ada, which also makes ada their active organization. A reseed keeps
+# cookie seed.ts wrote for them, and opens /cloud/ada/~, which also makes ada their active organization. A reseed keeps
 # every cookie valid.
 # Usage: scripts/verify/as.sh ada|grace|linus      ada owns it, grace is an admin, linus a member.
 set -euo pipefail
@@ -18,4 +18,4 @@ cookie=$(node -e 'const v = JSON.parse(require("fs").readFileSync(process.argv[1
 base=http://localhost:$(sed -n 's/^PORT=//p' "$run/env")
 session=$(cat "$run/session")
 agent-browser --session "$session" cookies set better-auth.session_token "$cookie" --url "$base" --httpOnly --sameSite Lax
-agent-browser --session "$session" open "$base/cloud/ada"
+agent-browser --session "$session" open "$base/cloud/ada/~"

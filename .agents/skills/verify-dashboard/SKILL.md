@@ -61,7 +61,7 @@ agent-browser --session $S screenshot "$PWD/.verify/evidence/<name>.png"
 - Single-quote URLs that contain `~` or `$` (`'/cloud/ada/~/servers'`).
 - Inspector textboxes save on Enter, not on blur. A `fill` that you never commit is gone after a reload.
 - After any write, `reload` and snapshot again. That proves the write persisted rather than living only in optimistic UI.
-- To see a page as another role, run `scripts/verify/as.sh ada|grace|linus`. It sets that person's cookie in the session and opens `/cloud/ada`. Their cookies stay valid across reseeds, and Ada's `up.sh` lines still sign her back in. For the CLI, set `PLOYZ_TOKEN=$(jq -r .graceToken .verify/run/seed.json)` (or `.linusToken`, `.cliToken`) and `PLOYZ_CLOUD_URL` to the instance.
+- To see a page as another role, run `scripts/verify/as.sh ada|grace|linus`. It sets that person's cookie in the session and opens Ada's Projects page, `/cloud/ada/~`. Their cookies stay valid across reseeds, and Ada's `up.sh` lines still sign her back in. For the CLI, set `PLOYZ_TOKEN=$(jq -r .graceToken .verify/run/seed.json)` (or `.linusToken`, `.cliToken`) and `PLOYZ_CLOUD_URL` to the instance.
 - Grace and Linus each belong to two organizations, their personal one and `ada`. A visit to their personal one makes it the session's active organization, and `/cloud` then lands there. Rerun `as.sh`, or pick "Ada Lovelace's Projects" in the switcher, before you trust what the page shows.
 - grace@example.com and linus@example.com are already members of `ada`. To test inviting someone new, use another address.
 
