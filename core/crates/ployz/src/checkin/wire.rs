@@ -150,7 +150,9 @@ impl StopReason {
     }
 }
 
-pub(super) fn answer(body: &[u8]) -> Answer {
+/// Cloud's answer, or None when the body is not a JSON object with a `kind`, which Cloud always
+/// sends. A kind or field this CLI does not know waits, since a newer Cloud may send it.
+pub(super) fn answer(body: &[u8]) -> Option<Answer> {
     #[derive(Deserialize)]
     #[serde(tag = "kind", rename_all = "lowercase")]
     enum Wire {
@@ -165,12 +167,14 @@ pub(super) fn answer(body: &[u8]) -> Answer {
             message: String,
         },
     }
-    match serde_json::from_slice::<Wire>(body) {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    body.get("kind")?.as_str()?;
+    Some(match serde_json::from_value::<Wire>(body) {
         Ok(Wire::Wait { retry_after }) => Answer::Wait(wait_for(retry_after)),
         Ok(Wire::Enroll {}) => Answer::Enroll,
         Ok(Wire::Stop { reason, message }) => Answer::Stop(reason, message),
         Err(_) => Answer::Wait(UNKNOWN_WAIT),
-    }
+    })
 }
 
 fn wait_for(seconds: f64) -> Duration {

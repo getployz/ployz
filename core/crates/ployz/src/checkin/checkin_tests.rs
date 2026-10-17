@@ -138,22 +138,103 @@ fn the_signature_matches_what_cloud_verifies() {
 
 #[test]
 fn an_answer_this_cli_cannot_read_waits_a_minute() {
-    for body in [
-        &br#"{"kind":"reboot"}"#[..],
-        b"not json",
-        br#"{"kind":"wait"}"#,
-    ] {
-        assert_eq!(wire::answer(body), Answer::Wait(Duration::from_secs(60)));
+    for body in [&br#"{"kind":"reboot"}"#[..], br#"{"kind":"wait"}"#] {
+        assert_eq!(
+            wire::answer(body),
+            Some(Answer::Wait(Duration::from_secs(60)))
+        );
     }
     assert_eq!(
         wire::answer(br#"{"kind":"wait","retryAfter":30}"#),
-        Answer::Wait(Duration::from_secs(30))
+        Some(Answer::Wait(Duration::from_secs(30)))
     );
     for huge in [
         &br#"{"kind":"wait","retryAfter":999999}"#[..],
         br#"{"kind":"wait","retryAfter":1e300}"#,
     ] {
-        assert_eq!(wire::answer(huge), Answer::Wait(Duration::from_secs(3600)));
+        assert_eq!(
+            wire::answer(huge),
+            Some(Answer::Wait(Duration::from_secs(3600)))
+        );
+    }
+}
+
+#[test]
+fn an_answer_cloud_could_not_have_sent_is_not_cloud() {
+    for body in [
+        &b"<!doctype html><title>Welcome to nginx</title>"[..],
+        b"not json",
+        b"",
+        b"[]",
+        br#"{"ok":true}"#,
+        br#"{"kind":7}"#,
+    ] {
+        assert_eq!(wire::answer(body), None);
+        assert!(matches!(
+            client::reply(StatusCode::OK, None, None, body),
+            Reply::NotCloud(why) if why.starts_with("answered 200 OK")
+        ));
+    }
+    for status in [
+        StatusCode::NOT_FOUND,
+        StatusCode::METHOD_NOT_ALLOWED,
+        StatusCode::FORBIDDEN,
+        StatusCode::GONE,
+    ] {
+        assert_eq!(
+            client::reply(status, None, None, b"Not Found"),
+            Reply::NotCloud(format!("answered {status}"))
+        );
+    }
+    for (status, body, why) in [
+        (
+            StatusCode::FORBIDDEN,
+            r#"{"_tag":"PublicError","code":"forbidden","message":"Not allowed."}"#,
+            "Not allowed.",
+        ),
+        (
+            StatusCode::NOT_FOUND,
+            r#"{"_tag":"PublicError","code":"not_found","message":"No such fleet."}"#,
+            "No such fleet.",
+        ),
+        (
+            StatusCode::CONFLICT,
+            r#"{"error":"Already enrolled."}"#,
+            "Already enrolled.",
+        ),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            r#"{"_tag":"PublicError","code":"invalid","message":"Bad host."}"#,
+            "Bad host.",
+        ),
+    ] {
+        assert_eq!(
+            client::reply(status, None, None, body.as_bytes()),
+            Reply::Unreachable(
+                Duration::from_secs(60),
+                format!("Cloud answered {status}: {why}")
+            )
+        );
+    }
+    for body in [
+        &br#"{"_tag":"PublicError","message":"no code"}"#[..],
+        br#"{"error":7}"#,
+        br#"{"detail":"Forbidden"}"#,
+    ] {
+        assert_eq!(
+            client::reply(StatusCode::FORBIDDEN, None, None, body),
+            Reply::NotCloud("answered 403 Forbidden".to_owned())
+        );
+    }
+    for status in [
+        StatusCode::REQUEST_TIMEOUT,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ] {
+        assert!(matches!(
+            client::reply(status, None, None, b""),
+            Reply::Unreachable(after, _) if after == Duration::from_secs(60)
+        ));
     }
 }
 
@@ -203,7 +284,7 @@ fn only_cloud_refusing_with_agreeing_clocks_counts_against_the_token() {
 }
 
 #[test]
-fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
+fn an_unreadable_check_in_waits_for_a_newer_ployz() {
     assert!(matches!(
         client::reply(StatusCode::BAD_REQUEST, None, None, b""),
         Reply::Outdated(why) if why.ends_with("Install a newer ployz")
@@ -212,32 +293,155 @@ fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
         client::reply(StatusCode::PAYLOAD_TOO_LARGE, None, None, b""),
         Reply::Outdated("Cloud couldn't take this check-in (413 Payload Too Large)".to_owned())
     );
-    assert_eq!(
-        client::reply(
-            StatusCode::TOO_MANY_REQUESTS,
-            Some(Duration::from_secs(9)),
-            None,
-            b""
-        ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(9)))
-    );
-    assert_eq!(
-        client::reply(
-            StatusCode::TOO_MANY_REQUESTS,
-            Some(Duration::from_secs(u64::MAX)),
-            None,
-            b""
-        ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(3600)))
-    );
-    assert_eq!(
-        client::reply(StatusCode::TOO_MANY_REQUESTS, None, None, b""),
-        Reply::Answer(Answer::Wait(Duration::from_secs(1)))
-    );
     assert!(matches!(
         client::reply(StatusCode::BAD_GATEWAY, None, None, b""),
         Reply::Unreachable(after, _) if after == Duration::from_secs(60)
     ));
+}
+
+#[test]
+fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
+    let held = |after, body: &str| {
+        client::reply(StatusCode::TOO_MANY_REQUESTS, after, None, body.as_bytes())
+    };
+    for (message, hold) in [
+        (
+            "This Fleet Token already has 1000 waiting servers.",
+            Hold::Full,
+        ),
+        (
+            "This Fleet Token already has 5 waiting servers.",
+            Hold::Full,
+        ),
+        ("Too many check-ins.", Hold::Busy),
+        ("Busy, retry.", Hold::Busy),
+    ] {
+        assert_eq!(
+            held(
+                Some(Duration::from_secs(1)),
+                &format!(r#"{{"error":"{message}"}}"#)
+            ),
+            Reply::Held(Duration::from_secs(1), hold, message.to_owned())
+        );
+    }
+    assert_eq!(
+        held(
+            Some(Duration::from_secs(u64::MAX)),
+            r#"{"error":"Busy, retry."}"#
+        ),
+        Reply::Held(
+            Duration::from_secs(3600),
+            Hold::Busy,
+            "Busy, retry.".to_owned()
+        )
+    );
+    for body in [
+        "",
+        "<html>Slow down</html>",
+        r#"{"message":"rate limited"}"#,
+        r#"{"error":"Too Many Requests"}"#,
+        r#"{"error":"Too many check-ins"}"#,
+        r#"{"error":"This Fleet Token already has many waiting servers."}"#,
+        r#"{"error":"This Fleet Token already has  waiting servers."}"#,
+        r#"{"_tag":"PublicError","code":"busy","message":"Busy, retry."}"#,
+        r#"{"_tag":"PublicError","code":"full","message":"This Fleet Token already has 5 waiting servers."}"#,
+    ] {
+        assert_eq!(
+            held(Some(Duration::from_secs(9)), body),
+            Reply::Unreachable(
+                Duration::from_secs(9),
+                "Cloud answered 429 Too Many Requests".to_owned()
+            ),
+            "{body}"
+        );
+    }
+    assert!(matches!(
+        held(None, ""),
+        Reply::Unreachable(after, _) if after == Duration::from_secs(60)
+    ));
+}
+
+#[tokio::test]
+async fn a_check_in_cloud_held_back_names_its_reason_in_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, _server) = answering_cloud(
+        "429 Too Many Requests\r\nRetry-After: 1".to_owned(),
+        r#"{"error":"This Fleet Token already has 5 waiting servers."}"#.to_owned(),
+        1,
+    )
+    .await;
+    let host = FakeHost::default();
+    let Next::Held { after, hold, why } =
+        pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
+    else {
+        panic!("Cloud's 429 holds the check-in back");
+    };
+    assert_eq!(after, Duration::from_secs(1));
+    assert_eq!(hold, Hold::Full);
+    assert_eq!(
+        why,
+        "Cloud held this check-in back: This Fleet Token already has 5 waiting servers."
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline(), Headline::open("Held by Cloud"));
+    assert!(status.says_why());
+}
+
+#[tokio::test]
+async fn an_unreachable_cloud_says_why_in_one_sentence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (url, _server) = answering_cloud(
+        "403 Forbidden".to_owned(),
+        r#"{"error":"Forbidden."}"#.to_owned(),
+        1,
+    )
+    .await;
+    let next = pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths(&dir),
+        Utc::now(),
+    )
+    .await;
+    let Next::Retry { why, .. } = next else {
+        panic!("{next:?}");
+    };
+    assert_eq!(
+        why,
+        "Could not reach Ployz Cloud: Cloud answered 403 Forbidden: Forbidden."
+    );
+}
+
+#[tokio::test]
+async fn a_body_cut_off_before_its_length_is_unreachable_not_another_service() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0; 16384];
+        let _ = stream.read(&mut buf).await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"kind\"")
+            .await
+            .unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let next = pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    server.await.unwrap();
+    assert!(
+        matches!(&next, Next::Retry { after, .. } if *after == Duration::from_secs(60)),
+        "{next:?}"
+    );
 }
 
 #[tokio::test]
@@ -624,7 +828,7 @@ async fn refused_pass(
 
 fn retries_after(next: &Next, seconds: u64) {
     assert!(
-        matches!(next, Next::Retry { after, .. } if *after == Duration::from_secs(seconds)),
+        matches!(next, Next::RefusedOnce { after } if *after == Duration::from_secs(seconds)),
         "{next:?}"
     );
 }
@@ -676,14 +880,14 @@ async fn a_token_swapped_in_after_a_refusal_gets_its_own_two_refusals_across_res
 }
 
 #[tokio::test]
-async fn the_loop_starting_right_after_an_install_refusal_does_not_confirm_it() {
+async fn an_install_rerun_right_after_a_refusal_does_not_confirm_it() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let installed = cloud_now();
     let now = Utc::now();
     retries_after(&refused_pass(&paths, OLD, now, installed, true).await, 60);
-    let looped = refused_pass(&paths, OLD, now, installed + TimeDelta::seconds(3), false).await;
-    retries_after(&looped, 57);
+    let rerun = refused_pass(&paths, OLD, now, installed + TimeDelta::seconds(3), true).await;
+    retries_after(&rerun, 57);
 }
 
 #[tokio::test]
@@ -794,10 +998,7 @@ async fn one_refusal_keeps_the_token_and_a_success_after_it_clears_it() {
     let host = FakeHost::default();
     let (url, _server) = unauthorized_cloud(4, 1).await;
     let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    assert!(
-        matches!(&next, Next::Retry { after, .. } if *after == Duration::from_secs(60)),
-        "{next:?}"
-    );
+    retries_after(&next, 60);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(
         status.headline(),
@@ -812,7 +1013,7 @@ async fn one_refusal_keeps_the_token_and_a_success_after_it_clears_it() {
     pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
     let (url, _server) = unauthorized_cloud(4, 1).await;
     let next = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
-    assert!(matches!(next, Next::Retry { .. }), "{next:?}");
+    assert!(matches!(next, Next::RefusedOnce { .. }), "{next:?}");
     assert!(paths.token_file.exists());
     assert_eq!(host.disables.load(Ordering::SeqCst), 0);
 }
@@ -1083,11 +1284,88 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
         at("2026-10-16T01:31:00Z"),
     )
     .await;
+    assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 0);
+    let answered = at("2026-10-16T01:32:00Z");
+    restart_preparation(&reinstalled, &paths, answered).await;
     assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 1);
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
     assert_eq!(status.prepare_retries, 0);
+    assert_eq!(status.prepare_started, Some(answered));
     // ployzd records what it added in the state file, so the restart leaves it alone.
     assert_eq!(fs::read_to_string(&paths.prepare_state).unwrap(), state);
+}
+
+#[tokio::test]
+async fn an_install_starts_no_preparation_before_cloud_answers_the_token() {
+    for (status, body) in [
+        ("200 OK", r#"{"kind":"wait","retryAfter":30}"#),
+        (
+            "401 Unauthorized\r\nDate: {date}",
+            r#"{"error":"Authentication is required."}"#,
+        ),
+        ("404 Not Found", "Not Found"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(&dir);
+        let status = status.replace("{date}", &Utc::now().to_rfc2822());
+        let (url, _server) = answering_cloud(status, body.to_owned(), 1).await;
+        let host = FakeHost::default();
+        install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+        assert_eq!(host.prepares.load(Ordering::SeqCst), 0, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn a_preparation_that_finished_or_runs_is_not_restarted_by_an_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
+    fs::write(
+        &paths.prepare_state,
+        r#"{"docker":{"state":"ready"},"zfs":{"state":"off"}}"#,
+    )
+    .unwrap();
+    let ready = FakeHost::default();
+    restart_preparation(&ready, &paths, Utc::now()).await;
+    assert_eq!(ready.prepares.load(Ordering::SeqCst), 0);
+    fs::remove_file(&paths.prepare_state).unwrap();
+    let running = FakeHost::default();
+    running.preparing.store(true, Ordering::SeqCst);
+    restart_preparation(&running, &paths, Utc::now()).await;
+    assert_eq!(running.prepares.load(Ordering::SeqCst), 0);
+    let fresh = FakeHost::default();
+    restart_preparation(&fresh, &paths, Utc::now()).await;
+    assert_eq!(fresh.prepares.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_url_that_is_not_cloud_is_retried_and_named_in_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let (url, _server) = answering_cloud(
+        "404 Not Found".to_owned(),
+        "<html>Not Found</html>".to_owned(),
+        1,
+    )
+    .await;
+    let host = FakeHost::default();
+    let Next::NotCloud(why) = pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await
+    else {
+        panic!("a 404 is not Cloud");
+    };
+    assert!(
+        why.starts_with(&format!("{url}/api/checkin answered 404 Not Found")),
+        "{why}"
+    );
+    assert!(
+        why.ends_with(
+            "which isn't how Ployz Cloud answers. A proxy or firewall in between may have answered instead"
+        ),
+        "{why}"
+    );
+    let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+    assert_eq!(status.headline(), Headline::open("Not Ployz Cloud"));
+    assert!(status.says_why());
 }
 
 #[tokio::test]

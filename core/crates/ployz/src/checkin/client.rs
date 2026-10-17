@@ -29,9 +29,21 @@ pub(super) const BACKOFF: Duration = Duration::from_secs(60);
 pub(super) const OUTDATED_BACKOFF: Duration = Duration::from_secs(60 * 60);
 const FLEET_TOKEN_PREFIX: &str = "pflt_";
 const FLEET_TOKEN_SECRET_CHARS: usize = 43;
+const TOKEN_MODE: u32 = 0o600;
 const MAX_SKEW_SECONDS: i64 = 300;
 const TRUSTED_SKEW_SECONDS: i64 = MAX_SKEW_SECONDS - 60;
+// Cloud's own words. Only these mean Cloud refused the token or held a check-in back; any other
+// 401 or 429 may come from something in between.
 const CLOUD_REFUSAL: &str = "Authentication is required.";
+const CLOUD_BUSY: [&str; 2] = ["Too many check-ins.", "Busy, retry."];
+const CLOUD_FULL: (&str, &str) = ("This Fleet Token already has ", " waiting servers.");
+
+/// Why Cloud held a check-in back: it is busy, or the token has all the waiting servers it allows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Hold {
+    Busy,
+    Full,
+}
 
 #[derive(Debug, Error)]
 pub enum KeyError {
@@ -131,19 +143,19 @@ impl FleetToken {
             path: path.to_owned(),
             source,
         })?;
+        Self::parse(&text).ok_or_else(|| KeyError::NotAToken {
+            path: path.to_owned(),
+        })
+    }
+
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         let token = text.trim();
         let secret = token.strip_prefix(FLEET_TOKEN_PREFIX).unwrap_or_default();
-        if secret.len() == FLEET_TOKEN_SECRET_CHARS
+        (secret.len() == FLEET_TOKEN_SECRET_CHARS
             && secret
                 .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        {
-            Ok(Self(token.to_owned()))
-        } else {
-            Err(KeyError::NotAToken {
-                path: path.to_owned(),
-            })
-        }
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'))
+        .then(|| Self(token.to_owned()))
     }
 
     #[cfg(test)]
@@ -164,6 +176,9 @@ pub(super) enum Reply {
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
+    Held(Duration, Hold, String),
+    /// The URL answered, and the answer can't have come from Ployz Cloud.
+    NotCloud(String),
     ClockOff(String),
     Outdated(String),
 }
@@ -189,8 +204,21 @@ impl CheckinClient {
         self.token = token;
     }
 
-    pub(super) fn sends(&self, token: &FleetToken) -> bool {
+    pub(crate) fn sends(&self, token: &FleetToken) -> bool {
         self.token == *token
+    }
+
+    /// Writes the token this client sends to `path` in one step, readable by root only.
+    pub(crate) fn write_token(&self, path: &Path) -> io::Result<()> {
+        let directory = path.parent().unwrap_or(Path::new("."));
+        fs::create_dir_all(directory)?;
+        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(TOKEN_MODE))?;
+        writeln!(file, "{}", self.token.0)?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 
     /// Names the token in status.json without writing the token itself there.
@@ -235,8 +263,18 @@ impl CheckinClient {
             .and_then(|value| value.to_str().ok())
             .and_then(|value| DateTime::parse_from_rfc2822(value).ok())
             .map(|cloud| cloud.to_utc());
-        let body = response.bytes().await.unwrap_or_default();
-        reply(status, retry_after, cloud, &body)
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => return Reply::Unreachable(BACKOFF, error.without_url().to_string()),
+        };
+        let reply = reply(status, retry_after, cloud, &body);
+        if let Reply::NotCloud(why) = &reply {
+            return Reply::NotCloud(format!(
+                "{} {why}, which isn't how Ployz Cloud answers. A proxy or firewall in between may have answered instead",
+                self.url
+            ));
+        }
+        reply
     }
 }
 
@@ -247,7 +285,14 @@ pub(super) fn reply(
     body: &[u8],
 ) -> Reply {
     if status.is_success() {
-        return Reply::Answer(wire::answer(body));
+        return wire::answer(body).map_or_else(
+            || {
+                Reply::NotCloud(format!(
+                    "answered {status} with something other than a check-in answer"
+                ))
+            },
+            Reply::Answer,
+        );
     }
     if status == StatusCode::UNAUTHORIZED {
         return unauthorized(cloud, body);
@@ -261,12 +306,43 @@ pub(super) fn reply(
         return Reply::Outdated(format!("Cloud couldn't take this check-in ({status})"));
     }
     if status == StatusCode::TOO_MANY_REQUESTS {
-        let after = retry_after
-            .unwrap_or(Duration::from_secs(1))
-            .min(wire::WAIT_CAP);
-        return Reply::Answer(Answer::Wait(after));
+        let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
+        return match cloud_hold(body) {
+            Some((hold, why)) => Reply::Held(after, hold, why),
+            None => Reply::Unreachable(after, format!("Cloud answered {status}")),
+        };
+    }
+    if let Some(why) = cloud_error(body) {
+        return Reply::Unreachable(BACKOFF, format!("Cloud answered {status}: {why}"));
+    }
+    if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
+        return Reply::NotCloud(format!("answered {status}"));
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
+}
+
+fn cloud_error(body: &[u8]) -> Option<String> {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let text = |field: &str| body.get(field).and_then(serde_json::Value::as_str);
+    let message = match text("_tag") {
+        Some("PublicError") => text("code").and(text("message")),
+        _ => text("error"),
+    };
+    message.map(str::to_owned)
+}
+
+/// Cloud holds a check-in back with `{error}` only, the shape its 429 sends.
+fn cloud_hold(body: &[u8]) -> Option<(Hold, String)> {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let said = body.get("error")?.as_str()?;
+    if CLOUD_BUSY.contains(&said) {
+        return Some((Hold::Busy, said.to_owned()));
+    }
+    let cap = said
+        .strip_prefix(CLOUD_FULL.0)?
+        .strip_suffix(CLOUD_FULL.1)?;
+    (!cap.is_empty() && cap.bytes().all(|digit| digit.is_ascii_digit()))
+        .then(|| (Hold::Full, said.to_owned()))
 }
 
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well

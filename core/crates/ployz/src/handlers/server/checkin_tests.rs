@@ -11,10 +11,13 @@ use chrono::Utc;
 use clap::{ArgMatches, Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use super::{LoopPloyzd, command, loop_ployzd, loop_start};
+use super::{
+    Answered, Install, LoopPloyzd, Token, command, install_outcome, install_start,
+    keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token,
+};
 use crate::checkin::{
-    self, CheckinClient, CheckinKey, FleetToken, Host, LocalCheckin, Paths, Probe, Seen, System,
-    unit,
+    self, CheckinClient, CheckinKey, FleetToken, Hold, Host, LocalCheckin, Next, Paths, Probe,
+    Seen, StopReason, System, unit,
 };
 
 const PROBE: &str = r#"{"facts":{"os":{"id":"ubuntu","version_id":"24.04"},"kernel":"6.8.0","arch":"x86_64","virt":"BareMetal","cgroup":"V2","cpu_count":4,"memory_total_bytes":8589934592,"disks":[],"docker":"Absent"},"assessment":{"blockers":[],"warnings":[],"zfs":{"Ineligible":{"reason":{"code":"zfs_off","message":"Off."}}}}}"#;
@@ -167,6 +170,45 @@ async fn with_no_current_ployzd_the_loop_runs_an_older_one_and_says_to_reinstall
     assert!(!dir.path().join("gone").exists(), "the loop never fetches");
 }
 
+/// Answers one check-in with `status` and `body` once `meanwhile` has run, and returns its request.
+async fn answering_once(
+    status: &'static str,
+    body: &'static str,
+    meanwhile: impl FnOnce() + Send + 'static,
+) -> (String, tokio::task::JoinHandle<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = vec![0; 16384];
+        loop {
+            let read = stream.read(&mut buf).await.unwrap();
+            request.extend_from_slice(buf.get(..read).unwrap());
+            let text = String::from_utf8_lossy(&request).to_lowercase();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|length| length.trim().parse::<usize>().ok())
+                .unwrap_or_default();
+            if read == 0 || body.len() >= length {
+                break;
+            }
+        }
+        meanwhile();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    (url, server)
+}
+
 /// The chosen ployzd, probed for real, on a host whose preparation must not start.
 struct Chosen(System);
 
@@ -221,36 +263,7 @@ async fn a_stale_pin_that_fails_its_probe_gives_way_to_an_older_ployzd_that_answ
         "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     )
     .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        let mut buf = vec![0; 16384];
-        loop {
-            let read = stream.read(&mut buf).await.unwrap();
-            request.extend_from_slice(buf.get(..read).unwrap());
-            let text = String::from_utf8_lossy(&request).to_lowercase();
-            let Some((head, body)) = text.split_once("\r\n\r\n") else {
-                continue;
-            };
-            let length = head
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length:"))
-                .and_then(|length| length.trim().parse::<usize>().ok())
-                .unwrap_or_default();
-            if read == 0 || body.len() >= length {
-                break;
-            }
-        }
-        let body = r#"{"kind":"wait","retryAfter":30}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-        String::from_utf8_lossy(&request).into_owned()
-    });
+    let (url, server) = answering_once("200 OK", r#"{"kind":"wait","retryAfter":30}"#, || {}).await;
     let token = FleetToken::read(&paths.token_file).unwrap();
     let key = CheckinKey::load_or_create(&paths.key()).unwrap();
     let mut client = CheckinClient::new(&url, token).unwrap();
@@ -348,4 +361,525 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
             .starts_with("No ployzd on PATH or at "),
         "the status names what is missing"
     );
+}
+
+const PIPED: Install<'static> = Install {
+    cloud_url: "ployz.dev",
+    url_source: None,
+    token: Token::Piped,
+};
+const FROM_FILE: Install<'static> = Install {
+    token: Token::InFile,
+    ..PIPED
+};
+
+#[test]
+fn an_install_ends_with_an_error_when_cloud_refuses_the_token() {
+    let refused = |url_source| {
+        install_outcome(
+            Next::RefusedOnce {
+                after: std::time::Duration::from_secs(60),
+            },
+            Install {
+                cloud_url: "cloud.example.com",
+                url_source,
+                ..PIPED
+            },
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let unset = refused(None);
+    assert!(
+        unset.contains(
+            "Cloud at cloud.example.com refused this Fleet Token. Check the token, then run the install again."
+        ),
+        "{unset}"
+    );
+    assert!(!unset.contains("PLOYZ_CLOUD_URL"), "{unset}");
+    let set = refused(Some("PLOYZ_CLOUD_URL"));
+    assert!(
+        set.contains(
+            "Cloud at cloud.example.com refused this Fleet Token. Check the token and PLOYZ_CLOUD_URL, then run the install again."
+        ),
+        "{set}"
+    );
+}
+
+#[test]
+fn an_install_stopped_by_its_token_says_to_run_it_again_with_a_new_one() {
+    for (reason, again) in [
+        (StopReason::TokenExpired, true),
+        (StopReason::TokenRevoked, true),
+        (StopReason::Rejected, false),
+    ] {
+        let stopped = install_outcome(Next::Stop(reason, "Said Cloud.".to_owned()), PIPED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            stopped.contains(&format!("{}. Said Cloud.", reason.title())),
+            "{stopped}"
+        );
+        assert_eq!(
+            stopped.contains("Run the install again with a new token."),
+            again,
+            "{stopped}"
+        );
+    }
+}
+
+#[test]
+fn an_install_says_waiting_only_when_cloud_answered_the_token() {
+    let after = std::time::Duration::from_secs(60);
+    assert_eq!(
+        install_outcome(Next::Wait { after, log: None }, PIPED).unwrap(),
+        Answered::Waiting
+    );
+    let why = "Cloud held this check-in back: This Fleet Token already has 5 waiting servers.";
+    assert_eq!(
+        install_outcome(
+            Next::Held {
+                after,
+                hold: Hold::Full,
+                why: why.to_owned()
+            },
+            PIPED
+        )
+        .unwrap(),
+        Answered::Held(Hold::Full, why.to_owned())
+    );
+    let why = "Could not reach Ployz Cloud: refused.".to_owned();
+    assert_eq!(
+        install_outcome(
+            Next::Retry {
+                after,
+                why: why.clone()
+            },
+            PIPED
+        )
+        .unwrap(),
+        Answered::Unconfirmed(why)
+    );
+}
+
+#[test]
+fn an_install_that_reaches_something_other_than_cloud_names_the_setting_only_when_set() {
+    let why = "http://127.0.0.1:9/api/checkin answered 404 Not Found, which isn't how Ployz Cloud answers. A proxy or firewall in between may have answered instead";
+    let not_cloud = |setting| {
+        install_outcome(
+            Next::NotCloud(why.to_owned()),
+            Install {
+                url_source: setting,
+                ..PIPED
+            },
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let unset = not_cloud(None);
+    assert!(
+        unset.contains(&format!(
+            "{why}. Run the install again once this host reaches Ployz Cloud."
+        )),
+        "{unset}"
+    );
+    assert!(!unset.contains("PLOYZ_CLOUD_URL"), "{unset}");
+    for setting in ["PLOYZ_CLOUD_URL", "--cloud-url"] {
+        let set = not_cloud(Some(setting));
+        assert!(
+            set.contains(&format!(
+                "{why}, or {setting} doesn't name Ployz Cloud. Check {setting}, then run the install again."
+            )),
+            "{set}"
+        );
+    }
+    let clock = install_outcome(Next::ClockOff("Clock off".to_owned()), PIPED)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        clock.contains("Clock off, then run the install again."),
+        "{clock}"
+    );
+}
+
+const OLD_TOKEN: &str = "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const NEW_TOKEN: &str = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+fn token_file_holding(dir: &tempfile::TempDir, token: &str) -> PathBuf {
+    let token_file = dir.path().join("etc/fleet-token");
+    fs::create_dir_all(token_file.parent().unwrap()).unwrap();
+    fs::write(&token_file, format!("{token}\n")).unwrap();
+    token_file
+}
+
+fn sending(token: &str) -> CheckinClient {
+    CheckinClient::new("http://127.0.0.1:9", FleetToken::parse(token).unwrap()).unwrap()
+}
+
+#[test]
+fn a_token_from_stdin_replaces_the_old_one_only_once_cloud_answers_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = token_file_holding(&dir, OLD_TOKEN);
+    let candidate = sending(NEW_TOKEN);
+    let after = std::time::Duration::from_secs(60);
+    for unanswered in [
+        Next::RefusedOnce { after },
+        Next::Stop(StopReason::TokenExpired, "Expired.".to_owned()),
+        Next::NotCloud("answered 404 Not Found".to_owned()),
+        Next::ClockOff("Clock off".to_owned()),
+        Next::Retry {
+            after,
+            why: "Could not reach Ployz Cloud: refused.".to_owned(),
+        },
+        Next::Held {
+            after,
+            hold: Hold::Full,
+            why:
+                "Cloud held this check-in back: This Fleet Token already has 1000 waiting servers."
+                    .to_owned(),
+        },
+        Next::Held {
+            after,
+            hold: Hold::Busy,
+            why: "Cloud held this check-in back: Too many check-ins.".to_owned(),
+        },
+    ] {
+        assert!(keep_answered_token(unanswered, &candidate, &token_file, PIPED).is_err());
+        assert_eq!(
+            fs::read_to_string(&token_file).unwrap(),
+            format!("{OLD_TOKEN}\n")
+        );
+    }
+    keep_answered_token(
+        Next::Wait { after, log: None },
+        &candidate,
+        &token_file,
+        PIPED,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+    let mode = fs::metadata(&token_file).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn a_rerun_cloud_cannot_answer_or_holds_back_keeps_the_old_token_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = token_file_holding(&dir, OLD_TOKEN);
+    let after = std::time::Duration::from_secs(60);
+    for (why, next) in [
+        "Could not reach Ployz Cloud: error sending request.",
+        "Could not probe this server: ployzd install --probe did not finish in 30s.",
+        "Cloud held this check-in back: Too many check-ins.",
+        "Cloud held this check-in back: Busy, retry.",
+    ]
+    .map(|why| {
+        let next = if why.starts_with("Cloud held") {
+            Next::Held {
+                after,
+                hold: Hold::Busy,
+                why: why.to_owned(),
+            }
+        } else {
+            Next::Retry {
+                after,
+                why: why.to_owned(),
+            }
+        };
+        (why, next)
+    }) {
+        let kept = keep_answered_token(next, &sending(NEW_TOKEN), &token_file, PIPED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            kept.contains(&format!(
+                "{why} Until Cloud takes the new Fleet Token, this install keeps {} and changes nothing else. Run the install again.",
+                token_file.display()
+            )),
+            "{kept}"
+        );
+        assert_eq!(
+            fs::read_to_string(&token_file).unwrap(),
+            format!("{OLD_TOKEN}\n")
+        );
+    }
+}
+
+#[test]
+fn a_rerun_with_a_token_that_has_all_its_waiting_servers_keeps_the_old_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = token_file_holding(&dir, OLD_TOKEN);
+    let why = "Cloud held this check-in back: This Fleet Token already has 1000 waiting servers.";
+    let full = || Next::Held {
+        after: std::time::Duration::from_secs(1),
+        hold: Hold::Full,
+        why: why.to_owned(),
+    };
+    let kept = keep_answered_token(full(), &sending(NEW_TOKEN), &token_file, PIPED)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        kept.contains(&format!(
+            "{why} Cloud didn't take the new Fleet Token, so this install keeps {} and changes nothing else. Run the install again with another token, or revoke this one to clear its waiting servers.",
+            token_file.display()
+        )),
+        "{kept}"
+    );
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{OLD_TOKEN}\n")
+    );
+    let fresh = dir.path().join("new/fleet-token");
+    assert_eq!(
+        keep_answered_token(full(), &sending(NEW_TOKEN), &fresh, PIPED).unwrap(),
+        Answered::Held(Hold::Full, why.to_owned())
+    );
+    assert_eq!(
+        fs::read_to_string(&fresh).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+}
+
+#[test]
+fn a_first_install_or_the_same_token_keeps_trying_while_cloud_is_unreachable() {
+    let dir = tempfile::tempdir().unwrap();
+    let after = std::time::Duration::from_secs(60);
+    let offline = || Next::Retry {
+        after,
+        why: "Could not reach Ployz Cloud: refused.".to_owned(),
+    };
+    let fresh = dir.path().join("new/fleet-token");
+    assert!(matches!(
+        keep_answered_token(offline(), &sending(NEW_TOKEN), &fresh, PIPED).unwrap(),
+        Answered::Unconfirmed(_)
+    ));
+    assert_eq!(
+        fs::read_to_string(&fresh).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+    let same = token_file_holding(&dir, NEW_TOKEN);
+    keep_answered_token(offline(), &sending(NEW_TOKEN), &same, PIPED).unwrap();
+    assert_eq!(fs::read_to_string(&same).unwrap(), format!("{NEW_TOKEN}\n"));
+}
+
+#[test]
+fn only_a_missing_token_file_makes_a_first_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let new = sending(NEW_TOKEN);
+    let replaces = |path: &Path| replaces_token(path, |held| new.sends(held));
+    assert!(!replaces(&dir.path().join("new/fleet-token")).unwrap());
+    assert!(!replaces(&token_file_holding(&dir, NEW_TOKEN)).unwrap());
+    assert!(replaces(&token_file_holding(&dir, "not a token")).unwrap());
+    assert!(replaces(&token_file_holding(&dir, OLD_TOKEN)).unwrap());
+    let unreadable = dir.path().join("a-directory");
+    fs::create_dir(&unreadable).unwrap();
+    let error = replaces(&unreadable).unwrap_err().to_string();
+    assert!(
+        error.contains(&format!(
+            "Could not read {}, so this install can't tell whether it replaces a Fleet Token.",
+            unreadable.display()
+        )),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_rerun_over_a_file_that_isnt_a_token_swaps_it_only_once_cloud_takes_the_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = token_file_holding(&dir, "not a token");
+    let after = std::time::Duration::from_secs(60);
+    for unanswered in [
+        Next::Retry {
+            after,
+            why: "Could not reach Ployz Cloud: refused.".to_owned(),
+        },
+        Next::Held {
+            after,
+            hold: Hold::Busy,
+            why: "Cloud held this check-in back: Busy, retry.".to_owned(),
+        },
+        Next::Held {
+            after,
+            hold: Hold::Full,
+            why: "Cloud held this check-in back: This Fleet Token already has 5 waiting servers."
+                .to_owned(),
+        },
+    ] {
+        let kept = keep_answered_token(unanswered, &sending(NEW_TOKEN), &token_file, PIPED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            kept.contains(&format!("this install keeps {}", token_file.display())),
+            "{kept}"
+        );
+        assert_eq!(fs::read_to_string(&token_file).unwrap(), "not a token\n");
+    }
+    keep_answered_token(
+        Next::Wait { after, log: None },
+        &sending(NEW_TOKEN),
+        &token_file,
+        PIPED,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+}
+
+#[tokio::test]
+async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answering() {
+    for (status, body) in [
+        ("502 Bad Gateway", ""),
+        (
+            "429 Too Many Requests",
+            r#"{"error":"This Fleet Token already has 1000 waiting servers."}"#,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(&dir);
+        let ployzd = dir.path().join("bin/ployzd");
+        probing_daemon(&ployzd, "0.0.1");
+        let host = Chosen(System {
+            ployzd,
+            stale: Some("Older.".to_owned()),
+        });
+        let landed = paths.token_file.clone();
+        let (url, server) = answering_once(status, body, move || {
+            fs::write(landed, format!("{OLD_TOKEN}\n")).unwrap();
+        })
+        .await;
+        let key = CheckinKey::load_or_create(&paths.key()).unwrap();
+        let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
+        assert!(!replaces_token(&paths.token_file, |held| client.sends(held)).unwrap());
+        let next = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
+        server.await.unwrap();
+        let kept = keep_answered_token(next, &client, &paths.token_file, PIPED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            kept.contains(&format!(
+                "this install keeps {}",
+                paths.token_file.display()
+            )),
+            "{status}: {kept}"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.token_file).unwrap(),
+            format!("{OLD_TOKEN}\n"),
+            "{status}"
+        );
+    }
+}
+
+#[test]
+fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = dir.path().join("fleet-token");
+    let other = fs::File::open(dir.path()).unwrap();
+    rustix::fs::flock(&other, rustix::fs::FlockOperation::LockExclusive).unwrap();
+    let committing = token_file.clone();
+    let install = std::thread::spawn(move || {
+        let next = Next::Retry {
+            after: std::time::Duration::from_secs(60),
+            why: "Could not reach Ployz Cloud: refused.".to_owned(),
+        };
+        keep_answered_token(next, &sending(NEW_TOKEN), &committing, PIPED)
+            .map_err(|error| error.to_string())
+    });
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !install.is_finished(),
+        "the install wrote while another held the lock"
+    );
+    fs::write(&token_file, format!("{OLD_TOKEN}\n")).unwrap();
+    drop(other);
+    let kept = install.join().unwrap().unwrap_err();
+    assert!(
+        kept.contains(&format!("this install keeps {}", token_file.display())),
+        "{kept}"
+    );
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{OLD_TOKEN}\n")
+    );
+}
+
+#[test]
+fn a_piped_install_stops_on_an_unreadable_token_file_before_it_writes_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    fs::create_dir(&paths.token_file).unwrap();
+    let piped = fs::File::open(token_file_holding(&tempfile::tempdir().unwrap(), NEW_TOKEN));
+    let Err(error) = install_start(&paths, "http://127.0.0.1:9", Some(piped.unwrap())) else {
+        panic!("an unreadable token file was taken");
+    };
+    let error = error.to_string();
+    assert!(
+        error.contains(&format!("Could not read {}", paths.token_file.display())),
+        "{error}"
+    );
+    assert!(
+        !paths.checkin_dir.exists(),
+        "the install wrote its key first"
+    );
+}
+
+#[test]
+fn a_token_read_from_its_file_stays_where_it_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = token_file_holding(&dir, OLD_TOKEN);
+    fs::set_permissions(&token_file, fs::Permissions::from_mode(0o644)).unwrap();
+    let client = sending(OLD_TOKEN);
+    let after = std::time::Duration::from_secs(60);
+    for next in [
+        Next::Wait { after, log: None },
+        Next::Retry {
+            after,
+            why: "Could not reach Ployz Cloud: refused.".to_owned(),
+        },
+    ] {
+        keep_answered_token(next, &client, &token_file, FROM_FILE).unwrap();
+        assert_eq!(
+            fs::read_to_string(&token_file).unwrap(),
+            format!("{OLD_TOKEN}\n")
+        );
+        let mode = fs::metadata(&token_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}
+
+#[test]
+fn a_token_on_stdin_must_be_piped_not_typed() {
+    let terminal = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/ptmx")
+        .unwrap();
+    let Err(typed) = stdin_token(terminal) else {
+        panic!("a terminal on stdin was read");
+    };
+    let typed = typed.to_string();
+    assert!(
+        typed.contains("--token-stdin reads a piped Fleet Token"),
+        "{typed}"
+    );
+    let piped = fs::File::open(token_file_holding(&tempfile::tempdir().unwrap(), NEW_TOKEN));
+    assert!(stdin_token(piped.unwrap()).is_ok());
+}
+
+#[test]
+fn a_token_on_stdin_belongs_to_an_install() {
+    let parsed = command(Command::new("checkin"))
+        .no_binary_name(true)
+        .try_get_matches_from(["--token-stdin"]);
+    assert!(parsed.is_err());
+    let parsed = command(Command::new("checkin"))
+        .no_binary_name(true)
+        .try_get_matches_from(["--install", "--token-stdin"])
+        .unwrap();
+    assert!(parsed.get_flag("token-stdin"));
 }
