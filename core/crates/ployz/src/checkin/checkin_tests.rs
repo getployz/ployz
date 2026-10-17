@@ -566,6 +566,65 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
     );
 }
 
+#[tokio::test]
+async fn a_probe_handout_opens_a_window_and_every_later_check_in_reports_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let body = format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":10000,"listen":["tcp:{port}"],"send":[]}}}}"#
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), body, 3).await;
+    let (host, mut client, mut probes) = (FakeHost::default(), client(&url), Probes::default());
+
+    for _ in 0..3 {
+        let next = pass_from(
+            &host,
+            &mut client,
+            &key(),
+            &paths,
+            Utc::now(),
+            false,
+            &mut probes,
+        )
+        .await;
+        assert_eq!(
+            next,
+            Next::Wait {
+                after: Duration::from_secs(10),
+                log: None
+            }
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the window listens on the named port");
+    }
+
+    let requests = server.await.unwrap();
+    assert!(!requests.first().unwrap().contains(r#""probe""#));
+    for later in requests.get(1..).unwrap() {
+        assert!(
+            later.contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+            "{later}"
+        );
+    }
+    assert_eq!(
+        LocalCheckin::read(&paths.status()).unwrap().unwrap().answer,
+        Seen::Wait
+    );
+}
+
 fn sending(token: &str) -> CheckinClient {
     CheckinClient::new("http://127.0.0.1:9", FleetToken::literal(token)).unwrap()
 }

@@ -6,6 +6,7 @@
 //! and `status.json` only remembers the last answer for `ployz status`.
 
 mod client;
+mod probe;
 pub(crate) mod unit;
 mod wire;
 
@@ -20,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
+use probe::Probes;
 use wire::{Answer, CheckinRequest, PrepState};
 pub(crate) use wire::{DockerPrep, Issue, Prep, Probe, StopReason, ZfsPrep};
 
@@ -358,8 +360,9 @@ pub(crate) async fn run<H: Host>(
     paths: &Paths,
 ) -> CheckinEnd {
     let mut last_log = None;
+    let mut probes = Probes::default();
     loop {
-        match pass(host, client, key, paths, Utc::now()).await {
+        match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after, log } => {
                 if let Some(line) = log.filter(|line| last_log != Some(*line)) {
                     crate::ui::note(line);
@@ -466,6 +469,7 @@ pub(crate) async fn stop<H: Host>(
     CheckinEnd::Stopped(reason)
 }
 
+#[cfg(test)]
 pub(crate) async fn pass<H: Host>(
     host: &H,
     client: &mut CheckinClient,
@@ -473,7 +477,7 @@ pub(crate) async fn pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, false).await
+    pass_from(host, client, key, paths, now, false, &mut Probes::default()).await
 }
 
 /// The pass an explicit `--install` makes: a failed preparation starts over at once, with its
@@ -485,7 +489,7 @@ pub(crate) async fn install_pass<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
 ) -> Next {
-    pass_from(host, client, key, paths, now, true).await
+    pass_from(host, client, key, paths, now, true, &mut Probes::default()).await
 }
 
 async fn pass_from<H: Host>(
@@ -495,6 +499,7 @@ async fn pass_from<H: Host>(
     paths: &Paths,
     now: DateTime<Utc>,
     installing: bool,
+    probes: &mut Probes,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     let refusal = previous
@@ -592,13 +597,20 @@ async fn pass_from<H: Host>(
         cli_version: env!("CARGO_PKG_VERSION"),
         report: &report,
         prep: Some(prep),
+        probe: probes.report(),
     };
     let next = match client.post(key, &request).await {
         client::Reply::Answer(Answer::Wait(after)) => {
             status.answer = Seen::Wait;
             Next::Wait { after, log: None }
         }
+        client::Reply::Answer(Answer::Probe(after, handout)) => {
+            probes.open(handout, key).await;
+            status.answer = Seen::Wait;
+            Next::Wait { after, log: None }
+        }
         client::Reply::Answer(Answer::Enroll) => {
+            probes.close().await;
             status.answer = Seen::Enroll;
             Next::Wait {
                 after: ENROLL_WAIT,
@@ -606,6 +618,7 @@ async fn pass_from<H: Host>(
             }
         }
         client::Reply::Answer(Answer::Stop(reason, message)) => {
+            probes.close().await;
             status.answer = Seen::Stop;
             status.reason = Some(reason);
             status.message = Some(message.clone());

@@ -233,6 +233,13 @@ prepares Docker and ZFS meanwhile.
    answers, trying the one install chose, then PATH, then its own copy, and doesn't prepare Docker
    or ZFS with it. `No ployzd` means there is none at all: the loop exits until the same command
    installs one.
+10. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
+    at most 10 seconds, then closes them. Nothing stays listening after that. **Open** means Cloud
+    reached the port and the server answered. **Closed** means the server listened but Cloud's
+    connection was refused, so a firewall in front of it turns the port away. **Unknown · port
+    busy** means another program, such as a web server, already holds that port, so Ployz couldn't
+    listen on it. Find it with `sudo ss -lntup 'sport = :80'`, stop it, and check again. A server
+    running a `ployz` older than this feature leaves every port Unknown.
 
 ## Ployz stops over a leftover network
 
