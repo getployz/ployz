@@ -1,7 +1,7 @@
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { Client, ConfigCommand, MachineId } from "@ployz/sdk";
-import { eq, sql } from "drizzle-orm";
+import { eq, isNotNull, sql } from "drizzle-orm";
 import { Effect, Layer, Result } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
@@ -174,7 +174,7 @@ const pairingRows = Effect.gen(function* () {
 
 const backdateRemoval = Effect.gen(function* () {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(organizationPairing).set({ removalStartedAt: new Date(Date.now() - 2 * HOUR) });
+  yield* drizzle.update(organizationPairing).set({ removalStartedAt: new Date(Date.now() - 2 * HOUR) }).where(isNotNull(organizationPairing.removalStartedAt));
   yield* drizzle.execute(sql`update config_removal_mark set at = at - 7200 where organization_id = ${ORGANIZATION}`);
 });
 
