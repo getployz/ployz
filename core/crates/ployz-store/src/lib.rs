@@ -102,7 +102,7 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment,
+    ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 

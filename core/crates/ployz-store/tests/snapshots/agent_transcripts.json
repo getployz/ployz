@@ -4885,6 +4885,143 @@
     ]
   },
   {
+    "tool": "environment_protect",
+    "input": {
+      "environment": "production",
+      "protected": true
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "cloud",
+        "organization": "org"
+      }
+    },
+    "call_key": "call-environment_protect",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "set_environment_protected",
+              "environment": {
+                "project": "shop",
+                "environment": "production"
+              },
+              "protected": true
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environments": [
+                {
+                  "branch_setup": [],
+                  "default": true,
+                  "id": "00000000-0000-4000-8000-000000000002",
+                  "merged": false,
+                  "name": "production",
+                  "parent": null,
+                  "protected": true,
+                  "removal": null
+                }
+              ],
+              "project": {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "name": "shop"
+              },
+              "written": "protected"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "at": "shop/production",
+              "protected": true
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "tool": "environment_protect",
+    "input": {
+      "environment": "production",
+      "protected": true
+    },
+    "place": {
+      "project": "shop",
+      "environment": null,
+      "store": {
+        "at": "local"
+      }
+    },
+    "call_key": "call-environment_protect",
+    "turns": [
+      {
+        "step": {
+          "step": "write",
+          "write": {
+            "at": "store",
+            "write": {
+              "command": "set_environment_protected",
+              "environment": {
+                "project": "shop",
+                "environment": "production"
+              },
+              "protected": true
+            }
+          }
+        },
+        "answers": [
+          {
+            "value": {
+              "environments": [
+                {
+                  "branch_setup": [],
+                  "default": true,
+                  "id": "00000000-0000-4000-8000-000000000002",
+                  "merged": false,
+                  "name": "production",
+                  "parent": null,
+                  "protected": true,
+                  "removal": null
+                }
+              ],
+              "project": {
+                "id": "00000000-0000-4000-8000-000000000001",
+                "name": "shop"
+              },
+              "written": "protected"
+            }
+          }
+        ]
+      },
+      {
+        "step": {
+          "step": "done",
+          "result": {
+            "ok": true,
+            "value": {
+              "at": "shop/production",
+              "protected": true
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
     "tool": "environment_setup",
     "input": {
       "environment": "staging"

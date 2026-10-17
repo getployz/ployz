@@ -1159,6 +1159,17 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
 
         let moved = ok(store, &["env", "default", "staging"]);
         assert_eq!(moved["environments"][1]["default"], json!(true));
+        let protected = error(
+            store,
+            &["env", "rm", "production", "--confirm", "shop/production"],
+        );
+        assert_eq!(protected["code"], json!("unsupported"));
+        assert_eq!(
+            protected["details"]["next"],
+            json!("ployz env protect production --off --project shop")
+        );
+        let unprotected = ok(store, &["env", "protect", "production", "--off"]);
+        assert_eq!(unprotected["environments"][0]["protected"], json!(false));
         // Nothing of production ever ran, so it goes without a Server.
         let removed = ok(
             store,

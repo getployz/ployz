@@ -104,6 +104,7 @@ tools! {
     deployment::DeploymentStart,
     deployment::DeploymentCancel,
     environment::EnvironmentPr,
+    environment::EnvironmentProtect,
     environment::EnvironmentSetup,
     github::GithubLs,
     github::GithubConnect,

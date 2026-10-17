@@ -111,6 +111,10 @@ pub(crate) fn create_project(
     let name = EnvironmentName::parse(DEFAULT_ENVIRONMENT).expect("a valid name");
     let default_environment =
         insert_environment(tx, who, &project, &create.default_environment, name)?;
+    tx.execute(
+        "UPDATE config_environment SET protected = 1 WHERE id = ?1",
+        &[create.default_environment.as_str().into()],
+    )?;
     Ok(ProjectCreated {
         project: ProjectSummary {
             id: create.id.clone(),
