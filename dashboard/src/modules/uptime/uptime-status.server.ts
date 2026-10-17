@@ -39,7 +39,7 @@ export const readEnvironmentUptime = Effect.fn("Uptime.readEnvironment")(functio
   actor: Actor,
   input: ReadEnvironmentUptimeInput,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
     .select({ serviceId: uptimeCheck.serviceId, url: uptimeCheck.url, openedAt: uptimeIncident.openedAt })
@@ -86,7 +86,7 @@ const countedKinds = inArray(uptimeResult.kind, ["routine", "triggered"]);
 
 /** The Service's check with its status, uptime, latency points, results and the incidents over a range. Null without a check. */
 export const readServiceUptime = Effect.fn("Uptime.readService")(function* (actor: Actor, input: ReadServiceUptimeInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const { drizzle } = yield* Database;
   const now = new Date(yield* Clock.currentTimeMillis);
   const found = yield* findCheck(organization.id, input);
@@ -185,7 +185,7 @@ export const readServiceUptime = Effect.fn("Uptime.readService")(function* (acto
  * nothing.
  */
 export const requestUptimeProbe = Effect.fn("Uptime.requestProbe")(function* (actor: Actor, input: RequestUptimeProbeInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const { drizzle } = yield* Database;
   // The checker answers with the request's millisecond, but `now()` writes microseconds.
   const answered = gte(uptimeCheck.probeAnsweredAt, sql`date_trunc('milliseconds', ${uptimeCheck.probeRequestedAt})`);

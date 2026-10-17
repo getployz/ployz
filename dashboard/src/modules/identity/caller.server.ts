@@ -51,7 +51,7 @@ export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (
   const auth = yield* Auth;
   const session = yield* auth.getSession(headers);
   if (session === null) return yield* new Unauthorized();
-  const access = yield* requireAccess({ userId: session.user.id }, organizationSlug, "operate");
+  const access = yield* requireAccess({ userId: session.user.id }, organizationSlug, "org:read");
   return {
     userId: session.user.id,
     organization: access.organization,

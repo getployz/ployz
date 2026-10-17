@@ -158,7 +158,7 @@ export const getOrganizationState = Effect.fn(
 export const syncOrganizationSlug = Effect.fn(
   "Organization.syncOrganizationSlug",
 )(function* (actor: Actor, input: SyncOrganizationSlug) {
-  const { kind, organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { kind, organization } = yield* requireAccess(actor, input.organizationSlug, "org:read");
   // Support visits; its sessions stay in the staff member's own Organization.
   if (kind === "member") {
     yield* updateActorSessionsOrganization(actor, organization.id, input.organizationSlug);
@@ -229,7 +229,7 @@ const setActiveOrganizationForSession = Effect.fn(
 
 export const handleUserCreated = Effect.fn("Organization.handleUserCreated")(
   function* (user: PersonalOrganizationUser) {
-    yield* ensurePersonalOrganizationForUser(user);
+    return yield* ensurePersonalOrganizationForUser(user);
   },
 );
 

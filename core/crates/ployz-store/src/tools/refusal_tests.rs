@@ -184,6 +184,35 @@ fn another_refusal_keeps_the_same_call_as_its_retry() {
 }
 
 #[test]
+fn a_claim_refusal_carries_the_claim_url() {
+    let call = Call::new(
+        "domain_add",
+        json!({ "service": "web", "hostname": "app.example.com" }),
+    );
+    let error = store_error(
+        RpcErrorCode::from("claim_required"),
+        "Claim this Organization to add a custom domain.",
+        json!({
+            "claim_url": "https://ployz.app/claim/abc",
+            "action": "add_domain",
+            "next": "Open https://ployz.app/claim/abc and sign in with GitHub, then try again.",
+        }),
+    );
+    let refusal = from_store(error, &call, Writes::None);
+    assert_eq!(refusal.code, RpcErrorCode::from("claim_required"));
+    assert_eq!(
+        refusal.fix(),
+        Some(Fix::Claim {
+            url: "https://ployz.app/claim/abc".into()
+        })
+    );
+    assert!(
+        !refusal.retries(),
+        "the same call fails until a person claims"
+    );
+}
+
+#[test]
 fn a_domain_key_is_no_setting() {
     assert_eq!(not_setting("managedHostnames"), Some("domain_add"));
     assert_eq!(not_setting("volumes"), Some("volume_add"));

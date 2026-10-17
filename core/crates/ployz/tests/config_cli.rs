@@ -17,8 +17,8 @@ use ployz_core::RpcError;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
-    ConfigStore, DomainEvidence, Hostname, OrganizationId, Principal, Removal, RunnerId,
-    SealingKey, Trusted, Written,
+    ConfigStore, DomainEvidence, Hostname, OrganizationId, Permission, Principal, Removal,
+    RunnerId, SealingKey, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -337,6 +337,8 @@ fn evidence() -> Trusted {
             ..DomainEvidence::default()
         },
         servers: Some(1),
+        // Cloud sends what the token's member holds: here, everything.
+        permissions: Some(Permission::ALL.iter().copied().collect()),
         ..github()
     }
 }

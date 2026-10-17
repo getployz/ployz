@@ -24,12 +24,14 @@ import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
+import { Route as ClaimSecretRouteImport } from './routes/claim/$secret'
 import { Route as DevSettingsRowsRouteImport } from './routes/dev.settings-rows'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
 import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
+import { Route as ApiAgentSignupRouteImport } from './routes/api/agent/signup'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCheckinIndexRouteImport } from './routes/api/checkin/index'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
@@ -160,6 +162,11 @@ const AuthGithubRoute = AuthGithubRouteImport.update({
   path: '/auth/github',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClaimSecretRoute = ClaimSecretRouteImport.update({
+  id: '/claim/$secret',
+  path: '/claim/$secret',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DevSettingsRowsRoute = DevSettingsRowsRouteImport.update({
   id: '/dev/settings-rows',
   path: '/dev/settings-rows',
@@ -193,6 +200,11 @@ const ProtectedCloudOrganizationSlugRouteRoute =
     path: '/$organizationSlug',
     getParentRoute: () => ProtectedCloudRouteRoute,
   } as any)
+const ApiAgentSignupRoute = ApiAgentSignupRouteImport.update({
+  id: '/api/agent/signup',
+  path: '/api/agent/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -561,10 +573,12 @@ export interface FileRoutesByFullPath {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -633,10 +647,12 @@ export interface FileRoutesByTo {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -706,10 +722,12 @@ export interface FileRoutesById {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -784,10 +802,12 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -856,10 +876,12 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -928,10 +950,12 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -1004,9 +1028,11 @@ export interface RootRouteChildren {
   ApiSplatRoute: typeof ApiSplatRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
+  ClaimSecretRoute: typeof ClaimSecretRoute
   DevSettingsRowsRoute: typeof DevSettingsRowsRoute
   InviteTokenRoute: typeof InviteTokenRoute
   DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
+  ApiAgentSignupRoute: typeof ApiAgentSignupRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
@@ -1143,6 +1169,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthGithubRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/claim/$secret': {
+      id: '/claim/$secret'
+      path: '/claim/$secret'
+      fullPath: '/claim/$secret'
+      preLoaderRoute: typeof ClaimSecretRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dev/settings-rows': {
       id: '/dev/settings-rows'
       path: '/dev/settings-rows'
@@ -1184,6 +1217,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugRouteRouteImport
       parentRoute: typeof ProtectedCloudRouteRoute
+    }
+    '/api/agent/signup': {
+      id: '/api/agent/signup'
+      path: '/api/agent/signup'
+      fullPath: '/api/agent/signup'
+      preLoaderRoute: typeof ApiAgentSignupRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/auth/$': {
       id: '/api/auth/$'
@@ -1796,10 +1836,12 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSplatRoute: ApiSplatRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
+  ClaimSecretRoute: ClaimSecretRoute,
   DevSettingsRowsRoute: DevSettingsRowsRoute,
   InviteTokenRoute: InviteTokenRoute,
   DotwellKnownOauthProtectedResourceMcpRoute:
     DotwellKnownOauthProtectedResourceMcpRoute,
+  ApiAgentSignupRoute: ApiAgentSignupRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,

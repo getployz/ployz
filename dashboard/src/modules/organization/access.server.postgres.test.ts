@@ -18,7 +18,7 @@ let staff: string;
 const run = <A, E>(effect: Effect.Effect<A, E, Database | SecretEncryption>) =>
   harness.runEffect(effect.pipe(Effect.provideService(SupportStaff, supportStaffOf([staff]))));
 
-const staffAccess = () => run(requireAccess({ userId: staff }, SLUG, "operate").pipe(
+const staffAccess = () => run(requireAccess({ userId: staff }, SLUG, "org:read").pipe(
   Effect.map((access) => access.kind),
   Effect.catchTag("NotFound", () => Effect.succeed("not_found")),
 ));

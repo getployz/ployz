@@ -11,10 +11,11 @@ import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { callStoreAsMember, writeStoreAsMember } from "#/modules/config-store/config-store.server";
+import { callStore, callStoreAsMember, callStoreBy, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import type { Access } from "#/modules/organization/access.server";
 import * as ids from "#/test/ids";
-import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
@@ -245,6 +246,42 @@ it.live(
         // Naming an Organization you're not a member of is refused before the Store is asked.
         const foreign = yield* Effect.exit(callStoreAsMember(bob, slug, { operation: "read", query: get(null) }));
         assert.isTrue(Exit.isFailure(foreign) && Cause.squash(foreign.cause) instanceof NotFound);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a member stages but can't delete an Environment or a Project; an admin can",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* resolveCaller(signedIn(yield* signUp("alice")));
+        const bobSession = yield* signUp("bob");
+        const bobUser = (yield* resolveCaller(signedIn(bobSession))).userId;
+        const slug = alice.organization.slug;
+        const { drizzle } = yield* Database;
+        yield* drizzle.insert(member).values({ userId: bobUser, organizationId: alice.organization.id, role: "member" });
+        const bob = { userId: bobUser };
+
+        assert.isTrue((yield* callStoreAsMember(alice, slug, write(shop))).ok);
+        assert.isTrue((yield* callStoreAsMember(alice, slug, write({
+          command: "create_environment", id: "00000000-0000-4000-8000-000000000004", project: "shop", name: "staging",
+        }))).ok);
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, web)).ok, "a member stages");
+
+        const deleteStaging: ConfigCommand = { command: "remove", project: "shop", environment: "staging" };
+        const deleteShop: ConfigCommand = { command: "remove", project: "shop" };
+        for (const command of [deleteStaging, deleteShop]) {
+          const refused = yield* Effect.exit(writeStoreAsMember(bob, slug, command));
+          const error = Exit.isFailure(refused) ? Cause.squash(refused.cause) : null;
+          assert.deepInclude(error, { _tag: "Forbidden", message: "Only an owner or admin of this Organization can do this." });
+        }
+
+        yield* drizzle.update(member).set({ role: "admin" }).where(eq(member.userId, bobUser));
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteStaging)).ok, "an admin deletes the Environment");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteShop)).ok, "an admin deletes the Project");
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -816,5 +853,35 @@ it.live(
         assert.strictEqual(yield* held(second), 1);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
+  60_000,
+);
+
+it.live(
+  "a user's write carries what they hold: none named is a defect, and callStoreBy sends the role's set",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const organizationId = "00000000-0000-4000-8000-00000000c001";
+        const owner = yield* seedStoreOrganization(organizationId);
+        const { drizzle } = yield* Database;
+        const [linus] = yield* drizzle.insert(user).values({ email: "linus@example.test", name: "Linus" }).returning();
+        const memberId = linus?.id ?? assert.fail("no member");
+        yield* drizzle.insert(member).values({ userId: memberId, organizationId, role: "member" });
+        const organization = { id: organizationId, slug: "shop" };
+        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization });
+        const buildOrder = write({ command: "set_build_order", build_order: "servers-then-github" });
+
+        // A user's write with no permissions named is Cloud's defect, never a grant.
+        const unnamed = yield* Effect.exit(callStore(organizationId, owner, buildOrder));
+        assert.isTrue(Exit.isFailure(unnamed), String(unnamed));
+        if (Exit.isFailure(unnamed)) assert.match(String(Cause.squash(unnamed.cause)), /names no permissions/);
+        // The Store refuses a member what their role lacks, and lands an owner's.
+        const refused = yield* callStoreBy(organizationId, by(memberId, "member"), buildOrder);
+        assert.isFalse(refused.ok);
+        if (!refused.ok) assert.deepInclude(refused.refusal, { code: "forbidden", message: "Needs org:settings" });
+        assert.isTrue((yield* callStoreBy(organizationId, by(owner, "owner"), buildOrder)).ok);
+      }).pipe(Effect.provide(layer));
+    }),
   60_000,
 );

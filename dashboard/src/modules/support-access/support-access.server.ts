@@ -24,7 +24,7 @@ export const setSupportAccess = Effect.fn("SupportAccess.set")(function* (
   actor: Actor,
   { organizationSlug, change }: SetSupportAccessInput,
 ) {
-  const access = yield* requireAccess(actor, organizationSlug, "manage");
+  const access = yield* requireAccess(actor, organizationSlug, "org:settings");
   if (access.kind === "support") return yield* new Forbidden({ message: "Only an owner or admin of this Organization can do this." });
   const organizationId = access.organization.id;
   const { drizzle } = yield* Database;

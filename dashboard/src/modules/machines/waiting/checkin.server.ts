@@ -16,7 +16,7 @@ import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enr
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
-import { ENROLLMENT_STAGES, isReadyFor, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
+import { PAST_STORAGE, isReadyFor, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
@@ -138,7 +138,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
     eq(waitingServer.checkinKey, request.checkinKey),
   );
   const [existing] = yield* drizzle
-    .select({ fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
+    .select({ id: waitingServer.id, fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
     .from(waitingServer)
     .where(key);
   const newToToken = existing?.fleetTokenId !== token.id;
@@ -148,7 +148,10 @@ const admit = Effect.fn("Checkin.admit")(function* (
   const ended = endedBy(live);
   const stopped = ended === null ? null : yield* endUnlessEnrolling(token, request.checkinKey, ended);
   if (stopped !== null) return stopped;
-  if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
+  if (!newToToken && existing.rejectedAt !== null) {
+    const open = yield* openAttemptFor(existing.id);
+    if (open === null || !PAST_STORAGE.has(open.stage)) return stop("rejected");
+  }
   if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
     return yield* new CheckinRefused({
       status: 429,
@@ -172,7 +175,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
     : yield* drizzle
       .update(waitingServer)
       .set(fresh)
-      .where(and(key, eq(waitingServer.fleetTokenId, token.id), isNull(waitingServer.rejectedAt)))
+      .where(and(key, eq(waitingServer.fleetTokenId, token.id), existing.rejectedAt === null ? isNull(waitingServer.rejectedAt) : undefined))
       .returning({ id: waitingServer.id, probe: waitingServer.probe });
   if (row === undefined) return OWNERSHIP_CHANGED;
   const answer = yield* answerAttempt(row.id, request, report);
@@ -201,8 +204,6 @@ const hasOpenEnrollment = Effect.fn("Checkin.hasOpenEnrollment")(function* (
     .limit(1);
   return row !== undefined;
 });
-
-const PAST_STORAGE = new Set<string | null>(ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1));
 
 function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentCheckinReport | null {
   if (open.instruction.storage.kind === "zfs" && request.prep?.zfs === "failed" && !PAST_STORAGE.has(open.stage)) {

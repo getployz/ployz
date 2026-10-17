@@ -7,6 +7,7 @@ import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domai
 import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { firstRuntimeFrame } from "#/modules/runtime/organization-runtime.server";
 import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
@@ -23,6 +24,8 @@ const DomainCall = Schema.Union([
   Schema.Struct({ query: Schema.Literal("domains") }),
   Schema.Struct({ query: Schema.Literal("domain"), environment: Schema.optional(EnvironmentRef), domain: Schema.String }),
 ]);
+
+const AddDomainAnyHostname = Schema.Struct({ command: Schema.Literal("add_domain"), hostname: Schema.optional(Schema.Unknown) });
 
 const nothing: ConfigDomainEvidence = { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] };
 
@@ -131,7 +134,10 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   read: StoreRead,
   lookUp: (hostname: string) => Effect.Effect<DnsLookup | null> = lookUpHostname,
 ) {
-  const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(call.operation === "read" ? call.query : call.command));
+  const asked = call.operation === "read" ? call.query : call.command;
+  const adding = Option.getOrUndefined(Schema.decodeUnknownOption(AddDomainAnyHostname)(asked));
+  if ((adding?.hostname ?? null) !== null) yield* requireClaimed(organizationId, "add_domain");
+  const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(asked));
   if (wanted === undefined) return nothing;
   if ("command" in wanted) {
     if (wanted.command !== "admit") {

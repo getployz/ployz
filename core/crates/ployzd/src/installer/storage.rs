@@ -92,12 +92,21 @@ impl ZfsRoute {
             self.package_manager(),
             || match self {
                 Self::Ubuntu => install_zfs_packages(kernel),
-                Self::Debian { codename, keyring } => {
-                    prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
-                }
-                Self::AmazonLinux => {
-                    prepare_amazon_zfs(&paths.modules_load_dir, os, kernel, OPENZFS_SHA256)
-                }
+                Self::Debian { codename, keyring } => prepare_debian_zfs(
+                    &paths.apt_dir,
+                    os,
+                    codename,
+                    keyring,
+                    kernel,
+                    super::prepare::prepared_dkms_build(paths, kernel),
+                ),
+                Self::AmazonLinux => prepare_amazon_zfs(
+                    &super::prepare::prepare_dir(paths).join("zfs"),
+                    &paths.modules_load_dir,
+                    os,
+                    kernel,
+                    OPENZFS_SHA256,
+                ),
             },
         )
     }
@@ -173,20 +182,21 @@ fn run_step(step: &'static str, command: &mut Command) -> Result<(), BuildFailur
     run_command(step, command).map(drop).map_err(failed(step))
 }
 
-/// Runs `build`, then checks `kernel` has ZFS.
-///
 /// # Errors
 ///
 /// Names the OS, kernel and failing step, and points at `--storage none`.
 fn build_zfs_module(
     os: &OsRelease,
     kernel: &str,
+    warn_slow_build: bool,
     build: impl FnOnce() -> Result<(), BuildFailure>,
 ) -> Result<(), Error> {
-    eprintln!(
-        "WARNING: {} doesn't include ZFS, so Ployz is building it for kernel {kernel}. This can take up to 20 minutes on small Servers. Ubuntu includes ZFS and sets up in seconds.",
-        os.display()
-    );
+    if warn_slow_build {
+        eprintln!(
+            "WARNING: {} doesn't include ZFS, so Ployz is building it for kernel {kernel}. This can take up to 20 minutes on small Servers. Ubuntu includes ZFS and sets up in seconds.",
+            os.display()
+        );
+    }
     build()
         .and_then(|()| {
             if zfs_installed(kernel) {
@@ -218,15 +228,17 @@ pub(super) fn zfs_installed(kernel: &str) -> bool {
 }
 
 /// Adds `contrib` in its own source and installs Debian's `zfs-dkms`, whose install builds the
-/// module for every kernel with headers.
+/// module for every kernel with headers. A module preparation already built is installed as it
+/// is, beside `zfsutils-linux` alone, since `zfs-dkms` would build it again.
 fn prepare_debian_zfs(
     apt_dir: &Path,
     os: &OsRelease,
     codename: &str,
     keyring: &str,
     kernel: &str,
+    prepared: Option<super::prepare::PreparedBuild>,
 ) -> Result<(), Error> {
-    build_zfs_module(os, kernel, || {
+    build_zfs_module(os, kernel, prepared.is_none(), || {
         let flavour = debian_kernel_flavour_step(kernel)?;
         enable_debian_contrib(apt_dir, codename, keyring)?;
         // The flavour's meta package pulls headers for future kernels, so DKMS can rebuild.
@@ -244,6 +256,24 @@ fn prepare_debian_zfs(
             None,
         )
         .map_err(failed(step))?;
+        if let Some(build) = prepared {
+            let step = "installing the prepared ZFS build";
+            super::prepare::install_prepared_build(&build, kernel).map_err(failed(step))?;
+            let step = "installing zfsutils-linux";
+            run_apt(
+                step,
+                [
+                    "install",
+                    "-y",
+                    "-qq",
+                    "--no-install-recommends",
+                    "zfsutils-linux",
+                ],
+                None,
+            )
+            .map_err(failed(step))?;
+            return Ok(());
+        }
         // run_apt's noninteractive frontend and closed stdin keep the CDDL debconf note from blocking.
         let step = "installing zfs-dkms";
         run_apt(
@@ -359,24 +389,29 @@ pub(super) fn require_kernel_devel(os: &OsRelease, kernel: &str) -> Result<(), E
     Ok(())
 }
 
-/// Builds the pinned OpenZFS into DKMS and userspace RPMs and installs them; DKMS builds the
-/// module. `sha256` is the tarball's expected checksum.
 fn prepare_amazon_zfs(
+    prepared: &Path,
     modules_load_dir: &Path,
     os: &OsRelease,
     kernel: &str,
-    sha256: &str,
+    tarball_sha256: &str,
 ) -> Result<(), Error> {
-    build_zfs_module(os, kernel, || {
-        let scratch = staging_directory(Path::new("/var/tmp"))
-            .map_err(failed("staging the OpenZFS build"))?;
-        let tarball = download_openzfs(scratch.path(), sha256)?;
-        let mut dependencies = Command::new("dnf");
-        dependencies
-            .args(["install", "-y", &kernel_devel(kernel)])
-            .args(OPENZFS_BUILD_DEPENDENCIES);
-        run_step("installing build dependencies", &mut dependencies)?;
-        let rpms = make_openzfs_rpms(scratch.path(), &tarball)?;
+    build_zfs_module(os, kernel, true, || {
+        let scratch;
+        let rpms = match built_rpms(&prepared.join(format!("zfs-{OPENZFS_VERSION}"))) {
+            Ok(rpms) => rpms,
+            Err(_) => {
+                scratch = staging_directory(Path::new("/var/tmp"))
+                    .map_err(failed("staging the OpenZFS build"))?;
+                let tarball = download_openzfs(scratch.path(), tarball_sha256)?;
+                let mut dependencies = Command::new("dnf");
+                dependencies
+                    .args(["install", "-y", &kernel_devel(kernel)])
+                    .args(OPENZFS_BUILD_DEPENDENCIES);
+                run_step("installing build dependencies", &mut dependencies)?;
+                make_openzfs_rpms(scratch.path(), &tarball)?
+            }
+        };
         // zfs-dkms's install builds and installs the module for the running kernel.
         let mut install = Command::new("dnf");
         install.args(["install", "-y"]).args(rpms);

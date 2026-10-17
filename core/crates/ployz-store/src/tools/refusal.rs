@@ -71,7 +71,6 @@ impl Call {
         }
     }
 
-    /// Stands for the refused call itself until the machine fills it in.
     fn same() -> Self {
         Self::new("", json!({}))
     }
@@ -106,6 +105,8 @@ pub struct Refusal {
     pub did_you_mean: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub valid: Vec<String>,
+    #[serde(default = "Call::same", skip_serializing_if = "Call::is_same")]
+    #[ts(as = "Option<Call>", optional)]
     pub retry: Call,
     pub writes: Writes,
     #[serde(default)]
@@ -201,6 +202,10 @@ impl Refusal {
         self
     }
 
+    pub(crate) fn retries(&self) -> bool {
+        !matches!(self.fix(), Some(Fix::Claim { .. }))
+    }
+
     /// The structured fix, if a human must act.
     #[must_use]
     pub fn fix(&self) -> Option<Fix> {
@@ -246,6 +251,9 @@ pub(crate) fn from_store(error: RpcError, call: &Call, writes: Writes) -> Refusa
                 Next::Drop => {}
             }
         }
+    }
+    if let Some(url) = details.get("claim_url").and_then(Value::as_str) {
+        refusal = refusal.with_fix(&Fix::Claim { url: url.into() });
     }
     if code == RpcErrorCode::ConfirmationRequired {
         // Only a confirmation's retry may accept loss: the one the Store named.

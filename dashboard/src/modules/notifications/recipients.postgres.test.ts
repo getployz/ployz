@@ -22,6 +22,7 @@ let ada: string;
 let bob: string;
 let cy: string;
 let outsider: string;
+let agent: string;
 
 const inngest = new Inngest({ id: "recipients-test" });
 const send = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
@@ -52,8 +53,9 @@ beforeAll(async () => {
     { email: "bob@acme.test", name: "Bob" },
     { email: "cy@acme.test", name: "Cy" },
     { email: "out@globex.test", name: "Out" },
+    { email: "agent@anonymous.ployz.invalid", name: "Agent", isAnonymous: true },
   ]).returning({ id: user.id });
-  [ada, bob, cy, outsider] = users.map((row) => row.id) as [string, string, string, string];
+  [ada, bob, cy, outsider, agent] = users.map((row) => row.id) as [string, string, string, string, string];
   await harness.db.insert(organization).values([
     { id: ACME, name: "Acme", slug: "acme" },
     { id: GLOBEX, name: "Globex", slug: "globex" },
@@ -63,6 +65,7 @@ beforeAll(async () => {
     { userId: bob, organizationId: ACME, role: "member" },
     { userId: cy, organizationId: ACME, role: "member" },
     { userId: outsider, organizationId: GLOBEX, role: "owner" },
+    { userId: agent, organizationId: ACME, role: "member" },
   ]);
   await harness.db.insert(notificationPreference).values([
     { userId: bob, type: "uptime", channel: "none" },
@@ -87,6 +90,12 @@ describe("resolveRecipients", () => {
   it("reads None only for the type it was set on", async () => {
     expect(await recipientsOf("deploy-failed")).toEqual(["ada@acme.test", "bob@acme.test"]);
     expect(await recipientsOf("upgrade-failed")).toEqual(["ada@acme.test", "bob@acme.test", "cy@acme.test"]);
+  });
+
+  it("leaves out an anonymous member, whose address has no mailbox", async () => {
+    for (const type of ["uptime", "deploy-failed", "upgrade-failed"] as const) {
+      expect(await recipientsOf(type)).not.toContain("agent@anonymous.ployz.invalid");
+    }
   });
 });
 

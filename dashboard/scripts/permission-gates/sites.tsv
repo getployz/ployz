@@ -1,0 +1,78 @@
+file	line	site	need	permission	change
+src/collections/read.server.ts	37	readCollection	operate	org:read	none
+src/modules/approvals/approvals.functions.ts	18	listPendingApprovalsServerFn	operate	org:read	none
+src/modules/approvals/approvals.functions.ts	26	getApprovalServerFn	operate	org:read	none
+src/modules/approvals/approvals.functions.ts	38	decideApprovalServerFn	operate	approvals:answer	none
+src/modules/volume-copies/volume-copies.functions.ts	13	refreshMirrorServerFn	operate	services:control	none
+src/modules/volume-copies/volume-copies.functions.ts	20	mirrorStatusesServerFn	operate	volumes:read	none
+src/modules/server-upgrade/server-upgrade.server.ts	100	listLatestServerUpgrades	operate	servers:read	none
+src/modules/server-upgrade/server-upgrade.server.ts	126	requestServerUpgrade	operate	servers:operate	member refused
+src/modules/cluster-domain/cluster-domain.server.ts	82	checkClusterDomainNow	operate	org:read	none
+src/modules/support-access/support-access.server.ts	27	setSupportAccess	manage	org:settings	none
+src/modules/organization/organization-state.server.ts	161	syncOrganizationSlug	operate	org:read	none
+src/modules/organization/organization-removal.server.ts	61	removeOrganizationAsMember	own	org:delete	none
+src/modules/agent/agent.functions.ts	12	listAgentThreadsServerFn	operate	org:read	none
+src/modules/volume-run/volume-run.functions.ts	17	inspectVolumeCopiesServerFn	operate	volumes:read	none
+src/modules/volume-run/volume-run.functions.ts	24	isVolumeOwedServerFn	operate	volumes:read	none
+src/modules/volume-run/volume-run.functions.ts	31	listActiveVolumeRunsServerFn	operate	volumes:read	none
+src/modules/volume-run/volume-run.functions.ts	38	getVolumeRunServerFn	operate	volumes:read	none
+src/modules/canvas/canvas-positions.server.ts	16	updateCanvasPosition	operate	project:edit	none
+src/modules/config-store/config-store.server.ts	329	callStoreAsMember	operate	project:read	none
+src/modules/config-store/config-store.server.ts	343	writeStoreAsMember	operate	by command	member refused for remove (environment:delete, project:delete)
+src/modules/github/github.server.ts	129	listGithubRepositories	operate	project:read	none
+src/modules/github/github.server.ts	137	getGithubRepoAccessState	operate	project:read	none
+src/modules/github/github.server.ts	150	requestGithubRepoSync	operate	project:edit	none
+src/modules/github/github.server.ts	177	readableRepository	operate	project:read	none
+src/modules/github/github-build.server.ts	130	listGithubBuildRepositories	operate	project:read	none
+src/modules/github/github-connect.server.ts	73	startGithubConnect	manage	github:connect	none
+src/modules/github/github-connect.server.ts	150	completeGithubConnect	manage	github:connect	none
+src/modules/github/github-connect.server.ts	197	readOffer	manage	github:connect	none
+src/modules/github/github-connect.server.ts	227	listOrganizationGithub	operate	org:read	none
+src/modules/github/github-cli.server.ts	189	disconnectGithub	manage	github:connect	none
+src/modules/uptime/uptime-status.server.ts	42	readEnvironmentUptime	operate	metrics:read	none
+src/modules/uptime/uptime-status.server.ts	89	readServiceUptime	operate	metrics:read	none
+src/modules/uptime/uptime-status.server.ts	188	requestUptimeProbe	operate	metrics:read	none
+src/modules/billing/billing.server.ts	106	getBillingState	operate	org:read	none
+src/modules/billing/billing.server.ts	144	createCustomerPortal	operate	org:read	none
+src/modules/identity/caller.server.ts	54	dashboardCaller	operate	org:read	none
+src/modules/service-act/service-act.functions.ts	24	latestServiceActServerFn	operate	project:read	none
+src/modules/metrics/metrics.server.ts	33	readServiceMetrics	operate	metrics:read	none
+src/modules/metrics/metrics.server.ts	43	readRuntimeServiceMetrics	operate	metrics:read	none
+src/modules/metrics/metrics.server.ts	50	readServerMetrics	operate	metrics:read	none
+src/modules/runtime/container-logs.server.ts	49	openContainerLogs	operate	logs:read	none
+src/modules/runtime/container-logs.server.ts	76	openContainerLogs support recheck	operate	logs:read	none
+src/modules/volume-placement/volume-placement.functions.ts	23	listPlacementsServerFn	operate	volumes:read	none
+src/modules/volume-placement/volume-placement.functions.ts	30	stagePlacementServerFn	operate	changes:stage	none
+src/modules/volume-placement/volume-placement.functions.ts	40	discardPlacementServerFn	operate	changes:stage	none
+src/modules/volume-placement/volume-placement.functions.ts	47	stageRestoreServerFn	operate	changes:stage	none
+src/modules/volume-placement/volume-placement.functions.ts	54	stageOffServerServerFn	operate	changes:stage	none
+src/modules/volume-placement/volume-placement.functions.ts	63	deleteCopyServerFn	operate	volumes:delete-copy	member refused
+src/modules/machines/server-drain.server.ts	234	listLatestServerDrains	operate	servers:read	none
+src/modules/machines/server-web-traffic.server.ts	74	requestServerWebTraffic	operate	servers:operate	member refused
+src/modules/machines/server-web-traffic.server.ts	119	listLatestServerWebTraffic	operate	servers:read	none
+src/modules/machines/machine-removal.server.ts	292	loadMachineDataLoss	operate	servers:remove	member refused
+src/modules/machines/machine-removal.server.ts	322	enqueueMachineRemove	operate	servers:remove	member refused
+src/modules/machines/machine-removal.server.ts	354	getMachineRemoveAttempt	operate	servers:read	none
+src/modules/machines/namespace-cleanup.server.ts	32	listStrayNamespaces	operate	servers:read	none
+src/modules/machines/namespace-cleanup.server.ts	42	removeStrayNamespace	operate	servers:operate	member refused
+src/modules/machines/enrollment.server.ts	77	authorizeEnrollmentOrganization	operate	servers:add	member refused
+src/modules/machines/waiting/waiting-servers.server.ts	69	listWaitingServers	operate	servers:read	none
+src/modules/machines/waiting/waiting-servers.server.ts	77	showWaitingServer	operate	servers:read	none
+src/routes/api/org/changes.ts	23	org changes feed	operate	org:read	none
+src/modules/machines/waiting/fleet-token.server.ts	34	createFleetToken	operate	servers:add	member refused
+src/modules/machines/waiting/fleet-token.server.ts	75	listFleetTokens	operate	servers:read	none
+src/modules/machines/waiting/fleet-token.server.ts	105	revokeFleetToken	operate	servers:add	member refused
+src/modules/web-analytics/ui/analytics.server.ts	44	readAnalyticsView	operate	metrics:read	none
+src/modules/web-analytics/ui/analytics.server.ts	106	openRequests	operate	metrics:read	none
+src/modules/web-analytics/ui/analytics.server.ts	180	turnOnAnalytics	manage	org:settings	none
+src/modules/web-analytics/ui/analytics.server.ts	189	requireSite	operate	metrics:read	none
+src/modules/machines/forget-servers.server.ts	30	forgetterFor	operate	servers:read	none
+src/modules/machines/forget-servers.server.ts	36	mayManage	manage	servers:remove	none
+src/modules/machines/waiting/probe.server.ts	224	openProbeSelection	operate	servers:add	member refused
+src/modules/runtime/runtime-watch.server.ts	29	runtime watch	operate	project:read	none
+src/modules/machines/server-policy.server.ts	62	requestServerPolicyChange	operate	servers:operate	member refused
+src/modules/machines/server-policy.server.ts	76	planKeyedServerPolicyChange	operate	servers:operate	member refused
+src/modules/machines/waiting/reject.server.ts	14	rejectWaitingServers	operate	servers:add	member refused
+src/modules/machines/waiting/enroll.server.ts	196	startServerEnrollment	operate	servers:add	member refused
+src/modules/machines/waiting/enroll.server.ts	261	cancelServerEnrollment	operate	servers:add	member refused
+src/modules/machines/waiting/enroll.server.ts	295	readServerEnrollments	operate	servers:read	none

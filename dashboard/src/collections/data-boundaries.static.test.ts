@@ -57,6 +57,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/members-settings.tsx": "invite, remove or leave in flight",
   "routes/invite/$token.tsx": "joining in flight",
+  "routes/claim/$secret.tsx": "keeping the Organization in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",

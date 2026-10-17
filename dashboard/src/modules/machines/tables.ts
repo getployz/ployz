@@ -439,6 +439,8 @@ export const machineEnrollmentToken = pgTable(
     /** The claimant's WireGuard public key, in the enrollment identity's base64 form. */
     claimedPublicKey: text("claimed_public_key"),
     claimedAt: timestamp("claimed_at", { mode: "date", withTimezone: true }),
+    /** When this token first waited for a join slot: its place in the Organization's line. */
+    queuedAt: timestamp("queued_at", { mode: "date", withTimezone: true }),
     enrollmentRole: text("enrollment_role").$type<EnrollmentRole>(),
     serverEnrollmentId: uuid("server_enrollment_id"),
     createdAt,

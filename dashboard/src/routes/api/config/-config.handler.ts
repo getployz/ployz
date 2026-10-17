@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
-import { requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
+import { hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
+import { callerPermissions } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { NotFound, Validation } from "#/server/public-error";
 
@@ -41,12 +42,11 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // A destructive Save or Deploy, or any Deploy or retry `ployz mcp` asks for, waits for a human; the CLI retries naming the approval.
-  const approval = call.operation === "write" && asksApproval(caller.via, call.command)
+  const approval = call.operation === "write" && asksApproval(caller.via, call.command) && (yield* hasApprover(caller.organization.id))
     ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
     : { ok: true, approval: "not_required" } as const;
   if (!approval.ok) return refusal(approval.refusal);
-  const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys" } as const;
+  const gate = { approval: approval.approval, asks: call.operation === "write" ? approvalAsks(caller.via, call.command) : "destroys", permissions: callerPermissions(caller) } as const;
   const result = yield* callStore(caller.organization.id, caller.userId, call, { source: "cli", agent }, gate);
   if (result.ok) return Response.json(result.value, { headers: { "cache-control": "no-store" } });
   if (call.operation === "write" && result.refusal.code === "approval_required") {

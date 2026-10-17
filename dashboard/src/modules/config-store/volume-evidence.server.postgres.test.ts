@@ -5,6 +5,7 @@ import { expect, vi } from "vitest";
 import type { JsonObject, JsonValue } from "#/db/tables";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
+import { permissionsOf } from "#/modules/organization/permissions";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import type { StoreRead } from "#/modules/config-store/store.contract";
 import { gatherVolumeEvidence, systemVolumeEvidence, VolumeObserver } from "#/modules/config-store/volume-evidence.server";
@@ -118,7 +119,7 @@ it.live("the Store still judges the raw Publish: a malformed Environment or an u
     const provided = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.provide(services));
     const userId = yield* provided(seedStoreOrganization(ORGANIZATION));
     yield* provided(seedStoreGitService(ORGANIZATION, ids));
-    const publish = (command: JsonObject) => provided(callStore(ORGANIZATION, userId, { operation: "write", command: raw(command) }));
+    const publish = (command: JsonObject) => provided(callStore(ORGANIZATION, userId, { operation: "write", command: raw(command) }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") }));
 
     const refused: JsonObject[] = [
       { command: "publish", environment: 5, version: null, accept_volume_loss: [] },

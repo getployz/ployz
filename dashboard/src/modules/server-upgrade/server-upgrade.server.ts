@@ -97,7 +97,7 @@ export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(fu
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const inOrganization = eq(serverUpgradeAttempt.organizationId, organization.id);
   const rows = yield* drizzle.selectDistinctOn([serverUpgradeAttempt.machineId], {
@@ -118,12 +118,12 @@ export const listLatestServerUpgrades = Effect.fn("ServerUpgrade.listLatest")(fu
   };
 });
 
-/** Upgrade and Try again on a Server page, Upgrade on the Servers page: any member may. The rollout run records each attempt. */
+/** Upgrade and Try again on a Server page, Upgrade on the Servers page. The rollout run records each attempt. */
 export const requestServerUpgrade = Effect.fn("ServerUpgrade.request")(function* (
   actor: Actor,
   input: RequestServerUpgradeInput,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
   yield* sendInngestEvent(createServerUpgradeRequestedEvent({
     organizationId: organization.id,
     machineId: input.machineId,
@@ -465,7 +465,7 @@ export const listAutomaticUpgradeOrganizationIds = Effect.fn("ServerUpgrade.list
   return rows.map(({ id }) => id);
 });
 
-/** "Upgrade automatically" and "Releases" in the Server upgrades dialog: any member may change them. */
+/** "Upgrade automatically" and "Releases" in the Server upgrades dialog; `server_upgrade_policy_set` gates them. */
 export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(function* (
   organizationId: string,
   settings: ServerUpgradeSettingsChange,

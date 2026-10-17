@@ -4,7 +4,9 @@ import { Effect, Schema, SchemaIssue } from "effect";
 import { asRecord } from "#/lib/json";
 import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
 import { type StoreRefusal, StoreRefused } from "#/modules/config-store/store.contract";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, callerOrSupportCan } from "#/modules/identity/actor";
+import { refusalOf } from "#/modules/organization/access.server";
+import type { Permission } from "#/modules/organization/permissions";
 import { NotFound } from "#/server/public-error";
 import type { Database } from "#/server/database.server";
 
@@ -37,6 +39,7 @@ type Shown = {
   readonly path: readonly string[];
   readonly about: string;
   readonly examples: readonly string[];
+  readonly requires: Permission;
   readonly agents: boolean;
   readonly typed: "organization" | null;
   readonly render: "table" | "record" | "message";
@@ -87,6 +90,7 @@ export function defineCommand<const N extends string, F extends Fields, O extend
     if (unknown.length > 0) return invalidInput(unknown.map((key) => ({ message: `Unknown input ${key}`, path: [key] })));
     const decoded = yield* decode(fields).pipe(Effect.result);
     if (decoded._tag === "Failure") return invalidInput(issues(decoded.failure.issue).issues);
+    if (!callerOrSupportCan(caller, def.requires)) return refused("forbidden", refusalOf(def.requires));
     if (gate !== "never") {
       const gated = yield* gateOperation(caller, call.approvalId, yield* gate.asked(caller, decoded.success));
       if (!gated.ok) return gated;
