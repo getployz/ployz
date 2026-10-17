@@ -3,6 +3,7 @@ import type { Connection } from "@ployz/sdk";
 import { and, eq, isNotNull, isNull, not, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { MachineId } from "#/db/tables";
+import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Caller } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
@@ -41,10 +42,19 @@ type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "sess
 /**
  * The Caller's own capability on every Server of its Organization, provisioning a missing `cli-<id>` holder on
  * first use, including on Servers enrolled after login. A Server that can't be reached now is listed as unreachable.
+ * Only an owner or admin gets one: a holder is full control of the Server.
  */
 export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: ServerAccessCaller) {
+  if (caller.role !== "owner" && caller.role !== "admin") {
+    const slug = caller.organization.slug;
+    return { ok: false as const, refusal: {
+      code: "forbidden",
+      message: `Server access needs an admin. Ask an owner or admin of ${slug}.`,
+      details: { organization: slug },
+    } satisfies StoreRefusal };
+  }
   const loaded = yield* loadOrganizationConnections(caller.organization.id);
-  if (loaded.kind === "missing") return { connections: [], unreachable: [] };
+  if (loaded.kind === "missing") return { ok: true as const, value: { connections: [], unreachable: [] } };
   const database = yield* Database;
   const { drizzle } = database;
   const encryption = yield* SecretEncryption;
@@ -97,15 +107,15 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     }
     return { machine_id: machineId, management: management.value };
   }), { concurrency: SERVER_CONCURRENCY });
-  return {
+  return { ok: true as const, value: {
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
     unreachable: results.flatMap(({ machine_id, management }) => management === null ? [machine_id] : []),
-  };
+  } };
 });
 
-/** A row's credential still authorizes it: unexpired, and its user still a member of the row's Organization. */
 const stillAuthorized = sql`(exists (select 1 from ${member}
-    where ${member.userId} = ${serverAccess.userId} and ${member.organizationId} = ${serverAccess.organizationId})
+    where ${member.userId} = ${serverAccess.userId} and ${member.organizationId} = ${serverAccess.organizationId}
+      and ${member.role} in ('owner', 'admin'))
   and ((${serverAccess.credentialKind} = 'session' and exists (select 1 from ${session}
       where ${session.id} = ${serverAccess.credentialId} and ${session.expiresAt} > now()))
     or (${serverAccess.credentialKind} = 'token' and exists (select 1 from ${organizationToken}

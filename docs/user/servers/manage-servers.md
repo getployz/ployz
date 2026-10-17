@@ -125,6 +125,20 @@ Click a server. Its page shows its status and public IP address, then:
 An entry marked **Not in any Project** is left over from a deleted project or environment.
 **Remove** deletes its containers and its volumes, data included, from every server.
 
+## Reach a server from the CLI
+
+Some CLI commands talk to your servers directly, so only owners and admins can run them:
+`exec`, `logs`, `ps`, `metrics`, `service start`, `service stop`, `service restart`,
+`service port-forward`, `server ls`, `server inspect`, `server logs`, `server set` and
+`server drain`. A member who runs one gets this, and the command exits 1:
+
+```text
+Server access needs an admin. Ask an owner or admin of acme.
+```
+
+Members can still deploy, and still see logs and restart services on these pages. An admin
+moved to member loses this access within 5 minutes.
+
 ## Change what a server does
 
 Every server runs builds, runs services and takes web traffic. To turn one off, see
