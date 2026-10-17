@@ -90,3 +90,10 @@ it("counts Cloud slot occupancy while completed workflows still report joining",
   expect(screen.getAllByText("8 / 8")).toHaveLength(2);
   expect(screen.queryByText("9 / 8")).toBeNull();
 });
+
+it("keeps a fifty-host enrollment list within the ten-row rendering budget", () => {
+  render(<EnrollingList attempts={Array.from({ length: 50 }, (_, n) => attempt(n + 1))} joining={0} onCancel={vi.fn()} />);
+  expect(screen.getByRole("table").getAttribute("aria-rowcount")).toBe("51");
+  expect(rows().length).toBeLessThanOrEqual(14);
+  expect(screen.getByText("0 of 50 joined")).toBeTruthy();
+});
