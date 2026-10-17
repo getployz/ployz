@@ -692,6 +692,30 @@ it.live("a Server that answers its pairing removal restarts the silence clock, e
   }).pipe(Effect.provide(services));
 }), 60_000);
 
+it.live("a Server that authenticates to its pairing removal restarts the silence clock, even when inspect then fails", () => Effect.gen(function* () {
+  const server = { answersOnce: false, inspected: 0 };
+  const services = yield* cloud({
+    connect: async () => {
+      if (!server.answersOnce) throw new Error("no route to the Server");
+      server.answersOnce = false;
+      return asTestDouble<Client>()({
+        inspect: async () => { server.inspected++; throw new Error("the connection dropped"); },
+        close: async () => undefined,
+      });
+    },
+  });
+  yield* Effect.gen(function* () {
+    yield* seeded(new Date(Date.now() - 2 * HOUR), { server: true });
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    yield* backdate(2);
+    server.answersOnce = true;
+    expect((yield* tearDown(services)).result).toEqual({ organizationId: ORGANIZATION, state: "lapsed", did: "waited_on_servers" });
+    expect(server.inspected).toBe(1);
+    expect((yield* pairingRows).map((row) => row.id)).toEqual([ORGANIZATION]);
+    expect(yield* organizationIds).toEqual([{ id: ORGANIZATION }]);
+  }).pipe(Effect.provide(services));
+}), 60_000);
+
 it.live("a new pairing starts its own silence clock: the old pairing's hour never forgets it", () => Effect.gen(function* () {
   const services = yield* cloud("unreachable");
   yield* Effect.gen(function* () {
