@@ -1036,7 +1036,9 @@ fn answer<T: DeserializeOwned>(
         (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
         (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(LoginError::TokenRefused),
-        (StatusCode::FORBIDDEN, Credential::Device(signed_in)) => {
+        // Cloud refuses a member's call in the RPC error vocabulary (`claim_required`);
+        // only a bare 403 means the sign-in left its Organization.
+        (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
             Err(LoginError::NotMember(signed_in.organization.slug.clone()))
         }
         (status, _) => Err(LoginError::Status {
@@ -1102,6 +1104,21 @@ mod tests {
         assert!(matches!(&chosen, Credential::Token { cloud, .. } if cloud == "http://cloud.test"));
         let chosen = credential(&store, Some(String::new()), None).await.unwrap();
         assert!(matches!(chosen, Credential::Device(_)));
+    }
+
+    #[tokio::test]
+    async fn a_device_keeps_cloud_s_structured_refusal_of_a_403() {
+        let (_dir, store) = signed_in_store("http://cloud.test");
+        let device = credential(&store, Some(String::new()), None).await.unwrap();
+        let claim = br#"{"error":{"code":"claim_required","message":"Claim this Organization.","details":{"claim_url":"http://cloud.test/claim/x"}}}"#;
+        let error = answer::<serde_json::Value>(&device, StatusCode::FORBIDDEN, claim).unwrap_err();
+        assert!(
+            matches!(error, LoginError::Status { status: 403, .. }),
+            "{error:?}"
+        );
+        let bare = br#"{"_tag":"PublicError","code":"FORBIDDEN","message":"no"}"#;
+        let error = answer::<serde_json::Value>(&device, StatusCode::FORBIDDEN, bare).unwrap_err();
+        assert!(matches!(error, LoginError::NotMember(slug) if slug == "acme"));
     }
 
     #[tokio::test]

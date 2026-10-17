@@ -5,17 +5,17 @@ import { oauthConsent } from "#/modules/identity/oauth-tables";
 import { member, organizationToken, session, user } from "#/modules/identity/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createServerAccessRetireRequestedEvent } from "#/modules/inngest/events";
-import type { Role } from "#/modules/organization/access.server";
+import { refusalOf, type Role } from "#/modules/organization/access.server";
+import { can } from "#/modules/organization/permissions";
 import { organization } from "#/modules/organization/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 
-export const MANAGE = "Only an owner or admin of this Organization can do this.";
 export const OWN = "Only an owner can make or remove an owner.";
 
 const refusalFor = (members: ReadonlyArray<{ userId: string; role: Role }>, askedBy: string, touchesOwner: boolean) => {
   const role = members.find((row) => row.userId === askedBy)?.role;
-  if (role !== "owner" && role !== "admin") return new Conflict({ message: MANAGE, userFacing: true });
+  if (role === undefined || !can(role, "members:manage")) return new Conflict({ message: refusalOf("members:manage"), userFacing: true });
   if (touchesOwner && role !== "owner") return new Conflict({ message: OWN, userFacing: true });
   return null;
 };

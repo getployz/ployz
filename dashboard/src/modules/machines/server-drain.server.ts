@@ -231,7 +231,7 @@ export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(functi
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.selectDistinctOn([serverDrainAttempt.machineId]).from(serverDrainAttempt)
     .where(eq(serverDrainAttempt.organizationId, organization.id))

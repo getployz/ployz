@@ -221,7 +221,7 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly ids: ReadonlyArray<string> },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   const selected = and(
     eq(waitingServer.organizationId, organization.id),

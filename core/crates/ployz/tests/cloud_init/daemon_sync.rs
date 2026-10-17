@@ -24,7 +24,8 @@ fn recording_installer(
     daemon: JoinDaemon,
     outcome: InstallOutcome,
     calls: Arc<AtomicUsize>,
-) -> impl Fn(ployz_core::StorageChoice) -> std::future::Ready<Result<(), ployz::handlers::Error>> {
+) -> impl Fn(ployz::handlers::Installation) -> std::future::Ready<Result<(), ployz::handlers::Error>>
+{
     move |_| {
         calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(match outcome {
@@ -61,7 +62,7 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
 async fn run_enroll(
     matches: ArgMatches,
     install: impl Fn(
-        ployz_core::StorageChoice,
+        ployz::handlers::Installation,
     ) -> std::future::Ready<Result<(), ployz::handlers::Error>>
     + Send
     + 'static,
@@ -192,4 +193,41 @@ async fn remote_mismatch_is_rejected_without_mutating_the_local_machine() {
         )
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_missing_explicit_local_socket_installs_the_daemon_before_enrollment() {
+    let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let (_, serving_socket, connections) = serve_local_machine(daemon).await;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("not-installed.sock");
+    let connect = format!("unix://{}", socket.display());
+    let calls = Arc::<AtomicUsize>::default();
+    let installs = Arc::clone(&calls);
+    let installed_socket = serving_socket.clone();
+    let installer = move |installation| {
+        assert!(matches!(
+            installation,
+            ployz::handlers::Installation::Host(ployz_core::StorageChoice::None)
+        ));
+        installs.fetch_add(1, Ordering::SeqCst);
+        std::os::unix::fs::symlink(&installed_socket, &socket).unwrap();
+        std::future::ready(Ok(()))
+    };
+
+    let result = run_enroll(enroll_matches(&connect, &enroll.url), installer).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(connections.load(Ordering::SeqCst) > 0);
+    std::fs::remove_file(serving_socket).unwrap();
 }

@@ -126,7 +126,7 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
 
 export const listGithubRepositories = Effect.fn("Github.listRepositories")(
   function* (actor: Actor, organizationSlug: string) {
-    const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, organizationSlug, "project:read");
     return yield* listCachedGithubRepositoriesForOrganization(organization.id);
   },
 );
@@ -134,7 +134,7 @@ export const listGithubRepositories = Effect.fn("Github.listRepositories")(
 export const getGithubRepoAccessState = Effect.fn(
   "Github.getRepoAccessState",
 )(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "project:read");
   const installations = yield* listGithubInstallationsForOrganization(organization.id);
   return { hasInstallations: installations.length > 0 };
 });
@@ -147,7 +147,7 @@ export const getGithubWeb = Effect.fn("Github.getWeb")(function* () {
 
 export const requestGithubRepoSync = Effect.fn("Github.requestRepoSync")(
   function* (actor: Actor, organizationSlug: string) {
-    const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+    const { organization } = yield* requireAccess(actor, organizationSlug, "project:edit");
     const installations = yield* listGithubInstallationsForOrganization(organization.id);
     if (installations.length === 0) {
       return { requestedInstallationCount: 0, hasInstallations: false };
@@ -174,7 +174,7 @@ type RepositoryInput = {
 };
 
 const readableRepository = Effect.fn("Github.readableRepository")(function* (actor: Actor, input: RepositoryInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "project:read");
   const access: GithubAccess = accessFor(organization.id, input.installationId);
   const repository = input.installationId === null
     // A private repository reads as absent to the public API.

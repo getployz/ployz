@@ -156,9 +156,9 @@ describe("drain-server", () => {
     await harness.pool.query(`
       truncate table organization, "user", operation_outbox cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
-      insert into "user" (id, email, name) values ('${userId}', 'member@example.com', 'Member');
+      insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
       insert into member (id, organization_id, user_id, role, created_at)
-      values (gen_random_uuid(), '${organizationId}', '${userId}', 'member', now());
+      values (gen_random_uuid(), '${organizationId}', '${userId}', 'owner', now());
     `);
   });
 
@@ -194,13 +194,14 @@ describe("drain-server", () => {
       .toEqual([{ event_id: `server-drain-${requestId}`, sent_at: null }]);
   });
 
-  it("asks the Engine once for the services its plan names and stores its partial report as the result", async () => {
+  it("asks the Engine once for the services its plan names and stores its partial report, which a member reads", async () => {
     await request();
     const output = await drain();
 
     expect(output.error).toBeUndefined();
     expect(output.result).toEqual({ attemptId: requestId, state: "finished" });
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+    await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
     expect(await latest()).toEqual({
       [machineId]: { attemptId: requestId, state: "finished", endedAt: expect.any(String), report: partialReport },
     });

@@ -16,6 +16,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
+import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
@@ -275,6 +276,9 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
 
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
 
+export const hasApprover = (organizationId: string) =>
+  isOwnedOnlyByAgents(organizationId).pipe(Effect.map((agentsOnly) => !agentsOnly), Effect.orDie);
+
 export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   caller: Caller,
   approvalId: string | null,
@@ -285,6 +289,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
+  if (!(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };

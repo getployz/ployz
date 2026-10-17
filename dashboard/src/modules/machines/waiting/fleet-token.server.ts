@@ -33,7 +33,7 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
   input: CreateFleetTokenInput,
   generateName: () => string = generateTokenName,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   const expiresAt = new Date(Date.now() + LIFETIME_DAYS[input.expiresIn] * DAY_MS);
   const insert = (name: string) => {
@@ -74,7 +74,7 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
 
 /** The Organization's unrevoked Fleet Tokens, expired ones included and marked. */
 export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Actor, input: ListFleetTokensInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
     .select({
@@ -113,7 +113,7 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string } & ({ readonly id: string } | { readonly name: string }),
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   const target = and(
     eq(fleetToken.organizationId, organization.id),

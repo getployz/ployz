@@ -71,7 +71,7 @@ export const listWaitingServers = Effect.fn("WaitingServer.list")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   return yield* listed(organization.id, null);
 });
 
@@ -79,7 +79,7 @@ export const showWaitingServer = Effect.fn("WaitingServer.show")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const [row] = yield* listed(organization.id, input.id);
   if (row === undefined) return yield* new NotFound({ message: "No such waiting server." });
   return row;

@@ -31,7 +31,7 @@ describe("organization machine enrollment invariants", () => {
     ]);
   });
 
-  it("keeps token persistence to authorization and the Server that joined through it", () => {
+  it("keeps token persistence to authorization, its place in the join line, and the Server that joined through it", () => {
     const columns = getTableConfig(machineEnrollmentToken).columns.map(
       columnName,
     );
@@ -45,6 +45,7 @@ describe("organization machine enrollment invariants", () => {
       "claimed_machine_id",
       "claimed_public_key",
       "claimed_at",
+      "queued_at",
       "enrollment_role",
       "server_enrollment_id",
       "created_at",

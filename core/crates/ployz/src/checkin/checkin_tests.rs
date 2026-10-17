@@ -36,6 +36,7 @@ const PROBE: &str = r#"{
 const OLD: &str = "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const NEW: &str = "pflt_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 const REFUSAL: &str = r#"{"error":"Authentication is required."}"#;
+const WAIT: &str = r#"{"kind":"wait","retryAfter":10}"#;
 
 #[derive(Default)]
 struct FakeHost {
@@ -43,6 +44,7 @@ struct FakeHost {
     disables: AtomicU32,
     preparing: AtomicBool,
     probe_hangs: bool,
+    probe_fails: bool,
     /// A preparation that finishes, writing this state, while its unit is being checked.
     finishes: Option<(PathBuf, &'static str)>,
     stale: Option<String>,
@@ -52,6 +54,9 @@ impl Host for FakeHost {
     async fn probe(&self) -> Result<Probe, String> {
         if self.probe_hangs {
             std::future::pending::<()>().await;
+        }
+        if self.probe_fails {
+            return Err("ployzd crashed".to_owned());
         }
         Ok(serde_json::from_str(PROBE).unwrap())
     }
@@ -80,6 +85,22 @@ impl Host for FakeHost {
 
     fn stale_ployzd(&self) -> Option<String> {
         self.stale.clone()
+    }
+
+    async fn enroll(
+        &self,
+        _: &crate::checkin::EnrollInstruction,
+        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<crate::checkin::Committed, String> {
+        Err("this fake does not enroll".to_owned())
+    }
+
+    async fn participating(&self) -> bool {
+        false
+    }
+
+    async fn discard_zfs_build(&self) -> Result<(), String> {
+        Err("this fake does not discard".to_owned())
     }
 }
 
@@ -219,7 +240,7 @@ fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
             None,
             b""
         ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(9)))
+        Reply::RateLimited(Duration::from_secs(9))
     );
     assert_eq!(
         client::reply(
@@ -228,11 +249,11 @@ fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
             None,
             b""
         ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(3600)))
+        Reply::RateLimited(Duration::from_secs(3600))
     );
     assert_eq!(
         client::reply(StatusCode::TOO_MANY_REQUESTS, None, None, b""),
-        Reply::Answer(Answer::Wait(Duration::from_secs(1)))
+        Reply::RateLimited(Duration::from_secs(1))
     );
     assert!(matches!(
         client::reply(StatusCode::BAD_GATEWAY, None, None, b""),
@@ -334,6 +355,70 @@ async fn answering_cloud(
     (url, server)
 }
 
+#[tokio::test]
+async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempting() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let cloud = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0; 16_384];
+        assert!(stream.read(&mut buf).await.unwrap() > 0);
+        let observer = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            for at in [1_000, 2_500, 4_000, 5_500, 7_000, 8_500] {
+                std::thread::sleep(
+                    (started + Duration::from_millis(at))
+                        .saturating_duration_since(std::time::Instant::now()),
+                );
+                assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(7_500)).await;
+        let body = format!(
+            r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"delayed","windowMs":10000,"listen":["tcp:{port}","udp:{port}"],"send":[]}}}}"#
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        observer
+    });
+    let mut probes = Probes::default();
+    pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    probes.finish().await;
+    cloud.await.unwrap().join().unwrap();
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+    );
+    let report = serde_json::to_value(probes.report().await.unwrap()).unwrap();
+    assert_eq!(
+        report.get("bindFailed"),
+        Some(&serde_json::json!([
+            format!("tcp:{port}"),
+            format!("udp:{port}")
+        ]))
+    );
+}
+
 async fn old_then_new(server: tokio::task::JoinHandle<Vec<String>>) {
     let requests = tokio::time::timeout(Duration::from_secs(10), server)
         .await
@@ -432,13 +517,13 @@ fn the_preparation_unit_quotes_ployzd_and_refuses_paths_that_break_it() {
 fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
     let text = unit::checkin(
         Path::new("/opt/my tools/ployz"),
-        Path::new("/var/lib/ployz/checkin/ployzd"),
+        Path::new("/var/lib/ployz-checkin/ployzd"),
         Path::new("/etc/ployz/fleet-token"),
         "https://cloud.example/100%",
     )
     .unwrap();
     assert!(text.contains(
-        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz/checkin/ployzd\"\n"
+        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz-checkin/ployzd\"\n"
     ));
     assert!(text.contains("Environment=\"PLOYZ_CLOUD_URL=https://cloud.example/100%%\"\n"));
     for url in ["https://a\nExecStart=/bin/sh", "https://a\"", "https://a\\"] {
@@ -493,10 +578,10 @@ fn a_fleet_token_file_must_hold_one_token() {
 }
 
 #[tokio::test]
-async fn enroll_waits_ten_seconds_and_says_why() {
+async fn a_check_in_is_signed_and_its_answer_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let (url, server) = cloud("200 OK", r#"{"kind":"enroll","instruction":{}}"#).await;
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":10}"#).await;
     let host = FakeHost::default();
     let now = at("2026-10-16T00:00:00Z");
     let next = pass(&host, &mut client(&url), &key(), &paths, now).await;
@@ -504,7 +589,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
         next,
         Next::Wait {
             after: Duration::from_secs(10),
-            log: Some(ENROLL_LINE)
+            log: None
         }
     );
     let request = server.await.unwrap();
@@ -529,7 +614,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
 
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::Enroll);
+    assert_eq!(status.answer, Seen::Wait);
     assert_eq!(status.at, now);
     assert_eq!(status.blockers.first().unwrap().code, "kernel_too_old");
     assert_eq!(
@@ -566,6 +651,487 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
     );
 }
 
+#[tokio::test]
+async fn a_check_in_reports_a_window_only_once_it_has_ended() {
+    probe::tests::LEAD.set(Some(Duration::from_millis(300)));
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let body = format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":1000,"listen":["tcp:{port}"],"send":[]}}}}"#
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), body, 3).await;
+    let (host, mut client, mut probes) = (FakeHost::default(), client(&url), Probes::default());
+
+    for pass in 0..3 {
+        if pass == 2 {
+            probes.finish().await;
+        }
+        let next = pass_from(
+            &host,
+            &mut client,
+            &key(),
+            &paths,
+            Utc::now(),
+            false,
+            &mut probes,
+        )
+        .await;
+        assert_eq!(
+            next,
+            Next::Wait {
+                after: Duration::from_secs(10),
+                log: None
+            }
+        );
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the window listens on the named port");
+    }
+
+    let requests = server.await.unwrap();
+    for open in requests.get(..2).unwrap() {
+        assert!(!open.contains(r#""probe""#), "{open}");
+    }
+    assert!(
+        requests
+            .last()
+            .unwrap()
+            .contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+        "{requests:?}"
+    );
+    assert_eq!(
+        LocalCheckin::read(&paths.status()).unwrap().unwrap().answer,
+        Seen::Wait
+    );
+}
+
+#[tokio::test]
+async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_reports_it() {
+    probe::tests::LEAD.set(Some(Duration::from_millis(450)));
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let body = format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"h","windowMs":1500,"listen":["tcp:{port}"],"send":[]}}}}"#
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), body, 2).await;
+    let host = FakeHost::default();
+    let greeted = tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                let mut read = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut read)
+                    .await
+                    .unwrap();
+                return read.len();
+            }
+            assert!(tokio::time::Instant::now() < deadline, "nothing listened");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+
+    install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    assert_eq!(greeted.await.unwrap(), 22);
+
+    let mut restarted = Probes::load(paths.probe());
+    pass_from(
+        &host,
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut restarted,
+    )
+    .await;
+    let requests = server.await.unwrap();
+    assert!(
+        requests
+            .last()
+            .unwrap()
+            .contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+        "{requests:?}"
+    );
+}
+
+fn udp_port() -> u16 {
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn handing_out(handout: &str, port: u16, window_ms: u64) -> String {
+    format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n0nce","handout":"{handout}","windowMs":{window_ms},"listen":["udp:{port}"],"send":[]}}}}"#
+    )
+}
+
+async fn handed(paths: &Paths, probes: &mut Probes, handout: &str, port: u16, window_ms: u64) {
+    probe::tests::LEAD.set(Some(Duration::from_millis(window_ms * 3 / 10)));
+    let (url, server) = answering_cloud(
+        "200 OK".to_owned(),
+        handing_out(handout, port, window_ms),
+        1,
+    )
+    .await;
+    let next = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        paths,
+        Utc::now(),
+        false,
+        probes,
+    )
+    .await;
+    assert!(matches!(next, Next::Wait { .. }), "{next:?}");
+    server.await.unwrap();
+}
+
+async fn send_nonce(port: u16) {
+    let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    for _ in 0..5 {
+        peer.send_to(b"n0nce", ("127.0.0.1", port)).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn saved(paths: &Paths) -> Option<probe::Report> {
+    Probes::load(paths.probe()).report().await
+}
+
+fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
+    serde_json::from_value(
+        serde_json::json!({"handout": handout, "heardFrom": heard_from, "bindFailed": []}),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_next_check_in() {
+    probe::tests::LEAD.set(Some(Duration::from_millis(90)));
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::load(paths.probe());
+    let (held, holding) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let disk = std::thread::spawn(move || {
+        let _stalled = probe::tests::SAVES.lock().unwrap();
+        held.send(()).unwrap();
+        let _ = released.recv_timeout(Duration::from_secs(5));
+    });
+    holding.recv().unwrap();
+    handed(&paths, &mut probes, "old", udp_port(), 200).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let body = format!(
+        r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"new","windowMs":300,"listen":["tcp:{port}"],"send":[]}}}}"#
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), body, 1).await;
+
+    let handed_out = std::time::Instant::now();
+    let next = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+
+    assert!(matches!(next, Next::Wait { .. }), "{next:?}");
+    assert!(
+        handed_out.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        handed_out.elapsed()
+    );
+    server.await.unwrap();
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("the new window listens");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
+    pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
+    assert!(
+        request.contains(r#""probe":{"handout":"new","heardFrom":[],"bindFailed":[]}"#),
+        "{request}"
+    );
+    drop(release);
+    disk.join().unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::default();
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let unreachable = || client("http://127.0.0.1:9");
+    let pass = async |host: &FakeHost, client: &mut CheckinClient, probes: &mut Probes| {
+        pass_from(host, client, &key(), &paths, Utc::now(), false, probes).await
+    };
+
+    retries_after(&pass(&failing, &mut unreachable(), &mut probes).await, 10);
+    retries_after(
+        &pass(&FakeHost::default(), &mut unreachable(), &mut probes).await,
+        10,
+    );
+    retries_after(
+        &pass(&failing, &mut unreachable(), &mut Probes::default()).await,
+        client::BACKOFF.as_secs(),
+    );
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
+    pass(&FakeHost::default(), &mut client(&url), &mut probes).await;
+    let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
+    assert!(
+        request.contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
+        "{request}"
+    );
+    retries_after(
+        &pass(&failing, &mut unreachable(), &mut probes).await,
+        client::BACKOFF.as_secs(),
+    );
+}
+
+#[tokio::test]
+async fn a_rate_limited_report_keeps_its_retry_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::default();
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let (url, server) = answering_cloud(
+        "429 Too Many Requests\r\nRetry-After: 1".to_owned(),
+        r#"{"error":"Too many check-ins."}"#.to_owned(),
+        1,
+    )
+    .await;
+    let limited = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    assert!(matches!(limited, Next::Wait { after, .. } if after == Duration::from_secs(1)));
+    let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
+    assert!(request.contains(r#""probe":{"handout":"h""#), "{request}");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let failed = pass_from(
+        &FakeHost {
+            probe_fails: true,
+            ..FakeHost::default()
+        },
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+
+    assert!(probes.report().await.is_some());
+    retries_after(&failed, 10);
+}
+
+#[tokio::test]
+async fn a_failed_pass_after_a_restart_still_retries_inside_cloud_s_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let pass = async |probes: &mut Probes| {
+        pass_from(
+            &failing,
+            &mut client("http://127.0.0.1:9"),
+            &key(),
+            &paths,
+            Utc::now(),
+            false,
+            probes,
+        )
+        .await
+    };
+
+    retries_after(&pass(&mut Probes::load(paths.probe())).await, 10);
+    std::fs::File::options()
+        .write(true)
+        .open(paths.probe())
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(31))
+        .unwrap();
+    retries_after(
+        &pass(&mut Probes::load(paths.probe())).await,
+        client::BACKOFF.as_secs(),
+    );
+}
+
+#[tokio::test]
+async fn what_a_window_heard_outlives_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = udp_port();
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "h", port, 1_000).await;
+    send_nonce(port).await;
+    probes.finish().await;
+    drop(probes);
+
+    assert_eq!(
+        saved(&paths).await,
+        Some(window_report("h", &["127.0.0.1"]))
+    );
+}
+
+#[tokio::test]
+async fn a_restart_mid_window_resumes_no_report_rather_than_a_partial_or_older_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = udp_port();
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "first", port, 300).await;
+    probes.finish().await;
+    assert_eq!(saved(&paths).await, Some(window_report("first", &[])));
+
+    handed(&paths, &mut probes, "second", port, 10_000).await;
+    send_nonce(port).await;
+    drop(probes);
+
+    assert_eq!(saved(&paths).await, None);
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
+    pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    let request = server.await.unwrap().remove(0);
+    assert!(!request.contains(r#""probe""#), "{request}");
+}
+
+#[tokio::test]
+async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    fs::create_dir_all(&paths.checkin_dir).unwrap();
+    let kept = window_report("h", &["2001:db8::1"]);
+    fs::write(paths.probe(), serde_json::to_vec(&kept).unwrap()).unwrap();
+    let (url, server) = answering_cloud("200 OK".to_owned(), WAIT.to_owned(), 1).await;
+
+    install_pass(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    let request = server.await.unwrap().remove(0);
+    assert!(
+        request.contains(r#""probe":{"handout":"h","heardFrom":["2001:db8::1"],"bindFailed":[]}"#),
+        "{request}"
+    );
+    assert_eq!(saved(&paths).await, Some(kept.clone()));
+
+    let failing = FakeHost {
+        probe_fails: true,
+        ..FakeHost::default()
+    };
+    let next = install_pass(
+        &failing,
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+    )
+    .await;
+    assert!(matches!(next, Next::Retry { .. }), "{next:?}");
+    assert_eq!(saved(&paths).await, Some(kept));
+}
+
+#[tokio::test]
+async fn a_confirmed_refusal_closes_the_open_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = udp_port();
+    let mut probes = Probes::load(paths.probe());
+    handed(&paths, &mut probes, "h", port, 10_000).await;
+    refused_once(&paths, OLD, TimeDelta::seconds(90));
+    let (url, _server) = answering_cloud(
+        format!("401 Unauthorized\r\nDate: {}", cloud_now().to_rfc2822()),
+        REFUSAL.to_owned(),
+        1,
+    )
+    .await;
+
+    let next = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    assert!(
+        matches!(next, Next::Stop(StopReason::TokenRevoked, _)),
+        "{next:?}"
+    );
+    assert!(std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok());
+}
+
 fn sending(token: &str) -> CheckinClient {
     CheckinClient::new("http://127.0.0.1:9", FleetToken::literal(token)).unwrap()
 }
@@ -576,6 +1142,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
     let at = Utc::now() - ago;
     record(
         &LocalCheckin {
+            token_fingerprint: None,
             answer: Seen::Refused,
             reason: None,
             message: Some(REFUSED_ONCE.to_owned()),
@@ -584,6 +1151,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
             blockers: Vec::new(),
             prepare_retries: 0,
             prepare_started: None,
+            attempt: None,
             refused: Some(Refusal {
                 token: sending(token).fingerprint(),
                 date: at,
@@ -1397,6 +1965,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
     .unwrap();
     record(
         &LocalCheckin {
+            token_fingerprint: None,
             answer: Seen::Wait,
             reason: None,
             message: None,
@@ -1406,6 +1975,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
             prepare_retries: PREPARE_TRIES,
             prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
             refused: None,
+            attempt: None,
         },
         &paths,
     );
@@ -1479,6 +2049,7 @@ async fn a_running_preparation_is_left_alone() {
 #[test]
 fn the_headline_says_where_the_host_stands() {
     let mut status = LocalCheckin {
+        token_fingerprint: None,
         answer: Seen::Wait,
         reason: None,
         message: None,
@@ -1491,6 +2062,7 @@ fn the_headline_says_where_the_host_stands() {
         prepare_retries: 0,
         prepare_started: None,
         refused: None,
+        attempt: None,
     };
     assert_eq!(
         status.headline(),
@@ -1551,4 +2123,16 @@ fn ago_reads_in_the_largest_whole_unit() {
     assert_eq!(ago(now - TimeDelta::hours(3), now), "3h ago");
     assert_eq!(ago(now - TimeDelta::days(2), now), "2d ago");
     assert_eq!(ago(now + TimeDelta::seconds(5), now), "0s ago");
+}
+
+#[test]
+fn checkin_state_stays_out_of_the_daemon_data_dir() {
+    let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
+    for path in [paths.key(), paths.status(), paths.checkin_dir] {
+        assert!(
+            !path.starts_with("/var/lib/ployz"),
+            "ployzd refuses to claim a data dir holding {}",
+            path.display()
+        );
+    }
 }

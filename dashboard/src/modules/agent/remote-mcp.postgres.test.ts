@@ -55,6 +55,7 @@ const Structured = Schema.Struct({
   ok: Schema.Boolean,
   request_key: Schema.String,
   approval_required: Schema.optional(Schema.Struct({ approval_id: Schema.String, url: Schema.String })),
+  claim_required: Schema.optional(Schema.Struct({ message: Schema.String, url: Schema.String })),
   refusal: Schema.optional(Schema.Struct({ code: Schema.String })),
   value: Schema.optional(Schema.Unknown),
 });
@@ -334,6 +335,19 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     const refused = yield* agent.call("service_add", { ...SHOP, project: "nope", name: "cache", image: "redis:7" });
     expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { code: "not_found" } } });
     expect(yield* agent.call("environment_show", SHOP)).toMatchObject({ isError: false, body: { ok: true } });
+  }).pipe(Effect.scoped), 30_000);
+
+it.live("an anonymous Organization's agent hears the claim URL when it adds a custom domain", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
+    yield* shop.provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update "user" set is_anonymous = true where id = ${shop.ada.userId}`);
+    }));
+    const refused = yield* agent.call("domain_add", { ...SHOP, service: "web", hostname: "app.example.com" });
+    expect(refused).toMatchObject({ isError: true, body: { ok: false, claim_required: { message: "Claim this Organization to add a custom domain." } } });
+    expect(refused.body.claim_required?.url).toMatch(/^http:\/\/localhost:3000\/claim\/[\w-]{43}$/);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a destroying Deploy waits on a person; an early retry only asks again, and the retry after approval deploys once", () =>

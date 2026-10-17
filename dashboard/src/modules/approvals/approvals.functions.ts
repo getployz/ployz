@@ -15,7 +15,7 @@ export const listPendingApprovalsServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const access = yield* requireAccess(context.actor, data.organizationSlug, "operate");
+    const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
     return (yield* freshPendingApprovals(access.organization.id)).map(shownTo(access));
   })));
 
@@ -23,7 +23,7 @@ export const getApprovalServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const access = yield* requireAccess(context.actor, data.organizationSlug, "operate");
+    const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
     return shownTo(access)(yield* freshApproval(access.organization.id, data.id));
   })));
 
@@ -35,7 +35,7 @@ export const decideApprovalServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, decision: ApprovalDecision })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const access = yield* requireAccess(context.actor, data.organizationSlug, "operate");
+    const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
     return yield* decideApproval({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest).pipe(
       Effect.map((decided) => decided.ok
         ? { ok: true as const, approval: shownTo(access)(decided.approval) }

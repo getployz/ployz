@@ -13,6 +13,8 @@ import { GithubApi } from "#/modules/github/github-observation.api";
 import { getGithubAppInstallUrl } from "#/modules/github/github.server";
 import { githubIdSchema } from "#/modules/github/github-ingestion.contracts";
 import type { Actor } from "#/modules/identity/actor";
+import { requireClaimed } from "#/modules/identity/claim-required.server";
+import { can } from "#/modules/organization/permissions";
 import { requireAccess, requireAccessById } from "#/modules/organization/access.server";
 import { createGithubRepositoriesSyncRequestedEvent } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
@@ -70,7 +72,8 @@ const settingsPath = (organizationSlug: string, search: { connect: ConnectNotice
 
 export const startGithubConnect = Effect.fn("GithubConnect.start")(function* (actor: Actor, organizationSlug: string, existing: boolean) {
   const config = yield* AppConfig;
-  const { organization } = yield* requireAccess(actor, organizationSlug, "manage");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "github:connect");
+  yield* requireClaimed(organization.id, "github_connect");
   const state = yield* sign(STATE, { organizationId: organization.id, userId: actor.userId, expiresAt: Date.now() + TOKEN_TTL_MS, existing });
   if (!existing) return `${getGithubAppInstallUrl(config.github)}?${new URLSearchParams({ state }).toString()}`;
   return `${config.github.origins.web}/login/oauth/authorize?${new URLSearchParams({
@@ -147,7 +150,7 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
   if (state === null || state.userId !== actor.userId) {
     return yield* new Forbidden({ message: "This GitHub link expired or isn't yours." });
   }
-  const { organization } = yield* requireAccessById(actor, state.organizationId, "manage");
+  const { organization } = yield* requireAccessById(actor, state.organizationId, "github:connect");
   const land = (search: Parameters<typeof settingsPath>[1]) => settingsPath(organization.slug, search);
   // An org member asked an owner to install; nothing is theirs to link yet, whatever else the redirect carries.
   if (params.get("setup_action") === "request") return land({ connect: "pending" });
@@ -194,7 +197,7 @@ export const completeGithubConnect = Effect.fn("GithubConnect.complete")(functio
 });
 
 const readOffer = Effect.fn("GithubConnect.readOffer")(function* (actor: Actor, organizationSlug: string, token: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "manage");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "github:connect");
   const offer = yield* verify(OFFER, token);
   if (offer === null || offer.userId !== actor.userId || offer.organizationId !== organization.id) {
     return yield* new Forbidden({ message: "This GitHub link expired or isn't yours." });
@@ -224,11 +227,11 @@ export const acceptGithubOffer = Effect.fn("GithubConnect.acceptOffer")(function
 });
 
 export const listOrganizationGithub = Effect.fn("GithubConnect.list")(function* (actor: Actor, organizationSlug: string) {
-  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const access = yield* requireAccess(actor, organizationSlug, "org:read");
   const installations = yield* listGithubInstallationsForOrganization(access.organization.id);
   const repositories = yield* listCachedGithubRepositoriesForOrganization(access.organization.id);
   return {
-    canManage: access.kind === "support" || access.role !== "member",
+    canManage: can(access.kind === "support" ? "support" : access.role, "github:connect"),
     accounts: installations.map((installation) => ({
       login: installation.accountLogin,
       avatarUrl: installation.accountAvatarUrl,

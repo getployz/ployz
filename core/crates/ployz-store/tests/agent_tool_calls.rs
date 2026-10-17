@@ -368,6 +368,56 @@ fn a_local_store_cannot_answer_for_github() {
     );
 }
 
+fn unclaimed(cloud: Cloud) -> Result<Value, RpcError> {
+    match cloud {
+        Cloud::Ask(CloudQuery::GithubConnection) => Err(rpc_error(
+            "claim_required",
+            json!({ "claim_url": "https://ployz.app/claim/abc", "action": "github_connect" }),
+        )),
+        Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[("web-1", 'a')])),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is acted on: {act:?}"),
+    }
+}
+
+#[test]
+fn an_unclaimed_organization_hands_the_agent_its_claim_url_and_no_retry() {
+    let refusal = drive(
+        &shop(),
+        in_org(),
+        "github_connect",
+        json!({}),
+        "call-1",
+        &mut unclaimed,
+    )
+    .refused();
+    assert_eq!(refusal.code.as_str(), "claim_required");
+    assert_eq!(
+        refusal.fix(),
+        Some(Fix::Claim {
+            url: "https://ployz.app/claim/abc".into()
+        })
+    );
+    assert!(json!(refusal).get("retry").is_none(), "{refusal:?}");
+}
+
+#[test]
+fn an_unclaimed_organization_without_builds_still_sets_up_its_environment() {
+    let setup = drive(
+        &shop(),
+        in_org(),
+        "environment_setup",
+        json!({}),
+        "call-1",
+        &mut unclaimed,
+    )
+    .ok();
+    assert_eq!(
+        setup["needs"],
+        json!([{ "what": "cluster domain", "where": "servers" }])
+    );
+}
+
 /// Cloud's side of github_ls for `acme/api` at `main`: a tree query keeps the
 /// named path and everything under it, then what a `*suffix` glob matches, and
 /// a file query returns its text.

@@ -113,7 +113,7 @@ The Ed25519 key a waiting host makes for itself and signs each check-in with, al
 _Avoid_: Host key, machine key, enrollment key
 
 **Server Enrollment**:
-One attempt to turn a Waiting Server into a Server, with its role (founder or joiner), name, storage and policy, and its own single-use enrollment token, held encrypted until the host takes it. A host has at most one open attempt, and an Organization at most one open founder. Cloud answers the instruction on a check-in only once the host is ready for its storage, and a joiner waits until the founder joins. It ends joined, failed or cancelled; failed and cancelled send the host back to Waiting.
+One attempt to turn a Waiting Server into a Server, with its role (founder or joiner), name, storage and policy, and its own single-use enrollment token, held encrypted until the host takes it. A host has at most one open attempt, and an Organization at most one open founder. Cloud answers the instruction on a check-in only once the host is ready for its storage, and a joiner waits until the founder joins. It ends joined, failed or cancelled; failed and cancelled send the host back to Waiting. Cloud can answer the plan an Enroll would carry out, with founder, names, storage and skips, without starting it. An attempt waiting for a join slot counts the joins ahead of it, read from the slot queue and never stored.
 _Avoid_: Join request, enrollment job, admission
 
 **Signed-in Device**:

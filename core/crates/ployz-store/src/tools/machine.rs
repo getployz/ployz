@@ -627,7 +627,7 @@ fn local_next(tool: &str, input: &Value) -> Call {
 
 fn done(state: State, refusal: Refusal) -> (Step, State) {
     let call = Call::new(&state.tool, state.input.clone());
-    let refusal = match refusal.retry.is_same() {
+    let refusal = match refusal.retry.is_same() && refusal.retries() {
         true => refusal.with_retry(call),
         false => refusal,
     };
@@ -642,7 +642,7 @@ fn done(state: State, refusal: Refusal) -> (Step, State) {
 /// Fill what every refusal carries: a complete retry, and for a bad argument
 /// what fits there and an example.
 fn finish(mut refusal: Refusal, entry: &Entry, call: &Call, call_key: &str) -> Refusal {
-    if refusal.retry.is_same() {
+    if refusal.retry.is_same() && refusal.retries() {
         refusal.retry = call.clone();
     }
     let input_schema = (entry.def)().input_schema;

@@ -71,7 +71,7 @@ const enqueueChange = (row: WebTrafficAttemptRow) =>
  * whichever way it goes: the switch waits for it.
  */
 export const requestServerWebTraffic = Effect.fn("ServerWebTraffic.request")(function* (actor: Actor, input: RequestServerWebTrafficInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
   const organizationId = organization.id;
   const database = yield* Database;
   const sameOrActive = Effect.fn(function* () {
@@ -116,7 +116,7 @@ export const listLatestServerWebTraffic = Effect.fn("ServerWebTraffic.listLatest
   actor: Actor,
   input: { readonly organizationSlug: string },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.selectDistinctOn([serverWebTrafficAttempt.machineId]).from(serverWebTrafficAttempt)
     .where(eq(serverWebTrafficAttempt.organizationId, organization.id))

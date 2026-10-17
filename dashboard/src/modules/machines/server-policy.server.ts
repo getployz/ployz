@@ -59,7 +59,7 @@ export const requestServerPolicyChange = Effect.fn(
       message: "A Server Policy change must set at least one value.",
     });
   }
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:operate");
   yield* refuseWhileDraining(organization.id, input.machineId, input.change);
   yield* sendInngestEvent(
     createServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId: input.machineId, change: input.change }),
@@ -73,7 +73,7 @@ export const planKeyedServerPolicyChange = Effect.fn("ServerPolicy.planKeyed")(f
   const refused = (code: string, message: string) =>
     ({ ok: false, refusal: { code, message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
   if (isEmptyPolicyChange(change)) return refused("invalid_argument", "A Server Policy change must set at least one value.");
-  const { organization } = yield* requireAccess(caller, caller.organization.slug, "operate");
+  const { organization } = yield* requireAccess(caller, caller.organization.slug, "servers:operate");
   if (yield* undoesDrain(organization.id, machineId, change)) return refused("conflict", DRAINING);
   return (attemptId: string) =>
     enqueueEvent(createKeyedServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId, change }, attemptId))
