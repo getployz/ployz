@@ -125,11 +125,16 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
             ui::stream(format_args!("{rejected} of {matched} rejected."));
             ui::warn_cause("Reject stopped", &error);
             if uncertain.is_empty() {
-                ui::warn(format!("{} were not rejected.", not_rejected.len()));
+                ui::warn(format!(
+                    "{} server{} not rejected.",
+                    not_rejected.len(),
+                    plural(not_rejected.len())
+                ));
             } else {
                 ui::warn(format!(
-                    "{} may or may not be rejected and {} were not. Run the same reject again.",
+                    "{} server{} may or may not be rejected and {} not. Run the same reject again.",
                     uncertain.len(),
+                    plural(uncertain.len()),
                     not_rejected.len()
                 ));
             }

@@ -1282,7 +1282,7 @@ fn server_reject_counts_a_later_refused_batch_as_not_rejected() {
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
     let (code, _, stderr) = run_output(&["server", "reject", "bulk-*", "--yes"], &token);
     assert_eq!(code, Some(3), "{stderr}");
-    assert!(stderr.contains("! 1 were not rejected."), "{stderr}");
+    assert!(stderr.contains("! 1 server not rejected."), "{stderr}");
     assert!(!stderr.contains("Run the same reject again"), "{stderr}");
 }
 
@@ -1419,13 +1419,14 @@ fn server_show_reaches_the_waiting_list_past_an_inherited_connection() {
     );
 }
 
-/// How the fake daemon answers discovery: with its contract at this protocol major, or by
-/// refusing the caller.
+/// How the fake daemon answers discovery: with its contract at this protocol major, by
+/// refusing the caller, or with a Cancelled status.
 #[cfg(unix)]
 #[derive(Clone, Copy)]
 enum Discovery {
     Describes(u32),
     Unauthenticated,
+    Cancelled,
 }
 
 /// A daemon on a unix socket, Machine `bbbb…`, that answers discovery as told and every
@@ -1451,6 +1452,7 @@ fn fake_daemon(socket: &std::path::Path, discovery: Discovery) {
                 Discovery::Unauthenticated => {
                     return Err(Status::unauthenticated("this caller is not authorized"));
                 }
+                Discovery::Cancelled => return Err(Status::cancelled("the daemon is stopping")),
             };
             let description = ContractDescription {
                 machine_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".parse().unwrap(),
@@ -1636,6 +1638,35 @@ fn server_show_keeps_an_inherited_daemons_discovery_answer() {
         (1, "unsupported"),
         &routes,
     );
+
+    let no_ssh = tempfile::tempdir().unwrap();
+    let no_ssh_path = no_ssh.path().to_str().unwrap();
+    let refused_then_no_ssh =
+        serde_json::json!([{ "unix": refusing }, { "ssh": "root@127.0.0.1" }]);
+    let mut without_ssh = inherit("PLOYZ_CONTEXT", "prod").to_vec();
+    without_ssh.push(("PATH", no_ssh_path));
+    let (code, json) = show_web_1_with_config(refused_then_no_ssh, &without_ssh);
+    assert_ne!(code, Some(0), "refused, then no ssh client: {json}");
+    assert!(json.get("waiting_server").is_none(), "{json}");
+    assert!(routes.lock().unwrap().is_empty(), "{json}");
+
+    let cancelling = daemon("cancelling.sock", Discovery::Cancelled);
+    let connect_cancelling = format!("unix://{cancelling}");
+    for (case, envs) in [
+        (
+            "context daemon cancels discovery",
+            inherit("PLOYZ_CONTEXT", "prod"),
+        ),
+        (
+            "connect daemon cancels discovery",
+            inherit("PLOYZ_CONNECT", &connect_cancelling),
+        ),
+    ] {
+        let (code, json) = show_web_1_with_config(unpinned(&cancelling), &envs);
+        assert_ne!(code, Some(0), "{case}: {json}");
+        assert!(json.get("waiting_server").is_none(), "{case}: {json}");
+        assert!(routes.lock().unwrap().is_empty(), "{case}: {json}");
+    }
 
     let (code, json) =
         show_web_1_with_config(unpinned(&current), &inherit("PLOYZ_CONTEXT", "missing"));

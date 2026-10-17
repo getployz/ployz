@@ -501,7 +501,7 @@ pub(crate) fn target_request<T>(payload: T, target: Option<&MachineTarget>) -> t
 /// # Errors
 ///
 /// Returns [`ConnectError::SshClientMissing`] when the local ssh client cannot
-/// be spawned and only SSH connections remain. Returns
+/// be spawned, only SSH connections remain and no earlier daemon answered. Returns
 /// [`ConnectError::AllFailed`] after every connection is tried.
 pub async fn connect_selected_with(
     selected: SelectedConnections,
@@ -515,6 +515,7 @@ pub async fn connect_selected_with(
             Ok(client) => return Ok(client),
             Err(error)
                 if matches!(error, ConnectError::SshClientMissing)
+                    && !reached
                     && selected
                         .connections
                         .iter()
@@ -797,7 +798,7 @@ impl ConnectError {
             | Self::Connection(_)
             | Self::Context(_)
             | Self::Path { .. } => true,
-            Self::Rpc(error) => error.unanswered || error.budget_expired,
+            Self::Rpc(error) => error.local || error.budget_expired,
             Self::AllFailed { reached, .. } => !reached,
             Self::IdentityMismatch { .. }
             | Self::MissingMachineDetails
@@ -848,8 +849,10 @@ pub struct TransportError {
     code: tonic::Code,
     message: String,
     details: Value,
-    /// The client produced this status: the daemon never answered.
+    /// Worth retrying as a silence: the client produced this status, or it is Cancelled.
     unanswered: bool,
+    /// The client's connection or stream failed: no status crossed the wire.
+    local: bool,
     /// The client's own deadline for the whole call elapsed.
     budget_expired: bool,
     /// The entry's router marked this status: the target did not answer it.
@@ -927,7 +930,8 @@ impl From<tonic::Status> for TransportError {
         // Remote statuses cross the wire without a source. Tonic attaches one
         // only when the client connection or stream itself fails.
         let source = std::error::Error::source(&status);
-        let unanswered = status.code() == tonic::Code::Cancelled || source.is_some();
+        let local = source.is_some();
+        let unanswered = status.code() == tonic::Code::Cancelled || local;
         let sent = ployz_core::rpc::status_causes(status.details());
         let cause = match source {
             Some(source) => {
@@ -942,6 +946,7 @@ impl From<tonic::Status> for TransportError {
         };
         Self {
             unanswered,
+            local,
             budget_expired: false,
             routed_unanswered: status
                 .metadata()
