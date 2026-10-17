@@ -29,7 +29,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::OnceCell;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -105,7 +104,7 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
             config,
             token,
             cloud,
-            organization: OnceCell::new(),
+            organization: Acting::default(),
         },
         store,
         place,
@@ -386,8 +385,53 @@ struct Account {
     config: PathBuf,
     token: Option<String>,
     cloud: Option<String>,
-    /// The Organization `token` acts in, asked of Ployz Cloud once.
-    organization: OnceCell<OrganizationId>,
+    organization: Acting,
+}
+
+/// The Organization an Organization Token acts in, asked of Ployz Cloud once per
+/// token. `ployz mcp login` can swap the stored token while the server runs, so the
+/// answer is kept with the token it belongs to.
+#[derive(Default)]
+struct Acting(Mutex<Option<Known>>);
+
+struct Known {
+    cloud: String,
+    bearer: String,
+    organization: OrganizationId,
+}
+
+impl Acting {
+    #[cfg(test)]
+    fn known(cloud: &str, bearer: &str, organization: OrganizationId) -> Self {
+        Self(Mutex::new(Some(Known {
+            cloud: cloud.to_owned(),
+            bearer: bearer.to_owned(),
+            organization,
+        })))
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Known>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn of(&self, credential: &Credential) -> Option<OrganizationId> {
+        self.held()
+            .as_ref()
+            .filter(|known| {
+                known.cloud == credential.cloud() && known.bearer == credential.bearer()
+            })
+            .map(|known| known.organization.clone())
+    }
+
+    fn learn(&self, credential: &Credential, organization: OrganizationId) {
+        *self.held() = Some(Known {
+            cloud: credential.cloud().to_owned(),
+            bearer: credential.bearer().to_owned(),
+            organization,
+        });
+    }
 }
 
 impl Server {
@@ -661,21 +705,18 @@ impl Server {
             Backend::Local(..) => return Ok(StoreAt::Local),
             Backend::Cloud(credential) => credential,
         };
-        let acting = || async {
-            let organization = cloud_account::acting_in(credential)
-                .await
-                .map_err(|error| Error::from(error).to_string())?;
-            OrganizationId::parse(organization.id).map_err(|error| error.message)
-        };
-        let organization = match credential {
-            Credential::Device(_) => acting().await?,
-            Credential::Token { .. } => self
-                .account
+        if let Some(organization) = self.account.organization.of(credential) {
+            return Ok(StoreAt::Cloud { organization });
+        }
+        let organization = cloud_account::acting_in(credential)
+            .await
+            .map_err(|error| Error::from(error).to_string())?;
+        let organization = OrganizationId::parse(organization.id).map_err(|error| error.message)?;
+        if let Credential::Token { .. } = credential {
+            self.account
                 .organization
-                .get_or_try_init(acting)
-                .await?
-                .clone(),
-        };
+                .learn(credential, organization.clone());
+        }
         Ok(StoreAt::Cloud { organization })
     }
 

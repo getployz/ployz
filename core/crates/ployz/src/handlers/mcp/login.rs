@@ -64,8 +64,15 @@ fn save(config: &Path, stored: &Stored) -> Result<(), LoginError> {
         tempfile::NamedTempFile::new_in(dir).map_err(|source| failed(path.clone(), source))?;
     serde_json::to_writer_pretty(&mut file, stored)
         .map_err(|source| failed(path.clone(), io::Error::other(source)))?;
+    // Durable before the caller revokes the token this replaces.
+    file.as_file()
+        .sync_all()
+        .map_err(|source| failed(path.clone(), source))?;
     file.persist(&path)
         .map_err(|error| failed(path.clone(), error.error))?;
+    std::fs::File::open(dir)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|source| failed(path.clone(), source))?;
     Ok(())
 }
 

@@ -318,7 +318,7 @@ fn on_cloud(fake: &Fake, place: Place) -> Server {
                 config: PathBuf::from("/nonexistent/config.toml"),
                 token: Some("ployz_acme".to_owned()),
                 cloud: Some(fake.url.clone()),
-                organization: OnceCell::new_with(Some(org())),
+                organization: Acting::known(&fake.url, "ployz_acme", org()),
             },
             Store::Cloud,
             fixed(place),
@@ -518,7 +518,7 @@ async fn an_organization_token_mints_in_its_organization_asked_once() {
     cloud.extend(script(&transcript));
     let fake = fake_cloud(cloud, None, Duration::ZERO);
     let mut server = on_cloud(&fake, transcript.place.clone());
-    server.account.organization.take();
+    server.account.organization = Acting::default();
     let mut client = Client::initialized(server, json!({})).await;
     let (result, _) = outcome(&transcript);
     for id in [2, 3] {
@@ -532,6 +532,91 @@ async fn an_organization_token_mints_in_its_organization_asked_once() {
         .into_iter()
         .filter(|seen| seen.path == "/api/cli/organizations");
     assert_eq!(asked.count(), 1, "the token's Organization is asked once");
+}
+
+fn acts_in(id: &str, slug: &str) -> Scripted {
+    Scripted {
+        path: "/api/cli/organizations".to_owned(),
+        body: Value::Null,
+        answer: Answered::Value(json!({ "organizations": [
+            { "id": id, "slug": slug, "name": slug, "current": true },
+        ] })),
+    }
+}
+
+fn store_agent_token(home: &tempfile::TempDir, fake: &Fake, token: &str, organization: &str) {
+    let mcp = json!({
+        "cloud": fake.url,
+        "id": format!("tok_{organization}"),
+        "organization": organization,
+        "token": token,
+    });
+    std::fs::write(home.path().join("mcp.json"), mcp.to_string()).unwrap();
+}
+
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn a_token_swapped_by_mcp_login_acts_in_its_own_organization_on_the_next_call() {
+    let transcript = transcript("project_create", in_org());
+    let mut cloud = vec![acts_in("org_acme", "acme"), acts_in("org_globex", "globex")];
+    cloud.extend(script(&transcript));
+    let fake = fake_cloud(cloud, None, Duration::ZERO);
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+    let links = json!({ here.to_str().unwrap(): {
+        "organization": { "id": "org_acme", "slug": "acme" },
+        "project": "shop",
+        "environment": "production",
+    } });
+    std::fs::write(home.path().join("links.json"), links.to_string()).unwrap();
+    store_agent_token(&home, &fake, "ployz_acme_agent", "acme");
+    let server = Server {
+        account: Account {
+            config: config.clone(),
+            token: None,
+            cloud: None,
+            organization: Acting::default(),
+        },
+        place: located(config),
+        ..on_cloud(&fake, transcript.place.clone())
+    };
+    let mut client = Client::initialized(server, json!({})).await;
+    let first = client
+        .call(2, "project_create", transcript.input.clone())
+        .await;
+    assert!(
+        !first.to_string().contains("is linked in Organization"),
+        "the link is in the token's Organization: {first}"
+    );
+    store_agent_token(&home, &fake, "ployz_globex_agent", "globex");
+    let second = client
+        .call(3, "project_create", transcript.input.clone())
+        .await;
+    assert_eq!(second["result"]["isError"], true, "{second}");
+    assert!(
+        second
+            .to_string()
+            .contains("is linked in Organization acme, but `ployz mcp` acts in another"),
+        "{second}"
+    );
+    let seen = fake.requests();
+    let asked: Vec<_> = seen
+        .iter()
+        .filter(|seen| seen.path == "/api/cli/organizations")
+        .map(|seen| seen.bearer.as_str())
+        .collect();
+    assert_eq!(
+        asked,
+        ["ployz_acme_agent", "ployz_globex_agent"],
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .filter(|seen| seen.bearer == "ployz_globex_agent")
+            .all(|seen| seen.path == "/api/cli/organizations"),
+        "nothing reaches the Store with the new token: {seen:?}"
+    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -859,13 +944,15 @@ fn signed_in_home(fake: &Fake, agent: bool) -> tempfile::TempDir {
     home
 }
 
+/// `server` acts with the agent token `signed_in_home` stored in `home`.
 fn without_token(server: Server, home: &tempfile::TempDir) -> Server {
+    let cloud = server.account.cloud.clone().unwrap_or_default();
     Server {
         account: Account {
             config: home.path().join("config.toml"),
             token: None,
             cloud: None,
-            organization: OnceCell::new_with(Some(org())),
+            organization: Acting::known(&cloud, "ployz_agent", org()),
         },
         ..server
     }
