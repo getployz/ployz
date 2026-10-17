@@ -84,14 +84,16 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     let runtime = runtime()?;
     if matches.get_flag("install") {
         let (token, token_source) = if matches.get_flag("token-stdin") {
-            let token = stdin_token(std::io::stdin())?;
-            let replaces = replaces_token(&paths.token_file, &token)?;
-            (token, Token::Piped { replaces })
+            (stdin_token(std::io::stdin())?, Token::Piped)
         } else {
             let token = FleetToken::read(&paths.token_file).map_err(key_failure)?;
             (token, Token::InFile)
         };
         let (key, mut client) = connect(&paths, &cloud_url, token)?;
+        if let Token::Piped = token_source {
+            // Fails before checking in on a file this can't read. The answer reads it again.
+            replaces_token(&paths.token_file, &client)?;
+        }
         let url_source = match matches.value_source("cloud-url") {
             Some(ValueSource::CommandLine) => Some("--cloud-url"),
             Some(ValueSource::EnvVariable) => Some(env::CLOUD_URL),
@@ -162,18 +164,18 @@ fn stdin_token(mut stdin: impl Read + IsTerminal) -> Result<FleetToken, Error> {
         .ok_or_else(|| Error::usage("stdin doesn't hold a Fleet Token (pflt_…)"))
 }
 
-/// Whether `token_file` holds a token other than `token`. Only a missing file makes a first
-/// install: one this can't read may hold the token the running service checks in with.
-fn replaces_token(token_file: &Path, token: &FleetToken) -> Result<bool, Error> {
+/// Whether `token_file` holds something other than the token `client` sends. Only a missing
+/// file makes a first install: one that isn't a token may still be what someone wants kept, and
+/// one this can't read may hold the token the running service checks in with.
+fn replaces_token(token_file: &Path, client: &CheckinClient) -> Result<bool, Error> {
     match FleetToken::read(token_file) {
-        Ok(held) => Ok(held != *token),
+        Ok(held) => Ok(!client.sends(&held)),
         Err(checkin::KeyError::Token { source, .. })
             if source.kind() == io::ErrorKind::NotFound =>
         {
             Ok(false)
         }
-        // Nothing in it can check in, so there is no token to keep.
-        Err(checkin::KeyError::NotAToken { .. }) => Ok(false),
+        Err(checkin::KeyError::NotAToken { .. }) => Ok(true),
         Err(checkin::KeyError::Token { path, source }) => Err(Error::caused(
             RpcErrorCode::InvalidArgument,
             format!(
@@ -197,8 +199,8 @@ struct Install<'a> {
 enum Token {
     /// Read from --token-file, where it stays.
     InFile,
-    /// Piped on stdin. `replaces` when --token-file holds a different token.
-    Piped { replaces: bool },
+    /// Piped on stdin, and written to --token-file once Cloud takes it.
+    Piped,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -251,28 +253,27 @@ fn keep_answered_token(
     install_with: Install<'_>,
 ) -> Result<Answered, Error> {
     let answered = install_outcome(next, install_with)?;
-    let replaces = matches!(install_with.token, Token::Piped { replaces: true });
-    match &answered {
-        Answered::Unconfirmed(why) if replaces => {
-            return Err(Error::coded(
-                RpcErrorCode::Unavailable,
+    if let Answered::Unconfirmed(why) | Answered::Held(_, why) = &answered {
+        // Read now, not before checking in: another install may have written it meanwhile.
+        if let Token::Piped = install_with.token
+            && replaces_token(token_file, client)?
+        {
+            let kept = format!(
+                "this host keeps {} and its check-in service",
+                token_file.display()
+            );
+            let message = if let Answered::Held(Hold::Full, _) = answered {
                 format!(
-                    "{why} This host keeps its old token and check-in service until Cloud answers the new Fleet Token. Run the install again."
-                ),
-            ));
-        }
-        Answered::Held(Hold::Full, why) if replaces => {
-            return Err(Error::coded(
-                RpcErrorCode::Unavailable,
+                    "{why} Cloud didn't take the new Fleet Token, so {kept}. Run the install again with another token, or revoke this one to clear its waiting servers."
+                )
+            } else {
                 format!(
-                    "{why} Cloud didn't take the new Fleet Token, so this host keeps its old token and check-in service. Run the install again with another token, or revoke this one to clear its waiting servers."
-                ),
-            ));
+                    "{why} Until Cloud takes the new Fleet Token, {kept}. Run the install again."
+                )
+            };
+            return Err(Error::coded(RpcErrorCode::Unavailable, message));
         }
-        Answered::Unconfirmed(why) | Answered::Held(_, why) => {
-            crate::ui::warn(format!("{why} The check-in service keeps trying."));
-        }
-        Answered::Waiting => {}
+        crate::ui::warn(format!("{why} The check-in service keeps trying."));
     }
     if let Token::InFile = install_with.token {
         keep_token_private(token_file)?;

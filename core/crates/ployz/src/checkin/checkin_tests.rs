@@ -343,6 +343,8 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
         r#"{"error":"Too many check-ins"}"#,
         r#"{"error":"This Fleet Token already has many waiting servers."}"#,
         r#"{"error":"This Fleet Token already has  waiting servers."}"#,
+        r#"{"_tag":"PublicError","code":"busy","message":"Busy, retry."}"#,
+        r#"{"_tag":"PublicError","code":"full","message":"This Fleet Token already has 5 waiting servers."}"#,
     ] {
         assert_eq!(
             held(Some(Duration::from_secs(9)), body),

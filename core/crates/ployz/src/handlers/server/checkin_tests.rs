@@ -170,6 +170,45 @@ async fn with_no_current_ployzd_the_loop_runs_an_older_one_and_says_to_reinstall
     assert!(!dir.path().join("gone").exists(), "the loop never fetches");
 }
 
+/// Answers one check-in with `status` and `body` once `meanwhile` has run, and returns its request.
+async fn answering_once(
+    status: &'static str,
+    body: &'static str,
+    meanwhile: impl FnOnce() + Send + 'static,
+) -> (String, tokio::task::JoinHandle<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = vec![0; 16384];
+        loop {
+            let read = stream.read(&mut buf).await.unwrap();
+            request.extend_from_slice(buf.get(..read).unwrap());
+            let text = String::from_utf8_lossy(&request).to_lowercase();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .and_then(|length| length.trim().parse::<usize>().ok())
+                .unwrap_or_default();
+            if read == 0 || body.len() >= length {
+                break;
+            }
+        }
+        meanwhile();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    (url, server)
+}
+
 /// The chosen ployzd, probed for real, on a host whose preparation must not start.
 struct Chosen(System);
 
@@ -224,36 +263,7 @@ async fn a_stale_pin_that_fails_its_probe_gives_way_to_an_older_ployzd_that_answ
         "pflt_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     )
     .unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        let mut buf = vec![0; 16384];
-        loop {
-            let read = stream.read(&mut buf).await.unwrap();
-            request.extend_from_slice(buf.get(..read).unwrap());
-            let text = String::from_utf8_lossy(&request).to_lowercase();
-            let Some((head, body)) = text.split_once("\r\n\r\n") else {
-                continue;
-            };
-            let length = head
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length:"))
-                .and_then(|length| length.trim().parse::<usize>().ok())
-                .unwrap_or_default();
-            if read == 0 || body.len() >= length {
-                break;
-            }
-        }
-        let body = r#"{"kind":"wait","retryAfter":30}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-        String::from_utf8_lossy(&request).into_owned()
-    });
+    let (url, server) = answering_once("200 OK", r#"{"kind":"wait","retryAfter":30}"#, || {}).await;
     let token = FleetToken::read(&paths.token_file).unwrap();
     let key = CheckinKey::load_or_create(&paths.key()).unwrap();
     let mut client = CheckinClient::new(&url, token).unwrap();
@@ -356,11 +366,7 @@ async fn a_loop_with_no_ployzd_at_all_says_so_in_status_before_it_exits() {
 const PIPED: Install<'static> = Install {
     cloud_url: "ployz.dev",
     url_source: None,
-    token: Token::Piped { replaces: false },
-};
-const RERUN: Install<'static> = Install {
-    token: Token::Piped { replaces: true },
-    ..PIPED
+    token: Token::Piped,
 };
 const FROM_FILE: Install<'static> = Install {
     token: Token::InFile,
@@ -532,33 +538,23 @@ fn a_token_from_stdin_replaces_the_old_one_only_once_cloud_answers_it() {
                 "Cloud held this check-in back: This Fleet Token already has 1000 waiting servers."
                     .to_owned(),
         },
+        Next::Held {
+            after,
+            hold: Hold::Busy,
+            why: "Cloud held this check-in back: Too many check-ins.".to_owned(),
+        },
     ] {
-        assert!(keep_answered_token(unanswered, &candidate, &token_file, RERUN).is_err());
+        assert!(keep_answered_token(unanswered, &candidate, &token_file, PIPED).is_err());
         assert_eq!(
             fs::read_to_string(&token_file).unwrap(),
             format!("{OLD_TOKEN}\n")
         );
     }
-    let why = "Cloud held this check-in back: Too many check-ins.".to_owned();
-    let held = Next::Held {
-        after,
-        hold: Hold::Busy,
-        why: why.clone(),
-    };
-    assert_eq!(
-        keep_answered_token(held, &candidate, &token_file, RERUN).unwrap(),
-        Answered::Held(Hold::Busy, why)
-    );
-    assert_eq!(
-        fs::read_to_string(&token_file).unwrap(),
-        format!("{NEW_TOKEN}\n")
-    );
-    let token_file = token_file_holding(&dir, OLD_TOKEN);
     keep_answered_token(
         Next::Wait { after, log: None },
         &candidate,
         &token_file,
-        RERUN,
+        PIPED,
     )
     .unwrap();
     assert_eq!(
@@ -570,27 +566,38 @@ fn a_token_from_stdin_replaces_the_old_one_only_once_cloud_answers_it() {
 }
 
 #[test]
-fn a_rerun_cloud_cannot_answer_keeps_the_old_token_and_says_so() {
+fn a_rerun_cloud_cannot_answer_or_holds_back_keeps_the_old_token_and_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let token_file = token_file_holding(&dir, OLD_TOKEN);
-    for why in [
+    let after = std::time::Duration::from_secs(60);
+    for (why, next) in [
         "Could not reach Ployz Cloud: error sending request.",
         "Could not probe this server: ployzd install --probe did not finish in 30s.",
-    ] {
-        let kept = keep_answered_token(
-            Next::Retry {
-                after: std::time::Duration::from_secs(60),
+        "Cloud held this check-in back: Too many check-ins.",
+        "Cloud held this check-in back: Busy, retry.",
+    ]
+    .map(|why| {
+        let next = if why.starts_with("Cloud held") {
+            Next::Held {
+                after,
+                hold: Hold::Busy,
                 why: why.to_owned(),
-            },
-            &sending(NEW_TOKEN),
-            &token_file,
-            RERUN,
-        )
-        .unwrap_err()
-        .to_string();
+            }
+        } else {
+            Next::Retry {
+                after,
+                why: why.to_owned(),
+            }
+        };
+        (why, next)
+    }) {
+        let kept = keep_answered_token(next, &sending(NEW_TOKEN), &token_file, PIPED)
+            .unwrap_err()
+            .to_string();
         assert!(
             kept.contains(&format!(
-                "{why} This host keeps its old token and check-in service until Cloud answers the new Fleet Token. Run the install again."
+                "{why} Until Cloud takes the new Fleet Token, this host keeps {} and its check-in service. Run the install again.",
+                token_file.display()
             )),
             "{kept}"
         );
@@ -611,12 +618,13 @@ fn a_rerun_with_a_token_that_has_all_its_waiting_servers_keeps_the_old_token() {
         hold: Hold::Full,
         why: why.to_owned(),
     };
-    let kept = keep_answered_token(full(), &sending(NEW_TOKEN), &token_file, RERUN)
+    let kept = keep_answered_token(full(), &sending(NEW_TOKEN), &token_file, PIPED)
         .unwrap_err()
         .to_string();
     assert!(
         kept.contains(&format!(
-            "{why} Cloud didn't take the new Fleet Token, so this host keeps its old token and check-in service. Run the install again with another token, or revoke this one to clear its waiting servers."
+            "{why} Cloud didn't take the new Fleet Token, so this host keeps {} and its check-in service. Run the install again with another token, or revoke this one to clear its waiting servers.",
+            token_file.display()
         )),
         "{kept}"
     );
@@ -660,11 +668,11 @@ fn a_first_install_or_the_same_token_keeps_trying_while_cloud_is_unreachable() {
 #[test]
 fn only_a_missing_token_file_makes_a_first_install() {
     let dir = tempfile::tempdir().unwrap();
-    let new = FleetToken::parse(NEW_TOKEN).unwrap();
+    let new = sending(NEW_TOKEN);
     let replaces = |path: &Path| replaces_token(path, &new);
     assert!(!replaces(&dir.path().join("new/fleet-token")).unwrap());
     assert!(!replaces(&token_file_holding(&dir, NEW_TOKEN)).unwrap());
-    assert!(!replaces(&token_file_holding(&dir, "not a token")).unwrap());
+    assert!(replaces(&token_file_holding(&dir, "not a token")).unwrap());
     assert!(replaces(&token_file_holding(&dir, OLD_TOKEN)).unwrap());
     let unreadable = dir.path().join("a-directory");
     fs::create_dir(&unreadable).unwrap();
@@ -676,6 +684,92 @@ fn only_a_missing_token_file_makes_a_first_install() {
         )),
         "{error}"
     );
+}
+
+#[test]
+fn a_rerun_over_a_file_that_isnt_a_token_swaps_it_only_once_cloud_takes_the_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let token_file = token_file_holding(&dir, "not a token");
+    let after = std::time::Duration::from_secs(60);
+    for unanswered in [
+        Next::Retry {
+            after,
+            why: "Could not reach Ployz Cloud: refused.".to_owned(),
+        },
+        Next::Held {
+            after,
+            hold: Hold::Busy,
+            why: "Cloud held this check-in back: Busy, retry.".to_owned(),
+        },
+        Next::Held {
+            after,
+            hold: Hold::Full,
+            why: "Cloud held this check-in back: This Fleet Token already has 5 waiting servers."
+                .to_owned(),
+        },
+    ] {
+        let kept = keep_answered_token(unanswered, &sending(NEW_TOKEN), &token_file, PIPED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            kept.contains(&format!("this host keeps {}", token_file.display())),
+            "{kept}"
+        );
+        assert_eq!(fs::read_to_string(&token_file).unwrap(), "not a token\n");
+    }
+    keep_answered_token(
+        Next::Wait { after, log: None },
+        &sending(NEW_TOKEN),
+        &token_file,
+        PIPED,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(&token_file).unwrap(),
+        format!("{NEW_TOKEN}\n")
+    );
+}
+
+#[tokio::test]
+async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answering() {
+    for (status, body) in [
+        ("502 Bad Gateway", ""),
+        (
+            "429 Too Many Requests",
+            r#"{"error":"This Fleet Token already has 1000 waiting servers."}"#,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = temp_paths(&dir);
+        let ployzd = dir.path().join("bin/ployzd");
+        probing_daemon(&ployzd, "0.0.1");
+        let host = Chosen(System {
+            ployzd,
+            stale: Some("Older.".to_owned()),
+        });
+        let landed = paths.token_file.clone();
+        let (url, server) = answering_once(status, body, move || {
+            fs::write(landed, format!("{OLD_TOKEN}\n")).unwrap();
+        })
+        .await;
+        let key = CheckinKey::load_or_create(&paths.key()).unwrap();
+        let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
+        assert!(!replaces_token(&paths.token_file, &client).unwrap());
+        let next = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
+        server.await.unwrap();
+        let kept = keep_answered_token(next, &client, &paths.token_file, PIPED)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            kept.contains(&format!("this host keeps {}", paths.token_file.display())),
+            "{status}: {kept}"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.token_file).unwrap(),
+            format!("{OLD_TOKEN}\n"),
+            "{status}"
+        );
+    }
 }
 
 #[test]

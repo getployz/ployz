@@ -305,15 +305,14 @@ pub(super) fn reply(
     if status == StatusCode::PAYLOAD_TOO_LARGE {
         return Reply::Outdated(format!("Cloud couldn't take this check-in ({status})"));
     }
-    let said = cloud_error(body);
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
-        return match said.and_then(|why| Some((cloud_hold(&why)?, why))) {
+        return match cloud_hold(body) {
             Some((hold, why)) => Reply::Held(after, hold, why),
             None => Reply::Unreachable(after, format!("Cloud answered {status}")),
         };
     }
-    if let Some(why) = said {
+    if let Some(why) = cloud_error(body) {
         return Reply::Unreachable(BACKOFF, format!("Cloud answered {status}: {why}"));
     }
     if status.is_client_error() && status != StatusCode::REQUEST_TIMEOUT {
@@ -332,14 +331,18 @@ fn cloud_error(body: &[u8]) -> Option<String> {
     message.map(str::to_owned)
 }
 
-fn cloud_hold(said: &str) -> Option<Hold> {
+/// Cloud holds a check-in back with `{error}` only, the shape its 429 sends.
+fn cloud_hold(body: &[u8]) -> Option<(Hold, String)> {
+    let body = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let said = body.get("error")?.as_str()?;
     if CLOUD_BUSY.contains(&said) {
-        return Some(Hold::Busy);
+        return Some((Hold::Busy, said.to_owned()));
     }
     let cap = said
         .strip_prefix(CLOUD_FULL.0)?
         .strip_suffix(CLOUD_FULL.1)?;
-    (!cap.is_empty() && cap.bytes().all(|digit| digit.is_ascii_digit())).then_some(Hold::Full)
+    (!cap.is_empty() && cap.bytes().all(|digit| digit.is_ascii_digit()))
+        .then(|| (Hold::Full, said.to_owned()))
 }
 
 /// A 401 counts against the token only when Cloud itself refused it and the clocks agree well
