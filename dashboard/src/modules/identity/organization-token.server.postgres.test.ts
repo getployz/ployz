@@ -76,4 +76,17 @@ describe("organization tokens", () => {
     expect(await revokedBy("bob", ada)).toBe("revoked");
     expect(await listedBy("ada")).toEqual(["eve-ci"]);
   });
+
+  it("shows support none of the Organization's tokens and lets it revoke none", async () => {
+    const ada = await tokenOf("ada");
+    const support: Caller = {
+      ...callerOf("bob"), userId: "00000000-0000-4000-8000-00000000d0ff", role: null,
+      support: { variables: true, configs: true, logs: true },
+    };
+    expect((await run(listCredentials(support))).tokens).toEqual([]);
+    expect(await run(revokeCredential(support, ada).pipe(
+      Effect.as("revoked"),
+      Effect.catchTag("NotFound", () => Effect.succeed("not_found")),
+    ))).toBe("not_found");
+  });
 });

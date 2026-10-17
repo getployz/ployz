@@ -16,6 +16,7 @@ import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
+import { provideServerAccess } from "#/modules/machines/server-access.server";
 import { organization } from "#/modules/organization/tables";
 import { requestServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import { deleteCopy } from "#/modules/volume-placement/volume-placement.deploy.server";
@@ -123,5 +124,12 @@ describe("Server management and copy deletion", () => {
     const support: Caller = { ...caller(ids.member), role: null, support: { variables: false, configs: false, logs: false } };
     const outcome = await outcomeOf(() => runCommand(support, "server_upgrade_policy_set", { automatic: false }, { approvalId: null, key: null }) as never, ids.member);
     expect([outcome, sent]).toEqual([JSON.stringify({ ok: true, output: { channel: "stable", automatic: false } }), []]);
+  });
+
+  it("refuses support Server access and member management, as trunk did", async () => {
+    const support: Caller = { ...caller(ids.admin), role: null, support: { variables: true, configs: true, logs: true } };
+    const access = await outcomeOf(() => provideServerAccess(support as never) as never, ids.admin);
+    const invite = await outcomeOf(() => runCommand(support, "org_member_invite", {}, { approvalId: null, key: null }) as never, ids.admin);
+    expect([JSON.parse(access).refusal.code, JSON.parse(invite).refusal.code]).toEqual(["forbidden", "forbidden"]);
   });
 });
