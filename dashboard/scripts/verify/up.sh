@@ -252,6 +252,7 @@ uptime: seeding in the background for the Monitoring tab; wait with: until [ -s 
 browser:
   agent-browser --session $name cookies set better-auth.session_token '$cookie' --url $base --httpOnly --sameSite Lax
   agent-browser --session $name open $base/cloud/$org/shop/production
+  scripts/verify/as.sh ada|grace|linus   switches this session to the owner, an admin or a member of $org
 EOF
 if [ "$with_inngest" = 1 ]; then
   echo "inngest: http://127.0.0.1:$inngest_port (function runs; logs $run/inngest.log, $run/worker.log)" | tee -a "$run/info"
