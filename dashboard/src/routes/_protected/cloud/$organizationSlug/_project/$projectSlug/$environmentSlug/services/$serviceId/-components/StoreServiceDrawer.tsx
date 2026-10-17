@@ -608,14 +608,16 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuGroup>
-                <DropdownMenuItem disabled={other(kind) === "repository" && locked !== undefined}
-                  onClick={() => setPicking({ kind: other(kind), replacing: true })}>
+                {/* Switching either way connects or clears the repository. */}
+                <DropdownMenuItem disabled={locked !== undefined} onClick={() => setPicking({ kind: other(kind), replacing: true })}>
                   Switch to {SOURCES[other(kind)].label.toLowerCase()}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                <DropdownMenuItem variant="destructive" onClick={disconnect}>Disconnect</DropdownMenuItem>
+                <DropdownMenuItem variant="destructive" disabled={kind === "repository" && locked !== undefined} onClick={disconnect}>
+                  Disconnect
+                </DropdownMenuItem>
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>

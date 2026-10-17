@@ -78,6 +78,9 @@ it("locks the repository and its branch in a Protected Environment, and says why
   expect(screen.getByRole("button", { name: "Change repository" }).hasAttribute("disabled")).toBe(true);
   expect(screen.getByRole("button", { name: /Change branch/ }).hasAttribute("disabled")).toBe(true);
   expect(screen.getAllByText(LOCKED)).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "Source actions" }));
+  expect(screen.getByRole("menuitem", { name: "Switch to container image" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Disconnect" }).getAttribute("aria-disabled")).toBe("true");
 });
 
 it("leaves the repository and branch open when the Environment isn't locked to you", () => {
@@ -90,6 +93,9 @@ it("leaves the repository and branch open when the Environment isn't locked to y
   expect(screen.getByRole("button", { name: "Change repository" }).hasAttribute("disabled")).toBe(false);
   expect(screen.getByRole("button", { name: /Change branch/ }).hasAttribute("disabled")).toBe(false);
   expect(screen.queryByText(LOCKED)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Source actions" }));
+  expect(screen.getByRole("menuitem", { name: "Switch to container image" }).getAttribute("aria-disabled")).toBeNull();
+  expect(screen.getByRole("menuitem", { name: "Disconnect" }).getAttribute("aria-disabled")).toBeNull();
 });
 
 it("offers only an image to an empty Service in a Protected Environment", () => {
