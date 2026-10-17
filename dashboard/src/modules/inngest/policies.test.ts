@@ -28,6 +28,7 @@ import { createPruneOrganizationChangeLog } from "#/modules/organization/change-
 import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
 import { createUptimeMaintenanceFunctions } from "#/modules/uptime/maintenance.inngest";
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/postgres/web-analytics.inngest";
+import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
 
 describe("Inngest function policies", () => {
   it("pins the SDK-default retry count and domain-owned concurrency", () => {
@@ -55,6 +56,8 @@ describe("Inngest function policies", () => {
     createScheduleServerUpgrades(inngest),
     ...createUptimeMaintenanceFunctions(inngest),
     ...createWebAnalyticsFunctions(inngest),
+    createTearDownAnonymousOrganization(inngest),
+    createScheduleAnonymousSweep(inngest),
     ];
 
     expect(
@@ -88,12 +91,19 @@ describe("Inngest function policies", () => {
       { id: "uptime-prune", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "uptime-backfill", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "analytics-retention", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "tear-down-anonymous-organization", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
+      { id: "schedule-anonymous-sweep", retries: 3, concurrency: [{ limit: 1 }] },
     ]);
   });
 
   it("rolls uptime up at :05, once the previous hour has closed", () => {
     const [rollup] = createUptimeMaintenanceFunctions(new Inngest({ id: "uptime-contract" }));
     expect(rollup?.opts).toMatchObject({ id: "uptime-rollup", triggers: [{ cron: "5 * * * *" }] });
+  });
+
+  it("sweeps lapsed anonymous Organizations every 15 minutes", () => {
+    const sweep = createScheduleAnonymousSweep(new Inngest({ id: "anonymous-contract" }));
+    expect(sweep.opts).toMatchObject({ id: "schedule-anonymous-sweep", triggers: [{ cron: "TZ=UTC */15 * * * *" }] });
   });
 
   it("runs analytics retention daily on a UTC cron", () => {
