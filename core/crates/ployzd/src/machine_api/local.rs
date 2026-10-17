@@ -778,6 +778,10 @@ fn local_error(error: LocalMachineError) -> Result<Response<OpaquePayload>, Stat
             tonic::Code::Unauthenticated,
             &error,
         )),
+        LocalMachineError::OnlyCloudManagesSlots => Err(ployz_core::rpc::caused_status(
+            tonic::Code::PermissionDenied,
+            &error,
+        )),
         LocalMachineError::NotParticipating => respond(unavailable("Machine is not participating")),
         LocalMachineError::ClusterStoreUnavailable => {
             respond(unavailable("Cluster store is not available"))

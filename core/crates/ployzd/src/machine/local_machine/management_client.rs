@@ -18,7 +18,8 @@ impl LocalMachine {
     /// never persisted.
     ///
     /// # Errors
-    /// Returns [`Error::NotParticipating`] when this Machine is not participating,
+    /// Returns [`Error::OnlyCloudManagesSlots`] when a management client other than
+    /// Cloud's calls it, [`Error::NotParticipating`] when this Machine is not participating,
     /// admission failures, [`Error::RecordOwner`] when the record owner has stopped,
     /// and [`Error::Store`] when the record cannot be written.
     pub async fn set_management_client(
@@ -26,6 +27,7 @@ impl LocalMachine {
         request: SetManagementClientRequest,
     ) -> Result<SetManagementClientResponse, Error> {
         let local = self.clone();
+        let client = self.management_client;
         self.finish_mutation(async move {
             local
                 .owner
@@ -33,6 +35,7 @@ impl LocalMachine {
                     if store.record().phase() != LocalMachinePhase::Participating {
                         return Err(Error::NotParticipating);
                     }
+                    LocalMachine::require_slot_authority(client, store.record())?;
                     let capability = match request {
                         SetManagementClientRequest::Set { label } => {
                             let client = iroh::SecretKey::generate();
@@ -142,6 +145,70 @@ mod tests {
             "a revoked client must not mutate after Clear"
         );
         assert!(!local.record().has_management_clients());
+    }
+
+    async fn accepted(local: &LocalMachine, label: &str) -> [u8; 32] {
+        let label = ployz_core::ManagementClientLabel::parse(label).unwrap();
+        let capability = local
+            .set_management_client(SetManagementClientRequest::Set { label })
+            .await
+            .unwrap()
+            .capability
+            .unwrap();
+        let key = *iroh::SecretKey::from_bytes(capability.client_secret())
+            .public()
+            .as_bytes();
+        local.activate_management_client(key).await.unwrap();
+        key
+    }
+
+    #[tokio::test]
+    async fn only_the_cloud_slot_may_set_or_clear_slots() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = participating(dir.path()).await;
+        let cloud_key = accepted(&local, "cloud").await;
+        let device_key = accepted(&local, "cli-device").await;
+        let device = local.clone().with_management_client(device_key);
+        let before = local
+            .record()
+            .management_clients()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for request in [
+            set(),
+            clear(),
+            SetManagementClientRequest::Set {
+                label: ployz_core::ManagementClientLabel::parse("cli-other").unwrap(),
+            },
+        ] {
+            assert!(
+                matches!(
+                    device.set_management_client(request).await,
+                    Err(Error::OnlyCloudManagesSlots)
+                ),
+                "a cli- slot changed slots"
+            );
+        }
+        let record = local.record();
+        assert_eq!(
+            record.management_clients().cloned().collect::<Vec<_>>(),
+            before
+        );
+        assert_eq!(record.accepted_client(&cloud()), Some(cloud_key));
+        assert_eq!(record.pending_client(&cloud()), None);
+
+        let manager = local.clone().with_management_client(cloud_key);
+        let rotated = manager.set_management_client(set()).await.unwrap();
+        assert!(rotated.capability.is_some());
+        assert!(local.record().pending_client(&cloud()).is_some());
+        manager
+            .set_management_client(SetManagementClientRequest::Clear {
+                label: ployz_core::ManagementClientLabel::parse("cli-device").unwrap(),
+            })
+            .await
+            .unwrap();
+        assert!(!local.record().accepts_management_client(&device_key));
     }
 
     #[tokio::test]
