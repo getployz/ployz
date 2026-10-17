@@ -100,6 +100,22 @@ async fn run_remote(remote: &Remote, release: &Path) -> Result<(), ProvisionErro
 }
 
 #[tokio::test]
+async fn a_failed_local_install_reports_the_last_line_the_installer_wrote() {
+    let fixture = tempfile::tempdir().unwrap();
+    let daemon = fixture.path().join("ployzd");
+    write_executable(
+        &daemon,
+        "#!/bin/sh\necho 'checking disk' >&2\necho 'prepare ZFS storage: Host root is full' >&2\necho >&2\nexit 1\n",
+    );
+
+    let error = run_installer(&daemon, VERSION, Preparation::SoftwareOnly)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.to_string(), "prepare ZFS storage: Host root is full");
+}
+
+#[tokio::test]
 async fn local_setup_runs_the_verified_bootstrap_installer() {
     let fixture = tempfile::tempdir().unwrap();
     let log = fixture.path().join("commands.log");

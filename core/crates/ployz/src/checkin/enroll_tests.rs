@@ -494,3 +494,15 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
             .contains(&"--ployz-config".to_owned())
     );
 }
+
+#[test]
+fn a_failure_sent_to_cloud_keeps_the_cause_under_its_sentence() {
+    let error =
+        crate::handlers::Error::coded(ployz_core::RpcErrorCode::Unavailable, "Store not ready")
+            .context("the first Server did not become ready");
+
+    assert_eq!(
+        failure_message(&error),
+        "the first Server did not become ready; cause: Store not ready"
+    );
+}

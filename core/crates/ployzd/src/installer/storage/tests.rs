@@ -297,7 +297,7 @@ fn zfs_debian_contract() {
         let ZfsRoute::Debian { codename, keyring } = ZfsRoute::for_os(&os).unwrap() else {
             panic!("{name} is not on the Debian route");
         };
-        let result = prepare_debian_zfs(&paths.apt_dir, &os, codename, keyring, case.kernel);
+        let result = prepare_debian_zfs(&paths.apt_dir, &os, codename, keyring, case.kernel, None);
         match case.failed_step {
             Some(step) => assert_refused(
                 result,
@@ -415,6 +415,7 @@ fn zfs_install_takes_over_a_prepared_build_contract() {
         "stuck-cleanup",
         "contended",
         "unprepared",
+        "built",
     ] {
         let fixture = fixture(name);
         let root = fixture.path();
@@ -444,13 +445,24 @@ esac"#,
         write_script(
             &commands.join("dkms"),
             r#"echo "$*" >> "$PLOYZ_INSTALLER_CONTRACT_ROOT/dkms.log"
-if [ "$1" = status ]; then echo "zfs/2.3.2: added"; fi"#,
+case "$1" in
+  status)
+    if [ "$PLOYZ_ZFS_TAKEOVER_CONTRACT" != built ]; then echo "zfs/2.3.2: added"
+    elif [ -f "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ]; then echo "zfs/2.3.2, 6.12.43+deb13-cloud-amd64, x86_64: installed"
+    else echo "zfs/2.3.2, 6.12.43+deb13-cloud-amd64, x86_64: built"; fi ;;
+  install) : > "$PLOYZ_INSTALLER_CONTRACT_ROOT/module" ;;
+esac"#,
         );
         symlink("/usr/bin/flock", commands.join("flock")).unwrap();
         write_zfs_probes(&commands);
         let prepare = root.join("data/prepare");
         let source = root.join("usr/src/zfs-2.3.2");
         fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("dkms.conf"),
+            "PACKAGE_NAME=\"zfs\"\nAUTOINSTALL=\"no\"\n",
+        )
+        .unwrap();
         let claim = PrepState {
             added_packages: vec!["dkms".into(), "lsb-release".into()],
             zfs_build: (name != "no-build").then(|| ZfsBuild::Dkms {
@@ -538,6 +550,22 @@ if [ "$1" = status ]; then echo "zfs/2.3.2: added"; fi"#,
         } else {
             assert!(!dkms.contains("remove"), "{name}: {dkms}");
             assert!(source.exists(), "{name}");
+        }
+        let conf = fs::read_to_string(source.join("dkms.conf")).unwrap_or_default();
+        if name == "built" {
+            assert!(
+                dkms.contains(&format!("install -m zfs -v 2.3.2 -k {KERNEL}")),
+                "{name}: {dkms}"
+            );
+            assert!(
+                !apt.contains("zfs-dkms")
+                    && apt.contains("install -y -qq --no-install-recommends zfsutils-linux"),
+                "{name}: {apt}"
+            );
+            assert!(conf.contains("AUTOINSTALL=\"yes\""), "{name}: {conf}");
+        } else {
+            assert!(!dkms.contains("install"), "{name}: {dkms}");
+            assert!(apt.contains("zfs-dkms"), "{name}: {apt}");
         }
         if name == "stuck-cleanup" {
             assert!(prepare.join("zfs").is_file(), "{name}");

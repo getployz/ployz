@@ -92,9 +92,14 @@ impl ZfsRoute {
             self.package_manager(),
             || match self {
                 Self::Ubuntu => install_zfs_packages(kernel),
-                Self::Debian { codename, keyring } => {
-                    prepare_debian_zfs(&paths.apt_dir, os, codename, keyring, kernel)
-                }
+                Self::Debian { codename, keyring } => prepare_debian_zfs(
+                    &paths.apt_dir,
+                    os,
+                    codename,
+                    keyring,
+                    kernel,
+                    super::prepare::prepared_dkms_build(paths, kernel),
+                ),
                 Self::AmazonLinux => prepare_amazon_zfs(
                     &super::prepare::prepare_dir(paths).join("zfs"),
                     &paths.modules_load_dir,
@@ -177,7 +182,7 @@ fn run_step(step: &'static str, command: &mut Command) -> Result<(), BuildFailur
     run_command(step, command).map(drop).map_err(failed(step))
 }
 
-/// Runs `build`, then checks `kernel` has ZFS.
+/// Runs `build`, then checks `kernel` has ZFS. `compiles` warns that the build takes minutes.
 ///
 /// # Errors
 ///
@@ -185,12 +190,15 @@ fn run_step(step: &'static str, command: &mut Command) -> Result<(), BuildFailur
 fn build_zfs_module(
     os: &OsRelease,
     kernel: &str,
+    compiles: bool,
     build: impl FnOnce() -> Result<(), BuildFailure>,
 ) -> Result<(), Error> {
-    eprintln!(
-        "WARNING: {} doesn't include ZFS, so Ployz is building it for kernel {kernel}. This can take up to 20 minutes on small Servers. Ubuntu includes ZFS and sets up in seconds.",
-        os.display()
-    );
+    if compiles {
+        eprintln!(
+            "WARNING: {} doesn't include ZFS, so Ployz is building it for kernel {kernel}. This can take up to 20 minutes on small Servers. Ubuntu includes ZFS and sets up in seconds.",
+            os.display()
+        );
+    }
     build()
         .and_then(|()| {
             if zfs_installed(kernel) {
@@ -222,15 +230,17 @@ pub(super) fn zfs_installed(kernel: &str) -> bool {
 }
 
 /// Adds `contrib` in its own source and installs Debian's `zfs-dkms`, whose install builds the
-/// module for every kernel with headers.
+/// module for every kernel with headers. A module preparation already built is installed as it
+/// is, beside `zfsutils-linux` alone, since `zfs-dkms` would build it again.
 fn prepare_debian_zfs(
     apt_dir: &Path,
     os: &OsRelease,
     codename: &str,
     keyring: &str,
     kernel: &str,
+    prepared: Option<super::prepare::PreparedBuild>,
 ) -> Result<(), Error> {
-    build_zfs_module(os, kernel, || {
+    build_zfs_module(os, kernel, prepared.is_none(), || {
         let flavour = debian_kernel_flavour_step(kernel)?;
         enable_debian_contrib(apt_dir, codename, keyring)?;
         // The flavour's meta package pulls headers for future kernels, so DKMS can rebuild.
@@ -248,6 +258,24 @@ fn prepare_debian_zfs(
             None,
         )
         .map_err(failed(step))?;
+        if let Some(build) = prepared {
+            let step = "installing the prepared ZFS build";
+            super::prepare::install_prepared_build(&build, kernel).map_err(failed(step))?;
+            let step = "installing zfsutils-linux";
+            run_apt(
+                step,
+                [
+                    "install",
+                    "-y",
+                    "-qq",
+                    "--no-install-recommends",
+                    "zfsutils-linux",
+                ],
+                None,
+            )
+            .map_err(failed(step))?;
+            return Ok(());
+        }
         // run_apt's noninteractive frontend and closed stdin keep the CDDL debconf note from blocking.
         let step = "installing zfs-dkms";
         run_apt(
@@ -373,7 +401,7 @@ fn prepare_amazon_zfs(
     kernel: &str,
     sha256: &str,
 ) -> Result<(), Error> {
-    build_zfs_module(os, kernel, || {
+    build_zfs_module(os, kernel, true, || {
         let scratch;
         let rpms = match built_rpms(&prepared.join(format!("zfs-{OPENZFS_VERSION}"))) {
             Ok(rpms) => rpms,

@@ -179,7 +179,17 @@ pub(super) async fn server_add(
         progress,
     )
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| failure_message(&error))
+}
+
+/// The sentence and its `cause:` lines, as `ployz server add` prints them.
+fn failure_message(error: &crate::handlers::Error) -> String {
+    let mut message = error.to_string();
+    for cause in error.causes() {
+        message.push_str("; cause: ");
+        message.push_str(&cause);
+    }
+    message
 }
 
 pub(super) fn add_arguments(

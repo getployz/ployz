@@ -576,6 +576,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         | ProvisionError::BootstrapSignature(_)
         | ProvisionError::Install(_)
         | ProvisionError::InstallFailed { .. }
+        | ProvisionError::InstallRefused { .. }
         | ProvisionError::Cleanup(_)
         | ProvisionError::CleanupFailed { .. } => RpcErrorCode::Internal,
     }

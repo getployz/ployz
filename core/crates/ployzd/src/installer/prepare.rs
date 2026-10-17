@@ -561,7 +561,7 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
     let mut copy = Command::new("cp");
     copy.arg("-a").arg(&unpacked).arg(&source_dir);
     run_command("copy the ZFS source", &mut copy)?;
-    turn_off_autoinstall(&source_dir.join("dkms.conf"))?;
+    set_autoinstall(&source_dir.join("dkms.conf"), false)?;
     run_host(
         "register ZFS with DKMS",
         "dkms",
@@ -575,17 +575,18 @@ fn dkms_build(paths: &InstallPaths, job: &mut Job, root: &Path, kernel: &str) ->
     Ok(())
 }
 
-/// Stops DKMS's kernel hooks from installing the module this build registered when a new kernel
-/// lands; only install puts ZFS in place. The package install replaces this file.
-fn turn_off_autoinstall(conf: &Path) -> Result<(), Error> {
-    let stage = "turn off DKMS autoinstall for ZFS";
+/// Sets whether DKMS's kernel hooks install the module when a new kernel lands. Preparation turns
+/// it off so only enroll puts ZFS in place, and enroll turns it back on so new kernels get ZFS.
+fn set_autoinstall(conf: &Path, on: bool) -> Result<(), Error> {
+    let stage = "set DKMS autoinstall for ZFS";
     let io = |source| Error::Io { stage, source };
+    let value = if on { "yes" } else { "no" };
     let text = fs::read_to_string(conf).map_err(io)?;
     let edited: String = text
         .lines()
         .map(|line| {
             if line.trim_start().starts_with("AUTOINSTALL=") {
-                "AUTOINSTALL=\"no\"\n".to_owned()
+                format!("AUTOINSTALL=\"{value}\"\n")
             } else {
                 format!("{line}\n")
             }
@@ -594,6 +595,45 @@ fn turn_off_autoinstall(conf: &Path) -> Result<(), Error> {
     if edited != text {
         crate::filesystem::atomic_write(conf, edited.as_bytes(), 0o644).map_err(io)?;
     }
+    Ok(())
+}
+
+/// The DKMS build of ZFS preparation made, once DKMS holds it built for the running kernel.
+pub(super) struct PreparedBuild {
+    version: String,
+    source_dir: PathBuf,
+}
+
+/// Reads preparation's record, so call it under the preparation lock.
+pub(super) fn prepared_dkms_build(paths: &InstallPaths, kernel: &str) -> Option<PreparedBuild> {
+    let Some(ZfsBuild::Dkms {
+        version,
+        source_dir,
+        ..
+    }) = load(paths).zfs_build
+    else {
+        return None;
+    };
+    dkms_status(&["-m", "zfs", "-v", &version, "-k", kernel])
+        .lines()
+        .any(|line| {
+            let line = line.trim_end();
+            line.ends_with(": built") || line.ends_with(": installed")
+        })
+        .then_some(PreparedBuild {
+            version,
+            source_dir,
+        })
+}
+
+/// Installs the module preparation built, without building it again.
+pub(super) fn install_prepared_build(build: &PreparedBuild, kernel: &str) -> Result<(), Error> {
+    set_autoinstall(&build.source_dir.join("dkms.conf"), true)?;
+    run_host(
+        "install the prepared ZFS build",
+        "dkms",
+        ["install", "-m", "zfs", "-v", &build.version, "-k", kernel],
+    )?;
     Ok(())
 }
 
@@ -686,8 +726,18 @@ fn remove_build(module: &str, version: &str, source_dir: &Path) -> Result<(), Er
     remove_dir(source_dir)
 }
 
+fn installed_by_dkms(build: &ZfsBuild) -> bool {
+    matches!(build, ZfsBuild::Dkms { version, .. } if dkms_status(&["-m", "zfs", "-v", version])
+        .lines()
+        .any(|line| line.trim_end().ends_with(": installed")))
+}
+
+/// Drops the build from the record. A package that ships its source, or DKMS's install of it,
+/// now owns it; any other build is removed.
 fn remove_unowned_build(package_manager: &str, build: Option<ZfsBuild>) -> Option<ZfsBuild> {
-    let build = build.filter(|build| !package_ships_build_source(package_manager, build))?;
+    let build = build.filter(|build| {
+        !package_ships_build_source(package_manager, build) && !installed_by_dkms(build)
+    })?;
     if let ZfsBuild::Dkms {
         module,
         version,

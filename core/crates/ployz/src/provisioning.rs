@@ -109,6 +109,9 @@ pub enum ProvisionError {
     /// The shared Machine installer exited unsuccessfully.
     #[error("Ployz installer exited with {status}")]
     InstallFailed { status: std::process::ExitStatus },
+    /// The local installer exited unsuccessfully, and this was the last line it wrote.
+    #[error("{reason}")]
+    InstallRefused { reason: String },
     /// Remote bootstrap cleanup could not be run.
     #[error("Could not remove the remote bootstrap.")]
     Cleanup(#[source] io::Error),
@@ -633,13 +636,30 @@ async fn run_installer(
     version: &str,
     preparation: Preparation<'_>,
 ) -> Result<(), ProvisionError> {
-    installer_status(
-        tokio::process::Command::new(daemon)
-            .args(install_arguments(version, preparation))
-            .stdout(std::io::stderr())
-            .status()
-            .await,
-    )
+    use tokio::io::AsyncBufReadExt;
+
+    let mut child = tokio::process::Command::new(daemon)
+        .args(install_arguments(version, preparation))
+        .stdout(std::io::stderr())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(ProvisionError::Install)?;
+    let mut last = None;
+    if let Some(stderr) = child.stderr.take() {
+        let mut lines = tokio::io::BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("{line}");
+            if !line.trim().is_empty() {
+                last = Some(line);
+            }
+        }
+    }
+    match (installer_status(child.wait().await), last) {
+        (Err(ProvisionError::InstallFailed { .. }), Some(reason)) => {
+            Err(ProvisionError::InstallRefused { reason })
+        }
+        (result, _) => result,
+    }
 }
 
 pub(crate) async fn fetch_daemon(path: &Path) -> Result<(), ProvisionError> {
