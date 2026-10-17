@@ -7,7 +7,9 @@ export type EnrollmentState = "awaiting_founder" | "instructed" | "running" | "j
 
 export type EnrollmentStage = "installing" | "storage" | "enrolling" | "queued" | "joining" | "publishing";
 
-export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "storage", "enrolling", "queued", "joining", "publishing"];
+export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "enrolling", "queued", "storage", "joining", "publishing"];
+
+export const PAST_STORAGE: ReadonlySet<string | null> = new Set(ENROLLMENT_STAGES.slice(ENROLLMENT_STAGES.indexOf("storage") + 1));
 
 export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
 

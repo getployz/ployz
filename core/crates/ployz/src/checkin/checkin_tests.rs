@@ -86,6 +86,22 @@ impl Host for FakeHost {
     fn stale_ployzd(&self) -> Option<String> {
         self.stale.clone()
     }
+
+    async fn enroll(
+        &self,
+        _: &crate::checkin::EnrollInstruction,
+        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<crate::checkin::Committed, String> {
+        Err("this fake does not enroll".to_owned())
+    }
+
+    async fn participating(&self) -> bool {
+        false
+    }
+
+    async fn discard_zfs_build(&self) -> Result<(), String> {
+        Err("this fake does not discard".to_owned())
+    }
 }
 
 fn paths(dir: &tempfile::TempDir) -> Paths {
@@ -501,13 +517,13 @@ fn the_preparation_unit_quotes_ployzd_and_refuses_paths_that_break_it() {
 fn the_check_in_unit_quotes_paths_and_refuses_values_that_break_it() {
     let text = unit::checkin(
         Path::new("/opt/my tools/ployz"),
-        Path::new("/var/lib/ployz/checkin/ployzd"),
+        Path::new("/var/lib/ployz-checkin/ployzd"),
         Path::new("/etc/ployz/fleet-token"),
         "https://cloud.example/100%",
     )
     .unwrap();
     assert!(text.contains(
-        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz/checkin/ployzd\"\n"
+        "ExecStart=\"/opt/my tools/ployz\" server checkin --token-file \"/etc/ployz/fleet-token\" --ployzd \"/var/lib/ployz-checkin/ployzd\"\n"
     ));
     assert!(text.contains("Environment=\"PLOYZ_CLOUD_URL=https://cloud.example/100%%\"\n"));
     for url in ["https://a\nExecStart=/bin/sh", "https://a\"", "https://a\\"] {
@@ -562,10 +578,10 @@ fn a_fleet_token_file_must_hold_one_token() {
 }
 
 #[tokio::test]
-async fn enroll_waits_ten_seconds_and_says_why() {
+async fn a_check_in_is_signed_and_its_answer_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
-    let (url, server) = cloud("200 OK", r#"{"kind":"enroll","instruction":{}}"#).await;
+    let (url, server) = cloud("200 OK", r#"{"kind":"wait","retryAfter":10}"#).await;
     let host = FakeHost::default();
     let now = at("2026-10-16T00:00:00Z");
     let next = pass(&host, &mut client(&url), &key(), &paths, now).await;
@@ -573,7 +589,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
         next,
         Next::Wait {
             after: Duration::from_secs(10),
-            log: Some(ENROLL_LINE)
+            log: None
         }
     );
     let request = server.await.unwrap();
@@ -598,7 +614,7 @@ async fn enroll_waits_ten_seconds_and_says_why() {
     assert_eq!(host.prepares.load(Ordering::SeqCst), 1);
 
     let status = LocalCheckin::read(&paths.status()).unwrap().unwrap();
-    assert_eq!(status.answer, Seen::Enroll);
+    assert_eq!(status.answer, Seen::Wait);
     assert_eq!(status.at, now);
     assert_eq!(status.blockers.first().unwrap().code, "kernel_too_old");
     assert_eq!(
@@ -1126,6 +1142,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
     let at = Utc::now() - ago;
     record(
         &LocalCheckin {
+            token_fingerprint: None,
             answer: Seen::Refused,
             reason: None,
             message: Some(REFUSED_ONCE.to_owned()),
@@ -1134,6 +1151,7 @@ fn refused_once(paths: &Paths, token: &str, ago: TimeDelta) {
             blockers: Vec::new(),
             prepare_retries: 0,
             prepare_started: None,
+            attempt: None,
             refused: Some(Refusal {
                 token: sending(token).fingerprint(),
                 date: at,
@@ -1947,6 +1965,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
     .unwrap();
     record(
         &LocalCheckin {
+            token_fingerprint: None,
             answer: Seen::Wait,
             reason: None,
             message: None,
@@ -1956,6 +1975,7 @@ async fn a_spent_preparation_tells_cloud_its_steps_failed_and_how_to_rerun() {
             prepare_retries: PREPARE_TRIES,
             prepare_started: Some(Utc::now() - TimeDelta::hours(1)),
             refused: None,
+            attempt: None,
         },
         &paths,
     );
@@ -2029,6 +2049,7 @@ async fn a_running_preparation_is_left_alone() {
 #[test]
 fn the_headline_says_where_the_host_stands() {
     let mut status = LocalCheckin {
+        token_fingerprint: None,
         answer: Seen::Wait,
         reason: None,
         message: None,
@@ -2041,6 +2062,7 @@ fn the_headline_says_where_the_host_stands() {
         prepare_retries: 0,
         prepare_started: None,
         refused: None,
+        attempt: None,
     };
     assert_eq!(
         status.headline(),
@@ -2101,4 +2123,16 @@ fn ago_reads_in_the_largest_whole_unit() {
     assert_eq!(ago(now - TimeDelta::hours(3), now), "3h ago");
     assert_eq!(ago(now - TimeDelta::days(2), now), "2d ago");
     assert_eq!(ago(now + TimeDelta::seconds(5), now), "0s ago");
+}
+
+#[test]
+fn checkin_state_stays_out_of_the_daemon_data_dir() {
+    let paths = Paths::system(PathBuf::from(Paths::TOKEN_FILE));
+    for path in [paths.key(), paths.status(), paths.checkin_dir] {
+        assert!(
+            !path.starts_with("/var/lib/ployz"),
+            "ployzd refuses to claim a data dir holding {}",
+            path.display()
+        );
+    }
 }
