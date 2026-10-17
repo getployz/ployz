@@ -60,8 +60,8 @@ curl -fsS -X POST https://ployz.dev/api/agent/signup
 
 Export the `token` from the reply as `PLOYZ_TOKEN`, and every `ployz` command acts in the
 sandbox. Give the user the `claimUrl`. They open it and sign in with GitHub to keep what you
-built. Ployz removes the sandbox and its projects 24 hours after the call unless someone keeps
-it. Custom domains, tokens, invites, billing and GitHub wait until then. See
+built. Ployz starts removing the sandbox and its projects 24 hours after the call unless someone
+keeps it. Custom domains, tokens, invites, billing and GitHub wait until then. See
 https://ployz.dev/docs/account/try-without-an-account.
 
 In a sandbox, `ployz mcp login` waits for a claim, because it makes a token. In step 4, skip it

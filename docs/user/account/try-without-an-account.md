@@ -79,9 +79,15 @@ deploy asks them first, as in any organization. See [Approve a deploy](connect-a
 
 ## When nobody claims it
 
-A sandbox nobody keeps ends 24 hours after the call. Ployz looks for ended sandboxes every 15
-minutes. When it finds one, it removes the projects, then the organization, and the servers leave
-it. A server that doesn't answer holds this up. From an hour past the end, the next look forgets
-that server and removes the organization without it. A claim and a removal never run at once.
+A sandbox nobody keeps ends 24 hours after the call, and its claim link stops working. Ployz
+looks for ended sandboxes every 15 minutes. When it finds one, it removes the projects, then the
+organization, and the servers leave it. A claim made in time keeps everything, even when a removal
+starts at the same moment.
+
+A server that doesn't answer holds the removal up. Ployz forgets it only after an hour of silence,
+then removes the organization without it. The hour starts when Ployz first fails to reach the
+server. It starts again each time the server answers, and when the server is paired again. A
+server answers as soon as Ployz connects to it, even if the removal then fails there. A server
+that keeps answering is never forgotten, and the removal waits for it.
 
 **Next:** [connect an agent to Ployz Cloud](connect-an-agent.md) once you have an account.
