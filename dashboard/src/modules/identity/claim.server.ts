@@ -32,7 +32,8 @@ export type Claim =
   }
   | { readonly state: "claimed"; readonly organization: { readonly slug: string } }
   | { readonly state: "taken" }
-  | { readonly state: "expired" };
+  | { readonly state: "expired" }
+  | { readonly state: "not_found" };
 
 const unknown = () => new NotFound({ message: "This claim link is unknown." });
 const taken = () => new Conflict({ message: "Someone already kept this sandbox.", userFacing: true });
@@ -44,7 +45,8 @@ const sameSecret = (a: string, b: string) => crypto.timingSafeEqual(
 
 /**
  * The Organization under this secret, its anonymous owners (none once a person kept it), and when their tokens lapse.
- * The secret must also be the one the current encryption secret derives, so rotating it retires every outstanding URL.
+ * The secret must also be the one the current encryption secret derives, so rotating it retires every outstanding URL:
+ * a retired secret is `retired`, one no Organization ever had is `unknown`.
  */
 const findBySecret = Effect.fn("Identity.findClaimOrganization")(function* (secret: string) {
   const { drizzle } = yield* Database;
@@ -53,7 +55,8 @@ const findBySecret = Effect.fn("Identity.findClaimOrganization")(function* (secr
     .from(organization)
     .where(eq(organization.claimSecretHash, hashClaimSecret(secret)))
     .limit(1);
-  if (found === undefined || !sameSecret(secret, yield* claimSecretFor(found.id))) return null;
+  if (found === undefined) return "unknown" as const;
+  if (!sameSecret(secret, yield* claimSecretFor(found.id))) return "retired" as const;
   const owners = yield* drizzle
     .select({ userId: member.userId })
     .from(member)
@@ -80,7 +83,8 @@ const live = (expiresAt: Date | null): expiresAt is Date => expiresAt !== null &
 
 export const readClaim = Effect.fn("Identity.readClaim")(function* (secret: string, viewer: Actor | null) {
   const found = yield* findBySecret(secret);
-  if (found === null) return { state: "expired" } satisfies Claim;
+  if (found === "unknown") return { state: "not_found" } satisfies Claim;
+  if (found === "retired") return { state: "expired" } satisfies Claim;
   if (found.anonymousIds.length === 0) {
     const mine = viewer !== null && (yield* isMember(viewer, found.id));
     return (mine ? { state: "claimed", organization: { slug: found.slug } } : { state: "taken" }) satisfies Claim;
@@ -117,7 +121,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
     yield* drizzle.select({ userId: member.userId }).from(member)
       .where(eq(member.organizationId, locked.id)).orderBy(asc(member.userId)).for("update");
     const found = yield* findBySecret(secret);
-    if (found === null) return yield* unknown();
+    if (found === "unknown" || found === "retired") return yield* unknown();
     if (found.anonymousIds.length === 0) {
       if (yield* isMember(actor, found.id)) return { slug: found.slug };
       return yield* taken();
