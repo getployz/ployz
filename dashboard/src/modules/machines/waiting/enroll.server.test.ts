@@ -125,6 +125,12 @@ describe("storage", () => {
     expect(planned(storageOf(zfs(true, false), mainOnly)).rows[0]?.instruction.storage).toEqual({ kind: "zfs" });
   });
 
+  it("resolves the by-id basename reported by the host to its device path", () => {
+    const spare = row("a", { report: { zfs: { kind: "eligible", targets: [{ kind: "disk", byId: "virtio-spare" }] } } });
+    expect(planned(storageOf(zfs(true, false), spare)).rows[0]?.instruction.storage)
+      .toEqual({ kind: "zfs", device: "/dev/disk/by-id/virtio-spare" });
+  });
+
   it("falls back to Docker volumes where ZFS can't run, or skips the row with ZFS's reason", () => {
     expect(planned(storageOf(zfs(true, true), row("a", { report: ineligible }))).rows[0]?.instruction.storage).toEqual({ kind: "none" });
     const plan = planned(storageOf(zfs(true, false), row("a", { report: ineligible })));

@@ -21,7 +21,7 @@ use std::{
     process::{Command, Output},
 };
 
-use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StorageChoice};
+use ployz_core::{MachineRelease, MachineUpgradeStage, MachineVersion, StoragePreparation};
 use thiserror::Error;
 
 use crate::mutation;
@@ -52,7 +52,7 @@ pub enum InstallMode {
     /// Prepare the host and optionally configure its requested storage.
     PrepareHost {
         /// Explicit storage preparation for a fresh Machine.
-        storage: StorageChoice,
+        storage: StoragePreparation,
         /// Existing operator to add to the Ployz service group during host preparation.
         group_user: Option<String>,
     },
@@ -135,6 +135,7 @@ pub(super) struct InstallPaths {
     pub(super) proc_dir: PathBuf,
     /// Present only while the ZFS kernel module is loaded.
     pub(super) zfs_module: PathBuf,
+    pub(super) device_pool_marker: PathBuf,
     pub(super) usr_src: PathBuf,
 }
 
@@ -156,6 +157,7 @@ impl InstallPaths {
             apt_dir: PathBuf::from("/etc/apt"),
             proc_dir: PathBuf::from("/proc"),
             zfs_module: PathBuf::from("/sys/module/zfs"),
+            device_pool_marker: crate::machine_pool::DEVICE_POOL_MARKER.into(),
             usr_src: PathBuf::from("/usr/src"),
         }
     }
@@ -181,6 +183,7 @@ impl InstallPaths {
             apt_dir: root.join("apt"),
             proc_dir: root.join("proc"),
             zfs_module: root.join("sys/module/zfs"),
+            device_pool_marker: root.join("machine-pool.device"),
             usr_src: root.join("usr/src"),
         }
     }
@@ -280,7 +283,7 @@ async fn install_locked(
         } => {
             // Before the ZFS build or any change: Ployz can't use every Docker it would retain.
             verify_docker()?;
-            prepare_storage(*storage, paths)?;
+            prepare_storage(storage, paths)?;
             install_prerequisites()?;
             let inherited_group = sudo_user();
             create_user_and_directories(

@@ -40,6 +40,10 @@ fn recording_installer(
 }
 
 fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
+    enroll_matches_with_storage(connect, cloud_url, "zfs")
+}
+
+fn enroll_matches_with_storage(connect: &str, cloud_url: &str, storage: &str) -> ArgMatches {
     ployz::cli::command()
         .try_get_matches_from([
             "ployz",
@@ -53,10 +57,45 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             cloud_url,
             "--name",
             "joiner",
+            "--storage",
+            storage,
             "--accepts-ingress=false",
             "--yes",
         ])
         .unwrap()
+}
+
+#[tokio::test]
+async fn cloud_enroll_retains_a_named_device_through_the_legacy_cloud_reply() {
+    let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
+    let enroll = EnrollListen::start(json!({
+        "kind": "join", "storage": "zfs", "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let (connect, socket, _) = serve_local_machine(daemon).await;
+    let prepared = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&prepared);
+    let result = run_enroll(
+        enroll_matches_with_storage(&connect, &enroll.url, "zfs:/dev/vdb"),
+        move |installation| {
+            observed.lock().unwrap().push(installation);
+            std::future::ready(Ok(()))
+        },
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        *prepared.lock().unwrap(),
+        [ployz::handlers::Installation::Host(
+            ployz_core::StoragePreparation::Zfs {
+                device: Some(ployz_core::ZfsDevice::parse("/dev/vdb").unwrap())
+            }
+        )]
+    );
+    std::fs::remove_file(socket).unwrap();
 }
 
 async fn run_enroll(
@@ -217,7 +256,7 @@ async fn a_missing_explicit_local_socket_installs_the_daemon_before_enrollment()
     let installer = move |installation| {
         assert!(matches!(
             installation,
-            ployz::handlers::Installation::Host(ployz_core::StorageChoice::None)
+            ployz::handlers::Installation::Host(ployz_core::StoragePreparation::None)
         ));
         installs.fetch_add(1, Ordering::SeqCst);
         std::os::unix::fs::symlink(&installed_socket, &socket).unwrap();

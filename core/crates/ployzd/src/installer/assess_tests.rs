@@ -424,6 +424,19 @@ fn lsblk_keeps_the_root_disk_and_empty_disks() {
     };
     let by_id = [(PathBuf::from("/dev/vdb"), "virtio-data".to_owned())];
     let (disks, errors) = disks_from_lsblk(&listing, root, &by_id);
+    assert!(device_blocker(&disks, Path::new("/dev/vdb")).is_none());
+    for device in [
+        "/dev/vda",
+        "/dev/vdc",
+        "/dev/vdd",
+        "/dev/vde",
+        "/dev/missing",
+    ] {
+        assert_eq!(
+            device_blocker(&disks, Path::new(device)).unwrap().code,
+            "device_not_empty"
+        );
+    }
     let summary: Vec<_> = disks
         .iter()
         .map(|disk| {

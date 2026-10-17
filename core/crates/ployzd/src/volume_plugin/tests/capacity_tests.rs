@@ -5,6 +5,69 @@ use super::first_pool_tests::fake_first_pool;
 use super::*;
 
 #[tokio::test]
+async fn device_pool_recovery_preserves_volumes_through_every_admission_route() {
+    for route in [
+        "/Storage.Inspect",
+        "/Storage.Prepare",
+        "/VolumeDriver.Create",
+    ] {
+        let test = TestDir::new();
+        let storage = fake_first_pool(&test.0, 4096);
+        let script = test.0.join("fake-storage");
+        let body = fs::read_to_string(&script)
+            .unwrap()
+            .replace("ployz/ployz", "ployz-device/ployz")
+            .replace("-r ployz'", "-r ployz-device'")
+            .replace(
+                "  zpool)\n",
+                &format!(
+                    r#"  zpool)
+    case "$*" in
+      import) printf '   pool: ployz-device\n'; exit 0 ;;
+      'import -N ployz-device') touch '{}/device-imported'; exit 0 ;;
+      'list -Hp -o name,size,allocated,free,health,readonly')
+        if [ -e '{}/device-imported' ]; then
+          printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n'
+        fi
+        exit 0 ;;
+    esac
+"#,
+                    test.0.display(),
+                    test.0.display()
+                ),
+            );
+        fs::write(script, body).unwrap();
+        fs::write(test.0.join("root"), "").unwrap();
+        fs::write(test.0.join("volume"), "existing device data").unwrap();
+        fs::write(test.0.join("volume-bound"), "1073741824").unwrap();
+        let socket = test.0.join("plugin.sock");
+        let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+        let request = if route == "/VolumeDriver.Create" {
+            json!({"Name":"data","Opts":{"size":"1g"}})
+        } else {
+            json!({"data":1073741824u64})
+        };
+        let response = post(&socket, route, request).await;
+        if route == "/VolumeDriver.Create" {
+            assert_eq!(response, json!({"Err":""}));
+        } else {
+            assert!(response.get("Ok").is_some(), "{route}: {response}");
+        }
+        let capacity = post(&socket, "/Storage.Inspect", json!(null)).await;
+        assert_eq!(capacity.pointer("/Ok/volumes/data").unwrap(), 1073741824u64);
+        assert_eq!(
+            fs::read_to_string(test.0.join("volume")).unwrap(),
+            "existing device data"
+        );
+        assert!(!test.0.join(POOL_BACKING_FILE).exists());
+        let log = fs::read_to_string(test.0.join("commands")).unwrap();
+        assert!(!log.contains("zpool create"), "{log}");
+        assert!(!log.contains("zfs create"), "{log}");
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn storage_admission_recovers_unimported_pool_without_recreating_data() {
     for route in ["/Storage.Inspect", "/Storage.Prepare"] {
         let test = TestDir::new();
