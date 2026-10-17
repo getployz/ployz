@@ -163,7 +163,6 @@ pub(crate) fn publish(
         environment.working,
         review.saved.as_ref(),
         (publish.message.as_deref(), &lost),
-        trusted,
     )?;
     if !created
         && let Some(latest) = review.saved.as_ref()

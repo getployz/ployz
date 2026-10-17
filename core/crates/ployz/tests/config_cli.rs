@@ -339,6 +339,8 @@ fn evidence() -> Trusted {
         servers: Some(1),
         // Cloud sends what the token's member holds: here, everything.
         permissions: Some(Permission::ALL.iter().copied().collect()),
+        // The token's owner owns the Organization.
+        may_protect: true,
         ..github()
     }
 }

@@ -29,12 +29,12 @@ use ts_rs::TS;
 pub use approval::{DestructiveEffect, DestructiveKind};
 pub(crate) use approval::{approve, approve_retry};
 
+use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Hostname, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
 use crate::settings::{ServiceSetting, SettingPath, shown};
 use crate::storage::Tx;
-use crate::{Actor, Trusted};
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -613,7 +613,6 @@ pub(crate) fn publish(
     intent: SavedEnvironmentIntent,
     latest: Option<&Saved>,
     (message, accepted): (Option<&str>, &[crate::VolumeLoss]),
-    trusted: &Trusted,
 ) -> Result<(Revision, bool), RpcError> {
     let intent = canonicalize_environment_intent(intent);
     crate::volume::check_storage(tx, environment, &intent)?;
@@ -622,7 +621,8 @@ pub(crate) fn publish(
     {
         return Ok((latest.revision, false));
     }
-    guard_source(tx, who, environment, latest, &intent, trusted)?;
+    let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
+    guard_source(tx, environment, before, &intent.services)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     let accepted = (!accepted.is_empty())
         .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
@@ -647,23 +647,27 @@ pub(crate) fn publish(
     Ok((revision, true))
 }
 
-/// Refuse a caller who may not protect when `intent` changes what a GitHub merge ships
-/// into a Protected Environment: the repository or deploy branch of a Service it held
-/// before, or a Git Service it adds. Removing a Service is removal's to approve.
-fn guard_source(
+/// Refuse a caller who may not protect when `after` changes what a GitHub merge ships
+/// into Protected Environment `environment`: the repository or deploy branch of a
+/// Service in `before`, or a Git Service it adds. Removing a Service is removal's to
+/// approve. Staging and publishing both ask, so no command brings a source in.
+pub(crate) fn guard_source(
     tx: &mut dyn Tx,
-    who: &Actor,
     environment: &EnvironmentId,
-    latest: Option<&Saved>,
-    intent: &SavedEnvironmentIntent,
-    trusted: &Trusted,
+    before: &[SavedServiceIntent],
+    after: &[SavedServiceIntent],
 ) -> Result<(), RpcError> {
-    if who.principal.is_none() || trusted.may_protect {
-        return Ok(());
-    }
-    let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
-    let changed: Vec<&str> = intent
-        .services
+    crate::storage::admit_protect(tx, |tx| touches_source(tx, environment, before, after))
+}
+
+/// The Services whose source `after` changes in `environment`, when it is Protected.
+pub(crate) fn touches_source(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    before: &[SavedServiceIntent],
+    after: &[SavedServiceIntent],
+) -> Result<Option<serde_json::Value>, RpcError> {
+    let changed: Vec<&str> = after
         .iter()
         .filter(
             |service| match before.iter().find(|old| old.id == service.id) {
@@ -681,12 +685,9 @@ fn guard_source(
             )?
             .is_empty()
     {
-        return Ok(());
+        return Ok(None);
     }
-    Err(error::forbidden(
-        "Only an owner or admin of this Organization can do this.",
-        json!({ "services": changed }),
-    ))
+    Ok(Some(json!({ "services": changed })))
 }
 
 /// The repository and deploy branch a GitHub merge ships `service` from, if any.

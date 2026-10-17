@@ -165,6 +165,39 @@ fn protecting_flips_either_way_and_returns_the_projects_environments() {
 }
 
 #[test]
+fn each_protection_counts_once_so_an_unprotect_approval_holds_for_one() {
+    let (store, who) = shop();
+    let protections = || {
+        store
+            .read(&who, &EnvironmentsQuery::default())
+            .unwrap()
+            .environments
+            .into_iter()
+            .map(|listing| (listing.name.to_string(), listing.protections))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        protections(),
+        [("production".into(), 1), ("staging".into(), 0)]
+    );
+
+    store.write(&who, &set("production", true)).unwrap();
+    store.write(&who, &set("staging", false)).unwrap();
+    assert_eq!(
+        protections(),
+        [("production".into(), 1), ("staging".into(), 0)]
+    );
+
+    store.write(&who, &set("production", false)).unwrap();
+    store.write(&who, &set("production", true)).unwrap();
+    store.write(&who, &set("staging", true)).unwrap();
+    assert_eq!(
+        protections(),
+        [("production".into(), 2), ("staging".into(), 1)]
+    );
+}
+
+#[test]
 fn a_branch_cannot_be_protected() {
     let (store, who) = shop();
     store
@@ -282,8 +315,22 @@ fn fix_web(store: &ConfigStore, who: &Actor) {
         .unwrap();
 }
 
+/// Cloud's evidence for `acme`, and whether it found the caller may protect.
+fn acme_as(may_protect: bool) -> Trusted {
+    Trusted {
+        may_protect,
+        ..acme()
+    }
+}
+
 /// Stage `changes` in `environment`; a change without a value unsets its path.
-fn edit(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Option<Value>)]) {
+fn edit(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+    changes: &[(&str, Option<Value>)],
+    may_protect: bool,
+) -> Result<(), RpcError> {
     let changes = changes
         .iter()
         .map(|(path, value)| {
@@ -302,11 +349,13 @@ fn edit(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, O
         expect: None,
         changes,
     };
-    store.write_trusted(who, &edit, &acme()).unwrap();
+    store
+        .write_trusted(who, &edit, &acme_as(may_protect))
+        .map(drop)
 }
 
 /// Sync everything fix-web changed into production.
-fn sync_up(store: &ConfigStore, who: &Actor) {
+fn sync_up(store: &ConfigStore, who: &Actor, may_protect: bool) -> Result<(), RpcError> {
     let view = store
         .read(
             who,
@@ -317,7 +366,7 @@ fn sync_up(store: &ConfigStore, who: &Actor) {
         )
         .unwrap();
     store
-        .write(
+        .write_trusted(
             who,
             &SyncChanges {
                 from: at("fix-web"),
@@ -329,8 +378,9 @@ fn sync_up(store: &ConfigStore, who: &Actor) {
                 values: BTreeMap::new(),
                 id: None,
             },
+            &acme_as(may_protect),
         )
-        .unwrap();
+        .map(drop)
 }
 
 fn publish(
@@ -345,25 +395,47 @@ fn publish(
             environment: at(environment),
             ..Publish::default()
         },
-        &Trusted {
-            may_protect,
-            ..Trusted::default()
-        },
+        &acme_as(may_protect),
     )
 }
 
-fn assert_forbidden(result: Result<Published, RpcError>, service: &str) {
+fn assert_forbidden<T: std::fmt::Debug>(result: Result<T, RpcError>, details: Value) {
     let error = result.unwrap_err();
     assert_eq!(error.code, RpcErrorCode::from("forbidden"));
     assert_eq!(
         error.message,
         "Only an owner or admin of this Organization can do this."
     );
-    assert_eq!(error.details, json!({"services": [service]}));
+    assert_eq!(error.details, details);
+}
+
+/// Whether `result` got past the protection check, refused or not for another reason.
+fn passed<T>(result: &Result<T, RpcError>) -> bool {
+    result.as_ref().map_or_else(
+        |error| error.code != RpcErrorCode::from("forbidden"),
+        |_| true,
+    )
+}
+
+/// Production's staged value at `path`.
+fn production(store: &ConfigStore, who: &Actor, path: &str) -> Value {
+    store
+        .read(
+            who,
+            &ployz_store::EnvironmentQuery {
+                environment: at("production"),
+                path: Some(SettingPath::parse(path).unwrap()),
+                all: false,
+            },
+        )
+        .unwrap()
+        .settings
+        .remove(0)
+        .value
 }
 
 #[test]
-fn a_repository_synced_into_protected_production_saves_only_for_whoever_may_protect() {
+fn a_repository_synced_into_protected_production_needs_whoever_may_protect() {
     let (store, system) = shop();
     let who = person(&system);
     fix_web(&store, &who);
@@ -372,10 +444,17 @@ fn a_repository_synced_into_protected_production_saves_only_for_whoever_may_prot
         &who,
         "fix-web",
         &[("web.repository", Some(json!("acme/docs")))],
-    );
-    sync_up(&store, &who);
+        false,
+    )
+    .unwrap();
 
-    assert_forbidden(publish(&store, &who, "production", false), "web");
+    assert_forbidden(sync_up(&store, &who, false), json!({"services": ["web"]}));
+    assert_eq!(
+        production(&store, &who, "web.repository"),
+        json!("acme/web")
+    );
+
+    sync_up(&store, &who, true).unwrap();
     assert!(publish(&store, &who, "production", true).unwrap().created);
 }
 
@@ -397,40 +476,101 @@ fn a_git_service_synced_into_protected_production_needs_whoever_may_protect() {
             &acme(),
         )
         .unwrap();
-    sync_up(&store, &who);
 
-    assert_forbidden(publish(&store, &who, "production", false), "docs");
+    assert_forbidden(sync_up(&store, &who, false), json!({"services": ["docs"]}));
+    sync_up(&store, &who, true).unwrap();
 }
 
 #[test]
 fn a_protected_services_branch_needs_whoever_may_protect() {
     let (store, system) = shop();
     let who = person(&system);
-    edit(
-        &store,
-        &who,
-        "production",
-        &[("web.branch", Some(json!("dev")))],
-    );
+    let dev = [("web.branch", Some(json!("dev")))];
 
-    assert_forbidden(publish(&store, &who, "production", false), "web");
+    assert_forbidden(
+        edit(&store, &who, "production", &dev, false),
+        json!({"services": ["web"]}),
+    );
+    edit(&store, &who, "production", &dev, true).unwrap();
 }
 
 #[test]
 fn unsetting_a_protected_services_repository_needs_whoever_may_protect() {
     let (store, system) = shop();
     let who = person(&system);
+    let image = [
+        ("web.repository", None),
+        ("web.image", Some(json!("web:2"))),
+    ];
+
+    assert_forbidden(
+        edit(&store, &who, "production", &image, false),
+        json!({"services": ["web"]}),
+    );
+    edit(&store, &who, "production", &image, true).unwrap();
+}
+
+#[test]
+fn restoring_an_old_branch_from_history_needs_whoever_may_protect() {
+    let (store, system) = shop();
+    edit(
+        &store,
+        &system,
+        "production",
+        &[("web.branch", Some(json!("dev")))],
+        false,
+    )
+    .unwrap();
+    publish(&store, &system, "production", false).unwrap();
+    let who = person(&system);
+    let query = ployz_store::HistoryPreviewQuery {
+        environment: at("production"),
+        revision: ployz_store::Revision(1),
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+    };
+    let restore = |may_protect| {
+        let preview = store.read(&who, &query).unwrap();
+        store.write_trusted(
+            &who,
+            &ployz_store::StageHistory {
+                environment: at("production"),
+                revision: query.revision,
+                action: query.action,
+                change: None,
+                version: preview.version,
+                accept_overwrite: true,
+            },
+            &acme_as(may_protect),
+        )
+    };
+
+    assert_forbidden(restore(false), json!({"services": ["web"]}));
+    assert_eq!(production(&store, &who, "web.branch"), json!("dev"));
+    restore(true).unwrap();
+    assert_eq!(production(&store, &who, "web.branch"), json!("main"));
+}
+
+#[test]
+fn a_source_staged_before_protecting_still_publishes_only_for_whoever_may_protect() {
+    let (store, system) = shop();
+    let who = person(&system);
+    store.write(&system, &set("production", false)).unwrap();
     edit(
         &store,
         &who,
         "production",
-        &[
-            ("web.repository", None),
-            ("web.image", Some(json!("web:2"))),
-        ],
-    );
+        &[("web.branch", Some(json!("dev")))],
+        false,
+    )
+    .unwrap();
+    store.write(&system, &set("production", true)).unwrap();
 
-    assert_forbidden(publish(&store, &who, "production", false), "web");
+    assert_forbidden(
+        publish(&store, &who, "production", false),
+        json!({"services": ["web"]}),
+    );
+    assert!(publish(&store, &who, "production", true).unwrap().created);
 }
 
 #[test]
@@ -462,8 +602,10 @@ fn the_stores_own_automation_and_an_unprotected_environment_save_any_branch() {
         &system,
         "fix-web",
         &[("web.repository", Some(json!("acme/docs")))],
-    );
-    sync_up(&store, &system);
+        false,
+    )
+    .unwrap();
+    sync_up(&store, &system, false).unwrap();
     assert!(
         publish(&store, &system, "production", false)
             .unwrap()
@@ -477,6 +619,78 @@ fn the_stores_own_automation_and_an_unprotected_environment_save_any_branch() {
         &who,
         "production",
         &[("web.branch", Some(json!("dev")))],
-    );
+        false,
+    )
+    .unwrap();
     assert!(publish(&store, &who, "production", false).unwrap().created);
+}
+
+#[test]
+fn only_whoever_may_protect_flips_protection_even_after_another_protects() {
+    let (store, system) = shop();
+    let who = person(&system);
+    let flip = |environment, protected, may_protect| {
+        store.write_trusted(
+            &who,
+            &set(environment, protected),
+            &Trusted {
+                may_protect,
+                ..Trusted::default()
+            },
+        )
+    };
+
+    // Cloud judged the member before an admin protected staging; the Store judges
+    // the flag in the transaction that reads `protected`.
+    flip("staging", true, true).unwrap();
+    assert_forbidden(
+        flip("staging", false, false),
+        json!({"project": "shop", "environment": "staging"}),
+    );
+    assert_forbidden(
+        flip("production", true, false),
+        json!({"project": "shop", "environment": "production"}),
+    );
+    assert_eq!(
+        protection(&store, &who),
+        [("production".into(), true), ("staging".into(), true)]
+    );
+
+    flip("staging", false, true).unwrap();
+    assert!(protection(&store, &who).contains(&("staging".into(), false)));
+}
+
+#[test]
+fn removing_a_project_with_a_protected_environment_needs_whoever_may_protect() {
+    let remove = |store: &ConfigStore, who: &Actor, may_protect| {
+        store.write_trusted(
+            who,
+            &ployz_store::Remove {
+                project: ProjectName::parse("shop").unwrap(),
+                environment: None,
+                version: None,
+                accept_volume_loss: BTreeMap::new(),
+                every_copy: BTreeMap::new(),
+            },
+            &Trusted {
+                may_protect,
+                ..Trusted::default()
+            },
+        )
+    };
+    let (store, system) = shop();
+    let who = person(&system);
+
+    assert_forbidden(
+        remove(&store, &who, false),
+        json!({"protected": ["production"]}),
+    );
+    assert_eq!(protection(&store, &who).len(), 2);
+    store.write(&system, &set("production", false)).unwrap();
+    let unprotected = remove(&store, &who, false);
+    assert!(passed(&unprotected), "{unprotected:?}");
+
+    let (store, system) = shop();
+    let admin = remove(&store, &person(&system), true);
+    assert!(passed(&admin), "{admin:?}");
 }

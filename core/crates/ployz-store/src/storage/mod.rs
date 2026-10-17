@@ -219,6 +219,49 @@ pub(crate) trait Tx {
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError>;
     /// Run a script of parameterless statements, as the driver splits it.
     fn batch(&mut self, sql: &str) -> Result<(), RpcError>;
+    /// Whether the caller this transaction acts for may protect and unprotect
+    /// Environments and choose a Protected one's repository and deploy branch. The
+    /// Store's own work acts for nobody, so it may. Read only by [`admit_protect`].
+    fn may_protect(&self) -> bool {
+        true
+    }
+}
+
+/// The one Protected Environment fence. When the caller may not protect, `touches`
+/// says whether this write reaches into a Protected Environment, with the details its
+/// refusal names; it runs in the write's own transaction, so a protect that lands
+/// first still fences the write.
+// ponytail: this fence is Cloud's `may_protect` evidence; P7's `needs` replaces it.
+pub(crate) fn admit_protect(
+    tx: &mut dyn Tx,
+    touches: impl FnOnce(&mut dyn Tx) -> Result<Option<serde_json::Value>, RpcError>,
+) -> Result<(), RpcError> {
+    if tx.may_protect() {
+        return Ok(());
+    }
+    match touches(tx)? {
+        Some(details) => Err(crate::error::protector_only(details)),
+        None => Ok(()),
+    }
+}
+
+/// A transaction acting for a caller Cloud found may not protect: see
+/// [`admit_protect`].
+pub(crate) struct Unprotecting<'tx>(pub(crate) &'tx mut dyn Tx);
+
+impl Tx for Unprotecting<'_> {
+    fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
+        self.0.execute(sql, params)
+    }
+    fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
+        self.0.query(sql, params)
+    }
+    fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
+        self.0.batch(sql)
+    }
+    fn may_protect(&self) -> bool {
+        false
+    }
 }
 
 /// A bound parameter. Only the column types the schema uses exist.

@@ -530,6 +530,22 @@ pub(crate) fn persist_working(
     tx: &mut dyn Tx,
     environment: &mut Environment,
 ) -> Result<(), RpcError> {
+    crate::storage::admit_protect(tx, |tx| {
+        let rows = tx.query(
+            "SELECT working FROM config_environment WHERE id = ?1",
+            &[environment.summary.id.as_str().into()],
+        )?;
+        let before = rows
+            .first()
+            .ok_or_else(|| error::corrupt("Environment"))?
+            .intent(0, "Working State")?;
+        crate::review::touches_source(
+            tx,
+            &environment.summary.id,
+            &before.services,
+            &environment.working.services,
+        )
+    })?;
     environment.summary.revision = environment.summary.revision.next();
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",

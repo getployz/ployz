@@ -4927,6 +4927,7 @@
                   "name": "production",
                   "parent": null,
                   "protected": true,
+                  "protections": 1,
                   "removal": null
                 }
               ],
@@ -4995,6 +4996,7 @@
                   "name": "production",
                   "parent": null,
                   "protected": true,
+                  "protections": 1,
                   "removal": null
                 }
               ],
