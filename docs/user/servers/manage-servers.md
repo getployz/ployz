@@ -60,7 +60,8 @@ ployz server show web-3
 `ployz server show` shows a server in your cluster the same way, so one command covers both.
 
 To turn away servers you don't want, name them, give a pattern or give one server's id from
-`ployz server ls --waiting --json`. Patterns match names only, and case matters. Ployz lists what
+`ployz server ls --waiting --json`. Patterns match names only, and case matters. A server named
+exactly what you typed wins over the pattern it spells, so `db[1]` means that name. Ployz lists what
 matches and asks before it does anything:
 
 ```sh

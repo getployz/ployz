@@ -376,10 +376,10 @@ fn size(bytes: u64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn waiting(status: &str, prep: Option<Value>) -> Waiting {
+    pub(crate) fn waiting(status: &str, prep: Option<Value>) -> Waiting {
         let mut report = json!({
             "hostname": "web-1",
             "provider": "hetzner",

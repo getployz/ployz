@@ -148,10 +148,13 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
                 "No Server matches {selector}, and the servers waiting to join could not be read."
             ))
         })?;
-    let named: Vec<_> = listed
-        .iter()
-        .filter(|host| host.row.name == *selector || host.row.id == *selector)
-        .collect();
+    let named: Vec<_> = match listed.iter().find(|host| host.row.id == *selector) {
+        Some(host) => vec![host],
+        None => listed
+            .iter()
+            .filter(|host| host.row.name == *selector)
+            .collect(),
+    };
     match named.as_slice() {
         [] => Err(error),
         [host] => waiting::show(host),

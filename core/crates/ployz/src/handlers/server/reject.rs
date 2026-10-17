@@ -97,11 +97,18 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-/// The waiting server whose id `pattern` is, else those whose name it matches, in the
-/// list's order.
+/// The waiting server whose id `pattern` is, else those named `pattern` exactly, else
+/// those whose name it matches as a glob, in the list's order.
 fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting>, Error> {
     if let Some(host) = waiting.iter().find(|host| host.row.id == pattern) {
         return Ok(vec![host]);
+    }
+    let named: Vec<_> = waiting
+        .iter()
+        .filter(|host| host.row.name == pattern)
+        .collect();
+    if !named.is_empty() {
+        return Ok(named);
     }
     let glob = Glob::new(pattern)
         .map_err(|error| Error::usage(format!("{pattern} is not a valid glob: {}", error.kind())))?
@@ -131,5 +138,27 @@ mod tests {
         assert_eq!(leaf.get_one::<String>("pattern").unwrap(), "web-*");
         assert!(leaf.get_flag("yes"));
         assert!(parse(&[]).is_err());
+    }
+
+    #[test]
+    fn a_literal_name_beats_the_glob_it_spells() {
+        let host = |id: &str, name: &str| {
+            let mut host = super::super::waiting::tests::waiting("waiting", None);
+            host.row.id = id.into();
+            host.row.name = name.into();
+            host
+        };
+        let waiting = [host("a", "db1"), host("b", "db[1]")];
+        let names = |pattern| {
+            matching(&waiting, pattern)
+                .unwrap()
+                .into_iter()
+                .map(|host| host.row.name.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("db[1]"), ["db[1]"]);
+        assert_eq!(names("db[2]"), Vec::<&str>::new());
+        assert_eq!(names("db*"), ["db1", "db[1]"]);
+        assert_eq!(names("b"), ["db[1]"]);
     }
 }

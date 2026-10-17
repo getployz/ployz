@@ -739,6 +739,18 @@ fn server_ls_waiting_show_and_reject_read_waiting_servers_from_cloud() {
     let (code, json, _) = run_json_with(&["server", "show", "nobody", "--json"], &token);
     assert_eq!(code, Some(1), "{json}");
 
+    let (code, json, _) = run_json_with(
+        &[
+            "server",
+            "show",
+            "00000000-0000-4000-8000-000000000003",
+            "--json",
+        ],
+        &token,
+    );
+    assert_eq!(code, Some(0), "{json}");
+    assert_eq!(json.pointer("/waiting_server/name").unwrap(), "db-1");
+
     let (code, json, _) = run_json_with(&["server", "show", "twin", "--json"], &token);
     assert_eq!(code, Some(2), "{json}");
     assert_eq!(json.pointer("/error/code").unwrap(), "ambiguous");
