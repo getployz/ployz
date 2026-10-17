@@ -224,7 +224,7 @@ fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
             None,
             b""
         ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(9)))
+        Reply::RateLimited(Duration::from_secs(9))
     );
     assert_eq!(
         client::reply(
@@ -233,11 +233,11 @@ fn an_unreadable_check_in_waits_for_a_newer_ployz_and_rate_limits_wait() {
             None,
             b""
         ),
-        Reply::Answer(Answer::Wait(Duration::from_secs(3600)))
+        Reply::RateLimited(Duration::from_secs(3600))
     );
     assert_eq!(
         client::reply(StatusCode::TOO_MANY_REQUESTS, None, None, b""),
-        Reply::Answer(Answer::Wait(Duration::from_secs(1)))
+        Reply::RateLimited(Duration::from_secs(1))
     );
     assert!(matches!(
         client::reply(StatusCode::BAD_GATEWAY, None, None, b""),
@@ -364,7 +364,7 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
                 assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
             }
         });
-        tokio::time::sleep(Duration::from_secs(9)).await;
+        tokio::time::sleep(Duration::from_millis(7_500)).await;
         let body = format!(
             r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"delayed","windowMs":10000,"listen":["tcp:{port}","udp:{port}"],"send":[]}}}}"#
         );
@@ -373,7 +373,7 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
             body.len()
         );
         stream.write_all(response.as_bytes()).await.unwrap();
-        observer.join().unwrap();
+        observer
     });
     let mut probes = Probes::default();
     pass_from(
@@ -387,7 +387,7 @@ async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempt
     )
     .await;
     probes.finish().await;
-    cloud.await.unwrap();
+    cloud.await.unwrap().join().unwrap();
     assert!(
         tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
@@ -637,6 +637,7 @@ async fn a_stop_answer_is_recorded_with_its_reason() {
 
 #[tokio::test]
 async fn a_check_in_reports_a_window_only_once_it_has_ended() {
+    probe::tests::LEAD.set(Some(Duration::from_millis(300)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -702,6 +703,7 @@ async fn a_check_in_reports_a_window_only_once_it_has_ended() {
 
 #[tokio::test]
 async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_reports_it() {
+    probe::tests::LEAD.set(Some(Duration::from_millis(450)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -768,6 +770,7 @@ fn handing_out(handout: &str, port: u16, window_ms: u64) -> String {
 }
 
 async fn handed(paths: &Paths, probes: &mut Probes, handout: &str, port: u16, window_ms: u64) {
+    probe::tests::LEAD.set(Some(Duration::from_millis(window_ms * 3 / 10)));
     let (url, server) = answering_cloud(
         "200 OK".to_owned(),
         handing_out(handout, port, window_ms),
@@ -809,6 +812,7 @@ fn window_report(handout: &str, heard_from: &[&str]) -> probe::Report {
 
 #[tokio::test]
 async fn a_replacement_handed_out_mid_save_listens_at_once_and_goes_out_on_the_next_check_in() {
+    probe::tests::LEAD.set(Some(Duration::from_millis(90)));
     let dir = tempfile::tempdir().unwrap();
     let paths = paths(&dir);
     let mut probes = Probes::load(paths.probe());
@@ -911,6 +915,51 @@ async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle
         &pass(&failing, &mut unreachable(), &mut probes).await,
         client::BACKOFF.as_secs(),
     );
+}
+
+#[tokio::test]
+async fn a_rate_limited_report_keeps_its_retry_grace() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::default();
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let (url, server) = answering_cloud(
+        "429 Too Many Requests\r\nRetry-After: 1".to_owned(),
+        r#"{"error":"Too many check-ins."}"#.to_owned(),
+        1,
+    )
+    .await;
+    let limited = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    assert!(matches!(limited, Next::Wait { after, .. } if after == Duration::from_secs(1)));
+    let [request]: [String; 1] = server.await.unwrap().try_into().unwrap();
+    assert!(request.contains(r#""probe":{"handout":"h""#), "{request}");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let failed = pass_from(
+        &FakeHost {
+            probe_fails: true,
+            ..FakeHost::default()
+        },
+        &mut client("http://127.0.0.1:9"),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+
+    assert!(probes.report().await.is_some());
+    retries_after(&failed, 10);
 }
 
 #[tokio::test]

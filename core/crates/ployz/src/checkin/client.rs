@@ -161,6 +161,7 @@ pub(crate) struct CheckinClient {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Reply {
     Answer(Answer),
+    RateLimited(Duration),
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
@@ -264,7 +265,7 @@ pub(super) fn reply(
         let after = retry_after
             .unwrap_or(Duration::from_secs(1))
             .min(wire::WAIT_CAP);
-        return Reply::Answer(Answer::Wait(after));
+        return Reply::RateLimited(after);
     }
     Reply::Unreachable(BACKOFF, format!("Cloud answered {status}"))
 }

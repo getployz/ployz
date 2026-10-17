@@ -24,11 +24,47 @@ thread_local! {
     pub(super) static ONLY_V6_BY_DEFAULT: Cell<bool> = const { Cell::new(false) };
     /// Fails every IPv6 bind with this errno.
     pub(super) static IPV6_FAILS_WITH: Cell<Option<i32>> = const { Cell::new(None) };
-    /// Overrides the proportional bind budget for deadline fault tests.
-    pub(super) static LEAD: Cell<Option<Duration>> = const { Cell::new(None) };
+    /// Gives compressed test windows a bind budget without waiting for D8's first attempt.
+    pub(in crate::checkin) static LEAD: Cell<Option<Duration>> = const { Cell::new(None) };
     /// Delays every bind by this long, the way a loaded host delays `open`.
     pub(super) static BIND_STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     pub(super) static STALL_PORT: Cell<Option<Port>> = const { Cell::new(None) };
+}
+
+pub(super) struct BindFaults {
+    only_v6: bool,
+    ipv6_error: Option<i32>,
+    stall: Duration,
+    port: Option<Port>,
+}
+
+impl BindFaults {
+    pub(super) fn capture() -> Self {
+        Self {
+            only_v6: ONLY_V6_BY_DEFAULT.get(),
+            ipv6_error: IPV6_FAILS_WITH.get(),
+            stall: BIND_STALL.get(),
+            port: STALL_PORT.get(),
+        }
+    }
+
+    pub(super) fn enter(self) -> Self {
+        Self {
+            only_v6: ONLY_V6_BY_DEFAULT.replace(self.only_v6),
+            ipv6_error: IPV6_FAILS_WITH.replace(self.ipv6_error),
+            stall: BIND_STALL.replace(self.stall),
+            port: STALL_PORT.replace(self.port),
+        }
+    }
+}
+
+impl Drop for BindFaults {
+    fn drop(&mut self) {
+        ONLY_V6_BY_DEFAULT.set(self.only_v6);
+        IPV6_FAILS_WITH.set(self.ipv6_error);
+        BIND_STALL.set(self.stall);
+        STALL_PORT.set(self.port);
+    }
 }
 
 /// Held to stall every save, the way a slow disk stalls `sync_all`. It is process-wide, so a test
@@ -49,6 +85,9 @@ fn free_port() -> u16 {
 }
 
 fn handout(handout: &str, window_ms: u64, listen: &[Port], send: &[u16]) -> Handout {
+    if window_ms <= 2_000 && LEAD.get().is_none() {
+        LEAD.set(Some(Duration::from_millis(window_ms * 3 / 10)));
+    }
     Handout {
         nonce: NONCE.to_owned(),
         handout: handout.to_owned(),
@@ -540,12 +579,13 @@ fn a_port_must_listen_three_seconds_before_the_window_ends() {
 async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
     let (udp, first, second) = (free_port(), free_port(), free_port());
     STALL_PORT.set(Some(Port::Tcp(second)));
-    BIND_STALL.set(Duration::from_millis(800));
+    BIND_STALL.set(Duration::from_millis(1_600));
     LEAD.set(Some(Duration::from_millis(300)));
     let started = std::time::Instant::now();
     let observer = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
         assert!(std::net::TcpStream::connect(("127.0.0.1", first)).is_ok());
+        assert!(!bindable(udp));
         std::thread::sleep(
             (started + Duration::from_millis(1_100))
                 .saturating_duration_since(std::time::Instant::now()),
@@ -553,6 +593,10 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
         assert!(
             std::net::TcpStream::connect(("127.0.0.1", first)).is_err(),
             "the earlier listener outlived its window"
+        );
+        assert!(
+            bindable(first) && bindable(udp),
+            "ports were not released at expiry"
         );
     });
     let mut probes = Probes::default();
@@ -584,7 +628,7 @@ async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
 
 #[tokio::test]
 async fn shorter_windows_still_greet_cloud_on_a_free_port() {
-    for millis in [1_000, 2_500, 3_000] {
+    for millis in [2_500, 3_000] {
         let port = free_port();
         let mut probes = Probes::default();
         probes
@@ -628,12 +672,18 @@ async fn a_bind_that_finishes_after_the_deadline_reports_as_failed_and_stays_ref
 }
 
 #[tokio::test]
-async fn a_bind_stalled_past_a_second_still_listens_inside_the_deadline() {
+async fn a_bind_after_d8_s_only_attempt_reports_failed_in_a_short_window() {
     let dir = tempfile::tempdir().unwrap();
     let tcp = free_port();
-    LEAD.set(Some(Duration::from_secs(1)));
     BIND_STALL.set(Duration::from_millis(1_200));
     let mut probes = Probes::load(dir.path().join("probe.json"));
+    let sent = std::time::Instant::now();
+    let observer = std::thread::spawn(move || {
+        std::thread::sleep(
+            (sent + Duration::from_secs(1)).saturating_duration_since(std::time::Instant::now()),
+        );
+        assert!(std::net::TcpStream::connect(("127.0.0.1", tcp)).is_err());
+    });
 
     probes
         .open(
@@ -643,12 +693,30 @@ async fn a_bind_stalled_past_a_second_still_listens_inside_the_deadline() {
         )
         .await;
 
-    assert_eq!(
-        greeting_from(tcp).await,
-        greeting("slow", key().public_hex(), tcp).into_bytes()
-    );
     probes.finish().await;
-    assert!(probes.report().await.unwrap().bind_failed.is_empty());
+    observer.join().unwrap();
+    assert_eq!(
+        probes.report().await.unwrap().bind_failed,
+        [format!("tcp:{tcp}")]
+    );
+    assert!(bindable(tcp));
+}
+
+#[tokio::test]
+async fn windows_without_a_usable_d8_attempt_report_every_port_failed() {
+    for millis in [1, 500, 1_000, 1_500, 2_000] {
+        let (tcp, udp) = (free_port(), free_port());
+        let mut probes = Probes::default();
+        let handout = handout("no-attempt", millis, &[Port::Tcp(tcp), Port::Udp(udp)], &[]);
+        LEAD.set(None);
+        probes.open(handout, &key(), Instant::now()).await;
+        assert!(bindable(tcp) && bindable(udp));
+        probes.finish().await;
+        assert_eq!(
+            probes.report().await.unwrap().bind_failed,
+            [format!("tcp:{tcp}"), format!("udp:{udp}")]
+        );
+    }
 }
 
 #[tokio::test]

@@ -15,7 +15,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use futures_util::future::join_all;
+use futures_util::{StreamExt as _, stream::FuturesUnordered};
 use hmac::{Hmac, KeyInit as _, Mac as _};
 use rustix::io::Errno;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ use socket2::{Domain, Type};
 use tokio::{
     io::AsyncWriteExt as _,
     net::{TcpListener, UdpSocket},
+    sync::mpsc,
     task::JoinHandle,
     time::{Instant, MissedTickBehavior},
 };
@@ -158,30 +159,40 @@ impl Probes {
         self.saving = None;
         self.owed_until = Some(expires + SETTLE_GRACE);
         let saved = self.saved.clone().map(|saved| (claim(&saved), saved));
-        let in_time = || Instant::now() <= deadline;
-        let mut sockets = Vec::new();
-        let mut bind_failed = Vec::new();
-        for &port in &handout.listen {
-            match in_time()
-                .then(|| bind(port))
-                .flatten()
-                .filter(|_| in_time())
-            {
-                Some(socket) => sockets.push(socket),
-                None => bind_failed.push(port.to_string()),
-            }
-        }
+        let ports = handout.listen.clone();
+        let (bound, sockets) = mpsc::unbounded_channel();
         let stop = CancellationToken::new();
         let task = tokio::spawn(window(
             handout,
             key.public_hex().to_owned(),
             sockets,
-            bind_failed,
             saved,
             stop.clone(),
             expires,
         ));
-        self.window = Some(Window { task, stop });
+        self.window = Some(Window {
+            task,
+            stop: stop.clone(),
+        });
+        for port in ports {
+            if Instant::now() >= deadline || stop.is_cancelled() {
+                break;
+            }
+            #[cfg(test)]
+            let faults = tests::BindFaults::capture();
+            let binding_stop = stop.clone();
+            let binding = tokio::task::spawn_blocking(move || {
+                #[cfg(test)]
+                let _faults = faults.enter();
+                if Instant::now() >= deadline || binding_stop.is_cancelled() {
+                    return None;
+                }
+                bind(port).filter(|_| Instant::now() < deadline && !binding_stop.is_cancelled())
+            });
+            if let Ok(Ok(Some(socket))) = tokio::time::timeout_at(deadline, binding).await {
+                let _ = bound.send((port, socket));
+            }
+        }
     }
 
     /// Only a window that has ended reports, so Cloud never stores what half a window heard.
@@ -237,12 +248,22 @@ impl Probes {
 }
 
 /// D8 hands out ten-second windows and tries TCP at 1, 2.5, 4, 5.5, 7 and 8.5 seconds.
-/// Reserve the last 30% for observing listeners; shorter windows scale the same budget.
+/// Bind before its last attempt with time for the greeting. Windows without an attempt cannot bind.
 fn bind_deadline(window: Duration) -> Duration {
-    let lead = window * 3 / 10;
     #[cfg(test)]
-    let lead = tests::LEAD.get().unwrap_or(lead);
-    window.saturating_sub(lead)
+    if let Some(lead) = tests::LEAD.get() {
+        return window.saturating_sub(lead);
+    }
+    let first = Duration::from_secs(1);
+    let every = Duration::from_millis(1_500);
+    if window <= first {
+        return Duration::ZERO;
+    }
+    let attempts = (window - first - Duration::from_nanos(1)).as_nanos() / every.as_nanos();
+    let last = first + every * u32::try_from(attempts).expect("window is capped at ten seconds");
+    (window * 7 / 10)
+        .min(last.saturating_sub(CLOUD_READS_FOR))
+        .min(window.saturating_sub(every + CLOUD_READS_FOR))
 }
 
 /// When Cloud stops waiting on a saved report, from the file's mtime, which is when its window
@@ -269,8 +290,7 @@ fn claim(saved: &Path) -> u64 {
 async fn window(
     handout: Handout,
     checkin_key: String,
-    sockets: Vec<Socket>,
-    bind_failed: Vec<String>,
+    mut sockets: mpsc::UnboundedReceiver<(Port, Socket)>,
     saved: Option<(u64, PathBuf)>,
     stop: CancellationToken,
     expires: Instant,
@@ -278,31 +298,41 @@ async fn window(
     let report = Mutex::new(Report {
         handout: handout.handout.clone(),
         heard_from: Vec::new(),
-        bind_failed,
+        bind_failed: handout.listen.iter().map(ToString::to_string).collect(),
     });
     {
-        let mut listeners = Vec::new();
-        let mut udp = Vec::new();
-        for socket in sockets {
-            match socket {
-                Socket::Tcp(listener, port) => listeners.push((listener, port)),
-                Socket::Udp(socket) => udp.push(socket),
+        let mut serving = FuturesUnordered::new();
+        let mut binding = true;
+        loop {
+            tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(expires) => break,
+                () = stop.cancelled() => return None,
+                socket = sockets.recv(), if binding => {
+                    let Some((port, socket)) = socket else {
+                        binding = false;
+                        continue;
+                    };
+                    report.lock().unwrap_or_else(PoisonError::into_inner)
+                        .bind_failed.retain(|failed| failed != &port.to_string());
+                    let handout = &handout;
+                    let checkin_key = &checkin_key;
+                    let report = &report;
+                    serving.push(async move {
+                        match socket {
+                            Socket::Tcp(listener, port) => greet(
+                                &listener,
+                                greeting(&handout.handout, checkin_key, port).into_bytes(),
+                            ).await,
+                            Socket::Udp(socket) => exchange(&socket, handout, report).await,
+                        }
+                    });
+                }
+                _ = serving.next(), if !binding && !serving.is_empty() => {}
             }
         }
-        let greet = join_all(listeners.iter().map(|(listener, port)| {
-            greet(
-                listener,
-                greeting(&handout.handout, &checkin_key, *port).into_bytes(),
-            )
-        }));
-        let exchange = join_all(udp.iter().map(|socket| exchange(socket, &handout, &report)));
-        tokio::select! {
-            biased;
-            () = tokio::time::sleep_until(expires) => {}
-            () = stop.cancelled() => return None,
-            _ = async { tokio::join!(greet, exchange) } => {}
-        }
     }
+    drop(sockets);
     let report = report.into_inner().unwrap_or_else(PoisonError::into_inner);
     let saving = saved.map(|(generation, saved)| {
         let written = report.clone();

@@ -627,7 +627,7 @@ async fn pass_from<H: Host>(
         probes.reported();
     }
     let next = match reply {
-        client::Reply::Answer(Answer::Wait(after)) => {
+        client::Reply::Answer(Answer::Wait(after)) | client::Reply::RateLimited(after) => {
             status.answer = Seen::Wait;
             Next::Wait { after, log: None }
         }
