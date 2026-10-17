@@ -21,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
+pub(crate) use enroll::Committed;
 use wire::{Answer, CheckinRequest, PrepState};
 pub(crate) use wire::{
     Attempt, DockerPrep, EnrollInstruction, Issue, Prep, Probe, StopReason, ZfsPrep,
@@ -88,8 +89,9 @@ pub(crate) trait Host {
         &self,
         instruction: &EnrollInstruction,
         progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
-    ) -> Result<(), String>;
+    ) -> Result<Committed, String>;
     async fn discard_zfs_build(&self) -> Result<(), String>;
+    async fn participating(&self) -> bool;
 }
 
 pub(crate) struct System {
@@ -177,12 +179,41 @@ impl Host for System {
         &self,
         instruction: &EnrollInstruction,
         progress: &dyn Fn(crate::cloud_enroll::EnrollStage),
-    ) -> Result<(), String> {
+    ) -> Result<Committed, String> {
         enroll::server_add(self, instruction, progress).await
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
         enroll::discard_zfs_build(&self.ployzd).await
+    }
+
+    async fn participating(&self) -> bool {
+        use crate::context::{Connection, ConnectionSource, SelectedConnections};
+        use ployz_core::{InspectRequest, LocalMachinePhase, op};
+
+        let inspect = async {
+            let connection =
+                Connection::unix(Path::new(crate::connect::DEFAULT_LOCAL_SOCKET)).ok()?;
+            let mut client = crate::connect::connect_selected_with(
+                SelectedConnections {
+                    source: ConnectionSource::LocalSocket,
+                    connections: vec![connection],
+                },
+                std::sync::Arc::new(crate::connect::SystemConnector::default()),
+            )
+            .await
+            .ok()?;
+            let details = client
+                .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
+                .await
+                .ok()?;
+            Some(details.phase == LocalMachinePhase::Participating)
+        };
+        tokio::time::timeout(PROBE_TIMEOUT, inspect)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false)
     }
 }
 
@@ -540,6 +571,13 @@ async fn pass_from<H: Host>(
     installing: bool,
 ) -> Next {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
+    if !installing
+        && previous
+            .as_ref()
+            .is_some_and(|status| status.answer == Seen::Joined)
+    {
+        return Next::Enrolled;
+    }
     let refusal = previous
         .as_ref()
         .filter(|status| status.answer == Seen::Refused)
@@ -640,6 +678,17 @@ async fn pass_from<H: Host>(
         attempt: status.attempt.as_ref(),
     };
     let next = match client.post(key, &request).await {
+        client::Reply::Answer(Answer::Wait(_))
+            if !installing
+                && status
+                    .attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.failure.is_none())
+                && host.participating().await =>
+        {
+            status.answer = Seen::Joined;
+            Next::Enrolled
+        }
         client::Reply::Answer(Answer::Wait(after)) => {
             status.answer = Seen::Wait;
             if status.enroll_failed() {

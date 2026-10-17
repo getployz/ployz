@@ -608,8 +608,9 @@ async fn install_local(
     run_installer(bootstrap.daemon(), version, preparation).await
 }
 
-/// Carry out `installation` with the daemon already at `daemon`, which must report this
-/// CLI's version, so nothing is downloaded.
+/// Carry out `installation` with the daemon already at `daemon`, without downloading it.
+/// The caller verifies its version. Installer stderr is forwarded and its last non-empty
+/// line is included when it exits unsuccessfully.
 ///
 /// # Errors
 ///
@@ -646,12 +647,20 @@ async fn run_installer(
         .map_err(ProvisionError::Install)?;
     let mut last = None;
     if let Some(stderr) = child.stderr.take() {
-        let mut lines = tokio::io::BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            eprintln!("{line}");
+        let mut reader = tokio::io::BufReader::new(stderr);
+        let mut bytes = Vec::new();
+        while reader
+            .read_until(b'\n', &mut bytes)
+            .await
+            .map_err(ProvisionError::Install)?
+            != 0
+        {
+            let line = String::from_utf8_lossy(&bytes);
+            eprint!("{line}");
             if !line.trim().is_empty() {
-                last = Some(line);
+                last = Some(line.trim_end().to_owned());
             }
+            bytes.clear();
         }
     }
     match (installer_status(child.wait().await), last) {
@@ -713,6 +722,23 @@ mod tests {
         assert!(daemon_is_current(&daemon("current", env!("CARGO_PKG_VERSION"))).await);
         assert!(!daemon_is_current(&daemon("older", "0.0.1")).await);
         assert!(!daemon_is_current(&dir.path().join("missing")).await);
+    }
+
+    #[tokio::test]
+    async fn installer_drains_non_utf8_stderr_and_keeps_the_last_nonempty_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = dir.path().join("installer");
+        std::fs::write(&daemon, b"#!/bin/sh\nprintf '\\377\\n' >&2\nhead -c 131072 /dev/zero >&2\nprintf '\\nStorage refused by this host\\n\\n' >&2\nexit 7\n").unwrap();
+        std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_installer(&daemon, "1.2.3", Preparation::SoftwareOnly),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(result, Err(ProvisionError::InstallRefused { reason }) if reason == "Storage refused by this host")
+        );
     }
 
     #[test]

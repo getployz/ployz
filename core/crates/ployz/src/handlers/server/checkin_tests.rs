@@ -199,8 +199,12 @@ impl Host for Chosen {
         &self,
         _: &crate::checkin::EnrollInstruction,
         _: &dyn Fn(crate::cloud_enroll::EnrollStage),
-    ) -> Result<(), String> {
+    ) -> Result<crate::checkin::Committed, String> {
         unreachable!("the check-in never enrolls here")
+    }
+
+    async fn participating(&self) -> bool {
+        false
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -308,8 +312,12 @@ impl Host for Stopper {
         &self,
         _: &crate::checkin::EnrollInstruction,
         _: &dyn Fn(crate::cloud_enroll::EnrollStage),
-    ) -> Result<(), String> {
+    ) -> Result<crate::checkin::Committed, String> {
         unreachable!("the check-in never enrolls here")
+    }
+
+    async fn participating(&self) -> bool {
+        false
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {

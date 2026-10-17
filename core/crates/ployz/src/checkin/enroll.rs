@@ -9,7 +9,7 @@ use super::{Attempt, EnrollInstruction, Prep};
 use super::{
     CheckinClient, CheckinEnd, CheckinKey, CheckinRequest, Host, LocalCheckin, Next, Paths, Seen,
     System, ZfsPrep, client, read_prep_state, record, unit,
-    wire::{self, AttemptFailure, EnrollStorage, HostReport},
+    wire::{self, Answer, AttemptFailure, EnrollStorage, HostReport, StopReason},
 };
 use crate::cloud_enroll::EnrollStage;
 
@@ -17,6 +17,22 @@ pub(super) const LOOP_ENROLLS: &str =
     "Cloud is ready to enroll this server. The check-in loop runs it.";
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const ROOT_CONFIG: &str = "/root/.config/ployz/config.yaml";
+
+/// Enrollment committed; a failed follow-up does not undo the join.
+#[derive(Clone, Debug)]
+pub(crate) struct Committed {
+    pub(crate) follow_up: Option<String>,
+}
+
+impl Committed {
+    fn from_setup(setup: crate::handlers::cloud::Setup) -> Result<Self, String> {
+        setup
+            .map_err(|error| failure_message(&error))
+            .map(|follow_up| Self {
+                follow_up: follow_up.err().map(|error| failure_message(&error)),
+            })
+    }
+}
 
 pub(super) struct Report<'a> {
     pub(super) report: &'a HostReport,
@@ -28,7 +44,7 @@ pub(super) fn title(stage: EnrollStage) -> &'static str {
         EnrollStage::Installing => "Installing",
         EnrollStage::Storage => "Setting up ZFS",
         EnrollStage::Enrolling => "Enrolling",
-        EnrollStage::Queued { .. } => "Queued to join",
+        EnrollStage::Queued => "Queued to join",
         EnrollStage::Joining => "Joining",
         EnrollStage::Publishing => "Publishing",
     }
@@ -56,11 +72,15 @@ pub(super) async fn attempt<H: Host>(
 ) -> Next {
     status.answer = Seen::Enroll;
     status.message = None;
-    let mut attempt = Attempt {
-        attempt_id: instruction.attempt_id.clone(),
-        stage: EnrollStage::Installing,
-        failure: None,
-    };
+    let mut attempt = status
+        .attempt
+        .take()
+        .filter(|attempt| attempt.attempt_id == instruction.attempt_id && attempt.failure.is_none())
+        .unwrap_or_else(|| Attempt {
+            attempt_id: instruction.attempt_id.clone(),
+            stage: EnrollStage::Installing,
+            failure: None,
+        });
     let discard = instruction.storage == EnrollStorage::None
         && read_prep_state(&paths.prepare_state).is_some_and(|(state, _)| {
             matches!(
@@ -70,7 +90,14 @@ pub(super) async fn attempt<H: Host>(
         });
     let (stages, mut moved) = watch::channel(attempt.stage);
     let progress = |stage| {
-        stages.send_replace(stage);
+        stages.send_if_modified(|current| {
+            if stage > *current {
+                *current = stage;
+                true
+            } else {
+                false
+            }
+        });
     };
     let enrolling = async {
         if discard {
@@ -81,21 +108,53 @@ pub(super) async fn attempt<H: Host>(
         host.enroll(instruction, &progress).await
     };
     tokio::pin!(enrolling);
+    let mut rejected = None;
     let outcome = loop {
-        tokio::select! {
-            outcome = &mut enrolling => break outcome,
-            () = heartbeat(client, key, paths, report, &mut status, &mut attempt, &mut moved) => {}
+        if rejected.is_some()
+            && matches!(
+                *moved.borrow(),
+                EnrollStage::Enrolling | EnrollStage::Queued
+            )
+        {
+            break None;
+        }
+        if rejected.is_some() {
+            tokio::select! {
+                outcome = &mut enrolling => break Some(outcome),
+                _ = moved.changed() => {}
+            }
+        } else {
+            tokio::select! {
+                outcome = &mut enrolling => break Some(outcome),
+                message = heartbeat(client, key, paths, report, &mut status, &mut attempt, &mut moved) => {
+                    rejected = message;
+                }
+            }
         }
     };
     attempt.stage = *moved.borrow();
     match outcome {
-        Ok(()) => {
+        Some(Ok(committed)) => {
+            if let Some(message) = &committed.follow_up {
+                tracing::warn!(%message, "Enrollment committed; follow-up failed");
+                crate::ui::note(format!("Enrolled, but follow-up failed: {message}"));
+            }
+            status.message = committed.follow_up;
             status.answer = Seen::Joined;
             status.attempt = Some(attempt);
             record(&status, paths);
             Next::Enrolled
         }
-        Err(message) => {
+        _ if rejected.is_some() => {
+            let message = rejected.expect("rejection checked above");
+            status.answer = Seen::Stop;
+            status.reason = Some(StopReason::Rejected);
+            status.message = Some(message.clone());
+            status.attempt = Some(attempt);
+            record(&status, paths);
+            Next::Stop(StopReason::Rejected, message)
+        }
+        Some(Err(message)) => {
             let failure = AttemptFailure {
                 stage: attempt.stage,
                 message,
@@ -112,6 +171,7 @@ pub(super) async fn attempt<H: Host>(
                 log: None,
             }
         }
+        None => unreachable!("only a rejection cancels enrollment"),
     }
 }
 
@@ -123,7 +183,7 @@ async fn heartbeat(
     status: &mut LocalCheckin,
     attempt: &mut Attempt,
     moved: &mut watch::Receiver<EnrollStage>,
-) {
+) -> Option<String> {
     status.attempt = Some(attempt.clone());
     record(status, paths);
     let request = CheckinRequest {
@@ -134,11 +194,19 @@ async fn heartbeat(
         prep: Some(report.prep),
         attempt: Some(attempt),
     };
-    if let client::Reply::Unreachable(_, why) = client.post(key, &request).await {
-        crate::ui::note(format!("Could not report the enroll stage: {why}"));
+    match client.post(key, &request).await {
+        client::Reply::Answer(Answer::Stop(StopReason::Rejected, message)) => return Some(message),
+        client::Reply::Unreachable(_, why) => {
+            crate::ui::note(format!("Could not report the enroll stage: {why}"));
+        }
+        client::Reply::Answer(_)
+        | client::Reply::Refused(_)
+        | client::Reply::ClockOff(_)
+        | client::Reply::Outdated(_) => {}
     }
     let _ = tokio::time::timeout(HEARTBEAT, moved.changed()).await;
     attempt.stage = *moved.borrow_and_update();
+    None
 }
 
 pub(super) async fn finish<H: Host>(host: &H, paths: &Paths) -> CheckinEnd {
@@ -161,7 +229,15 @@ pub(super) async fn server_add(
     system: &System,
     instruction: &EnrollInstruction,
     progress: &dyn Fn(EnrollStage),
-) -> Result<(), String> {
+) -> Result<Committed, String> {
+    if let EnrollStorage::Zfs {
+        device: Some(device),
+    } = &instruction.storage
+    {
+        crate::ui::note(format!(
+            "Cloud selected {device}. This version builds ZFS on the default disk."
+        ));
+    }
     let root = crate::cli::command()
         .try_get_matches_from(add_arguments(
             instruction,
@@ -177,15 +253,15 @@ pub(super) async fn server_add(
                 .map_err(crate::handlers::Error::from)
         }
     };
-    crate::handlers::cloud::run_enrollment(
+    let setup = crate::handlers::cloud::run_enrollment(
         &root,
         &instruction.token,
         &system.cloud,
         &install,
         progress,
     )
-    .await
-    .map_err(|error| failure_message(&error))
+    .await;
+    Committed::from_setup(setup)
 }
 
 fn failure_message(error: &crate::handlers::Error) -> String {
@@ -205,7 +281,7 @@ pub(super) fn add_arguments(
     let policy = &instruction.policy;
     let storage = match instruction.storage {
         EnrollStorage::None => "none",
-        EnrollStorage::Zfs => "zfs",
+        EnrollStorage::Zfs { .. } => "zfs",
     };
     let mut arguments: Vec<String> = [
         "ployz",

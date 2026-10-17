@@ -54,11 +54,14 @@ pub(crate) struct EnrollInstruction {
     pub(crate) policy: EnrollPolicy,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum EnrollStorage {
     None,
-    Zfs,
+    Zfs {
+        #[serde(default)]
+        device: Option<String>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]

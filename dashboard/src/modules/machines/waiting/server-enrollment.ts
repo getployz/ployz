@@ -7,7 +7,7 @@ export type EnrollmentState = "awaiting_founder" | "instructed" | "running" | "j
 
 export type EnrollmentStage = "installing" | "storage" | "enrolling" | "queued" | "joining" | "publishing";
 
-export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "storage", "enrolling", "queued", "joining", "publishing"];
+export const ENROLLMENT_STAGES: ReadonlyArray<EnrollmentStage> = ["installing", "enrolling", "queued", "storage", "joining", "publishing"];
 
 export const OPEN_ENROLLMENT_STATES: ReadonlyArray<EnrollmentState> = ["awaiting_founder", "instructed", "running"];
 

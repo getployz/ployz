@@ -74,7 +74,7 @@ where
 
 /// Setup's outcome: `Ok` once the final callback succeeded, holding what printing the
 /// committed result returned.
-type Setup = Result<Result<(), Error>, Error>;
+pub(crate) type Setup = Result<Result<(), Error>, Error>;
 
 /// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
@@ -87,7 +87,9 @@ where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    runtime()?.block_on(run_enrollment(root, &token, cloud_url, install, &|_| {}))
+    runtime()?
+        .block_on(run_enrollment(root, &token, cloud_url, install, &|_| {}))
+        .and_then(|printed| printed)
 }
 
 /// Enroll as `server add` does, telling `progress` each stage as it starts, then send
@@ -98,7 +100,7 @@ pub(crate) async fn run_enrollment<Install, InstallFuture>(
     cloud_url: &str,
     install: &Install,
     progress: &dyn Fn(EnrollStage),
-) -> Result<(), Error>
+) -> Setup
 where
     Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
@@ -112,7 +114,7 @@ where
             setup.as_ref().err(),
         )
         .await;
-    setup.and_then(|printed| printed)
+    setup
 }
 
 async fn enroll_steps<Install, InstallFuture>(

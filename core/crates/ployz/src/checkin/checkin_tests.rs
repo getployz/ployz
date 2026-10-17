@@ -86,8 +86,12 @@ impl Host for FakeHost {
         &self,
         _: &crate::checkin::EnrollInstruction,
         _: &dyn Fn(crate::cloud_enroll::EnrollStage),
-    ) -> Result<(), String> {
+    ) -> Result<crate::checkin::Committed, String> {
         Err("this fake does not enroll".to_owned())
+    }
+
+    async fn participating(&self) -> bool {
+        false
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {

@@ -37,20 +37,29 @@ struct Cloud {
     url: String,
     bodies: Arc<Mutex<Vec<Value>>>,
     seen: tokio::sync::watch::Receiver<usize>,
+    received: Arc<Mutex<Vec<tokio::time::Instant>>>,
 }
 
 impl Cloud {
     async fn answering(answers: Vec<String>) -> Self {
+        Self::delaying(answers, Duration::ZERO).await
+    }
+
+    async fn delaying(answers: Vec<String>, delay: Duration) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let (count, seen) = tokio::sync::watch::channel(0);
         let kept = Arc::clone(&bodies);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let times = Arc::clone(&received);
         tokio::spawn(async move {
             let mut answers = answers.into_iter();
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let body = read_body(&mut stream).await;
+                times.lock().unwrap().push(tokio::time::Instant::now());
+                tokio::time::sleep(delay).await;
                 let answer = answers.next().unwrap_or_else(|| WAIT.to_owned());
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
@@ -65,7 +74,12 @@ impl Cloud {
                 count.send_replace(total);
             }
         });
-        Self { url, bodies, seen }
+        Self {
+            url,
+            bodies,
+            seen,
+            received,
+        }
     }
 
     fn attempts(&self) -> Vec<Value> {
@@ -135,6 +149,10 @@ struct Scripted {
     cloud: Arc<Cloud>,
     events: Mutex<Vec<&'static str>>,
     disables: AtomicU32,
+    participating: bool,
+    follow_up: Option<String>,
+    pace: Option<Duration>,
+    first: EnrollStage,
 }
 
 impl Scripted {
@@ -146,6 +164,10 @@ impl Scripted {
             cloud: Arc::clone(cloud),
             events: Mutex::new(Vec::new()),
             disables: AtomicU32::new(0),
+            participating: false,
+            follow_up: None,
+            pace: None,
+            first: EnrollStage::Installing,
         }
     }
 
@@ -184,15 +206,39 @@ impl Host for Scripted {
         &self,
         instruction: &EnrollInstruction,
         progress: &dyn Fn(EnrollStage),
-    ) -> Result<(), String> {
+    ) -> Result<crate::checkin::Committed, String> {
         assert_eq!(instruction.token.as_str(), TOKEN);
         self.events.lock().unwrap().push("enroll");
-        self.cloud.told(EnrollStage::Installing).await;
-        for stage in &self.stages {
-            progress(*stage);
-            self.cloud.told(*stage).await;
+        if self.pace.is_none() {
+            self.cloud.told(self.first).await;
         }
-        self.result.clone()
+        for stage in &self.stages {
+            if let Some(pace) = self.pace {
+                tokio::time::sleep(pace).await;
+            }
+            progress(*stage);
+            if self.pace.is_none() && *stage >= self.first {
+                self.cloud.told(*stage).await;
+            }
+        }
+        if let Some(pace) = self.pace {
+            tokio::time::sleep(pace).await;
+        }
+        self.events.lock().unwrap().push("finished");
+        Committed::from_setup(
+            self.result
+                .clone()
+                .map_err(crate::handlers::Error::usage)
+                .map(|()| {
+                    self.follow_up.clone().map_or(Ok(()), |message| {
+                        Err(crate::handlers::Error::usage(message))
+                    })
+                }),
+        )
+    }
+
+    async fn participating(&self) -> bool {
+        self.participating
     }
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
@@ -249,9 +295,9 @@ impl Fixture {
 }
 
 const EVERY_STAGE: [EnrollStage; 5] = [
-    EnrollStage::Storage,
     EnrollStage::Enrolling,
-    EnrollStage::Queued { ahead: 2 },
+    EnrollStage::Queued,
+    EnrollStage::Storage,
     EnrollStage::Joining,
     EnrollStage::Publishing,
 ];
@@ -275,9 +321,9 @@ async fn cloud_hears_every_stage_in_order_and_the_loop_ends_enrolled() {
         cloud.stages(),
         [
             "installing",
-            "storage",
             "enrolling",
             "queued",
+            "storage",
             "joining",
             "publishing"
         ]
@@ -331,7 +377,7 @@ async fn a_failed_enroll_goes_back_to_waiting_and_tells_cloud_where_it_failed() 
     let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
     let host = Scripted::new(
         &cloud,
-        vec![EnrollStage::Storage, EnrollStage::Enrolling],
+        vec![EnrollStage::Enrolling],
         Err("Docker is not running".to_owned()),
     );
     let mut client = fixture.client(&cloud);
@@ -379,7 +425,7 @@ async fn a_failed_enroll_goes_back_to_waiting_and_tells_cloud_where_it_failed() 
         })
     );
     assert_eq!(fixture.status().headline().title, "Enroll failed");
-    assert_eq!(host.events(), ["enroll"]);
+    assert_eq!(host.events(), ["enroll", "finished"]);
 }
 
 #[tokio::test]
@@ -453,7 +499,14 @@ async fn a_server_enrolled_without_storage_discards_the_zfs_build_prep_began_fir
         )
         .await;
 
-        assert_eq!(host.events(), events, "storage {storage}, zfs {zfs}");
+        assert_eq!(
+            host.events()
+                .into_iter()
+                .filter(|event| *event != "finished")
+                .collect::<Vec<_>>(),
+            events,
+            "storage {storage}, zfs {zfs}"
+        );
     }
 }
 
@@ -486,7 +539,7 @@ fn the_add_arguments_carry_the_whole_instruction_and_a_root_config_without_home(
         attempt_id: "att_1".to_owned(),
         token: ployz_core::CloudEnrollToken::parse(TOKEN).unwrap(),
         name: "web-1".to_owned(),
-        storage: EnrollStorage::Zfs,
+        storage: EnrollStorage::Zfs { device: None },
         policy: EnrollPolicy {
             labels: BTreeMap::from([("tier".to_owned(), "edge".to_owned())]),
             accepts_builds: false,
@@ -540,5 +593,306 @@ fn a_failure_sent_to_cloud_keeps_the_cause_under_its_sentence() {
     assert_eq!(
         failure_message(&error),
         "the first Server did not become ready; cause: Store not ready"
+    );
+}
+
+fn previous(fixture: &Fixture, answer: Seen, stage: EnrollStage) {
+    record(
+        &LocalCheckin {
+            answer,
+            reason: None,
+            message: None,
+            at: Utc::now(),
+            prep: None,
+            blockers: Vec::new(),
+            prepare_retries: 0,
+            prepare_started: None,
+            refused: None,
+            attempt: Some(Attempt {
+                attempt_id: "att_1".to_owned(),
+                stage,
+                failure: None,
+            }),
+        },
+        &fixture.paths,
+    );
+}
+
+#[tokio::test]
+async fn a_committed_enroll_with_failed_follow_up_cleans_up_as_joined() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
+    let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
+    host.follow_up = Some("Global catch-up failed".to_owned());
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+    assert_eq!(next, Next::Enrolled);
+    assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
+    assert_eq!(fixture.status().answer, Seen::Joined);
+    assert_eq!(
+        fixture.status().message.as_deref(),
+        Some("Global catch-up failed")
+    );
+    assert!(fixture.status().attempt.unwrap().failure.is_none());
+    assert!(!fixture.paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn rejection_during_installing_or_slot_wait_stops_before_storage() {
+    for stage in [
+        EnrollStage::Installing,
+        EnrollStage::Enrolling,
+        EnrollStage::Queued,
+    ] {
+        let fixture = Fixture::new("ready");
+        let cloud = Arc::new(
+            Cloud::answering(vec![
+                instruction("zfs"),
+                r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#.to_owned(),
+            ])
+            .await,
+        );
+        if stage != EnrollStage::Installing {
+            previous(&fixture, Seen::Enroll, stage);
+        }
+        let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
+        host.pace = Some(Duration::from_millis(250));
+        let next = pass(
+            &host,
+            &mut fixture.client(&cloud),
+            &fixture.key,
+            &fixture.paths,
+            Utc::now(),
+        )
+        .await;
+        assert_eq!(
+            next,
+            Next::Stop(StopReason::Rejected, "Rejected by owner".to_owned()),
+            "{stage:?}"
+        );
+        assert_eq!(fixture.status().answer, Seen::Stop);
+        assert_eq!(fixture.status().reason, Some(StopReason::Rejected));
+        assert!(!host.events().contains(&"finished"));
+        assert!(fixture.paths.token_file.exists());
+    }
+}
+
+#[tokio::test]
+async fn rejection_after_storage_allows_committed_work_to_finish() {
+    for stage in [
+        EnrollStage::Storage,
+        EnrollStage::Joining,
+        EnrollStage::Publishing,
+    ] {
+        let fixture = Fixture::new("ready");
+        let cloud = Arc::new(
+            Cloud::answering(vec![
+                instruction("zfs"),
+                r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#.to_owned(),
+            ])
+            .await,
+        );
+        previous(&fixture, Seen::Enroll, stage);
+        let mut host = Scripted::new(&cloud, vec![EnrollStage::Publishing], Ok(()));
+        host.pace = Some(Duration::from_millis(250));
+        let end = run(
+            &host,
+            &mut fixture.client(&cloud),
+            &fixture.key,
+            &fixture.paths,
+        )
+        .await;
+        assert_eq!(end, CheckinEnd::Enrolled);
+        assert!(host.events().contains(&"finished"));
+        assert!(!fixture.paths.token_file.exists());
+    }
+}
+
+#[tokio::test]
+async fn rejection_after_joining_reports_stop_if_uncommitted_work_fails() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(
+        Cloud::answering(vec![
+            instruction("zfs"),
+            r#"{"kind":"stop","reason":"rejected","message":"Rejected by owner"}"#.to_owned(),
+        ])
+        .await,
+    );
+    previous(&fixture, Seen::Enroll, EnrollStage::Joining);
+    let mut host = Scripted::new(&cloud, vec![], Err("Publish failed".to_owned()));
+    host.pace = Some(Duration::from_millis(250));
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+    assert_eq!(
+        next,
+        Next::Stop(StopReason::Rejected, "Rejected by owner".to_owned())
+    );
+    assert!(host.events().contains(&"finished"));
+}
+
+#[tokio::test]
+async fn token_expiration_or_revocation_allows_an_open_attempt_to_finish() {
+    for reason in ["token_expired", "token_revoked"] {
+        let fixture = Fixture::new("ready");
+        let cloud = Arc::new(
+            Cloud::answering(vec![
+                instruction("zfs"),
+                format!(r#"{{"kind":"stop","reason":"{reason}"}}"#),
+            ])
+            .await,
+        );
+        let host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
+        assert_eq!(
+            run(
+                &host,
+                &mut fixture.client(&cloud),
+                &fixture.key,
+                &fixture.paths
+            )
+            .await,
+            CheckinEnd::Enrolled
+        );
+    }
+}
+
+#[tokio::test]
+async fn persisted_joined_resumes_cleanup_before_another_checkin() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![]).await);
+    previous(&fixture, Seen::Joined, EnrollStage::Publishing);
+    let host = Scripted::new(&cloud, vec![], Ok(()));
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+    assert_eq!(next, Next::Enrolled);
+    assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
+    assert!(cloud.bodies.lock().unwrap().is_empty());
+    assert!(!fixture.paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn participating_after_callback_resumes_cleanup_when_cloud_answers_wait() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![]).await);
+    previous(&fixture, Seen::Enroll, EnrollStage::Publishing);
+    let mut host = Scripted::new(&cloud, vec![], Ok(()));
+    host.participating = true;
+    let next = pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+    assert_eq!(next, Next::Enrolled);
+    assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
+    assert_eq!(fixture.status().answer, Seen::Joined);
+    assert!(!fixture.paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn terminal_cleanup_is_harmless_twice() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![]).await);
+    let host = Scripted::new(&cloud, vec![], Ok(()));
+    assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
+    assert_eq!(finish(&host, &fixture.paths).await, CheckinEnd::Enrolled);
+    assert!(!fixture.paths.token_file.exists());
+    assert_eq!(host.disables.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn resumed_attempt_reports_only_forward_moves() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![instruction("zfs")]).await);
+    previous(&fixture, Seen::Enroll, EnrollStage::Joining);
+    let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
+    host.first = EnrollStage::Joining;
+    assert_eq!(
+        pass(
+            &host,
+            &mut fixture.client(&cloud),
+            &fixture.key,
+            &fixture.paths,
+            Utc::now()
+        )
+        .await,
+        Next::Enrolled
+    );
+    assert_eq!(cloud.stages(), ["joining", "publishing"]);
+}
+
+#[tokio::test]
+async fn stage_changes_during_a_post_are_coalesced_and_sent_promptly() {
+    let fixture = Fixture::new("ready");
+    let cloud =
+        Arc::new(Cloud::delaying(vec![instruction("zfs")], Duration::from_millis(200)).await);
+    let mut host = Scripted::new(&cloud, EVERY_STAGE.to_vec(), Ok(()));
+    host.pace = Some(Duration::from_millis(5));
+    // Keep host work alive while the delayed POST finishes; progress itself does not wait for Cloud.
+    host.stages.extend(vec![EnrollStage::Publishing; 100]);
+    let next = tokio::time::timeout(
+        Duration::from_secs(2),
+        pass(
+            &host,
+            &mut fixture.client(&cloud),
+            &fixture.key,
+            &fixture.paths,
+            Utc::now(),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(next, Next::Enrolled);
+    assert_eq!(cloud.stages(), ["installing", "publishing"]);
+    let times = cloud.received.lock().unwrap();
+    assert_eq!(times.len(), 3);
+    assert!(*times.get(2).unwrap() - *times.get(1).unwrap() < Duration::from_millis(400));
+}
+
+#[test]
+fn the_zfs_device_survives_decoding_and_default_disk_install_arguments_are_explicit() {
+    let answer = wire::answer(
+        instruction("zfs")
+            .replace(
+                r#""kind":"zfs""#,
+                r#""kind":"zfs","device":"/dev/disk/by-id/spare""#,
+            )
+            .as_bytes(),
+    );
+    let Answer::Enroll(instruction) = answer else {
+        panic!("enroll instruction");
+    };
+    assert_eq!(
+        instruction.storage,
+        EnrollStorage::Zfs {
+            device: Some("/dev/disk/by-id/spare".to_owned())
+        }
+    );
+    assert!(
+        add_arguments(&instruction, "https://cloud.example", true)
+            .windows(2)
+            .any(|pair| pair == ["--storage", "zfs"])
     );
 }

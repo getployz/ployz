@@ -216,10 +216,11 @@ it("keeps a joiner waiting until its founder is in", async () => {
   expect(await checkin(b)).toMatchObject({ kind: "enroll", role: "joiner", name: "web-b" });
 });
 
-it("reports a failed ZFS build to the run and stops answering enroll", async () => {
+it.each(["installing", "enrolling", "queued", "storage"])("reports a failed ZFS build at %s and stops answering enroll", async (stage) => {
   const [a] = await waiting("web-a");
   if (a === undefined) throw new Error("one host");
   const [started] = (await run(enroll([a], { storage: { kind: "zfs", useSpareDisk: false, fallbackToDocker: false } }))).attempts;
+  await harness.pool.query("update server_enrollment set state = 'running', stage = $1", [stage]);
   sent.mockClear();
   expect(await checkin(a, { docker: "ready", zfs: "failed" })).toEqual({ kind: "wait", retryAfter: 10 });
   expect(sent).toHaveBeenCalledWith(expect.objectContaining({

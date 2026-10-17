@@ -213,14 +213,17 @@ pub(crate) enum Waiting {
     Queued { ahead: u32 },
 }
 
-/// Where an in-process enrollment has reached, reported to Cloud on each check-in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Where an in-process enrollment has reached, reported to Cloud on each check-in. Declared in
+/// the order an enrollment runs them, which Cloud's `ENROLLMENT_STAGES` shares.
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
 #[serde(into = "&'static str", try_from = "String")]
 pub(crate) enum EnrollStage {
     Installing,
-    Storage,
     Enrolling,
-    Queued { ahead: u32 },
+    Queued,
+    Storage,
     Joining,
     Publishing,
 }
@@ -232,7 +235,7 @@ impl EnrollStage {
             Self::Installing => "installing",
             Self::Storage => "storage",
             Self::Enrolling => "enrolling",
-            Self::Queued { .. } => "queued",
+            Self::Queued => "queued",
             Self::Joining => "joining",
             Self::Publishing => "publishing",
         }
@@ -253,7 +256,7 @@ impl TryFrom<String> for EnrollStage {
             "installing" => Self::Installing,
             "storage" => Self::Storage,
             "enrolling" => Self::Enrolling,
-            "queued" => Self::Queued { ahead: 0 },
+            "queued" => Self::Queued,
             "joining" => Self::Joining,
             "publishing" => Self::Publishing,
             _ => return Err(format!("unknown enrollment stage {stage}")),
@@ -373,7 +376,7 @@ pub(crate) async fn enroll(
                 retry_after,
                 waiting: Waiting::Queued { ahead },
             } => {
-                progress(EnrollStage::Queued { ahead });
+                progress(EnrollStage::Queued);
                 if announced_queue != Some(ahead) {
                     crate::ui::note(format_args!("Queued to join; {ahead} ahead. Waiting..."));
                     announced_queue = Some(ahead);
@@ -903,7 +906,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_answers_report_their_position_and_keep_polling() {
+    async fn queued_answers_report_the_queued_stage_and_keep_polling() {
         let (listener, origin) = listen().await;
         let server = tokio::spawn(async move {
             for body in [
@@ -928,10 +931,7 @@ mod tests {
         assert!(matches!(outcome, Outcome::Join(_)));
         assert_eq!(
             stages.into_inner(),
-            [
-                EnrollStage::Queued { ahead: 2 },
-                EnrollStage::Queued { ahead: 1 }
-            ]
+            [EnrollStage::Queued, EnrollStage::Queued]
         );
     }
 
