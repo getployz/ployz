@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import { type Client, type ConfigCommand, type MachineId, RpcError } from "@ployz/sdk";
@@ -45,7 +46,7 @@ type Store = Effect.Success<typeof cloudStore>;
 const cloud = (servers: "answering" | "unreachable" | { answers: boolean }) => Effect.gen(function* () {
   const ployz = makePloyzLayer({
     connect: async () => {
-      if (typeof servers === "string" ? servers === "unreachable" : !servers.answers) throw new Error("no route to the Server");
+      if (servers === "unreachable" || (servers !== "answering" && !servers.answers)) throw new Error("no route to the Server");
       return asTestDouble<Client>()({ close: async () => undefined });
     },
   });
@@ -178,9 +179,7 @@ const backdate = (hours: number) => Effect.gen(function* () {
   const by = sql.raw(`interval '${hours} hours'`);
   yield* drizzle.execute(sql`update organization_pairing set removal_started_at = removal_started_at - ${by} where removal_started_at is not null`);
   yield* drizzle.execute(sql`update config_removal_mark set at = at - ${hours * 3600} where organization_id = ${ORGANIZATION}`);
-  yield* drizzle.execute(sql.raw(`do $$ begin if to_regclass('anonymous_teardown') is not null then
-    update anonymous_teardown set waiting_since = waiting_since - interval '${hours} hours', silent_since = silent_since - interval '${hours} hours';
-  end if; end $$`));
+  yield* drizzle.execute(sql`update anonymous_teardown set waiting_since = waiting_since - ${by}, silent_since = silent_since - ${by}`);
 });
 
 const appClock = (shiftMs: number) => vi.spyOn(Date, "now").mockReturnValue(Date.now() + shiftMs);
@@ -188,15 +187,8 @@ const appClock = (shiftMs: number) => vi.spyOn(Date, "now").mockReturnValue(Date
 /** Counts console lines that mention `text`, wherever Effect's logger writes them. */
 const logLines = (text: string) => {
   const spies = (["log", "info", "warn", "error", "debug"] as const).map((method) => vi.spyOn(console, method));
-  const mentions = (value: unknown) => {
-    try {
-      return (typeof value === "string" ? value : JSON.stringify(value) ?? "").includes(text);
-    } catch {
-      return false;
-    }
-  };
   return {
-    count: () => spies.flatMap((spy) => spy.mock.calls).filter((args) => args.some(mentions)).length,
+    count: () => spies.flatMap((spy) => spy.mock.calls).filter((args) => inspect(args, { depth: null }).includes(text)).length,
     restore: () => spies.forEach((spy) => spy.mockRestore()),
   };
 };
