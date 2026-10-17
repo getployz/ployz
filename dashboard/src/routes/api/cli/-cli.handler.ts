@@ -331,8 +331,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const forgotten = yield* forgetServers(forgetter(caller));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
     }
-    case "POST server-access":
-      return yield* provideServerAccess(caller);
+    case "POST server-access": {
+      const access = yield* provideServerAccess(caller);
+      return access.ok ? access.value : refusal(access.refusal);
+    }
     case "GET github":
       return yield* githubConnection(caller);
     case "GET github/:id": {

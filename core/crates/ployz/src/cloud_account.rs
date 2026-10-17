@@ -343,9 +343,23 @@ pub(crate) async fn remove_token(
 ///
 /// # Errors
 ///
-/// Returns a Cloud failure.
-pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, LoginError> {
-    call(credential, Method::POST, "server-access", None).await
+/// Returns Cloud's refusal when the credential's user is not an owner or admin, or a
+/// Cloud failure.
+pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, StoreCallError> {
+    let url = format!("{}/api/cli/server-access", credential.cloud());
+    let response = send(credential, Method::POST, &url, None).await?;
+    notice_revision(&response);
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    if status == StatusCode::FORBIDDEN
+        && let Some(refused) = refusal(&body)
+    {
+        return Err(StoreCallError::Refused(refused));
+    }
+    Ok(answer(credential, status, &body)?)
 }
 
 /// Why a Config Store call over HTTPS failed.
