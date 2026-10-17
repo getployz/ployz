@@ -24,7 +24,8 @@ fn recording_installer(
     daemon: JoinDaemon,
     outcome: InstallOutcome,
     calls: Arc<AtomicUsize>,
-) -> impl Fn(ployz_core::StorageChoice) -> std::future::Ready<Result<(), ployz::handlers::Error>> {
+) -> impl Fn(ployz::handlers::Installation) -> std::future::Ready<Result<(), ployz::handlers::Error>>
+{
     move |_| {
         calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(match outcome {
@@ -39,6 +40,10 @@ fn recording_installer(
 }
 
 fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
+    enroll_matches_with_storage(connect, cloud_url, "zfs")
+}
+
+fn enroll_matches_with_storage(connect: &str, cloud_url: &str, storage: &str) -> ArgMatches {
     ployz::cli::command()
         .try_get_matches_from([
             "ployz",
@@ -52,16 +57,51 @@ fn enroll_matches(connect: &str, cloud_url: &str) -> ArgMatches {
             cloud_url,
             "--name",
             "joiner",
+            "--storage",
+            storage,
             "--accepts-ingress=false",
             "--yes",
         ])
         .unwrap()
 }
 
+#[tokio::test]
+async fn cloud_enroll_retains_a_named_device_through_the_legacy_cloud_reply() {
+    let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
+    let enroll = EnrollListen::start(json!({
+        "kind": "join", "storage": "zfs", "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let (connect, socket, _) = serve_local_machine(daemon).await;
+    let prepared = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&prepared);
+    let result = run_enroll(
+        enroll_matches_with_storage(&connect, &enroll.url, "zfs:/dev/vdb"),
+        move |installation| {
+            observed.lock().unwrap().push(installation);
+            std::future::ready(Ok(()))
+        },
+    )
+    .await;
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        *prepared.lock().unwrap(),
+        [ployz::handlers::Installation::Host(
+            ployz_core::StoragePreparation::Zfs {
+                device: Some(ployz_core::ZfsDevice::parse("/dev/vdb").unwrap())
+            }
+        )]
+    );
+    std::fs::remove_file(socket).unwrap();
+}
+
 async fn run_enroll(
     matches: ArgMatches,
     install: impl Fn(
-        ployz_core::StorageChoice,
+        ployz::handlers::Installation,
     ) -> std::future::Ready<Result<(), ployz::handlers::Error>>
     + Send
     + 'static,
@@ -192,4 +232,41 @@ async fn remote_mismatch_is_rejected_without_mutating_the_local_machine() {
         )
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_missing_explicit_local_socket_installs_the_daemon_before_enrollment() {
+    let mut registration = registration();
+    registration.assigned_machine.accepts_ingress = false;
+    let enroll = EnrollListen::start(json!({
+        "kind": "join",
+        "storage": "none",
+        "pairing": { "secret": PAIRING },
+        "registration": registration,
+    }))
+    .await;
+    let daemon = JoinDaemon::new(registration);
+    let (_, serving_socket, connections) = serve_local_machine(daemon).await;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("not-installed.sock");
+    let connect = format!("unix://{}", socket.display());
+    let calls = Arc::<AtomicUsize>::default();
+    let installs = Arc::clone(&calls);
+    let installed_socket = serving_socket.clone();
+    let installer = move |installation| {
+        assert!(matches!(
+            installation,
+            ployz::handlers::Installation::Host(ployz_core::StoragePreparation::None)
+        ));
+        installs.fetch_add(1, Ordering::SeqCst);
+        std::os::unix::fs::symlink(&installed_socket, &socket).unwrap();
+        std::future::ready(Ok(()))
+    };
+
+    let result = run_enroll(enroll_matches(&connect, &enroll.url), installer).await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(connections.load(Ordering::SeqCst) > 0);
+    std::fs::remove_file(serving_socket).unwrap();
 }

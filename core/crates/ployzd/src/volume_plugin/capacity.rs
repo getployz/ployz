@@ -38,14 +38,10 @@ struct ManagedStorage {
 
 impl VolumeStorage {
     async fn capacity(&self) -> super::Result<ManagedStorage> {
-        let pool = match self.pool.one_usable().await? {
-            Some(pool) => Some(pool),
-            None => {
-                self.pool
-                    .recover(super::pool::UnlabeledBacking::Preserve)
-                    .await?
-            }
-        };
+        let pool = self
+            .pool
+            .admit(super::pool::UnlabeledBacking::Preserve)
+            .await?;
         let mut volumes = BTreeMap::new();
         let mut copies: BTreeMap<ployz_core::DockerVolumeName, ProvisionedCopy> = BTreeMap::new();
         let mut managed_used_bytes = 0u64;

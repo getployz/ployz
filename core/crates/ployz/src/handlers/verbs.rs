@@ -2,6 +2,7 @@
 //! to know before calling it. `VERBS` is the only list.
 
 use clap::Command;
+use ployz_store::Permission;
 use ployz_store::tools::ToolId;
 use serde::Serialize;
 
@@ -71,6 +72,7 @@ pub(crate) struct Verb {
     pub(crate) keeps_running: KeepsRunning,
     /// The `docs/user` page that shows how to call it, when one does.
     pub(crate) docs: Option<&'static str>,
+    pub(crate) needs: Option<Permission>,
     /// The agent tool that does this verb's write when no `ConfigCommand` claims it.
     #[cfg_attr(not(test), expect(dead_code, reason = "the claim tests read it"))]
     pub(crate) tool: Option<ToolId>,
@@ -94,6 +96,7 @@ impl Verb {
             stdin: &[],
             keeps_running: KeepsRunning::Never,
             docs: None,
+            needs: None,
             tool: None,
         }
     }
@@ -146,6 +149,13 @@ impl Verb {
     const fn docs(self, page: &'static str) -> Self {
         Self {
             docs: Some(page),
+            ..self
+        }
+    }
+
+    const fn needs(self, permission: Permission) -> Self {
+        Self {
+            needs: Some(permission),
             ..self
         }
     }
@@ -249,13 +259,15 @@ pub(crate) const DEBUG_VOLUME_RPC: Verb = Verb::internal(
 );
 pub(crate) const DEPLOY: Verb =
     Verb::cloud("deploy", Depends, deploy::deploy_command, deploy::deploy)
-        .docs("deploy/deployments.md");
+        .docs("deploy/deployments.md")
+        .needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_CANCEL: Verb = Verb::cloud(
     "deployment cancel",
     Never,
     deploy::cancel_command,
     deploy::cancel,
-);
+)
+.needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_LS: Verb =
     Verb::cloud("deployment ls", Never, deploy::ls_command, deploy::ls);
 pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
@@ -264,7 +276,8 @@ pub(crate) const DEPLOYMENT_RETRY: Verb = Verb::cloud(
     deploy::retry_command,
     deploy::retry,
 )
-.docs("deploy/deployments.md");
+.docs("deploy/deployments.md")
+.needs(Permission::ChangesDeploy);
 pub(crate) const DEPLOYMENT_SHOW: Verb =
     Verb::cloud("deployment show", Never, deploy::show_command, deploy::show);
 pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
@@ -272,7 +285,8 @@ pub(crate) const DEPLOYMENT_START: Verb = Verb::cloud(
     Never,
     deploy::start_command,
     deploy::start,
-);
+)
+.needs(Permission::ChangesDeploy);
 pub(crate) const DIFF: Verb =
     Verb::cloud("diff", Never, review::diff_command, review::diff).docs("services/settings.md");
 pub(crate) const DISCARD: Verb =
@@ -295,11 +309,13 @@ pub(crate) const ENV_BRANCH: Verb = Verb::cloud(
     Never,
     env::branch_command,
     env::branch::branch,
-);
+)
+.needs(Permission::EnvironmentCreate);
 pub(crate) const ENV_COPY: Verb =
     Verb::cloud("env copy", Never, env::copy_command, env::branch::copy);
 pub(crate) const ENV_DEFAULT: Verb =
-    Verb::cloud("env default", Never, env::default_command, env::default);
+    Verb::cloud("env default", Never, env::default_command, env::default)
+        .needs(Permission::ProjectEdit);
 pub(crate) const ENV_KEEP: Verb =
     Verb::cloud("env keep", Never, env::keep_command, env::branch::keep);
 pub(crate) const ENV_LS: Verb =
@@ -310,7 +326,8 @@ pub(crate) const ENV_NEVER_SYNC: Verb = Verb::cloud(
     env::never_sync_command,
     env::never_sync,
 );
-pub(crate) const ENV_NEW: Verb = Verb::cloud("env new", Never, env::new_command, env::new);
+pub(crate) const ENV_NEW: Verb =
+    Verb::cloud("env new", Never, env::new_command, env::new).needs(Permission::EnvironmentCreate);
 pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     "env on-merge",
     Never,
@@ -318,6 +335,7 @@ pub(crate) const ENV_ON_MERGE: Verb = Verb::cloud(
     env::pr::on_merge,
 );
 pub(crate) const ENV_PR: Verb = Verb::cloud("env pr", Depends, env::pr_command, env::pr::pr)
+    .needs(Permission::ProjectEdit)
     .docs("environments/preview-environments.md");
 pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
     "env pr approve",
@@ -325,10 +343,13 @@ pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
     env::pr_approve_command,
     env::pr::approve,
 )
-.docs("environments/preview-environments.md");
-pub(crate) const ENV_RM: Verb =
-    Verb::cloud("env rm", Always, env::rm_command, env::rm).docs("cli/overview.md");
-pub(crate) const ENV_SETUP: Verb = Verb::cloud("env setup", Never, env::setup_command, env::setup);
+.docs("environments/preview-environments.md")
+.needs(Permission::ChangesDeploy);
+pub(crate) const ENV_RM: Verb = Verb::cloud("env rm", Always, env::rm_command, env::rm)
+    .docs("cli/overview.md")
+    .needs(Permission::EnvironmentDelete);
+pub(crate) const ENV_SETUP: Verb =
+    Verb::cloud("env setup", Never, env::setup_command, env::setup).needs(Permission::ProjectEdit);
 pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     "env shutdown",
     Always,
@@ -401,7 +422,8 @@ pub(crate) const ORG_BUILD_ORDER: Verb = Verb::cloud(
     Depends,
     account::org_build_order_command,
     account::org_build_order,
-);
+)
+.needs(Permission::OrgSettings);
 pub(crate) const ORG_LEAVE: Verb = Verb::cloud(
     "org leave",
     Always,
@@ -428,15 +450,19 @@ pub(crate) const ORG_USE: Verb =
 pub(crate) const PROJECT_LS: Verb =
     Verb::cloud("project ls", Never, project::ls_command, project::ls).docs("cli/overview.md");
 pub(crate) const PROJECT_NEW: Verb =
-    Verb::cloud("project new", Never, project::new_command, project::new);
+    Verb::cloud("project new", Never, project::new_command, project::new)
+        .needs(Permission::ProjectCreate);
 pub(crate) const PROJECT_RENAME: Verb = Verb::cloud(
     "project rename",
     Never,
     project::rename_command,
     project::rename,
-);
+)
+.needs(Permission::ProjectEdit);
 pub(crate) const PROJECT_RM: Verb =
-    Verb::cloud("project rm", Always, project::rm_command, project::rm).docs("cli/overview.md");
+    Verb::cloud("project rm", Always, project::rm_command, project::rm)
+        .docs("cli/overview.md")
+        .needs(Permission::ProjectDelete);
 pub(crate) const PS: Verb = Verb::cloud("ps", Never, operator::ps_command, service::processes)
     .docs("troubleshooting/deployments.md");
 pub(crate) const SCHEMA: Verb =
@@ -926,15 +952,23 @@ pub(crate) fn tree(root: Command) -> Command {
         .map(|group| (group.path, group.command, Vec::new(), None));
     let verbs = VERBS
         .iter()
-        .map(|verb| (verb.path, verb.command, verb.marked_flags(), verb.docs));
+        .map(|verb| (verb.path, verb.command, verb.marked_flags(), verb.help()));
     groups
         .chain(verbs)
-        .fold(root, |root, (path, command, flags, docs)| {
-            insert(root, path, path, command, &flags, docs)
+        .fold(root, |root, (path, command, flags, help)| {
+            insert(root, path, path, command, &flags, help)
         })
 }
 
 impl Verb {
+    /// What `--help` adds after the flags: the permission it needs and its docs page.
+    fn help(&self) -> Option<String> {
+        let needs = self.needs.map(|permission| format!("Needs {permission}"));
+        let docs = self.docs.map(|page| format!("Docs: ployz docs {page}"));
+        let lines = needs.into_iter().chain(docs).collect::<Vec<_>>();
+        (!lines.is_empty()).then(|| lines.join("\n"))
+    }
+
     fn marked_flags(&self) -> Vec<&'static str> {
         let wait = match self.keeps_running {
             KeepsRunning::With(flag) => Some(flag),
@@ -954,16 +988,15 @@ fn insert(
     rest: &'static str,
     command: fn(Command) -> Command,
     flags: &[&'static str],
-    docs: Option<&'static str>,
+    added: Option<String>,
 ) -> Command {
     match rest.split_once(' ') {
         None => {
             let mut leaf = command(Command::new(rest));
-            if let Some(page) = docs {
-                let docs = format!("Docs: ployz docs {page}");
+            if let Some(added) = added {
                 let help = match leaf.get_after_help() {
-                    Some(help) => format!("{help}\n\n{docs}"),
-                    None => docs,
+                    Some(help) => format!("{help}\n\n{added}"),
+                    None => added,
                 };
                 leaf = leaf.after_help(help);
             }
@@ -982,7 +1015,7 @@ fn insert(
                 "`{path}` needs its parent `{head}` listed first"
             );
             parent.mut_subcommand(head, |child| {
-                insert(child, path, rest, command, flags, docs)
+                insert(child, path, rest, command, flags, added)
             })
         }
     }
@@ -1047,6 +1080,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn help_names_the_permission_a_verb_needs() {
+        let root = tree(clap::Command::new("ployz"));
+        let deploy = root.find_subcommand("deploy").unwrap();
+        let help = deploy.get_after_help().unwrap().to_string();
+        assert!(help.contains("Needs changes:deploy"), "{help}");
+        assert!(
+            help.contains("Docs: ployz docs deploy/deployments.md"),
+            "{help}"
+        );
+        let rm = root
+            .find_subcommand("env")
+            .unwrap()
+            .find_subcommand("rm")
+            .unwrap();
+        let help = rm.get_after_help().unwrap().to_string();
+        assert!(help.contains("Needs environment:delete"), "{help}");
+        let rename = root
+            .find_subcommand("project")
+            .unwrap()
+            .find_subcommand("rename")
+            .unwrap();
+        let help = rename.get_after_help().unwrap().to_string();
+        assert!(help.contains("Needs project:edit"), "{help}");
     }
 
     fn claimed() -> impl Iterator<Item = (String, ToolId)> {

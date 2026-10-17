@@ -13,9 +13,12 @@ use ployz_core::{
 };
 
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
+use crate::cloud_enroll::{
+    self, CloudPairing, EnrollIdentity, EnrollStage, InitializeMode, Join, Outcome,
+};
 use crate::connect::{Client, ConnectError};
 use crate::context::{Connection, ContextError, SelectedConnections, Transport};
+use crate::provisioning::Installation;
 use crate::setup_report::{SetupReport, Step};
 use crate::ui::{self, Hint};
 
@@ -32,20 +35,18 @@ pub(super) fn enroll(
         // A remote host is provisioned up front, in `enroll_steps`.
         return enroll_token(root, token, cloud_url, &|_| async { Ok(()) });
     }
-    enroll_token(root, token, cloud_url, &|storage| async move {
-        if storage == StorageChoice::Zfs {
-            crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage).await?;
-        } else {
-            crate::provisioning::synchronize_local_daemon().await?;
+    enroll_token(root, token, cloud_url, &|installation| async move {
+        match installation {
+            Installation::Host(storage) => {
+                crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), &storage).await?;
+            }
+            Installation::Daemon => crate::provisioning::synchronize_local_daemon().await?,
         }
         Ok(())
     })
 }
 
 /// Run token enrollment, installing this CLI's daemon version with `install`.
-///
-/// `install` receives `none` for software-only synchronization and `zfs` for
-/// storage preparation; tests substitute it to avoid provisioning a real daemon.
 ///
 /// # Errors
 ///
@@ -56,7 +57,7 @@ pub fn enroll_with_installer<Install, InstallFuture>(
     install: &Install,
 ) -> Result<(), Error>
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
@@ -73,7 +74,7 @@ where
 
 /// Setup's outcome: `Ok` once the final callback succeeded, holding what printing the
 /// committed result returned.
-type Setup = Result<Result<(), Error>, Error>;
+pub(crate) type Setup = Result<Result<(), Error>, Error>;
 
 /// Enroll, then send Cloud the best-effort setup report for the outcome.
 fn enroll_token<Install, InstallFuture>(
@@ -83,21 +84,37 @@ fn enroll_token<Install, InstallFuture>(
     install: &Install,
 ) -> Result<(), Error>
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
+    runtime()?
+        .block_on(run_enrollment(root, &token, cloud_url, install, &|_| {}))
+        .and_then(|printed| printed)
+}
+
+/// Enroll as `server add` does, reporting Joining only after the daemon accepts
+/// enrollment, then send Cloud the best-effort setup report for the outcome.
+pub(crate) async fn run_enrollment<Install, InstallFuture>(
+    root: &ArgMatches,
+    token: &CloudEnrollToken,
+    cloud_url: &str,
+    install: &Install,
+    progress: &dyn Fn(EnrollStage),
+) -> Setup
+where
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let mut report = SetupReport::start();
-    runtime()?.block_on(async {
-        let setup = enroll_steps(root, &token, cloud_url, install, &mut report).await;
-        report
-            .send(
-                &cloud_enroll::report_url(cloud_url),
-                &token,
-                setup.as_ref().err(),
-            )
-            .await;
-        setup.and_then(|printed| printed)
-    })
+    let setup = enroll_steps(root, token, cloud_url, install, &mut report, progress).await;
+    report
+        .send(
+            &cloud_enroll::report_url(cloud_url),
+            token,
+            setup.as_ref().err(),
+        )
+        .await;
+    setup
 }
 
 async fn enroll_steps<Install, InstallFuture>(
@@ -106,9 +123,10 @@ async fn enroll_steps<Install, InstallFuture>(
     cloud_url: &str,
     install: &Install,
     report: &mut SetupReport,
+    progress: &dyn Fn(EnrollStage),
 ) -> Setup
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
@@ -128,30 +146,33 @@ where
         .get_one::<Ipv4Net>("network")
         .expect("Cluster network has a default");
 
+    progress(EnrollStage::Installing);
     if remote && !matches.get_flag("no-install") {
         // A remote host is provisioned once, up front, with this CLI's release.
-        crate::provisioning::provision(matches, requested_storage).await?;
+        crate::provisioning::provision(matches, &requested_storage).await?;
     }
-    let mut client = connect_machine(matches).await?;
+    let mut client = connect_machine(matches, install).await?;
     client = synchronize_daemon(matches, client, install).await?;
     if matches.get_flag("reset") {
         client = ensure_uninitialized(matches, matches.get_flag("yes"), true, client).await?;
     }
     report.step(Step::Enroll);
+    progress(EnrollStage::Enrolling);
     let (details, machine_token, name, outcome) = enroll_current_identity(
         &mut client,
         requested_name,
-        requested_storage,
+        requested_storage.choice(),
         &initial_policy,
         &url,
         token,
+        progress,
     )
     .await?;
     report.sizes_from(&machine_token);
     report.step(Step::Storage);
     match outcome {
         Outcome::Join(join) => {
-            report.enrolled(join.storage, false);
+            report.enrolled(join.storage.choice(), false);
             enroll_join(
                 matches,
                 client,
@@ -162,6 +183,7 @@ where
                 token,
                 install,
                 report,
+                progress,
             )
             .await
         }
@@ -170,7 +192,7 @@ where
             pairing,
             storage,
         } => {
-            report.enrolled(storage, true);
+            report.enrolled(storage.choice(), true);
             enroll_founder(
                 matches,
                 client,
@@ -186,18 +208,21 @@ where
                 token,
                 install,
                 report,
+                progress,
             )
             .await
         }
     }
 }
 
-fn already_assigned(details: &MachineDetails, assigned: &Machine) -> bool {
-    details.phase == LocalMachinePhase::Participating
-        && details
-            .machine
-            .as_ref()
-            .is_some_and(|machine| machine.id == assigned.id)
+fn already_assigned<'a>(details: &'a MachineDetails, assigned: &Machine) -> Option<&'a Machine> {
+    matches!(
+        details.phase,
+        LocalMachinePhase::Joining | LocalMachinePhase::Participating
+    )
+    .then_some(details.machine.as_ref())
+    .flatten()
+    .filter(|machine| machine.id == assigned.id)
 }
 
 async fn enroll_current_identity(
@@ -207,6 +232,7 @@ async fn enroll_current_identity(
     initial_policy: &ployz_core::InitialMachinePolicy,
     url: &str,
     token: &CloudEnrollToken,
+    progress: &dyn Fn(EnrollStage),
 ) -> Result<(MachineDetails, MachineToken, MachineName, Outcome), Error> {
     let (details, machine_token) = crate::handlers::server::inspect_token(
         client,
@@ -223,7 +249,7 @@ async fn enroll_current_identity(
         requested_storage,
         initial_policy.clone(),
     );
-    let outcome = cloud_enroll::enroll(url, token, &identity).await?;
+    let outcome = cloud_enroll::enroll(url, token, &identity, progress).await?;
     Ok((details, machine_token, name, outcome))
 }
 
@@ -241,29 +267,35 @@ async fn enroll_join<Install, InstallFuture>(
     token: &CloudEnrollToken,
     install: &Install,
     report: &mut SetupReport,
+    progress: &dyn Fn(EnrollStage),
 ) -> Setup
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let assigned = join.registration.assigned_machine.clone();
+    let local = already_assigned(&details, &assigned);
     if !initial_policy.matches(&assigned)
-        || (already_assigned(&details, &assigned)
-            && !initial_policy.matches(
-                details
-                    .machine
-                    .as_ref()
-                    .expect("already assigned Machine exists"),
-            ))
+        || local.is_some_and(|machine| !initial_policy.matches(machine))
     {
         return Err(Error::conflict(
             "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
         ));
     }
     let pairing = join.pairing;
-    let mut ready = if already_assigned(&details, &assigned) {
+    let mut ready = if local.is_some() {
         report.step(Step::Join);
-        client
+        progress(EnrollStage::Joining);
+        if details.phase == LocalMachinePhase::Joining {
+            wait_phase(
+                matches,
+                LocalMachinePhase::Participating,
+                "the joined Server did not become ready",
+            )
+            .await?
+        } else {
+            client
+        }
     } else {
         client = ensure_uninitialized(
             matches,
@@ -272,7 +304,8 @@ where
             client,
         )
         .await?;
-        client = provision_storage(matches, client, join.storage, install).await?;
+        progress(EnrollStage::Storage);
+        client = provision_storage(matches, client, &join.storage, install).await?;
         report.step(Step::Join);
         crate::handlers::server::enroll(
             &mut client,
@@ -284,6 +317,7 @@ where
             },
         )
         .await?;
+        progress(EnrollStage::Joining);
         wait_phase(
             matches,
             LocalMachinePhase::Participating,
@@ -291,6 +325,7 @@ where
         )
         .await?
     };
+    progress(EnrollStage::Publishing);
     // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
     let capability = set_cloud_management_client(matches, &mut ready).await?;
     let catch_up = crate::global_catch_up::follow_globals(&mut ready, &assigned).await;
@@ -336,14 +371,15 @@ async fn enroll_founder<Install, InstallFuture>(
     cluster_network: Ipv4Net,
     mode: InitializeMode,
     pairing: CloudPairing,
-    storage: StorageChoice,
+    storage: ployz_core::StoragePreparation,
     cloud_url: &str,
     token: &CloudEnrollToken,
     install: &Install,
     report: &mut SetupReport,
+    progress: &dyn Fn(EnrollStage),
 ) -> Setup
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let state = match (mode, details.phase) {
@@ -391,6 +427,7 @@ where
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => {
             report.step(Step::Join);
+            progress(EnrollStage::Joining);
             (*machine, client)
         }
         FounderLocalState::Initialize => {
@@ -401,7 +438,8 @@ where
                 client,
             )
             .await?;
-            client = provision_storage(matches, client, storage, install).await?;
+            progress(EnrollStage::Storage);
+            client = provision_storage(matches, client, &storage, install).await?;
             report.step(Step::Join);
             let machine = crate::handlers::server::enroll(
                 &mut client,
@@ -417,6 +455,7 @@ where
                 },
             )
             .await?;
+            progress(EnrollStage::Joining);
             let ready = wait_phase(
                 matches,
                 LocalMachinePhase::Participating,
@@ -435,6 +474,7 @@ where
             super::ingress_hints(Error::from(error), |args| super::rerun(matches, args)).context("Server initialized; Ingress deployment incomplete. Rerun the same ployz server add command without --reset, keeping all other options, to reconcile it.")
         })?;
     }
+    progress(EnrollStage::Publishing);
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
         .map_err(|error| error.context("Server initialized; Cloud Pairing publication incomplete. Rerun the same ployz server add command without --reset, keeping all other options."))?;
@@ -511,15 +551,19 @@ async fn set_cloud_management_client(
 async fn provision_storage<Install, InstallFuture>(
     matches: &ArgMatches,
     client: Client,
-    storage: StorageChoice,
+    storage: &ployz_core::StoragePreparation,
     install: &Install,
 ) -> Result<Client, Error>
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
-    crate::provisioning::announce_storage(storage);
-    if storage != StorageChoice::Zfs {
+    let storage = cloud_enroll::storage_with_requested_device(
+        storage,
+        &super::server::requested_storage(matches),
+    );
+    crate::provisioning::announce_storage(&storage);
+    if storage.choice() != StorageChoice::Zfs {
         return Ok(client);
     }
     if !installs_here(matches, &client) {
@@ -528,7 +572,7 @@ where
             client.connection()
         )));
     }
-    install(storage).await?;
+    install(Installation::Host(storage)).await?;
     wait_matching_daemon(matches).await
 }
 
@@ -538,7 +582,7 @@ async fn synchronize_daemon<Install, InstallFuture>(
     install: &Install,
 ) -> Result<Client, Error>
 where
-    Install: Fn(StorageChoice) -> InstallFuture,
+    Install: Fn(Installation) -> InstallFuture,
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let daemon = client
@@ -553,7 +597,7 @@ where
             client.connection()
         )));
     }
-    install(StorageChoice::None).await?;
+    install(Installation::Daemon).await?;
     wait_matching_daemon(matches).await
 }
 
@@ -626,15 +670,26 @@ fn dials_this_host(matches: &ArgMatches) -> bool {
     }
 }
 
-async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
+async fn connect_machine<Install, InstallFuture>(
+    matches: &ArgMatches,
+    install: &Install,
+) -> Result<Client, Error>
+where
+    Install: Fn(Installation) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
     match dial(matches).await {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
-            crate::provisioning::provision_local(
-                env!("CARGO_PKG_VERSION"),
-                ployz_core::StorageChoice::None,
-            )
-            .await?;
+            install(Installation::Host(StorageChoice::None.into())).await?;
+            wait_client(matches).await
+        }
+        Err(error) if error.is_setup_retryable() && dials_this_host(matches) => {
+            if local_selection(matches)?.connections.iter().any(|connection| {
+                matches!(connection.transport(), Transport::Unix(path) if !path.exists())
+            }) {
+                install(Installation::Host(StorageChoice::None.into())).await?;
+            }
             wait_client(matches).await
         }
         Err(error) => Err(error.into()),
@@ -795,5 +850,178 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::Context(
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
+    }
+
+    #[tokio::test]
+    async fn unacknowledged_enroll_never_reports_committed_joining() {
+        use ployz_core::{OpaquePayload, RpcRequestBody, RpcResponse};
+        use std::cell::RefCell;
+        use tonic::{Request, Response};
+
+        for founder in [false, true] {
+            let mut machine = crate::global_fixtures::machine('a', "web-3");
+            machine.accepts_ingress = false;
+            let details = MachineDetails {
+                id: machine.id,
+                phase: LocalMachinePhase::Uninitialized,
+                public_key: machine.public_key,
+                advertised_endpoints: Vec::new(),
+                machine: None,
+                store_version: Default::default(),
+                rtts: Vec::new(),
+                management_clients: Vec::new(),
+                telemetry: None,
+                storage: None,
+                upgrade: None,
+                token: None,
+            };
+            let observed = details.clone();
+            let reached = std::sync::Arc::new(tokio::sync::Notify::new());
+            let received = std::sync::Arc::clone(&reached);
+            let (client, server) =
+                crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
+                    let details = observed.clone();
+                    let received = std::sync::Arc::clone(&received);
+                    async move {
+                        let request = request.into_inner().decode_request().unwrap().body;
+                        if matches!(request, RpcRequestBody::Inspect(_)) {
+                            return Ok(Response::new(RpcResponse::from(details).encode().unwrap()));
+                        }
+                        assert!(
+                            matches!(request, RpcRequestBody::Enroll(_)),
+                            "unexpected RPC: {request:?}"
+                        );
+                        received.notify_one();
+                        std::future::pending().await
+                    }
+                })
+                .await;
+            let root = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "add", "--yes"])
+                .unwrap();
+            let matches = leaf_matches(&root);
+            let token = CloudEnrollToken::parse("pmet_unacknowledged_enroll").unwrap();
+            let pairing = CloudPairing {
+                secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
+            };
+            let policy = ployz_core::InitialMachinePolicy {
+                accepts_ingress: false,
+                ..Default::default()
+            };
+            let mut report = SetupReport::start();
+            let stages = RefCell::new(Vec::new());
+            let progress = |stage| stages.borrow_mut().push(stage);
+            let install = |_| async { Ok(()) };
+            let enrolling = async {
+                if founder {
+                    enroll_founder(
+                        matches,
+                        client,
+                        details,
+                        MachineToken {
+                            id: machine.id,
+                            public_key: machine.public_key,
+                            public_ip: None,
+                            advertised_endpoints: Vec::new(),
+                            runtime: Default::default(),
+                            memory_total_bytes: None,
+                            disk_total_bytes: None,
+                            disk_available_bytes: None,
+                        },
+                        machine.name.clone(),
+                        policy,
+                        "10.210.0.0/16".parse().unwrap(),
+                        InitializeMode::New,
+                        pairing,
+                        StorageChoice::None.into(),
+                        "http://unused.invalid",
+                        &token,
+                        &install,
+                        &mut report,
+                        &progress,
+                    )
+                    .await
+                } else {
+                    enroll_join(
+                        matches,
+                        client,
+                        details,
+                        Join {
+                            pairing,
+                            storage: StorageChoice::None.into(),
+                            registration: ployz_core::Registered {
+                                assigned_machine: machine,
+                                visible_peers: Vec::new(),
+                                target_versions: Default::default(),
+                            },
+                        },
+                        &policy,
+                        "http://unused.invalid",
+                        &token,
+                        &install,
+                        &mut report,
+                        &progress,
+                    )
+                    .await
+                }
+            };
+            tokio::pin!(enrolling);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    outcome = &mut enrolling => panic!("unacknowledged enrollment finished: {outcome:?}"),
+                    () = reached.notified() => {}
+                }
+            })
+            .await
+            .expect("the RPC fixture receives enrollment");
+            server.abort();
+            assert_eq!(
+                *stages.borrow(),
+                vec![EnrollStage::Storage],
+                "founder={founder}: an unacknowledged RPC must leave a cancellable saved stage"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
+        let assigned = crate::global_fixtures::machine('a', "web-3");
+        let other = crate::global_fixtures::machine('b', "web-4");
+        let details = |phase, machine: Option<&Machine>| MachineDetails {
+            id: assigned.id,
+            phase,
+            public_key: assigned.public_key,
+            advertised_endpoints: Vec::new(),
+            machine: machine.cloned(),
+            store_version: Default::default(),
+            rtts: Vec::new(),
+            management_clients: Vec::new(),
+            telemetry: None,
+            storage: None,
+            upgrade: None,
+            token: None,
+        };
+        for phase in [LocalMachinePhase::Joining, LocalMachinePhase::Participating] {
+            assert_eq!(
+                already_assigned(&details(phase.clone(), Some(&assigned)), &assigned),
+                Some(&assigned),
+                "{phase:?}"
+            );
+            assert_eq!(
+                already_assigned(&details(phase, Some(&other)), &assigned),
+                None
+            );
+        }
+        assert_eq!(
+            already_assigned(&details(LocalMachinePhase::Uninitialized, None), &assigned),
+            None
+        );
+        assert_eq!(
+            already_assigned(
+                &details(LocalMachinePhase::Resetting, Some(&assigned)),
+                &assigned
+            ),
+            None
+        );
     }
 }

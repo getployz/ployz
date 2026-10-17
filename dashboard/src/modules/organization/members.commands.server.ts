@@ -87,6 +87,7 @@ const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Call
 
 export const orgMemberLs = defineCommand({
   name: "org_member_ls",
+  requires: "members:read",
   path: ["org", "member", "ls"],
   about: "List the Organization's members and their roles",
   examples: ["ployz org member ls"],
@@ -111,6 +112,7 @@ export const orgMemberLs = defineCommand({
 
 export const orgMemberInvite = defineCommand({
   name: "org_member_invite",
+  requires: "members:manage",
   path: ["org", "member", "invite"],
   about: `Make an invite link that adds whoever opens it as a member. It lasts ${INVITE_DAYS} days and works once`,
   examples: ["ployz org member invite bob@example.com", "ployz org member invite bob@example.com --role admin"],
@@ -149,6 +151,7 @@ const roleTarget = (caller: Caller, input: typeof RoleInput.Type) =>
 
 export const orgMemberRole = defineCommand({
   name: "org_member_role",
+  requires: "members:manage",
   path: ["org", "member", "role"],
   about: "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
   examples: ["ployz org member role bob@example.com admin", "ployz org member role Bob member"],
@@ -181,6 +184,7 @@ const rmTarget = (caller: Caller, member: string) => managed(caller, member, (ro
 
 export const orgMemberRm = defineCommand({
   name: "org_member_rm",
+  requires: "members:manage",
   path: ["org", "member", "rm"],
   about: "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
   examples: ["ployz org member rm bob@example.com", "ployz org member rm Bob"],
@@ -211,6 +215,7 @@ export const orgMemberRm = defineCommand({
 
 export const orgInviteLs = defineCommand({
   name: "org_invite_ls",
+  requires: "members:manage",
   path: ["org", "invite", "ls"],
   about: "List the Organization's pending invites",
   examples: ["ployz org invite ls"],
@@ -235,6 +240,7 @@ export const orgInviteLs = defineCommand({
 
 export const orgInviteRevoke = defineCommand({
   name: "org_invite_revoke",
+  requires: "members:manage",
   path: ["org", "invite", "revoke"],
   about: "Revoke a pending invite so its link stops working",
   examples: ["ployz org invite revoke bob@example.com"],
@@ -265,6 +271,7 @@ export const orgInviteRevoke = defineCommand({
 
 export const orgLeave = defineCommand({
   name: "org_leave",
+  requires: "org:read",
   path: ["org", "leave"],
   about: "Leave the Organization. Its last owner cannot leave",
   examples: ["ployz org leave"],

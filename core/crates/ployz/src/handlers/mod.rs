@@ -38,6 +38,8 @@ pub(crate) mod verbs;
 pub(crate) mod volume;
 
 #[doc(hidden)]
+pub use crate::provisioning::Installation;
+#[doc(hidden)]
 pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
 
 pub type Error = Failure;
@@ -792,7 +794,7 @@ mod tests {
 
     #[test]
     fn server_add_accepts_only_supported_storage_choices() {
-        for storage in ["none", "zfs"] {
+        for storage in ["none", "zfs", "zfs:/dev/vdb"] {
             let parsed = command()
                 .try_get_matches_from([
                     "ployz",
@@ -805,9 +807,9 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 leaf_matches(&parsed)
-                    .get_one::<ployz_core::StorageChoice>("storage")
-                    .map(|choice| choice.as_str()),
-                Some(storage),
+                    .get_one::<ployz_core::StoragePreparation>("storage")
+                    .map(ToString::to_string),
+                Some(storage.to_owned()),
             );
         }
         assert!(
@@ -895,8 +897,8 @@ mod tests {
         assert_eq!(add.get_one::<String>("destination").unwrap(), "root@host");
         assert_eq!(add.get_one::<String>("name").unwrap(), "edge");
         assert_eq!(
-            add.get_one::<ployz_core::StorageChoice>("storage"),
-            Some(&ployz_core::StorageChoice::Zfs)
+            add.get_one::<ployz_core::StoragePreparation>("storage"),
+            Some(&ployz_core::StoragePreparation::Zfs { device: None })
         );
         assert_eq!(add.get_one::<bool>("accepts-ingress"), Some(&false));
         assert!(add.get_flag("reset"));

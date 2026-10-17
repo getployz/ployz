@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import { initializeAuthSession } from "./auth/auth-client";
 import type { AuthSession } from "./auth/auth";
-import { getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "./modules/analytics/posthog";
+import { followPostHogNavigation, getPostHogBrowserConfig, startPostHog, type PostHogBrowserConfig } from "./modules/analytics/posthog";
 import {
   createRouter as createTanStackRouter,
   useHydrated,
@@ -75,7 +75,7 @@ export function getRouter() {
     },
     hydrate: (data: { authSession: AuthSession | null; posthog: PostHogBrowserConfig }) => {
       initializeAuthSession(data.authSession);
-      startPostHog(data.posthog, data.authSession);
+      startPostHog(data.posthog, data.authSession, router);
     },
     defaultPreload: "viewport",
     defaultPreloadStaleTime: 0,
@@ -90,6 +90,7 @@ export function getRouter() {
   // the SSR HTML for its fallback. The Query also carries each change collection's cursor.
   // ponytail: collection rows serialize twice (DB and Query); drop one once DB hydration marks collections ready.
   setupRouterSsrQueryIntegration({ router, queryClient });
+  router.subscribe("onBeforeNavigate", ({ toLocation }) => followPostHogNavigation(toLocation.pathname));
 
   return routerWithDbClient(router, dbClient);
 }
@@ -101,5 +102,7 @@ declare module "@tanstack/react-router" {
   interface StaticDataRouteOption {
     /** An organization page's crumb, shown after its section's name in the top bar: Servers / hel-1 ⌄. Environment pages are named by EnvironmentCrumbs instead. */
     crumb?: ComponentType;
+    /** The page's URL is itself a secret, so analytics never sees it (see modules/analytics/posthog.ts). */
+    secret?: boolean;
   }
 }

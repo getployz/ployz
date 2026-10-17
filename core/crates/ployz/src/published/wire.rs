@@ -25,6 +25,9 @@ pub(super) struct Entry {
     /// Absent from a Cloud that predates it; the gate stands in.
     #[serde(default)]
     pub(super) removes: Option<bool>,
+    /// The permission it needs, as Cloud names it; absent from a Cloud that predates it.
+    #[serde(default)]
+    pub(super) requires: Option<String>,
     pub(super) agents: bool,
     #[serde(default)]
     pub(super) typed: Option<Typed>,

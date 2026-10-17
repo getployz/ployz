@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StorageChoice};
+use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StoragePreparation};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -115,7 +115,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
     let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
-        let storage = matches.get_one::<StorageChoice>("storage").copied();
+        let storage = matches.get_one::<StoragePreparation>("storage").cloned();
         return runtime.block_on(paste(&acting, &minted, storage));
     }
     drop(runtime);
@@ -244,7 +244,7 @@ struct PendingReport<'a> {
 async fn paste(
     acting: &Acting,
     minted: &Minted,
-    storage: Option<StorageChoice>,
+    storage: Option<StoragePreparation>,
 ) -> Result<(), Error> {
     let line = pasted_command(acting.credential.cloud(), storage);
     if crate::ui::json() {
@@ -268,13 +268,15 @@ async fn paste(
 /// One line that installs exactly this CLI's release, so the Server speaks the same
 /// enrollment, keeping an explicit `--storage` choice. It carries no token: `server add`
 /// asks for it, since the pipe feeds only `sh` and leaves the terminal on its stdin.
-fn pasted_command(cloud: &str, storage: Option<StorageChoice>) -> String {
+fn pasted_command(cloud: &str, storage: Option<StoragePreparation>) -> String {
     let cloud_flag = if cloud == crate::cloud_enroll::cloud_origin(DEFAULT_CLOUD) {
         String::new()
     } else {
         format!(" --cloud-url '{cloud}'")
     };
-    let storage_flag = storage.map_or(String::new(), |storage| format!(" --storage {storage}"));
+    let storage_flag = storage.map_or(String::new(), |storage| {
+        format!(" --storage {}", shell_words::quote(&storage.to_string()))
+    });
     format!(
         "curl -fsSL {INSTALLER_URL} | sh -s -- {} && sudo ployz server add{cloud_flag}{storage_flag}",
         env!("CARGO_PKG_VERSION")
@@ -331,11 +333,11 @@ fn standalone(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Storage the Cloud path asks for; it never prompts.
-pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StorageChoice {
+pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StoragePreparation {
     matches
-        .get_one::<StorageChoice>("storage")
-        .copied()
-        .unwrap_or(StorageChoice::Zfs)
+        .get_one::<StoragePreparation>("storage")
+        .cloned()
+        .unwrap_or(StoragePreparation::Zfs { device: None })
 }
 
 #[cfg(test)]
@@ -354,7 +356,7 @@ mod tests {
                 .ends_with("sudo ployz server add --cloud-url 'http://localhost:3000'")
         );
         assert!(
-            pasted_command("https://ployz.dev", Some(StorageChoice::None))
+            pasted_command("https://ployz.dev", Some(StoragePreparation::None))
                 .ends_with("sudo ployz server add --storage none")
         );
     }

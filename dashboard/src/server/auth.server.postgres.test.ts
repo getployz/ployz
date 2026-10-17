@@ -5,8 +5,10 @@ import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { session as sessionTable, verification } from "#/modules/identity/tables";
-import { eq } from "drizzle-orm";
+import { member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { hashClaimSecret } from "#/modules/identity/claim-required.server";
+import { eq, like } from "drizzle-orm";
+import { vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import {
@@ -73,19 +75,33 @@ it.live(
         assert.strictEqual(restored?.session.userId, actor.userId);
 
         assert.strictEqual(restored?.user.openStartedDeployments, true);
-        const userPreference = yield* auth.handler(new Request("http://localhost:3000/api/auth/update-user", {
+        assert.strictEqual(restored?.user.isAnonymous, false);
+        const update = (body: Record<string, boolean>) => auth.handler(new Request("http://localhost:3000/api/auth/update-user", {
           method: "POST",
           headers: { cookie, "content-type": "application/json", origin: "http://localhost:3000" },
-          body: JSON.stringify({ openStartedDeployments: false }),
+          body: JSON.stringify(body),
         }));
+        const userPreference = yield* update({ openStartedDeployments: false });
         assert.strictEqual(userPreference.status, 200);
         const updatedUser = yield* auth.getSession(new Headers({ cookie }));
         assert.strictEqual(updatedUser?.user.openStartedDeployments, false);
+        const anonymityClaimed = yield* update({ isAnonymous: true });
+        assert.strictEqual(anonymityClaimed.status, 400);
+        assert.strictEqual((yield* auth.getSession(new Headers({ cookie })))?.user.isAnonymous, false);
 
         const anonymous = yield* Effect.exit(auth.resolveActor(new Headers()));
         assert.strictEqual(anonymous._tag, "Failure");
         if (anonymous._tag === "Failure") {
           assert.instanceOf(Cause.squash(anonymous.cause), Unauthorized);
+        }
+
+        const { drizzle } = yield* Database;
+        yield* drizzle.update(userTable).set({ isAnonymous: true }).where(eq(userTable.id, actor.userId));
+        assert.strictEqual((yield* auth.getSession(new Headers({ cookie })))?.user.isAnonymous, true);
+        const agent = yield* Effect.exit(auth.resolveActor(new Headers({ cookie })));
+        assert.strictEqual(agent._tag, "Failure");
+        if (agent._tag === "Failure") {
+          assert.instanceOf(Cause.squash(agent.cause), Unauthorized);
         }
       }).pipe(Effect.provide(layer));
     }),
@@ -277,6 +293,117 @@ it.live(
 
         assert.strictEqual(yield* newUserURL("/invite/invite-token"), "/invite/invite-token");
         assert.strictEqual(yield* newUserURL("/cloud"), "/cloud?welcome=true");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** GitHub's side of the OAuth dance, answered locally so the real callback runs and signs a new person up. */
+const fakeGithub = (login: string, githubId: number) => {
+  const real = globalThis.fetch;
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.startsWith("https://github.com/login/oauth/access_token")) {
+      return Promise.resolve(Response.json({ access_token: `token-${login}`, token_type: "bearer", scope: "read:user,user:email" }));
+    }
+    if (url === "https://api.github.com/user") {
+      return Promise.resolve(Response.json({ id: githubId, login, name: login, email: `${login}@example.test`, avatar_url: null }));
+    }
+    if (url === "https://api.github.com/user/emails") {
+      return Promise.resolve(Response.json([{ email: `${login}@example.test`, primary: true, verified: true }]));
+    }
+    return real(input, init);
+  });
+};
+
+it.live(
+  "binds the Organization a claim page's GitHub sign-up made to that claim, and nothing for any other sign-up",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const signUpWithGithub = (login: string, githubId: number, callbackURL: string) => Effect.gen(function* () {
+          const github = fakeGithub(login, githubId);
+          try {
+            const started = yield* auth.signInGithub(new Headers({ origin }), callbackURL);
+            const state = new URL(String((yield* Effect.promise(() => started.json() as Promise<{ url: string }>)).url)).searchParams.get("state");
+            const cookie = started.headers.getSetCookie().map((line) => line.split(";", 1)[0]).join("; ");
+            const back = yield* auth.handler(new Request(`${origin}/api/auth/callback/github?code=code-${login}&state=${state}`, { headers: { cookie } }));
+            assert.strictEqual(back.status, 302, back.headers.get("location") ?? "");
+            const [person] = yield* drizzle.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, `${login}@example.test`));
+            const [own] = yield* drizzle.select({ organizationId: member.organizationId }).from(member).where(eq(member.userId, person?.id ?? ""));
+            return { userId: person?.id ?? assert.fail(`no user for ${login}`), organizationId: own?.organizationId };
+          } finally {
+            github.mockRestore();
+          }
+        });
+        const bindings = drizzle.select({ identifier: verification.identifier, value: verification.value }).from(verification)
+          .where(like(verification.identifier, "claim-sign-in:%"));
+
+        const ada = yield* signUpWithGithub("ada", 1001, "/claim/s3cret");
+        assert.deepStrictEqual(yield* bindings, [{ identifier: `claim-sign-in:${ada.userId}:${hashClaimSecret("s3cret")}`, value: ada.organizationId }]);
+
+        const bob = yield* signUpWithGithub("bob", 1002, "/cloud");
+        assert.notStrictEqual(bob.userId, ada.userId);
+        assert.strictEqual((yield* bindings).length, 1);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "binds each claim sign-up to its own claim when GitHub sign-ins overlap, and nothing to the ordinary ones",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        // Routes read the database before they reach Auth, so they resume on a pooled connection. A connection keeps
+        // the async context it was opened in, and on a fresh worker the first one opens inside a claim sign-in.
+        const afterQuery = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          drizzle.select({ id: userTable.id }).from(userTable).limit(1).pipe(Effect.andThen(effect));
+        const start = (index: number) => Effect.gen(function* () {
+          const callbackURL = index % 2 === 0 ? `/claim/overlap-${index}` : "/cloud";
+          const started = yield* (index === 0 ? auth.signInGithub(new Headers({ origin }), callbackURL)
+            : afterQuery(auth.signInGithub(new Headers({ origin }), callbackURL)));
+          const state = new URL(String((yield* Effect.promise(() => started.json() as Promise<{ url: string }>)).url)).searchParams.get("state");
+          const cookie = started.headers.getSetCookie().map((line) => line.split(";", 1)[0]).join("; ");
+          return { index, state, cookie };
+        });
+        const flows = [yield* start(0), ...yield* Effect.forEach([1, 2, 3, 4, 5, 6, 7], start, { concurrency: "unbounded" })];
+        const real = globalThis.fetch;
+        const github = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+          const request = new Request(input, init);
+          if (request.url.startsWith("https://github.com/login/oauth/access_token")) {
+            return Response.json({ access_token: new URLSearchParams(await request.text()).get("code"), token_type: "bearer", scope: "read:user,user:email" });
+          }
+          const login = `overlap-${request.headers.get("authorization")?.match(/code-(\d+)/)?.[1]}`;
+          const githubId = 2000 + Number(login.slice("overlap-".length));
+          if (request.url === "https://api.github.com/user") return Response.json({ id: githubId, login, name: login, email: `${login}@example.test`, avatar_url: null });
+          if (request.url === "https://api.github.com/user/emails") return Response.json([{ email: `${login}@example.test`, primary: true, verified: true }]);
+          return real(input, init);
+        });
+        try {
+          const callbacks = yield* Effect.forEach(flows, ({ index, state, cookie }) =>
+            afterQuery(auth.handler(new Request(`${origin}/api/auth/callback/github?code=code-${index}&state=${state}`, { headers: { cookie } }))), { concurrency: "unbounded" });
+          assert.deepStrictEqual(callbacks.map((back) => back.status), flows.map(() => 302));
+        } finally {
+          github.mockRestore();
+        }
+        const bound = [];
+        const expected = [];
+        for (const { index } of flows) {
+          const [person] = yield* drizzle.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, `overlap-${index}@example.test`));
+          const userId = person?.id ?? assert.fail(`no user for flow ${index}`);
+          const bindings = yield* drizzle.select({ identifier: verification.identifier }).from(verification)
+            .where(like(verification.identifier, `claim-sign-in:${userId}:%`));
+          bound.push({ index, identifiers: bindings.map(({ identifier }) => identifier) });
+          expected.push({ index, identifiers: index % 2 === 0 ? [`claim-sign-in:${userId}:${hashClaimSecret(`overlap-${index}`)}`] : [] });
+        }
+        assert.deepStrictEqual(bound, expected);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

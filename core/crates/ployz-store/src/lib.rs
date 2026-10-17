@@ -19,6 +19,7 @@ mod git;
 mod github;
 mod id;
 mod names;
+mod permission;
 mod policy;
 mod project;
 mod pull_request;
@@ -78,6 +79,7 @@ pub use github::{
     GithubFileBody, GithubFileQuery, GithubFileView, GithubTreeQuery, GithubTreeView,
 };
 pub use id::*;
+pub use permission::Permission;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
@@ -206,12 +208,13 @@ impl ConfigStore {
         command: &C,
         trusted: &Trusted,
     ) -> Result<C::Written, RpcError> {
+        let trusted = trusted.held_by(who);
         self.storage.write(|tx| {
             command.apply(&mut Call {
                 tx,
                 who,
                 sealing: &self.sealing,
-                trusted,
+                trusted: &trusted,
             })
         })
     }
@@ -227,12 +230,13 @@ impl ConfigStore {
         command: &Command,
         trusted: &Trusted,
     ) -> Result<Committed, RpcError> {
+        let trusted = trusted.held_by(who);
         self.storage.write(|tx| {
             let written = command.apply(&mut Call {
                 tx,
                 who,
                 sealing: &self.sealing,
-                trusted,
+                trusted: &trusted,
             })?;
             let checks = match written.environment() {
                 Some(environment) => pull_request::project_checks(tx, environment)?,

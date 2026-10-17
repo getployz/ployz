@@ -392,6 +392,86 @@ async fn remove_waits_for_a_list_holding_the_storage_mutation() {
 }
 
 #[tokio::test]
+async fn docker_lookups_and_mounts_recover_existing_pools_without_create_or_capacity() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for pool in ["ployz-device", "ployz"] {
+        for endpoint in ["Get", "Mount", "Path", "List"] {
+            let test = TestDir::new();
+            let (zpool, zfs) = fake_zfs(&test.0, "");
+            let script = test.0.join("fake-zfs");
+            fs::write(
+                &script,
+                fs::read_to_string(&script).unwrap().replace("tank", pool),
+            )
+            .unwrap();
+            fs::remove_file(&zpool).unwrap();
+            fs::write(
+                &zpool,
+                format!(
+                    r#"#!/bin/sh
+set -eu
+case "$*" in
+ 'list -Hp -o name,size,allocated,free,health,readonly')
+  [ ! -e '{root}/imported' ] || printf '{pool}\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
+ import|'import -d {root}/machine-pool') printf 'pool: {pool}\n' ;;
+ 'import -N ployz-device'|'import -d {root}/machine-pool -f -N ployz') touch '{root}/imported' ;;
+ *) exit 97 ;;
+esac
+"#,
+                    root = test.0.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&zpool, fs::Permissions::from_mode(0o755)).unwrap();
+            if pool == "ployz" {
+                fs::write(test.0.join("machine-pool"), "retained file Pool").unwrap();
+            }
+            fs::write(test.0.join("root"), "").unwrap();
+            fs::write(test.0.join("volume"), "").unwrap();
+            let socket = test.0.join("plugin.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+
+            let reply = post(
+                &socket,
+                &format!("/VolumeDriver.{endpoint}"),
+                json!({"Name":"data"}),
+            )
+            .await;
+            assert_eq!(
+                reply.get("Err"),
+                Some(&json!("")),
+                "{pool} {endpoint}: {reply}"
+            );
+            match endpoint {
+                "Get" => assert_eq!(reply.pointer("/Volume/Name"), Some(&json!("data"))),
+                "List" => assert_eq!(reply.pointer("/Volumes/0/Name"), Some(&json!("data"))),
+                _ => assert_eq!(
+                    reply.get("Mountpoint"),
+                    Some(&json!("/var/lib/ployz-volumes/data"))
+                ),
+            }
+            assert!(test.0.join("imported").exists());
+            if pool == "ployz-device" {
+                assert_eq!(
+                    fs::read_to_string(test.0.join("machine-pool.device")).unwrap(),
+                    ployzd::machine_pool::CONFIRMED_DEVICE_POOL_MARKER
+                );
+                assert!(!test.0.join("machine-pool").exists());
+            } else {
+                assert!(!test.0.join("machine-pool.device").exists());
+                assert_eq!(
+                    fs::read_to_string(test.0.join("machine-pool")).unwrap(),
+                    "retained file Pool"
+                );
+            }
+            server.abort();
+        }
+    }
+}
+
+#[tokio::test]
 async fn get_answers_absent_without_a_pool_and_hangs_up_while_one_is_not_imported() {
     let test = TestDir::new();
     let (zpool, zfs) = fake_zfs(&test.0, "");

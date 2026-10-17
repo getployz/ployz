@@ -868,6 +868,7 @@ case "$name" in
     ;;
   zpool)
     case "$*" in
+      import) : ;;
       'import -d {backing}')
         if [ -e '{foreign}' ]; then printf '   pool: foreign\n'
         elif [ -e '{importable}' ]; then printf '   pool: ployz\n'

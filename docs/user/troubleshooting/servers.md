@@ -225,15 +225,36 @@ prepares Docker and ZFS meanwhile.
    boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
-   again. A rejected server stays rejected. If the token file goes missing, the loop stops the
-   next time it starts.
+   again to start a new check-in attempt. A non-rejection response clears the local rejection
+   status, but Cloud can still reject the server. If the token file goes missing, the loop stops
+   the next time it starts.
 9. A `blocked` line saying `ployzd ... is older than this ployz` means you upgraded `ployz` but
    not `ployzd`. The loop keeps checking in with the older one, and Cloud shows the server as
    blocked until you run `sudo ployz server checkin --install`. It uses the first older one that
    answers, trying the one install chose, then PATH, then its own copy, and doesn't prepare Docker
    or ZFS with it. `No ployzd` means there is none at all: the loop exits until the same command
    installs one.
-10. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
+10. Once you approve the server, the loop enrolls it and the **this server** line walks through
+    `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
+    the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
+    fleet first. When it reads `Joined`, the loop turns itself off and deletes
+    `/etc/ployz/fleet-token`.
+11. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
+    example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
+    and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
+    Cloud. If the loop restarts mid-enroll, it picks up the same attempt rather than starting a
+    second one and keeps the last reported stage. If the join committed but a follow-up failed,
+    the server stays Joined, the loop cleans up, and its log and status name that follow-up.
+12. Rejecting a server stops enrollment at the next safe point. A package install finishes
+    before stopping at the enroll or queue step. Storage setup finishes once begun in the
+    current run. After a restart from storage setup, rejection stops enrollment at the enroll
+    or queue step. Once the daemon accepts the join and Cloud records `Joining` or
+    `Publishing`, rejection lets enrollment finish, including after a restart. Cloud keeps
+    its enrollment token valid and continues answering the attempt until it joins or fails.
+    Expiring or revoking a Fleet Token lets an open enrollment finish.
+13. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
+    disk. Selecting a particular disk on the host is not yet supported.
+14. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
     at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
     while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
     The server tells Cloud what it heard only after it closes the ports. One that restarts while it

@@ -64,14 +64,18 @@ export function LoginPanel({
         {description ? <p className="text-balance text-muted-foreground">{description}</p> : null}
       </div>
       <div className="flex w-full flex-col gap-2">
+        {/* Built on click, not rendered as a link: the callback URL can be a claim secret, kept out of the DOM. */}
         <Button
+          type="button"
           variant="ink"
           size="lg"
           className="w-full"
-          nativeButton={false}
+          disabled={!isHydrated || isPending}
           aria-busy={isGithubPending || undefined}
-          render={<a href={`/auth/github?${new URLSearchParams({ callbackURL })}`} />}
-          onClick={() => setIsGithubPending(true)}
+          onClick={() => {
+            setIsGithubPending(true);
+            window.location.assign(`/auth/github?${new URLSearchParams({ callbackURL })}`);
+          }}
         >
           {isGithubPending ? <Spinner data-icon="inline-start" /> : <GitHubMarkIcon data-icon="inline-start" />}
           {action}

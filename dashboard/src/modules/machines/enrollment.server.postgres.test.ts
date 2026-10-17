@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign } from "node:crypto";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { Client, ConnectOptions, EnrollmentAssignment, EnrollmentSnapshot } from "@ployz/sdk";
@@ -31,7 +32,10 @@ import {
   recordMachineSetupReport,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
-import { checkServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
+import { checkIn, checkinMessage } from "#/modules/machines/waiting/checkin.server";
+import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
+import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { checkServerEnrollment, recordStage, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { PostHog, type PostHogService } from "#/modules/analytics/posthog.server";
 import type { SetupReport } from "#/modules/machines/enrollment";
 import { disableOrganizationPairing, dropRemovedServer, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -154,6 +158,8 @@ function enrollmentTestClient(
     publish: (input: Parameters<typeof publishMachineEnrollment>[0]) => runtime.runPromise(
       Effect.result(publishMachineEnrollment(input)),
     ),
+    reject: (id: string) => runtime.runPromise(rejectWaitingServers({ userId }, { organizationSlug: "enroll", ids: [id] })),
+    checkin: (input: Parameters<typeof checkIn>[0]) => runtime.runPromise(checkIn(input)),
     check: (attemptId: string) => runtime.runPromise(checkServerEnrollment(attemptId)),
     connections: (id = organizationId) => runtime.runPromise(loadOrganizationConnections(id)),
     open: (id = organizationId) => runtime.runPromise(Effect.scoped(
@@ -500,6 +506,96 @@ describe("organization enrollment coordinator", () => {
     await fake.coordinator.completeFounding(founder);
     return founder;
   }
+
+  async function waitingAttempt(token: string, stage: string, role: "founder" | "joiner") {
+    const fleet = "pflt_rejected_enrollment";
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const key = Buffer.from(publicKey.export({ format: "jwk" }).x ?? "", "base64url").toString("hex");
+    const instruction = { name: "rejected", storage: { kind: "none" }, policy: { labels: {}, acceptsBuilds: true, acceptsServices: true, acceptsIngress: false } };
+    const { rows: [attempt] } = await harness.pool.query<{ id: string; waiting_server_id: string }>(`
+      with fleet as (
+        insert into fleet_token (organization_id, name, token_hash, expires_at, created_by_user_id)
+        values ($1, 'fleet', $2, now() + interval '1 day', $3) returning id
+      ), server as (
+        insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
+        select $1, id, $4, '{}'::jsonb, '203.0.113.9' from fleet returning id, fleet_token_id
+      )
+      insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction,
+        enroll_token_id, encrypted_token, state, inngest_run_id)
+      select $1, server.id, server.fleet_token_id, $5, $6::jsonb, token.id, $7::jsonb, 'running', 'rejection-run'
+      from server, machine_enrollment_token token where token.token_hash = $8
+      returning id, waiting_server_id
+    `, [organizationId, hashFleetToken(fleet), userId, key, role, JSON.stringify(instruction),
+      JSON.stringify(enrollmentSettings.encryption.encrypt(token)), hashEnrollmentToken(token)]);
+    if (attempt === undefined) throw new Error("No waiting attempt");
+    await harness.pool.query("update machine_enrollment_token set server_enrollment_id = $1 where token_hash = $2", [attempt.id, hashEnrollmentToken(token)]);
+    await harness.runEffect(recordStage(attempt.id, "rejection-run", stage));
+    const checkin = () => {
+      const body = Buffer.from(JSON.stringify({ protocolVersion: 1, checkinKey: key, cliVersion: "0.3.1",
+        report: { hostname: "rejected", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8", arch: "x86_64", virt: "kvm",
+          cpuCount: 4, memoryTotalBytes: 8589934592, disks: [], docker: { kind: "absent" }, cgroup: "v2",
+          zfs: { kind: "ineligible", code: "unavailable", message: "Unavailable" }, blockers: [], warnings: [] },
+        attempt: { attemptId: attempt.id, stage },
+      }));
+      const timestamp = BigInt(Math.floor(Date.now() / 1000));
+      const signature = sign(null, checkinMessage(key, timestamp, body), privateKey).toString("base64url");
+      return { headers: new Headers({ authorization: `Bearer ${fleet}`, "ployz-timestamp": String(timestamp), "ployz-signature": `v1=${signature}` }), body, observedIp: "203.0.113.9" };
+    };
+    return { ...attempt, checkin };
+  }
+
+  it.each(["joining", "publishing"])("finishes a rejected %s attempt through enroll, publish and callback", async (stage) => {
+    const fake = fakeSession(harness.database);
+    await readyFounder(fake);
+    const token = await issueToken(undefined, "joiner");
+    const claimed = await fake.coordinator.enroll({ token, identity: identity(1) });
+    if (Result.isFailure(claimed) || claimed.success.kind !== "join") throw new Error("No join claim");
+    const attempt = await waitingAttempt(token, stage, "joiner");
+    await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [attempt.id]);
+    await fake.coordinator.reject(attempt.waiting_server_id);
+    expect(await fake.coordinator.enroll({ token, identity: identity(1) })).toMatchObject({ success: { kind: "join" } });
+    expect(await fake.coordinator.checkin(attempt.checkin())).toMatchObject({ kind: "enroll", token });
+    expect((await harness.pool.query("select name from operation_outbox where name = 'server/enrollment.cancel'")).rows).toEqual([]);
+    await harness.pool.query("update server_enrollment set inngest_run_id = 'rejection-run' where id = $1", [attempt.id]);
+    const completion = { token, machineId: identity(1).machineId, pairingCredential: claimed.success.pairing.secret };
+    expect(await fake.coordinator.publish({ ...completion, capability })).toMatchObject({ success: { machineId: completion.machineId } });
+    expect(await fake.coordinator.completeFounding(completion)).toMatchObject({ success: { machineId: completion.machineId } });
+    expect(await fake.coordinator.check(attempt.id)).toEqual({ kind: "joined", machineId: completion.machineId });
+    await harness.runEffect(endServerEnrollment(attempt.id, "rejection-run", { state: "joined", machineId: completion.machineId }));
+    expect(await fake.coordinator.checkin(attempt.checkin())).toMatchObject({ kind: "stop", reason: "rejected" });
+  });
+
+  it.each(["joined", "failed"] as const)("preserves a rejected committed founder until it ends %s", async (ending) => {
+    const fake = fakeSession(harness.database);
+    const token = await issueToken(undefined, "founder");
+    const founder = await pendingFounder(fake, token);
+    const attempt = await waitingAttempt(token, "joining", "founder");
+    await fake.coordinator.reject(attempt.waiting_server_id);
+    expect(await fake.coordinator.enroll({ token, identity: identity(0) })).toMatchObject({ success: { kind: "initialize", resumed: true } });
+    expect(await fake.coordinator.checkin(attempt.checkin())).toMatchObject({ kind: "enroll", token });
+    expect((await harness.pool.query("select name from operation_outbox where name = 'server/enrollment.cancel'")).rows).toEqual([]);
+    if (ending === "joined") {
+      expect(await fake.coordinator.publish({ ...founder, capability })).toMatchObject({ success: { machineId: founder.machineId } });
+      expect(await fake.coordinator.completeFounding(founder)).toMatchObject({ success: { machineId: founder.machineId } });
+      await harness.runEffect(endServerEnrollment(attempt.id, "rejection-run", { state: "joined", machineId: founder.machineId }));
+      expect(await fake.coordinator.check(attempt.id)).toEqual({ kind: "joined", machineId: founder.machineId });
+    } else {
+      await harness.runEffect(endServerEnrollment(attempt.id, "rejection-run", { state: "failed", failure: { stage: "publishing", message: "Publish failed" } }));
+      expect(await fake.coordinator.enroll({ token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    }
+    expect(await fake.coordinator.checkin(attempt.checkin())).toMatchObject({ kind: "stop", reason: "rejected" });
+  });
+
+  it.each(["installing", "enrolling", "queued", "storage"])("still cancels a rejected %s attempt and refuses its token", async (stage) => {
+    const fake = fakeSession(harness.database);
+    const token = await issueToken(undefined, "founder");
+    const attempt = await waitingAttempt(token, stage, "founder");
+    await harness.pool.query("update server_enrollment set inngest_run_id = null where id = $1", [attempt.id]);
+    await fake.coordinator.reject(attempt.waiting_server_id);
+    expect(await fake.coordinator.enroll({ token, identity: identity(0) })).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    expect((await harness.pool.query("select state from server_enrollment where id = $1", [attempt.id])).rows).toEqual([{ state: "cancelled" }]);
+    expect(await fake.coordinator.checkin(attempt.checkin())).toMatchObject({ kind: "stop", reason: "rejected" });
+  });
 
   it("reports the Server that completed enrollment with a CLI-minted token, and only to members", async () => {
     const fake = fakeSession(harness.database);

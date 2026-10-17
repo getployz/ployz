@@ -131,7 +131,10 @@ Name a page instead to print it whole, as Markdown: `ployz docs services/domains
 as the `docs` tool from `ployz mcp`.
 
 Many commands' `--help` ends with the page that shows them: `ployz config put --help` ends
-with `Docs: ployz docs services/configs.md`.
+with `Docs: ployz docs services/configs.md`. A command that needs a role's permission names it
+there too: `ployz deploy --help` ends with `Needs changes:deploy`, and a member of the wrong role
+who runs it gets `Needs changes:deploy` and exit code 1. See
+[Invite people](../account/organizations.md#invite-people) for what each role can do.
 
 ## Commands from Ployz Cloud
 
