@@ -179,16 +179,27 @@ impl Service<http::Request<Body>> for MachineApi {
                     tonic::Status::unauthenticated("management credential revoked").into_http(),
                 );
             }
-            // Forwarding drops the client key, so a slot change is judged here,
-            // before routing can carry it to a Machine that would serve it as local.
-            if request.uri().path() == op::SetManagementClient::PATH
-                && let Err(error) =
+            if request.uri().path() == op::SetManagementClient::PATH {
+                if let Err(error) =
                     crate::machine::LocalMachine::require_slot_authority(Some(remote), &record)
-            {
-                return Ok(
-                    ployz_core::rpc::caused_status(tonic::Code::PermissionDenied, &error)
-                        .into_http(),
+                {
+                    return Ok(ployz_core::rpc::caused_status(
+                        tonic::Code::PermissionDenied,
+                        &error,
+                    )
+                    .into_http());
+                }
+                // Forwarding drops the client key, and only a Machine's own `cloud` slot
+                // governs its slots, so a slot change is never routed to another Machine.
+                let routing = ployz_core::routing_from_metadata(
+                    &tonic::metadata::MetadataMap::from_headers(request.headers().clone()),
                 );
+                if !matches!(routing, Ok(RoutingRequest::Local)) {
+                    return Ok(tonic::Status::invalid_argument(
+                        "slots change only on the Server that holds them",
+                    )
+                    .into_http());
+                }
             }
             let mut request = request;
             request.headers_mut().insert(

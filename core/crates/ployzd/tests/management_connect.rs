@@ -466,23 +466,41 @@ async fn contract() {
         "{error}"
     );
     // Forwarding drops the caller's key, so a request routed at another Machine is
-    // refused at entry rather than served there as a local call.
-    let mut routed = tonic::Request::new(
-        op::SetManagementClient::into_request(SetManagementClientRequest::Set { label: cloud() })
+    // refused at entry rather than served there as a local call, even from Cloud.
+    let routed = || {
+        let mut routed = tonic::Request::new(
+            op::SetManagementClient::into_request(SetManagementClientRequest::Set {
+                label: cloud(),
+            })
             .encode()
             .unwrap(),
-    );
-    routed.metadata_mut().insert(
-        ployz_core::ONE_TARGET_HEADER,
-        tonic::metadata::MetadataValue::from_static("elsewhere"),
-    );
+        );
+        routed.metadata_mut().insert(
+            ployz_core::ONE_TARGET_HEADER,
+            tonic::metadata::MetadataValue::from_static("elsewhere"),
+        );
+        routed
+    };
     let device_channel = connector.connect(&connection(&device)).await.unwrap();
     let device_channel_connection = observed.recv().await.unwrap();
     let status = MachineRpcClient::new(device_channel)
-        .set_management_client(routed)
+        .set_management_client(routed())
         .await
         .expect_err("a routed slot change from a cli- slot must be refused");
     assert_eq!(status.code(), tonic::Code::PermissionDenied, "{status}");
+    let cloud_channel = connector.connect(&connection(&capability)).await.unwrap();
+    observed.recv().await.unwrap();
+    let status = MachineRpcClient::new(cloud_channel)
+        .set_management_client(routed())
+        .await
+        .expect_err("a routed slot change from Cloud must be refused");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status}");
+    assert!(
+        status
+            .message()
+            .contains("only on the Server that holds them"),
+        "{status}"
+    );
     assert_eq!(
         owner
             .record()
