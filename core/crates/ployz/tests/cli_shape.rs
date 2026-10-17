@@ -1002,20 +1002,11 @@ fn server_waiting_commands_ignore_a_context_from_the_environment() {
 #[test]
 fn server_reject_reports_what_went_through_before_a_batch_failed() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let rows = (0..1001)
-        .map(|index| {
-            waiting_row(
-                &format!("00000000-0000-4000-8000-{index:012}"),
-                &format!("bulk-{index}"),
-                "waiting",
-            )
-        })
-        .collect();
     let cloud = waiting_cloud(
         routes.clone(),
         WaitingCloud {
             rejects: vec![("200 OK", None), ("503 Service Unavailable", None)],
-            ..WaitingCloud::of(rows)
+            ..WaitingCloud::of(bulk_rows())
         },
     );
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
@@ -1032,7 +1023,7 @@ fn server_reject_reports_what_went_through_before_a_batch_failed() {
         "{json}"
     );
     assert_eq!(
-        json.get("unattempted").unwrap(),
+        json.get("not_rejected").unwrap(),
         &serde_json::json!([]),
         "{json}"
     );
@@ -1171,15 +1162,6 @@ fn server_show_and_reject_take_a_unique_id_prefix() {
 #[test]
 fn server_reject_stops_when_its_first_batch_fails() {
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let rows = (0..1001)
-        .map(|index| {
-            waiting_row(
-                &format!("00000000-0000-4000-8000-{index:012}"),
-                &format!("bulk-{index}"),
-                "waiting",
-            )
-        })
-        .collect();
     let cloud = waiting_cloud(
         routes.clone(),
         WaitingCloud {
@@ -1187,7 +1169,7 @@ fn server_reject_stops_when_its_first_batch_fails() {
                 ("503 Service Unavailable", None),
                 ("503 Service Unavailable", None),
             ],
-            ..WaitingCloud::of(rows)
+            ..WaitingCloud::of(bulk_rows())
         },
     );
     let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
@@ -1203,7 +1185,7 @@ fn server_reject_stops_when_its_first_batch_fails() {
         "{json}"
     );
     assert_eq!(
-        json.get("unattempted").unwrap(),
+        json.get("not_rejected").unwrap(),
         &serde_json::json!(["00000000-0000-4000-8000-000000001000"]),
         "{json}"
     );
@@ -1216,6 +1198,72 @@ fn server_reject_stops_when_its_first_batch_fails() {
     let (code, _, stderr) = run_output(&["server", "reject", "bulk-*", "--yes"], &token);
     assert_eq!(code, Some(3), "{stderr}");
     assert!(stderr.contains("! Reject stopped: "), "{stderr}");
+}
+
+fn bulk_rows() -> Vec<serde_json::Value> {
+    (0..1001)
+        .map(|index| {
+            waiting_row(
+                &format!("00000000-0000-4000-8000-{index:012}"),
+                &format!("bulk-{index}"),
+                "waiting",
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn server_reject_returns_a_first_batch_refusal_as_its_error() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            rejects: vec![("403 Forbidden", None)],
+            ..WaitingCloud::of(bulk_rows())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "reject", "bulk-*", "--yes", "--json"], &token);
+    assert_ne!(code, Some(0), "{json}");
+    assert_ne!(code, Some(3), "{json}");
+    assert_eq!(rejected_ids(&routes).len(), 1, "{json}");
+    assert!(json.get("uncertain").is_none(), "{json}");
+    assert!(json.get("rejected").is_none(), "{json}");
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unauthenticated",
+        "{json}"
+    );
+}
+
+#[test]
+fn server_reject_counts_a_later_refused_batch_as_not_rejected() {
+    let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cloud = waiting_cloud(
+        routes.clone(),
+        WaitingCloud {
+            rejects: vec![("200 OK", None), ("400 Bad Request", None)],
+            ..WaitingCloud::of(bulk_rows())
+        },
+    );
+    let token = [("PLOYZ_TOKEN", "ployz_secret"), ("PLOYZ_CLOUD_URL", &cloud)];
+
+    let (code, json, _) = run_json_with(&["server", "reject", "bulk-*", "--yes", "--json"], &token);
+    assert_eq!(code, Some(3), "{json}");
+    let sent = rejected_ids(&routes);
+    assert_eq!(sent.iter().map(Vec::len).collect::<Vec<_>>(), [1000, 1]);
+    assert_eq!(json.get("rejected").unwrap(), 1000, "{json}");
+    assert_eq!(
+        json.get("uncertain").unwrap(),
+        &serde_json::json!([]),
+        "{json}"
+    );
+    assert_eq!(
+        json.get("not_rejected").unwrap(),
+        &serde_json::json!(sent.get(1).unwrap()),
+        "{json}"
+    );
 }
 
 #[test]

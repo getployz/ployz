@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::signed_in;
-use crate::cloud_account::{self, Credential};
+use crate::cloud_account::{self, Credential, StoreCallError};
 use crate::cloud_login::LoginError;
 use crate::handlers::{Error, runtime};
 use crate::ui::{self, Cell, Fields, Hint, Table, Tone, printable};
@@ -150,12 +150,15 @@ pub(super) struct Rejection<'a> {
     pub(super) stopped: Option<Stopped<'a>>,
 }
 
+/// A reject cut short: the ids Cloud may have rejected, and those it surely did not,
+/// because it refused them or they were never sent.
 pub(super) struct Stopped<'a> {
     pub(super) error: Error,
     pub(super) uncertain: &'a [&'a str],
-    pub(super) unattempted: &'a [&'a str],
+    pub(super) not_rejected: &'a [&'a str],
 }
 
+/// Reject `ids` a batch at a time. A first batch Cloud surely refused is the error itself.
 pub(super) async fn reject<'a>(
     credential: &Credential,
     ids: &'a [&'a str],
@@ -179,14 +182,22 @@ pub(super) async fn reject<'a>(
         {
             Ok(reply) => rejected += reply.rejected,
             Err(error) => {
-                let stopped = Stopped {
-                    error: Error::from(error).context("Could not reject the waiting servers."),
-                    uncertain: batch,
-                    unattempted: after,
+                let may_have_acted = may_have_acted(&error);
+                let error = Error::from(error).context("Could not reject the waiting servers.");
+                if !may_have_acted && rest.len() == ids.len() {
+                    return Err(error);
+                }
+                let (uncertain, not_rejected) = match may_have_acted {
+                    true => (batch, after),
+                    false => (&[][..], rest),
                 };
                 return Ok(Rejection {
                     rejected,
-                    stopped: Some(stopped),
+                    stopped: Some(Stopped {
+                        error,
+                        uncertain,
+                        not_rejected,
+                    }),
                 });
             }
         }
@@ -198,8 +209,42 @@ pub(super) async fn reject<'a>(
     })
 }
 
+/// Whether Cloud may have acted on a call that failed: it timed out, dropped the
+/// connection, or failed inside. Every answer it refused with left the list as it was.
+fn may_have_acted(error: &StoreCallError) -> bool {
+    match error {
+        StoreCallError::Refused(refusal) => {
+            matches!(
+                refusal.code,
+                RpcErrorCode::Internal | RpcErrorCode::Unavailable
+            )
+        }
+        StoreCallError::Cloud(LoginError::Status { status, .. }) => *status >= 500,
+        StoreCallError::Cloud(LoginError::Unreachable { .. } | LoginError::Reply(_))
+        | StoreCallError::Stopped(_) => true,
+        StoreCallError::Cloud(
+            LoginError::Unsupported(_)
+            | LoginError::Store { .. }
+            | LoginError::Corrupt { .. }
+            | LoginError::OtherCloud { .. }
+            | LoginError::SignedOut
+            | LoginError::Expired
+            | LoginError::Denied
+            | LoginError::Ended
+            | LoginError::AwaitingApproval { .. }
+            | LoginError::TokenRefused
+            | LoginError::NotMember(_)
+            | LoginError::TokenBound
+            | LoginError::UnknownOrganization(_)
+            | LoginError::UnknownCredential(_),
+        ) => false,
+    }
+}
+
 const ID_PREFIX_MIN: usize = 8;
 
+/// The waiting server whose id `selector` is, else those named `selector` exactly, else the
+/// one whose id starts with it (eight characters or more), in the list's order.
 pub(super) fn named<'a>(listed: &'a [Waiting], selector: &str) -> Result<Vec<&'a Waiting>, Error> {
     if let Some(host) = listed.iter().find(|host| host.row.id == selector) {
         return Ok(vec![host]);

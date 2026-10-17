@@ -95,7 +95,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     let Some(Stopped {
         error,
         uncertain,
-        unattempted,
+        not_rejected,
     }) = stopped
     else {
         let sentence = match (rejected, matched) {
@@ -118,16 +118,16 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
             "matched": matched,
             "waiting_servers": listed,
             "uncertain": uncertain,
-            "unattempted": unattempted,
+            "not_rejected": not_rejected,
             "error": error.json(),
         }),
         || {
             ui::stream(format_args!("{rejected} of {matched} rejected."));
             ui::warn_cause("Reject stopped", &error);
             ui::warn(format!(
-                "{} may or may not be rejected and {} were not sent. Run the same reject again.",
+                "{} may or may not be rejected and {} were not. Run the same reject again.",
                 uncertain.len(),
-                unattempted.len()
+                not_rejected.len()
             ));
         },
     )?;
