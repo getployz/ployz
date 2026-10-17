@@ -61,18 +61,25 @@ pub(super) async fn attempt<H: Host>(
         stage: EnrollStage::Installing,
         failure: None,
     };
-    if instruction.storage == EnrollStorage::None
-        && read_prep_state(&paths.prepare_state)
-            .is_some_and(|(state, _)| state.prep().zfs == ZfsPrep::Ready)
-        && let Err(why) = host.discard_zfs_build().await
-    {
-        crate::ui::note(format!("Could not discard the ZFS build: {why}"));
-    }
+    let discard = instruction.storage == EnrollStorage::None
+        && read_prep_state(&paths.prepare_state).is_some_and(|(state, _)| {
+            matches!(
+                state.prep().zfs,
+                ZfsPrep::Installing | ZfsPrep::Ready | ZfsPrep::Failed
+            )
+        });
     let (stages, mut moved) = watch::channel(attempt.stage);
     let progress = |stage| {
         stages.send_replace(stage);
     };
-    let enrolling = host.enroll(instruction, &progress);
+    let enrolling = async {
+        if discard {
+            host.discard_zfs_build()
+                .await
+                .map_err(|why| format!("Could not discard the ZFS build: {why}"))?;
+        }
+        host.enroll(instruction, &progress).await
+    };
     tokio::pin!(enrolling);
     let outcome = loop {
         tokio::select! {

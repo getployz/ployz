@@ -131,6 +131,7 @@ async fn read_body(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
 struct Scripted {
     stages: Vec<EnrollStage>,
     result: Result<(), String>,
+    discard: Result<(), String>,
     cloud: Arc<Cloud>,
     events: Mutex<Vec<&'static str>>,
     disables: AtomicU32,
@@ -141,6 +142,7 @@ impl Scripted {
         Self {
             stages,
             result,
+            discard: Ok(()),
             cloud: Arc::clone(cloud),
             events: Mutex::new(Vec::new()),
             disables: AtomicU32::new(0),
@@ -195,7 +197,7 @@ impl Host for Scripted {
 
     async fn discard_zfs_build(&self) -> Result<(), String> {
         self.events.lock().unwrap().push("discard");
-        Ok(())
+        self.discard.clone()
     }
 }
 
@@ -213,6 +215,10 @@ struct Fixture {
 
 impl Fixture {
     fn new(zfs: &str) -> Self {
+        Self::with_zfs(&format!(r#"{{"state":"{zfs}"}}"#))
+    }
+
+    fn with_zfs(zfs: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {
             checkin_dir: dir.path().join("checkin"),
@@ -222,7 +228,7 @@ impl Fixture {
         fs::create_dir_all(paths.prepare_state.parent().unwrap()).unwrap();
         fs::write(
             &paths.prepare_state,
-            format!(r#"{{"docker":{{"state":"ready"}},"zfs":{{"state":"{zfs}"}}}}"#),
+            format!(r#"{{"docker":{{"state":"ready"}},"zfs":{zfs}}}"#),
         )
         .unwrap();
         fs::write(&paths.token_file, FLEET).unwrap();
@@ -417,13 +423,24 @@ async fn an_attempt_cut_short_is_sent_again_so_cloud_serves_it_to_resume() {
 }
 
 #[tokio::test]
-async fn a_server_enrolled_without_storage_discards_the_ready_zfs_build_first() {
+async fn a_server_enrolled_without_storage_discards_the_zfs_build_prep_began_first() {
     for (storage, zfs, events) in [
-        ("none", "ready", vec!["discard", "enroll"]),
-        ("zfs", "ready", vec!["enroll"]),
-        ("none", "off", vec!["enroll"]),
+        ("none", r#"{"state":"ready"}"#, vec!["discard", "enroll"]),
+        (
+            "none",
+            r#"{"state":"installing"}"#,
+            vec!["discard", "enroll"],
+        ),
+        (
+            "none",
+            r#"{"state":"failed","message":"dkms","finished_at":"2026-10-16T00:00:00Z"}"#,
+            vec!["discard", "enroll"],
+        ),
+        ("none", r#"{"state":"skipped"}"#, vec!["enroll"]),
+        ("zfs", r#"{"state":"ready"}"#, vec!["enroll"]),
+        ("none", r#"{"state":"off"}"#, vec!["enroll"]),
     ] {
-        let fixture = Fixture::new(zfs);
+        let fixture = Fixture::with_zfs(zfs);
         let cloud = Arc::new(Cloud::answering(vec![instruction(storage)]).await);
         let host = Scripted::new(&cloud, Vec::new(), Ok(()));
 
@@ -438,6 +455,29 @@ async fn a_server_enrolled_without_storage_discards_the_ready_zfs_build_first() 
 
         assert_eq!(host.events(), events, "storage {storage}, zfs {zfs}");
     }
+}
+
+#[tokio::test]
+async fn a_zfs_build_that_cannot_be_discarded_fails_the_attempt_before_enrolling() {
+    let fixture = Fixture::new("ready");
+    let cloud = Arc::new(Cloud::answering(vec![instruction("none")]).await);
+    let mut host = Scripted::new(&cloud, Vec::new(), Ok(()));
+    host.discard = Err("dkms remove exited 3".to_owned());
+
+    pass(
+        &host,
+        &mut fixture.client(&cloud),
+        &fixture.key,
+        &fixture.paths,
+        Utc::now(),
+    )
+    .await;
+
+    assert_eq!(host.events(), ["discard"]);
+    assert_eq!(
+        fixture.status().message.as_deref(),
+        Some("Enroll failed at installing: Could not discard the ZFS build: dkms remove exited 3")
+    );
 }
 
 #[test]
