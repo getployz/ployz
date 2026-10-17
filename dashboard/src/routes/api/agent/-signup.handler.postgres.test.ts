@@ -1,9 +1,10 @@
 import { it } from "@effect/vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
+import { rateLimitEvent } from "#/modules/machines/waiting/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleAgentSignup, signupMethodNotAllowed } from "#/routes/api/agent/-signup.handler";
 import { observedIp } from "#/routes/api/checkin/-handler";
@@ -61,6 +62,28 @@ it.live("signs up an agent with a token that acts as the owner of a fresh sandbo
     expect(memberships).toEqual([{ slug: sandbox.slug, name: "Agent sandbox" }]);
   })));
 
+it.live("creates no personal organization, so the better-auth user-created hook never ran", () =>
+  inCloud(Effect.gen(function* () {
+    yield* signUp("203.0.113.5");
+    const { drizzle } = yield* Database;
+    expect(yield* drizzle.select({ name: organization.name }).from(organization)).toEqual([{ name: "Agent sandbox" }]);
+  })));
+
+it.live("leaves no user, organization, membership or token when the signup fails partway", () =>
+  inCloud(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`
+      create function refuse_token() returns trigger language plpgsql as $$ begin raise exception 'forced'; end $$;
+      create trigger refuse_token before insert on organization_token for each row execute function refuse_token();
+    `);
+    const exit = yield* Effect.exit(handleAgentSignup("203.0.113.6"));
+    expect(exit._tag).toBe("Failure");
+    expect(yield* drizzle.select().from(user)).toEqual([]);
+    expect(yield* drizzle.select().from(organization)).toEqual([]);
+    expect(yield* drizzle.select().from(member)).toEqual([]);
+    expect(yield* drizzle.select().from(organizationToken)).toEqual([]);
+  })));
+
 it.live("refuses the token once it expires", () =>
   inCloud(Effect.gen(function* () {
     const { body } = yield* signUp("203.0.113.2");
@@ -81,6 +104,19 @@ it.live("admits five signups an hour from one address, then refuses with Retry-A
     const { drizzle } = yield* Database;
     expect(yield* drizzle.select().from(user).where(eq(user.isAnonymous, true))).toHaveLength(5);
     expect((yield* signUp("203.0.113.4")).status).toBe(201);
+  })));
+
+it.live("refuses past 20 signups a day from one address even with the last hour empty", () =>
+  inCloud(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.insert(rateLimitEvent).values(Array.from({ length: 20 }, (_, i) => ({
+      key: "agent-signup:203.0.113.7",
+      at: new Date(Date.now() - (2 + i) * 60 * 60 * 1000),
+    })));
+    const refused = yield* signUp("203.0.113.7");
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(2 * 60 * 60);
+    expect(yield* drizzle.select().from(user)).toEqual([]);
   })));
 
 it.live("counts every address in one IPv6 /64 against the same limit, however it is spelled", () =>
