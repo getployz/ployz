@@ -86,6 +86,7 @@ const NETWORK_FILES = {
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
+  enrollmentPlanQueryOptions: "the Enroll sheet previews the selected hosts and storage choices when it opens or changes",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read when a repository picker opens; installation access changes in GitHub, so each picker rechecks it",
   githubBranchesQueryOptions: "depends on the repository the user just picked",

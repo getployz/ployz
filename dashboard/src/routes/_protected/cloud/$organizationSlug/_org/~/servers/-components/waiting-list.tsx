@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
@@ -7,7 +7,10 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { cn } from "#/lib/utils";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { useRejectWaiting, useSettledProbe, useWaitingServers } from "./use-waiting";
+import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
+import { EnrollSheet } from "./enroll-sheet";
+import { EnrollmentCounters, EnrollingList, waitingAfterReturns } from "./enrolling-list";
+import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
   disksText,
@@ -27,17 +30,27 @@ export const VISIBLE_ROWS = 10;
 const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
 const GRID = "grid grid-cols-[20px_minmax(0,1fr)_130px_92px_150px_150px_160px] items-center gap-3 px-3";
 
-export function WaitingSection({ organizationSlug, token }: { organizationSlug: string; token: string | undefined }) {
-  const { data, dataUpdatedAt } = useWaitingServers(organizationSlug);
-  if (data === undefined || data.length === 0) return null;
-  return <WaitingList organizationSlug={organizationSlug} servers={data} now={dataUpdatedAt} token={token} />;
+export function WaitingSection({ organizationSlug, token, hasFirst }: { organizationSlug: string; token: string | undefined; hasFirst: boolean }) {
+  const waiting = useWaitingServers(organizationSlug);
+  const enrollments = useEnrollmentStatus(organizationSlug);
+  const cancel = useCancelEnrollment(organizationSlug);
+  const servers = waiting.data ?? [];
+  const attempts = enrollments.data ?? [];
+  if (waiting.isError || enrollments.isError) return <p role="alert">Couldn’t load waiting servers or enrollments. <Button variant="outline" onClick={() => { void waiting.refetch(); void enrollments.refetch(); }}>Retry</Button></p>;
+  return <>
+    <EnrollmentCounters waiting={servers} attempts={attempts} />
+    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} attempts={attempts} hasFirst={hasFirst || attempts.some((row) => row.endedAt === null || row.state === "joined")} />
+    <EnrollingList attempts={attempts} onCancel={(id) => cancel.mutate(id)} />
+  </>;
 }
 
-export function WaitingList({ organizationSlug, servers, now, token }: {
+export function WaitingList({ organizationSlug, servers, now, token, attempts = [], hasFirst = true }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   now: number;
   token?: string | undefined;
+  attempts?: readonly ServerEnrollmentView[];
+  hasFirst?: boolean;
 }) {
   const [filter, setFilter] = useState<ReadinessFilter>("all");
   const [provider, setProvider] = useState("");
@@ -45,6 +58,17 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
+  const [enroll, setEnroll] = useState<readonly WaitingServerView[] | null>(null);
+  const autoOpened = useRef<string | null>(null);
+  const only = servers.length === 1 ? servers[0] : undefined;
+  const lone = !hasFirst && only && selectable(only) ? only : undefined;
+  useEffect(() => {
+    if (lone && autoOpened.current !== lone.id) {
+      autoOpened.current = lone.id;
+      setEnroll([lone]);
+    }
+  }, [lone]);
+  const { rows: ordered, returned } = waitingAfterReturns(servers, attempts);
   const reject = useRejectWaiting(organizationSlug);
 
   const counts = new Map<ReadinessFilter, number>([["all", servers.length]]);
@@ -53,7 +77,7 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
   const tokens = [...new Set(servers.map((server) => server.fleetToken))].sort();
   const shownToken = tokens.includes(tokenFilter) ? tokenFilter : "";
   const matches = hostnameOrIpMatcher(query);
-  const rows = servers.filter((server) =>
+  const rows = ordered.filter((server) =>
     (filter === "all" || readiness(server) === filter)
     && (provider === "" || providerOf(server) === provider)
     && (shownToken === "" || server.fleetToken === shownToken)
@@ -163,6 +187,7 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
                       key={server.id}
                       server={server}
                       now={now}
+                      returned={returned.get(server.id)}
                       picked={pickedIds.has(server.id)}
                       full={full}
                       onPick={(on) => toggle(server.id, on)}
@@ -181,8 +206,10 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
           {full ? <span className="text-primary-foreground/70">{SELECTION_MAX} max</span> : null}
           <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
           <Button size="sm" variant="destructive" onClick={() => rejectIds(chosen)}>Reject</Button>
+          <Button size="sm" variant="secondary" onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
         </div>
       ) : null}
+      {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
       <WaitingDetailSheet
         server={open}
         now={now}
@@ -193,8 +220,9 @@ export function WaitingList({ organizationSlug, servers, now, token }: {
   );
 }
 
-function WaitingRow({ server, now, picked, full, onPick, onOpen }: {
+function WaitingRow({ server, now, picked, full, onPick, onOpen, returned }: {
   server: WaitingServerView;
+  returned: ServerEnrollmentView | undefined;
   now: number;
   picked: boolean;
   full: boolean;
@@ -202,7 +230,10 @@ function WaitingRow({ server, now, picked, full, onPick, onOpen }: {
   onOpen: () => void;
 }) {
   const { report } = server;
-  const status = statusCell(server, now);
+  const status = returned ? {
+    bold: returned.state === "cancelled" ? "Cancelled" : `Failed at ${returned.failure?.stage ?? returned.stage ?? "start"}`,
+    detail: returned.failure?.message ?? "Ready to try again",
+  } : statusCell(server, now);
   const disks = disksText(report);
   const volumes = volumesText(report);
   const state = readiness(server);
