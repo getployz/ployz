@@ -28,6 +28,7 @@ thread_local! {
     pub(super) static LEAD: Cell<Duration> = const { Cell::new(Duration::ZERO) };
     /// Delays every bind by this long, the way a loaded host delays `open`.
     pub(super) static BIND_STALL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    pub(super) static STALL_PORT: Cell<Option<Port>> = const { Cell::new(None) };
 }
 
 /// Held to stall every save, the way a slow disk stalls `sync_all`. It is process-wide, so a test
@@ -476,6 +477,67 @@ async fn a_replacement_listens_at_once_while_the_old_window_is_still_saving() {
 fn a_port_must_listen_three_seconds_before_the_window_ends() {
     LEAD.set(LATE_LEAD);
     assert_eq!(bind_deadline(WINDOW_CAP), Duration::from_secs(7));
+}
+
+#[tokio::test]
+async fn a_later_slow_bind_does_not_extend_an_earlier_listener() {
+    let (udp, first, second) = (free_port(), free_port(), free_port());
+    STALL_PORT.set(Some(Port::Tcp(second)));
+    BIND_STALL.set(Duration::from_millis(800));
+    LEAD.set(Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let observer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(std::net::TcpStream::connect(("127.0.0.1", first)).is_ok());
+        std::thread::sleep(
+            (started + Duration::from_millis(1_100))
+                .saturating_duration_since(std::time::Instant::now()),
+        );
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", first)).is_err(),
+            "the earlier listener outlived its window"
+        );
+    });
+    let mut probes = Probes::default();
+    probes
+        .open(
+            handout(
+                "later-bind",
+                1_000,
+                &[Port::Udp(udp), Port::Tcp(first), Port::Tcp(second)],
+                &[],
+            ),
+            &key(),
+        )
+        .await;
+    probes.finish().await;
+    let elapsed = started.elapsed();
+    observer.join().unwrap();
+    assert!(
+        elapsed < Duration::from_millis(1_200),
+        "report finished after {elapsed:?}"
+    );
+    assert!(bindable(udp) && bindable(first) && bindable(second));
+    assert_eq!(
+        probes.report().await.unwrap().bind_failed,
+        [format!("tcp:{second}")]
+    );
+}
+
+#[tokio::test]
+async fn shorter_windows_still_greet_cloud_on_a_free_port() {
+    for millis in [1_000, 2_500, 3_000] {
+        let port = free_port();
+        let mut probes = Probes::default();
+        probes
+            .open(handout("shorter", millis, &[Port::Tcp(port)], &[]), &key())
+            .await;
+        assert_eq!(
+            greeting_from(port).await,
+            greeting("shorter", key().public_hex(), port).into_bytes()
+        );
+        probes.close().await;
+    }
 }
 
 #[tokio::test]

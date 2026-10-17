@@ -339,6 +339,67 @@ async fn answering_cloud(
     (url, server)
 }
 
+#[tokio::test]
+async fn a_delayed_handout_reports_failed_ports_after_cloud_has_finished_attempting() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let cloud = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0; 16_384];
+        stream.read(&mut buf).await.unwrap();
+        let observer = std::thread::spawn(move || {
+            let started = std::time::Instant::now();
+            for at in [1_000, 2_500, 4_000, 5_500, 7_000, 8_500] {
+                std::thread::sleep(
+                    (started + Duration::from_millis(at))
+                        .saturating_duration_since(std::time::Instant::now()),
+                );
+                assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+            }
+        });
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        let body = format!(
+            r#"{{"kind":"wait","retryAfter":10,"probe":{{"nonce":"n","handout":"delayed","windowMs":10000,"listen":["tcp:{port}","udp:{port}"],"send":[]}}}}"#
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        observer.join().unwrap();
+    });
+    let mut probes = Probes::default();
+    pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    probes.finish().await;
+    cloud.await.unwrap();
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+    );
+    let report = serde_json::to_value(probes.report().await.unwrap()).unwrap();
+    assert_eq!(
+        report["bindFailed"],
+        serde_json::json!([format!("tcp:{port}"), format!("udp:{port}")])
+    );
+}
+
 async fn old_then_new(server: tokio::task::JoinHandle<Vec<String>>) {
     let requests = tokio::time::timeout(Duration::from_secs(10), server)
         .await
@@ -842,6 +903,10 @@ async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle
     assert!(
         request.contains(r#""probe":{"handout":"h","heardFrom":[],"bindFailed":[]}"#),
         "{request}"
+    );
+    retries_after(
+        &pass(&failing, &mut unreachable(), &mut probes).await,
+        client::BACKOFF.as_secs(),
     );
 }
 

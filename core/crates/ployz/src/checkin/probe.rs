@@ -335,7 +335,12 @@ enum Socket {
 
 fn bind(port: Port) -> Option<Socket> {
     #[cfg(test)]
-    std::thread::sleep(tests::BIND_STALL.get());
+    if tests::STALL_PORT
+        .get()
+        .is_none_or(|stalled| stalled == port)
+    {
+        std::thread::sleep(tests::BIND_STALL.get());
+    }
     match port {
         Port::Tcp(number) => {
             let socket = any_address(number, Type::STREAM)?;
