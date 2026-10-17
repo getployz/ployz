@@ -3,8 +3,8 @@ import { useEffect } from "react";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { PROBE_WINDOW_MS } from "#/modules/machines/waiting/checkin-wire";
-import { openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
-import { fleetTokenKeys, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
+import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 
 export function useWaitingServers(organizationSlug: string) {
   return useQuery(waitingServersQueryOptions(organizationSlug));
@@ -55,4 +55,24 @@ export function useSettledProbe(organizationSlug: string, ids: readonly string[]
       clearTimeout(timer);
     };
   }, [organizationSlug, selection]);
+}
+
+export function useEnrollmentStatus(organizationSlug: string) {
+  return useQuery(serverEnrollmentsQueryOptions(organizationSlug));
+}
+
+export function useWaitingServerDetail(organizationSlug: string, id: string | null) {
+  return useQuery(waitingServerDetailQueryOptions(organizationSlug, id));
+}
+
+export function useCancelEnrollment(organizationSlug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => cancelServerEnrollmentServerFn({ data: { organizationSlug, id } }),
+    onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't cancel enrollment.")),
+    onSettled: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: serverEnrollmentsQueryOptions(organizationSlug).queryKey }),
+      queryClient.invalidateQueries({ queryKey: waitingServersQueryOptions(organizationSlug).queryKey }),
+    ]),
+  });
 }
