@@ -848,6 +848,127 @@ mod tests {
         )));
     }
 
+    #[tokio::test]
+    async fn unacknowledged_enroll_never_reports_committed_joining() {
+        use ployz_core::{OpaquePayload, RpcRequestBody, RpcResponse};
+        use std::cell::RefCell;
+        use tonic::{Request, Response};
+
+        for founder in [false, true] {
+            let mut machine = crate::global_fixtures::machine('a', "web-3");
+            machine.accepts_ingress = false;
+            let details = MachineDetails {
+                id: machine.id,
+                phase: LocalMachinePhase::Uninitialized,
+                public_key: machine.public_key,
+                advertised_endpoints: Vec::new(),
+                machine: None,
+                store_version: Default::default(),
+                rtts: Vec::new(),
+                management_clients: Vec::new(),
+                telemetry: None,
+                storage: None,
+                upgrade: None,
+                token: None,
+            };
+            let observed = details.clone();
+            let (client, server) =
+                crate::connect::test_support::rpc_client(move |request: Request<OpaquePayload>| {
+                    let details = observed.clone();
+                    async move {
+                        match request.into_inner().decode_request().unwrap().body {
+                            RpcRequestBody::Inspect(_) => {
+                                Ok(Response::new(RpcResponse::from(details).encode().unwrap()))
+                            }
+                            RpcRequestBody::Enroll(_) => std::future::pending().await,
+                            request => panic!("unexpected RPC: {request:?}"),
+                        }
+                    }
+                })
+                .await;
+            let root = crate::cli::command()
+                .try_get_matches_from(["ployz", "server", "add", "--yes"])
+                .unwrap();
+            let matches = leaf_matches(&root);
+            let token = CloudEnrollToken::parse("pmet_unacknowledged_enroll").unwrap();
+            let pairing = CloudPairing {
+                secret: cloud_enroll::PairingCredential::parse("pairing").unwrap(),
+            };
+            let policy = ployz_core::InitialMachinePolicy {
+                accepts_ingress: false,
+                ..Default::default()
+            };
+            let mut report = SetupReport::start();
+            let stages = RefCell::new(Vec::new());
+            let progress = |stage| stages.borrow_mut().push(stage);
+            let install = |_| async { Ok(()) };
+            let enrolling = async {
+                if founder {
+                    enroll_founder(
+                        matches,
+                        client,
+                        details,
+                        MachineToken {
+                            id: machine.id,
+                            public_key: machine.public_key,
+                            public_ip: None,
+                            advertised_endpoints: Vec::new(),
+                            runtime: Default::default(),
+                            memory_total_bytes: None,
+                            disk_total_bytes: None,
+                            disk_available_bytes: None,
+                        },
+                        machine.name.clone(),
+                        policy,
+                        "10.210.0.0/16".parse().unwrap(),
+                        InitializeMode::New,
+                        pairing,
+                        StorageChoice::None,
+                        "http://unused.invalid",
+                        &token,
+                        &install,
+                        &mut report,
+                        &progress,
+                    )
+                    .await
+                } else {
+                    enroll_join(
+                        matches,
+                        client,
+                        details,
+                        Join {
+                            pairing,
+                            storage: StorageChoice::None,
+                            registration: ployz_core::Registered {
+                                assigned_machine: machine,
+                                visible_peers: Vec::new(),
+                                target_versions: Default::default(),
+                            },
+                        },
+                        &policy,
+                        "http://unused.invalid",
+                        &token,
+                        &install,
+                        &mut report,
+                        &progress,
+                    )
+                    .await
+                }
+            };
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), enrolling)
+                    .await
+                    .is_err()
+            );
+            server.abort();
+            assert_eq!(
+                *stages.borrow(),
+                vec![EnrollStage::Storage],
+                "founder={founder}: an unacknowledged RPC must leave a cancellable saved stage"
+            );
+        }
+    }
+
     #[test]
     fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
         let assigned = crate::global_fixtures::machine('a', "web-3");
