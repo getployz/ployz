@@ -397,7 +397,7 @@ type CheckinRequest = {
   cliVersion: string;
   report: HostReport;
   attempt?: { attemptId: string; stage: EnrollmentStage; failure?: { stage: EnrollmentStage; message: string } };
-  probe?: { nonce: string; heardFrom: string[]; bindFailed: string[] };
+  probe?: { handout: string; heardFrom: string[]; bindFailed: string[] };  // handout from the request it answers
   prep?: {                           // optional, so /api/checkin stays frozen; absent reads as ready
     docker: "installing" | "ready" | "failed";
     zfs: "installing" | "ready" | "failed" | "skipped" | "off";
@@ -429,7 +429,9 @@ type CheckinResponse =
   | { kind: "stop"; reason: "rejected" | "token_expired" | "token_revoked"; message: string };
 
 type ProbeRequest = {                 // bounded window; nothing listens after it
-  nonce: string; windowMs: number;    // <= 10_000, host clamps
+  nonce: string;                      // shared by the selection, sent only in UDP datagrams
+  handout: string;                    // 22 chars base64url, new on every handout, keys the TCP greeting and the report
+  windowMs: number;                   // <= 10_000, host clamps
   listen: ("udp:51820" | "tcp:80" | "tcp:443")[];
   send: { target: string; port: 51820 }[];   // other selected waiting hosts' observed IPs
 };
@@ -566,18 +568,28 @@ Assume the token leaks. user_data is readable from the metadata service by any p
 - **Per-attempt token in transit.** TLS only, released to one signed host, single claimant, expired when the attempt ends, never written to disk.
 - **Replay.** The signature covers the timestamp, and skew over 5 minutes is refused. A replay can only refresh a row with stale facts.
 - **Hostile report.** Decoded by Effect Schema with a 64 KiB cap, and strings are rendered as text. A lying host can only mislead its own row.
-- **Probe steering.** Cloud's inbound TCP check connects to the observed IP, not the reported one. It refuses private, loopback and link-local ranges, follows no redirects and reads at most 64 bytes.
+- **Probe steering.** Cloud's inbound TCP check connects to the observed IP, not the reported one. It refuses private, loopback, link-local and other special-use ranges, and addresses with a zone. It follows no redirects and reads at most 64 bytes. The observed IP is the last `X-Real-IP` value from the edge. Before Cloud ships, the coordinator confirms that the deployed edge overwrites a client-sent `X-Real-IP`; if it doesn't, a token holder can point the connects at any public address on 80 and 443. A reopen opens every selected host or none. While any selected host's window started less than 11 seconds ago, counted from when its check-in was handed the probe, it opens nothing, so reopening can't stack windows or split a selection's nonce.
 - **Revocation.** It works at once, because every check-in re-checks the token. Waiting rows from a revoked token are deleted and their loops stop on the next poll. Enrolled Servers are untouched.
 
 ### Probes
 
 Port reachability is reported, never assumed (bet 8).
 
-1. When the user opens a selection, Cloud hands each selected host a `ProbeRequest` with one shared nonce in its next `wait`. The host binds what it can for at most 10 seconds and sends nonce datagrams to up to three peers on UDP 51820.
+1. When the user opens a selection, Cloud hands each selected host a `ProbeRequest` in its next `wait`. The `nonce` is shared by the selection. The `handout` is new on every handout to that host. The host binds what it can for at most 10 seconds and sends nonce datagrams to up to three peers on UDP 51820.
 2. Cloud connects in on 80 and 443 during the window.
-3. The host reports `heardFrom` and `bindFailed` on its next check-in.
+3. The host reports `{handout, heardFrom, bindFailed}` on its next check-in.
 
-The detail sheet shows Open, Closed, or "Unknown · port busy". A waiting host can't be probed against an enrolled Server before WireGuard runs, so that edge shows Unknown.
+The host side (C9) must keep this contract:
+
+- **Bind first.** On a handout the host binds every port in `listen` before it writes a greeting or sends a datagram. A port not bound within 1 s of the handout goes in `bindFailed` as `tcp:<port>` or `udp:51820`, whether it was busy, denied, or slow.
+- **Greeting.** On every accept on tcp 80 and 443 during the window, the listener writes the greeting at once, as the first bytes on the connection. The greeting is `base64url(HMAC-SHA256(key = handout as ASCII, msg = "ployz-probe-tcp:" + checkinKey + ":" + port))`, unpadded, truncated after encoding to its first 22 characters, sent as those 22 ASCII bytes. `checkinKey` is the host's key as the 64-character lowercase hex string it signs check-ins with. `port` is the listener's own port in decimal ASCII, `80` or `443`, so each port writes its own greeting. It never writes the nonce over TCP. Cloud reads at most 64 bytes and stops 500 ms after the connect, and never later than the end of the window, however the bytes arrive. A slow or different reply reads as another listener. The greeting names one host, one handout and one port, so a host behind a shared address can't answer for another, and a relay from one port can't answer for the other.
+- **Datagrams.** Each datagram to a peer is the nonce as literal ASCII, the 22 bytes and nothing else. The host sends one datagram to every `send` target as soon as udp 51820 is bound, then one every 500 ms until its window ends, because peers' windows start at their own check-ins and overlap only in part. It counts a datagram received on udp 51820 during its window only when the whole payload equals the nonce of its current handout. Cloud sends a host only peers at addresses it would probe itself, never private, loopback or reserved ones.
+- **heardFrom.** `heardFrom` lists each distinct source address of a counted datagram once, as the address alone without a port or zone: IPv4 in dotted decimal, IPv6 in RFC 5952 form, and an IPv4-mapped IPv6 source as its IPv4 address. The host keeps a private source too, since a peer behind hairpin NAT can arrive from one.
+- **Every handout.** A new handout replaces the current one at once. The host drops the old window and starts a full new window and a new report, even when the nonce repeats.
+- **Report.** The host sends `{handout, heardFrom, bindFailed}` on every check-in until the next handout replaces it. A port in `bindFailed` reads Unknown, port busy, even if something answered. Closed needs the report, and a report counts only for its own handout.
+- **Unstable address.** Cloud re-hands a host after each of the first two address changes in one selection. On the third change it stops re-handing, and both TCP ports read Unknown, address unstable.
+
+The detail sheet shows Open, Closed, or "Unknown" with its reason. A waiting host can't be probed against an enrolled Server before WireGuard runs, so that edge shows Unknown.
 
 ### Stale rows
 
@@ -737,8 +749,8 @@ Each unit is one PR with its own check. Units run in this order. A unit may star
 | C8 | `ployz server enroll` with globs, `--name 'web-{n}'`, `--first`, `--all` provider breakdown, `--status`, and the storage flags. | core | C6, C7 | `cli_shape.rs` cases, and a glob enroll on three Boat hosts prints the skip list and progress. |
 | D6 | UI for the Enroll sheet (first server, volumes, names, runs, spread banner) and the Enrolling list with six fixed counters, append order, joined rows that stay, and sent-back rows at the bottom of Waiting. | dashboard | D3, D4, D5 | verify-dashboard with `SERVERS=1` and three hosts. Screenshots before and after each stage change show no row or column moving. |
 | D7 | Enroll on arrival. `autoEnrollMax`, the default plan, the used count, ready hosts only, and never founding. | dashboard | D4 | A Postgres vitest with max 2 and three hosts enrolls two and leaves the third waiting. An empty Organization enrolls none. A host still preparing starts no attempt until it is ready. |
-| D8 | Inbound probes on 80 and 443 with private-range refusal, and the probe request in `wait`. | dashboard | D2 | A route test refuses a private observed IP. |
-| C9 | The bounded probe window on the host. | core | C3, D8 | A Boat pair with UDP 51820 blocked on one host shows Closed for that edge. |
+| D8 | Inbound probes on 80 and 443 with private-range refusal, and the probe request in `wait` with its per-handout `handout`. | dashboard | D2 | A route test refuses a private observed IP. |
+| C9 | The bounded probe window on the host, keeping the host contract in Probes: per-handout greeting, nonce only in datagrams, a new window per handout, and the report keyed by `handout`. | core | C3, D8 | A Boat pair with UDP 51820 blocked on one host shows Closed for that edge. |
 | C10 | `--storage zfs:<device>` in the installer and the instruction. | core | C7, open risk 1 | A Boat host with a spare disk builds its pool on that disk. |
 
 C1 through D3 give a read-only waiting list, with preparation running, before anyone can enroll from it. D7 ships after D6 because enroll on arrival is the weakest credential. User docs ride with the unit that changes them. C4 updates `docs/user/servers/add-a-server.md`, and D6 adds `docs/user/servers/add-many-servers.md`.

@@ -789,6 +789,7 @@ mod tests {
             selection: ConnectionSource::LocalSocket,
             attempts: 1,
             retry: ployz_core::Retry::Never,
+            reached: false,
             last: None,
         }));
         assert!(!retry_local_connect(&ConnectError::Context(

@@ -208,7 +208,7 @@ describe("volume placement", () => {
         await staging.query("select pg_advisory_lock(hashtext('volume-environment:env-1'))");
         deleted = deleting();
         await waitFor(async () => (await harness.pool.query(
-          "select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted",
+          "select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())",
         )).rows[0].waiting > 0, deleted);
         await restoring("10");
       } finally {
@@ -360,7 +360,7 @@ describe("volume placement", () => {
         await staging.query("select pg_advisory_lock(hashtext('volume-environment:env-1'))");
         admitted = admission(admit([]));
         await waitFor(async () => (await harness.pool.query(
-          "select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted",
+          "select count(*)::int as waiting from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())",
         )).rows[0].waiting > 0, admitted);
         expect(writes).toEqual([]);
       } finally {
@@ -382,7 +382,7 @@ describe("volume placement", () => {
       during = async () => {
         edit = restage("web-2");
         await waitFor(async () => (await harness.pool.query(
-          "select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock'",
+          "select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()",
         )).rows[0].waiting > 0, edit);
         meanwhile = await Promise.race([edit, Promise.resolve("blocked")]);
       };
@@ -438,7 +438,7 @@ describe("volume placement", () => {
       during = async () => {
         edit = stage("web-1");
         await waitFor(async () => (await harness.pool.query(
-          "select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock'",
+          "select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()",
         )).rows[0].waiting > 0, edit);
       };
       expect(await admission(admit([]))).toEqual({ ok: true, command: admit([]) });

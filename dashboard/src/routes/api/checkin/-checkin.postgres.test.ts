@@ -116,6 +116,12 @@ it("takes the observed address from the proxy header, else the socket peer", () 
   expect(observedIp(new Headers(), undefined, undefined)).toBe("unknown");
 });
 
+it("trusts only the last value of the client address header", () => {
+  const spoofed = new Headers([["x-real-ip", "198.51.100.66"], ["x-real-ip", "203.0.113.7"]]);
+  expect(observedIp(spoofed, ["x-real-ip"], "10.0.0.2")).toBe("203.0.113.7");
+  expect(observedIp(new Headers({ "x-real-ip": "198.51.100.66, 203.0.113.7" }), ["x-real-ip"], "10.0.0.2")).toBe("203.0.113.7");
+});
+
 it("ignores a forwarded address that did not come through a proxy", () => {
   const headers = new Headers({ "x-forwarded-for": "198.51.100.4" });
   expect(observedIp(headers, undefined, "203.0.113.7")).toBe("203.0.113.7");

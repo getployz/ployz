@@ -15,6 +15,8 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
+    // Every writer of several waiting rows locks them in id order first, so two of them can't deadlock.
+    // It writes only the rows it locked. Re-evaluating the filter could take a row a check-in just un-rejected, out of order.
     const rejected = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(and(
       eq(waitingServer.organizationId, organization.id),
       inArray(waitingServer.id, [...input.ids]),

@@ -1,8 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { CHECKIN_WAIT_SECONDS, type StoredReport } from "#/modules/machines/waiting/checkin-wire";
+import { type PortStates, portStates } from "#/modules/machines/waiting/probe";
+import { decodeStoredProbe } from "#/modules/machines/waiting/probe.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database } from "#/server/database.server";
@@ -20,6 +22,7 @@ export type WaitingServerView = {
   readonly status: WaitingServerStatus;
   readonly firstSeenAt: string;
   readonly lastCheckInAt: string;
+  readonly probe: PortStates | null;
 };
 
 export function waitingServerStatus(report: StoredReport, lastCheckInAt: Date, now: Date): WaitingServerStatus {
@@ -39,6 +42,7 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
       fleetToken: fleetToken.name,
       firstSeenAt: waitingServer.firstSeenAt,
       lastCheckInAt: waitingServer.lastCheckInAt,
+      probe: waitingServer.probe,
     })
     .from(waitingServer)
     .innerJoin(fleetToken, eq(fleetToken.id, waitingServer.fleetTokenId))
@@ -54,6 +58,7 @@ const listed = Effect.fn("WaitingServer.read")(function* (organizationId: string
     status: waitingServerStatus(row.report, row.lastCheckInAt, now),
     firstSeenAt: row.firstSeenAt.toISOString(),
     lastCheckInAt: row.lastCheckInAt.toISOString(),
+    probe: Option.match(decodeStoredProbe(row.probe), { onNone: () => null, onSome: (probe) => portStates(probe, now) }),
   }));
 });
 

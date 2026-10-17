@@ -53,8 +53,10 @@ const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
  * transaction; the order after it is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows
  * (each in id order), then enrollment tokens, then `operation_outbox` cancel events (in attempt id order), then the
  * Organization row. Cancel, Reject and the run and sweep closers only end attempts; they skip this lock and start at
- * `server_enrollment`, Reject after its `waiting_server` rows. A cancel event's outbox row stays locked until commit, so
- * no path inserts one before it holds that attempt.
+ * `server_enrollment`, Reject after its `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
+ * Revoke locks its token, then that token's `waiting_server` rows, and probe selection locks only `waiting_server` rows. A
+ * check-in holds at most one `waiting_server` row, after its token, and stamps a probe handout on that same row. A cancel
+ * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt.
  */
 export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
   const { drizzle } = yield* Database;

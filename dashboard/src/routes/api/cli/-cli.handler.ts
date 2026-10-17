@@ -28,6 +28,7 @@ import {
   type ServerEnrollmentView,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
+import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import type { EnrollInput } from "#/modules/machines/waiting/server-enrollment";
 import { listWaitingServers, showWaitingServer, type WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
@@ -58,7 +59,7 @@ const NewFleetToken = Schema.Struct({
   auto_enroll_max: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 1000 }))),
 });
 
-const RejectServers = Schema.Struct({ ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)) });
+const WaitingServerIds = Schema.Struct({ ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)) });
 
 const EnrollServers = Schema.Struct({
   ids: Schema.Array(Uuid).check(Schema.isMinLength(1), Schema.isMaxLength(1000)),
@@ -214,7 +215,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return { waiting_server: cliWaitingServer(yield* showWaitingServer(caller, { organizationSlug: caller.organization.slug, id })) };
     }
     case "POST reject-servers": {
-      const input = yield* decodeBody(RejectServers, request, "Rejecting takes the ids of 1 to 1000 waiting servers.");
+      const input = yield* decodeBody(WaitingServerIds, request, "Rejecting takes the ids of 1 to 1000 waiting servers.");
       return yield* rejectWaitingServers(caller, { organizationSlug: caller.organization.slug, ids: input.ids });
     }
     case "POST enrollments": {
@@ -243,6 +244,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "POST enrollments/:id/cancel": {
       if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such enrollment." });
       return yield* cancelServerEnrollment(caller, { organizationSlug: caller.organization.slug, id });
+    }
+    case "POST probe-servers": {
+      const input = yield* decodeBody(WaitingServerIds, request, "Probing takes the ids of 1 to 1000 waiting servers.");
+      return yield* openProbeSelection(caller, { organizationSlug: caller.organization.slug, ids: input.ids });
     }
     case "POST logout": {
       if (caller.credential.kind !== "session") {
