@@ -81,7 +81,7 @@ describe("dashboard navigation model", () => {
   });
 
   it("makes Billing a section of Organization, only when billing is configured", () => {
-    const settings = (section: "organization-settings" | "billing", search: { section?: "general" | "members" | "github" | "builds" }, billingEnabled: boolean) =>
+    const settings = (section: "organization-settings" | "billing", search: { section?: "general" | "members" | "tokens" | "github" | "builds" }, billingEnabled: boolean) =>
       createDashboardNavigation(organization, { section, search, billingEnabled }).places.find((place) => place.label === "Organization");
 
     const billing = settings("billing", {}, true);
@@ -89,13 +89,15 @@ describe("dashboard navigation model", () => {
     expect(billing?.sections.map(({ label, to, current }) => ({ label, to, current }))).toEqual([
       { label: "General", to: "/cloud/$organizationSlug/~/settings", current: false },
       { label: "Members", to: "/cloud/$organizationSlug/~/settings", current: false },
+      { label: "Tokens", to: "/cloud/$organizationSlug/~/settings", current: false },
       { label: "GitHub", to: "/cloud/$organizationSlug/~/settings", current: false },
       { label: "Builds", to: "/cloud/$organizationSlug/~/settings", current: false },
       { label: "Billing", to: "/cloud/$organizationSlug/~/billing", current: true },
     ]);
     expect(settings("organization-settings", { section: "builds" }, true)?.sections.find((item) => item.current)?.label).toBe("Builds");
     expect(settings("organization-settings", { section: "github" }, true)?.sections.find((item) => item.current)?.label).toBe("GitHub");
-    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).toEqual(["General", "Members", "GitHub", "Builds"]);
+    expect(settings("organization-settings", { section: "tokens" }, true)?.sections.find((item) => item.current)?.label).toBe("Tokens");
+    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).toEqual(["General", "Members", "Tokens", "GitHub", "Builds"]);
   });
 
   it("keeps a section across scopes where it exists, else falls back to the scope's home", () => {
