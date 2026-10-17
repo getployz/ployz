@@ -179,7 +179,8 @@ const pairingRows = Effect.gen(function* () {
 const backdate = (hours: number) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
   const by = sql.raw(`interval '${hours} hours'`);
-  yield* drizzle.execute(sql`update organization_pairing set removal_started_at = removal_started_at - ${by} where removal_started_at is not null`);
+  yield* drizzle.execute(sql`update organization_pairing set
+    created_at = created_at - ${by}, removal_started_at = removal_started_at - ${by}, removal_answered_at = removal_answered_at - ${by}`);
   yield* drizzle.execute(sql`update config_removal_mark set at = at - ${hours * 3600} where organization_id = ${ORGANIZATION}`);
   yield* drizzle.execute(sql`update anonymous_teardown set waiting_since = waiting_since - ${by}, silent_since = silent_since - ${by}`);
 });

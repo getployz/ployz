@@ -129,8 +129,9 @@ const removeSandbox = Effect.fn("AnonymousTeardown.removeSandbox")(function* (
 
 /**
  * Probes the Servers a lapsed sandbox's removal waits on and reports whether Cloud forgot them. The database clock
- * times it all: silence starts at the first probe that reaches none of them and ends at any answer, and Cloud forgets
- * only once that silence has lasted an hour. A sandbox that has waited a day on Servers that answer warns once.
+ * times it all: silence starts at the first probe that reaches none of them and ends at any answer, to a probe or to
+ * the pairing's removal. Cloud forgets only once the current pairing has been silent an hour, so a pairing made since
+ * starts its own hour. A sandbox that has waited a day on Servers that answer warns once.
  */
 const waitOnServers = Effect.fn("AnonymousTeardown.waitOnServers")(function* (organizationId: string) {
   const database = yield* Database;
@@ -140,9 +141,13 @@ const waitOnServers = Effect.fn("AnonymousTeardown.waitOnServers")(function* (or
     if (found.state !== "lapsed" || !found.paired) return null;
     yield* drizzle.insert(anonymousTeardown).values({ organizationId }).onConflictDoNothing();
     const [row] = yield* drizzle.select({
-      due: sql<boolean>`coalesce(${anonymousTeardown.silentSince} <= clock_timestamp() - interval '1 hour', false)`,
+      due: sql<boolean>`${anonymousTeardown.silentSince} is not null and greatest(
+        ${anonymousTeardown.silentSince}, ${organizationPairing.createdAt}, ${organizationPairing.removalAnsweredAt}
+      ) <= clock_timestamp() - interval '1 hour'`,
       stuck: sql<boolean>`${anonymousTeardown.waitingSince} <= clock_timestamp() - interval '24 hours' and ${anonymousTeardown.warnedAt} is null`,
-    }).from(anonymousTeardown).where(eq(anonymousTeardown.organizationId, organizationId));
+    }).from(anonymousTeardown)
+      .leftJoin(organizationPairing, eq(organizationPairing.organizationId, anonymousTeardown.organizationId))
+      .where(eq(anonymousTeardown.organizationId, organizationId));
     return row === undefined ? null : { ownerId: found.ownerId, ...row };
   })).pipe(Effect.orDie);
   if (waiting === null) return false;

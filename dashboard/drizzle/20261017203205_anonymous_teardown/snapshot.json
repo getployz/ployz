@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "bfa16e3e-5f7c-4cec-9281-6ee50d328181",
+  "id": "aa9b14e9-d8a2-466a-b1e8-23d497f75736",
   "prevIds": [
     "2823f762-1658-4446-ac4c-43b16177e2e1"
   ],
@@ -3040,6 +3040,19 @@
       "generated": null,
       "identity": null,
       "name": "removal_endpoints",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "organization_pairing"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "removal_answered_at",
       "entityType": "columns",
       "schema": "public",
       "table": "organization_pairing"
