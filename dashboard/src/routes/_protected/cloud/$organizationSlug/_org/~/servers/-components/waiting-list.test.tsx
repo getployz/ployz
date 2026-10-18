@@ -10,7 +10,7 @@ import { PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { EnrollSheet } from "./enroll-sheet";
-import { ROW_PX, VISIBLE_ROWS, WaitingList, WaitingSection } from "./waiting-list";
+import { IntakeTray, ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
 
 let probe: ReturnType<typeof stubProbe>;
 let reject: ReturnType<typeof stubReject>;
@@ -18,6 +18,7 @@ const stubProbe = () => vi.spyOn(waitingFunctions, "openProbeSelectionServerFn")
 const stubReject = () => vi.spyOn(waitingFunctions, "rejectWaitingServersServerFn").mockResolvedValue({ rejected: 0 });
 
 beforeEach(() => {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }));
   probe = stubProbe();
   reject = stubReject();
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
@@ -120,7 +121,7 @@ it("reads each prep step in the status cell", () => {
   ]);
 
   expect(statusOf("docker-installing")).toBe("Installing Docker5s ago");
-  expect(statusOf("zfs-building")).toBe("Building ZFS5s ago");
+  expect(statusOf("zfs-building")).toBe("ReadyBuilding ZFS · 5s ago");
   expect(statusOf("all-ready")).toBe("Ready5s ago");
   expect(statusOf("docker-failed")).toBe("Docker install failedapt-get exited 100. Run the line again.");
   expect(statusOf("zfs-failed")).toMatch(/^ReadyZFS build failed/);
@@ -151,7 +152,7 @@ const filterBy = (text: string) => fireEvent.change(screen.getByRole("textbox", 
 const settle = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
 it("rejects only the picked rows the filter still shows", async () => {
-  renderList([host("web-1"), host("web-2"), host("db-1")]);
+  renderList([host("web-1"), host("web-2"), host("db-1"), ...Array.from({ length: VISIBLE_ROWS }, (_, index) => host(`db-${index + 2}`))]);
   fireEvent.click(pick("web-1"));
   fireEvent.click(pick("db-1"));
 
@@ -233,10 +234,25 @@ it("asks nothing more once the list is gone, even when a pending probe comes bac
   expect(probe).toHaveBeenCalledOnce();
 });
 
-it("shows every token when the one it was asked for has no waiting servers", () => {
-  renderList([host("a"), host("b")], "no-such-token");
+it("shows no filters while every waiting server fits in the box", () => {
+  renderList([host("a"), host("b")]);
 
   expect(rowNames()).toEqual(["a", "b"]);
+  expect(screen.queryByRole("textbox", { name: "Filter" })).toBeNull();
+});
+
+it("a token link filters even a short list", () => {
+  renderList([host("a"), { ...host("b"), fleetToken: "calm-heron" }], "calm-heron");
+
+  expect(rowNames()).toEqual(["b"]);
+  expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Token" }).value).toBe("calm-heron");
+});
+
+it("shows every token when the one it was asked for has no waiting servers", () => {
+  const names = Array.from({ length: VISIBLE_ROWS + 1 }, (_, index) => `h${String(index).padStart(2, "0")}`);
+  renderList(names.map((name) => host(name)), "no-such-token");
+
+  expect(rowNames()).toEqual(names.slice(0, rowNames().length));
   expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Token" }).value).toBe("");
 });
 
@@ -282,7 +298,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
   client.setQueryData(waitingKey, [second]);
   client.setQueryData(statusKey, { attempts: [attempt], hasFirst: true, joining: 0 });
-  render(<QueryClientProvider client={client}><WaitingSection organizationSlug="ada" token={undefined} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} /></QueryClientProvider>);
   expect(rowNames()).toEqual(["second"]);
   const waiting = deferred<WaitingServerView[]>();
   const status = deferred<Awaited<ReturnType<typeof waitingFunctions.serverEnrollmentStatusServerFn>>>();
@@ -337,16 +353,7 @@ it("drives selection, first-server preview and the exact start payload, then cle
   expect(screen.queryByText("2 selected")).toBeNull();
 });
 
-it("auto-opens only a lone selectable host in a fresh cluster, and stays closed after dismissal", async () => {
-  previewStub();
-  const view = flow([host("one")], false);
-  await vi.waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  view.rerender([{ ...host("one"), lastCheckInAt: "2026-10-17T10:00:00Z" }]);
-  expect(screen.queryByRole("dialog")).toBeNull();
-});
-
-it.each([{ count: 1, hasFirst: true, status: "waiting" }, { count: 2, hasFirst: false, status: "waiting" }, { count: 1, hasFirst: false, status: "offline" }] as const)("keeps the sheet closed for $count hosts, founder=$hasFirst, status=$status", ({ count, hasFirst, status }) => {
+it.each([{ count: 1, hasFirst: false, status: "waiting" }, { count: 1, hasFirst: true, status: "waiting" }, { count: 2, hasFirst: false, status: "waiting" }, { count: 1, hasFirst: false, status: "offline" }] as const)("keeps the sheet closed for $count hosts, founder=$hasFirst, status=$status", ({ count, hasFirst, status }) => {
   previewStub();
   flow(Array.from({ length: count }, (_, n) => host(String(n), { status })), hasFirst);
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -375,6 +382,8 @@ it("does not offer an unproven spare-disk promise, and cannot enroll a zero-row 
   const row = host("spare");
   const withDisk: WaitingServerView = { ...row, report: { ...row.report, disks: [{ role: "empty", sizeBytes: 100 * 1024 ** 3 }] } };
   flow([withDisk], false);
+  fireEvent.click(pick("spare"));
+  fireEvent.click(screen.getByRole("button", { name: "Enroll 1" }));
   await vi.waitFor(() => expect(screen.getByRole("button", { name: "Enroll 0" })).toBeTruthy());
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 0" }).disabled).toBe(true);
   expect(screen.queryByLabelText("Use a spare disk if there is one")).toBeNull();
@@ -408,4 +417,24 @@ it("keeps preview data while editing, debounces names, and permits a background 
   expect(screen.getByText("ZFS on main disk")).toBeTruthy();
   await act(async () => edited.resolve(planFor(["id-one"])));
   await vi.waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 1" }).disabled).toBe(false));
+});
+
+it("heads the tray with the readiness mix, hiding empty parts, and shows CPU, RAM and disk per row", () => {
+  renderList([host("alpha"), host("bravo"), host("charlie", { status: "blocked", blockers: [{ code: "no_systemd", message: "Needs systemd" }] })]);
+  expect(screen.getByRole("heading", { name: "Waiting to join" })).toBeTruthy();
+  expect(screen.getByText("2 ready")).toBeTruthy();
+  expect(screen.getByText("1 blocked")).toBeTruthy();
+  expect(screen.queryByText("0 offline")).toBeNull();
+  expect([...document.querySelectorAll<HTMLElement>("[data-mix]")].map((part) => [part.dataset["mix"], part.style.flex])).toEqual([["ready", "2 1 0%"], ["blocked", "1 1 0%"]]);
+  expect(screen.getAllByText("4 vCPU · 8 GB · 80 GB")).toHaveLength(3);
+  expect(statusOf("charlie")).toBe("No systemdNeeds systemd");
+});
+
+it("names the first arrival on first run and enrolls it from the heading", async () => {
+  vi.spyOn(waitingFunctions, "planServerEnrollmentServerFn").mockImplementation(async ({ data }) => planFor(data.ids));
+  render(<QueryClientProvider client={flowClient()}><WaitingList organizationSlug="ada" servers={[host("web")]} now={NOW} firstRun /></QueryClientProvider>);
+  expect(screen.getByRole("heading", { name: "web is ready to enroll" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Waiting to join" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
+  await vi.waitFor(() => expect(screen.getByRole("region", { name: "Enrollment preview" })).toBeTruthy());
 });

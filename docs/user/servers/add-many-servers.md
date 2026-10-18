@@ -38,7 +38,7 @@ count past N. Revoke stops new arrivals while open enrollments finish.
    tabs use the same token. Ployz shows its secret once.
 4. Run the line on each host as root or with `sudo`. For user data, use the cloud-init or
    Terraform example instead. The line returns once check-in is running.
-5. Return to **Servers**. Hosts appear under **Waiting** in arrival order. **Installing Docker**
+5. Return to **Servers**. Hosts appear under **Waiting to join** in arrival order. **Installing Docker**
    and **Building ZFS** show preparation. **Ready** means preparation has finished.
 
 Preparation installs Docker before you enroll. It builds ZFS ahead where needed, without
@@ -49,7 +49,6 @@ check-in refreshes the row. Offline hosts have stopped checking in.
 
 1. Select the hosts you recognize by name, source IP and provider, then click **Enroll**.
    You can select hosts while they prepare. Blocked and Offline hosts cannot be selected.
-   With just one waiting host in a new organization, the Enroll sheet opens automatically.
 2. For a new cluster, choose the **First server**. Everything else joins once it is up.
 3. Choose **Volumes**. ZFS gives volumes size limits. ZFS uses the main disk. You can fall back
    to Docker where ZFS cannot run. **Docker only** has no managed volume size limits.
@@ -72,9 +71,8 @@ It changes to **Installing** in the same row when preparation finishes. **Waitin
 means the first server has not finished. **In line** means it is waiting for a join slot;
 when Cloud knows the position, the detail shows how many servers are ahead.
 
-The first server joins, then the others join up to eight at a time. **Joining N / 8** includes
-servers going live. The stage counters count attempts, including **Going live** under **Joining**;
-the **Joining N / 8** total counts Cloud join slots. Every row draws six progress segments, including Docker-only servers.
+The first server joins, then the others join up to eight at a time. The header counts how many of
+the attempts have joined. Every row draws six progress segments, including Docker-only servers.
 **Joined** rows stay in the list for one hour. Older attempts leave the polling view. The Servers below it show what Cloud observes from your
 running cluster. A new server takes no apps until you deploy.
 

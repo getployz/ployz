@@ -39,7 +39,9 @@ export function sortServers<T extends { name: string; status: ServerStatus }>(se
  * What the Servers pages can show for a Runtime Watch status. `unavailable` keeps the last observation, if any; an
  * incomplete observation is just as uncertain (incomplete IDs are never deletions), as the Projects page reads it too.
  */
-export function serverListState(status: RuntimeLensStatus, serverCount: number, incomplete: boolean) {
+export type ServerListState = "loading" | "unreachable" | "stale" | "live";
+
+export function serverListState(status: RuntimeLensStatus, serverCount: number, incomplete: boolean): ServerListState {
   const uncertain = serverCount > 0 ? "stale" : "unreachable";
   switch (status) {
     case "connecting":

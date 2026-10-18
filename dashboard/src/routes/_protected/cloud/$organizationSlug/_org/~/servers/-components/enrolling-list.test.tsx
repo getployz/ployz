@@ -2,16 +2,11 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
-import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { EnrollmentCounters, EnrollingList } from "./enrolling-list";
+import { EnrollingList } from "./enrolling-list";
 
 afterEach(cleanup);
 const attempt = (n: number, patch: Partial<ServerEnrollmentView> = {}): ServerEnrollmentView => ({
   id: `attempt-${n}`, waitingServerId: `host-${n}`, role: "joiner", name: `web-${n}`, storage: { kind: "none" }, state: "running", stage: "installing", queued: false, ahead: null, machineId: null, failure: null, requestedAt: `2026-10-17T10:00:${String(n).padStart(2, "0")}Z`, endedAt: null, ...patch,
-});
-const host = (n: number): WaitingServerView => ({
-  id: `host-${n}`, report: { hostname: `web-${n}`, os: { id: "ubuntu", version: "24.04" }, cpuCount: 2, memoryTotalBytes: 4 * 1024 ** 3, disks: [], zfs: { kind: "eligible" }, blockers: [] },
-  observedIp: "203.0.113.1", fleetToken: "test", status: "waiting", firstSeenAt: `2026-10-17T09:00:${String(n).padStart(2, "0")}Z`, lastCheckInAt: "2026-10-17T10:00:00Z", arrivalAt: `2026-10-17T09:00:${String(n).padStart(2, "0")}Z`, returned: null,
 });
 const rows = () => within(screen.getByRole("table", { name: "Enrolling servers" })).getAllByRole("row").slice(1);
 
@@ -43,9 +38,6 @@ it("keeps preparation Queued distinct from In line, including an unknown join po
   expect(screen.getByText("3 servers ahead")).toBeTruthy();
   expect(screen.queryByText("Position unknown")).toBeNull();
   expect(screen.queryByText("Waiting for preparation")).toBeNull();
-  const stages = screen.getByRole("group", { name: "Enrollment stages" });
-  expect(stages.querySelector('[data-counter="Starting"]')?.textContent).toBe("Starting1");
-  expect(stages.querySelector('[data-counter="In line"]')?.textContent).toBe("In line2");
 });
 
 it("moves failed or cancelled hosts to the bottom of Waiting in return order", () => {
@@ -54,19 +46,6 @@ it("moves failed or cancelled hosts to the bottom of Waiting in return order", (
   expect(screen.queryByRole("table")).toBeNull();
 });
 
-it("keeps all six fleet and stage counters at fixed equal widths, including zeros", () => {
-  const view = render(<><EnrollmentCounters joining={0} waiting={[]} attempts={[]} /><EnrollingList attempts={[attempt(1)]} onCancel={vi.fn()} /></>);
-  const grids = screen.getAllByRole("group");
-  expect(grids).toHaveLength(2);
-  for (const grid of grids) {
-    expect(grid.classList.contains("grid-cols-6")).toBe(true);
-    expect(grid.querySelectorAll("[data-counter]")).toHaveLength(6);
-    for (const value of grid.querySelectorAll("dd")) expect(value.className).toContain("w-14 shrink-0");
-  }
-  const before = [...(grids[0] ?? expect.unreachable("totals")).querySelectorAll("dd")].map((value) => value.className);
-  view.rerender(<EnrollmentCounters joining={0} waiting={Array.from({ length: 200 }, (_, n) => host(n))} attempts={Array.from({ length: 50 }, (_, n) => attempt(n))} />);
-  expect([...screen.getByRole("group").querySelectorAll("dd")].map((value) => value.className)).toEqual(before);
-});
 
 it("cancels the named attempt and holds every row at 52 pixels inside a ten-row box", () => {
   const onCancel = vi.fn();
@@ -75,16 +54,6 @@ it("cancels the named attempt and holds every row at 52 pixels inside a ten-row 
   expect(onCancel).toHaveBeenCalledWith("attempt-2");
   expect(document.querySelector<HTMLElement>('[data-slot="enrolling-box"]')?.style.maxHeight).toBe("520px");
   expect(new Set(rows().map((row) => row.style.height))).toEqual(new Set(["52px"]));
-});
-
-
-it("counts Cloud slot occupancy while completed workflows still report joining", () => {
-  const attempts = Array.from({ length: 9 }, (_, n) => attempt(n, { stage: "joining" }));
-  render(<><EnrollmentCounters waiting={[]} attempts={attempts} joining={8} /><EnrollingList attempts={attempts} onCancel={vi.fn()} /></>);
-  expect(screen.getAllByText("8 / 8")).toHaveLength(1);
-  const stages = screen.getByRole("group", { name: "Enrollment stages" });
-  expect(stages.querySelector('[data-counter="Joining"] dd')?.textContent).toBe("9");
-  expect(screen.queryByText("9 / 8")).toBeNull();
 });
 
 it("keeps a fifty-host enrollment list within the ten-row rendering budget", () => {
@@ -107,9 +76,7 @@ it("fills the expanded viewport when a second batch appends to a short list", ()
 it("accounts for every open attempt exactly once, including publishing and an unknown stage", () => {
   const attempts = [attempt(1, { state: "instructed", queued: true }), attempt(2), attempt(3, { stage: "storage" }), attempt(4, { stage: "enrolling" }), attempt(5, { stage: "queued" }), attempt(6, { stage: "joining" }), attempt(7, { stage: "publishing" }), attempt(8, { stage: null })];
   render(<EnrollingList attempts={attempts} onCancel={vi.fn()} />);
-  const values = [...screen.getByRole("group", { name: "Enrollment stages" }).querySelectorAll("dd")].map((node) => Number(node.textContent));
-  expect(values).toEqual([2, 1, 1, 1, 1, 2]);
-  expect(values.reduce((sum, n) => sum + n, 0)).toBe(attempts.length);
+  expect(rows().map((row) => within(row).getAllByRole("cell")[1]?.textContent)).toEqual(["Queued", "Installing", "Setting up ZFS", "Enrolling", "In line", "Joining", "Going live", "Starting"]);
 });
 
 it("uses singular copy for exactly one server ahead", () => {

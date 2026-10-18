@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { PlusIcon } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import type { ButtonVariants } from "#/components/ui/button-variants";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
@@ -9,13 +8,11 @@ import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "#
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
-import { toErrorMessage } from "#/lib/error-message";
 import { FLEET_TOKEN_LIFETIMES, type FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
-import { createFleetTokenServerFn } from "#/modules/machines/waiting/fleet-token.functions";
 import { installLines, cliLifetimeLabel } from "#/modules/machines/waiting/install-lines";
-import { fleetTokenKeys, fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
-import { CopyBlock } from "./copy-block";
+import { fleetTokensQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { InstallTabs } from "./copy-block";
+import { useMintFleetToken } from "./use-waiting";
 
 const LIFETIME_LABELS = { "1d": "1 day", "7d": "7 days", "30d": "30 days" } satisfies Record<FleetTokenLifetime, string>;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -44,7 +41,6 @@ export function AddServersDialog({ organizationSlug, label = "Add servers", vari
 }
 
 function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDone: () => void }) {
-  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [expiresIn, setExpiresIn] = useState<FleetTokenLifetime>("1d");
   const [autoEnroll, setAutoEnroll] = useState(false);
@@ -52,12 +48,7 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
   const max = Number(maxServers);
   const maxOk = !autoEnroll || (Number.isInteger(max) && max >= 1 && max <= 1000);
   const nameOk = name.trim() === "" || NAME_PATTERN.test(name.trim());
-  const mint = useMutation({
-    mutationFn: (input: { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: Minted["autoEnroll"] }) =>
-      createFleetTokenServerFn({ data: { organizationSlug, ...input } }),
-    onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't create the token.")),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: fleetTokenKeys.all }),
-  });
+  const mint = useMintFleetToken(organizationSlug);
 
   if (mint.data !== undefined && mint.variables !== undefined) {
     return (
@@ -143,16 +134,7 @@ function MintDone({ organizationSlug, minted, onDone }: { organizationSlug: stri
         <DialogTitle className="font-mono">{minted.name}</DialogTitle>
         <DialogDescription>{minted.autoEnroll === null ? "Waits for you" : `Auto up to ${minted.autoEnroll.maxServers}`}</DialogDescription>
       </DialogHeader>
-      <Tabs defaultValue="shell">
-        <TabsList>
-          <TabsTrigger value="shell">Shell</TabsTrigger>
-          <TabsTrigger value="cloud-init">cloud-init</TabsTrigger>
-          <TabsTrigger value="terraform">Terraform</TabsTrigger>
-        </TabsList>
-        <TabsContent value="shell"><CopyBlock value={lines.shell} /></TabsContent>
-        <TabsContent value="cloud-init"><CopyBlock value={lines.cloudInit} /></TabsContent>
-        <TabsContent value="terraform"><CopyBlock value={lines.terraform} /></TabsContent>
-      </Tabs>
+      <InstallTabs lines={lines} />
       <div className="flex flex-col gap-0.5 text-sm">
         <p className="text-muted-foreground">{minted.autoEnroll === null ? "Installs Docker and Ployz. Nothing joins until you say so." : `Installs Docker and Ployz. Up to ${minted.autoEnroll.maxServers} servers join your existing cluster when ready.`}</p>
         {minted.autoEnroll === null ? <p className="text-muted-foreground">To deploy now, add a server with <code className="font-mono text-foreground">ployz server add --command</code>.</p> : null}

@@ -4,8 +4,6 @@ import { Button } from "#/components/ui/button";
 import { cn } from "#/lib/utils";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { ENROLLMENT_STAGES, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
-import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
-import { readiness } from "./waiting-row";
 
 const BOX_RECT = { width: 0, height: 520 };
 const GRID = "grid grid-cols-[12px_minmax(120px,1fr)_130px_120px_180px_64px] items-center gap-3 px-3";
@@ -22,29 +20,13 @@ export function enrollmentStage(row: ServerEnrollmentView) {
   return stage === undefined ? "Starting" : STAGES[stage];
 }
 
-export function EnrollmentCounters({ waiting, attempts, joining }: { joining: number; waiting: readonly WaitingServerView[]; attempts: readonly ServerEnrollmentView[] }) {
-  const active = attempts.filter((row) => row.endedAt === null);
-  const latest = new Map(attempts.map((row) => [row.waitingServerId, row]));
-  return <Counters label="Server totals" values={[
-    ["Waiting", String(waiting.length)],
-    ["Ready", String(waiting.filter((row) => readiness(row) === "ready").length)],
-    ["Enrolling", String(active.length)],
-    ["Joining", `${joining} / 8`],
-    ["Joined", String([...latest.values()].filter((row) => row.state === "joined").length)],
-    ["Failed", String([...latest.values()].filter((row) => row.state === "failed").length)],
-  ]} />;
-}
-
-function Counters({ label, values }: { label: string; values: readonly (readonly [string, string])[] }) {
-  return <div className="overflow-x-auto"><dl role="group" aria-label={label} className="grid min-w-[780px] grid-cols-6 divide-x rounded-lg border">
-    {values.map(([name, value]) => <div key={name} data-counter={name} className="flex min-w-0 items-center justify-between gap-2 px-3 py-2 text-xs">
-      <dt className="truncate text-muted-foreground">{name}</dt><dd className="w-14 shrink-0 text-right font-medium tabular-nums">{value}</dd>
-    </div>)}
-  </dl></div>;
+/** Open attempts, and joined ones, which stay for an hour so the arrival is seen. Failed ones show back in Waiting. */
+export function enrollingRows(attempts: readonly ServerEnrollmentView[]) {
+  return attempts.filter((row) => row.endedAt === null || row.state === "joined");
 }
 
 export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }: { attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
-  const rows = attempts.filter((row) => row.endedAt === null || row.state === "joined");
+  const rows = enrollingRows(attempts);
   const scroller = useRef<HTMLDivElement>(null);
   const height = Math.min(rows.length, 10) * 52;
   const virtual = useVirtualizer({
@@ -61,18 +43,10 @@ export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }:
   const padBottom = virtual.getTotalSize() - (items.at(-1)?.end ?? 0);
   if (rows.length === 0) return null;
   const active = rows.filter((row) => row.endedAt === null);
-  const stageCounts = new Map<string, number>();
-  for (const row of active) {
-    const stage = ENROLLMENT_STAGES.find((stage) => stage === row.stage);
-    const label = row.state !== "running" || stage === undefined ? "Starting"
-      : stage === "joining" || stage === "publishing" ? "Joining" : STAGES[stage];
-    stageCounts.set(label, (stageCounts.get(label) ?? 0) + 1);
-  }
   return <section aria-labelledby="enrolling-heading" className="flex flex-col gap-2.5">
     <div className="flex items-center gap-2.5"><h2 id="enrolling-heading" className="text-sm font-semibold">Enrolling</h2>
       <span className="text-xs text-muted-foreground tabular-nums">{rows.length - active.length} of {rows.length} joined</span>
     </div>
-    <Counters label="Enrollment stages" values={["Starting", "Installing", "Setting up ZFS", "Enrolling", "In line", "Joining"].map((name) => [name, String(stageCounts.get(name) ?? 0)] as const)} />
     <div className="overflow-x-auto rounded-lg border">
       <div role="table" aria-label="Enrolling servers" aria-rowcount={rows.length + 1} className="min-w-[780px] text-sm">
         <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>

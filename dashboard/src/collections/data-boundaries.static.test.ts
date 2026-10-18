@@ -61,6 +61,7 @@ const SPINNER_FILES = {
   "routes/claim/$secret.tsx": "keeping the Organization in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog.tsx": "token mint in flight, then listening for the first server",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-run-card.tsx": "token mint in flight, then listening for the first server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-services-section.tsx": "the Drain running on the Server",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-web-traffic-section.tsx": "the web server starting or stopping on the Server",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",

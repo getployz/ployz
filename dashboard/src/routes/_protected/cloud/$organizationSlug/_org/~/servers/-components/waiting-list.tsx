@@ -1,57 +1,75 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
+import { Card, CardContent } from "#/components/ui/card";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
+import { Separator } from "#/components/ui/separator";
+import { useMediaQuery } from "#/hooks/use-media-query";
 import { cn } from "#/lib/utils";
 import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollmentCounters, EnrollingList, STAGES } from "./enrolling-list";
+import { EnrollingList, enrollingRows, STAGES } from "./enrolling-list";
 import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
-  disksText,
   hostnameOrIpMatcher,
   providerOf,
   READINESS_FILTERS,
   readiness,
+  type Readiness,
   type ReadinessFilter,
   selectable,
-  sizeText,
+  specText,
   statusCell,
-  volumesText,
 } from "./waiting-row";
 
 const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView[]; now: number }>({ servers: [], now: 0 });
 
 export const ROW_PX = 52;
+// Below sm a row stacks its specs under the name, so it needs a third line.
+const STACKED_ROW_PX = 72;
 export const VISIBLE_ROWS = 10;
-const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
-const GRID = "grid grid-cols-[20px_minmax(0,1fr)_130px_92px_150px_150px_160px] items-center gap-3 px-3";
+const GRID = "grid grid-cols-[20px_minmax(0,1fr)_auto] content-center items-center gap-x-3 gap-y-0.5 px-3 sm:grid-cols-[20px_minmax(0,1fr)_150px_170px_200px]";
 
-export function WaitingSection({ organizationSlug, token }: { organizationSlug: string; token: string | undefined }) {
+/** The readiness mix, in the order a server moves through it, with the colour of its bar segment. */
+const MIX = [
+  { value: "ready", bar: "bg-success", text: "text-success" },
+  { value: "preparing", bar: "bg-info", text: "text-info" },
+  { value: "blocked", bar: "bg-warning", text: "text-warning" },
+  { value: "offline", bar: "bg-destructive", text: "text-destructive" },
+] as const satisfies readonly { value: Readiness; bar: string; text: string }[];
+
+/** Servers waiting to join and servers enrolling, in one tray. The page renders it only when it holds something. */
+export function IntakeTray({ organizationSlug, token, firstRun }: { organizationSlug: string; token: string | undefined; firstRun: boolean }) {
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const cancel = useCancelEnrollment(organizationSlug);
   const servers = waiting.data ?? [];
   const attempts = enrollments.data?.attempts ?? [];
-  if (waiting.isError || enrollments.isError) return <p role="alert">Couldn’t load waiting servers or enrollments. <Button variant="outline" onClick={() => { void waiting.refetch(); void enrollments.refetch(); }}>Retry</Button></p>;
-  return <>
-    <EnrollmentCounters waiting={servers} attempts={attempts} joining={enrollments.data?.joining ?? 0} />
-    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} />
-    <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
-  </>;
+  const enrolling = enrollingRows(attempts).length > 0;
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-4">
+        {/* Stays mounted while the last waiting server enrolls, so its sheet survives the row leaving. */}
+        <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} firstRun={firstRun} />
+        {servers.length > 0 && enrolling ? <Separator /> : null}
+        <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
+      </CardContent>
+    </Card>
+  );
 }
 
-export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true }: {
+export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true, firstRun = false }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   now: number;
   token?: string | undefined;
   hasFirst?: boolean;
+  firstRun?: boolean;
 }) {
   const [filter, setFilter] = useState<ReadinessFilter>("all");
   const [provider, setProvider] = useState("");
@@ -60,15 +78,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
   const [enroll, setEnroll] = useState<readonly WaitingServerView[] | null>(null);
-  const autoOpened = useRef<string | null>(null);
   const only = servers.length === 1 ? servers[0] : undefined;
-  const lone = !hasFirst && only && selectable(only) ? only : undefined;
-  useEffect(() => {
-    if (lone && autoOpened.current !== lone.id) {
-      autoOpened.current = lone.id;
-      setEnroll([lone]);
-    }
-  }, [lone]);
+  const arrived = firstRun && only && readiness(only) === "ready" ? only : undefined;
   const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
   const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
   const reject = useRejectWaiting(organizationSlug);
@@ -79,6 +90,10 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const tokens = [...new Set(servers.map((server) => server.fleetToken))].sort();
   const shownToken = tokens.includes(tokenFilter) ? tokenFilter : "";
   const matches = hostnameOrIpMatcher(query);
+  const filtering = filter !== "all" || provider !== "" || shownToken !== "" || query !== "";
+  // Filters earn their place once the list overflows its box. An active filter, such as a Tokens page
+  // link, keeps them visible on a short list so it can always be cleared.
+  const filterable = servers.length > VISIBLE_ROWS || filtering;
   const rows = ordered.filter((server) =>
     (filter === "all" || readiness(server) === filter)
     && (provider === "" || providerOf(server) === provider)
@@ -91,14 +106,16 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const allPicked = pickable.length > 0 && pickable.slice(0, SELECTION_MAX).every((server) => pickedIds.has(server.id));
   const detail = useWaitingServerDetail(organizationSlug, openId);
   const scroller = useRef<HTMLDivElement>(null);
+  const rowPx = useMediaQuery("(max-width: 639px)") ? STACKED_ROW_PX : ROW_PX;
+  const boxRect = { width: 0, height: rowPx * VISIBLE_ROWS };
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
     getItemKey: (index) => rows[index]?.id ?? index,
-    estimateSize: () => ROW_PX,
+    estimateSize: () => rowPx,
     // The box is ten rows tall by construction, so its height is known rather than measured.
-    initialRect: BOX_RECT,
-    observeElementRect: (_, report) => report(BOX_RECT),
+    initialRect: boxRect,
+    observeElementRect: (_, report) => report(boxRect),
     overscan: 2,
   });
   const items = virtual.getVirtualItems();
@@ -121,20 +138,54 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
     setOpenId(null);
   };
 
+  const sheets = <>
+    {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
+    <WaitingDetailSheet
+      open={openId !== null}
+      failed={detail.isError}
+      server={openId === null ? null : detail.data ?? null}
+      now={now}
+      onOpenChange={(next) => { if (!next) setOpenId(null); }}
+      onReject={(id) => rejectIds([id])}
+    />
+  </>;
+  if (servers.length === 0) return sheets;
+  const mix = MIX.filter((part) => (counts.get(part.value) ?? 0) > 0);
+
   return (
     <WaitingStatusContext value={statusContext}><section aria-labelledby="waiting-heading" className="flex flex-col gap-2.5">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <h2 id="waiting-heading" className="text-sm font-semibold">Waiting</h2>
-        <span className="text-xs text-muted-foreground tabular-nums">{servers.length}</span>
-        <div className="ml-auto flex flex-wrap items-center gap-1">
-          <div role="group" aria-label="Readiness" className="flex items-center gap-1">
+      {arrived === undefined ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 id="waiting-heading" className="text-sm font-semibold">Waiting to join</h2>
+            <span className="text-xs text-muted-foreground tabular-nums">{servers.length}</span>
+            <span className="flex items-center gap-2.5 text-xs tabular-nums">
+              {mix.map((part) => <span key={part.value} className={part.text}>{counts.get(part.value)} {part.value}</span>)}
+            </span>
+          </div>
+          <div aria-hidden="true" className="flex h-1 gap-0.5 overflow-hidden rounded-full">
+            {mix.map((part) => <span key={part.value} data-mix={part.value} className={part.bar} style={{ flex: counts.get(part.value) }} />)}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 id="waiting-heading" className="text-sm font-semibold">{arrived.report.hostname} is ready to enroll</h2>
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => rejectIds([arrived.id])}>Reject</Button>
+            <Button size="sm" variant="ink" onClick={() => setEnroll([arrived])}>Enroll</Button>
+          </div>
+        </div>
+      )}
+      {filterable ? <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-1">
+          <div role="group" aria-label="Readiness" className="flex w-full items-center gap-1 overflow-x-auto sm:w-auto">
             {READINESS_FILTERS.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 aria-pressed={filter === option.value}
                 onClick={() => setFilter(option.value)}
-                className="h-7 rounded-md border border-transparent px-2.5 text-[13px] text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
+                className="h-7 shrink-0 whitespace-nowrap rounded-md border border-transparent px-2.5 text-[13px] text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
               >
                 {option.label} <span className="text-muted-foreground tabular-nums">{counts.get(option.value) ?? 0}</span>
               </button>
@@ -156,9 +207,9 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
             className="h-7 w-40 text-[13px]"
           />
         </div>
-      </div>
+      </div> : null}
       <div className="overflow-x-auto rounded-lg border">
-        <div role="table" aria-label="Waiting servers" className="min-w-[860px] text-[13px]">
+        <div role="table" aria-label="Waiting servers" className="text-[13px] sm:min-w-[680px]">
           <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
             <span role="columnheader">
               <Checkbox
@@ -169,15 +220,13 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
               />
             </span>
             <span role="columnheader">Name</span>
-            <span role="columnheader">Source IP</span>
-            <span role="columnheader">Size</span>
-            <span role="columnheader">Disks</span>
-            <span role="columnheader">Volumes</span>
+            <span role="columnheader" className="hidden sm:block">IP</span>
+            <span role="columnheader" className="hidden sm:block">CPU · RAM · disk</span>
             <span role="columnheader">Status</span>
           </div>
-          <div ref={scroller} role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: ROW_PX * VISIBLE_ROWS }}>
+          <div ref={scroller} role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: rowPx * VISIBLE_ROWS }}>
             {rows.length === 0 ? (
-              <div role="row" className={cn(GRID, "border-t text-muted-foreground")} style={{ height: ROW_PX }}>
+              <div role="row" className={cn(GRID, "border-t text-muted-foreground")} style={{ height: rowPx }}>
                 <span />
                 <span role="cell">Nothing matches</span>
               </div>
@@ -191,6 +240,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
                       server={server}
                       picked={pickedIds.has(server.id)}
                       full={full}
+                      height={rowPx}
                       onPick={toggle}
                       onOpen={setOpenId}
                     />
@@ -202,37 +252,28 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
         </div>
       </div>
       {chosen.length > 0 ? (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-primary py-2 pr-2 pl-4 text-sm text-primary-foreground shadow-lg">
-          <span className="tabular-nums">{chosen.length} selected</span>
+        <div className="fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 min-wf-nav:bottom-6 items-center gap-3 rounded-xl bg-primary py-2 pr-2 pl-4 text-sm text-primary-foreground shadow-lg">
+          <span className="whitespace-nowrap tabular-nums">{chosen.length} selected</span>
           {full ? <span className="text-primary-foreground/70">{SELECTION_MAX} max</span> : null}
           <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
           <Button size="sm" variant="destructive" onClick={() => rejectIds(chosen)}>Reject</Button>
           <Button size="sm" variant="secondary" onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
         </div>
       ) : null}
-      {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
-      <WaitingDetailSheet
-        open={openId !== null}
-        failed={detail.isError}
-        server={openId === null ? null : detail.data ?? null}
-        now={now}
-        onOpenChange={(next) => { if (!next) setOpenId(null); }}
-        onReject={(id) => rejectIds([id])}
-      />
+      {sheets}
     </section></WaitingStatusContext>
   );
 }
 
-const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOpen }: {
+const WaitingRow = memo(function WaitingRow({ server, picked, full, height, onPick, onOpen }: {
   server: WaitingServerView;
   picked: boolean;
   full: boolean;
+  height: number;
   onPick: (id: string, on: boolean) => void;
   onOpen: (id: string) => void;
 }) {
   const { report } = server;
-  const disks = disksText(report);
-  const volumes = volumesText(report);
   const state = readiness(server);
   return (
     <div
@@ -241,7 +282,7 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOp
       aria-selected={picked}
       onClick={() => onOpen(server.id)}
       className={cn(GRID, "cursor-pointer border-t hover:bg-muted/50", picked && "bg-muted")}
-      style={{ height: ROW_PX }}
+      style={{ height }}
     >
       <span role="cell" onClick={(event) => event.stopPropagation()}>
         <Checkbox
@@ -257,22 +298,17 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOp
         </button>
         <span>{report.os.id} {report.os.version}</span>
       </TwoLineCell>
-      <TwoLineCell>
+      <TwoLineCell className="hidden sm:flex">
         <span className="font-mono">{server.observedIp}</span>
         <span>{providerOf(server)}</span>
       </TwoLineCell>
-      <span role="cell" className="truncate text-muted-foreground">{sizeText(report)}</span>
-      <span role="cell" className="truncate">
-        {disks.main}
-        {disks.spare === "" ? null : <span className="text-muted-foreground"> {disks.spare}</span>}
-      </span>
-      <TwoLineCell><span>{volumes.bold}</span><span>{volumes.detail}</span></TwoLineCell>
+      <span role="cell" className="col-span-2 col-start-2 row-start-2 truncate text-muted-foreground sm:col-auto sm:row-auto">{specText(report)}</span>
       <WaitingStatus id={server.id} />
     </div>
   );
 }, (a, b) => a.server.id === b.server.id && a.server.report === b.server.report
   && a.server.observedIp === b.server.observedIp && a.server.status === b.server.status
-  && a.server.returned === b.server.returned && a.picked === b.picked && a.full === b.full
+  && a.server.returned === b.server.returned && a.picked === b.picked && a.full === b.full && a.height === b.height
   && a.onPick === b.onPick && a.onOpen === b.onOpen);
 
 function WaitingStatus({ id }: { id: string }) {
@@ -285,16 +321,16 @@ function WaitingStatus({ id }: { id: string }) {
   const reason = returned === null ? null : returned.state === "cancelled" ? "Cancelled"
     : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
   const detail = reason === null ? status.detail : `${status.detail} · ${reason}${returned?.message ? ` · ${returned.message}` : ""}`;
-  return <TwoLineCell>
-    <span className={cn("font-medium", readiness(server) === "blocked" && "text-destructive")}>{status.bold}</span>
+  return <TwoLineCell className="text-right sm:text-left">
+    <span className={cn("font-medium", readiness(server) === "blocked" && "text-warning")}>{status.bold}</span>
     <span title={detail}>{detail}</span>
   </TwoLineCell>;
 }
 
-function TwoLineCell({ children }: { children: [ReactNode, ReactNode] }) {
+function TwoLineCell({ children, className }: { children: [ReactNode, ReactNode]; className?: string }) {
   const [first, second] = children;
   return (
-    <div role="cell" className="flex min-w-0 flex-col leading-tight">
+    <div role="cell" className={cn("flex min-w-0 flex-col leading-tight", className)}>
       <span className="truncate">{first}</span>
       <span className="truncate text-xs text-muted-foreground">{second}</span>
     </div>

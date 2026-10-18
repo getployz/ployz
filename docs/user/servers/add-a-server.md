@@ -44,6 +44,13 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 
 ## Add servers from the dashboard
 
+Before your first server, the **Servers** page shows one card instead of a list. Click
+**Get install command** and it makes a token that works for 7 days and shows the install line,
+under **Shown once. Expires in 7d.** Copy it now: Ployz can't show the token again. The card then
+says **Listening for servers…** until the first one checks in.
+
+Once you have a server, or one is waiting, make more tokens with **Add servers**:
+
 1. Go to **Servers** and click **Add servers**. While you have no server, the bottom bar of your
    environment offers it too.
 2. Name the token, or leave the name blank and Ployz picks one. Choose how long it works: 1 day,
@@ -58,21 +65,30 @@ you deploy; see [Scaling](../services/scaling.md#add-a-server).
 ![The Add servers dialog with its install line](../images/add-servers-dialog.png)
 
 Run the same line on as many servers as you like while the token works. Each one installs Docker
-and Ployz and shows up under **Waiting** on the **Servers** page within seconds, above your other
-servers. New ones go to the bottom of the list, and the list never reorders while you look at it.
+and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
+above your other servers. The tray shows only while a server waits or enrolls. Its header counts
+the servers that are ready, preparing, blocked and offline, with a bar for the mix. New ones go
+to the bottom of the list, and the list never reorders while you look at it. When your very first
+server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
 
 Select a waiting server and click **Enroll** to choose its name, storage and what it runs.
 You can enroll while it prepares. Follow [Add many servers](add-many-servers.md) for the full
 review and enrollment flow.
 
-Each row shows the server's name, the IP address Ployz Cloud saw it check in from, its provider,
-size, disks and storage, and its status. **Installing Docker** and **Building ZFS** mean it is
+Each row shows the server's name and operating system, the IP address Ployz Cloud saw it check in
+from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** and **Building ZFS** mean it is
 still getting ready, and **Ready** means it has everything it needs. **Blocked** rows say what
 is wrong with the server, in the server's own words, such as `Disk is 20 GB. Ployz needs 30 GB.`, and
-**Offline** means it stopped checking in. Filter the list by provider and by status, or search
-by name or IP address.
+**Offline** means it stopped checking in. You can't select a blocked server. Once more than ten
+servers wait, filter the list by readiness, provider and token, or search by name or IP address.
 
-Click a row to see the server in full, with its CPU, memory, disks, Docker, the storage it would
+Servers you enroll move to **Enrolling** in the same tray, with the step each one is on, until
+they join.
+
+Above your servers, **Fleet** counts how many are online, building, offline and unknown, and how
+many need an upgrade.
+
+Click a waiting row to see the server in full, with its CPU, memory, disks, Docker, the storage it would
 get, its open ports and anything blocking it. **Reject** there turns the server away: it stops
 checking in, and asking again with the same token gets it turned away.
 

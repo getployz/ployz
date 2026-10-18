@@ -78,7 +78,7 @@ export function statusCell(server: Pick<WaitingServerView, "report" | "status" |
   const blocker = report.blockers[0];
   if (blocker !== undefined) return { bold: blockerLabel(blocker.code), detail: blocker.message };
   if (report.prep?.docker === "installing") return { bold: "Installing Docker", detail: seen };
-  if (report.prep?.zfs === "installing") return { bold: "Building ZFS", detail: seen };
+  if (report.prep?.zfs === "installing") return { bold: "Ready", detail: `Building ZFS · ${seen}` };
   if (report.prep?.zfs === "failed") return { bold: "Ready", detail: `${ZFS_BUILD_FAILED} · ${seen}` };
   return { bold: "Ready", detail: seen };
 }
@@ -93,10 +93,10 @@ export function sizeText(report: WaitingServerView["report"]) {
   return `${report.cpuCount} vCPU · ${bytes(report.memoryTotalBytes)}`;
 }
 
-export function disksText(report: WaitingServerView["report"]) {
+/** CPU, memory and the main disk, the size a waiting row shows. */
+export function specText(report: WaitingServerView["report"]) {
   const root = report.disks.find((disk) => disk.role === "root");
-  const empty = report.disks.filter((disk) => disk.role === "empty");
-  return { main: root === undefined ? "No disk" : bytes(root.sizeBytes), spare: empty.map((disk) => `+${bytes(disk.sizeBytes)}`).join(" ") };
+  return `${sizeText(report)} · ${root === undefined ? "No disk" : bytes(root.sizeBytes)}`;
 }
 
 export function volumesText(report: WaitingServerView["report"]): TwoLines {
