@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent } from "#/components/ui/card";
 import { Checkbox } from "#/components/ui/checkbox";
@@ -76,16 +76,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [openId, setOpenId] = useState<string | null>(null);
   const [enroll, setEnroll] = useState<readonly WaitingServerView[] | null>(null);
-  const autoOpened = useRef<string | null>(null);
   const only = servers.length === 1 ? servers[0] : undefined;
-  const lone = !hasFirst && only && selectable(only) ? only : undefined;
   const arrived = firstRun && only && readiness(only) === "ready" ? only : undefined;
-  useEffect(() => {
-    if (lone && autoOpened.current !== lone.id) {
-      autoOpened.current = lone.id;
-      setEnroll([lone]);
-    }
-  }, [lone]);
   const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
   const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
   const reject = useRejectWaiting(organizationSlug);

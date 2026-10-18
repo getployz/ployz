@@ -337,16 +337,7 @@ it("drives selection, first-server preview and the exact start payload, then cle
   expect(screen.queryByText("2 selected")).toBeNull();
 });
 
-it("auto-opens only a lone selectable host in a fresh cluster, and stays closed after dismissal", async () => {
-  previewStub();
-  const view = flow([host("one")], false);
-  await vi.waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  view.rerender([{ ...host("one"), lastCheckInAt: "2026-10-17T10:00:00Z" }]);
-  expect(screen.queryByRole("dialog")).toBeNull();
-});
-
-it.each([{ count: 1, hasFirst: true, status: "waiting" }, { count: 2, hasFirst: false, status: "waiting" }, { count: 1, hasFirst: false, status: "offline" }] as const)("keeps the sheet closed for $count hosts, founder=$hasFirst, status=$status", ({ count, hasFirst, status }) => {
+it.each([{ count: 1, hasFirst: false, status: "waiting" }, { count: 1, hasFirst: true, status: "waiting" }, { count: 2, hasFirst: false, status: "waiting" }, { count: 1, hasFirst: false, status: "offline" }] as const)("keeps the sheet closed for $count hosts, founder=$hasFirst, status=$status", ({ count, hasFirst, status }) => {
   previewStub();
   flow(Array.from({ length: count }, (_, n) => host(String(n), { status })), hasFirst);
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -375,6 +366,8 @@ it("does not offer an unproven spare-disk promise, and cannot enroll a zero-row 
   const row = host("spare");
   const withDisk: WaitingServerView = { ...row, report: { ...row.report, disks: [{ role: "empty", sizeBytes: 100 * 1024 ** 3 }] } };
   flow([withDisk], false);
+  fireEvent.click(pick("spare"));
+  fireEvent.click(screen.getByRole("button", { name: "Enroll 1" }));
   await vi.waitFor(() => expect(screen.getByRole("button", { name: "Enroll 0" })).toBeTruthy());
   expect(screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 0" }).disabled).toBe(true);
   expect(screen.queryByLabelText("Use a spare disk if there is one")).toBeNull();
