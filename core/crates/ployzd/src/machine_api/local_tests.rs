@@ -2573,6 +2573,48 @@ mod ensure_container {
     }
 
     #[tokio::test]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture edits")]
+    async fn a_request_past_tonic_s_default_4_mib_still_creates_the_container() {
+        use std::os::unix::fs::MetadataExt;
+        let (data_dir, _store, service, _fake) = fake_docker_service("ployzd-ensure-large").await;
+        let owner = std::fs::metadata(&data_dir).unwrap();
+        let mut spec = spec("example.test/api:1");
+        spec["configs"] = json!([{"name":"bulk/a", "content":vec![b'x'; 2 * 1024 * 1024]}]);
+        spec["container"]["config_mounts"] = json!([{
+            "config_name":"bulk/a", "target":"/etc/bulk/a", "uid":owner.uid(), "gid":owner.gid()
+        }]);
+        let request =
+            op::EnsureContainer::into_request(serde_json::from_value(run_new("k1", spec)).unwrap())
+                .encode()
+                .unwrap();
+        assert!(request.json.len() > 4 * 1024 * 1024);
+        let api = crate::machine_api::MachineApi::from_local(service);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)),
+        );
+        let mut client = MachineRpcClient::connect(format!("http://{address}"))
+            .await
+            .unwrap()
+            .max_decoding_message_size(ployz_core::RUNTIME_WATCH_MESSAGE_SIZE_LIMIT);
+
+        let reply = client
+            .ensure_container(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner()
+            .decode_response()
+            .unwrap()
+            .decode::<op::EnsureContainer>()
+            .unwrap();
+
+        present(&reply);
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn exec_refuses_a_container_this_machine_does_not_manage() {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-exec").await;
         let stray = ContainerId::parse("b".repeat(64)).unwrap();

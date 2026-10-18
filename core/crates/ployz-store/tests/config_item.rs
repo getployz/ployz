@@ -491,6 +491,33 @@ fn a_file_holds_at_most_256_kb() {
 }
 
 #[test]
+fn a_service_mounts_at_most_768_kb_across_its_configs() {
+    let (store, who) = shop();
+    let file = 256 * 1024;
+    create(&store, &who, 10, "bulk", &[("web", "/etc/bulk")]).unwrap();
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        put(&store, &who, "bulk", name, &"x".repeat(file)).unwrap();
+    }
+
+    let over = refused(put(&store, &who, "bulk", "d.txt", "x"));
+    assert_eq!(over.code, RpcErrorCode::InvalidArgument);
+    assert!(over.message.contains("web"), "{}", over.message);
+    assert!(over.message.contains("Config bulk"), "{}", over.message);
+    assert!(over.message.contains("768 KB"), "{}", over.message);
+    assert_eq!(over.details["configs"], json!(["bulk"]));
+    assert_eq!(over.details["bytes"], json!(3 * file + 1));
+    assert_eq!(over.details["max_bytes"], json!(3 * file));
+    assert_eq!(item(&store, &who, "bulk").unwrap().contents.len(), 3);
+
+    create(&store, &who, 11, "more", &[]).unwrap();
+    put(&store, &who, "more", "e.txt", "x").unwrap();
+    let over = refused(attach(&store, &who, "more", "web", "/etc/more"));
+    assert_eq!(over.details["configs"], json!(["bulk", "more"]));
+    attach(&store, &who, "more", "worker", "/etc/more").unwrap();
+    put(&store, &who, "bulk", "a.txt", &"y".repeat(file)).unwrap();
+}
+
+#[test]
 fn a_file_name_is_a_relative_path_of_at_most_four_segments() {
     for bad in [
         "/etc/a",
