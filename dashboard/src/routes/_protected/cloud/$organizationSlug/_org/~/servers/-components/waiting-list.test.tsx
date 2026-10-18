@@ -241,6 +241,13 @@ it("shows no filters while every waiting server fits in the box", () => {
   expect(screen.queryByRole("textbox", { name: "Filter" })).toBeNull();
 });
 
+it("a token link filters even a short list", () => {
+  renderList([host("a"), { ...host("b"), fleetToken: "calm-heron" }], "calm-heron");
+
+  expect(rowNames()).toEqual(["b"]);
+  expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Token" }).value).toBe("calm-heron");
+});
+
 it("shows every token when the one it was asked for has no waiting servers", () => {
   const names = Array.from({ length: VISIBLE_ROWS + 1 }, (_, index) => `h${String(index).padStart(2, "0")}`);
   renderList(names.map((name) => host(name)), "no-such-token");

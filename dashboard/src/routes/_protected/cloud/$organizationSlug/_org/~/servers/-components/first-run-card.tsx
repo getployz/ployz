@@ -14,9 +14,22 @@ const STEPS = [
   { title: "Enroll", description: "Sets up storage and networking, then it's ready for deploys." },
 ] as const;
 
-/** First run: mint a token in place, show the line once, and wait for a server to check in. */
-export function FirstRunCard({ organizationSlug }: { organizationSlug: string }) {
+/**
+ * First run: mint a token in place, show the line once, and wait for a server to check in. Once one arrives the card
+ * shrinks to the line, if this visit minted it, so the user can still run it on more servers.
+ */
+export function FirstRunCard({ organizationSlug, arrived }: { organizationSlug: string; arrived: boolean }) {
   const mint = useMintFleetToken(organizationSlug);
+  if (arrived) {
+    return mint.data === undefined ? (
+      <p className="text-sm text-muted-foreground">Add servers to queue more here.</p>
+    ) : (
+      <div className="flex flex-col gap-3">
+        <InstallTabs lines={installLines(mint.data.cloudOrigin, mint.data.token)} />
+        <p className="text-sm text-muted-foreground">Run it on more servers and they queue above.</p>
+      </div>
+    );
+  }
   return (
     <Card>
       <CardHeader>

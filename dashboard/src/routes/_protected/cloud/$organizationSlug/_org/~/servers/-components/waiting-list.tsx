@@ -79,8 +79,6 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const [openId, setOpenId] = useState<string | null>(null);
   const [enroll, setEnroll] = useState<readonly WaitingServerView[] | null>(null);
   const only = servers.length === 1 ? servers[0] : undefined;
-  // Filters earn their place only once the list overflows its box; below that every server is shown.
-  const bulk = servers.length > VISIBLE_ROWS;
   const arrived = firstRun && only && readiness(only) === "ready" ? only : undefined;
   const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
   const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
@@ -92,7 +90,11 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const tokens = [...new Set(servers.map((server) => server.fleetToken))].sort();
   const shownToken = tokens.includes(tokenFilter) ? tokenFilter : "";
   const matches = hostnameOrIpMatcher(query);
-  const rows = !bulk ? ordered : ordered.filter((server) =>
+  const filtering = filter !== "all" || provider !== "" || shownToken !== "" || query !== "";
+  // Filters earn their place once the list overflows its box. An active filter, such as a Tokens page
+  // link, keeps them visible on a short list so it can always be cleared.
+  const filterable = servers.length > VISIBLE_ROWS || filtering;
+  const rows = ordered.filter((server) =>
     (filter === "all" || readiness(server) === filter)
     && (provider === "" || providerOf(server) === provider)
     && (shownToken === "" || server.fleetToken === shownToken)
@@ -174,7 +176,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
           </div>
         </div>
       )}
-      {bulk ? <div className="flex flex-wrap items-center gap-2.5">
+      {filterable ? <div className="flex flex-wrap items-center gap-2.5">
         <div className="flex flex-wrap items-center gap-1">
           <div role="group" aria-label="Readiness" className="flex w-full items-center gap-1 overflow-x-auto sm:w-auto">
             {READINESS_FILTERS.map((option) => (
@@ -306,7 +308,7 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, height, onPi
   );
 }, (a, b) => a.server.id === b.server.id && a.server.report === b.server.report
   && a.server.observedIp === b.server.observedIp && a.server.status === b.server.status
-  && a.server.returned === b.server.returned && a.picked === b.picked && a.full === b.full
+  && a.server.returned === b.server.returned && a.picked === b.picked && a.full === b.full && a.height === b.height
   && a.onPick === b.onPick && a.onOpen === b.onOpen);
 
 function WaitingStatus({ id }: { id: string }) {

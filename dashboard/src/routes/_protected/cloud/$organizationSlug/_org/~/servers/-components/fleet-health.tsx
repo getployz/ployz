@@ -3,7 +3,7 @@ import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade"
 
 const PARTS = [
   { key: "online", label: "online", dot: "bg-success" },
-  { key: "building", label: "building", dot: "bg-success" },
+  { key: "building", label: "building", dot: "bg-info" },
   { key: "offline", label: "offline", dot: "bg-destructive" },
   { key: "unknown", label: "unknown", dot: "bg-muted-foreground" },
   { key: "behind", label: "needs upgrade", dot: "bg-warning" },

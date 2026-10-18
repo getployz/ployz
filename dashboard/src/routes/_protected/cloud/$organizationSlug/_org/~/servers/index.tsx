@@ -44,8 +44,8 @@ function RouteComponent() {
   const page = serversPageState({
     list: state,
     servers: servers.length,
-    waiting: waiting.data?.length ?? 0,
-    enrolling: enrollingRows(enrollments.data?.attempts ?? []).length,
+    waiting: waiting.data?.length,
+    enrolling: enrollments.data === undefined ? undefined : enrollingRows(enrollments.data.attempts).length,
   });
   const upgrade = page.kind === "fleet" && !page.stale ? upgrades : null;
   // First run has its own install card; the dialog returns once a server has shown up.
@@ -79,15 +79,11 @@ function RouteComponent() {
       ) : page.kind === "unreachable" ? (
         <ServersUnreachable organizationSlug={organizationSlug} />
       ) : page.kind === "first-run" ? (
-        page.intake ? (
-          <p className="text-sm text-muted-foreground">Still listening. Run the line on more servers and they queue here.</p>
-        ) : (
-          <FirstRunCard organizationSlug={organizationSlug} />
-        )
+        <FirstRunCard organizationSlug={organizationSlug} arrived={page.intake} />
       ) : (
         <>
           {page.stale ? <ServersStaleAlert /> : null}
-          <FleetHealth servers={servers} upgrades={upgrades.rows} />
+          <FleetHealth servers={servers} upgrades={upgrade?.rows ?? new Map()} />
           <nav aria-label="Servers" className={SERVER_LIST}>
             {servers.map((server) => (
               <ServerRow

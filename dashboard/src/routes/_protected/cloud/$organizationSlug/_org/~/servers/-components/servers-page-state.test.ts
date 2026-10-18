@@ -19,3 +19,8 @@ test("loading and unreachable keep the tray, which comes from Cloud", () => {
   expect(serversPageState({ list: "loading", servers: 0, waiting: 0, enrolling: 0 })).toEqual({ kind: "loading", intake: false });
   expect(serversPageState({ list: "unreachable", servers: 0, waiting: 4, enrolling: 0 })).toEqual({ kind: "unreachable", intake: true });
 });
+
+test("zero servers waits for Cloud before offering first run", () => {
+  expect(serversPageState({ list: "live", servers: 0, waiting: undefined, enrolling: 0 })).toEqual({ kind: "loading", intake: false });
+  expect(serversPageState({ list: "live", servers: 2, waiting: undefined, enrolling: undefined })).toEqual({ kind: "fleet", intake: false, stale: false });
+});

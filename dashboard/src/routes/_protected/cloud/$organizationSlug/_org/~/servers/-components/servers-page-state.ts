@@ -13,11 +13,13 @@ export type ServersPageState =
 export function serversPageState({ list, servers, waiting, enrolling }: {
   list: ServerListState;
   servers: number;
-  waiting: number;
-  enrolling: number;
+  /** Undefined until Cloud answers. */
+  waiting: number | undefined;
+  enrolling: number | undefined;
 }): ServersPageState {
-  const intake = waiting + enrolling > 0;
+  const intake = (waiting ?? 0) + (enrolling ?? 0) > 0;
   if (list === "loading" || list === "unreachable") return { kind: list, intake };
-  if (servers === 0) return { kind: "first-run", intake };
+  // Without Cloud's answer, zero servers could still be a first arrival, so the first-run card would mislead.
+  if (servers === 0) return waiting === undefined || enrolling === undefined ? { kind: "loading", intake } : { kind: "first-run", intake };
   return { kind: "fleet", intake, stale: list === "stale" };
 }
