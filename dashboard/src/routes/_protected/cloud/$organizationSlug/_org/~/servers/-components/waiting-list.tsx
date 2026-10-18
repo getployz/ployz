@@ -6,6 +6,7 @@ import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
 import { Separator } from "#/components/ui/separator";
+import { useMediaQuery } from "#/hooks/use-media-query";
 import { cn } from "#/lib/utils";
 import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
@@ -29,9 +30,10 @@ import {
 const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView[]; now: number }>({ servers: [], now: 0 });
 
 export const ROW_PX = 52;
+// Below sm a row stacks its specs under the name, so it needs a third line.
+const STACKED_ROW_PX = 68;
 export const VISIBLE_ROWS = 10;
-const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
-const GRID = "grid grid-cols-[20px_minmax(0,1fr)_150px_170px_200px] items-center gap-3 px-3";
+const GRID = "grid grid-cols-[20px_minmax(0,1fr)_auto] content-center items-center gap-x-3 gap-y-0.5 px-3 sm:grid-cols-[20px_minmax(0,1fr)_150px_170px_200px]";
 
 /** The readiness mix, in the order a server moves through it, with the colour of its bar segment. */
 const MIX = [
@@ -102,14 +104,16 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const allPicked = pickable.length > 0 && pickable.slice(0, SELECTION_MAX).every((server) => pickedIds.has(server.id));
   const detail = useWaitingServerDetail(organizationSlug, openId);
   const scroller = useRef<HTMLDivElement>(null);
+  const rowPx = useMediaQuery("(max-width: 639px)") ? STACKED_ROW_PX : ROW_PX;
+  const boxRect = { width: 0, height: rowPx * VISIBLE_ROWS };
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
     getItemKey: (index) => rows[index]?.id ?? index,
-    estimateSize: () => ROW_PX,
+    estimateSize: () => rowPx,
     // The box is ten rows tall by construction, so its height is known rather than measured.
-    initialRect: BOX_RECT,
-    observeElementRect: (_, report) => report(BOX_RECT),
+    initialRect: boxRect,
+    observeElementRect: (_, report) => report(boxRect),
     overscan: 2,
   });
   const items = virtual.getVirtualItems();
@@ -203,7 +207,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
         </div>
       </div> : null}
       <div className="overflow-x-auto rounded-lg border">
-        <div role="table" aria-label="Waiting servers" className="min-w-[680px] text-[13px]">
+        <div role="table" aria-label="Waiting servers" className="text-[13px] sm:min-w-[680px]">
           <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
             <span role="columnheader">
               <Checkbox
@@ -214,13 +218,13 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
               />
             </span>
             <span role="columnheader">Name</span>
-            <span role="columnheader">IP</span>
-            <span role="columnheader">CPU · RAM · disk</span>
+            <span role="columnheader" className="hidden sm:block">IP</span>
+            <span role="columnheader" className="hidden sm:block">CPU · RAM · disk</span>
             <span role="columnheader">Status</span>
           </div>
-          <div ref={scroller} role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: ROW_PX * VISIBLE_ROWS }}>
+          <div ref={scroller} role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: rowPx * VISIBLE_ROWS }}>
             {rows.length === 0 ? (
-              <div role="row" className={cn(GRID, "border-t text-muted-foreground")} style={{ height: ROW_PX }}>
+              <div role="row" className={cn(GRID, "border-t text-muted-foreground")} style={{ height: rowPx }}>
                 <span />
                 <span role="cell">Nothing matches</span>
               </div>
@@ -234,6 +238,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
                       server={server}
                       picked={pickedIds.has(server.id)}
                       full={full}
+                      height={rowPx}
                       onPick={toggle}
                       onOpen={setOpenId}
                     />
@@ -258,10 +263,11 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   );
 }
 
-const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOpen }: {
+const WaitingRow = memo(function WaitingRow({ server, picked, full, height, onPick, onOpen }: {
   server: WaitingServerView;
   picked: boolean;
   full: boolean;
+  height: number;
   onPick: (id: string, on: boolean) => void;
   onOpen: (id: string) => void;
 }) {
@@ -274,7 +280,7 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOp
       aria-selected={picked}
       onClick={() => onOpen(server.id)}
       className={cn(GRID, "cursor-pointer border-t hover:bg-muted/50", picked && "bg-muted")}
-      style={{ height: ROW_PX }}
+      style={{ height }}
     >
       <span role="cell" onClick={(event) => event.stopPropagation()}>
         <Checkbox
@@ -290,11 +296,11 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOp
         </button>
         <span>{report.os.id} {report.os.version}</span>
       </TwoLineCell>
-      <TwoLineCell>
+      <TwoLineCell className="hidden sm:flex">
         <span className="font-mono">{server.observedIp}</span>
         <span>{providerOf(server)}</span>
       </TwoLineCell>
-      <span role="cell" className="truncate text-muted-foreground">{specText(report)}</span>
+      <span role="cell" className="col-span-2 col-start-2 row-start-2 truncate text-muted-foreground sm:col-auto sm:row-auto">{specText(report)}</span>
       <WaitingStatus id={server.id} />
     </div>
   );
@@ -319,10 +325,10 @@ function WaitingStatus({ id }: { id: string }) {
   </TwoLineCell>;
 }
 
-function TwoLineCell({ children }: { children: [ReactNode, ReactNode] }) {
+function TwoLineCell({ children, className }: { children: [ReactNode, ReactNode]; className?: string }) {
   const [first, second] = children;
   return (
-    <div role="cell" className="flex min-w-0 flex-col leading-tight">
+    <div role="cell" className={cn("flex min-w-0 flex-col leading-tight", className)}>
       <span className="truncate">{first}</span>
       <span className="truncate text-xs text-muted-foreground">{second}</span>
     </div>

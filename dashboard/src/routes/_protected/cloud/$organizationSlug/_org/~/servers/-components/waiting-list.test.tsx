@@ -18,6 +18,7 @@ const stubProbe = () => vi.spyOn(waitingFunctions, "openProbeSelectionServerFn")
 const stubReject = () => vi.spyOn(waitingFunctions, "rejectWaitingServersServerFn").mockResolvedValue({ rejected: 0 });
 
 beforeEach(() => {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }));
   probe = stubProbe();
   reject = stubReject();
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
