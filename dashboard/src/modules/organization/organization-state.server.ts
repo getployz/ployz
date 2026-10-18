@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
-import type { Actor } from "#/modules/identity/actor";
+import type { Actor, SessionActor } from "#/modules/identity/actor";
+import { takeDeviceOrganization } from "#/modules/identity/device-organization.server";
 import { invitation, member, session, user } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
@@ -101,17 +102,21 @@ export const ensurePersonalOrganizationForUser = Effect.fn(
   );
 });
 
-/** A new Organization the actor owns; their sessions then act in it. Returns its slug. */
-export const createOrganization = Effect.fn("Organization.create")(function* (actor: Actor, input: CreateOrganization) {
+/** A new Organization the actor owns; their session then acts in it. Returns its slug. */
+export const createOrganization = Effect.fn("Organization.create")(function* (actor: SessionActor, input: CreateOrganization) {
   const database = yield* Database;
   const created = yield* database.transaction(insertOrganization(actor.userId, input.name, input.slug));
-  yield* updateActorSessionsOrganization(actor, created.id, created.slug);
+  yield* openOrganizationInSession(actor, created.id, created.slug);
   return created.slug;
 });
 
-export const updateActorSessionsOrganization = Effect.fn(
-  "Organization.updateActorSessionsOrganization",
-)(function* (actor: Actor, organizationId: string, organizationSlug: string) {
+/**
+ * Makes the Organization the one the actor's own session acts in. Their other sessions, another browser or a `ployz`
+ * device, keep theirs: each chose its own.
+ */
+export const openOrganizationInSession = Effect.fn(
+  "Organization.openOrganizationInSession",
+)(function* (actor: SessionActor, organizationId: string, organizationSlug: string) {
   const database = yield* Database;
   yield* database.drizzle
     .update(session)
@@ -120,7 +125,7 @@ export const updateActorSessionsOrganization = Effect.fn(
       activeOrganizationSlug: organizationSlug,
       updatedAt: new Date(),
     })
-    .where(eq(session.userId, actor.userId));
+    .where(and(eq(session.id, actor.credential.id), eq(session.userId, actor.userId)));
 });
 
 /** Someone who once joined by invite already knows the Organization exists, so its name tells them nothing new. */
@@ -157,11 +162,11 @@ export const getOrganizationState = Effect.fn(
 
 export const syncOrganizationSlug = Effect.fn(
   "Organization.syncOrganizationSlug",
-)(function* (actor: Actor, input: SyncOrganizationSlug) {
+)(function* (actor: SessionActor, input: SyncOrganizationSlug) {
   const { kind, organization } = yield* requireAccess(actor, input.organizationSlug, "org:read");
-  // Support visits; its sessions stay in the staff member's own Organization.
+  // Support visits; the session stays in the staff member's own Organization.
   if (kind === "member") {
-    yield* updateActorSessionsOrganization(actor, organization.id, input.organizationSlug);
+    yield* openOrganizationInSession(actor, organization.id, input.organizationSlug);
   }
   return {
     organizationId: organization.id,
@@ -233,13 +238,19 @@ export const handleUserCreated = Effect.fn("Organization.handleUserCreated")(
   },
 );
 
+/**
+ * A new session acts in an Organization from the start. A `ployz login` session redeeming `deviceCode` takes the one
+ * the `/device` page named when it was approved; any other takes the user's first, made if they have none.
+ */
 export const handleSessionCreated = Effect.fn("Organization.handleSessionCreated")(
 function* (
   sessionRecord: SessionRecord,
   ctx: SessionContext | null,
+  deviceCode: string | null,
 ) {
   if (!ctx || sessionRecord.activeOrganizationId) return;
-  let organizationId = yield* getFirstOrganizationIdForUser(sessionRecord.userId);
+  const approved = deviceCode === null ? null : yield* takeDeviceOrganization(deviceCode, sessionRecord.userId);
+  let organizationId = approved ?? (yield* getFirstOrganizationIdForUser(sessionRecord.userId));
   if (!organizationId) {
     const user = yield* Effect.tryPromise({
       try: () => ctx.context.internalAdapter.findUserById(sessionRecord.userId),
@@ -254,9 +265,9 @@ function* (
 
 /**
  * For an actor whose session acts in no Organization (theirs was deleted): their first Organization, else a new
- * personal one; their sessions then act in it. Returns its slug.
+ * personal one; their session then acts in it. Returns its slug.
  */
-export const openOrCreateOrganization = Effect.fn("Organization.openOrCreate")(function* (actor: Actor) {
+export const openOrCreateOrganization = Effect.fn("Organization.openOrCreate")(function* (actor: SessionActor) {
   const database = yield* Database;
   const [row] = yield* database.drizzle.select({ id: user.id, name: user.name, email: user.email }).from(user)
     .where(eq(user.id, actor.userId)).limit(1);
@@ -264,6 +275,6 @@ export const openOrCreateOrganization = Effect.fn("Organization.openOrCreate")(f
   const organizationId = yield* ensurePersonalOrganizationForUser(row);
   const slug = yield* getOrganizationSlugById(organizationId);
   if (!slug) return yield* new NotFound({ message: "Organization not found." });
-  yield* updateActorSessionsOrganization(actor, organizationId, slug);
+  yield* openOrganizationInSession(actor, organizationId, slug);
   return slug;
 });
