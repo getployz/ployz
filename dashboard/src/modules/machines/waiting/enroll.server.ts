@@ -301,7 +301,9 @@ const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(functi
 const usedOf = (tokenId: string) => sql<number>`(select count(*) from ${fleetTokenJoin} where ${fleetTokenJoin.fleetTokenId} = ${tokenId})
   + (select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${tokenId} and ${serverEnrollment.endedAt} is null)`.mapWith(Number);
 
-const enrollingOrJoined = sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and (${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
+// One arrival attempt per host per token: after a failed or cancelled one, the host waits for someone to enroll it again.
+const arrivalSpent = (tokenId: string) => sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id}
+  and (${serverEnrollment.fleetTokenId} = ${tokenId} or ${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`;
 
 const arrivingHost = (token: { readonly id: string; readonly organizationId: string }, checkinKey: string) => and(
   eq(waitingServer.organizationId, token.organizationId), eq(waitingServer.checkinKey, checkinKey),
@@ -310,7 +312,7 @@ const arrivingHost = (token: { readonly id: string; readonly organizationId: str
 
 /**
  * Starts the enroll of a ready host that just checked in on an Enroll on arrival token, while the token's used count
- * is under its max. An unlocked read first skips hosts that cannot start, so only a likely start opens a transaction.
+ * is under its max. Each host gets one such attempt per token; a manual enroll is the retry. An unlocked read first skips hosts that cannot start, so only a likely start opens a transaction.
  * Arrivals lock the token before the host, the same order as check-in and revoke, so the locks never form a cycle.
  * The token lock also queues arrivals of one token, and the host read after it sees every attempt that committed ahead.
  */
@@ -319,7 +321,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
   checkinKey: string,
 ) {
   const database = yield* Database;
-  const [glance] = yield* database.drizzle.select({ unavailable: enrollingOrJoined, used: usedOf(token.id) })
+  const [glance] = yield* database.drizzle.select({ unavailable: arrivalSpent(token.id), used: usedOf(token.id) })
     .from(waitingServer).where(arrivingHost(token, checkinKey));
   if (glance === undefined || glance.unavailable || glance.used >= token.autoEnrollMax) return false;
   return yield* database.transaction(Effect.gen(function* () {
@@ -334,7 +336,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
     if (live === undefined || live.max === null) return false;
     const [host] = yield* drizzle.select({
       id: waitingServer.id, report: waitingServer.report, observedIp: waitingServer.observedIp,
-      unavailable: enrollingOrJoined, used: usedOf(token.id),
+      unavailable: arrivalSpent(token.id), used: usedOf(token.id),
     }).from(waitingServer).where(arrivingHost(token, checkinKey)).for("update");
     if (host === undefined || host.unavailable || host.used >= live.max) return false;
     const { report } = host;

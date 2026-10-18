@@ -22,7 +22,9 @@ disk otherwise. Hosts where ZFS cannot run, or its preparation failed, was skipp
 turned off, use Docker volumes.
 
 Open **Tokens** to see **Auto up to N** and **x/N joined**. Open enrollments also reserve
-capacity. Failed or cancelled enrollments free their capacity for another arrival.
+capacity. Failed or cancelled enrollments free their capacity for another host. Each host
+gets one automatic attempt per token: after a failed or cancelled one it stays in Waiting
+until you enroll it again.
 Successful joins count for the token's lifetime, including after their waiting rows age out
 after seven days or a joined server is removed. Hosts beyond the limit stay in Waiting and
 can be enrolled manually. Manual enrolls of its hosts use its capacity too and can take the
