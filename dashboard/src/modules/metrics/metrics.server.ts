@@ -30,7 +30,7 @@ const readHistory = Effect.fn("Metrics.readHistory")(function* (organizationId: 
 
 /** A Service's metrics summed over every Server it runs on, with each Server's own reply. */
 export const readServiceMetrics = Effect.fn("Metrics.readService")(function* (actor: Actor, input: ReadServiceMetricsInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
   const found = yield* findService(organization.id, input.environmentId, input.service);
@@ -40,14 +40,14 @@ export const readServiceMetrics = Effect.fn("Metrics.readService")(function* (ac
 });
 
 export const readRuntimeServiceMetrics = Effect.fn("Metrics.readRuntimeService")(function* (actor: Actor, input: ReadRuntimeServiceMetricsInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
   return yield* readHistory(organization.id, { kind: "service", service: `${input.namespace}/${input.name}` }, window, at);
 });
 
 export const readServerMetrics = Effect.fn("Metrics.readServer")(function* (actor: Actor, input: ReadServerMetricsInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "metrics:read");
   const at = yield* Clock.currentTimeMillis;
   const window = resolveRange(input, at);
   return yield* readHistory(organization.id, { kind: "machine", machine_id: input.machineId }, window, at);

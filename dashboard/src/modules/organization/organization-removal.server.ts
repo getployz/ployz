@@ -4,24 +4,29 @@ import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.se
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { requireAccess } from "#/modules/organization/access.server";
-import type { Actor, Caller } from "#/modules/identity/actor";
-import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { type Actor, type Caller, callerCan } from "#/modules/identity/actor";
+import { deleteEnrollmentTokens, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { eq } from "drizzle-orm";
 import { session } from "#/modules/identity/tables";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
-import { machineEnrollmentToken } from "#/modules/machines/tables";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { organization } from "./tables";
+import { organization, organizationChange } from "./tables";
 import { Database } from "#/server/database.server";
 
 /**
  * `ployz org rm`: remove the Caller's Organization once it has no Project, whose Environments all left the Servers
  * through the one teardown path. The Store forgets its configuration; then pairing removal clears every device key and
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
- * rerun confirms it; only then do Cloud's rows go.
+ * rerun confirms it; only then do Cloud's rows go. `deleting` wraps the row delete inside that transaction, for a caller
+ * with rows of its own to take along or a last check to make under the Organization's lock.
  */
-export const removeOrganization = Effect.fn("Organization.remove")(function* (caller: Pick<Caller, "userId" | "organization" | "role">, slug: string) {
+export const removeOrganization = Effect.fn("Organization.remove")(function* <E = never>(
+  caller: Pick<Caller, "userId" | "organization" | "role">,
+  slug: string,
+  deleting: Deleting<E> = (drop) => drop,
+) {
   const { id, slug: current } = caller.organization;
   if (slug !== current) {
     return refused({
@@ -30,7 +35,7 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* (ca
       details: { next: `ployz org use ${slug}` },
     });
   }
-  if (caller.role !== "owner") {
+  if (!callerCan(caller, "org:delete")) {
     return refused({ code: "forbidden", message: "Only an owner of this Organization can remove it. No changes made.", details: null });
   }
   const refusal = yield* cloudStore.pipe(
@@ -46,19 +51,20 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* (ca
   };
   if (!revoked.confirmed) return removal({ organization: slug, removed: false, servers });
   const database = yield* Database;
-  const domain = yield* database.transaction(dropOrganizationRows(id));
+  const domain = yield* database.transaction(dropOrganizationRows(id, deleting));
   // Only once the Organization is gone: its Cluster Domain row cascaded with it, so a retry never releases twice.
   if (domain) yield* releaseClusterDomain(domain);
   return removal({ organization: slug, removed: true, servers });
 });
 
+type Deleting<E> = (drop: Effect.Effect<void, never, Database>) => Effect.Effect<void, E, Database>;
 type OrganizationRemoval = { organization: string; removed: boolean; servers: { confirmed: string[]; unconfirmed: string[] } };
 const removal = (value: OrganizationRemoval): StoreResult<OrganizationRemoval> => ({ ok: true, value });
 const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ ok: false, refusal });
 
 /** The dashboard's Delete organization: the same removal, by an owner of the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
-  const access = yield* requireAccess(actor, organizationSlug, "own").pipe(
+  const access = yield* requireAccess(actor, organizationSlug, "org:delete").pipe(
     // A server function answers every Forbidden with one generic sentence; a refusal reaches the dialog as written.
     Effect.catchTag("Forbidden", (error) => Effect.succeed(refused({ code: "forbidden", message: error.message, details: null }))),
   );
@@ -66,17 +72,29 @@ export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember
   return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, organizationSlug);
 });
 
-/** Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. */
-const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* (organizationId: string) {
+/**
+ * Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. The
+ * cascade follows the Organization enrollment lock order: it locks the rows check-in, Reject and revoke take before it
+ * deletes them, and ends open attempts, with their runs' cancel events, before it deletes their tokens.
+ */
+const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* <E>(organizationId: string, deleting: Deleting<E>) {
   const { drizzle } = yield* Database;
+  yield* lockOrganizationEnrollment(organizationId);
+  yield* drizzle.select({ id: organization.id }).from(organization).where(eq(organization.id, organizationId)).for("update");
   const [pending] = yield* drizzle.select({ organizationId: organizationPairing.organizationId })
     .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
   if (pending) return yield* new PloyzProviderError({
     operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
   });
   const [domain] = yield* drizzle.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, organizationId));
-  yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
-  yield* drizzle.delete(organization).where(eq(organization.id, organizationId));
+  yield* drizzle.select({ id: fleetToken.id }).from(fleetToken)
+    .where(eq(fleetToken.organizationId, organizationId)).orderBy(fleetToken.id).for("update");
+  yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
+    .where(eq(waitingServer.organizationId, organizationId)).orderBy(waitingServer.id).for("update");
+  yield* deleteEnrollmentTokens(organizationId);
+  yield* deleting(drizzle.delete(organization).where(eq(organization.id, organizationId)).pipe(Effect.asVoid, Effect.orDie));
+  // The cascade's statement triggers logged the deletes under the Organization's id; the log goes with it.
+  yield* drizzle.delete(organizationChange).where(eq(organizationChange.organizationId, organizationId));
   // Sessions in it act nowhere now: /cloud offers the next Organization or a new one.
   yield* drizzle.update(session).set({ activeOrganizationId: null, activeOrganizationSlug: null })
     .where(eq(session.activeOrganizationId, organizationId));

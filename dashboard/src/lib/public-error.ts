@@ -8,6 +8,7 @@ export const PublicError = Schema.Union([
       "FORBIDDEN",
       "NOT_FOUND",
       "CONFLICT",
+      "RATE_LIMITED",
       "BUILD_GRANT_UNAVAILABLE",
       "INTERNAL",
     ]),

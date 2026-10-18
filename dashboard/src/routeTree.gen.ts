@@ -24,12 +24,14 @@ import { Route as PublicAuthRouteImport } from './routes/_public/auth'
 import { Route as ApiSplatRouteImport } from './routes/api/$'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthGithubRouteImport } from './routes/auth/github'
+import { Route as ClaimSecretRouteImport } from './routes/claim/$secret'
 import { Route as DevSettingsRowsRouteImport } from './routes/dev.settings-rows'
 import { Route as InviteTokenRouteImport } from './routes/invite/$token'
 import { Route as DotwellKnownOauthAuthorizationServerIndexRouteImport } from './routes/[.]well-known/oauth-authorization-server/index'
 import { Route as DotwellKnownOauthProtectedResourceMcpRouteImport } from './routes/[.]well-known/oauth-protected-resource/mcp'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
+import { Route as ApiAgentSignupRouteImport } from './routes/api/agent/signup'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiCheckinIndexRouteImport } from './routes/api/checkin/index'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
@@ -69,6 +71,7 @@ import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugIndexRouteImpo
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/route'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126ServersIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/servers/index'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/servers/$serverId'
+import { Route as ProtectedCloudOrganizationSlugOrgChar126ServersTokensRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/servers/tokens'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/route'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugAnalyticsRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/analytics'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugDeploymentsRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments/route'
@@ -159,6 +162,11 @@ const AuthGithubRoute = AuthGithubRouteImport.update({
   path: '/auth/github',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClaimSecretRoute = ClaimSecretRouteImport.update({
+  id: '/claim/$secret',
+  path: '/claim/$secret',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const DevSettingsRowsRoute = DevSettingsRowsRouteImport.update({
   id: '/dev/settings-rows',
   path: '/dev/settings-rows',
@@ -192,6 +200,11 @@ const ProtectedCloudOrganizationSlugRouteRoute =
     path: '/$organizationSlug',
     getParentRoute: () => ProtectedCloudRouteRoute,
   } as any)
+const ApiAgentSignupRoute = ApiAgentSignupRouteImport.update({
+  id: '/api/agent/signup',
+  path: '/api/agent/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -405,6 +418,12 @@ const ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute =
     path: '/~/servers/$serverId',
     getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
   } as any)
+const ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute =
+  ProtectedCloudOrganizationSlugOrgChar126ServersTokensRouteImport.update({
+    id: '/~/servers/tokens',
+    path: '/~/servers/tokens',
+    getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
+  } as any)
 const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRoute =
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRouteImport.update(
     {
@@ -554,10 +573,12 @@ export interface FileRoutesByFullPath {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -597,6 +618,7 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugDeploymentsRouteRouteWithChildren
   '/cloud/$organizationSlug/~/servers/$serverId': typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
+  '/cloud/$organizationSlug/~/servers/tokens': typeof ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugAnalyticsRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/history': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugHistoryRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRoute
@@ -625,10 +647,12 @@ export interface FileRoutesByTo {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -666,6 +690,7 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug/~': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
   '/cloud/$organizationSlug/~/servers/$serverId': typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
+  '/cloud/$organizationSlug/~/servers/tokens': typeof ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugAnalyticsRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/history': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugHistoryRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRoute
@@ -697,10 +722,12 @@ export interface FileRoutesById {
   '/api/$': typeof ApiSplatRoute
   '/api/health': typeof ApiHealthRoute
   '/auth/github': typeof AuthGithubRoute
+  '/claim/$secret': typeof ClaimSecretRoute
   '/dev/settings-rows': typeof DevSettingsRowsRoute
   '/invite/$token': typeof InviteTokenRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/.well-known/oauth-protected-resource/mcp': typeof DotwellKnownOauthProtectedResourceMcpRoute
+  '/api/agent/signup': typeof ApiAgentSignupRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/cli/$': typeof ApiCliSplatRoute
   '/api/cli/manifest': typeof ApiCliManifestRoute
@@ -743,6 +770,7 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugDeploymentsRouteRouteWithChildren
   '/_protected/cloud/$organizationSlug/_org/~/servers/$serverId': typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
+  '/_protected/cloud/$organizationSlug/_org/~/servers/tokens': typeof ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/analytics': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugAnalyticsRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/history': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugHistoryRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRoute
@@ -774,10 +802,12 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -817,6 +847,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/$projectSlug/'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments'
     | '/cloud/$organizationSlug/~/servers/$serverId'
+    | '/cloud/$organizationSlug/~/servers/tokens'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/history'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs'
@@ -845,10 +876,12 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -886,6 +919,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/~'
     | '/cloud/$organizationSlug/$projectSlug'
     | '/cloud/$organizationSlug/~/servers/$serverId'
+    | '/cloud/$organizationSlug/~/servers/tokens'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/analytics'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/history'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs'
@@ -916,10 +950,12 @@ export interface FileRouteTypes {
     | '/api/$'
     | '/api/health'
     | '/auth/github'
+    | '/claim/$secret'
     | '/dev/settings-rows'
     | '/invite/$token'
     | '/_protected/cloud/$organizationSlug'
     | '/.well-known/oauth-protected-resource/mcp'
+    | '/api/agent/signup'
     | '/api/auth/$'
     | '/api/cli/$'
     | '/api/cli/manifest'
@@ -962,6 +998,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments'
     | '/_protected/cloud/$organizationSlug/_org/~/servers/$serverId'
+    | '/_protected/cloud/$organizationSlug/_org/~/servers/tokens'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/analytics'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/history'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs'
@@ -991,9 +1028,11 @@ export interface RootRouteChildren {
   ApiSplatRoute: typeof ApiSplatRoute
   ApiHealthRoute: typeof ApiHealthRoute
   AuthGithubRoute: typeof AuthGithubRoute
+  ClaimSecretRoute: typeof ClaimSecretRoute
   DevSettingsRowsRoute: typeof DevSettingsRowsRoute
   InviteTokenRoute: typeof InviteTokenRoute
   DotwellKnownOauthProtectedResourceMcpRoute: typeof DotwellKnownOauthProtectedResourceMcpRoute
+  ApiAgentSignupRoute: typeof ApiAgentSignupRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiCliManifestRoute: typeof ApiCliManifestRoute
@@ -1130,6 +1169,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthGithubRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/claim/$secret': {
+      id: '/claim/$secret'
+      path: '/claim/$secret'
+      fullPath: '/claim/$secret'
+      preLoaderRoute: typeof ClaimSecretRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/dev/settings-rows': {
       id: '/dev/settings-rows'
       path: '/dev/settings-rows'
@@ -1171,6 +1217,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/cloud/$organizationSlug'
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugRouteRouteImport
       parentRoute: typeof ProtectedCloudRouteRoute
+    }
+    '/api/agent/signup': {
+      id: '/api/agent/signup'
+      path: '/api/agent/signup'
+      fullPath: '/api/agent/signup'
+      preLoaderRoute: typeof ApiAgentSignupRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/auth/$': {
       id: '/api/auth/$'
@@ -1445,6 +1498,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
     }
+    '/_protected/cloud/$organizationSlug/_org/~/servers/tokens': {
+      id: '/_protected/cloud/$organizationSlug/_org/~/servers/tokens'
+      path: '/~/servers/tokens'
+      fullPath: '/cloud/$organizationSlug/~/servers/tokens'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersTokensRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
+    }
     '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas': {
       id: '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas'
       path: ''
@@ -1559,6 +1619,7 @@ interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgChar126SettingsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   ProtectedCloudOrganizationSlugOrgChar126IndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
+  ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute
   ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute
 }
 
@@ -1574,6 +1635,8 @@ const ProtectedCloudOrganizationSlugOrgRouteRouteChildren: ProtectedCloudOrganiz
       ProtectedCloudOrganizationSlugOrgChar126IndexRoute,
     ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute:
       ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute,
+    ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute:
+      ProtectedCloudOrganizationSlugOrgChar126ServersTokensRoute,
     ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute:
       ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute,
   }
@@ -1773,10 +1836,12 @@ const rootRouteChildren: RootRouteChildren = {
   ApiSplatRoute: ApiSplatRoute,
   ApiHealthRoute: ApiHealthRoute,
   AuthGithubRoute: AuthGithubRoute,
+  ClaimSecretRoute: ClaimSecretRoute,
   DevSettingsRowsRoute: DevSettingsRowsRoute,
   InviteTokenRoute: InviteTokenRoute,
   DotwellKnownOauthProtectedResourceMcpRoute:
     DotwellKnownOauthProtectedResourceMcpRoute,
+  ApiAgentSignupRoute: ApiAgentSignupRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
   ApiCliManifestRoute: ApiCliManifestRoute,

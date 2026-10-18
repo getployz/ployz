@@ -9,6 +9,7 @@ import { CATALOG } from "#/modules/agent/agent-tools";
 import { asRecord, asString, projectJsonObject, projectJsonValue } from "#/lib/json";
 import type { JsonObject } from "#/db/tables";
 import { grantClaimsOf, oauthCaller } from "#/modules/identity/caller.server";
+import { claimUrlFor } from "#/modules/identity/claim-required.server";
 import { REQUEST_KEY_HEADER, requestKeyOf } from "#/modules/operations/keyed.server";
 import { MCP_SCOPES, mcpEndpoints } from "#/server/auth-mcp.server";
 import { Auth } from "#/server/auth.server";
@@ -56,12 +57,17 @@ const toolSchema = (tool: AgentTool): JsonObject => {
 };
 
 type Run = <A, E>(effect: Effect.Effect<A, E, RemoteServices>) => Promise<A>;
-type RemoteServices = Effect.Services<ReturnType<typeof runAgentCall>> | Effect.Services<ReturnType<typeof oauthCaller>>;
+type RemoteServices =
+  | Effect.Services<ReturnType<typeof runAgentCall>>
+  | Effect.Services<ReturnType<typeof oauthCaller>>
+  | Effect.Services<ReturnType<typeof claimUrlFor>>;
 
 const text = (body: JsonObject, isError: boolean): CallToolResult =>
   ({ isError, content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body });
 
-const resultOf = (result: AgentResult, key: string, link: () => string): CallToolResult => {
+type Claim = { message: string; url: string };
+
+const resultOf = (result: AgentResult, key: string, link: () => string, claim: Claim | null): CallToolResult => {
   if ("asking" in result) {
     const { approvalId, refusal } = result.asking;
     const url = link();
@@ -75,6 +81,13 @@ const resultOf = (result: AgentResult, key: string, link: () => string): CallToo
     };
   }
   const { outcome } = result;
+  if (claim !== null) {
+    return {
+      isError: true,
+      content: [{ type: "text", text: `${claim.message} A person must claim it first: open ${claim.url} and sign in with GitHub, then call this tool again.` }],
+      structuredContent: { ok: false, claim_required: claim, request_key: key },
+    };
+  }
   return text(projectJsonObject({ ...outcome, request_key: key }) ?? { ok: outcome.ok, request_key: key }, !outcome.ok);
 };
 
@@ -103,7 +116,9 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
         approvalId: asString(approval),
         page: { at: "organization" },
       }));
-      return resultOf(result, key, link);
+      const refused = "outcome" in result && "refusal" in result.outcome ? result.outcome.refusal : null;
+      const claim = refused?.code === "claim_required" ? { message: refused.message, url: await run(claimUrlFor(caller.organization.id)) } : null;
+      return resultOf(result, key, link, claim);
     });
   }
   return server;

@@ -1,13 +1,14 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import {
   enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
 } from "#/modules/machines/tables";
+import { cancelOpenServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -42,15 +43,64 @@ const decrypt = Effect.fn("PairingRemoval.decrypt")(function* (
   });
 });
 
+/** The advisory lock class of {@link lockOrganizationEnrollment}; the two-key form keeps it apart from every one-key lock. */
+const ORGANIZATION_ENROLLMENT_LOCK = 1_349_601;
+
+/**
+ * Serializes the writers that create an Organization's enrollments or tokens, or delete its enrollment state: Enroll,
+ * a legacy claim, Fleet Token creation, Forget Servers, a pairing removal, a dead-claim release and Organization
+ * removal. The pairing row can't do it, since it doesn't exist before the first server founds. Taken first in its
+ * transaction; Organization removal alone then locks the Organization row, the row a claim locks without this lock. The
+ * order after that is the pairing row, then `fleet_token`, `waiting_server` and `server_enrollment` rows (each in id
+ * order), then enrollment tokens, then `operation_outbox` cancel events (in attempt id order). Cancel, Reject and the
+ * run and sweep closers only end attempts; they skip this lock and start at `server_enrollment`, Reject after its
+ * `waiting_server` rows. Fleet Token revoke and probe selection skip it too.
+ * Revoke locks its token, then that token's `waiting_server` rows, and probe selection locks only `waiting_server` rows. A
+ * check-in holds at most one `waiting_server` row, after its token, and stamps a probe handout on that same row. A cancel
+ * event's outbox row stays locked until commit, so no path inserts one before it holds that attempt.
+ */
+export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganizationEnrollment")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
+});
+
+export const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* cancelOpenServerEnrollments(organizationId);
+  yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+});
+
+/** A claim lives while any unspent, unexpired founding token its Machine holds with its key could still complete it. */
+const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function* (pairing: Pairing) {
+  const { drizzle } = yield* Database;
+  const [live] = yield* drizzle.select({ id: machineEnrollmentToken.id }).from(machineEnrollmentToken).where(and(
+    eq(machineEnrollmentToken.organizationId, pairing.organizationId),
+    eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
+    pairing.founderPublicKey === null ? undefined : eq(machineEnrollmentToken.claimedPublicKey, pairing.founderPublicKey),
+    sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
+    isNull(machineEnrollmentToken.joinedMachineId),
+    gt(machineEnrollmentToken.expiresAt, sql`now()`),
+  )).limit(1);
+  return live !== undefined;
+});
+
+/** A founding claim no token can finish, which the next Enroll drops before it plans a first server. */
+export const isDeadFoundingClaim = Effect.fn("PairingRemoval.isDeadFoundingClaim")(function* (pairing: Pairing) {
+  return pairing.founderMachineId === null && pairing.removalStartedAt === null && !(yield* foundingClaimLive(pairing));
+});
+
 /** Move usable credentials out of ordinary lookup before doing any remote work. */
 export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
-  function* (organizationId: string) {
+  function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
     const database = yield* Database;
     const disabled = yield* database.transaction(Effect.gen(function* () {
+      yield* lockOrganizationEnrollment(organizationId);
       const { drizzle } = yield* Database;
       const [pairing] = yield* drizzle.select().from(organizationPairing)
         .where(eq(organizationPairing.organizationId, organizationId)).for("update");
       if (!pairing) return null;
+      const deadClaim = options.deadClaimOnly === true && pairing.removalStartedAt === null;
+      if (deadClaim && (pairing.founderMachineId !== null || (yield* foundingClaimLive(pairing)))) return "kept" as const;
       const secret = yield* decrypt(pairing.encryptedPairingSecret);
       const generation = createHash("sha256").update(secret).digest("hex");
       let attempt: RemovalAttempt;
@@ -70,8 +120,9 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         }))))];
         // A claim or reserved Join may have reached a Machine before publication was acknowledged.
         const intendedMachines = [pairing.founderClaimMachineId, ...(allocation?.assignments.map((assignment) => assignment.machine.id) ?? [])];
+        const waived = deadClaim ? pairing.founderClaimMachineId : null;
         for (const machineId of intendedMachines) {
-          if (!removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
+          if (machineId !== waived && !removalEndpoints.some((endpoint) => endpoint.machineId === machineId)) {
             removalEndpoints.push({ machineId: yield* Schema.decodeUnknownEffect(rustMachineIdSchema)(machineId), status: "unknown" });
           }
         }
@@ -82,11 +133,14 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
         // Every device's capability goes at once; clearing each Server's `cli-*` holders below confirms it.
         yield* drizzle.delete(serverAccess).where(eq(serverAccess.organizationId, organizationId));
-        yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
+      // A dead claim's own tokens are spent or expired, so other tokens and open attempts stay for the next first server.
+      // A full removal clears them even when it resumes a removal a dead-claim release started.
+      if (options.deadClaimOnly !== true) yield* deleteEnrollmentTokens(organizationId);
       return { attempt, generation };
     }));
+    if (disabled === "kept") return disabled;
     if (disabled !== null) {
       const runtime = yield* OrganizationRuntime;
       yield* runtime.cancel(organizationId, disabled.generation);
@@ -97,6 +151,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
 
 /** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */
 const lockWitnessedPairing = Effect.fn("PairingRemoval.lockWitnessed")(function* (organizationId: string, generation: string) {
+  yield* lockOrganizationEnrollment(organizationId);
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select().from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId)).for("update");
@@ -162,7 +217,7 @@ export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
       if (pairing.kind === "replaced") return replaced;
       if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } satisfies ServerRelease;
       const { drizzle } = yield* Database;
-      yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+      yield* deleteEnrollmentTokens(organizationId);
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
       return { kind: "released" } satisfies ServerRelease;
     }));
@@ -190,6 +245,7 @@ export const seeCluster = Effect.fn("PairingRemoval.seeCluster")(function* (orga
 
 /** As `seeCluster`, holding the pairing row's lock for the caller's transaction. */
 const lockCluster = Effect.fn("PairingRemoval.lockCluster")(function* (organizationId: string) {
+  yield* lockOrganizationEnrollment(organizationId);
   const { drizzle } = yield* Database;
   const [pairing] = yield* drizzle.select().from(organizationPairing)
     .where(eq(organizationPairing.organizationId, organizationId)).for("update");
@@ -214,7 +270,7 @@ export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function*
     const written = yield* storeSystem(organizationId, { event: "cluster_forgotten" });
     const { drizzle } = yield* Database;
     yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
-    yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+    yield* deleteEnrollmentTokens(organizationId);
     yield* drizzle.delete(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
     yield* drizzle.delete(machineRemoveAttempt).where(eq(machineRemoveAttempt.organizationId, organizationId));
     yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
@@ -242,31 +298,36 @@ const ManagementClientCleared = Schema.Struct({
 });
 
 /**
- * Clear one Machine's device holders (`cli-*`), then its `cloud` Management Client. Only a successful Clear or an
- * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders.
+ * Clear one Machine's device holders (`cli-*`), its push target, then its `cloud` Management Client. Only a successful Clear or an
+ * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders. A Machine that
+ * authenticates but never confirms still holds the pairing, and Cloud records that it answered.
  */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
-      const { management_clients: labels } = yield* session.inspect();
-      for (const label of labels) {
-        if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
-      }
-      yield* session.clearManagementClient("cloud");
-      return true;
+      return yield* Effect.gen(function* () {
+        const { management_clients: labels } = yield* session.inspect();
+        for (const label of labels) {
+          if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
+        }
+        yield* session.setPushTarget(null).pipe(Effect.catchTag("ServerLacks", () => Effect.void));
+        yield* session.clearManagementClient("cloud");
+        return "confirmed" as const;
+      }).pipe(Effect.orElseSucceed(() => "answered" as const));
     })).pipe(Effect.catch((error) => Effect.succeed(
       error._tag === "PloyzProviderError" && error.operation === "connect"
-        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)),
+        && Option.isSome(Schema.decodeUnknownOption(ManagementClientCleared)(error.cause)) ? "confirmed" as const : "silent" as const,
     )));
   },
 );
 
 /** Endpoint failures are unconfirmed outcomes, never evidence that old access was revoked. */
 export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
-  function* (organizationId: string) {
-    const attempt = yield* disableOrganizationPairing(organizationId);
+  function* (organizationId: string, options: { readonly deadClaimOnly?: boolean } = {}) {
+    const attempt = yield* disableOrganizationPairing(organizationId, options);
+    if (attempt === "kept") return { confirmed: false, endpoints: [] };
     const database = yield* Database;
     if (attempt === null) {
       const candidates = yield* database.drizzle.select({ machineId: organizationMachine.machineId })
@@ -275,17 +336,20 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
     }
     yield* Effect.forEach(attempt.removalEndpoints, (endpoint) => Effect.gen(function* () {
       if (endpoint.status !== "pending") return;
-      const management = yield* decrypt(endpoint.encryptedExpected);
-      if (!(yield* removeEndpointPairing(endpoint.machineId, management))) return;
+      const heard = yield* decrypt(endpoint.encryptedExpected).pipe(
+        Effect.flatMap((management) => removeEndpointPairing(endpoint.machineId, management)),
+        Effect.orElseSucceed(() => "silent" as const),
+      );
+      if (heard === "silent") return;
       yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;
         const current = yield* loadCurrentAttempt(attempt);
-        yield* drizzle.update(organizationPairing).set({
+        yield* drizzle.update(organizationPairing).set(heard === "answered" ? { removalAnsweredAt: sql`clock_timestamp()` } : {
           removalEndpoints: current.removalEndpoints.map((entry) => entry.machineId === endpoint.machineId
             ? { status: "confirmed", machineId: entry.machineId } : entry),
         }).where(eq(organizationPairing.organizationId, organizationId));
       }));
-    }).pipe(Effect.ignore), { concurrency: 4, discard: true });
+    }), { concurrency: 4, discard: true });
     return yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
       const current = yield* loadCurrentAttempt(attempt);

@@ -8,8 +8,9 @@ import { handleGithubSignIn } from "./github";
 useServiceFreeEffectRunner();
 
 const GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize?state=abc";
-// SAFETY: The route only checks whether a session exists.
-const SESSION = {} as AuthSession;
+// SAFETY: The route only checks whether a session exists and whether its user is anonymous.
+const SESSION = { user: {} } as AuthSession;
+const ANONYMOUS_SESSION = { user: { isAnonymous: true } } as AuthSession;
 
 const getSession = vi.spyOn(auth, "getAuthSessionEffect");
 const signIn = vi.spyOn(auth, "signInGithubEffect");
@@ -58,6 +59,15 @@ describe("GET /auth/github", () => {
     expect(signIn).not.toHaveBeenCalled();
   });
 
+  it("sends an anonymous agent's session to GitHub as if signed out", async () => {
+    getSession.mockImplementation(() => Effect.succeed(ANONYMOUS_SESSION));
+
+    const response = await handleGithubSignIn(request("/claim/secret"));
+
+    expect(signIn).toHaveBeenCalledWith(expect.any(Headers), "/claim/secret");
+    expect(response.headers.get("location")).toBe(GITHUB_AUTHORIZE);
+  });
+
   it("keeps a signed-in visitor on this origin", async () => {
     getSession.mockImplementation(() => Effect.succeed(SESSION));
 
@@ -73,6 +83,23 @@ describe("GET /auth/github", () => {
 
     expect(response.headers.get("location")).toBe("/.//evil.com");
   });
+
+  it("marks a sign-in the claim page started, so the claim lands when GitHub sends the person back", async () => {
+    const response = await handleGithubSignIn(request("/claim/abc_DEF-123", "same-origin"));
+
+    expect(response.headers.get("location")).toBe(GITHUB_AUTHORIZE);
+    const cookie = response.headers.get("set-cookie") ?? "";
+    expect(cookie).toMatch(/^ployz_claim_sign_in=\d+\.[0-9a-f]{64}; Path=\/; Max-Age=600; HttpOnly; SameSite=Lax$/);
+  });
+
+  it.each([["/claim/abc", "cross-site"], ["/claim/abc", null], ["/cloud/acme", "same-origin"]])(
+    "does not mark the sign-in for %s from %s",
+    async (callbackURL, site) => {
+      const response = await handleGithubSignIn(request(callbackURL, site));
+
+      expect(response.headers.has("set-cookie")).toBe(false);
+    },
+  );
 
   it("shows the failed sign-in page when better-auth refuses", async () => {
     signIn.mockImplementation(() => Effect.succeed(new Response("{}", { status: 400 })));
@@ -94,8 +121,8 @@ describe("GET /auth/github", () => {
   });
 });
 
-function request(callbackURL: string | null) {
+function request(callbackURL: string | null, fetchSite: string | null = null) {
   const url = new URL("http://localhost/auth/github");
   if (callbackURL !== null) url.searchParams.set("callbackURL", callbackURL);
-  return new Request(url);
+  return new Request(url, { headers: fetchSite === null ? {} : { "sec-fetch-site": fetchSite } });
 }

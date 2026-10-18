@@ -576,6 +576,7 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         | ProvisionError::BootstrapSignature(_)
         | ProvisionError::Install(_)
         | ProvisionError::InstallFailed { .. }
+        | ProvisionError::InstallRefused { .. }
         | ProvisionError::Cleanup(_)
         | ProvisionError::CleanupFailed { .. } => RpcErrorCode::Internal,
     }
@@ -873,8 +874,14 @@ impl From<DeployError> for Failure {
 }
 
 impl From<LoginError> for Failure {
-    /// Sign-in failures name the command that fixes them.
+    /// Sign-in failures name the command that fixes them. A refusal Cloud sent in the
+    /// RPC error vocabulary, such as `claim_required`, keeps its code, details and next step.
     fn from(error: LoginError) -> Self {
+        if let LoginError::Status { body, .. } = &error
+            && let Some(refused) = crate::cloud_account::refusal(body.as_bytes())
+        {
+            return Self::command(refused);
+        }
         let next = match &error {
             // Cloud binds every call to the acting Organization, `org ls` included: a
             // sign-in left outside it can only start over.
@@ -1124,6 +1131,7 @@ mod tests {
             selection: crate::context::ConnectionSource::Context("prod".into()),
             attempts: 3,
             retry: ployz_core::Retry::AfterRestart,
+            reached: false,
             last: Some(Box::new(ConnectError::Io(io::Error::from(
                 io::ErrorKind::ConnectionRefused,
             )))),
@@ -1279,5 +1287,27 @@ mod tests {
         assert_eq!(failure.report().code, RpcErrorCode::NotFound);
         assert_eq!(failure.hints(), [Hint::valid(["web"])]);
         assert_eq!(failure.causes(), ["No Service nope."]);
+    }
+
+    #[test]
+    fn a_cloud_claim_required_refusal_keeps_its_code_claim_url_and_next() {
+        let claim_url = "https://ployz.dev/claim/abc";
+        let next = "Open https://ployz.dev/claim/abc and sign in with GitHub, then try again.";
+        let body = serde_json::json!({ "error": {
+            "code": "claim_required",
+            "message": "Claim this Organization to create a token.",
+            "details": { "claim_url": claim_url, "action": "mint_token", "next": next },
+        }});
+        let failure = Failure::from(LoginError::Status {
+            status: 403,
+            body: body.to_string(),
+        });
+        let report = failure.report();
+        assert_eq!(report.code, RpcErrorCode::from("claim_required"));
+        assert_eq!(report.message, "Claim this Organization to create a token.");
+        assert_eq!(report.details.get("claim_url").unwrap(), claim_url);
+        assert_eq!(report.details.get("action").unwrap(), "mint_token");
+        assert_eq!(report.details.get("next").unwrap(), next);
+        assert_eq!(failure.hints(), [Hint::Next(next.into())]);
     }
 }

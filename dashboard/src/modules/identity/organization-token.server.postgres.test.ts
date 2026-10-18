@@ -1,10 +1,15 @@
-import { Effect } from "effect";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ConfigProvider, Effect, Layer } from "effect";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import type { Caller } from "#/modules/identity/actor";
-import { createOrganizationToken, listCredentials, revokeCredential } from "#/modules/identity/organization-token.server";
+import { resolveCaller } from "#/modules/identity/caller.server";
+import { createOrganizationToken, listCredentials, mintOrganizationTokenUnchecked, revokeCredential } from "#/modules/identity/organization-token.server";
 import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
+import { Auth, type AuthService } from "#/server/auth.server";
+import { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 
 const ACME = "00000000-0000-4000-8000-00000000d001";
@@ -13,7 +18,9 @@ let harness: PostgresTestHarness;
 const ids = { ada: "", bob: "", eve: "" };
 const roles = { ada: "owner", bob: "admin", eve: "member" } satisfies Record<keyof typeof ids, Caller["role"]>;
 
-const run = <A, E>(effect: Effect.Effect<A, E, Database>) => harness.runEffect(effect);
+const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: "postgres://unused@localhost/unused" } }))));
+
+const run = <A, E>(effect: Effect.Effect<A, E, Database | AppConfig>) => harness.runEffect(effect.pipe(Effect.provide(config)));
 
 const callerOf = (who: keyof typeof ids): Caller => ({
   userId: ids[who],
@@ -75,5 +82,46 @@ describe("organization tokens", () => {
     expect(await listedBy("ada")).toEqual(["ada-ci", "eve-ci"]);
     expect(await revokedBy("bob", ada)).toBe("revoked");
     expect(await listedBy("ada")).toEqual(["eve-ci"]);
+  });
+
+  it("shows support none of the Organization's tokens and lets it revoke none", async () => {
+    const ada = await tokenOf("ada");
+    const support: Caller = {
+      ...callerOf("bob"), userId: "00000000-0000-4000-8000-00000000d0ff", role: null,
+      support: { variables: true, configs: true, logs: true },
+    };
+    expect((await run(listCredentials(support))).tokens).toEqual([]);
+    expect(await run(revokeCredential(support, ada).pipe(
+      Effect.as("revoked"),
+      Effect.catchTag("NotFound", () => Effect.succeed("not_found")),
+    ))).toBe("not_found");
+  });
+
+  it("acts as its maker until the expiry it was minted with, then reads as no credential", async () => {
+    const noSession = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(null) });
+    const presented = async (expiresAt: Date) => {
+      const { secret } = await run(mintOrganizationTokenUnchecked({ organizationId: ACME, userId: ids.eve, name: "agent", kind: "agent", expiresAt }));
+      return run(resolveCaller(new Headers({ authorization: `Bearer ${secret}` })).pipe(
+        Effect.map((caller) => caller.userId),
+        Effect.catchTag("Unauthorized", () => Effect.succeed("unauthorized")),
+        Effect.provideService(Auth, noSession),
+      ));
+    };
+    expect(await presented(new Date(Date.now() + 60_000))).toBe(ids.eve);
+    expect(await presented(new Date(Date.now() - 1_000))).toBe("unauthorized");
+  });
+
+  it("decides a token's expiry by the database clock, so a process clock running behind keeps no lapsed token alive", async () => {
+    const noSession = asTestDouble<AuthService>()({ getSession: () => Effect.succeed(null) });
+    const { secret } = await run(mintOrganizationTokenUnchecked({ organizationId: ACME, userId: ids.eve, name: "agent", kind: "agent", expiresAt: new Date(Date.now() - 1_000) }));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() - 2 * 3_600_000);
+    try {
+      expect(await run(resolveCaller(new Headers({ authorization: `Bearer ${secret}` })).pipe(
+        Effect.map((caller) => caller.userId),
+        Effect.catchTag("Unauthorized", () => Effect.succeed("unauthorized")),
+        Effect.provideService(Auth, noSession),
+      ))).toBe("unauthorized");
+    } finally { vi.useRealTimers(); }
   });
 });

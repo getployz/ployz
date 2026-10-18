@@ -9,6 +9,6 @@ export const listAgentThreadsServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const access = yield* requireAccess(context.actor, data.organizationSlug, "operate");
+    const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
     return yield* recentThreads({ organizationId: access.organization.id, userId: access.userId });
   })));

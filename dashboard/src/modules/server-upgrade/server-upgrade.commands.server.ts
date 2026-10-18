@@ -8,6 +8,7 @@ const UpgradePolicy = Schema.Struct({ channel: Schema.Literals(RELEASE_CHANNELS)
 
 export const serverUpgradePolicyShow = defineCommand({
   name: "server_upgrade_policy_show",
+  requires: "servers:read",
   path: ["server", "upgrade-policy", "show"],
   about: "Show the Organization's upgrade policy: its Release Channel and whether Servers upgrade automatically",
   examples: ["ployz server upgrade-policy show"],
@@ -25,6 +26,7 @@ export const serverUpgradePolicyShow = defineCommand({
 
 export const serverUpgradePolicySet = defineCommand({
   name: "server_upgrade_policy_set",
+  requires: "servers:operate",
   path: ["server", "upgrade-policy", "set"],
   about: "Change the Organization's upgrade policy: the Release Channel every upgrade follows, or automatic upgrades on or off",
   examples: ["ployz server upgrade-policy set --channel beta", "ployz server upgrade-policy set --automatic true"],

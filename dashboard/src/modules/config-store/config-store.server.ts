@@ -11,6 +11,7 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
+import { type Permission, permissionsOf } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -157,6 +158,7 @@ function statusFor(code: string) {
       return 401;
     case "forbidden":
     case "approval_denied":
+    case "claim_required":
       return 403;
     case "unsupported":
       return 501;
@@ -290,13 +292,15 @@ export const callStore = <C extends StoreCall>(
   userId: string | null,
   call: C,
   source: StoreSource = { source: "dashboard" },
-  gate: Pick<ConfigTrusted, "approval" | "asks"> = { approval: "not_required" },
+  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
     const trusted = { ...yield* gatherTrusted(organizationId, call, read), ...gate };
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
+    // Cloud sends every user's set, so a write by a user with none named is a defect, never a grant.
+    if (userId !== null && gate.permissions === undefined) return yield* Effect.die("A user's Store write names no permissions");
     const principal = yield* principalFor(userId).pipe(Effect.orDie);
     const written = yield* writeAdmitted(organizationId, call.command, (command) =>
       storeTry(() => store.write(organizationId, command, trusted, principal)));
@@ -326,13 +330,21 @@ export const callStore = <C extends StoreCall>(
  * when the actor is a member of it (the same Organization gate as the Org Store's reads).
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
-  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const access = yield* requireAccess(actor, organizationSlug, "project:read");
   return yield* callStoreWith(access, actor, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
-  Effect.map(callStore(access.organization.id, actor.userId, call), (result) =>
+  Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: permissionsFor(access) }), (result) =>
     access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
+
+/** What `access` holds, as the Store is told it: the member's role, or support's set. */
+const permissionsFor = (access: Access): Permission[] => permissionsOf(access.kind === "member" ? access.role : "support");
+
+/** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
+export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
+  ? callStore(organizationId, null, call)
+  : callStore(organizationId, by.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: permissionsFor(by) });
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or
@@ -340,7 +352,7 @@ const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: 
  * the write. A query of another Environment, past `MAX_SHOWN_VIEWS`, or whose reread fails, is dropped; the tab refetches those.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
-  const access = yield* requireAccess(actor, organizationSlug, "operate");
+  const access = yield* requireAccess(actor, organizationSlug, writePermission(command));
   const result = yield* callStoreWith(access, actor, { operation: "write", command });
   if (!result.ok) return result satisfies StoreWriteResult;
   const keys = new Set(commandEnvironments(command).map(environmentKey));
@@ -356,6 +368,12 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
   { concurrency: SHOWN_VIEW_READS });
   return { ...result, answers: answers.flat() } satisfies StoreWriteResult;
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
+
+/** Deleting an Environment or a Project takes its delete permission; every other write only staging. */
+const writePermission = (command: ConfigCommand): Permission => {
+  if (command.command !== "remove") return "changes:stage";
+  return command.environment == null ? "project:delete" : "environment:delete";
+};
 
 /** How many shown views one write rereads at once. */
 const SHOWN_VIEW_READS = 4;

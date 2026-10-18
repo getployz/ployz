@@ -46,7 +46,7 @@ const HISTORY_PAGE = 500;
 
 /** The response owns this scope until its consumer disconnects. */
 export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch, history?: { cursor?: string }) {
-  const access = yield* authorizeRequest(request.headers, search.organizationSlug, "operate");
+  const access = yield* authorizeRequest(request.headers, search.organizationSlug, "logs:read");
   if (access.kind === "support" && !access.shows.logs) {
     if (history === undefined) return { type: "hidden" as const };
     return yield* new Forbidden({ message: "This Organization doesn't show its container logs to Ployz support." });
@@ -73,7 +73,7 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
   const events = backfillThenFollow(tail, follow);
   // Support's access is read again while it streams, so hiding container logs stops lines already flowing.
   const logsShown = access.kind === "support"
-    ? requireAccessById({ userId: access.userId }, organizationId, "operate").pipe(Effect.map(now => now.kind !== "support" || now.shows.logs))
+    ? requireAccessById({ userId: access.userId }, organizationId, "logs:read").pipe(Effect.map(now => now.kind !== "support" || now.shows.logs))
     : undefined;
   return { type: "stream" as const, events, close, logsShown };
 });

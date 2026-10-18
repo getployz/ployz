@@ -186,7 +186,7 @@ export const GithubRepositoriesLive = Layer.effect(GithubRepositories, Effect.ge
  */
 export const disconnectGithub = Effect.fn("GithubCli.disconnect")(function* (actor: Actor, organizationSlug: string, login: string) {
   const { origins } = (yield* AppConfig).github;
-  const { organization } = yield* requireAccess(actor, organizationSlug, "manage");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "github:connect");
   const installation = (yield* listGithubInstallationsForOrganization(organization.id))
     .find((linked) => linked.accountLogin.toLowerCase() === login.toLowerCase());
   if (installation === undefined) return yield* new NotFound({ message: `No GitHub account ${login} in this Organization.` });

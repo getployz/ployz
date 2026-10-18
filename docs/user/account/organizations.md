@@ -31,13 +31,19 @@ In the sidebar, click **Organization** for its settings:
 
 ## Invite people
 
-Everyone in an organization has one role:
+Everyone in an organization has one role: **Owner**, **Admin** or **Member**. Each role can do
+everything the role below it can, and more:
 
-- **Owner**: everything, including deleting the organization and making other owners.
-- **Admin**: everything an owner can do, except deleting the organization. Only an owner can
-  make or remove an owner.
-- **Member**: deploys and changes projects and servers, but can't invite, change roles, remove
-  anyone, turn support access on or off, or forget servers.
+| Role   | Can do |
+| ------ | ------ |
+| Member | See the organization, its members, projects, servers, volumes, variables, logs and metrics. Create projects and environments, edit projects, stage changes, deploy, destroy and merge them, restart and stop services, answer approvals, and make their own organization tokens. |
+| Admin  | Also change the organization's settings and support access, invite people, change roles and remove members, manage everyone's tokens and agents, connect GitHub, delete projects and environments, delete volume copies, and add, operate, open a shell on and remove servers. |
+| Owner  | Also manage billing, delete the organization, and make or remove an owner. |
+
+When you try something your role can't do, Ployz says who can: "Only an owner or admin of this
+Organization can do this." or "Only an owner of this Organization can do this." A change to a
+project's configuration that your role can't make is refused with the permission it needs, such as
+`Needs environment:delete`; `ployz <command> --help` names that permission before you run it.
 
 To invite someone, go to **Organization → Members** and click **Invite**. Pick **Member** or
 **Admin**, add their email, and click **Make link**. When Ployz Cloud has email on, it emails the
@@ -133,15 +139,20 @@ You can answer from a terminal too. `ployz org approval ls` lists the approvals 
 `ployz org approval deny ID --reason "keep the volume"` answers it. Approving asks you to type the
 organization's name, so it needs a terminal.
 
-An agent never approves its own request. When the Ployz agent or an agent you connected to Ployz
-Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org approval approve` refuses
-with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog or in
-the sidebar. If you run the same change yourself with `ployz`, typing the name in your terminal
-approves it. Anyone in the organization can deny any request, from anywhere.
+An agent can't answer an approval: `ployz mcp`, an agent you connected to Ployz Cloud and the
+Ployz agent can neither approve nor deny one. When the Ployz agent or an agent you connected to
+Ployz Cloud asked, you approve in the Ployz agent's sidebar, and `ployz org approval approve`
+refuses with `forbidden`. When an agent using `ployz mcp` asked, you approve in its app's dialog,
+in the sidebar, or with `ployz org approval approve`. The dialog and the command answer with this
+computer's `ployz` login, so it must be signed in to the agent's Ployz Cloud and acting in the
+organization that owns the request. Otherwise they refuse: run `ployz org use ORG` to switch,
+then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
+approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
 
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop a program
-that's trying to get around it: anything that holds your `ployz` login or token can approve its
-own `ployz` request, as if you'd typed the name in a terminal.
+that's trying to get around it: anything that holds your own `ployz` login or one of your own
+tokens can approve its own `ployz` request, as if you'd typed the name in a terminal. The agent
+token `ployz mcp login` saves can't approve or deny anything.
 Keep tokens you give an agent short-lived: a token can't make or revoke tokens, so revoking it
 cuts the agent off. Keep
 [backups](../services/databases.md#back-up-a-database) of data you can't lose.

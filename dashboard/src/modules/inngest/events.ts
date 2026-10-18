@@ -90,6 +90,9 @@ export const volumeRunTakenEvent = "volume/run.taken";
 
 export type VolumeRunTakenEventData = { runId: string };
 export const serverDrainRequestedEvent = "server/drain.requested";
+export const serverEnrollmentRequestedEvent = "server/enrollment.requested";
+export const serverEnrollmentReportedEvent = "server/enrollment.reported";
+export const serverEnrollmentCancelEvent = "server/enrollment.cancel";
 export const serverWebTrafficRequestedEvent = "server/web-traffic.requested";
 export const namespaceCleanupRequestedEvent = "namespace/cleanup.requested";
 export const serviceActRequestedEvent = "service/act.requested";
@@ -102,6 +105,7 @@ export const serverAccessRetireRequestedEvent = "server-access/retire.requested"
 export const observePushTargetRequestedEvent = "observe/push-target.requested";
 export const configFirstServerJoinedEvent = "config/first-server.joined";
 export const configSweepRequestedEvent = "config/sweep.requested";
+export const anonymousTeardownRequestedEvent = "anonymous/teardown.requested";
 export const mailSendRequestedEvent = "mail/send";
 
 export type MailSendRequestedEventData = MailMessage;
@@ -152,6 +156,20 @@ export type ServerDrainRequestedEventData = {
   machineId: MachineId;
 };
 
+export type ServerEnrollmentRequestedEventData = {
+  attemptId: string;
+  organizationId: string;
+};
+
+export type ServerEnrollmentCheckinReport = { attemptId: string; stage: string | null; failure?: { stage: string | null; message: string } };
+
+export type ServerEnrollmentReportedEventData =
+  | ServerEnrollmentCheckinReport
+  | { attemptId: string; completed: true }
+  | { attemptId: string; founded: true };
+
+export type ServerEnrollmentCancelEventData = { attemptId: string };
+
 /** A web traffic change was requested: its row is written. `organizationId` keys the Organization's one-at-a-time changes. */
 export type ServerWebTrafficRequestedEventData = {
   attemptId: string;
@@ -191,6 +209,11 @@ export type ConfigFirstServerJoinedEventData = {
 
 /** A Config Store write closed a Branch at once (nothing on a Server): its Store sweeps it away now. */
 export type ConfigSweepRequestedEventData = {
+  organizationId: string;
+};
+
+/** An anonymous agent's Organization is past its token: tear it down one step further. */
+export type AnonymousTeardownRequestedEventData = {
   organizationId: string;
 };
 
@@ -293,6 +316,18 @@ export const serverDrainRequestedEventType = eventType(
   serverDrainRequestedEvent,
   { schema: staticSchema<ServerDrainRequestedEventData>() },
 );
+export const serverEnrollmentRequestedEventType = eventType(
+  serverEnrollmentRequestedEvent,
+  { schema: staticSchema<ServerEnrollmentRequestedEventData>() },
+);
+export const serverEnrollmentReportedEventType = eventType(
+  serverEnrollmentReportedEvent,
+  { schema: staticSchema<ServerEnrollmentReportedEventData>() },
+);
+export const serverEnrollmentCancelEventType = eventType(
+  serverEnrollmentCancelEvent,
+  { schema: staticSchema<ServerEnrollmentCancelEventData>() },
+);
 export const serverWebTrafficRequestedEventType = eventType(
   serverWebTrafficRequestedEvent,
   { schema: staticSchema<ServerWebTrafficRequestedEventData>() },
@@ -328,6 +363,10 @@ export const configFirstServerJoinedEventType = eventType(
 export const configSweepRequestedEventType = eventType(
   configSweepRequestedEvent,
   { schema: staticSchema<ConfigSweepRequestedEventData>() },
+);
+export const anonymousTeardownRequestedEventType = eventType(
+  anonymousTeardownRequestedEvent,
+  { schema: staticSchema<AnonymousTeardownRequestedEventData>() },
 );
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
@@ -435,6 +474,27 @@ export function createServerDrainRequestedEvent(data: ServerDrainRequestedEventD
   return { id: `server-drain-${data.attemptId}`, name: serverDrainRequestedEvent, data } as const;
 }
 
+export function createServerEnrollmentRequestedEvent(data: ServerEnrollmentRequestedEventData) {
+  return { id: `server-enrollment-${data.attemptId}`, name: serverEnrollmentRequestedEvent, data } as const;
+}
+
+/** Keyed by the check-in, not the stage: a report the run missed while busy comes again on the next one. */
+export function createServerEnrollmentReportedEvent(data: ServerEnrollmentReportedEventData) {
+  return { id: `server-enrollment-reported-${crypto.randomUUID()}`, name: serverEnrollmentReportedEvent, data } as const;
+}
+
+export function createServerEnrollmentCompletedEvent(attemptId: string) {
+  return { id: `server-enrollment-completed-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, completed: true } } as const;
+}
+
+export function createServerEnrollmentCancelEvent(data: ServerEnrollmentCancelEventData) {
+  return { id: `server-enrollment-cancel-${data.attemptId}`, name: serverEnrollmentCancelEvent, data } as const;
+}
+
+export function createServerEnrollmentFoundedEvent(founderAttemptId: string, attemptId: string) {
+  return { id: `organization-founded-${founderAttemptId}-${attemptId}`, name: serverEnrollmentReportedEvent, data: { attemptId, founded: true } } as const;
+}
+
 /** Keyed by the change's row: sending it again for the same request runs nothing new. */
 export function createServerWebTrafficRequestedEvent(data: ServerWebTrafficRequestedEventData) {
   return { id: `server-web-traffic-${data.attemptId}`, name: serverWebTrafficRequestedEvent, data } as const;
@@ -462,6 +522,10 @@ export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoined
 
 export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventData) {
   return { name: configSweepRequestedEvent, data } as const;
+}
+
+export function createAnonymousTeardownRequestedEvent(data: AnonymousTeardownRequestedEventData) {
+  return { name: anonymousTeardownRequestedEvent, data } as const;
 }
 
 export function createObserveCrashReceivedEvent(data: ObserveCrashReceivedEventData, crashEventId: string) {
@@ -629,6 +693,11 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerUpgradeRequestedEvent>
   | ReturnType<typeof createCliServerUpgradeRequestedEvent>
   | ReturnType<typeof createServerDrainRequestedEvent>
+  | ReturnType<typeof createServerEnrollmentRequestedEvent>
+  | ReturnType<typeof createServerEnrollmentReportedEvent>
+  | ReturnType<typeof createServerEnrollmentCompletedEvent>
+  | ReturnType<typeof createServerEnrollmentCancelEvent>
+  | ReturnType<typeof createServerEnrollmentFoundedEvent>
   | ReturnType<typeof createServerWebTrafficRequestedEvent>
   | ReturnType<typeof createNamespaceCleanupRequestedEvent>
   | ReturnType<typeof createServiceActRequestedEvent>
@@ -648,7 +717,8 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubPullRequestReceivedEvent>
-  | ReturnType<typeof createGithubBuildRunCompletedEvent>;
+  | ReturnType<typeof createGithubBuildRunCompletedEvent>
+  | ReturnType<typeof createAnonymousTeardownRequestedEvent>;
 
 /**
  * A dispatched GitHub build run completed, whatever its conclusion, or its runner's final report

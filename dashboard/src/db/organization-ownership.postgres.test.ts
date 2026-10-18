@@ -22,37 +22,15 @@ const notOrganizationOwned = {
   account: "Belongs to a user.",
   verification: "Belongs to a user.",
   device_code: "Belongs to the user who claims it; a CLI sign-in picks its Organization later.",
-  organization_token: "A credential the dashboard never reads into the Org Store, so it needs no change log.",
-  server_access: "A device's credential on one Server; never read into the Org Store, so it needs no change log.",
   session: "Belongs to a user; its active Organization doesn't make it organization-owned.",
   notification_preference: "Belongs to a user; one choice applies in every Organization.",
   github_installation: "A GitHub App installation, shared by every Organization linked to it through organization_github_installation.",
   github_repository_cache: "The repositories GitHub reports for an installation, shared by every Organization linked to it.",
-  organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
-  config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
   config_migration: "The Config Store's applied migrations.",
-  deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",
-  failed_restore: "A restored Volume whose copy failed, read only when a Deploy is admitted or advanced; no view reads it, so it needs no change log.",
-  volume_mirror_status: "What the last mirror sync saw of each mirror, read as a Remote Read; no view reads it, so it needs no change log.",
-  upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
-  config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
   config_volume_storage: "Storage fixed when a Deployment first targets a Volume; no Cloud view reads it, so it needs no change log.",
-  config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
-  config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
-  config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
-  config_removal_mark: "The Store's record of removals under way, read by its sweep; what a removal does shows in the Environment and Deployment rows it admits or deletes, so it needs no change log.",
   config_sealed_variable: "Which variables an Environment ever sealed, read only when History restores or scrubs; no view reads it, so it needs no change log.",
-  agent_threads: "One member's private sidebar conversation, read only through the agent chat route; no view reads it, so it needs no change log.",
-  agent_runs: "A sidebar turn's run record, read only by its own conversation; no view reads it, so it needs no change log.",
-  agent_interrupts: "A sidebar turn's pending question, read only by its own conversation; no view reads it, so it needs no change log.",
-  operation_request: "The attempt a request key admitted, read only to answer a replayed request; no view reads it, so it needs no change log.",
   operation_outbox: "Events waiting for Inngest, keyed by event id; it belongs to no Organization and no view reads it.",
-  uptime_alert: "The uptime alert outbox, read only by the alert sender; no view reads it, so it needs no change log.",
   uptime_region: "Display names for the probe regions, shared by every Organization and written only by the uptime checker.",
-  uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",
-  uptime_result_hourly: "Hourly probe rollups, read as a Remote Read; growing history that would flood the change log.",
-  observe_ingest_cursor: "The last observe push each Machine stream delivered, read only to refuse a replay; no view reads it, so it needs no change log.",
-  crash_event: "Crashes a Machine pushed, read only by the crash mailer; growing history no view reads, so it needs no change log.",
   jwks: "The keys Cloud signs agent access tokens with, shared by every Organization.",
   oauth_client: "An agent app registered to connect; one app serves every Organization its users pick.",
   oauth_resource: "The resources Cloud issues agent tokens for, shared by every Organization.",
@@ -63,6 +41,34 @@ const notOrganizationOwned = {
   oauth_access_token: "An agent's access token, read only by the token endpoint; no view reads it, so it needs no change log.",
   rate_limit: "Request counts per caller and path for auth rate limiting; it belongs to no Organization.",
   checkin_rate_limit: "Check-in counts per Fleet Token and source address for rate limiting; no view reads it, so it needs no change log.",
+  rate_limit_event: "One admitted request per key, such as an agent signup's source address; it belongs to no Organization.",
+} satisfies Record<string, string>;
+
+const organizationOwnedWithoutChangeLog = {
+  organization_token: "A credential the dashboard never reads into the Org Store, so it needs no change log.",
+  server_access: "A device's credential on one Server; never read into the Org Store, so it needs no change log.",
+  organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
+  config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
+  deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",
+  failed_restore: "A restored Volume whose copy failed, read only when a Deploy is admitted or advanced; no view reads it, so it needs no change log.",
+  volume_mirror_status: "What the last mirror sync saw of each mirror, read as a Remote Read; no view reads it, so it needs no change log.",
+  upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
+  config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
+  config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
+  config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
+  config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
+  config_removal_mark: "The Store's record of removals under way, read by its sweep; what a removal does shows in the Environment and Deployment rows it admits or deletes, so it needs no change log.",
+  agent_threads: "One member's private sidebar conversation, read only through the agent chat route; no view reads it, so it needs no change log.",
+  agent_runs: "A sidebar turn's run record, read only by its own conversation; no view reads it, so it needs no change log.",
+  agent_interrupts: "A sidebar turn's pending question, read only by its own conversation; no view reads it, so it needs no change log.",
+  operation_request: "The attempt a request key admitted, read only to answer a replayed request; no view reads it, so it needs no change log.",
+  uptime_alert: "The uptime alert outbox, read only by the alert sender; no view reads it, so it needs no change log.",
+  uptime_result: "Probe results, read as a Remote Read; growing history that would flood the change log.",
+  uptime_result_hourly: "Hourly probe rollups, read as a Remote Read; growing history that would flood the change log.",
+  observe_ingest_cursor: "The last observe push each Machine stream delivered, read only to refuse a replay; no view reads it, so it needs no change log.",
+  crash_event: "Crashes a Machine pushed, read only by the crash mailer; growing history no view reads, so it needs no change log.",
+  server_enrollment: "One host's Server Enrollment, read by its run, the host's check-in and the enrollments route; no view reads it, so it needs no change log.",
+  anonymous_teardown: "How long a lapsed agent sandbox has waited on its Servers, read only by its teardown; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;
@@ -83,9 +89,20 @@ it("classifies every table as organization-owned or excluded with a reason", asy
     where relnamespace = 'public'::regnamespace and relkind in ('r', 'p')
     order by relname
   `);
-  const classified = [...Object.keys(organizationOwned), ...Object.keys(notOrganizationOwned)];
+  const classified = [
+    ...Object.keys(organizationOwned), ...Object.keys(organizationOwnedWithoutChangeLog), ...Object.keys(notOrganizationOwned),
+  ];
   expect(new Set(classified).size).toBe(classified.length);
   expect(tables.rows.map((row) => row.relname)).toEqual(classified.sort());
+});
+
+it("lists a table as belonging to no Organization only when it has no organization_id", async () => {
+  const columns = await harness.pool.query<{ table_name: string }>(`
+    select table_name from information_schema.columns
+    where table_schema = 'public' and column_name = 'organization_id' and table_name = any($1::text[])
+    order by table_name
+  `, [Object.keys(notOrganizationOwned)]);
+  expect(columns.rows.map((row) => row.table_name)).toEqual([]);
 });
 
 it("stores a non-null Organization on every organization-owned table", async () => {

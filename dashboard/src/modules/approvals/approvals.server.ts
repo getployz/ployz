@@ -16,6 +16,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
+import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 
@@ -141,10 +142,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   if (approvalId === null) return { ok: true, approval: "required" };
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
-    return {
-      ok: false,
-      refusal: { code: "invalid_argument", message: "No such approval in this Organization.", details: { approval_id: approvalId } },
-    };
+    return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: { approval_id: approvalId } } };
   }
   switch (row.status) {
     case "approved":
@@ -207,6 +205,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   command: ConfigCommand,
   refused: StoreRefusal,
 ) {
+  if (command.command === "remove" && command.environment == null) return yield* requestProjectRemoval(caller, command.project, refused);
   const decoded = Schema.decodeUnknownOption(RefusedReview)(refused.details);
   if (Option.isNone(decoded)) {
     yield* Effect.logWarning("An approval_required refusal named no review; nothing was recorded.");
@@ -235,7 +234,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
 export type OperationAsked = {
-  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>` or `service:<environment id>/<name>`. */
+  /** `server:<machine id>`, `namespace:<name>`, `volume:<volume id>`, `member:<user id>`, `invite:<invite id>`, `service:<environment id>/<name>` or `project:<name>`. */
   subject: string;
   verb: OperationVerb;
   name: string;
@@ -247,6 +246,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   caller: Caller,
   asked: OperationAsked,
   digest: string,
+  stale: Stale<never> = staleOperation(asked.verb, digest),
 ) {
   const organizationId = caller.organization.id;
   const operation = { verb: asked.verb, name: asked.name };
@@ -265,7 +265,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
       set: askedAgain(caller),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
-  }), staleOperation(asked.verb, digest));
+  }), stale);
   return {
     code: "approval_required",
     message: `A human must approve this ${asked.verb.replaceAll("_", " ")} of ${asked.name} before it runs.`,
@@ -273,7 +273,32 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
   } satisfies StoreRefusal;
 });
 
+/** A Project's removal reviews each of its Environments, so it waits as an operation on the Project, keyed by the Store's digest. */
+const ProjectRemovalReview = Schema.Struct({
+  approval: Schema.String,
+  effects: RefusedReview.fields.effects,
+  diff: Schema.Record(Schema.String, RefusedReview.fields.diff),
+});
+
+const requestProjectRemoval = Effect.fn("Approvals.requestProjectRemoval")(function* (
+  caller: Caller,
+  project: string,
+  refused: StoreRefusal,
+) {
+  const decoded = Schema.decodeUnknownOption(ProjectRemovalReview)(refused.details);
+  if (Option.isNone(decoded)) {
+    yield* Effect.logWarning("A Project removal's approval_required named no review; nothing was recorded.");
+    return refused;
+  }
+  const { approval: digest, effects, diff } = decoded.value;
+  const asked: OperationAsked = { subject: `project:${project}`, verb: "remove", name: project, preview: diff, effects };
+  return yield* requestOperationApproval(caller, asked, digest, Effect.succeed(ne(operationApprovals.digest, digest)));
+});
+
 type Gated = { ok: true; approvalId: string | null } | { ok: false; refusal: StoreRefusal };
+
+export const hasApprover = (organizationId: string) =>
+  isOwnedOnlyByAgents(organizationId).pipe(Effect.map((agentsOnly) => !agentsOnly), Effect.orDie);
 
 export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   caller: Caller,
@@ -285,6 +310,7 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
+  if (!(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
@@ -321,16 +347,10 @@ export type Decider = Actor & { readonly organization: { readonly id: string } }
   | Pick<Caller, "via" | "credential">
 );
 
-/**
- * An agent never approves. What an agent asked waits on a person in the dashboard, or on the `ployz mcp` that asked,
- * which shows its human the form and answers through the credential it asked with. A request from before Cloud
- * recorded who asked is treated as an agent's.
- */
 const mayApprove = (decider: Decider, row: ApprovalRow) => {
   if (decider.via === "dashboard") return true;
-  if (decider.via === "agent" || !("credential" in decider)) return false;
   if (row.via === "cli") return true;
-  return row.credentialKind !== "oauth" && decider.credential.kind === row.credentialKind && decider.credential.id === row.credentialId;
+  return row.via === "agent" && row.credentialKind === "token" && decider.userId === row.requestedByUserId;
 };
 
 /**
@@ -356,6 +376,9 @@ export const decideApproval = <R = never>(
       ? conflict("The plan changed since this was asked; run the command again to review it.", current)
       : conflict(`This approval was already decided elsewhere (${current.status}).`, current);
   };
+  if (caller.via === "agent") {
+    return { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals.", details: { approval: approvalView(found) } } } satisfies Decided;
+  }
   const row = yield* freshen(found, operationDigest);
   if ("approve" in decision && !mayApprove(caller, row)) {
     const message = "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";

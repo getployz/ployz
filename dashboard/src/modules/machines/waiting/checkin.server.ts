@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { and, count, eq, isNull, sql } from "drizzle-orm";
+import { and, count, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import {
   CHECKIN_WAIT_SECONDS,
@@ -8,12 +8,19 @@ import {
   CheckinRequest,
   type CheckinResponse,
   type CheckinStopReason,
+  type StoredReport,
 } from "#/modules/machines/waiting/checkin-wire";
+import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
+import { sendInngestEvent } from "#/modules/inngest/client";
+import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
-import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
-import { Database } from "#/server/database.server";
+import { PAST_STORAGE, isReadyFor, ZFS_BUILD_FAILED } from "#/modules/machines/waiting/server-enrollment";
+import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export const WAITING_PER_TOKEN = 1000;
 const LAST_SLOTS = 100;
@@ -101,17 +108,22 @@ const OWNERSHIP_CHANGED = Symbol("ownershipChanged");
 const endedBy = (live: { readonly revoked: boolean; readonly expired: boolean } | undefined) =>
   live === undefined || live.revoked ? "token_revoked" : live.expired ? "token_expired" : null;
 
-const endWaiting = Effect.fn("Checkin.endWaiting")(function* (
+// An ended token stops its host only once no Enroll holds an attempt for it. Locking the row first waits out an Enroll
+// that holds it, and the read after the lock sees what that Enroll committed.
+const endUnlessEnrolling = Effect.fn("Checkin.endUnlessEnrolling")(function* (
   token: { readonly id: string; readonly organizationId: string },
   checkinKey: string,
   reason: CheckinStopReason,
 ) {
   const { drizzle } = yield* Database;
-  yield* drizzle.delete(waitingServer).where(and(
+  const mine = and(
     eq(waitingServer.organizationId, token.organizationId),
     eq(waitingServer.checkinKey, checkinKey),
     eq(waitingServer.fleetTokenId, token.id),
-  ));
+  );
+  yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(mine).for("update");
+  if (yield* hasOpenEnrollment(token, checkinKey)) return null;
+  yield* drizzle.delete(waitingServer).where(mine);
   return stop(reason);
 });
 
@@ -126,7 +138,7 @@ const admit = Effect.fn("Checkin.admit")(function* (
     eq(waitingServer.checkinKey, request.checkinKey),
   );
   const [existing] = yield* drizzle
-    .select({ fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
+    .select({ id: waitingServer.id, fleetTokenId: waitingServer.fleetTokenId, rejectedAt: waitingServer.rejectedAt })
     .from(waitingServer)
     .where(key);
   const newToToken = existing?.fleetTokenId !== token.id;
@@ -134,34 +146,99 @@ const admit = Effect.fn("Checkin.admit")(function* (
   const takingLastSlots = heldBefore >= WAITING_PER_TOKEN - LAST_SLOTS;
   const live = yield* lockTokenAgainstRevoke(token.id, takingLastSlots ? "update" : "share");
   const ended = endedBy(live);
-  if (ended !== null) return yield* endWaiting(token, request.checkinKey, ended);
-  if (!newToToken && existing.rejectedAt !== null) return stop("rejected");
+  const stopped = ended === null ? null : yield* endUnlessEnrolling(token, request.checkinKey, ended);
+  if (stopped !== null) return stopped;
+  if (!newToToken && existing.rejectedAt !== null) {
+    const open = yield* openAttemptFor(existing.id);
+    if (open === null || !PAST_STORAGE.has(open.stage)) return stop("rejected");
+  }
   if (takingLastSlots && (yield* heldByToken(token.id)) >= WAITING_PER_TOKEN) {
     return yield* new CheckinRefused({
       status: 429,
       message: `This Fleet Token already has ${WAITING_PER_TOKEN} waiting servers.`,
     });
   }
-  const report = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
-  const fresh = { report, observedIp, probe: request.probe ?? sql`${waitingServer.probe}`, lastCheckInAt: sql`now()` };
+  const prepared = request.prep === undefined ? request.report : { ...request.report, prep: request.prep };
+  const report: StoredReport = { ...prepared, cliVersion: request.cliVersion };
+  const fresh = { report, observedIp, probe: probeAfterCheckIn(observedIp, request.probe), lastCheckInAt: sql`now()` };
   // The capacity decision above holds only while the row is as it was read, so a changed row goes back through it.
   const [row] = newToToken
     ? yield* drizzle
       .insert(waitingServer)
-      .values({ organizationId: token.organizationId, fleetTokenId: token.id, checkinKey: request.checkinKey, report, observedIp, probe: request.probe ?? null })
+      .values({ organizationId: token.organizationId, fleetTokenId: token.id, checkinKey: request.checkinKey, report, observedIp })
       .onConflictDoUpdate({
         target: [waitingServer.organizationId, waitingServer.checkinKey],
         set: { ...fresh, fleetTokenId: token.id, rejectedAt: null },
         setWhere: existing === undefined ? sql`false` : eq(waitingServer.fleetTokenId, existing.fleetTokenId),
       })
-      .returning({ id: waitingServer.id })
+      .returning({ id: waitingServer.id, probe: waitingServer.probe })
     : yield* drizzle
       .update(waitingServer)
       .set(fresh)
-      .where(and(key, eq(waitingServer.fleetTokenId, token.id), isNull(waitingServer.rejectedAt)))
-      .returning({ id: waitingServer.id });
+      .where(and(key, eq(waitingServer.fleetTokenId, token.id), existing.rejectedAt === null ? isNull(waitingServer.rejectedAt) : undefined))
+      .returning({ id: waitingServer.id, probe: waitingServer.probe });
   if (row === undefined) return OWNERSHIP_CHANGED;
-  return { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS } satisfies CheckinResponse;
+  const answer = yield* answerAttempt(row.id, request, report);
+  if (answer.kind !== "wait") return answer;
+  // Handed out only with a wait, so an Enroll answer doesn't stamp a handout the host never sees.
+  const probe = yield* handOutProbe(row.id, decodeStoredProbe(row.probe), observedIp, request.checkinKey);
+  return probe === null ? answer : { ...answer, probe };
+});
+
+const WAIT: CheckinResponse = { kind: "wait", retryAfter: CHECKIN_WAIT_SECONDS };
+
+const hasOpenEnrollment = Effect.fn("Checkin.hasOpenEnrollment")(function* (
+  token: { readonly id: string; readonly organizationId: string },
+  checkinKey: string,
+) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ id: serverEnrollment.id })
+    .from(serverEnrollment)
+    .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
+    .where(and(
+      eq(waitingServer.organizationId, token.organizationId),
+      eq(waitingServer.checkinKey, checkinKey),
+      eq(waitingServer.fleetTokenId, token.id),
+      isNull(serverEnrollment.endedAt),
+    ))
+    .limit(1);
+  return row !== undefined;
+});
+
+function reportOf(open: OpenAttempt, request: CheckinRequest): ServerEnrollmentCheckinReport | null {
+  if (open.instruction.storage.kind === "zfs" && request.prep?.zfs === "failed" && !PAST_STORAGE.has(open.stage)) {
+    return { attemptId: open.id, stage: "storage", failure: { stage: "storage", message: ZFS_BUILD_FAILED } };
+  }
+  const attempt = request.attempt;
+  if (attempt?.attemptId !== open.id) return null;
+  if (attempt.failure !== undefined) return { attemptId: open.id, stage: attempt.stage, failure: attempt.failure };
+  return attempt.stage === open.stage ? null : { attemptId: open.id, stage: attempt.stage };
+}
+
+const answerAttempt = Effect.fn("Checkin.answerAttempt")(function* (
+  waitingServerId: string,
+  request: CheckinRequest,
+  report: StoredReport,
+) {
+  const open = yield* openAttemptFor(waitingServerId);
+  if (open === null) return WAIT;
+  const reported = reportOf(open, request);
+  if (reported !== null) {
+    yield* afterDatabaseCommit(sendInngestEvent(createServerEnrollmentReportedEvent(reported)).pipe(
+      Effect.catch((error) => Effect.logWarning("An enrollment report was not sent; the next check-in sends it again.", error)),
+    ));
+    if (reported.failure !== undefined) return WAIT;
+  }
+  const ready = open.state === "running" || (open.state === "instructed" && isReadyFor(report, open.instruction.storage));
+  if (!ready || open.encryptedToken === null) return WAIT;
+  const encryption = yield* SecretEncryption;
+  return {
+    kind: "enroll",
+    attemptId: open.id,
+    token: encryption.decrypt(open.encryptedToken),
+    role: open.role,
+    ...open.instruction,
+  } satisfies CheckinResponse;
 });
 
 export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
@@ -200,7 +277,19 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
   const request = parsed.value;
 
   const ended = endedBy(token);
-  if (ended !== null) return yield* endWaiting(token, request.checkinKey, ended);
+  const stopped = ended === null ? null : yield* database.transaction(endUnlessEnrolling(token, request.checkinKey, ended));
+  if (stopped !== null) return stopped;
+
+  // Every check-in of a token shares this row, so a fresh stamp is left alone and the update locks nothing.
+  if (ended === null) {
+    yield* database.drizzle
+      .update(fleetToken)
+      .set({ lastUsedAt: sql`now()` })
+      .where(and(
+        eq(fleetToken.id, token.id),
+        or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`now() - interval '1 minute'`)),
+      ));
+  }
 
   yield* sometimesPruneStaleRateLimits;
   const tooMany = new CheckinRefused({ status: 429, message: "Too many check-ins." });

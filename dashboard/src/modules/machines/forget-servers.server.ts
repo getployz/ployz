@@ -27,13 +27,13 @@ type Forgetter = { readonly userId: string; readonly organizationId: string };
 
 /** The dashboard's forgetter: `actor`, in the Organization named by `organizationSlug`, which they must reach. */
 export const forgetterFor = Effect.fn("ForgetServers.forgetterFor")(function* (actor: Actor, organizationSlug: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:read");
   return { userId: actor.userId, organizationId: organization.id } satisfies Forgetter;
 });
 
 const refused = (refusal: StoreRefusal) => ({ ok: false as const, refusal });
 
-const mayManage = (forgetter: Forgetter) => requireAccessById(forgetter, forgetter.organizationId, "manage").pipe(
+const mayManage = (forgetter: Forgetter) => requireAccessById(forgetter, forgetter.organizationId, "servers:remove").pipe(
   Effect.as(null),
   Effect.catchTag("Forbidden", () => Effect.succeed(
     refused({ code: "forbidden", message: "Only an owner or admin of this Organization can forget its Servers.", details: null }),
@@ -114,7 +114,8 @@ export const checkForgetServers = Effect.fn("ForgetServers.check")(function* (fo
 
 /**
  * Forget Servers: the user says the Organization's Servers were deleted. Cloud tries each again and, when none answers
- * and nothing changed since, forgets its Cluster (`forgetCluster`). Cloud never does this on its own.
+ * and nothing changed since, forgets its Cluster (`forgetCluster`). Cloud does this on its own in one case: a lapsed
+ * anonymous sandbox whose Servers every probe for an hour since the last answer failed to reach.
  */
 export const forgetServers = Effect.fn("ForgetServers.forget")(function* (forgetter: Forgetter) {
   const { result: checked, seen } = yield* check(forgetter);

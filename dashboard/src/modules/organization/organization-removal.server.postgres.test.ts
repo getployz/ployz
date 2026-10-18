@@ -3,6 +3,7 @@ import { Cause, Effect, Exit } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
+import { InngestClient } from "#/modules/inngest/client";
 import { member, user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
@@ -11,19 +12,22 @@ import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/
 import { Ployz, type PloyzService } from "#/modules/runtime/ployz.server";
 import { organizationSupportAccess } from "#/modules/support-access/tables";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
+import { seedAnonymousStoreOrganization, sendsNowhere } from "#/test/store-cloud";
 
 const LAB = "00000000-0000-4000-8000-00000000c001";
+const SANDBOX = "00000000-0000-4000-8000-00000000c002";
 const STORE_OPENED = "the Store was opened";
 
 let harness: PostgresTestHarness;
-const ids = { owner: "", admin: "", member: "", support: "" };
+const ids = { owner: "", admin: "", member: "", support: "", agent: "" };
 
 // An owner gets past the gate and opens the Store, which this double turns into a defect; a refusal opens nothing.
-const removeAs = (who: keyof typeof ids) => harness.runEffect(Effect.exit(removeOrganizationAsMember({ userId: ids[who] }, "lab").pipe(
+const removeAs = (who: keyof typeof ids, slug = "lab") => harness.runEffect(Effect.exit(removeOrganizationAsMember({ userId: ids[who] }, slug).pipe(
   Effect.provideService(CloudStore, { open: Effect.die(STORE_OPENED) }),
   Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
   Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
   Effect.provideService(SupportStaff, supportStaffOf([ids.support])),
+  Effect.provideService(InngestClient, sendsNowhere()),
 )));
 
 beforeAll(async () => {
@@ -42,6 +46,7 @@ beforeAll(async () => {
     { userId: ids.member, organizationId: LAB, role: "member" },
   ]);
   await harness.db.insert(organizationSupportAccess).values({ organizationId: LAB, allowed: true });
+  ids.agent = (await harness.runEffect(seedAnonymousStoreOrganization(SANDBOX, new Date(Date.now() - 1000)))).userId;
 }, 60_000);
 
 afterAll(async () => {
@@ -60,5 +65,16 @@ describe("removeOrganizationAsMember", () => {
   it("lets an owner through to the removal", async () => {
     const exit = await removeAs("owner");
     expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(STORE_OPENED);
+  });
+
+  it("lets an anonymous owner through to the removal of its sandbox", async () => {
+    const exit = await removeAs("agent", `anon-${SANDBOX.slice(-8)}`);
+    expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain(STORE_OPENED);
+  });
+
+  it("shows an anonymous owner nothing of someone else's Organization", async () => {
+    const exit = await removeAs("agent");
+    expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toContain("The organization was not found.");
+    expect(await harness.db.select().from(organization).where(eq(organization.id, LAB))).toHaveLength(1);
   });
 });

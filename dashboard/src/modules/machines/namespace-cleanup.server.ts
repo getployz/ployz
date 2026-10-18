@@ -29,7 +29,7 @@ export const ownedNamespaces = (organizationId: string) =>
 export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function* (
   actor: Actor, input: { organizationSlug: string; namespaces: readonly string[] },
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const owned = new Set(yield* ownedNamespaces(organization.id));
   return input.namespaces.filter((namespace) => namespace !== SYSTEM_NAMESPACE && !owned.has(namespace));
 });
@@ -39,7 +39,7 @@ export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function
  * one goes with its Environment (Settings › Delete), which the Store records.
  */
 const unownedSession = Effect.fn("NamespaceCleanup.session")(function* (actor: Actor, organizationSlug: string, namespace: string) {
-  const { organization } = yield* requireAccess(actor, organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, organizationSlug, "servers:operate");
   if (namespace === SYSTEM_NAMESPACE || (yield* ownedNamespaces(organization.id)).includes(namespace)) {
     return yield* new Conflict({ userFacing: true, message: `${namespace} belongs to an Environment: delete that Environment in its Settings instead.` });
   }

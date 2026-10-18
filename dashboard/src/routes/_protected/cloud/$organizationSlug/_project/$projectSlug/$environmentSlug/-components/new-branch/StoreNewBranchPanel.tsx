@@ -15,7 +15,7 @@ import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
+import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -162,7 +162,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
             <Button type="submit" disabled={Boolean(nameError) || pending !== null}>
               {pending === "create" && <Spinner data-icon="inline-start" />}Create
             </Button>
-            <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="outline" />
+            <AddServersDialog organizationSlug={params.organizationSlug} label="Add servers" variant="outline" />
           </div>
         ) : (
           <div className="flex gap-2">

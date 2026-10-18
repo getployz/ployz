@@ -109,10 +109,11 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
     let host = System {
         ployzd: ployzd.path,
         stale: ployzd.stale,
+        cloud: cloud_url.clone(),
     };
     let (key, mut client) = connect(&paths, &cloud_url, token)?;
     match runtime.block_on(checkin::run(&host, &mut client, &key, &paths)) {
-        CheckinEnd::Stopped(_) => Ok(()),
+        CheckinEnd::Stopped(_) | CheckinEnd::Enrolled => Ok(()),
         // A failed exit, so systemd starts the loop again with the token now in the file.
         CheckinEnd::TokenChanged => Err(Error::coded(
             RpcErrorCode::Unavailable,
@@ -342,6 +343,7 @@ fn install_outcome(next: Next, install_with: Install<'_>) -> Result<Answered, Er
             }
             Ok(Answered::Waiting)
         }
+        Next::Enrolled => unreachable!("an install pass leaves enrolling to the loop"),
         Next::Held { hold, why, .. } => Ok(Answered::Held(hold, why)),
         Next::Retry { why, .. } => Ok(Answered::Unconfirmed(why)),
         Next::RefusedOnce { .. } => Err(Error::coded(

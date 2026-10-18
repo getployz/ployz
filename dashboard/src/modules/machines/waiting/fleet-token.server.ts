@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { and, asc, eq, gt, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, notExists, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import {
@@ -10,8 +10,11 @@ import {
   type FleetTokenView,
   type ListFleetTokensInput,
 } from "#/modules/machines/waiting/fleet-token";
+import { lockOrganizationEnrollment } from "#/modules/machines/pairing-removal.server";
 import { generateTokenName } from "#/modules/machines/waiting/names";
-import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
+import { user } from "#/modules/identity/tables";
+import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { stillWaiting } from "#/modules/machines/waiting/waiting-servers.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -30,28 +33,32 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
   input: CreateFleetTokenInput,
   generateName: () => string = generateTokenName,
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
-  const { drizzle } = yield* Database;
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
+  const database = yield* Database;
   const expiresAt = new Date(Date.now() + LIFETIME_DAYS[input.expiresIn] * DAY_MS);
   const insert = (name: string) => {
     const token = `${FLEET_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-    return drizzle
-      .insert(fleetToken)
-      .values({
-        organizationId: organization.id,
-        name,
-        tokenHash: hashFleetToken(token),
-        expiresAt,
-        autoEnrollMax: input.autoEnroll?.maxServers ?? null,
-        createdByUserId: actor.userId,
-      })
-      .returning({ id: fleetToken.id })
-      .pipe(
-        Effect.flatMap(([row]) => row === undefined
-          ? Effect.die("Fleet Token insert returned no row")
-          : Effect.succeed(Option.some({ token, id: row.id, name, expiresAt: expiresAt.toISOString() }))),
-        Effect.catchIf(isUniqueViolation, () => Effect.succeed(Option.none())),
-      );
+    // Organization removal holds this lock while it locks the tokens and then their hosts, so no token appears between.
+    return database.transaction(Effect.gen(function* () {
+      yield* lockOrganizationEnrollment(organization.id);
+      const { drizzle } = yield* Database;
+      return yield* drizzle
+        .insert(fleetToken)
+        .values({
+          organizationId: organization.id,
+          name,
+          tokenHash: hashFleetToken(token),
+          expiresAt,
+          autoEnrollMax: input.autoEnroll?.maxServers ?? null,
+          createdByUserId: actor.userId,
+        })
+        .returning({ id: fleetToken.id });
+    })).pipe(
+      Effect.flatMap(([row]) => row === undefined
+        ? Effect.die("Fleet Token insert returned no row")
+        : Effect.succeed(Option.some({ token, id: row.id, name, expiresAt: expiresAt.toISOString() }))),
+      Effect.catchIf(isUniqueViolation, () => Effect.succeed(Option.none())),
+    );
   };
   if (input.name !== null) {
     const created = yield* insert(input.name);
@@ -67,7 +74,7 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
 
 /** The Organization's unrevoked Fleet Tokens, expired ones included and marked. */
 export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Actor, input: ListFleetTokensInput) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const { drizzle } = yield* Database;
   const rows = yield* drizzle
     .select({
@@ -77,8 +84,14 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
       autoEnrollMax: fleetToken.autoEnrollMax,
       lastUsedAt: fleetToken.lastUsedAt,
       createdAt: fleetToken.createdAt,
+      createdBy: user.name,
+      waiting: sql<number>`(select count(*) from ${waitingServer} where ${waitingServer.fleetTokenId} = ${fleetToken.id}
+        and ${waitingServer.rejectedAt} is null and ${stillWaiting})`.mapWith(Number),
+      joined: sql<number>`(select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${fleetToken.id}
+        and ${serverEnrollment.state} = 'joined')`.mapWith(Number),
     })
     .from(fleetToken)
+    .innerJoin(user, eq(user.id, fleetToken.createdByUserId))
     .where(and(eq(fleetToken.organizationId, organization.id), isNull(fleetToken.revokedAt)))
     .orderBy(asc(fleetToken.createdAt), asc(fleetToken.id));
   const now = new Date();
@@ -90,6 +103,9 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
     autoEnrollMax: row.autoEnrollMax,
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+    createdBy: row.createdBy,
+    waiting: row.waiting,
+    joined: row.joined,
   }));
 });
 
@@ -97,7 +113,7 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string } & ({ readonly id: string } | { readonly name: string }),
 ) {
-  const { organization } = yield* requireAccess(actor, input.organizationSlug, "operate");
+  const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
   const target = and(
     eq(fleetToken.organizationId, organization.id),
@@ -111,9 +127,18 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
       .update(fleetToken)
       .set({ revokedAt: new Date() })
       .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
+    // Locked first so the delete below starts after any Enroll on these rows commits, and sees its attempt.
+    yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
+      .where(eq(waitingServer.fleetTokenId, found.id)).orderBy(waitingServer.id).for("update");
     const removed = yield* drizzle
       .delete(waitingServer)
-      .where(eq(waitingServer.fleetTokenId, found.id))
+      .where(and(
+        eq(waitingServer.fleetTokenId, found.id),
+        notExists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
+          eq(serverEnrollment.waitingServerId, waitingServer.id),
+          isNull(serverEnrollment.endedAt),
+        ))),
+      ))
       .returning({ id: waitingServer.id });
     return { waitingRemoved: removed.length };
   }));

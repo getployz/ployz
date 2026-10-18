@@ -4,7 +4,8 @@ import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { oauthClient, oauthConsent } from "#/modules/identity/oauth-tables";
 import { member, organizationToken, session } from "#/modules/identity/tables";
-import type { Caller } from "#/modules/identity/actor";
+import type { Caller, TokenKind } from "#/modules/identity/actor";
+import { tokenRuns } from "#/modules/identity/claim-required.server";
 import { hashOrganizationTokenSecret, ORGANIZATION_TOKEN_PREFIX } from "#/modules/identity/organization-token.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { organization } from "#/modules/organization/tables";
@@ -17,13 +18,10 @@ import { Forbidden, Unauthorized } from "#/server/public-error";
  * it is unexpired and its maker is still a member; a session acts in its active Organization while its user is a
  * member there. Anything else is refused. The session must come in the Authorization header, as the CLI sends it:
  * a cookie is what a browser attaches to a cross-site request on its own, so it authenticates nothing here.
- * `ployz mcp` marks its requests with `x-ployz-via: agent`, so an agent's requests are an agent's whichever
- * credential it borrowed.
  */
 export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (headers: Headers) {
-  const via = headers.get("x-ployz-via") === "agent" ? "agent" : "cli";
   const bearer = /^Bearer (\S+)$/.exec(headers.get("authorization") ?? "")?.[1];
-  if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer, via);
+  if (bearer?.startsWith(ORGANIZATION_TOKEN_PREFIX) === true) return yield* tokenCaller(bearer, headers);
   const auth = yield* Auth;
   const presented = new Headers(headers);
   presented.delete("cookie");
@@ -42,16 +40,19 @@ export const resolveCaller = Effect.fn("Identity.resolveCaller")(function* (head
     credential: { kind: "session", id: session.session.id },
     role: bound.role,
     support: null,
-    via,
+    via: ployzVia("cli", headers),
   } satisfies Caller;
 });
+
+export const ployzVia = (credential: TokenKind, headers: Headers): TokenKind =>
+  headers.get("x-ployz-via") === "agent" ? "agent" : credential;
 
 /** A dashboard request's signed-in user, acting in the Organization its URL names as a member or as support. */
 export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (headers: Headers, organizationSlug: string) {
   const auth = yield* Auth;
   const session = yield* auth.getSession(headers);
   if (session === null) return yield* new Unauthorized();
-  const access = yield* requireAccess({ userId: session.user.id }, organizationSlug, "operate");
+  const access = yield* requireAccess({ userId: session.user.id }, organizationSlug, "org:read");
   return {
     userId: session.user.id,
     organization: access.organization,
@@ -62,11 +63,12 @@ export const dashboardCaller = Effect.fn("Identity.dashboardCaller")(function* (
   } satisfies Caller;
 });
 
-const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string, via: "cli" | "agent") {
+const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string, headers: Headers) {
   const database = yield* Database;
   const rows = yield* database.drizzle
     .select({
       id: organizationToken.id,
+      kind: organizationToken.kind,
       userId: organizationToken.userId,
       organizationId: organization.id,
       slug: organization.slug,
@@ -80,7 +82,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string,
     ))
     .where(and(
       eq(organizationToken.secretHash, hashOrganizationTokenSecret(secret)),
-      gt(organizationToken.expiresAt, new Date()),
+      tokenRuns,
     ))
     .limit(1);
   const row = rows[0];
@@ -92,7 +94,7 @@ const tokenCaller = Effect.fn("Identity.tokenCaller")(function* (secret: string,
     credential: { kind: "token", id: row.id },
     role: row.role,
     support: null,
-    via,
+    via: ployzVia(row.kind, headers),
   } satisfies Caller;
 });
 

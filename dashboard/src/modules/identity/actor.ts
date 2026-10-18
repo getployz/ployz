@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { can, type Permission, permissionsOf } from "#/modules/organization/permissions";
 import type { SupportShows } from "#/modules/support-access/support-access";
 
 export const Actor = Schema.Struct({
@@ -10,14 +11,15 @@ export type Actor = typeof Actor.Type;
 /** A session (the dashboard or `ployz login`), an Organization Token, or a remote agent's OAuth grant. */
 export type CredentialKind = "session" | "token" | "oauth";
 
+export const TOKEN_KINDS = ["cli", "agent"] as const;
+export type TokenKind = (typeof TOKEN_KINDS)[number];
+
 /**
  * Who a request acts as, bound to one Organization. A `ployz` API request is a member, through a signed-in session (a
  * device's active Organization) or an Organization Token; a dashboard request is a member or support, through the
  * session, in the Organization its URL names; a remote agent is a member through an OAuth grant bound to one
  * Organization. It is an Actor, so Actor-taking operations accept it. `role` is a member's
- * role there, null for support; `support` is what Ployz support may read there, null for a member. `via` is who started
- * the request, set by Cloud from the route it came in on: a person in the dashboard, a `ployz` command, or an agent (the
- * sidebar, `ployz mcp`, or a remote MCP client).
+ * role there, null for support; `support` is what Ployz support may read there, null for a member.
  */
 export type Caller = Actor & {
   readonly organization: { readonly id: string; readonly slug: string };
@@ -26,3 +28,14 @@ export type Caller = Actor & {
   readonly support: SupportShows | null;
   readonly via: "dashboard" | "cli" | "agent";
 };
+
+/** Whether the Caller's member role holds `permission`. Support has no member role, so it holds none here. */
+export const callerCan = (caller: Pick<Caller, "role">, permission: Permission) => caller.role !== null && can(caller.role, permission);
+
+/** `callerCan`, but support with support access holds what the support role does: for the sites that let support act. */
+export const callerOrSupportCan = (caller: Pick<Caller, "role" | "support">, permission: Permission) =>
+  caller.role !== null ? can(caller.role, permission) : caller.support !== null && can("support", permission);
+
+/** The Caller's effective permissions, the set the Store checks each command against: their role's, or support's. */
+export const callerPermissions = (caller: Pick<Caller, "role" | "support">): Permission[] =>
+  caller.role !== null ? permissionsOf(caller.role) : caller.support !== null ? permissionsOf("support") : [];

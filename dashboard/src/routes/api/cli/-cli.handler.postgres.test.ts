@@ -24,10 +24,11 @@ import { operationApprovals } from "#/modules/approvals/tables";
 import type { Caller } from "#/modules/identity/actor";
 import { forgetServer } from "#/modules/operations/operations.server";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
+import { permissionsOf } from "#/modules/organization/permissions";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
-import { fleetToken } from "#/modules/machines/waiting/tables";
+import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
@@ -80,6 +81,7 @@ function fakeServers() {
           server.slots.set(label, capability);
           return capability;
         },
+        setPushTarget: async () => undefined,
         clearManagementClient: async (label: string) => { server.slots.delete(label); },
         inspect: async () => ({ management_clients: [...server.slots.keys()] }),
         close: async () => undefined,
@@ -146,8 +148,10 @@ const Approval = Schema.Struct({ id: Schema.String, status: Schema.String, diges
 const Reply = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
-  token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String })),
-  tokens: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, current: Schema.Boolean, expired: Schema.Boolean }))),
+  token: Schema.optionalKey(Schema.Struct({ id: Schema.String, secret: Schema.String, organization: Schema.String, kind: Schema.String })),
+  tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
+    id: Schema.String, kind: Schema.String, current: Schema.Boolean, expired: Schema.Boolean,
+  }))),
   fleet_token: Schema.optionalKey(Schema.Struct({ id: Schema.String, name: Schema.String, token: Schema.String, expires_at: Schema.String })),
   fleet_tokens: Schema.optionalKey(Schema.Array(Schema.Struct({
     id: Schema.String, name: Schema.String, expired: Schema.Boolean, auto_enroll_max: Schema.NullOr(Schema.Number),
@@ -207,7 +211,13 @@ type Reply = typeof Reply.Type;
 const decodeReply = (text: string) => Schema.decodeUnknownSync(Reply)(JSON.parse(text), { onExcessProperty: "preserve" });
 
 /** `session` is a signed-in login's session token, which the CLI sends as a bearer token. */
-type As = { readonly session?: string; readonly bearer?: string; readonly approval?: string; readonly key?: string };
+type As = {
+  readonly session?: string;
+  readonly bearer?: string;
+  readonly approval?: string;
+  readonly key?: string;
+  readonly via?: string;
+};
 
 type CliBody = JsonObject;
 
@@ -217,6 +227,7 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   if (bearer !== undefined) headers.set("authorization", `Bearer ${bearer}`);
   if (as.approval !== undefined) headers.set("x-ployz-approval", as.approval);
   if (as.key !== undefined) headers.set("x-ployz-request-key", as.key);
+  if (as.via !== undefined) headers.set("x-ployz-via", as.via);
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
@@ -672,6 +683,57 @@ it.live(
 );
 
 it.live(
+  "only an owner or admin gets Server access; a member is refused with no holder, and a demoted admin's holder is "
+    + "retired by the sweep",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const machine = ids.machineId("00000000000000000000000000001241");
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const slug = alice.organization.slug;
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true, slots: new Map<string, string>() };
+        fake.servers.set(machine, server);
+        const [personal] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, bob.organization.id));
+        const bobId = personal?.userId ?? assert.fail("no member");
+        yield* database.drizzle.insert(member).values({ userId: bobId, organizationId: alice.organization.id, role: "member" });
+        yield* database.drizzle.update(session).set({ activeOrganizationId: alice.organization.id, activeOrganizationSlug: slug })
+          .where(eq(session.userId, bobId));
+        const device = (yield* cli("GET", "tokens", bob)).json.devices?.[0]?.id ?? assert.fail("no device");
+        const setRole = (role: "admin" | "member") => database.drizzle.update(member).set({ role })
+          .where(and(eq(member.userId, bobId), eq(member.organizationId, alice.organization.id)));
+
+        const refused = yield* cli("POST", "server-access", bob);
+        assert.strictEqual(refused.status, 403);
+        assert.deepStrictEqual(JSON.parse(refused.text), { error: {
+          code: "forbidden",
+          message: `Server access needs an admin. Ask an owner or admin of ${slug}.`,
+          details: { organization: slug },
+        } });
+        assert.strictEqual(fake.sets(), 0);
+        assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+
+        yield* setRole("admin");
+        const granted = yield* cli("POST", "server-access", bob);
+        assert.strictEqual(granted.status, 200);
+        const key = granted.json.connections?.[0]?.management ?? assert.fail("no capability");
+        assert.strictEqual(server.slots.get(serverAccessLabel(device)), key);
+
+        yield* setRole("member");
+        yield* retireServerAccess();
+        assert.isFalse(server.slots.has(serverAccessLabel(device)));
+        assert.strictEqual((yield* cli("POST", "server-access", bob)).status, 403);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "github lists the caller's installations and a readable repository's branches, and disconnects one",
   () =>
     Effect.gen(function* () {
@@ -770,7 +832,7 @@ it.live(
         assert.strictEqual(other.json.error?.details?.next, "ployz org use elsewhere");
 
         // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
-        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command);
+        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
         const created = yield* write({ operation: "write", command: {
           command: "create_project", id: "00000000-0000-4000-8000-000000001260", name: "shop",
           default_environment: "00000000-0000-4000-8000-000000001261",
@@ -1027,6 +1089,53 @@ it.live(
 );
 
 it.live(
+  "an agent token's destroy asks whatever header it sends, and only its person answers",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-agent-token-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: leftBehindClusterOf({ observesFra1: true, sessionsOpened: 0 }), inngest });
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const mint = Effect.fn(function* (body: CliBody) {
+          const made = yield* cli("POST", "tokens", alice, { expires_in_days: 30, ...body });
+          return (made.json.token ?? assert.fail(made.text)).secret;
+        });
+        assert.strictEqual((yield* cli("POST", "tokens", alice, { name: "x", expires_in_days: 30, kind: "dashboard" })).status, 422);
+        const agent = yield* mint({ name: "mcp", kind: "agent" });
+        const ci = yield* mint({ name: "ci" });
+        const byAgent = yield* cli("POST", "tokens", { ...alice, via: "agent" }, { name: "sneaky", expires_in_days: 30, kind: "cli" });
+        assert.strictEqual(byAgent.json.token?.kind, "agent", byAgent.text);
+
+        const listed = yield* cli("GET", "tokens", alice);
+        assert.deepStrictEqual(listed.json.tokens?.map(({ kind }) => kind).sort(), ["agent", "agent", "cli"]);
+
+        const asked = yield* cli("POST", "namespaces/left-behind/clean", { bearer: agent });
+        assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"], asked.text);
+        const details = asked.json.error?.details ?? assert.fail("no details");
+        const approvalId = details.approval_id ?? assert.fail("no approval id");
+        const row = () => drizzle.select({ via: operationApprovals.via, status: operationApprovals.status })
+          .from(operationApprovals).where(eq(operationApprovals.id, approvalId));
+        assert.deepStrictEqual(yield* row(), [{ via: "agent", status: "pending" }]);
+
+        const approve = { approve: { digest: details.approval ?? "" } };
+        for (const as of [{ bearer: agent }, { bearer: agent, via: "cli" }, { bearer: ci, via: "agent" }]) {
+          for (const body of [approve, { reject: {} }]) {
+            const refused = yield* cli("POST", `approvals/${approvalId}`, as, body);
+            assert.deepStrictEqual([refused.status, refused.json.error?.message], [403, "Agents can't answer approvals."], refused.text);
+          }
+        }
+        assert.deepStrictEqual(yield* row(), [{ via: "agent", status: "pending" }]);
+
+        const approved = yield* cli("POST", `approvals/${approvalId}`, { bearer: ci }, approve);
+        assert.deepStrictEqual([approved.status, approved.json.approval?.status], [200, "approved"], approved.text);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a person forgetting a Server from its dashboard modal starts it at once, and a sidebar agent's forget asks first",
   () =>
     Effect.gen(function* () {
@@ -1217,7 +1326,7 @@ const ownNamespace = Effect.fn(function* (organizationId: string, userId: string
       command: "create_project", id: "00000000-0000-4000-8000-00000000d401", name: "shop",
       default_environment: "00000000-0000-4000-8000-00000000d402",
     },
-  });
+  }, { source: "dashboard" }, { approval: "not_required", permissions: permissionsOf("owner") });
   assert.isTrue(created.ok);
   yield* drizzle.execute(sql`insert into config_namespace (organization_id, namespace, environment_id)
     values (${organizationId}, 'shop-production', '00000000-0000-4000-8000-00000000d402')`);
@@ -1389,6 +1498,73 @@ it.live(
 
         const approvals = yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status }).from(operationApprovals);
         assert.sameDeepMembers(approvals, [{ id: removalId, status: "pending" }, { id: cleanId, status: "pending" }]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "POST enrollments/plan answers what POST enrollments then starts, writes nothing, and plans only the caller's own servers",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const fleet = (yield* cli("POST", "fleet-tokens", alice, { name: "rack-1", expires_in: "1d" })).json.fleet_token
+          ?? assert.fail("no fleet token");
+        const report = {
+          hostname: "web", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8.0", arch: "x86_64", virt: "kvm", cpuCount: 4,
+          memoryTotalBytes: 8_589_934_592, disks: [], docker: { kind: "absent" as const }, cgroup: "v2" as const,
+          zfs: { kind: "eligible" as const, targets: [{ kind: "main_disk" as const }] }, blockers: [], warnings: [], cliVersion: "0.3.1",
+        };
+        const hosts = yield* database.drizzle.insert(waitingServer).values(["web-a", "web-b", "web-c"].map((hostname, index) => ({
+          organizationId: alice.organization.id,
+          fleetTokenId: fleet.id,
+          checkinKey: String(index).repeat(64),
+          report: { ...report, hostname },
+          observedIp: "203.0.113.7",
+        }))).returning({ id: waitingServer.id, hostname: sql<string>`${waitingServer.report}->>'hostname'` });
+        const byName = new Map(hosts.map((row) => [row.hostname, row.id]));
+        const [a, b, c] = [byName.get("web-a"), byName.get("web-b"), byName.get("web-c")];
+        const body = {
+          ids: [a, b, c].map((id) => id ?? assert.fail("no host")),
+          first: b ?? assert.fail("no host"),
+          storage: { kind: "zfs", use_spare_disk: false, fallback_to_docker: false },
+          names: { kind: "pattern", pattern: "node-{n}" },
+          runs: { services: true, ingress: true, builds: false },
+        };
+
+        const planned = yield* cli("POST", "enrollments/plan", alice, body);
+        assert.strictEqual(planned.status, 200);
+        assert.deepStrictEqual(JSON.parse(planned.text), {
+          plan: [
+            { waiting_server_id: b, hostname: "web-b", role: "founder", name: "node-1", storage: { kind: "zfs" } },
+            { waiting_server_id: a, hostname: "web-a", role: "joiner", name: "node-2", storage: { kind: "zfs" } },
+            { waiting_server_id: c, hostname: "web-c", role: "joiner", name: "node-3", storage: { kind: "zfs" } },
+          ],
+          skipped: [],
+          spread: { providers: 1, networks: 1 },
+        });
+        assert.deepStrictEqual(yield* database.drizzle.select().from(serverEnrollment), []);
+
+        const outsider = yield* cli("POST", "enrollments/plan", bob, body);
+        assert.strictEqual(outsider.status, 422);
+        assert.notInclude(outsider.text, "web-b");
+        assert.strictEqual((yield* cli("POST", "enrollments/other", alice, body)).status, 404);
+
+        const started = yield* cli("POST", "enrollments", alice, body);
+        const plan = JSON.parse(planned.text) as { plan: Array<{ waiting_server_id: string; role: string; name: string }> };
+        const attempts = (JSON.parse(started.text) as { enrollments: Array<{ id: string; waiting_server_id: string; role: string; name: string }> }).enrollments;
+        assert.deepStrictEqual(
+          attempts.map((row) => [row.waiting_server_id, row.role, row.name]),
+          plan.plan.map((row) => [row.waiting_server_id, row.role, row.name]),
+        );
+        const listed = JSON.parse((yield* cli("GET", "enrollments", alice)).text) as { enrollments: Array<{ ahead: number | null }> };
+        assert.deepStrictEqual(listed.enrollments.map((row) => row.ahead), [null, null, null]);
+        const one = JSON.parse((yield* cli("GET", `enrollments/${attempts[0]?.id}`, alice)).text) as { enrollment: { ahead: number | null } };
+        assert.strictEqual(one.enrollment.ahead, null);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

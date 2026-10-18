@@ -26,12 +26,10 @@ const Answered = Schema.Struct({
   decided_at: Schema.NullOr(Schema.String),
 });
 
-const waiting = (approval: ApprovalView): typeof Waiting.Type => ({
-  id: approval.id,
-  status: approval.status,
-  ...approvalSubject(approval.command, approval.review),
-  created_at: approval.created_at,
-});
+const waiting = (approval: ApprovalView): typeof Waiting.Type => {
+  const { verb, name } = approvalSubject(approval.command, approval.review);
+  return { id: approval.id, status: approval.status, verb, name, created_at: approval.created_at };
+};
 
 const answered = (approval: ApprovalView): typeof Answered.Type => ({
   ...waiting(approval),
@@ -53,6 +51,7 @@ const told = (decided: Decided, said: (subject: string) => string): Ran<typeof A
 
 export const orgApprovalLs = defineCommand({
   name: "org_approval_ls",
+  requires: "approvals:answer",
   path: ["org", "approval", "ls"],
   about: "List the Organization's pending approvals",
   examples: ["ployz org approval ls"],
@@ -70,6 +69,7 @@ export const orgApprovalLs = defineCommand({
 
 export const orgApprovalShow = defineCommand({
   name: "org_approval_show",
+  requires: "approvals:answer",
   path: ["org", "approval", "show"],
   about: "Show one approval: what the plan destroys and how it was answered",
   examples: ["ployz org approval show 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"],
@@ -91,6 +91,7 @@ export const orgApprovalShow = defineCommand({
  */
 export const orgApprovalApprove = defineCommand({
   name: "org_approval_approve",
+  requires: "approvals:answer",
   path: ["org", "approval", "approve"],
   about: "Approve a pending approval so the command waiting on it goes ahead",
   examples: ["ployz org approval approve 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e"],
@@ -112,6 +113,7 @@ export const orgApprovalApprove = defineCommand({
 
 export const orgApprovalDeny = defineCommand({
   name: "org_approval_deny",
+  requires: "approvals:answer",
   path: ["org", "approval", "deny"],
   about: "Deny a pending approval; the agent or command waiting on it hears the reason",
   examples: ["ployz org approval deny 7f3c2a10-5d2e-4b61-9c4e-2f0a1b3c4d5e --reason \"not during the demo\""],

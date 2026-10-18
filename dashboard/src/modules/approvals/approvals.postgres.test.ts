@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { type Approval, type ConfigCommand, type ConfigStore, RpcError, type RuntimeWatchView } from "@ployz/sdk";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { expect, vi } from "vitest";
 import {
@@ -23,6 +23,7 @@ import { cleanPlan, drainPlan, freshApproval, freshPendingApprovals, removePlan 
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
+import { member, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/server/auth.server";
@@ -91,6 +92,17 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
   return { provided, write, refusal, caller, userId, store, pending, withApproval, cli };
 });
 
+const anonymous = (userId: string) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(user).set({ isAnonymous: true }).where(eq(user.id, userId));
+});
+
+const personOwner = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.insert(user).values({ email: "grace@example.test", name: "Grace" }).returning();
+  yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
+});
+
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
 const asked = (refused: { details: unknown }) => refused.details as Asked;
 type Reply = { written?: string; error?: { code: string; message: string; details: Partial<Asked> | null } };
@@ -114,7 +126,7 @@ it.live("a destructive CLI publish waits for a human to approve exactly what it 
       const { drizzle } = yield* Database;
       yield* drizzle.insert(organization).values({ id: OTHER, name: "Other", slug: "other" });
     }));
-    expect(yield* provided(trustedApproval(OTHER, first.approval_id))).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
+    expect(yield* provided(trustedApproval(OTHER, first.approval_id))).toMatchObject({ ok: false, refusal: { code: "not_found" } });
     expect(yield* provided(Effect.flip(getApproval(OTHER, first.approval_id)))).toMatchObject({ _tag: "NotFound" });
 
     // Approving another digest conflicts; approving the one asked about is what the retry tells the Store.
@@ -161,7 +173,7 @@ it.live("an approval the plan moved past is superseded, and a denial answers the
     });
   }));
 
-it.live("only a person in Cloud, or the prompt of the `ployz` that asked, approves an agent's request; anyone may deny it", () =>
+it.live("an agent answers no approval, and what it asked waits on a person in Cloud or, for `ployz mcp`, at its person's prompt", () =>
   Effect.gen(function* () {
     const { provided, refusal, caller } = yield* shopRemovingWeb();
     const ask = (requester: Caller) => provided(Effect.gen(function* () {
@@ -171,34 +183,39 @@ it.live("only a person in Cloud, or the prompt of the `ployz` that asked, approv
       const digest = (yield* getApproval(ORGANIZATION, id)).digest;
       return yield* decideApproval(decider, id, { approve: { digest } });
     }));
+    const deny = (decider: Caller, id: string) => provided(decideApproval(decider, id, { reject: {} }));
+    const status = (id: string) => provided(Effect.map(getApproval(ORGANIZATION, id), ({ status }) => status));
+    const agentRefused = { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals." } };
     const refused = {
       ok: false,
       refusal: { code: "forbidden", message: "Only a person in Ployz Cloud, or the prompt that asked, can approve this." },
     };
     const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2" } };
-    const mcp: Caller = { ...caller, via: "agent" };
+    const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp" }, via: "agent" };
     const grant: Caller = { ...caller, credential: { kind: "oauth", id: "grant-1" }, via: "agent" };
     const sidebar: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "agent" };
+    const colleague: Caller = { ...otherToken, userId: "00000000-0000-4000-8000-00000000a5aa", role: "member" };
 
     const fromMcp = yield* ask(mcp);
-    expect(yield* approve(mcp, fromMcp)).toMatchObject(refused);
-    expect(yield* approve(otherToken, fromMcp)).toMatchObject(refused);
-    // `ployz mcp` posts its host's form answer with the credential that asked.
-    expect(yield* approve(caller, fromMcp)).toMatchObject({ ok: true, approval: { status: "approved" } });
+    for (const agent of [mcp, grant, sidebar]) {
+      expect(yield* approve(agent, fromMcp)).toMatchObject(agentRefused);
+      expect(yield* deny(agent, fromMcp)).toMatchObject(agentRefused);
+    }
+    expect(yield* status(fromMcp)).toBe("pending");
+    expect(yield* approve(colleague, fromMcp)).toMatchObject(refused);
+    expect(yield* approve(otherToken, fromMcp)).toMatchObject({ ok: true, approval: { status: "approved" } });
 
     const fromGrant = yield* ask(grant);
-    expect(yield* approve(grant, fromGrant)).toMatchObject(refused);
     expect(yield* approve(caller, fromGrant)).toMatchObject(refused);
-    expect(yield* provided(decideApproval(grant, fromGrant, { reject: {} }))).toMatchObject({ ok: true, approval: { status: "denied" } });
+    expect(yield* deny(caller, fromGrant)).toMatchObject({ ok: true, approval: { status: "denied" } });
 
     const fromSidebar = yield* ask(sidebar);
-    expect(yield* approve(sidebar, fromSidebar)).toMatchObject(refused);
     expect(yield* approve(caller, fromSidebar)).toMatchObject(refused);
     expect(yield* approve({ ...caller, via: "dashboard" }, fromSidebar)).toMatchObject({ ok: true, approval: { status: "approved" } });
 
     // A person's own `ployz` request still approves from any of their CLI credentials, as the TTY prompt does.
     const fromCli = yield* ask(caller);
-    expect(yield* approve(mcp, fromCli)).toMatchObject(refused);
+    expect(yield* approve(mcp, fromCli)).toMatchObject(agentRefused);
     expect(yield* approve(otherToken, fromCli)).toMatchObject({ ok: true, approval: { status: "approved" } });
   }));
 
@@ -326,8 +343,8 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     const firstId = first.json.error?.details?.approval_id ?? expect.fail("no approval_id");
 
     const unknown = yield* cli(publish, UNKNOWN_APPROVAL);
-    expect(unknown.status).toBe(422);
-    expect(unknown.json.error).toMatchObject({ code: "invalid_argument", details: { approval_id: UNKNOWN_APPROVAL } });
+    expect(unknown.status).toBe(404);
+    expect(unknown.json.error).toMatchObject({ code: "not_found", details: { approval_id: UNKNOWN_APPROVAL } });
     expect(unknown.json.error?.message).not.toContain(UNKNOWN_APPROVAL);
 
     yield* provided(decideApproval(caller, firstId, { reject: { reason: "not today" } }));
@@ -345,24 +362,25 @@ it.live("the CLI's Publish asks over HTTPS, and its retry names the approval a h
     expect(yield* cli(publish, secondId)).toMatchObject({ status: 200, json: { written: "published" } });
   }));
 
-it.live("`ployz mcp`'s Publish asks as an agent, so another of the person's tokens can't approve it, nor a request from before Cloud recorded who asked", () =>
+it.live("`ployz mcp`'s Publish asks as an agent, which its person's `ployz` approves, unlike a request from before Cloud recorded who asked", () =>
   Effect.gen(function* () {
     const { provided, caller, cli } = yield* shopRemovingWeb();
     const otherToken: Caller = { ...caller, credential: { kind: "token", id: "token-2" } };
     const approve = (id: string, digest: string) => provided(decideApproval(otherToken, id, { approve: { digest } }));
+    const setVia = (id: string, via: string | null) => provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update operation_approvals set via = ${via} where id = ${id}`);
+    }));
     const askedBy = Effect.fn(function* (via?: "agent") {
       const details = (yield* cli(publish, undefined, via)).json.error?.details;
       return { id: details?.approval_id ?? expect.fail("no approval_id"), digest: details?.approval ?? expect.fail("no digest") };
     });
 
     const fromMcp = yield* askedBy("agent");
+    yield* setVia(fromMcp.id, null);
     expect(yield* approve(fromMcp.id, fromMcp.digest)).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
-
-    yield* provided(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      yield* drizzle.execute(sql`update operation_approvals set via = null where id = ${fromMcp.id}`);
-    }));
-    expect(yield* approve(fromMcp.id, fromMcp.digest)).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
+    yield* setVia(fromMcp.id, "agent");
+    expect(yield* approve(fromMcp.id, fromMcp.digest)).toMatchObject({ ok: true, approval: { status: "approved" } });
 
     const fromCli = yield* askedBy();
     expect(yield* approve(fromCli.id, fromCli.digest)).toMatchObject({ ok: true, approval: { status: "approved" } });
@@ -387,6 +405,101 @@ it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destr
     const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
     expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
     expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
+  }));
+
+it.live("an anonymous agent's Organization has no person to ask: its Deploys and destroys go through as not required", () =>
+  Effect.gen(function* () {
+    const { provided, userId, cli, store } = yield* shopRemovingWeb();
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(anonymous(userId));
+    const write = vi.spyOn(store, "write");
+    expect(yield* cli(deploy(1), undefined, "agent")).toMatchObject({ status: 200 });
+    expect(yield* cli(publish)).toMatchObject({ status: 200 });
+    expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.approval]))
+      .toEqual([["admit", "not_required"], ["publish", "not_required"]]);
+  }));
+
+it.live("an approval from another Organization is no approval here, whether or not this one asks, and nothing saves", () =>
+  Effect.gen(function* () {
+    const { provided, caller, userId, cli, store } = yield* shopRemovingWeb();
+    const details = (yield* cli(publish)).json.error?.details;
+    const own = details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval(caller, own, { approve: { digest: details?.approval ??expect.fail("no digest") } }));
+    const foreign = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.insert(organization).values({ id: OTHER, name: "Other", slug: "other" });
+      const [approved] = yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.id, own));
+      const [copied] = yield* drizzle.insert(operationApprovals)
+        .values({ ...(approved ?? expect.fail("no approval")), id: crypto.randomUUID(), organizationId: OTHER }).returning();
+      return copied?.id ?? expect.fail("no copy");
+    }));
+    const write = vi.spyOn(store, "write");
+    const notFound = { status: 404, json: { error: { code: "not_found", message: "No such approval.", details: { approval_id: foreign } } } };
+
+    expect(yield* cli(publish, foreign)).toMatchObject(notFound);
+    yield* provided(anonymous(userId));
+    expect(yield* cli(publish, foreign)).toMatchObject(notFound);
+    expect(write).not.toHaveBeenCalled();
+
+    expect(yield* cli(publish, own)).toMatchObject({ status: 200, json: { written: "published" } });
+  }));
+
+const removeShop = (version: string | null = null): ConfigCommand => ({ command: "remove", project: "shop", version });
+/** The version a `confirmation_required` refusal hands back, the one a removal names to go ahead. */
+const confirmed = (reply: { json: Reply }) => (reply.json.error?.details as { version?: string } | null)?.version ?? expect.fail("no version");
+/** `web` ran on the Servers, so removing Shop stops it there. */
+const ran = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`update config_deployment set started = 1 where id = ${DEPLOYMENT}`);
+});
+const marks = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.execute<{ marks: number }>(sql`select count(*)::int as marks from config_removal_mark`, "objects");
+  return rows[0]?.marks;
+});
+
+it.live("an agent's Project removal waits on a human to approve it, and removes nothing until then", () =>
+  Effect.gen(function* () {
+    const { provided, caller, cli } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(ran);
+
+    const version = confirmed(yield* cli(removeShop(), undefined, "agent"));
+    const asked = yield* cli(removeShop(version), undefined, "agent");
+    expect(asked.status).toBe(409);
+    expect(asked.json.error).toMatchObject({
+      code: "approval_required",
+      details: { approval_id: expect.any(String), operation: { verb: "remove", name: "shop" }, organization: "shop" },
+    });
+    expect(yield* provided(marks)).toBe(0);
+
+    const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
+    const digest = asked.json.error?.details?.approval ?? expect.fail("no digest");
+    const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
+    expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
+    expect(yield* cli(removeShop(version), id, "agent")).toMatchObject({ status: 200, json: { written: "removal" } });
+    expect(yield* provided(marks)).toBe(1);
+  }));
+
+it.live("an anonymous agent's Project removal goes through without asking", () =>
+  Effect.gen(function* () {
+    const { provided, userId, cli } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(anonymous(userId));
+    yield* provided(ran);
+    const version = confirmed(yield* cli(removeShop(), undefined, "agent"));
+    expect(yield* cli(removeShop(version), undefined, "agent")).toMatchObject({ status: 200, json: { written: "removal" } });
+    expect(yield* provided(marks)).toBe(1);
+  }));
+
+it.live("a person's Project removal from the dashboard goes through without asking", () =>
+  Effect.gen(function* () {
+    const { provided, userId, cli } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(ran);
+    const version = confirmed(yield* cli(removeShop()));
+    expect(yield* provided(writeStoreAsMember({ userId }, "shop", removeShop(version)))).toMatchObject({ ok: true });
+    expect(yield* provided(marks)).toBe(1);
   }));
 
 it.live("a retry `ployz mcp` asks for waits on a human as a Retry; the CLI's doesn't", () =>
@@ -542,6 +655,22 @@ it.live("a person's destructive operation from the dashboard runs without asking
     expect(yield* rows).toEqual([]);
   }));
 
+it.live("an anonymous agent's destructive operation runs without asking and records no approval", () =>
+  Effect.gen(function* () {
+    const { provided, userId, gate, rows } = yield* operationCloud();
+    yield* provided(anonymous(userId));
+    expect(yield* gate(drainOf(["shop.web"]))).toEqual({ ok: true, approvalId: null });
+    expect(yield* rows).toEqual([]);
+  }));
+
+it.live("an agent's destructive operation still asks once a person also owns the Organization", () =>
+  Effect.gen(function* () {
+    const { provided, userId, gate } = yield* operationCloud();
+    yield* provided(anonymous(userId));
+    yield* provided(personOwner);
+    expect(refusedWith(yield* gate(drainOf(["shop.web"]))).approval).toBe(operationDigest(drainOf(["shop.web"])));
+  }));
+
 it.live("a destructive operation waits on one approval of exactly its preview, and its retry runs once approved", () =>
   Effect.gen(function* () {
     const { provided, caller, gate, rows } = yield* operationCloud();
@@ -567,7 +696,7 @@ it.live("a destructive operation waits on one approval of exactly its preview, a
     expect(moved.approval_id).not.toBe(first.approval_id);
   }));
 
-it.live("a person who asks for what an agent asked approves it at their own prompt; another agent asking takes nothing", () =>
+it.live("a person who asks for what an agent asked approves it at their own prompt; no agent answers it", () =>
   Effect.gen(function* () {
     const { provided, caller } = yield* operationCloud();
     const asked = drainOf(["shop.web"]);
@@ -575,13 +704,14 @@ it.live("a person who asks for what an agent asked approves it at their own prom
     const gateAs = (requester: Caller) => Effect.map(provided(gateOperation(requester, null, asked)), refusedWith);
     const approveAs = (decider: Caller, id: string) =>
       provided(decideApproval(decider, id, { approve: { digest } }, answers(digest)));
-    const refused = { ok: false, refusal: { code: "forbidden" } };
+    const refused = { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals." } };
     const mcp: Caller = { ...caller, credential: { kind: "token", id: "token-mcp" }, via: "agent" };
     const otherAgent: Caller = { ...caller, credential: { kind: "token", id: "token-other" }, via: "agent" };
 
     const fromAgent = yield* gateAs(mcp);
     expect((yield* gateAs(otherAgent)).approval_id).toBe(fromAgent.approval_id);
-    expect(yield* approveAs({ ...otherAgent, via: "cli" }, fromAgent.approval_id)).toMatchObject(refused);
+    expect(yield* approveAs(otherAgent, fromAgent.approval_id)).toMatchObject(refused);
+    expect(yield* approveAs(mcp, fromAgent.approval_id)).toMatchObject(refused);
 
     expect((yield* gateAs(caller)).approval_id).toBe(fromAgent.approval_id);
     expect(yield* approveAs(caller, fromAgent.approval_id)).toMatchObject({ ok: true, approval: { status: "approved" } });
@@ -734,7 +864,7 @@ it.live("a named approval no human denied lets an operation that destroys nothin
 
     yield* provided(decideApproval(caller, waiting.approval_id, { approve: { digest: waiting.approval } }, answers(waiting.approval)));
     expect(yield* gate(emptied, waiting.approval_id)).toEqual({ ok: true, approvalId: null });
-    expect(yield* gate(emptied, crypto.randomUUID())).toMatchObject({ ok: false, refusal: { code: "invalid_argument" } });
+    expect(yield* gate(emptied, crypto.randomUUID())).toMatchObject({ ok: false, refusal: { code: "not_found" } });
   }));
 
 it.live("a pending approval still waits on the human whether a retry names it or not", () =>

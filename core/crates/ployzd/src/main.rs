@@ -13,7 +13,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use ployz_core::{
-    MachineRelease, MachineUpgradeAttemptId, NETWORK_CONFLICT_EXIT_STATUS, StorageChoice,
+    MachineRelease, MachineUpgradeAttemptId, NETWORK_CONFLICT_EXIT_STATUS, StoragePreparation,
 };
 use ployzd::{
     daemon::{ContainerMode, Daemon, DaemonConfig, Error, wait_until_socket_accepts},
@@ -99,7 +99,7 @@ enum Command {
         version: MachineRelease,
         /// Prepare ZFS storage, or leave this Machine stateless.
         #[arg(long, default_value = "none")]
-        storage: StorageChoice,
+        storage: StoragePreparation,
         /// Replace daemon software only; do not install Docker, OS packages, or prepare storage.
         #[arg(long)]
         software_only: bool,
@@ -290,12 +290,12 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
 
 fn install_request(
     release: MachineRelease,
-    storage: StorageChoice,
+    storage: StoragePreparation,
     software_only: bool,
     install_only: bool,
     group_user: Option<String>,
 ) -> io::Result<InstallRequest> {
-    if install_only && storage != StorageChoice::None {
+    if install_only && storage != StoragePreparation::None {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--install-only cannot be combined with --storage",
@@ -310,7 +310,7 @@ fn install_request(
     let mode = if install_only {
         InstallMode::InstallationOnly
     } else if software_only {
-        if storage != StorageChoice::None {
+        if storage != StoragePreparation::None {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "--software-only cannot be combined with --storage",
@@ -385,8 +385,14 @@ mod tests {
 
     #[test]
     fn install_cli_rejects_host_options_for_software_only_replacement() {
-        let storage =
-            install_request(release("stable"), StorageChoice::Zfs, true, false, None).unwrap_err();
+        let storage = install_request(
+            release("stable"),
+            StoragePreparation::Zfs { device: None },
+            true,
+            false,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(
             storage.to_string(),
@@ -395,7 +401,7 @@ mod tests {
 
         let group = install_request(
             release("stable"),
-            StorageChoice::None,
+            StoragePreparation::None,
             true,
             false,
             Some("operator".into()),
@@ -410,8 +416,14 @@ mod tests {
 
     #[test]
     fn install_cli_rejects_host_options_for_installation_only() {
-        let storage =
-            install_request(release("stable"), StorageChoice::Zfs, false, true, None).unwrap_err();
+        let storage = install_request(
+            release("stable"),
+            StoragePreparation::Zfs { device: None },
+            false,
+            true,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(storage.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(
             storage.to_string(),
@@ -420,7 +432,7 @@ mod tests {
 
         let group = install_request(
             release("stable"),
-            StorageChoice::None,
+            StoragePreparation::None,
             false,
             true,
             Some("operator".into()),
@@ -436,12 +448,12 @@ mod tests {
     #[test]
     fn install_cli_builds_one_explicit_mode() {
         let replacement =
-            install_request(release("1.2.3"), StorageChoice::None, true, true, None).unwrap();
+            install_request(release("1.2.3"), StoragePreparation::None, true, true, None).unwrap();
         assert!(matches!(replacement.mode, InstallMode::InstallationOnly));
 
         let host = install_request(
             release("1.2.3"),
-            StorageChoice::Zfs,
+            StoragePreparation::Zfs { device: None },
             false,
             false,
             Some("operator".into()),
@@ -450,7 +462,7 @@ mod tests {
         assert!(matches!(
             host.mode,
             InstallMode::PrepareHost {
-                storage: StorageChoice::Zfs,
+                storage: StoragePreparation::Zfs { device: None },
                 group_user: Some(_)
             }
         ));

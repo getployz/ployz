@@ -2,7 +2,7 @@
 //! answering its reads and its one write from the Config Store and Ployz Cloud.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,16 +29,19 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::OnceCell;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, leaf_matches, store};
 use crate::approval::{self, Asked, Subject, Verb};
 use crate::cloud_account::{self, Credential, StoreCallError, Via};
-use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cloud_login::{self, CredentialStore, LoginError};
 use crate::failure::Failure;
 use crate::published::{self, Effect, Published, PublishedCommand, Setup};
+
+mod login;
+
+pub(super) use login::{login, login_command};
 
 pub(super) fn command(command: Command) -> Command {
     command.about("Serve the agent tools to a coding agent as MCP tools over stdio")
@@ -47,6 +50,37 @@ pub(super) fn command(command: Command) -> Command {
 /// Outlasts the longest wait a tool may ask for and matches the default build limit. A
 /// Deployment or a Cloud operation goes on after ployz mcp stops waiting for it.
 pub(crate) const CALL_DEADLINE: Duration = Duration::from_secs(30 * 60);
+
+/// Where the agent's published commands come from: the Cloud it acts in. Without
+/// `PLOYZ_TOKEN` that is the Cloud `ployz mcp login` stored, not the sign-in's.
+fn publishing_setup(config: &Path, cloud: Option<String>, token: Option<&str>) -> Setup {
+    let setup = Setup::beside(config, cloud);
+    match login::stored(config) {
+        Ok(Some(stored)) if token.is_none_or(str::is_empty) => {
+            setup.in_cloud(stored.credential().cloud())
+        }
+        _ => setup,
+    }
+}
+
+/// Each call reads the link, like each CLI command, so `ployz link` takes effect on the
+/// next call. A Cloud link must be in the Organization the call's credential acts in.
+fn located(config: PathBuf) -> Locate {
+    Box::new(move |store| {
+        let scope = match &store {
+            StoreAt::Local => super::link::scope_from_env(&config)?,
+            StoreAt::Cloud { organization } => {
+                super::link::scope_from_env_in(&config, organization.as_str())?
+            }
+        };
+        let at = scope.at();
+        Ok(Place {
+            project: at.project,
+            environment: at.environment,
+            store,
+        })
+    })
+}
 
 pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
     let config = super::config_path(leaf_matches(root))?;
@@ -60,25 +94,17 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         _ => Store::Cloud,
     };
     let cloud = std::env::var(crate::cli::env::CLOUD_URL).ok();
+    let token = std::env::var(crate::cli::env::TOKEN).ok();
     // Only Cloud runs a published command, so a local Store lists none.
-    let setup = matches!(store, Store::Cloud).then(|| Setup::beside(&config, cloud.clone()));
-    let linked = config.clone();
-    // Like each CLI command, each call reads the link, so `ployz link` or
-    // `ployz org use` takes effect on the next call.
-    let place: Locate = Box::new(move |store| {
-        let at = super::link::scope_from_env(&linked)?.at();
-        Ok(Place {
-            project: at.project,
-            environment: at.environment,
-            store,
-        })
-    });
+    let setup = matches!(store, Store::Cloud)
+        .then(|| publishing_setup(&config, cloud.clone(), token.as_deref()));
+    let place = located(config.clone());
     let server = Server::new(
         Account {
             config,
-            token: std::env::var(crate::cli::env::TOKEN).ok(),
+            token,
             cloud,
-            organization: OnceCell::new(),
+            organization: Acting::default(),
         },
         store,
         place,
@@ -359,8 +385,53 @@ struct Account {
     config: PathBuf,
     token: Option<String>,
     cloud: Option<String>,
-    /// The Organization `token` acts in, asked of Ployz Cloud once.
-    organization: OnceCell<OrganizationId>,
+    organization: Acting,
+}
+
+/// The Organization an Organization Token acts in, asked of Ployz Cloud once per
+/// token. `ployz mcp login` can swap the stored token while the server runs, so the
+/// answer is kept with the token it belongs to.
+#[derive(Default)]
+struct Acting(Mutex<Option<Known>>);
+
+struct Known {
+    cloud: String,
+    bearer: String,
+    organization: OrganizationId,
+}
+
+impl Acting {
+    #[cfg(test)]
+    fn known(cloud: &str, bearer: &str, organization: OrganizationId) -> Self {
+        Self(Mutex::new(Some(Known {
+            cloud: cloud.to_owned(),
+            bearer: bearer.to_owned(),
+            organization,
+        })))
+    }
+
+    fn held(&self) -> std::sync::MutexGuard<'_, Option<Known>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn of(&self, credential: &Credential) -> Option<OrganizationId> {
+        self.held()
+            .as_ref()
+            .filter(|known| {
+                known.cloud == credential.cloud() && known.bearer == credential.bearer()
+            })
+            .map(|known| known.organization.clone())
+    }
+
+    fn learn(&self, credential: &Credential, organization: OrganizationId) {
+        *self.held() = Some(Known {
+            cloud: credential.cloud().to_owned(),
+            bearer: credential.bearer().to_owned(),
+            organization,
+        });
+    }
 }
 
 impl Server {
@@ -553,15 +624,86 @@ impl Server {
             Store::Local(store, who) => store::sweep(store, who)
                 .map(|()| Backend::Local(store, who))
                 .map_err(|error| Error::from(StoreCallError::Refused(error)).to_string()),
-            Store::Cloud => cloud_account::credential(
-                &CredentialStore::beside(&self.account.config),
-                self.account.token.clone(),
-                self.account.cloud.clone(),
-            )
-            .await
-            .map(Backend::Cloud)
-            .map_err(|error| Error::from(error).to_string()),
+            Store::Cloud => self.agent().await.map(Backend::Cloud),
         }
+    }
+
+    async fn agent(&self) -> Result<Credential, String> {
+        if self
+            .account
+            .token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            return self.person().await;
+        }
+        match login::stored(&self.account.config) {
+            Ok(Some(stored)) => Ok(stored.credential()),
+            Ok(None) => Err(login::NOT_LOGGED_IN.to_owned()),
+            Err(error) => Err(Error::from(error).to_string()),
+        }
+    }
+
+    async fn person(&self) -> Result<Credential, String> {
+        cloud_account::credential(
+            &CredentialStore::beside(&self.account.config),
+            self.account.token.clone(),
+            self.account.cloud.clone(),
+        )
+        .await
+        .map_err(|error| Error::from(error).to_string())
+    }
+
+    /// The human who answers an approval `agent` asked for in `acting`, the
+    /// Organization the call acts in: this device's sign-in, else `PLOYZ_TOKEN`. The
+    /// sign-in must be in `agent`'s Cloud and, by Cloud's account, in `acting`, since
+    /// Cloud finds the approval only there. Making an Organization in the browser moves
+    /// the device there without telling `cloud.json`.
+    async fn decider(
+        &self,
+        agent: &Credential,
+        acting: &OrganizationId,
+        verb: Verb,
+        asked: &Asked,
+    ) -> Result<Credential, String> {
+        let signed_in =
+            match cloud_login::signed_in(&CredentialStore::beside(&self.account.config)).await {
+                Ok(signed_in) => signed_in,
+                Err(LoginError::SignedOut) => return self.person().await,
+                Err(error) => return Err(Error::from(error).to_string()),
+            };
+        let what = asked.what(verb);
+        let past = verb.past();
+        if signed_in.cloud != agent.cloud() {
+            return Err(format!(
+                "The approval of {what} is in Ployz Cloud at {cloud}, but this device signed in \
+                 to {device}, so the answer was not recorded and nothing was {past}. It stays \
+                 pending; approve it in Ployz Cloud at {cloud}.",
+                cloud = agent.cloud(),
+                device = signed_in.cloud,
+            ));
+        }
+        let device = Credential::Device(signed_in);
+        let current = cloud_account::organizations(&device)
+            .await
+            .map_err(|error| Error::from(error).to_string())?
+            .into_iter()
+            .find(|entry| entry.current)
+            .ok_or_else(|| Error::from(LoginError::TokenRefused).to_string())?;
+        if current.id != acting.as_str() {
+            let organization = cloud_account::acting_in(agent)
+                .await
+                .map_err(|error| Error::from(error).to_string())?
+                .slug;
+            return Err(format!(
+                "The approval of {what} is in Organization {organization}, but this device acts \
+                 in {acting}, so the answer was not recorded and nothing was {past}. It stays \
+                 pending; run `ployz org use {organization}` and call the tool again, or \
+                 approve it in Ployz Cloud.",
+                acting = current.slug,
+            ));
+        }
+        Ok(device)
     }
 
     /// Which Store a new call reaches. A device can switch Organizations
@@ -571,21 +713,18 @@ impl Server {
             Backend::Local(..) => return Ok(StoreAt::Local),
             Backend::Cloud(credential) => credential,
         };
-        let acting = || async {
-            let organization = cloud_account::acting_in(credential)
-                .await
-                .map_err(|error| Error::from(error).to_string())?;
-            OrganizationId::parse(organization.id).map_err(|error| error.message)
-        };
-        let organization = match credential {
-            Credential::Device(_) => acting().await?,
-            Credential::Token { .. } => self
-                .account
+        if let Some(organization) = self.account.organization.of(credential) {
+            return Ok(StoreAt::Cloud { organization });
+        }
+        let organization = cloud_account::acting_in(credential)
+            .await
+            .map_err(|error| Error::from(error).to_string())?;
+        let organization = OrganizationId::parse(organization.id).map_err(|error| error.message)?;
+        if let Credential::Token { .. } = credential {
+            self.account
                 .organization
-                .get_or_try_init(acting)
-                .await?
-                .clone(),
-        };
+                .learn(credential, organization.clone());
+        }
         Ok(StoreAt::Cloud { organization })
     }
 
@@ -852,13 +991,19 @@ impl Server {
                 }
                 Step::Write { write } => {
                     if let Some((asked, answer)) = answered.take() {
-                        let Backend::Cloud(credential) = call.backend else {
+                        let (Backend::Cloud(agent), Some(StoreAt::Cloud { organization })) =
+                            (call.backend, &call.store)
+                        else {
                             return Ok(refused(not_here().message).into());
                         };
                         let verb = verb(call.tool, call.input, &asked);
+                        let person = match self.decider(agent, organization, verb, &asked).await {
+                            Ok(person) => person,
+                            Err(text) => return Ok(refused(text).into()),
+                        };
                         let typed = typed(&write);
                         match self
-                            .decide(credential, verb, &asked, typed.as_deref(), answer)
+                            .decide(&person, verb, &asked, typed.as_deref(), answer)
                             .await?
                         {
                             Answer::Approved => approval = Some(asked.id),

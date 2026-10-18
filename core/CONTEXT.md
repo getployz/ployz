@@ -489,7 +489,7 @@ A host that has a Fleet Token and checks in with Cloud over HTTP pull until an o
 _Avoid_: pending Machine, unenrolled Machine, Cluster member
 
 **Check-in Key**:
-The ed25519 key a Waiting Server generates and keeps under `/var/lib/ployz/checkin` to sign each check-in, so Cloud knows repeat check-ins come from the same host. It is not the Management Identity and never reaches the management plane.
+The ed25519 key a Waiting Server generates and keeps under `/var/lib/ployz-checkin` to sign each check-in, so Cloud knows repeat check-ins come from the same host. It is not the Management Identity and never reaches the management plane.
 _Avoid_: Management Identity, Machine key, WireGuard key
 
 **Founding Claim**:

@@ -1,5 +1,8 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
+import { Effect } from "effect";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { InngestClient } from "#/modules/inngest/client";
 import { checkinMessage } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { handleCheckin, observedIp } from "#/routes/api/checkin/-handler";
@@ -9,6 +12,8 @@ const ada = { userId: "00000000-0000-4000-8000-000000000701" };
 
 let harness: PostgresTestHarness;
 let token: string;
+const inngest = new Inngest({ id: "checkin-route-test" });
+vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
@@ -32,10 +37,10 @@ beforeEach(async () => {
 });
 
 const post = (body: Buffer, headers: Record<string, string>) =>
-  harness.runEffect(handleCheckin(
+  harness.runEffect(Effect.provideService(handleCheckin(
     new Request("http://cloud.test/api/checkin", { method: "POST", body: body.toString("latin1"), headers }),
     "203.0.113.7",
-  ));
+  ), InngestClient, inngest));
 
 const signed = (bearer: string, body: Uint8Array) => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -109,6 +114,12 @@ it("takes the observed address from the proxy header, else the socket peer", () 
   expect(observedIp(headers, ["x-real-ip"], "10.0.0.2")).toBe("198.51.100.5");
   expect(observedIp(new Headers({ "x-forwarded-for": "not-an-ip" }), undefined, "10.0.0.2")).toBe("10.0.0.2");
   expect(observedIp(new Headers(), undefined, undefined)).toBe("unknown");
+});
+
+it("trusts only the last value of the client address header", () => {
+  const spoofed = new Headers([["x-real-ip", "198.51.100.66"], ["x-real-ip", "203.0.113.7"]]);
+  expect(observedIp(spoofed, ["x-real-ip"], "10.0.0.2")).toBe("203.0.113.7");
+  expect(observedIp(new Headers({ "x-real-ip": "198.51.100.66, 203.0.113.7" }), ["x-real-ip"], "10.0.0.2")).toBe("203.0.113.7");
 });
 
 it("ignores a forwarded address that did not come through a proxy", () => {

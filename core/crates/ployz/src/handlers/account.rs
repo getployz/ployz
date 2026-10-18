@@ -9,7 +9,7 @@ use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{positional, switch, value};
 use ployz_core::RpcErrorCode;
 
-use crate::cloud_account::{self, Credential, ServerClears};
+use crate::cloud_account::{self, Credential, ServerClears, TokenKind};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::ui::{self, Cell, Hint, Table, Tone};
 
@@ -115,7 +115,7 @@ pub(super) fn token_new(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<u16>("expires-in")
         .expect("expires-in has a default");
     let token = in_cloud(root, async |_, credential| {
-        cloud_account::new_token(credential, name, days).await
+        cloud_account::new_token(credential, name, TokenKind::Cli, days).await
     })?;
     ui::finish(&serde_json::json!({ "token": token }), || {
         ui::note(format_args!(
@@ -145,7 +145,7 @@ pub(super) fn token_list(root: &ArgMatches) -> Result<(), Error> {
     };
     for token in &listed.tokens {
         table.row([
-            Cell::from("token"),
+            Cell::from(token.kind.as_str()),
             Cell::from(&token.id),
             Cell::from(token.name.escape_debug().to_string()),
             Cell::from(token.expires_at.to_string()),

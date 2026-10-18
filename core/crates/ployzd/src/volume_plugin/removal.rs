@@ -38,7 +38,12 @@ impl VolumeStorage {
     }
 
     async fn inspect(&self, name: &DockerVolumeName) -> Result<Option<PluginVolume>> {
-        let Some(pool) = self.pool.one_usable().await? else {
+        let _pool_guard = self.pool.lock_mutation().await?;
+        let Some(pool) = self
+            .pool
+            .admit(super::pool::UnlabeledBacking::Preserve)
+            .await?
+        else {
             if self.pool.has_held_a_pool()? {
                 return Err("this Machine has held a Pool that is not imported".into());
             }
@@ -82,7 +87,12 @@ impl VolumeStorage {
 
     async fn list(&self) -> Result<Vec<PluginVolume>> {
         let _guard = self.mutation.lock().await;
-        let Some(pool) = self.pool.one_usable().await? else {
+        let _pool_guard = self.pool.lock_mutation().await?;
+        let Some(pool) = self
+            .pool
+            .admit(super::pool::UnlabeledBacking::Preserve)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let datasets = self.datasets(&pool).await?;

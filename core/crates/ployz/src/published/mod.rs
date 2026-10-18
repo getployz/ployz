@@ -41,6 +41,8 @@ pub(crate) struct PublishedCommand {
     pub(crate) about: String,
     pub(crate) examples: Vec<String>,
     pub(crate) effect: Effect,
+    /// The permission Cloud checks before running it, when Cloud said.
+    pub(crate) requires: Option<String>,
     /// Whether `ployz mcp` lists it.
     pub(crate) agents: bool,
     pub(crate) typed: Option<Typed>,
@@ -180,6 +182,16 @@ impl Setup {
             configured,
             config: config.to_path_buf(),
             dir: config.with_file_name("published"),
+        }
+    }
+
+    /// The same setup for a credential that acts in `cloud`, whatever the environment
+    /// and the sign-in name.
+    pub(crate) fn in_cloud(self, cloud: &str) -> Self {
+        Self {
+            cloud: cloud.to_owned(),
+            configured: true,
+            ..self
         }
     }
 
@@ -460,6 +472,7 @@ impl PublishedCommand {
                     }
                 }
             },
+            requires: entry.requires,
             agents: entry.agents,
             typed: entry.typed.map(|typed| match typed {
                 wire::Typed::Organization => Typed::Organization,

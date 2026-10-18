@@ -236,6 +236,22 @@ impl Host for Chosen {
     fn stale_ployzd(&self) -> Option<String> {
         self.0.stale_ployzd()
     }
+
+    async fn enroll(
+        &self,
+        _: &crate::checkin::EnrollInstruction,
+        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<crate::checkin::Committed, String> {
+        unreachable!("the check-in never enrolls here")
+    }
+
+    async fn participating(&self) -> bool {
+        false
+    }
+
+    async fn discard_zfs_build(&self) -> Result<(), String> {
+        unreachable!("the check-in never enrolls here")
+    }
 }
 
 #[tokio::test]
@@ -256,6 +272,7 @@ async fn a_stale_pin_that_fails_its_probe_gives_way_to_an_older_ployzd_that_answ
     let host = Chosen(System {
         ployzd: found.path,
         stale: found.stale,
+        cloud: String::new(),
     });
 
     fs::write(
@@ -302,6 +319,22 @@ impl Host for Stopper {
 
     fn stale_ployzd(&self) -> Option<String> {
         unreachable!("the loop never starts")
+    }
+
+    async fn enroll(
+        &self,
+        _: &crate::checkin::EnrollInstruction,
+        _: &dyn Fn(crate::cloud_enroll::EnrollStage),
+    ) -> Result<crate::checkin::Committed, String> {
+        unreachable!("the check-in never enrolls here")
+    }
+
+    async fn participating(&self) -> bool {
+        false
+    }
+
+    async fn discard_zfs_build(&self) -> Result<(), String> {
+        unreachable!("the check-in never enrolls here")
     }
 }
 
@@ -746,6 +779,7 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
         let host = Chosen(System {
             ployzd,
             stale: Some("Older.".to_owned()),
+            cloud: String::new(),
         });
         let landed = paths.token_file.clone();
         let (url, server) = answering_once(status, body, move || {

@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import type { BatchCommand, ConfigCommand, ConfigCommitted, EnvironmentRef, MachineId } from "@ployz/sdk";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
-import { callStore, readStore } from "#/modules/config-store/config-store.server";
+import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
 import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
+import type { Access } from "#/modules/organization/access.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import {
   lossByVolume, lossTime, lossVersion, oldCopies, storeVersion, observePlacement, placementChanges, placementLosses, type Placement, type PlacementRow, type Seed,
@@ -138,7 +139,7 @@ export const stagePlacement = Effect.fn("VolumePlacement.stage")(function* (
  */
 export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* (
   organizationId: string,
-  userId: string | null,
+  by: Access | null,
   input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly guid: string; readonly name: string; readonly at: number },
   inspect: typeof inspectVolumeCopies = inspectVolumeCopies,
 ) {
@@ -184,7 +185,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
       staged: { primary: primary.id, mirrors: [], deletes: [], seed },
     }).returning();
     if (row === undefined) return yield* Effect.die("the restore's row was not written");
-    const written = yield* callStore(organizationId, userId, {
+    const written = yield* callStoreBy(organizationId, by, {
       operation: "write", command: { command: "batch", environment: input.environment, commands, expect: environment.revision },
     });
     if (!written.ok) {
@@ -201,7 +202,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
  * it is still staged: the new Volume, and the source's mounts it took over.
  */
 export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
-  organizationId: string, userId: string | null, volumeId: string, environment: EnvironmentRef,
+  organizationId: string, by: Access | null, volumeId: string, environment: EnvironmentRef,
 ) {
   const current = yield* readRow(organizationId, volumeId);
   if (current === undefined) return { ok: true, placement: null } satisfies PlacementDiscard;
@@ -227,7 +228,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
           .map((mount): BatchCommand => ({ command: "discard", environment, path: `${mount.service}.mounts.${seed.sourceName}`, version: null })),
       ];
       if (commands.length > 0) {
-        const written = yield* callStore(organizationId, userId, { operation: "write", command: { command: "batch", environment, commands } });
+        const written = yield* callStoreBy(organizationId, by, { operation: "write", command: { command: "batch", environment, commands } });
         if (!written.ok) return { ok: false, refusal: written.refusal } satisfies PlacementDiscard;
       }
       const { drizzle } = yield* Database;

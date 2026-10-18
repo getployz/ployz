@@ -8,10 +8,10 @@ use globset::Glob;
 use ployz_core::RpcErrorCode;
 use serde_json::json;
 
-use super::waiting::{self, Rejection, Stopped, Waiting, printable};
+use super::waiting::{self, Rejection, Stopped, Waiting};
 use crate::cli::{base, env, positional, switch};
 use crate::handlers::{Error, leaf_matches, runtime, typed_with};
-use crate::ui::{self, Cell, Hint, Table};
+use crate::ui::{self, Cell, Hint, Table, printable};
 
 pub(crate) fn command(command: Command) -> Command {
     base(command, "Reject servers waiting to join")
@@ -41,9 +41,11 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     let matched = matching(&waiting, pattern)?;
     if matched.is_empty() {
         return Err(Error::not_found(format!(
-            "No waiting server matches {pattern}. Nothing rejected."
+            "No waiting server matches {}. Nothing rejected.",
+            printable(pattern)
         ))
-        .hint(Hint::Next("ployz server ls --waiting".into())));
+        .hint(Hint::Next("ployz server ls --waiting".into()))
+        .hint(waiting::copied_hint(pattern)));
     }
     let listed: Vec<_> = matched
         .iter()
@@ -93,7 +95,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
     let Some(Stopped {
         error,
         uncertain,
-        unattempted,
+        not_rejected,
     }) = stopped
     else {
         let sentence = match (rejected, matched) {
@@ -116,37 +118,44 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
             "matched": matched,
             "waiting_servers": listed,
             "uncertain": uncertain,
-            "unattempted": unattempted,
+            "not_rejected": not_rejected,
             "error": error.json(),
         }),
         || {
             ui::stream(format_args!("{rejected} of {matched} rejected."));
-            ui::warn(format!(
-                "Reject stopped: {error}. {} may or may not be rejected and {} were not sent. \
-                 Run the same reject again.",
-                uncertain.len(),
-                unattempted.len()
-            ));
+            ui::warn_cause("Reject stopped", &error);
+            if uncertain.is_empty() {
+                ui::warn(format!(
+                    "{} server{} not rejected.",
+                    not_rejected.len(),
+                    plural(not_rejected.len())
+                ));
+            } else {
+                ui::warn(format!(
+                    "{} server{} may or may not be rejected and {} not. Run the same reject again.",
+                    uncertain.len(),
+                    plural(uncertain.len()),
+                    not_rejected.len()
+                ));
+            }
         },
     )?;
     Err(Error::partial())
 }
 
-/// The waiting server whose id `pattern` is, else those named `pattern` exactly, else
-/// those whose name it matches as a glob, in the list's order.
 fn matching<'a>(waiting: &'a [Waiting], pattern: &str) -> Result<Vec<&'a Waiting>, Error> {
-    if let Some(host) = waiting.iter().find(|host| host.row.id == pattern) {
-        return Ok(vec![host]);
-    }
-    let named: Vec<_> = waiting
-        .iter()
-        .filter(|host| host.row.name == pattern)
-        .collect();
+    let named = waiting::named(waiting, pattern)?;
     if !named.is_empty() {
         return Ok(named);
     }
     let glob = Glob::new(pattern)
-        .map_err(|error| Error::usage(format!("{pattern} is not a valid glob: {}", error.kind())))?
+        .map_err(|error| {
+            Error::usage(format!(
+                "{} is not a valid glob: {}",
+                printable(pattern),
+                error.kind()
+            ))
+        })?
         .compile_matcher();
     Ok(waiting
         .iter()

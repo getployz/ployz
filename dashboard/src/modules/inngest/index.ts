@@ -11,6 +11,7 @@ import {
 } from "#/modules/machines/machine-removal.inngest";
 import { createApplyServerPolicyChange } from "#/modules/machines/server-policy.inngest";
 import { createServerDrainFunctions } from "#/modules/machines/server-drain.inngest";
+import { createServerEnrollmentFunctions } from "#/modules/machines/waiting/server-enrollment.inngest";
 import { createServerWebTrafficFunctions } from "#/modules/machines/server-web-traffic.inngest";
 import { createNamespaceCleanupFunctions } from "#/modules/machines/namespace-cleanup.inngest";
 import {
@@ -20,6 +21,7 @@ import {
 import { createServerUpgradeFunctions } from "#/modules/server-upgrade/server-upgrade.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
+import { createSweepExpiredVerifications } from "#/modules/identity/verification-sweep.inngest";
 import {
   createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
 } from "#/modules/config-store/store-deployment.inngest";
@@ -37,6 +39,7 @@ import { createSendMail } from "#/modules/mail/mail.inngest";
 import { createCrashMailFunctions } from "#/modules/observe-ingest/crash-mail.inngest";
 import { createWebAnalyticsFunctions } from "#/modules/web-analytics/postgres/web-analytics.inngest";
 import { createDeliverPushTargets } from "#/modules/observe-ingest/push-target.inngest";
+import { createScheduleAnonymousSweep, createTearDownAnonymousOrganization } from "#/modules/anonymous/teardown.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
   return [
@@ -48,10 +51,12 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createCancelMachineRemove(inngest),
     createApplyServerPolicyChange(inngest),
     ...createServerDrainFunctions(inngest),
+    ...createServerEnrollmentFunctions(inngest),
     ...createServerWebTrafficFunctions(inngest),
     ...createNamespaceCleanupFunctions(inngest),
     createRetireServerAccess(inngest),
     createPruneOrganizationChangeLog(inngest),
+    createSweepExpiredVerifications(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
     ...createServerUpgradeFunctions(inngest),
@@ -75,5 +80,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     ...createCrashMailFunctions(inngest),
     createDeliverPushTargets(inngest),
     ...createWebAnalyticsFunctions(inngest),
+    createTearDownAnonymousOrganization(inngest),
+    createScheduleAnonymousSweep(inngest),
   ];
 }

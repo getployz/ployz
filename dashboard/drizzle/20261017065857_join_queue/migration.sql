@@ -1,0 +1,1 @@
+ALTER TABLE "machine_enrollment_token" ADD COLUMN "queued_at" timestamp with time zone;

@@ -21,8 +21,6 @@ use crate::cloud_login::{
 /// slow), so the client's 15s default would give up on a run Cloud goes on to start.
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Who a Cloud call speaks for. `ployz mcp` speaks for an agent, and Cloud lets only a
-/// person, or the prompt that asked, approve what an agent asks for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
     Cli,
@@ -148,6 +146,25 @@ pub(crate) struct TokenEntry {
     pub(crate) expires_at: String,
     pub(crate) expired: bool,
     pub(crate) current: bool,
+    #[serde(default)]
+    pub(crate) kind: TokenKind,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenKind {
+    #[default]
+    Cli,
+    Agent,
+}
+
+impl TokenKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Agent => "agent",
+        }
+    }
 }
 
 /// A signed-in device of the caller's.
@@ -208,6 +225,8 @@ pub(crate) struct NewToken {
     pub(crate) organization: String,
     pub(crate) expires_at: String,
     pub(crate) secret: String,
+    #[serde(default)]
+    pub(crate) kind: TokenKind,
 }
 
 /// A revoked token or signed-out device.
@@ -282,13 +301,15 @@ pub(crate) async fn credentials(credential: &Credential) -> Result<Credentials, 
 pub(crate) async fn new_token(
     credential: &Credential,
     name: &str,
+    kind: TokenKind,
     expires_in_days: u16,
 ) -> Result<NewToken, LoginError> {
     #[derive(Deserialize)]
     struct Reply {
         token: NewToken,
     }
-    let body = serde_json::json!({ "name": name, "expires_in_days": expires_in_days });
+    let body =
+        serde_json::json!({ "name": name, "kind": kind, "expires_in_days": expires_in_days });
     let reply: Reply = call(credential, Method::POST, "tokens", Some(&body)).await?;
     Ok(reply.token)
 }
@@ -322,9 +343,23 @@ pub(crate) async fn remove_token(
 ///
 /// # Errors
 ///
-/// Returns a Cloud failure.
-pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, LoginError> {
-    call(credential, Method::POST, "server-access", None).await
+/// Returns Cloud's refusal when the credential's user is not an owner or admin, or a
+/// Cloud failure.
+pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, StoreCallError> {
+    let url = format!("{}/api/cli/server-access", credential.cloud());
+    let response = send(credential, Method::POST, &url, None).await?;
+    notice_revision(&response);
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    if status == StatusCode::FORBIDDEN
+        && let Some(refused) = refusal(&body)
+    {
+        return Err(StoreCallError::Refused(refused));
+    }
+    Ok(answer(credential, status, &body)?)
 }
 
 /// Why a Config Store call over HTTPS failed.
@@ -1001,7 +1036,9 @@ fn answer<T: DeserializeOwned>(
         (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
         (StatusCode::UNAUTHORIZED, Credential::Token { .. }) => Err(LoginError::TokenRefused),
-        (StatusCode::FORBIDDEN, Credential::Device(signed_in)) => {
+        // Cloud refuses a member's call in the RPC error vocabulary (`claim_required`);
+        // only a bare 403 means the sign-in left its Organization.
+        (StatusCode::FORBIDDEN, Credential::Device(signed_in)) if refusal(body).is_none() => {
             Err(LoginError::NotMember(signed_in.organization.slug.clone()))
         }
         (status, _) => Err(LoginError::Status {
@@ -1067,6 +1104,21 @@ mod tests {
         assert!(matches!(&chosen, Credential::Token { cloud, .. } if cloud == "http://cloud.test"));
         let chosen = credential(&store, Some(String::new()), None).await.unwrap();
         assert!(matches!(chosen, Credential::Device(_)));
+    }
+
+    #[tokio::test]
+    async fn a_device_keeps_cloud_s_structured_refusal_of_a_403() {
+        let (_dir, store) = signed_in_store("http://cloud.test");
+        let device = credential(&store, Some(String::new()), None).await.unwrap();
+        let claim = br#"{"error":{"code":"claim_required","message":"Claim this Organization.","details":{"claim_url":"http://cloud.test/claim/x"}}}"#;
+        let error = answer::<serde_json::Value>(&device, StatusCode::FORBIDDEN, claim).unwrap_err();
+        assert!(
+            matches!(error, LoginError::Status { status: 403, .. }),
+            "{error:?}"
+        );
+        let bare = br#"{"_tag":"PublicError","code":"FORBIDDEN","message":"no"}"#;
+        let error = answer::<serde_json::Value>(&device, StatusCode::FORBIDDEN, bare).unwrap_err();
+        assert!(matches!(error, LoginError::NotMember(slug) if slug == "acme"));
     }
 
     #[tokio::test]
@@ -1204,19 +1256,22 @@ mod tests {
                 let body: serde_json::Value = serde_json::from_str(body).unwrap();
                 assert_eq!(
                     body,
-                    serde_json::json!({ "name": "ci", "expires_in_days": 30 })
+                    serde_json::json!({ "name": "ci", "kind": "agent", "expires_in_days": 30 })
                 );
                 (
                     200,
                     serde_json::json!({ "token": {
                         "id": "t1", "name": "ci", "organization": "acme",
-                        "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new",
+                        "expires_at": "2026-10-29T00:00:00.000Z", "secret": "ployz_new", "kind": "agent",
                     } }),
                 )
             }
             other => panic!("unexpected {other}"),
         });
-        let made = new_token(&token(&cloud), "ci", 30).await.unwrap();
+        let made = new_token(&token(&cloud), "ci", TokenKind::Agent, 30)
+            .await
+            .unwrap();
         assert_eq!(made.secret, "ployz_new");
+        assert_eq!(made.kind, TokenKind::Agent);
     }
 }

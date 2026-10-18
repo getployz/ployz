@@ -23,7 +23,7 @@ export const Route = createFileRoute("/_public/auth")({
   beforeLoad: async () => {
     const session = await getAuthSession();
 
-    if (session?.session && session.user) {
+    if (session?.session && session.user && session.user.isAnonymous !== true) {
       throw redirect({
         to: "/cloud",
         replace: true,

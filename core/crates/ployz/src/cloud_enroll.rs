@@ -170,7 +170,7 @@ impl EnrollIdentity {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Join {
     pub pairing: CloudPairing,
-    pub storage: StorageChoice,
+    pub storage: ployz_core::StoragePreparation,
     pub registration: Registered,
 }
 
@@ -181,7 +181,7 @@ pub(crate) enum Outcome {
     Initialize {
         mode: InitializeMode,
         pairing: CloudPairing,
-        storage: StorageChoice,
+        storage: ployz_core::StoragePreparation,
     },
 }
 
@@ -199,11 +199,69 @@ pub(crate) enum Response {
     Initialize {
         mode: InitializeMode,
         pairing: CloudPairing,
-        storage: StorageChoice,
+        storage: ployz_core::StoragePreparation,
     },
     NotYet {
         retry_after: Duration,
+        waiting: Waiting,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Waiting {
+    Founder,
+    Queued { ahead: u32 },
+}
+
+/// Where an in-process enrollment has reached, reported to Cloud on each check-in. Declared in
+/// the order an enrollment runs them, which Cloud's `ENROLLMENT_STAGES` shares.
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+#[serde(into = "&'static str", try_from = "String")]
+pub(crate) enum EnrollStage {
+    Installing,
+    Enrolling,
+    Queued,
+    Storage,
+    Joining,
+    Publishing,
+}
+
+impl EnrollStage {
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Installing => "installing",
+            Self::Storage => "storage",
+            Self::Enrolling => "enrolling",
+            Self::Queued => "queued",
+            Self::Joining => "joining",
+            Self::Publishing => "publishing",
+        }
+    }
+}
+
+impl From<EnrollStage> for &'static str {
+    fn from(stage: EnrollStage) -> Self {
+        stage.as_str()
+    }
+}
+
+impl TryFrom<String> for EnrollStage {
+    type Error = String;
+
+    fn try_from(stage: String) -> Result<Self, Self::Error> {
+        Ok(match stage.as_str() {
+            "installing" => Self::Installing,
+            "storage" => Self::Storage,
+            "enrolling" => Self::Enrolling,
+            "queued" => Self::Queued,
+            "joining" => Self::Joining,
+            "publishing" => Self::Publishing,
+            _ => return Err(format!("unknown enrollment stage {stage}")),
+        })
+    }
 }
 
 /// Enrollment responses ignore fields a newer Cloud adds; only the pairing is strict.
@@ -212,19 +270,23 @@ pub(crate) enum Response {
 enum EnrollWire {
     Join {
         pairing: CloudPairing,
-        #[serde(default)]
-        storage: StorageChoice,
+        #[serde(default, deserialize_with = "deserialize_storage")]
+        storage: ployz_core::StoragePreparation,
         registration: Box<Registered>,
     },
     NotYet {
         #[serde(default, rename = "retryAfter")]
         retry_after: Option<u64>,
+        #[serde(default)]
+        reason: Option<String>,
+        #[serde(default)]
+        ahead: Option<u32>,
     },
     Initialize {
         resumed: bool,
         pairing: CloudPairing,
-        #[serde(default)]
-        storage: StorageChoice,
+        #[serde(default, deserialize_with = "deserialize_storage")]
+        storage: ployz_core::StoragePreparation,
     },
 }
 
@@ -281,10 +343,12 @@ pub(crate) async fn enroll(
     url: &str,
     token: &CloudEnrollToken,
     identity: &EnrollIdentity,
+    progress: &dyn Fn(EnrollStage),
 ) -> Result<Outcome, Error> {
     let http = http_client()?;
     let mut announced_wait = false;
-    let deadline = tokio::time::Instant::now() + FOUNDER_WAIT;
+    let mut announced_queue = None;
+    let mut deadline = None;
     loop {
         let response = crate::setup_retry::run(
             &mut (),
@@ -308,14 +372,29 @@ pub(crate) async fn enroll(
                     storage,
                 });
             }
-            Response::NotYet { retry_after } => {
+            Response::NotYet {
+                retry_after,
+                waiting: Waiting::Queued { ahead },
+            } => {
+                progress(EnrollStage::Queued);
+                if announced_queue != Some(ahead) {
+                    crate::ui::note(format_args!("Queued to join; {ahead} ahead. Waiting..."));
+                    announced_queue = Some(ahead);
+                }
+                tokio::time::sleep(retry_after).await;
+            }
+            Response::NotYet {
+                retry_after,
+                waiting: Waiting::Founder,
+            } => {
                 if !announced_wait {
                     crate::ui::note(format_args!(
                         "Another Machine is founding this Organization; waiting..."
                     ));
                     announced_wait = true;
                 }
-                if tokio::time::Instant::now() + retry_after > deadline {
+                let now = tokio::time::Instant::now();
+                if now + retry_after > *deadline.get_or_insert(now + FOUNDER_WAIT) {
                     return Err(Error::FounderWait);
                 }
                 tokio::time::sleep(retry_after).await;
@@ -478,8 +557,19 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
             storage,
             registration: *registration,
         }))),
-        EnrollWire::NotYet { retry_after } => Ok(Response::NotYet {
+        EnrollWire::NotYet {
+            retry_after,
+            reason,
+            ahead,
+        } => Ok(Response::NotYet {
             retry_after: Duration::from_secs(retry_after.unwrap_or(DEFAULT_RETRY_AFTER)),
+            waiting: if reason.as_deref() == Some("queued") {
+                Waiting::Queued {
+                    ahead: ahead.unwrap_or(0),
+                }
+            } else {
+                Waiting::Founder
+            },
         }),
         EnrollWire::Initialize {
             resumed,
@@ -497,11 +587,98 @@ fn parse_enroll(bytes: &[u8]) -> Result<Response, Error> {
     }
 }
 
+pub(crate) fn storage_with_requested_device(
+    returned: &ployz_core::StoragePreparation,
+    requested: &ployz_core::StoragePreparation,
+) -> ployz_core::StoragePreparation {
+    match (returned, requested) {
+        (
+            ployz_core::StoragePreparation::Zfs { device: None },
+            ployz_core::StoragePreparation::Zfs { .. },
+        ) => requested.clone(),
+        (returned, _) => returned.clone(),
+    }
+}
+
+fn deserialize_storage<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ployz_core::StoragePreparation, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Wire {
+        Legacy(StorageChoice),
+        Target {
+            kind: StorageChoice,
+            device: Option<String>,
+        },
+    }
+    match Wire::deserialize(deserializer)? {
+        Wire::Legacy(choice) => Ok(choice.into()),
+        Wire::Target {
+            kind: StorageChoice::None,
+            device: None,
+        } => Ok(StorageChoice::None.into()),
+        Wire::Target {
+            kind: StorageChoice::Zfs,
+            device,
+        } => {
+            let value = device.map_or_else(|| "zfs".to_owned(), |device| format!("zfs:{device}"));
+            ployz_core::StoragePreparation::parse(value).map_err(serde::de::Error::custom)
+        }
+        Wire::Target {
+            kind: StorageChoice::None,
+            device: Some(_),
+        } => Err(serde::de::Error::custom(
+            "Docker-only storage cannot name a device",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::{Machine, MachineId, MachineName, Registered};
 
     use super::*;
+
+    #[test]
+    fn cloud_enroll_storage_wire_accepts_zfs_with_and_without_a_device() {
+        for (wire, device) in [
+            (serde_json::json!("zfs"), None),
+            (serde_json::json!({"kind": "zfs"}), None),
+            (
+                serde_json::json!({"kind": "zfs", "device": "/dev/vdb"}),
+                Some("/dev/vdb"),
+            ),
+        ] {
+            let Response::Initialize { storage, .. } = parse_enroll(&serde_json::to_vec(&serde_json::json!({
+                "kind": "initialize", "resumed": false, "pairing": {"secret": "pairing-secret"}, "storage": wire,
+            })).unwrap()).unwrap() else { panic!("initialize response") };
+            assert_eq!(
+                storage,
+                ployz_core::StoragePreparation::Zfs {
+                    device: device.map(|device| ployz_core::ZfsDevice::parse(device).unwrap())
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_enroll_storage_preserves_the_selected_device_only_when_zfs_is_allowed() {
+        let requested = ployz_core::StoragePreparation::parse("zfs:/dev/vdb").unwrap();
+        assert_eq!(
+            storage_with_requested_device(&StorageChoice::Zfs.into(), &requested),
+            requested
+        );
+        assert_eq!(
+            storage_with_requested_device(&StorageChoice::None.into(), &requested),
+            ployz_core::StoragePreparation::None
+        );
+        let returned = ployz_core::StoragePreparation::parse("zfs:/dev/vdc").unwrap();
+        assert_eq!(
+            storage_with_requested_device(&returned, &requested),
+            returned
+        );
+    }
 
     fn pairing() -> CloudPairing {
         CloudPairing {
@@ -591,7 +768,7 @@ mod tests {
             panic!("expected join");
         };
         assert_eq!(join.pairing, pairing());
-        assert_eq!(join.storage, ployz_core::StorageChoice::Zfs);
+        assert_eq!(join.storage, ployz_core::StorageChoice::Zfs.into());
         assert_eq!(join.registration, registration());
     }
 
@@ -669,21 +846,48 @@ mod tests {
         .unwrap() else {
             panic!("expected initialize");
         };
-        assert_eq!(storage, StorageChoice::None);
+        assert_eq!(storage, StorageChoice::None.into());
     }
 
     #[test]
     fn not_yet_defaults_retry_after_to_two_seconds() {
-        let Response::NotYet { retry_after } = parse_enroll(br#"{"kind":"not_yet"}"#).unwrap()
+        let Response::NotYet {
+            retry_after,
+            waiting,
+        } = parse_enroll(br#"{"kind":"not_yet"}"#).unwrap()
         else {
             panic!("expected not_yet");
         };
         assert_eq!(retry_after, Duration::from_secs(2));
+        assert_eq!(waiting, Waiting::Founder);
+    }
+
+    #[test]
+    fn not_yet_reads_queue_position() {
+        for (body, waiting) in [
+            (
+                br#"{"kind":"not_yet","retryAfter":5,"reason":"queued","ahead":3}"#.as_slice(),
+                Waiting::Queued { ahead: 3 },
+            ),
+            (
+                br#"{"kind":"not_yet","reason":"queued"}"#.as_slice(),
+                Waiting::Queued { ahead: 0 },
+            ),
+            (
+                br#"{"kind":"not_yet","retryAfter":2,"reason":"founder"}"#.as_slice(),
+                Waiting::Founder,
+            ),
+        ] {
+            let Response::NotYet { waiting: got, .. } = parse_enroll(body).unwrap() else {
+                panic!("expected not_yet");
+            };
+            assert_eq!(got, waiting);
+        }
     }
 
     #[test]
     fn not_yet_honors_retry_after_seconds() {
-        let Response::NotYet { retry_after } =
+        let Response::NotYet { retry_after, .. } =
             parse_enroll(br#"{"kind":"not_yet","retryAfter":5}"#).unwrap()
         else {
             panic!("expected not_yet");
@@ -774,7 +978,7 @@ mod tests {
             String::from_utf8_lossy(buf.get(..read).unwrap()).into_owned()
         });
         let url = enroll_url(&origin);
-        enroll(&url, &token(), &identity()).await.unwrap();
+        enroll(&url, &token(), &identity(), &|_| {}).await.unwrap();
         let request = server.await.unwrap();
         let request_line = request.lines().next().unwrap();
         assert_eq!(request_line, "POST /api/enroll HTTP/1.1");
@@ -786,6 +990,36 @@ mod tests {
         for url in [url, callback_url(&origin), report_url(&origin)] {
             assert!(!url.contains(token().as_str()), "{url}");
         }
+    }
+
+    #[tokio::test]
+    async fn queued_answers_report_the_queued_stage_and_keep_polling() {
+        let (listener, origin) = listen().await;
+        let server = tokio::spawn(async move {
+            for body in [
+                br#"{"kind":"not_yet","retryAfter":0,"reason":"queued","ahead":2}"#.to_vec(),
+                br#"{"kind":"not_yet","retryAfter":0,"reason":"queued","ahead":1}"#.to_vec(),
+                join_body(),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_http(&mut stream).await;
+                tokio::io::AsyncWriteExt::write_all(&mut stream, &http_response(200, "OK", &body))
+                    .await
+                    .unwrap();
+            }
+        });
+        let stages = std::cell::RefCell::new(Vec::new());
+        let outcome = enroll(&enroll_url(&origin), &token(), &identity(), &|stage| {
+            stages.borrow_mut().push(stage);
+        })
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert!(matches!(outcome, Outcome::Join(_)));
+        assert_eq!(
+            stages.into_inner(),
+            [EnrollStage::Queued, EnrollStage::Queued]
+        );
     }
 
     #[test]
@@ -851,11 +1085,13 @@ mod tests {
                         .is_err()
                 );
             });
-            let error =
-                tokio::time::timeout(Duration::from_secs(25), enroll(&url, &token(), &identity()))
-                    .await
-                    .expect("lost response must return without retrying")
-                    .unwrap_err();
+            let error = tokio::time::timeout(
+                Duration::from_secs(25),
+                enroll(&url, &token(), &identity(), &|_| {}),
+            )
+            .await
+            .expect("lost response must return without retrying")
+            .unwrap_err();
             let rendered = crate::ui::chain_text(&error);
             assert!(rendered.contains("uncertain"), "{rendered}");
             assert!(error.to_string().contains("without --reset"), "{error}");
@@ -984,7 +1220,9 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let error = enroll(&url, &token(), &identity()).await.unwrap_err();
+        let error = enroll(&url, &token(), &identity(), &|_| {})
+            .await
+            .unwrap_err();
         assert!(
             matches!(error, Error::Status { status: 503, .. }),
             "{error}"

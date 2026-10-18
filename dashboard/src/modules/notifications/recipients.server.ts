@@ -10,7 +10,7 @@ import { signUnsubscribeToken } from "#/modules/notifications/unsubscribe-token.
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
-/** Every member of the Organization, minus those who set `type` to None. */
+/** Every member of the Organization with a real mailbox, minus those who set `type` to None. */
 export const resolveRecipients = Effect.fn("Notifications.resolveRecipients")(function* (
   organizationId: string,
   type: NotificationType,
@@ -21,7 +21,7 @@ export const resolveRecipients = Effect.fn("Notifications.resolveRecipients")(fu
     .from(member)
     .innerJoin(user, eq(user.id, member.userId))
     .leftJoin(notificationPreference, and(eq(notificationPreference.userId, member.userId), eq(notificationPreference.type, type)))
-    .where(and(eq(member.organizationId, organizationId), or(isNull(notificationPreference.channel), eq(notificationPreference.channel, "email"))));
+    .where(and(eq(member.organizationId, organizationId), eq(user.isAnonymous, false), or(isNull(notificationPreference.channel), eq(notificationPreference.channel, "email"))));
 });
 
 export type OrganizationMail = {

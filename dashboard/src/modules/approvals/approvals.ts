@@ -21,11 +21,14 @@ export type ApprovalReview =
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
-/** What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". */
+/**
+ * What an approval asks about, as verb and name: "Deploy production", "Save production" or "Drain fra-1". A Store
+ * write also names its Project, which the card shows and a denial leaves out.
+ */
 export function approvalSubject(command: string, review: ApprovalReview) {
-  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name };
-  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : "Deploy";
-  return { verb, name: review.diff.environment.name };
+  if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
+  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove" : command === "shut_down" ? "Shut down" : "Deploy";
+  return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
 /** The card's badge: a Save deletes nothing until the next Deploy, and a Deploy that only deletes Volumes counts them. An agent's Deploy that destroys nothing still asks. */
@@ -43,15 +46,20 @@ export function approvalBadge(command: string, { effects }: ApprovalReview) {
 
 /** A Store write as an approval names it: a retry apart from the Deploy it ships again. */
 export function approvalCommand(command: ConfigCommand) {
-  return command.command === "admit" && command.admit === "retry" ? "retry" : command.command;
+  if (command.command === "admit" && (command.admit === "retry" || command.admit === "shut_down")) return command.admit;
+  return command.command;
 }
 
 const agentShips = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && command.command === "admit" && (command.admit === "deploy" || command.admit === "retry");
 
-/** The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, and an agent's retry. */
+const agentDestroys = (via: Caller["via"], command: ConfigCommand) =>
+  via === "agent" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
+
+/** The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, an agent's retry, and an agent's Project or Environment removal or shutdown. */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
-  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy") || agentShips(via, command);
+  return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
+    || agentShips(via, command) || agentDestroys(via, command);
 }
 
 /** Which Deploys wait for a human: every Deploy or retry an agent asks for, else only a Deploy that destroys something. */

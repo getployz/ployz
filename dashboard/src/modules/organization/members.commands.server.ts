@@ -3,12 +3,13 @@ import type { JsonValue } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { defineCommand, refused } from "#/modules/commands/command.server";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import type { Caller } from "#/modules/identity/actor";
+import { type Caller, callerCan } from "#/modules/identity/actor";
 import { callerOrganizations } from "#/modules/identity/caller.server";
 import type { Role } from "#/modules/organization/access.server";
 import { emailInvite } from "#/modules/organization/invitation-mail.server";
 import { createInvite, INVITE_DAYS, listPendingInvites, revokeInvite } from "#/modules/organization/invitation.server";
-import { listMembers, MANAGE, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
+import { refusalOf } from "#/modules/organization/access.server";
+import { listMembers, OWN, removeMembership, setMemberRole } from "#/modules/organization/membership.server";
 import { AppConfig } from "#/server/config.server";
 import { type Conflict, NotFound } from "#/server/public-error";
 
@@ -51,7 +52,7 @@ const Removed = Schema.Struct({ email: Schema.String });
 const Revoked = Schema.Struct({ id: Schema.String, email: Schema.NullOr(Schema.String) });
 const Left = Schema.Struct({ organization: Schema.String });
 
-export const manages = (caller: Caller) => caller.role === "owner" || caller.role === "admin";
+export const manages = (caller: Caller) => callerCan(caller, "members:manage");
 
 const conflictRefused = (conflict: Conflict) => Effect.succeed(refused("conflict", conflict.message));
 
@@ -62,7 +63,7 @@ const refuse = (code: string, message: string, details: JsonValue = null) => new
  * caller manages members, and unless they are an owner when `touchesOwner` says the change makes or removes one.
  */
 const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector: string, touchesOwner: (role: Role) => boolean) {
-  if (!manages(caller)) return yield* refuse("forbidden", MANAGE);
+  if (!manages(caller)) return yield* refuse("forbidden", refusalOf("members:manage"));
   const members = yield* listMembers(caller.organization.id);
   const wanted = selector.trim().toLowerCase();
   const named = members.filter((row) => (wanted.includes("@") ? row.email : row.name.trim()).toLowerCase() === wanted);
@@ -76,7 +77,7 @@ const managed = Effect.fn("Members.managed")(function* (caller: Caller, selector
 });
 
 const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Caller, selector: string) {
-  if (!manages(caller)) return yield* refuse("forbidden", MANAGE);
+  if (!manages(caller)) return yield* refuse("forbidden", refusalOf("members:manage"));
   const wanted = selector.trim();
   const invites = yield* listPendingInvites(caller.organization.id);
   const found = invites.find((row) => row.id === wanted) ?? invites.find((row) => row.email === wanted.toLowerCase());
@@ -86,6 +87,7 @@ const pendingInvite = Effect.fn("Members.pendingInvite")(function* (caller: Call
 
 export const orgMemberLs = defineCommand({
   name: "org_member_ls",
+  requires: "members:read",
   path: ["org", "member", "ls"],
   about: "List the Organization's members and their roles",
   examples: ["ployz org member ls"],
@@ -110,6 +112,7 @@ export const orgMemberLs = defineCommand({
 
 export const orgMemberInvite = defineCommand({
   name: "org_member_invite",
+  requires: "members:manage",
   path: ["org", "member", "invite"],
   about: `Make an invite link that adds whoever opens it as a member. It lasts ${INVITE_DAYS} days and works once`,
   examples: ["ployz org member invite bob@example.com", "ployz org member invite bob@example.com --role admin"],
@@ -126,7 +129,7 @@ export const orgMemberInvite = defineCommand({
   output: Invited,
   render: "message",
   run: (caller, input) => Effect.gen(function* () {
-    if (!manages(caller)) return refused("forbidden", MANAGE);
+    if (!manages(caller)) return refused("forbidden", refusalOf("members:manage"));
     const config = yield* AppConfig;
     const invite = yield* createInvite(caller.organization.id, caller.userId, { email: input.email ?? null, role: input.role ?? "member" });
     const link = new URL(`/invite/${invite.token}`, config.app.url).toString();
@@ -148,6 +151,7 @@ const roleTarget = (caller: Caller, input: typeof RoleInput.Type) =>
 
 export const orgMemberRole = defineCommand({
   name: "org_member_role",
+  requires: "members:manage",
   path: ["org", "member", "role"],
   about: "Change a member's role to owner, admin or member. Only an owner can make or remove an owner",
   examples: ["ployz org member role bob@example.com admin", "ployz org member role Bob member"],
@@ -180,6 +184,7 @@ const rmTarget = (caller: Caller, member: string) => managed(caller, member, (ro
 
 export const orgMemberRm = defineCommand({
   name: "org_member_rm",
+  requires: "members:manage",
   path: ["org", "member", "rm"],
   about: "Remove a member. Their Organization Tokens stop working and their devices lose access to its Servers",
   examples: ["ployz org member rm bob@example.com", "ployz org member rm Bob"],
@@ -210,6 +215,7 @@ export const orgMemberRm = defineCommand({
 
 export const orgInviteLs = defineCommand({
   name: "org_invite_ls",
+  requires: "members:manage",
   path: ["org", "invite", "ls"],
   about: "List the Organization's pending invites",
   examples: ["ployz org invite ls"],
@@ -220,7 +226,7 @@ export const orgInviteLs = defineCommand({
   input: Schema.Struct({}),
   output: Schema.Array(Invite),
   render: "table",
-  run: (caller) => !manages(caller) ? Effect.succeed(refused("forbidden", MANAGE)) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
+  run: (caller) => !manages(caller) ? Effect.succeed(refused("forbidden", refusalOf("members:manage"))) : listPendingInvites(caller.organization.id).pipe(Effect.map((invites) => ({
     ok: true,
     output: invites.map((row) => ({
       id: row.id,
@@ -234,6 +240,7 @@ export const orgInviteLs = defineCommand({
 
 export const orgInviteRevoke = defineCommand({
   name: "org_invite_revoke",
+  requires: "members:manage",
   path: ["org", "invite", "revoke"],
   about: "Revoke a pending invite so its link stops working",
   examples: ["ployz org invite revoke bob@example.com"],
@@ -264,6 +271,7 @@ export const orgInviteRevoke = defineCommand({
 
 export const orgLeave = defineCommand({
   name: "org_leave",
+  requires: "org:read",
   path: ["org", "leave"],
   about: "Leave the Organization. Its last owner cannot leave",
   examples: ["ployz org leave"],

@@ -4,6 +4,7 @@ import { SettingsField, SettingsGroup } from "#/components/settings/settings-gro
 import { SettingsSection } from "#/components/settings/settings-section";
 import { Switch } from "#/components/ui/switch";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { can } from "#/modules/organization/permissions";
 import type { SupportAccessChange } from "#/modules/support-access/support-access";
 import { useSupportAccess } from "#/modules/support-access/support-access.hooks";
 
@@ -18,7 +19,7 @@ export function SupportAccessSection({ organizationSlug }: { organizationSlug: s
   const { row, change } = useSupportAccess(organizationSlug);
   // Only an owner or admin decides what Ployz support may do. Everyone else, support included, sees the switches but can't move them.
   const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  const locked = yourRole !== "owner" && yourRole !== "admin";
+  const locked = yourRole === undefined || !can(yourRole, "org:settings");
   return (
     <SettingsSection id="support-access" title="Support">
       <SettingsGroup

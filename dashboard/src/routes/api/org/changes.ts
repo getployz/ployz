@@ -20,7 +20,7 @@ export const Route = createFileRoute("/api/org/changes")({
         if (Option.isNone(search)) return publicErrorResponse(new Validation({ message: "A valid organization slug is required" }));
         return handleOrgChangesRequest(request, search.value.organizationSlug, {
           authorize: (organizationSlug) =>
-            runAppEffect(authorizeRequest(request.headers, organizationSlug, "operate").pipe(
+            runAppEffect(authorizeRequest(request.headers, organizationSlug, "org:read").pipe(
               Effect.map((access) => ({ organizationId: access.organization.id })),
             ), { signal: request.signal }),
           currentCursor: () => runAppEffect(currentChangeCursor(), { signal: request.signal }),

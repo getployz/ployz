@@ -1,0 +1,2 @@
+ALTER TABLE "organization_token" ADD COLUMN "kind" text DEFAULT 'cli' NOT NULL;--> statement-breakpoint
+ALTER TABLE "organization_token" ADD CONSTRAINT "organization_token_kind_check" CHECK ("kind" in ('cli','agent'));

@@ -21,7 +21,7 @@ export const latestServiceActServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(ServiceSubject))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
-    const { organization } = yield* requireAccess(context.actor, data.organizationSlug, "operate");
+    const { organization } = yield* requireAccess(context.actor, data.organizationSlug, "project:read");
     return yield* latestServiceAct(organization.id, { environment: data.environmentId, service: data.service });
   })));
 

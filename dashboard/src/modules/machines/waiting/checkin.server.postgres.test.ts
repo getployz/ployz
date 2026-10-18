@@ -1,9 +1,12 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { Cause, Effect, Exit, Random } from "effect";
-import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
-import type { CheckinRequest, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
+import { Inngest } from "inngest";
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { InngestClient } from "#/modules/inngest/client";
+import type { CheckinRequest, CheckinResponse, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { pruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
 import {
@@ -12,6 +15,7 @@ import {
   waitingServerStatus,
 } from "#/modules/machines/waiting/waiting-servers.server";
 import type { Database } from "#/server/database.server";
+import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const ada = { userId: "00000000-0000-4000-8000-000000000601" };
@@ -19,6 +23,11 @@ const bob = { userId: "00000000-0000-4000-8000-000000000602" };
 const adaOrg = "00000000-0000-4000-8000-000000000611";
 
 let harness: PostgresTestHarness;
+const inngest = new Inngest({ id: "checkin-test" });
+vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+
+const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient>) =>
+  harness.runEffect(Effect.provideService(operation, InngestClient, inngest));
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
@@ -60,7 +69,7 @@ const report: HostReport = {
 };
 
 const fleetToken = async (name: string) =>
-  harness.runEffect(createFleetToken(ada, { organizationSlug: "ada", name, expiresIn: "1d", autoEnroll: null }));
+  run(createFleetToken(ada, { organizationSlug: "ada", name, expiresIn: "1d", autoEnroll: null }));
 
 type Host = { readonly key: string; readonly privateKey: KeyObject };
 
@@ -100,10 +109,10 @@ const request = (token: string, host: Host, options: Send = {}) => {
   return { headers, body, observedIp: options.ip ?? "203.0.113.7" };
 };
 
-const send = (token: string, host: Host, options?: Send) => harness.runEffect(checkIn(request(token, host, options)));
+const send = (token: string, host: Host, options?: Send) => run(checkIn(request(token, host, options)));
 
-const failure = async <A, E>(operation: Effect.Effect<A, E, Database>) => {
-  const exit = await harness.runEffect(Effect.exit(operation));
+const failure = async <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient>) => {
+  const exit = await run(Effect.exit(operation));
   return Exit.isFailure(exit) ? Cause.squash(exit.cause) : null;
 };
 
@@ -134,6 +143,25 @@ it("records a check-in, then updates the same row on the next one", async () => 
   expect(after[0]?.last_check_in_at.getTime()).toBeGreaterThan(first?.last_check_in_at.getTime() ?? Infinity);
 });
 
+it("stamps the token's last use at most once a minute", async () => {
+  const { token } = await fleetToken("rack-1");
+  const lastUsed = async () =>
+    (await harness.pool.query<{ last_used_at: Date | null }>("select last_used_at from fleet_token")).rows[0]?.last_used_at;
+  expect(await lastUsed()).toBeNull();
+
+  const host = newHost();
+  await send(token, host);
+  const first = await lastUsed();
+  expect(first).toBeInstanceOf(Date);
+  await send(token, host);
+  expect(await lastUsed()).toEqual(first);
+
+  await harness.pool.query("update fleet_token set last_used_at = now() - interval '2 minutes'");
+  const stale = await lastUsed();
+  await send(token, host);
+  expect((await lastUsed())?.getTime()).toBeGreaterThan(stale?.getTime() ?? Infinity);
+});
+
 it("stores prep while the host prepares, and reads a check-in without it as ready", async () => {
   const { token } = await fleetToken("rack-1");
   const host = newHost();
@@ -148,18 +176,436 @@ it("stores prep while the host prepares, and reads a check-in without it as read
   expect(waitingServerStatus(ready.report, new Date(), new Date())).toBe("waiting");
 });
 
-it("keeps the last probe result when a check-in carries none", async () => {
+const storedProbe = async (ip: string) =>
+  (await harness.pool.query("select probe from waiting_server where observed_ip = $1", [ip])).rows[0]?.probe;
+
+const settledTcp = async (ip: string) => {
+  for (let waited = 0; waited < 8000; waited += 20) {
+    const tcp = (await storedProbe(ip))?.tcp;
+    if (tcp !== undefined && tcp["80"].seen !== "pending" && tcp["443"].seen !== "pending") return tcp;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`the probe for ${ip} never settled`);
+};
+
+const shortenWindow = (ms: number) =>
+  harness.pool.query("update waiting_server set probe = jsonb_set(probe, '{request,windowMs}', to_jsonb($1::int))", [ms]);
+
+const handedLongAgo = () =>
+  harness.pool.query("update waiting_server set probe = jsonb_set(probe, '{handedAt}', to_jsonb(now() - interval '1 hour'))");
+
+const shownProbe = async () => {
+  const [row] = await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }));
+  return row === undefined ? undefined : (await harness.runEffect(showWaitingServer(ada, { organizationSlug: "ada", id: row.id }))).probe;
+};
+
+const waitingIds = async () => (await rows()).map((row) => row.id);
+
+const openedNonce = async (ip: string): Promise<string> => (await storedProbe(ip))?.request.nonce;
+
+const handedOut = (answer: CheckinResponse) => {
+  if (answer.kind !== "wait" || answer.probe === undefined) throw new Error("expected a probe in the wait");
+  return answer.probe.handout;
+};
+
+it("hands every selected host one shared nonce in its next wait, once", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "198.51.100.0/24");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const ips = ["198.51.100.11", "198.51.100.12", "198.51.100.13"];
+    const hosts = ips.map(() => newHost());
+    for (const [n, host] of hosts.entries()) await send(token, host, { ip: ips[n] });
+
+    expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }))).toEqual({ probing: 3 });
+    const nonce = await openedNonce(ips[0] ?? "");
+    await shortenWindow(1_500);
+
+    const answers = [];
+    for (const [n, host] of hosts.entries()) answers.push(await send(token, host, { ip: ips[n] }));
+    for (const [n, answer] of answers.entries()) {
+      expect(answer).toMatchObject({ ...wait, probe: { nonce, listen: ["udp:51820", "tcp:80", "tcp:443"] } });
+      const probe = "probe" in answer ? answer.probe : undefined;
+      expect(probe?.windowMs).toBeLessThanOrEqual(10_000);
+      const targets = probe?.send.map((peer) => peer.target) ?? [];
+      expect(targets.length).toBeLessThanOrEqual(3);
+      expect(targets).not.toContain(ips[n]);
+      expect(new Set(targets)).toEqual(new Set(ips.filter((ip) => ip !== ips[n])));
+    }
+    for (const [n, host] of hosts.entries()) expect(await send(token, host, { ip: ips[n] })).toEqual(wait);
+    for (const ip of ips) await settledTcp(ip);
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("never selects another Organization's or a rejected host", async () => {
+  const { token } = await fleetToken("rack-1");
+  const [kept, rejected] = [newHost(), newHost()];
+  await send(token, kept, { ip: "198.51.100.21" });
+  await send(token, rejected, { ip: "198.51.100.22" });
+  const ids = await waitingIds();
+  expect(await harness.runEffect(openProbeSelection(bob, { organizationSlug: "bob", ids }))).toMatchObject({ probing: 0 });
+  await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [ids[1] ?? ""] }));
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toMatchObject({ probing: 1 });
+  expect(await storedProbe("198.51.100.22")).toBeNull();
+});
+
+it("records Unknown for a host at a private address without dialling it", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "10.0.0.5" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const pending = { seen: "pending" };
+  expect((await storedProbe("10.0.0.5"))?.tcp).toEqual({ "80": pending, "443": pending });
+  await send(token, host, { ip: "10.0.0.5" });
+  const privateRange = { seen: "not_probed", reason: "private_range" };
+  expect((await storedProbe("10.0.0.5"))?.tcp).toEqual({ "80": privateRange, "443": privateRange });
+  expect(await shownProbe()).toEqual({
+    "80": { state: "unknown", reason: "private_range" },
+    "443": { state: "unknown", reason: "private_range" },
+  });
+});
+
+it("answers the check-in before Cloud's connects run, and shows refusals as Closed only once the host reports it listened", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.1/32");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const host = newHost();
+    await send(token, host, { ip: "127.0.0.1" });
+    await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    await shortenWindow(2_000);
+    const started = performance.now();
+    const handout = handedOut(await send(token, host, { ip: "127.0.0.1" }));
+    expect(performance.now() - started).toBeLessThan(900);
+    expect(await settledTcp("127.0.0.1")).toEqual({ "80": { seen: "refused" }, "443": { seen: "refused" } });
+    expect(await shownProbe()).toEqual({ "80": { state: "unknown", reason: "pending" }, "443": { state: "unknown", reason: "pending" } });
+
+    await send(token, host, { ip: "127.0.0.1", probe: { handout, heardFrom: [], bindFailed: ["tcp:443"] } });
+    expect(await shownProbe()).toEqual({ "80": { state: "closed" }, "443": { state: "unknown", reason: "port_busy" } });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("never reads Closed for a host that lost the request and never reported", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.1/32");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const host = newHost();
+    await send(token, host, { ip: "127.0.0.1" });
+    await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    await shortenWindow(2_000);
+    await send(token, host, { ip: "127.0.0.1" });
+    await settledTcp("127.0.0.1");
+    expect(await send(token, host, { ip: "127.0.0.1" })).toEqual(wait);
+    await handedLongAgo();
+    const noReport = { state: "unknown", reason: "no_host_report" };
+    expect(await shownProbe()).toEqual({ "80": noReport, "443": noReport });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("settles connects whose results were lost as no answer once the window has passed", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.41" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await harness.pool.query(
+    "update waiting_server set probe = probe || jsonb_build_object('handedAt', now(), 'address', '198.51.100.41')",
+  );
+  expect(await shownProbe()).toEqual({ "80": { state: "unknown", reason: "pending" }, "443": { state: "unknown", reason: "pending" } });
+  expect(await send(token, host, { ip: "198.51.100.41" })).toEqual(wait);
+  await handedLongAgo();
+  const noAnswer = { state: "unknown", reason: "no_answer" };
+  expect(await shownProbe()).toEqual({ "80": noAnswer, "443": noAnswer });
+});
+
+it("drops results measured at an address the host has moved off, and probes it again where it is", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "127.0.0.2" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const nonce = await openedNonce("127.0.0.2");
+  await harness.pool.query(`update waiting_server set probe = probe || jsonb_build_object(
+    'handedAt', now(), 'address', '127.0.0.2', 'tcp', '{"80":{"seen":"answered"},"443":{"seen":"answered"}}'::jsonb)`);
+  expect(await shownProbe()).toEqual({ "80": { state: "open" }, "443": { state: "open" } });
+
+  expect(await send(token, host, { ip: "127.0.0.3" })).toMatchObject({ probe: { nonce } });
+  const privateRange = { state: "unknown", reason: "private_range" };
+  expect(await shownProbe()).toEqual({ "80": privateRange, "443": privateRange });
+  expect(await storedProbe("127.0.0.3")).toMatchObject({ address: "127.0.0.3", request: { nonce } });
+});
+
+it("ignores a connect that finishes after the host moved to another address", async () => {
+  vi.stubEnv("PLOYZ_VERIFY_PROBE_ALLOW", "127.0.0.2/32");
+  try {
+    const { token } = await fleetToken("rack-1");
+    const host = newHost();
+    await send(token, host, { ip: "127.0.0.2" });
+    await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+    await shortenWindow(1_500);
+    expect(await send(token, host, { ip: "127.0.0.2" })).toHaveProperty("probe");
+    expect(await send(token, host, { ip: "127.0.0.3" })).toHaveProperty("probe");
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const privateRange = { seen: "not_probed", reason: "private_range" };
+    expect((await storedProbe("127.0.0.3"))?.tcp).toEqual({ "80": privateRange, "443": privateRange });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});
+
+it("stores a host's report only under its own handout, and keeps it across check-ins", async () => {
   const first = await fleetToken("rack-1");
   const second = await fleetToken("rack-2");
   const host = newHost();
-  const probe = { nonce: "n1", heardFrom: ["10.0.0.4"], bindFailed: [] };
-  const stored = async () => (await harness.pool.query("select probe from waiting_server")).rows[0]?.probe;
-  await send(first.token, host, { probe });
-  await send(first.token, host);
-  expect(await stored()).toEqual(probe);
-  await send(second.token, host);
-  expect(await stored()).toEqual(probe);
+  const ip = "198.51.100.31";
+  const hostReport = (handout: string) => ({ handout, heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] });
+
+  expect(await send(first.token, host, { ip, probe: hostReport("old") })).toEqual(wait);
+  expect(await storedProbe(ip)).toBeNull();
+
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const nonce = await openedNonce(ip);
+  const handout = handedOut(await send(first.token, host, { ip, probe: hostReport(nonce) }));
+  expect(handout).not.toBe(nonce);
+  expect(await storedProbe(ip)).not.toHaveProperty("host");
+
+  expect(await send(first.token, host, { ip, probe: hostReport(handout) })).toEqual(wait);
+  const reported = { heardFrom: ["198.51.100.32"], bindFailed: ["tcp:80"] };
+  expect(await storedProbe(ip)).toMatchObject({ request: { nonce }, host: reported });
+  await send(first.token, host, { ip });
+  expect(await storedProbe(ip)).toMatchObject({ host: reported });
+  await send(second.token, host, { ip });
+  expect(await storedProbe(ip)).toMatchObject({ host: reported });
 });
+
+it("never counts a replayed report from the old address for the new handout", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.51" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const first = handedOut(await send(token, host, { ip: "198.51.100.51" }));
+
+  const oldReport = request(token, host, { ip: "198.51.100.52", probe: { handout: first, heardFrom: [], bindFailed: [] } });
+  const second = handedOut(await run(checkIn(oldReport)));
+  expect(second).not.toBe(first);
+  await run(checkIn(oldReport));
+  expect(await storedProbe("198.51.100.52")).not.toHaveProperty("host");
+
+  await harness.pool.query(`update waiting_server set probe = jsonb_set(probe, '{tcp}', '{"80":{"seen":"refused"},"443":{"seen":"refused"}}')`);
+  await handedLongAgo();
+  const noReport = { state: "unknown", reason: "no_host_report" };
+  expect(await shownProbe()).toEqual({ "80": noReport, "443": noReport });
+});
+
+it("reads port busy for a host that couldn't listen, even when another host at its address answered", async () => {
+  const { token } = await fleetToken("rack-1");
+  const [a, b] = [newHost(), newHost()];
+  const ip = "198.51.100.61";
+  await send(token, a, { ip, hostname: "a" });
+  await send(token, b, { ip, hostname: "b" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  await send(token, a, { ip, hostname: "a" });
+  const handout = handedOut(await send(token, b, { ip, hostname: "b" }));
+  await harness.pool.query(`update waiting_server set probe = jsonb_set(probe, '{tcp}', '{"80":{"seen":"answered"},"443":{"seen":"other_listener"}}')`);
+  await send(token, b, { ip, hostname: "b", probe: { handout, heardFrom: [], bindFailed: ["tcp:80"] } });
+  const shown = await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }));
+  const bId = shown.find((server) => server.report.hostname === "b")?.id ?? "";
+  expect((await run(showWaitingServer(ada, { organizationSlug: "ada", id: bId }))).probe).toEqual({
+    "80": { state: "unknown", reason: "port_busy" },
+    "443": { state: "unknown", reason: "other_listener" },
+  });
+});
+
+it("stops probing a host whose address keeps changing, and says so", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.71" });
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: await waitingIds() }));
+  const handouts = [];
+  for (const ip of ["198.51.100.71", "198.51.100.72", "198.51.100.73"]) handouts.push(handedOut(await send(token, host, { ip })));
+  expect(new Set(handouts).size).toBe(3);
+
+  expect(await send(token, host, { ip: "198.51.100.74" })).toEqual(wait);
+  expect(await send(token, host, { ip: "198.51.100.73" })).toEqual(wait);
+  const unstable = { state: "unknown", reason: "address_unstable" };
+  expect(await shownProbe()).toEqual({ "80": unstable, "443": unstable });
+});
+
+it("won't reopen a selection over a host whose window is still running", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host, { ip: "198.51.100.81" });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  const nonce = await openedNonce("198.51.100.81");
+  await send(token, host, { ip: "198.51.100.81" });
+
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toEqual({ probing: 0 });
+  expect(await storedProbe("198.51.100.81")).toMatchObject({ request: { nonce } });
+  await handedLongAgo();
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toEqual({ probing: 1 });
+  expect(await openedNonce("198.51.100.81")).not.toBe(nonce);
+});
+
+it("reopens all of a selection or none of it when one host's window is still running", async () => {
+  const { token } = await fleetToken("rack-1");
+  const [running, idle] = [newHost(), newHost()];
+  await send(token, running, { ip: "198.51.100.82" });
+  await send(token, idle, { ip: "198.51.100.83" });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids: [ids[0] ?? ""] }));
+  const nonce = await openedNonce("198.51.100.82");
+  await send(token, running, { ip: "198.51.100.82" });
+
+  expect(await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }))).toEqual({ probing: 0 });
+  expect(await openedNonce("198.51.100.82")).toBe(nonce);
+  expect(await storedProbe("198.51.100.83")).toBeNull();
+});
+
+const blockedOnRowLocks = async (count: number) => {
+  for (let waited = 0; waited < 5000; waited += 20) {
+    const { rows } = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
+    if (rows.length >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`fewer than ${count} operations waited on a row lock`);
+};
+const blockedOnRowLock = () => blockedOnRowLocks(1);
+
+it("won't reopen over a handout a queued check-in committed while the selection waited", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  const ip = "198.51.100.84";
+  await send(token, host, { ip });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+  const nonce = await openedNonce(ip);
+
+  const checkin = await harness.pool.connect();
+  try {
+    await checkin.query("begin");
+    await checkin.query(
+      "update waiting_server set probe = probe || jsonb_build_object('handout', 'queued', 'handedAt', now(), 'address', $1::text)",
+      [ip],
+    );
+    const reopening = harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+    await blockedOnRowLock();
+    await checkin.query("commit");
+    expect(await reopening).toEqual({ probing: 0 });
+  } finally {
+    checkin.release();
+  }
+  expect(await storedProbe(ip)).toMatchObject({ request: { nonce }, handout: "queued" });
+});
+
+it("stamps a handout when it is issued, so a check-in queued behind a long lock isn't reopened over", async () => {
+  const { token } = await fleetToken("rack-1");
+  const host = newHost();
+  const ip = "198.51.100.85";
+  await send(token, host, { ip });
+  const ids = await waitingIds();
+  await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+
+  const blocker = await harness.pool.connect();
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server for update");
+    const checking = send(token, host, { ip });
+    await blockedOnRowLock();
+    await new Promise((resolve) => setTimeout(resolve, 11_200));
+    const reopening = harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+    await blockedOnRowLocks(2);
+    await blocker.query("commit");
+    const handout = handedOut(await checking);
+    expect(await reopening).toEqual({ probing: 0 });
+    expect(await storedProbe(ip)).toMatchObject({ handout });
+  } finally {
+    blocker.release();
+  }
+}, 20_000);
+
+const heapFirstBiggestId = async (token: string) => {
+  for (const ip of ["198.51.100.86", "198.51.100.87"]) await send(token, newHost(), { ip });
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.86'", [big]);
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.87'", [small]);
+  return { big, small };
+};
+
+const smallLockedWhileBigHeld = async (writer: (ids: ReadonlyArray<string>) => Promise<void>, token: string) => {
+  const { big, small } = await heapFirstBiggestId(token);
+  const blocker = await harness.pool.connect();
+  const probe = await harness.pool.connect();
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server where id = $1 for update", [big]);
+    const writing = writer([big, small]);
+    await blockedOnRowLock();
+    await probe.query("begin");
+    const lockedSmall = await probe.query("select id from waiting_server where id = $1 for update nowait", [small])
+      .then(() => false, () => true);
+    await probe.query("rollback");
+    await blocker.query("commit");
+    await writing;
+    return lockedSmall;
+  } finally {
+    blocker.release();
+    probe.release();
+  }
+};
+
+it("locks waiting rows in id order in every writer of several, so they can't deadlock each other", async () => {
+  const writers = {
+    select: async (ids: ReadonlyArray<string>) => {
+      await harness.runEffect(openProbeSelection(ada, { organizationSlug: "ada", ids }));
+    },
+    reject: async (ids: ReadonlyArray<string>) => {
+      await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids }));
+    },
+    revoke: async () => {
+      await harness.runEffect(revokeFleetToken(ada, { organizationSlug: "ada", name: "lock-order" }));
+    },
+  };
+  for (const [name, writer] of Object.entries(writers)) {
+    await harness.pool.query("truncate table waiting_server, fleet_token cascade");
+    const { token } = await fleetToken("lock-order");
+    expect({ name, lockedSmall: await smallLockedWhileBigHeld(writer, token) }).toEqual({ name, lockedSmall: true });
+  }
+}, 20_000);
+
+it("lets two Rejects finish when a check-in un-rejects one of their rows between their lock and their write", async () => {
+  const first = await fleetToken("rack-1");
+  const replacement = await fleetToken("rack-2");
+  const tombstone = newHost();
+  await send(first.token, tombstone, { ip: "198.51.100.88" });
+  await send(first.token, newHost(), { ip: "198.51.100.89" });
+  const small = "00000000-0000-4000-8000-0000000000f1";
+  const big = "00000000-0000-4000-8000-0000000000f2";
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.88'", [small]);
+  await harness.pool.query("update waiting_server set id = $1 where observed_ip = '198.51.100.89'", [big]);
+  const reject = () => run(Effect.exit(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small, big] })));
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [small] }))).toEqual({ rejected: 1 });
+
+  const blocker = await harness.pool.connect();
+  try {
+    await blocker.query("begin");
+    await blocker.query("select id from waiting_server where id = $1 for update", [big]);
+    const earlier = reject();
+    await blockedOnRowLock();
+    expect(await send(replacement.token, tombstone, { ip: "198.51.100.88" })).toEqual(wait);
+    const later = reject();
+    await blockedOnRowLocks(2);
+    await blocker.query("commit");
+    const outcomes = await Promise.all([earlier, later]);
+    expect(outcomes.map((exit) => Exit.isSuccess(exit) ? exit.value : Cause.squash(exit.cause)))
+      .toEqual([{ rejected: 1 }, { rejected: 1 }]);
+  } finally {
+    blocker.release();
+  }
+}, 15_000);
 
 it("refuses an unsigned, mis-signed, stale or unknown check-in and writes nothing", async () => {
   const { token } = await fleetToken("rack-1");
@@ -214,7 +660,7 @@ it("prunes rate-limit windows that have passed", async () => {
     insert into checkin_rate_limit (key, window_start, count) values
       ('ip:198.51.100.1', now() - interval '1 hour', 3),
       ('ip:198.51.100.2', date_trunc('second', now()) + interval '1 hour', 1)`);
-  await harness.runEffect(pruneStaleRateLimits());
+  await run(pruneStaleRateLimits());
   expect((await harness.pool.query("select key from checkin_rate_limit")).rows).toEqual([{ key: "ip:198.51.100.2" }]);
 });
 
@@ -222,7 +668,7 @@ it("prunes passed rate-limit windows on the check-ins its sample picks", async (
   const { token } = await fleetToken("rack-1");
   await harness.pool.query("insert into checkin_rate_limit (key, window_start, count) values ('ip:198.51.100.1', now() - interval '1 hour', 3)");
   const sampled = (draw: number) =>
-    harness.runEffect(checkIn(request(token, newHost(), { ip: "198.51.100.60" })).pipe(
+    run(checkIn(request(token, newHost(), { ip: "198.51.100.60" })).pipe(
       Effect.provideService(Random.Random, { nextDoubleUnsafe: () => draw, nextIntUnsafe: () => 0 }),
     ));
   const stale = async () => (await harness.pool.query("select 1 from checkin_rate_limit where key = 'ip:198.51.100.1'")).rowCount;
@@ -247,9 +693,9 @@ it("keeps a rejected host stopped under its token, and lets a new token admit it
   const host = newHost();
   await send(first.token, host);
   const row = await one();
-  expect(await harness.runEffect(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 1 });
-  expect(await harness.runEffect(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 0 });
-  expect(await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }))).toEqual([]);
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 1 });
+  expect(await run(rejectWaitingServers(ada, { organizationSlug: "ada", ids: [row.id] }))).toEqual({ rejected: 0 });
+  expect(await run(listWaitingServers(ada, { organizationSlug: "ada" }))).toEqual([]);
 
   expect(await send(first.token, host)).toEqual({ kind: "stop", reason: "rejected", message: "This server was rejected in Ployz Cloud." });
   expect((await one()).rejected_at).toBeInstanceOf(Date);
@@ -282,7 +728,7 @@ it("lets only as many concurrent new hosts in as the cap has room for", async ()
   );
   const outcomes = await Promise.all(
     Array.from({ length: 6 }, (_, n) =>
-      harness.runEffect(Effect.exit(checkIn(request(token, newHost(), { ip: `198.51.100.${n + 1}` })))),
+      run(Effect.exit(checkIn(request(token, newHost(), { ip: `198.51.100.${n + 1}` })))),
     ),
   );
   expect(outcomes.filter((exit) => Exit.isSuccess(exit))).toHaveLength(2);
@@ -309,7 +755,7 @@ it.each([
   try {
     await holder.query("begin");
     await holder.query("select 1 from fleet_token where id = $1 for update", [a.id]);
-    const refresh = harness.runEffect(Effect.exit(checkIn(request(a.token, moving, { ip: "198.51.100.50" }))));
+    const refresh = run(Effect.exit(checkIn(request(a.token, moving, { ip: "198.51.100.50" }))));
     for (let waited = 0; ; waited += 10) {
       const blocked = await harness.pool.query("select 1 from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()");
       if (blocked.rowCount !== 0) break;
@@ -318,7 +764,7 @@ it.each([
     }
     expect(await send(b.token, moving, { ip: "198.51.100.51" })).toEqual(wait);
     if (thenRevoke) {
-      expect(await harness.runEffect(revokeFleetToken(ada, { organizationSlug: "ada", id: b.id }))).toEqual({ waitingRemoved: 1 });
+      expect(await run(revokeFleetToken(ada, { organizationSlug: "ada", id: b.id }))).toEqual({ waitingRemoved: 1 });
     }
     await holder.query(
       `insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
@@ -338,7 +784,7 @@ it("rate limits one source address and keeps what it already wrote", async () =>
   const { token } = await fleetToken("rack-1");
   const hosts = Array.from({ length: 120 }, newHost);
   const outcomes = [];
-  for (const host of hosts) outcomes.push(await harness.runEffect(Effect.exit(checkIn(request(token, host, { ip: "198.51.100.1" })))));
+  for (const host of hosts) outcomes.push(await run(Effect.exit(checkIn(request(token, host, { ip: "198.51.100.1" })))));
   const refused = outcomes.filter((exit) => Exit.isFailure(exit));
   expect(refused.length).toBeGreaterThan(0);
   for (const exit of refused) expect(Exit.isFailure(exit) && Cause.squash(exit.cause)).toMatchObject({ status: 429 });
@@ -351,20 +797,67 @@ it("removes a revoked token's waiting hosts and counts them", async () => {
   const other = await fleetToken("rack-2");
   for (const host of [newHost(), newHost(), newHost()]) await send(token, host);
   await send(other.token, newHost());
-  expect(await harness.runEffect(revokeFleetToken(ada, { organizationSlug: "ada", id }))).toEqual({ waitingRemoved: 3 });
+  expect(await run(revokeFleetToken(ada, { organizationSlug: "ada", id }))).toEqual({ waitingRemoved: 3 });
   expect(await rows()).toHaveLength(1);
 });
 
 it("lists and shows waiting hosts only to their own Organization", async () => {
   const { token } = await fleetToken("rack-1");
   await send(token, newHost(), { hostname: "<script>alert(1)</script>" });
-  const [listed] = await harness.runEffect(listWaitingServers(ada, { organizationSlug: "ada" }));
+  const [listed] = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
   const id = listed?.id ?? "";
   expect(listed).toMatchObject({ fleetToken: "rack-1", status: "waiting", report: { hostname: "<script>alert(1)</script>" } });
-  expect(await harness.runEffect(showWaitingServer(ada, { organizationSlug: "ada", id }))).toEqual(listed);
+  const detail = await run(showWaitingServer(ada, { organizationSlug: "ada", id }));
+  expect(detail).toMatchObject({ id, report: { hostname: "<script>alert(1)</script>" }, probe: null });
+  expect(detail.report).toHaveProperty("kernel");
+  expect(listed).not.toHaveProperty("probe");
+  expect(listed?.report).not.toHaveProperty("kernel");
+  expect(listed?.report).not.toHaveProperty("warnings");
   expect(await failure(showWaitingServer(bob, { organizationSlug: "bob", id })))
     .toMatchObject({ _tag: "NotFound", message: "No such waiting server." });
-  expect(await harness.runEffect(rejectWaitingServers(bob, { organizationSlug: "bob", ids: [id] }))).toEqual({ rejected: 0 });
+  expect(await run(rejectWaitingServers(bob, { organizationSlug: "bob", ids: [id] }))).toEqual({ rejected: 0 });
+});
+
+it("drops a host from the list once it is enrolling or joined, and brings it back when an attempt fails", async () => {
+  const { token, id: tokenId } = await fleetToken("rack-1");
+  await send(token, newHost());
+  const [listed] = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  const enroll = (state: string, ended: boolean) => harness.pool.query(
+    `insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state, ended_at)
+     values ($1, $2, $3, 'joiner', '{}', gen_random_uuid(), $4, ${ended ? "now()" : "null"})`,
+    [adaOrg, listed?.id, tokenId, state],
+  );
+  const shown = async () => (await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((server) => server.id);
+
+  await enroll("running", false);
+  expect(await shown()).toEqual([]);
+  await harness.pool.query("update server_enrollment set state = 'failed', ended_at = now()");
+  expect(await shown()).toEqual([listed?.id]);
+  await enroll("joined", true);
+  expect(await shown()).toEqual([]);
+});
+
+it("leaves an ended token's last use alone", async () => {
+  const { token, id } = await fleetToken("rack-1");
+  await harness.pool.query("update fleet_token set expires_at = now() - interval '1 second' where id = $1", [id]);
+  expect(await send(token, newHost())).toMatchObject({ kind: "stop", reason: "token_expired" });
+  expect((await harness.pool.query("select last_used_at from fleet_token")).rows).toEqual([{ last_used_at: null }]);
+});
+
+it("leaves an ended token's last use alone while one of its hosts is still enrolling", async () => {
+  const { token, id } = await fleetToken("rack-1");
+  const host = newHost();
+  await send(token, host);
+  const [listed] = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  await harness.pool.query(
+    `insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
+     values ($1, $2, $3, 'joiner', '{}', gen_random_uuid(), 'running')`,
+    [adaOrg, listed?.id, id],
+  );
+  await harness.pool.query("update fleet_token set last_used_at = null, expires_at = now() - interval '1 second' where id = $1", [id]);
+
+  expect(await send(token, host)).not.toMatchObject({ kind: "stop" });
+  expect((await harness.pool.query("select last_used_at from fleet_token")).rows).toEqual([{ last_used_at: null }]);
 });
 
 it("reads status from the last check-in and the report", () => {

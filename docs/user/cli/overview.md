@@ -59,9 +59,21 @@ by hand for every project:
 
 ```sh
 claude mcp add -s user ployz -- ployz mcp
+ployz mcp login
 ```
 
-For Codex, run `codex mcp add ployz -- ployz mcp`. The tools act signed in as you. They create
+For Codex, run `codex mcp add ployz -- ployz mcp`. `ployz mcp` doesn't use your sign-in. It acts
+with its own agent token, which `ployz mcp login` makes in your current organization and keeps
+on this computer. Until you run it, every tool call fails and names the command. The token acts
+as you in that organization, expires after 365 days, and shows as `agent` under KIND in
+`ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. An agent
+token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
+in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
+for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
+calls as the agent's.
+
+The tools create
 Projects, read and stage changes in them, review and deploy them (or save them for the next deploy), restore or undo a
 saved version, list, follow, redeploy, start and cancel their deployments, show Services, Servers
 and Volumes, and read a Service's recent logs. The agent can resend a call after a lost reply
@@ -72,6 +84,7 @@ Some things are not tools. Run these yourself in a terminal:
 
 - `login`, `ctx use` and other commands that act on this computer.
 - `server add`, which installs Ployz over SSH or on this computer.
+- `server enroll`, which enrolls hosts waiting in Cloud by name or glob.
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` adds a secret.
@@ -83,7 +96,8 @@ or release a copy or remove a mirror, and removing an organization member or inv
 removal, such as `service_remove`, deletes nothing until the next deploy, so it isn't marked. When
 one of them needs your approval (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
-the agent's app shows you what it would remove and asks you to approve or deny it. Removing a
+the agent's app shows you what it would remove and asks you to approve or deny it. Your answer
+goes to Ployz Cloud with your own sign-in, not the agent's token. Removing a
 Project, an Environment or a Server also asks you to type its name. Approve and the call goes
 ahead. Leave Approve unticked and Ployz denies the approval; any reason you type goes back to the
 agent, which is told nothing changed. Declining or closing the dialog denies it too, without a
@@ -117,7 +131,10 @@ Name a page instead to print it whole, as Markdown: `ployz docs services/domains
 as the `docs` tool from `ployz mcp`.
 
 Many commands' `--help` ends with the page that shows them: `ployz config put --help` ends
-with `Docs: ployz docs services/configs.md`.
+with `Docs: ployz docs services/configs.md`. A command that needs a role's permission names it
+there too: `ployz deploy --help` ends with `Needs changes:deploy`, and a member of the wrong role
+who runs it gets `Needs changes:deploy` and exit code 1. See
+[Invite people](../account/organizations.md#invite-people) for what each role can do.
 
 ## Commands from Ployz Cloud
 
@@ -153,6 +170,13 @@ ployz org invite revoke bob@example.com
 Roles are `owner`, `admin` and `member`. Only an owner can make, change or remove an owner.
 Any member can run `ployz org member ls`. Pending invites name who was invited, so
 `ployz org invite ls` refuses anyone but an owner or admin.
+
+Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`, `logs`, `ps`,
+`metrics`, `service start`, `service stop`, `service restart`, `service port-forward`,
+`server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
+`server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
+`Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. See
+[Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
 Pick a member by email or by name. When two members share a name, the command refuses with
 `ambiguous`, lists both emails and exits 2, so name the one you mean by email.
@@ -212,7 +236,9 @@ offline, run it again once that server is back. Owners and admins see and can re
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. A token you make outlives the login you made it
+another that outlives it, or revoke the rest. `ployz token ls` shows each token's KIND: `cli` for
+one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
+answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.
 
 When a command fails, Ployz prints what went wrong, then a `cause:` line with the underlying
@@ -232,6 +258,12 @@ server waiting for approval, it leads with a **this server** line: `Installing D
 `Building ZFS`, `Waiting for approval`, `Blocked`, `Rejected`, `Token expired`, `Token revoked`,
 `Can't reach Cloud`, `Clock is off` or `Needs a newer ployz`. Then it says when the server last checked in and lists anything that blocks
 it as `blocked` lines. With `--json` this is the `this_server` object.
+
+`ployz server enroll 'host-*' --name 'web-{n}'` prints Cloud's enrollment plan and asks before
+starting. Add `--yes` to accept it without a prompt, including with `--json`. `--status` follows
+the stages. Run `ployz server enroll --status` to resume following after Ctrl-C. See
+[Servers waiting to join](../servers/manage-servers.md#servers-waiting-to-join) for storage and
+selection flags.
 
 Human output names things: Servers by name and Deployments as `#3`. It shows a short Container
 ID only where two rows would otherwise read the same. `--json` keeps every ID.
