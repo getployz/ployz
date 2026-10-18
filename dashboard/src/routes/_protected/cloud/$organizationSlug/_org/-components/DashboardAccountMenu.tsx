@@ -43,6 +43,18 @@ function getInitials(name: string) {
     .join("");
 }
 
+// The slug is what `ployz org use` takes, and it tells apart Organizations that share a name.
+function OrganizationLabel({ organization }: { organization: { name: string; slug: string } }) {
+  return (
+    <span className="min-w-0 max-w-64">
+      <span className="block truncate">{organization.name}</span>
+      {organization.slug !== organization.name ? (
+        <span className="block truncate text-xs text-muted-foreground">{organization.slug}</span>
+      ) : null}
+    </span>
+  );
+}
+
 const themes = [
   { value: "system", label: "System" },
   { value: "light", label: "Light" },
@@ -150,7 +162,7 @@ export default function DashboardAccountMenu({
               <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
                 {own.map((candidate) => (
                   <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                    {candidate.name}
+                    <OrganizationLabel organization={candidate} />
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -162,7 +174,7 @@ export default function DashboardAccountMenu({
                     <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={switchTo}>
                       {supported.map((candidate) => (
                         <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                          {candidate.name}
+                          <OrganizationLabel organization={candidate} />
                         </DropdownMenuRadioItem>
                       ))}
                     </DropdownMenuRadioGroup>
