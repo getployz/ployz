@@ -26,12 +26,10 @@ const Answered = Schema.Struct({
   decided_at: Schema.NullOr(Schema.String),
 });
 
-const waiting = (approval: ApprovalView): typeof Waiting.Type => ({
-  id: approval.id,
-  status: approval.status,
-  ...approvalSubject(approval.command, approval.review),
-  created_at: approval.created_at,
-});
+const waiting = (approval: ApprovalView): typeof Waiting.Type => {
+  const { verb, name } = approvalSubject(approval.command, approval.review);
+  return { id: approval.id, status: approval.status, verb, name, created_at: approval.created_at };
+};
 
 const answered = (approval: ApprovalView): typeof Answered.Type => ({
   ...waiting(approval),

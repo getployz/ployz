@@ -142,10 +142,7 @@ export const trustedApproval = Effect.fn("Approvals.trusted")(function* (
   if (approvalId === null) return { ok: true, approval: "required" };
   const row = yield* readRow(organizationId, approvalId).pipe(Effect.orDie);
   if (row === undefined) {
-    return {
-      ok: false,
-      refusal: { code: "invalid_argument", message: "No such approval in this Organization.", details: { approval_id: approvalId } },
-    };
+    return { ok: false, refusal: { code: "not_found", message: "No such approval.", details: { approval_id: approvalId } } };
   }
   switch (row.status) {
     case "approved":
