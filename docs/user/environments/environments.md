@@ -204,9 +204,9 @@ Protected. When an agent turns protection off, it waits for you to approve.
 A member can still ask for changes in a Protected environment. Their buttons read **Request
 deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows
 **Requested**. The request waits under **Waiting on you** in the [Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy)
-of every owner or admin. Once one approves it, it runs as the member who asked. The member sees
-their own request marked **Waiting on an owner or admin.** and can't approve it. Neither can an
-owner or admin approve a request they made. A deploy, sync or take from `ployz` or an agent asks
+of every owner or admin, with the name of who asked. Once one approves it, it runs as the member
+who asked. The member sees their own request under **Requested**, marked **Waiting on an owner or
+admin.**, and can't approve or deny it. Neither can an owner or admin decide a request they made. A deploy, sync or take from `ployz` or an agent asks
 the same way.
 
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
