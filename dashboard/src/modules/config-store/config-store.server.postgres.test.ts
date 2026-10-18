@@ -1,19 +1,25 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import type { ConfigCommand, ConfigQuery, MachineId } from "@ployz/sdk";
+import { type ConfigCommand, type ConfigQuery, type MachineId, RpcError } from "@ployz/sdk";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import * as tar from "tar";
 import { Cause, Effect, Exit, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
+import { runAgentCall } from "#/modules/agent/agent-runner.server";
+import { decideApproval } from "#/modules/approvals/approvals.server";
+import { operationApprovals } from "#/modules/approvals/tables";
 import { callStore, callStoreAsMember, callStoreBy, writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import type { Access } from "#/modules/organization/access.server";
+import { type Access, requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
+import type { Caller } from "#/modules/identity/actor";
+import { organizationSupportAccess } from "#/modules/support-access/tables";
+import { permissionsOf } from "#/modules/organization/permissions";
 import * as ids from "#/test/ids";
 import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
@@ -21,9 +27,11 @@ import { runStoreDeployment } from "#/modules/config-store/store-deployment.serv
 import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { createOrganizationToken, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
+import type { TokenGrant } from "#/modules/identity/token-grant";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
-import { member, user } from "#/modules/identity/tables";
+import { member, session as sessionTable, user } from "#/modules/identity/tables";
 import { machineRemoveAttempt, organizationMachine } from "#/modules/machines/tables";
 import {
   completeMachineRemoveAttemptActivity,
@@ -46,12 +54,15 @@ import { encodePublicError, NotFound, statusForPublicError } from "#/server/publ
 const origin = "http://localhost:3000";
 
 /**
- * GitHub as these tests see it: `acme/web` is private (read through installation 7) with a `dev` branch, `acme/docs`
- * is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
+ * GitHub as these tests see it: `acme/web` is private (read through installation 7) with `dev` and `main` branches,
+ * `acme/docs` is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
  */
 const github = fakeGithubApi({
   "/repos/acme/web/git/ref/heads%2Fdev": {
     ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) },
+  },
+  "/repos/acme/web/git/ref/heads%2Fmain": {
+    ref: "refs/heads/main", object: { type: "commit", sha: "b".repeat(40) },
   },
   "/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
   "/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
@@ -84,7 +95,11 @@ const Reply = Schema.Struct({
   values: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   error: Schema.optionalKey(Schema.Struct({
     code: Schema.String,
-    details: Schema.NullOr(Schema.Struct({ revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String) })),
+    message: Schema.optionalKey(Schema.String),
+    details: Schema.NullOr(Schema.Struct({
+      revision: Schema.optionalKey(Schema.Number), next: Schema.optionalKey(Schema.String),
+      approval: Schema.optionalKey(Schema.String), approval_id: Schema.optionalKey(Schema.String),
+    })),
   })),
   domain: Schema.optionalKey(Schema.Struct({
     kind: Schema.String, prefix: Schema.optionalKey(Schema.String), hostname: Schema.NullOr(Schema.String),
@@ -282,6 +297,572 @@ it.live(
         yield* drizzle.update(member).set({ role: "admin" }).where(eq(member.userId, bobUser));
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteStaging)).ok, "an admin deletes the Environment");
         assert.isTrue((yield* writeStoreAsMember(bob, slug, deleteShop)).ok, "an admin deletes the Project");
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Alice owns Project shop, whose production is Protected and runs `web` from acme/web; Bob is a member of her Organization. */
+const protectedShop = Effect.fn(function* () {
+  const session = yield* signUp("alice");
+  const alice = yield* resolveCaller(signedIn(session));
+  const bobSession = yield* signUp("bob");
+  const bobUser = (yield* resolveCaller(signedIn(bobSession))).userId;
+  const slug = alice.organization.slug;
+  const { drizzle } = yield* Database;
+  yield* drizzle.insert(member).values({ userId: bobUser, organizationId: alice.organization.id, role: "member" });
+  yield* drizzle.insert(githubInstallation).values({ installationId: 7, accountLogin: "acme", accountType: "Organization" });
+  yield* drizzle.insert(organizationGithubInstallation).values({
+    organizationId: alice.organization.id, installationId: 7, connectedByUserId: alice.userId, connectedGithubLogin: "alice",
+  });
+  yield* drizzle.insert(githubRepositoryCache).values({
+    installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+    private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
+  });
+  const protection = Effect.fn(function* () {
+    const listing = yield* callStoreAsMember(alice, slug, { operation: "read", query: { query: "environments", project: "shop" } });
+    return listing.ok && listing.value.view === "environments"
+      ? listing.value.environments.map((environment) => [environment.name, environment.protected])
+      : assert.fail("no environments");
+  });
+  const role = (value: "admin" | "member") => drizzle.update(member).set({ role: value }).where(eq(member.userId, bobUser));
+
+  assert.isTrue((yield* writeStoreAsMember(alice, slug, shop)).ok);
+  assert.deepStrictEqual(yield* protection(), [["production", true]]);
+  assert.isTrue((yield* writeStoreAsMember(alice, slug, {
+    command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null,
+  })).ok, "an owner connects a repository in a Protected Environment");
+  return { alice, session, bob: { userId: bobUser, session: bobSession }, organizationId: alice.organization.id, slug, protection, role };
+});
+const branch = (value: string): ConfigCommand => ({
+  command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.branch", value }],
+});
+const protect = (on: boolean): ConfigCommand => ({
+  command: "set_environment_protected", environment: { project: "shop", environment: "production" }, protected: on,
+});
+const adminOnly = "Only an owner or admin of this Organization can do this.";
+const refusalOf = (result: { ok: true } | { ok: false; refusal: { code: string; message: string } }) =>
+  result.ok ? null : [result.refusal.code, result.refusal.message];
+
+it.live(
+  "a new Project's production is Protected, and only an owner or admin changes its source or its protection",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, bob, slug, protection, role } = yield* protectedShop();
+
+        assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, branch("dev"))), ["forbidden", adminOnly]);
+        const clears: Array<ConfigCommand> = [
+          { command: "edit", environment: here, expect: null, changes: [{ op: "unset", path: "web.repository" }] },
+          { command: "edit", environment: here, expect: null, changes: [{ op: "patch", path: "web", value: { repository: null } }] },
+        ];
+        for (const clear of clears) {
+          assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, clear)), ["forbidden", adminOnly]);
+        }
+        const unprotect = yield* Effect.exit(writeStoreAsMember(bob, slug, protect(false)));
+        assert.deepInclude(Exit.isFailure(unprotect) ? Cause.squash(unprotect.cause) : null, { _tag: "Forbidden", message: adminOnly });
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+
+        yield* role("admin");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, branch("dev"))).ok, "an admin changes the branch");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, protect(false))).ok, "an admin unprotects production");
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+
+        yield* role("member");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, branch("main"))).ok, "a member changes the branch once it isn't Protected");
+        const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
+        assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "the CLI's write skips the dashboard's role check, and a Protected Environment's source and protection still need an owner or admin",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { bob, organizationId, slug, protection, role } = yield* protectedShop();
+        yield* activeIn(bob.userId, organizationId, slug);
+        const cli = (command: ConfigCommand) =>
+          request("write", bob.session, command).pipe(Effect.map(({ status, json }) => [status, json.error?.code, json.error?.message]));
+
+        assert.deepStrictEqual(yield* cli(protect(false)), [403, "forbidden", adminOnly]);
+        assert.deepStrictEqual(yield* cli(branch("dev")), [403, "forbidden", adminOnly]);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+
+        yield* role("admin");
+        assert.deepStrictEqual(yield* cli(protect(false)), [200, undefined, undefined], "an admin unprotects production from the CLI");
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a repository a member changes in a Branch syncs into Protected production only for an owner or admin",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, bob, slug, role } = yield* protectedShop();
+        const { drizzle } = yield* Database;
+        yield* drizzle.insert(githubRepositoryCache).values({
+          installationId: 7, repositoryId: 12, name: "docs", fullName: "acme/docs", defaultBranch: "main",
+          private: true, htmlUrl: "https://github.com/acme/docs", repoUpdatedAt: new Date(),
+        });
+        const fixWeb = { project: null, environment: "fix-web" };
+        const production = { project: null, environment: "production" };
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, {
+          command: "create_branch", id: "00000000-0000-4000-8000-000000000005", from: production, name: "fix-web",
+          copy: ["web"], live: [], setup: [], keep: false,
+        })).ok);
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, {
+          command: "edit", environment: fixWeb, expect: null, changes: [{ op: "set", path: "web.repository", value: "acme/docs" }],
+        })).ok, "a member changes the repository in an unprotected Branch");
+        const sync = yield* callStoreAsMember(bob, slug, { operation: "read", query: { query: "sync", from: fixWeb, into: production } });
+        const version = sync.ok && sync.value.view === "sync" ? sync.value.version : assert.fail("no sync");
+        const syncUp: ConfigCommand = { command: "sync", from: fixWeb, into: production, version };
+        assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, syncUp)), ["forbidden", "Needs environments:protect"]);
+
+        yield* role("admin");
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, syncUp)).ok, "an admin syncs it");
+        const save: ConfigCommand = { command: "publish", environment: production, version: null };
+        assert.isTrue((yield* writeStoreAsMember(bob, slug, save)).ok, "an admin saves it");
+        const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
+        assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { repository: "acme/docs" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Makes `organizationId` the active Organization of every session of user `userId`, as the CLI's login does. */
+const activeIn = Effect.fn(function* (userId: string, organizationId: string, slug: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(sessionTable).set({ activeOrganizationId: organizationId, activeOrganizationSlug: slug })
+    .where(eq(sessionTable.userId, userId));
+});
+
+/** The unprotect approvals filed in `organizationId`. */
+const unprotectApprovals = Effect.fn(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  return yield* drizzle.select({ id: operationApprovals.id, status: operationApprovals.status }).from(operationApprovals)
+    .where(and(eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.command, "unprotect")));
+});
+const unprotectByAgent = (key: string, approvalId: string | null) => ({
+  tool: "environment_protect", input: { protected: false }, key, approvalId,
+  page: { at: "here" as const, project: "shop", environment: "production" },
+});
+
+it.live(
+  "an agent's unprotect waits on one human approval, which holds for that protection only",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, organizationId, slug, protection } = yield* protectedShop();
+        const agent = { ...alice, via: "agent" as const };
+        /** Asks to unprotect production, and returns the approval it waits on. */
+        const ask = Effect.fn(function* (key: string, approvalId: string | null) {
+          const asked = yield* runAgentCall(agent, unprotectByAgent(key, approvalId));
+          if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
+          assert.strictEqual(asked.asking.refusal.code, "approval_required");
+          assert.deepInclude(asked.asking.refusal.details, { operation: { verb: "unprotect", name: "shop/production" } });
+          const { approval } = asked.asking.refusal.details as { approval: string };
+          return { id: asked.asking.approvalId, digest: approval };
+        });
+        const approve = Effect.fn(function* (approval: { id: string; digest: string }) {
+          assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, approval.id, { approve: { digest: approval.digest } })).ok);
+        });
+
+        const first = yield* ask("first", null);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        assert.deepStrictEqual(yield* unprotectApprovals(organizationId), [{ id: first.id, status: "pending" }]);
+        yield* approve(first);
+        assert.deepInclude(yield* runAgentCall(agent, unprotectByAgent("first", first.id)), {
+          outcome: { ok: true, value: { at: "shop/production", protected: false } },
+        });
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(true))).ok, "an owner protects it again");
+        const again = yield* ask("again", first.id);
+        assert.notStrictEqual(again.id, first.id, "the old approval doesn't lift the new protection");
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an unprotect from `ployz mcp` asks again after the Environment is protected again",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, slug, protection } = yield* protectedShop();
+        const mcp = (approvalId: string | null) => {
+          const headers = signedIn(session);
+          headers.set("x-ployz-via", "agent");
+          if (approvalId !== null) headers.set("x-ployz-approval", approvalId);
+          return send("write", headers, protect(false));
+        };
+
+        const asked = yield* mcp(null);
+        assert.strictEqual(asked.json.error?.code, "approval_required", JSON.stringify(asked.json));
+        const approvalId = asked.json.error?.details?.approval_id ?? assert.fail("no approval id");
+        const digest = asked.json.error?.details?.approval ?? assert.fail("no approval digest");
+        assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, approvalId, { approve: { digest } })).ok);
+        assert.strictEqual((yield* mcp(approvalId)).status, 200);
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(true))).ok);
+        const again = yield* mcp(approvalId);
+        assert.strictEqual(again.json.error?.code, "approval_required", JSON.stringify(again.json));
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a member's agent asking to unprotect is refused, and no human is asked",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, bob, organizationId, slug, protection } = yield* protectedShop();
+        const agent = { ...alice, userId: bob.userId, role: "member" as const, via: "agent" as const };
+
+        assert.deepStrictEqual(yield* runAgentCall(agent, unprotectByAgent("member", null)), {
+          outcome: { ok: false, refusal: { code: "forbidden", message: adminOnly, details: null } },
+        });
+        yield* activeIn(bob.userId, organizationId, slug);
+        const mcp = signedIn(bob.session);
+        mcp.set("x-ployz-via", "agent");
+        const fromMcp = yield* send("write", mcp, protect(false));
+        assert.deepStrictEqual([fromMcp.json.error?.code, fromMcp.json.error?.message], ["forbidden", adminOnly]);
+        assert.deepStrictEqual(yield* unprotectApprovals(organizationId), []);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Ployz staff with support access to Alice's Organization: not a member, acting as the dashboard's support Caller. */
+const supportIn = Effect.fn(function* (alice: { readonly userId: string }, organizationId: string, slug: string) {
+  const { drizzle } = yield* Database;
+  const session = yield* signUp("staff");
+  const staff = (yield* resolveCaller(signedIn(session))).userId;
+  yield* drizzle.insert(organizationSupportAccess).values({ organizationId, allowed: true, changedByUserId: alice.userId });
+  const access = yield* requireAccess({ userId: staff }, slug, "org:read").pipe(Effect.provideService(SupportStaff, supportStaffOf([staff])));
+  if (access.kind !== "support") return assert.fail(`staff isn't support: ${access.kind}`);
+  const caller: Caller = {
+    userId: staff, organization: access.organization, credential: { kind: "session", id: "support" },
+    role: null, support: access.shows, via: "dashboard",
+  };
+  return { caller, session };
+});
+
+it.live(
+  "support doesn't change Protected production's source or protection, or remove its Project",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, organizationId, slug, protection } = yield* protectedShop();
+        const { caller: staff } = yield* supportIn(alice, organizationId, slug);
+        const projects = Effect.fn(function* () {
+          const listing = yield* callStoreAsMember(alice, slug, { operation: "read", query: { query: "projects" } });
+          return listing.ok && listing.value.view === "projects" ? listing.value.projects.map((project) => project.name) : assert.fail("no projects");
+        });
+
+        yield* Effect.gen(function* () {
+          assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(staff, slug, branch("dev"))), ["forbidden", adminOnly]);
+          const unprotect = yield* Effect.exit(writeStoreAsMember(staff, slug, protect(false)));
+          assert.deepInclude(Exit.isFailure(unprotect) ? Cause.squash(unprotect.cause) : null, { _tag: "Forbidden", message: adminOnly });
+          const removal = yield* writeStoreAsMember(staff, slug, { command: "remove", project: "shop" });
+          assert.deepStrictEqual(refusalOf(removal), ["forbidden", "Needs environments:protect"]);
+        }).pipe(Effect.provideService(SupportStaff, supportStaffOf([staff.userId])));
+
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        assert.deepStrictEqual(yield* projects(), ["shop"]);
+        const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
+        assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "support's agent asking to unprotect is refused, and no human is asked",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, organizationId, slug, protection } = yield* protectedShop();
+        const { caller: staff, session } = yield* supportIn(alice, organizationId, slug);
+
+        const fromSidebar = yield* runAgentCall({ ...staff, via: "agent" }, unprotectByAgent("support", null))
+          .pipe(Effect.provideService(SupportStaff, supportStaffOf([staff.userId])));
+        assert.deepStrictEqual(fromSidebar, { outcome: { ok: false, refusal: { code: "forbidden", message: adminOnly, details: null } } });
+        // `ployz mcp` acts only as a member, so support's session is refused before the Store is asked.
+        yield* activeIn(staff.userId, organizationId, slug);
+        const mcp = signedIn(session);
+        mcp.set("x-ployz-via", "agent");
+        const fromMcp = yield* send("write", mcp, protect(false));
+        assert.strictEqual(fromMcp.status, 403);
+        assert.deepStrictEqual(yield* unprotectApprovals(organizationId), []);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/**
+ * Has the agent's owner protect production anew just before the Store sees its unprotect, as another
+ * write landing after Cloud decided whether to ask.
+ */
+const protectedAgainFirst = Effect.fn(function* (organizationId: string) {
+  const store = yield* cloudStore;
+  const write = store.write.bind(store);
+  let landed = false;
+  vi.spyOn(store, "write").mockImplementation(async (organization, command, trusted, principal) => {
+    if (!landed && command.command === "set_environment_protected" && !command.protected) {
+      landed = true;
+      const current = await store.read(organizationId, { query: "environments", project: "shop" });
+      const protectedNow = current.view === "environments" && current.environments.some((environment) => environment.protected);
+      if (protectedNow) await write(organization, protect(false), trusted, null);
+      await write(organization, protect(true), trusted, null);
+    }
+    return write(organization, command, trusted, principal);
+  });
+  return () => landed;
+});
+const refusedCode = (answer: Effect.Success<ReturnType<typeof runAgentCall>>) =>
+  "outcome" in answer && "refusal" in answer.outcome ? answer.outcome.refusal.code : JSON.stringify(answer);
+
+it.live(
+  "an agent's unprotect the protection changed under after Cloud decided is refused, approved or not",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, slug, protection } = yield* protectedShop();
+        const agent = { ...alice, via: "agent" as const };
+
+        // Approved for the first protection; production is unprotected and protected again before the write lands.
+        const asked = yield* runAgentCall(agent, unprotectByAgent("raced", null));
+        if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
+        const { approval } = asked.asking.refusal.details as { approval: string };
+        assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, asked.asking.approvalId, { approve: { digest: approval } })).ok);
+        const landed = yield* protectedAgainFirst(organizationId);
+        assert.strictEqual(refusedCode(yield* runAgentCall(agent, unprotectByAgent("raced", asked.asking.approvalId))), "conflict");
+        assert.isTrue(landed());
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        vi.restoreAllMocks();
+
+        // Unprotected, so no one is asked; a person protects it before the write lands.
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(false))).ok);
+        const unasked = yield* protectedAgainFirst(organizationId);
+        assert.strictEqual(refusedCode(yield* runAgentCall(agent, unprotectByAgent("unasked", null))), "conflict");
+        assert.isTrue(unasked());
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        vi.restoreAllMocks();
+
+        // The same from `ployz mcp`.
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(false))).ok);
+        const fromMcp = yield* protectedAgainFirst(organizationId);
+        const headers = signedIn(session);
+        headers.set("x-ployz-via", "agent");
+        const mcp = yield* send("write", headers, protect(false));
+        assert.strictEqual(mcp.json.error?.code, "conflict", JSON.stringify(mcp.json));
+        assert.isTrue(fromMcp());
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        vi.restoreAllMocks();
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+/** Evidence of someone who may protect, and no more. */
+const owner = { repositories: [], domains: { cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] } };
+/** Runs `between` once, after Cloud's first Environment listing reads and before it answers. */
+const afterListing = Effect.fn(function* (between: () => Promise<void>) {
+  const store = yield* cloudStore;
+  const read = store.read.bind(store);
+  let landed = false;
+  vi.spyOn(store, "read").mockImplementation(async (organization, query) => {
+    const answer = await read(organization, query);
+    if (!landed && query.query === "environments") {
+      landed = true;
+      await between();
+    }
+    return answer;
+  });
+  return () => landed;
+});
+const asAgent = (session: string, approvalId: string | null) => {
+  const headers = signedIn(session);
+  headers.set("x-ployz-via", "agent");
+  if (approvalId !== null) headers.set("x-ployz-approval", approvalId);
+  return headers;
+};
+/** Creates Environment `name` in `shop`, Protected once, as someone who may protect. */
+const protectedEnvironment = Effect.fn(function* (organizationId: string, id: string, name: string) {
+  const store = yield* cloudStore;
+  return async () => {
+    await store.write(organizationId, { command: "create_environment", id, project: "shop", name }, owner);
+    await store.write(organizationId, { command: "set_environment_protected", environment: { project: "shop", environment: name }, protected: true }, owner);
+  };
+});
+
+it.live(
+  "an agent's approved unprotect of the default is refused when another Environment became the default before it lands",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, slug } = yield* protectedShop();
+        const store = yield* cloudStore;
+        // staging is Protected once too, so its protection reads the same as production's.
+        yield* Effect.promise(yield* protectedEnvironment(organizationId, "00000000-0000-4000-8000-000000000090", "staging"));
+        const agent = { ...alice, via: "agent" as const };
+        const listing = Effect.fn(function* () {
+          const environments = yield* Effect.promise(() => store.read(organizationId, { query: "environments", project: "shop" }));
+          return environments.view === "environments"
+            ? environments.environments.map((environment) => [environment.name, environment.default, environment.protected])
+            : assert.fail("no environments");
+        });
+        const toDefault = (environment: string) => async () => {
+          await store.write(organizationId, { command: "set_default_environment", environment: { project: "shop", environment } }, owner);
+        };
+
+        for (const surface of ["sidebar", "mcp"] as const) {
+          // The human approves unprotecting the default, production.
+          yield* Effect.promise(toDefault("production"));
+          const call = { tool: "environment_protect", input: { protected: false }, key: `default-${surface}`, approvalId: null, page: { at: "organization" as const } };
+          const asked = yield* runAgentCall(agent, call);
+          if (!("asking" in asked)) return assert.fail(`no approval asked: ${JSON.stringify(asked)}`);
+          assert.deepInclude(asked.asking.refusal.details, { operation: { verb: "unprotect", name: "shop/production" } });
+          const { approval } = asked.asking.refusal.details as { approval: string };
+          assert.isTrue((yield* decideApproval({ ...alice, via: "dashboard" }, asked.asking.approvalId, { approve: { digest: approval } })).ok);
+
+          const moved = yield* afterListing(toDefault("staging"));
+          const code = surface === "sidebar"
+            ? refusedCode(yield* runAgentCall(agent, { ...call, approvalId: asked.asking.approvalId }))
+            : (yield* send("write", asAgent(session, asked.asking.approvalId), { command: "set_environment_protected", environment: here, protected: false })).json.error?.code;
+          assert.strictEqual(code, "conflict", surface);
+          assert.isTrue(moved());
+          vi.restoreAllMocks();
+          assert.deepStrictEqual(yield* listing(), [["production", false, true], ["staging", true, true]], surface);
+        }
+        assert.isTrue((yield* writeStoreAsMember(alice, slug, protect(true))).ok);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an agent's unprotect of an Environment Cloud can't find is refused, even when it's created before the write lands",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, protection } = yield* protectedShop();
+        const agent = { ...alice, via: "agent" as const };
+        const legs = [
+          ["sidebar", "staging", "00000000-0000-4000-8000-000000000091", (environment: string) =>
+            runAgentCall(agent, { ...unprotectByAgent("absent", null), page: { at: "here" as const, project: "shop", environment } }).pipe(Effect.map(refusedCode))],
+          ["mcp", "qa", "00000000-0000-4000-8000-000000000092", (environment: string) =>
+            send("write", asAgent(session, null), { command: "set_environment_protected", environment: { project: "shop", environment }, protected: false })
+              .pipe(Effect.map((answer) => answer.json.error?.code))],
+        ] as const;
+        for (const [surface, name, id, unprotect] of legs) {
+          const created = yield* afterListing(yield* protectedEnvironment(organizationId, id, name));
+          assert.strictEqual(yield* unprotect(name), "not_found", surface);
+          assert.isTrue(created());
+          vi.restoreAllMocks();
+          assert.deepInclude(yield* protection(), [name, true], surface);
+        }
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an agent's unprotect is refused with the listing's own refusal when Cloud can't list Environments, and writes nothing",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { alice, session, organizationId, protection } = yield* protectedShop();
+        const store = yield* cloudStore;
+        const read = store.read.bind(store);
+        const details = { next: "retry the listing" };
+        vi.spyOn(store, "read").mockImplementation(async (organization, query) => {
+          if (query.query === "environments") throw new RpcError({ code: "unavailable", message: "Environment listing refused", details });
+          return read(organization, query);
+        });
+        const writes = vi.spyOn(store, "write");
+
+        const sidebar = yield* runAgentCall({ ...alice, via: "agent" }, unprotectByAgent("refused-listing", null));
+        assert.deepStrictEqual(sidebar, { outcome: { ok: false, refusal: { code: "unavailable", message: "Environment listing refused", details } } });
+        const mcp = yield* send("write", asAgent(session, null), protect(false));
+        assert.strictEqual(mcp.status, 503);
+        assert.deepStrictEqual(
+          [mcp.json.error?.code, mcp.json.error?.message, mcp.json.error?.details],
+          ["unavailable", "Environment listing refused", details],
+        );
+        assert.strictEqual(writes.mock.calls.length, 0);
+        vi.restoreAllMocks();
+
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, organizationId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "someone no longer a member may not protect, and Cloud's own write still may",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { bob, organizationId, slug, protection, role } = yield* protectedShop();
+        yield* role("admin");
+        yield* activeIn(bob.userId, organizationId, slug);
+        const { drizzle } = yield* Database;
+        yield* drizzle.delete(member).where(eq(member.userId, bob.userId));
+        assert.strictEqual((yield* request("write", bob.session, protect(false))).status, 403);
+        assert.deepStrictEqual(yield* protection(), [["production", true]]);
+
+        assert.isTrue((yield* callStore(organizationId, null, { operation: "write", command: protect(false) })).ok, "Cloud itself unprotects");
+        assert.deepStrictEqual(yield* protection(), [["production", false]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a member's repository change in a Protected Environment is refused before Cloud asks GitHub about it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { bob, slug } = yield* protectedShop();
+        const asked = () => github.calls.filter((call) => call.path.startsWith("/repos/acme/down")).length;
+        const before = asked();
+        const down: ConfigCommand = {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.repository", value: "acme/down" }],
+        };
+        assert.deepStrictEqual(refusalOf(yield* writeStoreAsMember(bob, slug, down)), ["forbidden", adminOnly]);
+        assert.strictEqual(asked(), before, "GitHub was never asked");
       }).pipe(Effect.provide(layer));
     }),
   60_000,
@@ -857,6 +1438,29 @@ it.live(
 );
 
 it.live(
+  "a Read token can't upload source, and nothing is kept",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        yield* enrollStoreServer((yield* resolveCaller(signedIn(alice))).organization.id);
+        yield* request("write", alice, shop);
+        const { secret } = yield* createOrganizationToken(yield* resolveCaller(signedIn(alice)), {
+          name: "reader", expiresInDays: 1, preset: { preset: "read" },
+        });
+        const deploymentId = "00000000-0000-4000-8000-000000000204";
+        const refused = yield* upload(deploymentId, secret, yield* sourceArchive);
+        assert.strictEqual(refused.status, 403);
+        expect(refused.json.error).toMatchObject({ code: "forbidden", message: "This token's grant doesn't include changes:deploy." });
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId)), []);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "a user's write carries what they hold: none named is a defect, and callStoreBy sends the role's set",
   () =>
     Effect.gen(function* () {
@@ -869,7 +1473,7 @@ it.live(
         const memberId = linus?.id ?? assert.fail("no member");
         yield* drizzle.insert(member).values({ userId: memberId, organizationId, role: "member" });
         const organization = { id: organizationId, slug: "shop" };
-        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization });
+        const by = (userId: string, role: "owner" | "member"): Access => ({ kind: "member", userId, role, organization, permissions: permissionsOf(role), environments: undefined });
         const buildOrder = write({ command: "set_build_order", build_order: "servers-then-github" });
 
         // A user's write with no permissions named is Cloud's defect, never a grant.
@@ -885,3 +1489,101 @@ it.live(
     }),
   60_000,
 );
+
+it.live(
+  "a Deploy staging token deploys staging, and the Store refuses it production without writing",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const staging = { project: "shop", environment: "staging" };
+        for (const command of [shop, web, { command: "create_environment", id: "00000000-0000-4000-8000-000000000004", project: "shop", name: "staging" } as const]) {
+          assert.strictEqual((yield* request("write", alice, command)).status, 200);
+        }
+        assert.strictEqual((yield* request("write", alice, { command: "create_service", id: "00000000-0000-4000-8000-000000000005", environment: staging, name: "web", image: "nginx:1" })).status, 200);
+        const { secret, scope } = yield* createOrganizationToken(yield* resolveCaller(signedIn(alice)), {
+          name: "ci", expiresInDays: 1, preset: { preset: "deploy", environment: "staging" },
+        });
+        assert.strictEqual(scope, "Deploy staging");
+        const replicas = (environment: typeof here | typeof staging) => request("read", alice, { query: "environment", environment, path: "web.replicas", all: false });
+        const before = (yield* replicas(here)).json;
+
+        const refused = yield* request("write", secret, { command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: "3" }] });
+        assert.strictEqual(refused.status, 403);
+        expect(refused.json.error).toMatchObject({ code: "forbidden", message: "This token can deploy only to staging." });
+        assert.deepStrictEqual((yield* replicas(here)).json, before);
+
+        const landed = yield* request("write", secret, { command: "edit", environment: staging, expect: null, changes: [{ op: "set", path: "web.replicas", value: "3" }] });
+        assert.strictEqual(landed.status, 200);
+        assert.deepStrictEqual(landed.json.staged, ["web.replicas"]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+const CEILING_ORGANIZATION = "00000000-0000-4000-8000-000000004401";
+const protectIn = (environment: string, on: boolean): ConfigCommand => ({
+  command: "set_environment_protected", environment: { project: "shop", environment }, protected: on,
+});
+/** Shop with a Protected production and a staging, and a token of `grant` minted into it. */
+const ceilingShop = Effect.fn(function* (grant: TokenGrant, kind: "cli" | "agent") {
+  const userId = yield* seedStoreOrganization(CEILING_ORGANIZATION);
+  const store = yield* cloudStore;
+  yield* Effect.promise(async () => {
+    await store.write(CEILING_ORGANIZATION, {
+      command: "create_project", id: "00000000-0000-4000-8000-000000004402", name: "shop", default_environment: "00000000-0000-4000-8000-000000004403",
+    });
+    await store.write(CEILING_ORGANIZATION, { command: "create_environment", id: "00000000-0000-4000-8000-000000004404", project: "shop", name: "staging" });
+  });
+  const { secret } = yield* mintOrganizationTokenUnchecked({
+    organizationId: CEILING_ORGANIZATION, userId, name: "t", kind, expiresAt: new Date(Date.now() + 86_400_000), grant,
+  });
+  const headers = signedIn(secret);
+  const state = Effect.promise(async () =>
+    (await store.read(CEILING_ORGANIZATION, { query: "environments", project: "shop" })).environments.map(({ name, protected: on }) => [name, on]));
+  const approvals = Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    return yield* drizzle.select().from(operationApprovals).where(eq(operationApprovals.organizationId, CEILING_ORGANIZATION));
+  });
+  return { secret, headers, state, approvals };
+});
+const ceilingLayer = Effect.gen(function* () {
+  const cloud = yield* storeTestCloud();
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(cloud)), cloud);
+});
+const stagingOnly = "This token can deploy only to staging.";
+
+it.live("a token that may protect only staging protects and unprotects staging, and production refuses", () =>
+  Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const { headers, state, approvals } = yield* ceilingShop({ permissions: ["environments:protect"], environments: ["staging"] }, "cli");
+      assert.strictEqual((yield* send("write", headers, protectIn("staging", true))).status, 200);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", true]]);
+      assert.strictEqual((yield* send("write", headers, protectIn("staging", false))).status, 200);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
+      for (const on of [false, true]) {
+        const refused = yield* send("write", headers, protectIn("production", on));
+        assert.deepStrictEqual([refused.status, refused.json.error?.code, refused.json.error?.message], [403, "forbidden", stagingOnly]);
+      }
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
+      assert.deepStrictEqual(yield* approvals, []);
+    }).pipe(Effect.provide(yield* ceilingLayer));
+  }), 60_000);
+
+it.live("an agent token's unprotect outside its Environments is refused before it asks a human, on the config API and the sidebar", () =>
+  Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const { headers, state, approvals } = yield* ceilingShop({ permissions: ["environments:protect"], environments: ["staging"] }, "agent");
+      const mcp = yield* send("write", headers, protectIn("production", false));
+      assert.deepStrictEqual([mcp.status, mcp.json.error?.code, mcp.json.error?.message], [403, "forbidden", stagingOnly]);
+      const caller = yield* resolveCaller(headers);
+      const sidebar = yield* runAgentCall({ ...caller, via: "agent" }, {
+        tool: "environment_protect", input: { protected: false }, key: "ceiling", approvalId: null,
+        page: { at: "here", project: "shop", environment: "production" },
+      });
+      assert.deepStrictEqual(sidebar, { outcome: { ok: false, refusal: { code: "forbidden", message: stagingOnly, details: { environments: ["staging"] } } } });
+      assert.deepStrictEqual(yield* approvals, []);
+      assert.deepStrictEqual(yield* state, [["production", true], ["staging", false]]);
+    }).pipe(Effect.provide(yield* ceilingLayer));
+  }), 60_000);

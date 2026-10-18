@@ -11,8 +11,8 @@ $ ployz env ls
 
 stdout:
 ```
-ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
-production	default	-	-	-
+ENVIRONMENT	DEFAULT	PROTECTED	BRANCH OF	REMOVAL	BRANCH SETUP
+production	default	yes	-	-	-
 ```
 
 ### env ls --json
@@ -29,14 +29,16 @@ stdout:
     {
       "branch_setup": [],
       "default": true,
-      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+      "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
+      "merged": false,
       "name": "production",
       "parent": null,
+      "protected": true,
       "removal": null
     }
   ],
   "project": {
-    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
+    "id": "0ec618e0-7acf-4259-9647-415488226737",
     "name": "shop"
   }
 }
@@ -65,7 +67,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+    "id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
     "name": "qa",
     "project": "shop",
     "revision": 1
@@ -118,10 +120,10 @@ $ ployz env default staging
 
 stdout:
 ```
-ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
-production	-	-	-	-
-qa	-	-	-	-
-staging	default	-	-	-
+ENVIRONMENT	DEFAULT	PROTECTED	BRANCH OF	REMOVAL	BRANCH SETUP
+production	-	yes	-	-	-
+qa	-	-	-	-	-
+staging	default	-	-	-	-
 ```
 
 ### env default --json
@@ -138,30 +140,36 @@ stdout:
     {
       "branch_setup": [],
       "default": true,
-      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+      "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
+      "merged": false,
       "name": "production",
       "parent": null,
+      "protected": true,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+      "id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+      "merged": false,
       "name": "qa",
       "parent": null,
+      "protected": false,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "338315ca-dfd4-4cbf-bcc3-d2d67e5c8d65",
+      "id": "56955dcc-ed13-4b92-b618-de6fc91ccd89",
+      "merged": false,
       "name": "staging",
       "parent": null,
+      "protected": false,
       "removal": null
     }
   ],
   "project": {
-    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
+    "id": "0ec618e0-7acf-4259-9647-415488226737",
     "name": "shop"
   }
 }
@@ -189,10 +197,10 @@ $ ployz env setup --setup web=bin/migrate
 
 stdout:
 ```
-ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
-production	default	-	-	web: bin/migrate
-qa	-	-	-	-
-staging	-	-	-	-
+ENVIRONMENT	DEFAULT	PROTECTED	BRANCH OF	REMOVAL	BRANCH SETUP
+production	default	yes	-	-	web: bin/migrate
+qa	-	-	-	-	-
+staging	-	-	-	-	-
 ```
 
 ### env setup --json
@@ -218,30 +226,36 @@ stdout:
         }
       ],
       "default": true,
-      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+      "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
+      "merged": false,
       "name": "production",
       "parent": null,
+      "protected": true,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+      "id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+      "merged": false,
       "name": "qa",
       "parent": null,
+      "protected": false,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "338315ca-dfd4-4cbf-bcc3-d2d67e5c8d65",
+      "id": "56955dcc-ed13-4b92-b618-de6fc91ccd89",
+      "merged": false,
       "name": "staging",
       "parent": null,
+      "protected": false,
       "removal": null
     }
   ],
   "project": {
-    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
+    "id": "0ec618e0-7acf-4259-9647-415488226737",
     "name": "shop"
   }
 }
@@ -281,10 +295,10 @@ $ ployz env setup --clear
 
 stdout:
 ```
-ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
-production	default	-	-	-
-qa	-	-	-	-
-staging	-	-	-	-
+ENVIRONMENT	DEFAULT	PROTECTED	BRANCH OF	REMOVAL	BRANCH SETUP
+production	default	yes	-	-	-
+qa	-	-	-	-	-
+staging	-	-	-	-	-
 ```
 
 ### env branch --copy
@@ -318,7 +332,7 @@ stdout:
   "branch": {
     "closes_at": null,
     "environment": {
-      "id": "8f7c5f37-b9b4-460d-9405-57dfdbaeef76",
+      "id": "7f05c489-ab4d-4c85-bcc7-3727d865e5b3",
       "name": "fix-db",
       "project": "shop",
       "revision": 2
@@ -390,13 +404,13 @@ $ ployz env ls
 
 stdout:
 ```
-ENVIRONMENT	DEFAULT	BRANCH OF	REMOVAL	BRANCH SETUP
-fix-db	-	production	-	-
-fix-web	-	production	-	-
-long	-	production	-	-
-production	default	-	-	-
-qa	-	-	-	-
-staging	-	-	-	-
+ENVIRONMENT	DEFAULT	PROTECTED	BRANCH OF	REMOVAL	BRANCH SETUP
+fix-db	-	-	production	-	-
+fix-web	-	-	production	-	-
+long	-	-	production	-	-
+production	default	yes	-	-	-
+qa	-	-	-	-	-
+staging	-	-	-	-	-
 ```
 
 ### env ls --json (with Branches)
@@ -413,54 +427,66 @@ stdout:
     {
       "branch_setup": [],
       "default": false,
-      "id": "8f7c5f37-b9b4-460d-9405-57dfdbaeef76",
+      "id": "7f05c489-ab4d-4c85-bcc7-3727d865e5b3",
+      "merged": false,
       "name": "fix-db",
       "parent": "production",
+      "protected": false,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
+      "id": "72646041-6106-4873-b210-0ef0fbbd6dc9",
+      "merged": false,
       "name": "fix-web",
       "parent": "production",
+      "protected": false,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "1e6ec51e-e479-4d4e-af99-d9d75757b86d",
+      "id": "e64fa65d-b4e1-41e3-a6d1-28063b888a42",
+      "merged": false,
       "name": "long",
       "parent": "production",
+      "protected": false,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": true,
-      "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+      "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
+      "merged": false,
       "name": "production",
       "parent": null,
+      "protected": true,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+      "id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+      "merged": false,
       "name": "qa",
       "parent": null,
+      "protected": false,
       "removal": null
     },
     {
       "branch_setup": [],
       "default": false,
-      "id": "338315ca-dfd4-4cbf-bcc3-d2d67e5c8d65",
+      "id": "56955dcc-ed13-4b92-b618-de6fc91ccd89",
+      "merged": false,
       "name": "staging",
       "parent": null,
+      "protected": false,
       "removal": null
     }
   ],
   "project": {
-    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
+    "id": "0ec618e0-7acf-4259-9647-415488226737",
     "name": "shop"
   }
 }
@@ -488,7 +514,7 @@ $ ployz --json env sync --to --env fix-web
 
 stdout:
 ```
-{"error":{"cause":[],"code":"conflict","details":{"next":"ployz env sync --to --plan --project shop --env fix-web","version":"31:6a3fa6492c4d079f"},"message":"Nothing to sync into production"}}
+{"error":{"cause":[],"code":"conflict","details":{"next":"ployz env sync --to --plan --project shop --env fix-web","version":"31:d192d5497e403aa7"},"message":"Nothing to sync into production"}}
 ```
 
 ### env sync without --to/--from (clap)
@@ -533,7 +559,7 @@ $ ployz env sync --to --plan --env fix-web
 
 stdout:
 ```
-fix-web → production (version 31:a9e3bd3396e28940):
+fix-web → production (version 31:e811cadcdbce4693):
   web.source: {"credentials":false,"image":"nginx:1.27","type":"image"} → {"credentials":false,"image":"nginx:1.28","type":"image"}
   web.env.DEBUG: null → "1" (new)
   web.env.NEW: null → "1" (new)
@@ -549,21 +575,21 @@ $ ployz --json env sync --to --plan --env fix-web
 stdout:
 ```
 {
-  "at_merge": null,
   "from": {
-    "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
+    "id": "72646041-6106-4873-b210-0ef0fbbd6dc9",
     "name": "fix-web",
     "project": "shop",
     "revision": 3
   },
   "into": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
     "name": "production",
     "project": "shop",
     "revision": 31
   },
   "never_synced": [],
-  "next": "ployz env sync --to --version 31:a9e3bd3396e28940 --project shop --env fix-web",
+  "next": "ployz env sync --to --version 31:e811cadcdbce4693 --project shop --env fix-web",
+  "proposal": null,
   "rows": [
     {
       "change": "changed",
@@ -572,6 +598,7 @@ stdout:
         "image": "nginx:1.28",
         "type": "image"
       },
+      "held_by": null,
       "into": {
         "credentials": false,
         "image": "nginx:1.27",
@@ -581,36 +608,38 @@ stdout:
       "name": "source",
       "node": "web",
       "requires": null,
-      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:source",
+      "row": "c66b8ddf-e671-4e98-a40d-ac17ccc30664:source",
       "secret": null,
       "ticked": true
     },
     {
       "change": "new",
       "from": "1",
+      "held_by": null,
       "into": null,
       "kind": "service",
       "name": "env.DEBUG",
       "node": "web",
       "requires": null,
-      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.DEBUG",
+      "row": "c66b8ddf-e671-4e98-a40d-ac17ccc30664:variables.DEBUG",
       "secret": null,
       "ticked": true
     },
     {
       "change": "new",
       "from": "1",
+      "held_by": null,
       "into": null,
       "kind": "service",
       "name": "env.NEW",
       "node": "web",
       "requires": null,
-      "row": "3fa9959f-5d42-40b9-a746-eecb3062a942:variables.NEW",
+      "row": "c66b8ddf-e671-4e98-a40d-ac17ccc30664:variables.NEW",
       "secret": null,
       "ticked": true
     }
   ],
-  "version": "31:a9e3bd3396e28940"
+  "version": "31:e811cadcdbce4693"
 }
 ```
 
@@ -656,7 +685,7 @@ Staged: web
 
 stderr:
 ```
-undo: ployz env sync --undo 3fb29f8d-10d9-470c-80ba-9bdec39379bd --project shop
+undo: ployz env sync --undo 5b1e49a5-b9c9-4808-b3d2-07a734068aa7 --project shop
 next: ployz deploy --env production --project shop
 ```
 
@@ -670,27 +699,24 @@ $ ployz --json env sync --to --env fix-web
 stdout:
 ```
 {
+  "closing": false,
   "from": {
-    "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
+    "id": "72646041-6106-4873-b210-0ef0fbbd6dc9",
     "name": "fix-web",
     "project": "shop",
     "revision": 3
   },
   "into": {
-    "id": "6e65756d-4c02-4368-96ca-9d9dc3ecddad",
+    "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
     "name": "production",
     "project": "shop",
     "revision": 33
   },
   "next": "ployz deploy --env production --project shop",
-  "sync": "93635302-e15b-4eb2-b800-f900b37aa201",
-  "when": {
-    "closing": false,
-    "kind": "now",
-    "staged": [
-      "web"
-    ]
-  }
+  "staged": [
+    "web"
+  ],
+  "sync": "ebd83040-30a6-45d9-afad-db5ff24e2d81"
 }
 ```
 
@@ -731,7 +757,7 @@ stdout:
   "branch": {
     "closes_at": null,
     "environment": {
-      "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
+      "id": "72646041-6106-4873-b210-0ef0fbbd6dc9",
       "name": "fix-web",
       "project": "shop",
       "revision": 3
@@ -783,7 +809,7 @@ stdout:
 ```
 {
   "environment": {
-    "id": "25de9f48-0dba-48b4-93d6-b90d0fa2102f",
+    "id": "72646041-6106-4873-b210-0ef0fbbd6dc9",
     "name": "fix-web",
     "project": "shop",
     "revision": 3
@@ -926,7 +952,7 @@ stdout:
 {
   "plans": [],
   "project": {
-    "id": "06367cee-8aa3-42b0-b526-c1f03ba8ecca",
+    "id": "0ec618e0-7acf-4259-9647-415488226737",
     "name": "shop"
   }
 }
@@ -971,18 +997,18 @@ $ ployz --json env shutdown qa
 stdout:
 ```
 {
-  "admitted_at": 1791462271,
+  "admitted_at": 1792234930,
   "admitted_by": null,
   "builds": [],
-  "ended_at": 1791462271,
+  "ended_at": 1792234930,
   "environment": {
-    "id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
+    "id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
     "name": "qa",
     "project": "shop",
     "revision": 1
   },
-  "environment_id": "c6ad0938-4d6f-4ac6-a8f7-7dba63442845",
-  "id": "3c7576bc-067e-44e7-b80b-83b2520c7dee",
+  "environment_id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+  "id": "d264361a-5f83-43ec-abf1-11b41d751b77",
   "in_flight": false,
   "message": null,
   "namespace": "shop-qa",
@@ -1009,6 +1035,141 @@ stderr:
 Deploying #2 of shop/qa
 ```
 
+### env protect
+
+```console
+$ ployz env protect staging
+# exit 0
+```
+
+stdout:
+```
+staging is Protected
+```
+
+### env protect: a Branch
+
+```console
+$ ployz env protect fix-web
+# exit 1
+```
+
+stderr:
+```
+error: fix-web is a Branch: only a Project's own Environments can be Protected
+```
+
+### env rm: Protected Environment
+
+```console
+$ ployz env rm staging --confirm shop/staging
+# exit 1
+```
+
+stderr:
+```
+error: staging is Protected: unprotect it first
+next: ployz env protect staging --off --project shop
+```
+
+### env protect --json --off
+
+```console
+$ ployz --json env protect staging --off
+# exit 0
+```
+
+stdout:
+```
+{
+  "environments": [
+    {
+      "branch_setup": [],
+      "default": false,
+      "id": "7f05c489-ab4d-4c85-bcc7-3727d865e5b3",
+      "merged": false,
+      "name": "fix-db",
+      "parent": "production",
+      "protected": false,
+      "removal": null
+    },
+    {
+      "branch_setup": [],
+      "default": false,
+      "id": "72646041-6106-4873-b210-0ef0fbbd6dc9",
+      "merged": false,
+      "name": "fix-web",
+      "parent": "production",
+      "protected": false,
+      "removal": null
+    },
+    {
+      "branch_setup": [],
+      "default": false,
+      "id": "e64fa65d-b4e1-41e3-a6d1-28063b888a42",
+      "merged": false,
+      "name": "long",
+      "parent": "production",
+      "protected": false,
+      "removal": null
+    },
+    {
+      "branch_setup": [],
+      "default": true,
+      "id": "8446a278-2e2e-4313-9721-0289f02fe40a",
+      "merged": false,
+      "name": "production",
+      "parent": null,
+      "protected": true,
+      "removal": null
+    },
+    {
+      "branch_setup": [],
+      "default": false,
+      "id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+      "merged": false,
+      "name": "qa",
+      "parent": null,
+      "protected": false,
+      "removal": {
+        "admitted_at": 1792234930,
+        "admitted_by": null,
+        "ended_at": 1792234930,
+        "environment_id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+        "id": "d264361a-5f83-43ec-abf1-11b41d751b77",
+        "in_flight": false,
+        "message": null,
+        "number": 2,
+        "outcome": {
+          "type": "never_ran"
+        },
+        "remove": true,
+        "runner": null,
+        "saved": 0,
+        "services": [],
+        "started_at": null,
+        "status": "applied",
+        "upload": null
+      }
+    },
+    {
+      "branch_setup": [],
+      "default": false,
+      "id": "56955dcc-ed13-4b92-b618-de6fc91ccd89",
+      "merged": false,
+      "name": "staging",
+      "parent": null,
+      "protected": false,
+      "removal": null
+    }
+  ],
+  "project": {
+    "id": "0ec618e0-7acf-4259-9647-415488226737",
+    "name": "shop"
+  }
+}
+```
+
 ### env rm without --confirm
 
 ```console
@@ -1031,7 +1192,7 @@ $ ployz --json env rm qa
 
 stdout:
 ```
-{"error":{"cause":[],"code":"confirmation_required","details":{"environment":{"id":"c6ad0938-4d6f-4ac6-a8f7-7dba63442845","name":"qa","project":"shop","revision":1},"retry":"ployz env rm qa --confirm shop/qa --project shop","services":[],"volumes":[]},"message":"Removing Environment qa deletes its configuration, history and every Service and Volume in it; this can't be undone. No changes made."}}
+{"error":{"cause":[],"code":"confirmation_required","details":{"environment":{"id":"21634a42-3a4e-45f5-a898-1bc9c040f311","name":"qa","project":"shop","revision":1},"retry":"ployz env rm qa --confirm shop/qa --project shop","services":[],"volumes":[]},"message":"Removing Environment qa deletes its configuration, history and every Service and Volume in it; this can't be undone. No changes made."}}
 ```
 
 ### env rm: --confirm mismatch
@@ -1069,13 +1230,15 @@ $ ployz --json env rm fix-db --confirm shop/fix-db
 stdout:
 ```
 {
-  "deployment": null,
+  "deployments": [],
   "environment": {
-    "id": "8f7c5f37-b9b4-460d-9405-57dfdbaeef76",
+    "id": "7f05c489-ab4d-4c85-bcc7-3727d865e5b3",
     "name": "fix-db",
     "project": "shop",
     "revision": 2
-  }
+  },
+  "removal": "removed",
+  "residuals": []
 }
 ```
 
@@ -1088,7 +1251,7 @@ $ ployz env rm production --confirm shop/production
 
 stderr:
 ```
-error: production is the Default Environment. Choose another Default Environment first
+error: production is the Default Environment: it goes only with Project shop
 next: ployz env default ENV --project shop
 ```
 

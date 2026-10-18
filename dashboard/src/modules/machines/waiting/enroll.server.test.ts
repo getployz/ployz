@@ -17,7 +17,7 @@ const report: StoredReport = {
   zfs: { kind: "eligible", targets: [{ kind: "main_disk" }, { kind: "disk", byId: "/dev/disk/by-id/nvme-spare" }] },
   blockers: [],
   warnings: [],
-  cliVersion: "0.3.1",
+  cliVersion: "0.3.0",
 };
 
 const row = (id: string, overrides: Partial<Omit<EnrollCandidate, "report">> & { readonly report?: Partial<StoredReport> } = {}): EnrollCandidate => ({
@@ -155,16 +155,19 @@ describe("skips", () => {
     ["a host on an expired token", row("a", { tokenEnded: "expired" }), "Fleet Token expired"],
     ["a host on a revoked token", row("a", { tokenEnded: "revoked" }), "Fleet Token revoked"],
     ["a blocked host", row("a", { report: { blockers: [{ code: "disk", message: "Disk is 20 GB. Ployz needs 30 GB." }] } }), "Disk is 20 GB. Ployz needs 30 GB."],
-    ["a CLI from before enroll", row("a", { report: { cliVersion: "0.3.0" } }), "Update ployz"],
+    ["a CLI from before enroll", row("a", { report: { cliVersion: "0.3.0-beta.5" } }), "Update ployz"],
+    ["an older release", row("a", { report: { cliVersion: "0.2.2" } }), "Update ployz"],
     ["a host whose CLI never said its version", row("a", { report: { cliVersion: undefined } }), "Update ployz"],
   ])("skips %s", (_, candidate, reason) => {
     expect(reasonFor(candidate)).toEqual([{ id: "a", reason }]);
   });
 
-  it("keeps a host still preparing, and one whose CLI is current or newer", () => {
-    const preparing = row("a", { report: { prep: { docker: "installing", zfs: "installing" } } });
-    expect(reasonFor(preparing)).toEqual([]);
-    expect(reasonFor(row("a", { report: { cliVersion: "0.4.0" } }))).toEqual([]);
+  it("keeps a host still preparing", () => {
+    expect(reasonFor(row("a", { report: { prep: { docker: "installing", zfs: "installing" } } }))).toEqual([]);
+  });
+
+  it.each(["0.3.0", "0.3.1", "0.4.0"])("keeps a host whose CLI is %s", (cliVersion) => {
+    expect(reasonFor(row("a", { report: { cliVersion } }))).toEqual([]);
   });
 
   it("plans each id once", () => {

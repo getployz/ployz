@@ -29,6 +29,7 @@ mod volume;
 pub use logs::{LineCap, LogExcerpt, LogText, SecretSet, Withheld};
 pub use machine::{Place, STEP_BUDGET, State, StoreAt, ToolDef, WAIT_CAP_SECONDS, resume, start};
 pub use refusal::{Call, NOT_SETTINGS, Refusal, ToolResult, Writes};
+pub use runtime::plain_env;
 pub use schema::{lint, portable};
 pub use status::{ServiceStatus, service_status};
 pub use step::{
@@ -104,6 +105,7 @@ tools! {
     deployment::DeploymentStart,
     deployment::DeploymentCancel,
     environment::EnvironmentPr,
+    environment::EnvironmentProtect,
     environment::EnvironmentSetup,
     github::GithubLs,
     github::GithubConnect,

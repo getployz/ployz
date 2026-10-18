@@ -4,13 +4,17 @@ description: Your organization, its settings, deleting it, and what Pro costs.
 ---
 
 An organization holds your projects, your servers and your billing. The first time you sign in,
-Ployz creates one for you, named after you (like Ada's Projects).
+Ployz creates one for you, named after you (like Ada's Projects). An agent can also make one
+before anyone signs in, named Agent sandbox. Open its claim link within 24 hours to keep it. See
+[Try Ployz without an account](try-without-an-account.md).
 
 ## Your organization
 
 You can invite people to work in your organization with you. See
 [Invite people](#invite-people). To let a CI job act for you, make an
-[organization token](../cli/overview.md#make-an-organization-token).
+[organization token](../cli/overview.md#make-an-organization-token) under **Organization →
+Tokens**. Pick **Deploy** and an Environment for a token that can only deploy there, **Read only**
+for one that can't change anything, or **Full as you** for one that can do whatever you can.
 
 To make another organization, open the account menu and click **Switch organization → New
 organization**. Name it, change its URL if you like, and click **Create**. You land in the new
@@ -149,6 +153,9 @@ organization that owns the request. Otherwise they refuse: run `ployz org use OR
 then answer again. If you run the same change yourself with `ployz`, typing the name in your terminal
 approves it. Anyone in the organization can deny any request, from the dashboard or a terminal.
 
+An agent's own sandbox doesn't ask. While only the agent owns it, nobody could answer, so its
+deploys and removals go ahead. Once a person keeps it, the agent asks like anywhere else.
+
 This keeps a well-behaved agent from deleting something by mistake. It doesn't stop a program
 that's trying to get around it: anything that holds your own `ployz` login or one of your own
 tokens can approve its own `ployz` request, as if you'd typed the name in a terminal. The agent
@@ -167,6 +174,8 @@ organization, are coming soon.
 
 If you subscribed to the old $9 Pro plan for custom domains, you no longer need it. Click
 **Manage billing** on the same page to cancel it or get invoices.
+
+In an agent's sandbox, billing waits until someone keeps it.
 
 A [self-hosted Ployz Cloud](../self-hosting.md) has no billing, and custom domains are always
 allowed.
@@ -192,3 +201,7 @@ With no organization left, the dashboard offers **Create an organization**.
 From the CLI, `ployz org rm SLUG` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
 then `ployz login`.
+
+An agent's sandbox ends 24 hours after the agent made it, unless someone keeps it. Ployz then
+removes it. See
+[When nobody claims it](try-without-an-account.md#when-nobody-claims-it).

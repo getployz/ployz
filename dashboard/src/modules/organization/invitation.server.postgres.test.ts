@@ -1,3 +1,4 @@
+import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { and, eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -256,9 +257,14 @@ describe("org leave", () => {
   it("refuses an Organization the caller may not act in and changes nothing", async () => {
     const session = { kind: "session", id: "fay-session" } as const;
     expect(await leave(session, { id: CHARLIE, slug: "charlie" }, "acme")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
-    const token = { kind: "token", id: "fay-token" } as const;
+  });
+
+  it("refuses a token, even a full one leaving its own Organization, and changes nothing", async () => {
+    const token = { kind: "token", id: "fay-token", grant: FULL_GRANT } as const;
     await harness.db.insert(member).values({ userId: fay, organizationId: BRAVO, role: "member" });
-    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: false, refusal: { code: "not_found" } });
+    const refusal = { code: "forbidden", message: "A token can't leave for you. Run `ployz login`, then leave." };
+    expect(await leave(token, { id: CHARLIE, slug: "charlie" }, "bravo")).toMatchObject({ ok: false, refusal });
+    expect(await leave(token, { id: BRAVO, slug: "bravo" }, "bravo")).toMatchObject({ ok: false, refusal });
     expect(await membershipsOf(fay)).toEqual(["bravo", "charlie"]);
   });
 });

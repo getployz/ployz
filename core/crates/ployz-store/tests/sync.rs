@@ -13,9 +13,10 @@ use std::collections::BTreeMap;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, BranchQuery, Change, ConfigStore, CreateBranch, CreateProject, CreateService, Discard,
-    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, ProjectId,
-    ProjectName, Publish, RemoveService, RenameService, SecretRow, ServiceLineageId, ServiceQuery,
-    SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView, Synced, UndoSync,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, OrganizationId, Permission,
+    ProjectId, ProjectName, Publish, RemoveService, RenameService, SecretRow, ServiceLineageId,
+    ServiceQuery, SettingPath, SyncChange, SyncChanges, SyncId, SyncQuery, SyncRow, SyncView,
+    Synced, Trusted, UndoSync,
 };
 use serde_json::{Value, json};
 
@@ -884,6 +885,50 @@ fn a_sync_closes_a_branch_that_isnt_kept_when_asked() {
         )
         .unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_token_for_the_parent_alone_cannot_close_the_branch_it_syncs_from() {
+    let (store, who) = shop(false);
+    set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
+    let closing = SyncChanges {
+        close_after: true,
+        ..sync(&view(&store, &who), None)
+    };
+    let production_only = Trusted {
+        permissions: Some([Permission::ChangesStage, Permission::ChangesDeploy].into()),
+        environments: Some([EnvironmentName::parse("production").unwrap()].into()),
+        ..Trusted::default()
+    };
+    let refused = store
+        .write_trusted(&who, &closing, &production_only)
+        .unwrap_err();
+    assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+    assert_eq!(refused.message, "This token can deploy only to production.");
+    assert_eq!(
+        values(&store, &who, "production", "web")["image"],
+        json!("web:1")
+    );
+    assert_eq!(
+        values(&store, &who, "fix-web", "web")["image"],
+        json!("web:2")
+    );
+    store
+        .read(
+            &who,
+            &BranchQuery {
+                environment: at("fix-web"),
+            },
+        )
+        .unwrap();
+    // Without closing it, the same token syncs into production.
+    let staying = SyncChanges {
+        close_after: false,
+        ..closing
+    };
+    store
+        .write_trusted(&who, &staying, &production_only)
+        .unwrap();
 }
 
 #[test]

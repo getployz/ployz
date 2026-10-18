@@ -20,10 +20,11 @@ export type StoreEdit = {
 /**
  * Commands whose views reach past the Environment they name, so their views are every view. Most read or write
  * another Environment, and may make or close one, which the Project's views (its Environments, the Projects) list.
- * A Project's Default Environment and Branch setup show in those Project views, which name no Environment.
+ * A Project's Default Environment, Branch setup and protection show in those Project views, which name no Environment.
  */
 const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set([
   "sync", "undo_sync", "remove_proposal", "take", "create_branch", "copy_node", "set_default_environment", "set_branch_setup",
+  "set_environment_protected",
 ]);
 
 /** The Environment revision a write produced; a Batch's is its last command's. */

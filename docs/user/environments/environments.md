@@ -188,6 +188,22 @@ the default environment too, into any other place. What staging only got from pr
 The default environment is where the project opens, for everyone in your organization. Pick
 another under **Default environment** in **Settings → Project**.
 
+### Protect an environment
+
+A new project's default environment starts Protected, and its header shows a **Protected** lock.
+In a Protected environment, only an owner or admin can connect a repository, change a service's
+deploy branch, or turn protection off. It can't be deleted until you unprotect it. Deleting the
+whole project still takes it. Environments that existed before Protected shipped start
+unprotected.
+
+To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
+`ployz env protect production --off` and `ployz env protect production`. Members see the switch
+disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
+Protected. When an agent turns protection off, it waits for you to approve.
+
+A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
+[GitHub branch protection](../deploy/github.md#protected-environments).
+
 ### Delete an environment
 
 1. Open the environment's **Settings → Environment**.
@@ -196,8 +212,8 @@ another under **Default environment** in **Settings → Project**.
 
 ![Settings → Environment: setup commands for new branches, and Delete environment](../images/environment-settings.png)
 
-You can't delete one that still has branches, or the default environment until you make another
-one the default.
+You can't delete one that still has branches, a Protected one, or the default environment until
+you make another one the default.
 
 Deleting returns at once. The environment stays listed until every server that ran it has taken it
 off, and then it's gone. A server that's offline holds its part until it answers or you remove the

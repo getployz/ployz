@@ -102,7 +102,8 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, SetDefaultEnvironment,
+    ProjectListing, ProjectsQuery, ProjectsView, ProtectedView, SeenProtection,
+    SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 
@@ -209,7 +210,7 @@ impl ConfigStore {
         trusted: &Trusted,
     ) -> Result<C::Written, RpcError> {
         let trusted = trusted.held_by(who);
-        self.storage.write(|tx| {
+        self.acting(&trusted, |tx| {
             command.apply(&mut Call {
                 tx,
                 who,
@@ -217,6 +218,17 @@ impl ConfigStore {
                 trusted: &trusted,
             })
         })
+    }
+
+    /// Run `work` in one write transaction acting for the caller `trusted` describes,
+    /// so a write it reaches deep inside still meets [`storage::admit_protect`].
+    fn acting<T>(
+        &self,
+        trusted: &Trusted,
+        work: impl FnOnce(&mut dyn storage::Tx) -> Result<T, RpcError>,
+    ) -> Result<T, RpcError> {
+        self.storage
+            .write(|tx| work(&mut storage::Acting { tx, trusted }))
     }
 
     /// [`write_trusted`](Self::write_trusted) a [`Command`], answering with the pull
@@ -231,7 +243,7 @@ impl ConfigStore {
         trusted: &Trusted,
     ) -> Result<Committed, RpcError> {
         let trusted = trusted.held_by(who);
-        self.storage.write(|tx| {
+        self.acting(&trusted, |tx| {
             let written = command.apply(&mut Call {
                 tx,
                 who,

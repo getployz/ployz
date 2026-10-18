@@ -6,7 +6,8 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, user } from "#/modules/identity/tables";
 import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
-import { removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
+import { presetGrant } from "#/modules/identity/token-grant";
+import { removeOrganization, removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { organization } from "#/modules/organization/tables";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { Ployz, type PloyzService } from "#/modules/runtime/ployz.server";
@@ -60,6 +61,24 @@ describe("removeOrganizationAsMember", () => {
       refusal: { code: "forbidden", message: "Only an owner of this Organization can do this.", details: null },
     }));
     expect(await harness.db.select().from(organization).where(eq(organization.id, LAB))).toHaveLength(1);
+  });
+
+  it("refuses an owner's token whose grant leaves out org:delete, naming it", async () => {
+    const caller = {
+      userId: ids.owner,
+      organization: { id: LAB, slug: "lab" },
+      role: "owner" as const,
+      credential: { kind: "token" as const, id: "00000000-0000-4000-8000-00000000c002", grant: presetGrant({ preset: "read" }) },
+    };
+    expect(await harness.runEffect(Effect.exit(removeOrganization(caller, "lab").pipe(
+      Effect.provideService(CloudStore, { open: Effect.die(STORE_OPENED) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    )))).toEqual(Exit.succeed({
+      ok: false,
+      refusal: { code: "forbidden", message: "This token's grant doesn't include org:delete. No changes made.", details: { permission: "org:delete" } },
+    }));
   });
 
   it("lets an owner through to the removal", async () => {

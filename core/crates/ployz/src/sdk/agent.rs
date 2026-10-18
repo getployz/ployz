@@ -28,21 +28,44 @@ use crate::cluster::HealthWaitError;
 use crate::connect::TARGET_RPC_TIMEOUT;
 use crate::operator::DEPLOYMENT_LABEL;
 
-/// Answer `query` from the Servers behind `session`. A Server that did not answer is
-/// named in `seen.unanswered`, never guessed.
+/// The Namespaces whose Services an answer may describe. A Server answer keeps its host
+/// totals either way; `Only` drops every Service event outside the set before counting.
+#[derive(Clone, Debug, Default)]
+pub enum Readable {
+    #[default]
+    All,
+    Only(BTreeSet<Namespace>),
+}
+
+impl Readable {
+    fn admits(&self, namespace: &Namespace) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(namespaces) => namespaces.contains(namespace),
+        }
+    }
+}
+
+/// Answer `query` from the Servers behind `session`, describing only the Services
+/// `readable` admits. A Server that did not answer is named in `seen.unanswered`,
+/// never guessed.
 ///
 /// # Errors
 /// Returns `unsupported` for a query only Cloud answers, and
 /// the session's error when it is closed or the Servers cannot be listed.
-pub async fn ask(session: &Session, query: CloudQuery) -> Result<Value, RpcError> {
+pub async fn ask(
+    session: &Session,
+    query: CloudQuery,
+    readable: &Readable,
+) -> Result<Value, RpcError> {
     match query {
-        CloudQuery::Servers { only } => encode(&servers(session, only.as_ref()).await?),
+        CloudQuery::Servers { only } => encode(&servers(session, only.as_ref(), readable).await?),
         CloudQuery::Containers { namespace, service } => {
             encode(&containers(session, &namespace, service.as_ref()).await?)
         }
         CloudQuery::Logs(query) => encode(&logs(session, query).await?),
         CloudQuery::ServerLogs(query) => encode(&server_logs(session, query).await?),
-        CloudQuery::Metrics(query) => encode(&metrics(session, query).await?),
+        CloudQuery::Metrics(query) => encode(&metrics(session, query, readable).await?),
         CloudQuery::Copies { .. } => Err(unsupported(
             "Copies join the Config Store; Ployz Cloud answers them",
         )),
@@ -56,7 +79,11 @@ pub async fn ask(session: &Session, query: CloudQuery) -> Result<Value, RpcError
     }
 }
 
-async fn servers(session: &Session, only: Option<&ServerName>) -> Result<ServersAnswer, RpcError> {
+async fn servers(
+    session: &Session,
+    only: Option<&ServerName>,
+    readable: &Readable,
+) -> Result<ServersAnswer, RpcError> {
     let mut client = session.client()?;
     session
         .until_closed(async {
@@ -80,7 +107,13 @@ async fn servers(session: &Session, only: Option<&ServerName>) -> Result<Servers
             );
             unanswered.extend(live.containers.omissions.iter().copied());
             let mut namespaces = BTreeMap::<MachineId, BTreeSet<Namespace>>::new();
-            for container in live.containers.successes.iter().flat_map(|s| &s.value) {
+            for container in live
+                .containers
+                .successes
+                .iter()
+                .flat_map(|s| &s.value)
+                .filter(|container| readable.admits(&container.namespace))
+            {
                 namespaces
                     .entry(container.machine_id)
                     .or_default()
@@ -291,7 +324,11 @@ const METRIC_EVENTS: usize = 20;
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
-async fn metrics(session: &Session, query: MetricsQuery) -> Result<MetricsAnswer, RpcError> {
+async fn metrics(
+    session: &Session,
+    query: MetricsQuery,
+    readable: &Readable,
+) -> Result<MetricsAnswer, RpcError> {
     let mut client = session.client()?;
     session
         .until_closed(async {
@@ -324,6 +361,7 @@ async fn metrics(session: &Session, query: MetricsQuery) -> Result<MetricsAnswer
                 &history,
                 &machines,
                 query.deployment.as_ref(),
+                readable,
                 (since, until_nanos),
             ))
         })
@@ -334,6 +372,7 @@ fn summarize(
     history: &super::MetricHistory,
     machines: &[MachineObservation],
     deployment: Option<&DeploymentId>,
+    readable: &Readable,
     (since, until_nanos): (Timestamp, i64),
 ) -> MetricsAnswer {
     let names: BTreeMap<MachineId, &ServerName> = machines
@@ -345,7 +384,8 @@ fn summarize(
         .iter()
         .flat_map(|machine| &machine.value.markers)
         .filter(|marker| {
-            deployment.is_none_or(|id| marker.deployment_id.as_deref() == Some(id.as_str()))
+            readable.admits(&marker.service.namespace)
+                && deployment.is_none_or(|id| marker.deployment_id.as_deref() == Some(id.as_str()))
         })
         .collect();
     markers.sort_by_key(|marker| std::cmp::Reverse(marker.ts));

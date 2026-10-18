@@ -8,6 +8,7 @@ import { ForgetServer, ForgetServers, RemoveServer, UpgradeServer, VOLUME_RUN_BO
 import { RequestServerUpgradeInput } from "#/modules/server-upgrade/server-upgrade";
 import { RefreshMirrorInput } from "#/modules/volume-copies/volume-copies";
 import { DeleteCopyInput, StageRestoreInput } from "#/modules/volume-placement/volume-placement";
+import type { Permission } from "#/modules/organization/permissions";
 import type { VolumeRunRequestKind } from "#/modules/volume-run/volume-run";
 
 /** The tool name a request key is scoped to: the same key under another tool is another request. */
@@ -49,6 +50,8 @@ type Idempotency = OperationTool | { readonly none: string };
 
 type Operation<F extends Schema.Struct.Fields, I extends Idempotency> = {
   readonly options: Schema.Struct<F>;
+  /** What the Caller must hold on every surface: their role's permissions, narrowed by a token's grant. */
+  readonly requires: Permission;
   /** `approval` asks a human before a write with effects; `none` writes straight away. */
   readonly gate: "approval" | "none";
   readonly idempotency: I;
@@ -73,6 +76,7 @@ const VOLUME_RUNS = "POST volumes/:id/runs";
 const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>(tool: T, gate: "approval" | "none") =>
   operation({
     options: Schema.Struct({ service: Name, environment: Name, only: Name, wait: Seconds }),
+    requires: "services:control",
     gate,
     idempotency: tool,
     surfaces: {
@@ -89,6 +93,7 @@ const serviceAct = <const T extends Extract<OperationTool, `service_${string}`>>
 export const OPERATIONS = {
   "server.remove": operation({
     options: Schema.Struct({ server: Name, acceptLoss: Names }),
+    requires: "servers:remove",
     gate: "approval",
     idempotency: "server_remove",
     surfaces: {
@@ -104,6 +109,7 @@ export const OPERATIONS = {
   }),
   "server.forget": operation({
     options: Schema.Struct({ server: Name }),
+    requires: "servers:remove",
     gate: "approval",
     idempotency: "server_forget",
     surfaces: {
@@ -114,6 +120,7 @@ export const OPERATIONS = {
   }),
   "server.drain": operation({
     options: Schema.Struct({ server: Name, wait: Seconds, stageOff: Schema.Boolean }),
+    requires: "servers:operate",
     gate: "approval",
     idempotency: "server_drain",
     surfaces: {
@@ -139,6 +146,7 @@ export const OPERATIONS = {
   }),
   "server.upgrade": operation({
     options: Schema.Struct({ server: Name, behind: Schema.Boolean, channel: Name, ingressImage: Name, wait: Seconds }),
+    requires: "servers:operate",
     gate: "none",
     idempotency: "server_upgrade",
     surfaces: {
@@ -181,6 +189,7 @@ export const OPERATIONS = {
       server: Name, acceptsBuilds: Schema.Boolean, acceptsServices: Schema.Boolean, acceptsIngress: Schema.Boolean,
       buildConcurrency: BuildConcurrencyChangeSchema,
     }),
+    requires: "servers:operate",
     gate: "approval",
     idempotency: "server_set",
     surfaces: {
@@ -211,6 +220,7 @@ export const OPERATIONS = {
   }),
   "namespace.clean": operation({
     options: Schema.Struct({ namespace: Name, acceptLoss: Names }),
+    requires: "servers:operate",
     gate: "approval",
     idempotency: "server_clean",
     surfaces: {
@@ -226,6 +236,7 @@ export const OPERATIONS = {
   }),
   "volume.mirror": operation({
     options: Schema.Struct({ volume: Name, environment: Name, to: Name, wait: Seconds }),
+    requires: "services:control",
     gate: "approval",
     idempotency: "volume_mirror",
     surfaces: {
@@ -243,6 +254,7 @@ export const OPERATIONS = {
   }),
   "volume.sync": operation({
     options: Schema.Struct({ volume: Name, environment: Name, full: Schema.Boolean, wait: Seconds }),
+    requires: "services:control",
     gate: "approval",
     idempotency: "volume_mirror",
     surfaces: {
@@ -269,6 +281,7 @@ export const OPERATIONS = {
   }),
   "volume.move": operation({
     options: Schema.Struct({ volume: Name, environment: Name, to: Name, wait: Seconds }),
+    requires: "services:control",
     gate: "approval",
     idempotency: "volume_move",
     surfaces: {
@@ -286,6 +299,7 @@ export const OPERATIONS = {
   }),
   "volume.release": operation({
     options: Schema.Struct({ volume: Name, environment: Name, acceptLoss: Names, wait: Seconds }),
+    requires: "services:control",
     gate: "approval",
     idempotency: "volume_release",
     surfaces: {
@@ -303,6 +317,7 @@ export const OPERATIONS = {
   }),
   "volume.remove_mirror": operation({
     options: Schema.Struct({ volume: Name, environment: Name, slot: Name, confirmName: Name, acceptLoss: Names }),
+    requires: "volumes:delete-copy",
     gate: "approval",
     idempotency: "volume_mirror_remove",
     surfaces: {
@@ -337,6 +352,7 @@ export const OPERATIONS = {
   }),
   "volume.restore": operation({
     options: Schema.Struct({ volume: Name, environment: Name, from: Name, wait: Seconds }),
+    requires: "services:control",
     gate: "approval",
     idempotency: "volume_restore",
     surfaces: {
@@ -354,6 +370,7 @@ export const OPERATIONS = {
   }),
   "volume.seed": operation({
     options: Schema.Struct({ volume: Name, environment: Name, guid: Name, name: Name, at: Schema.Number }),
+    requires: "changes:stage",
     gate: "approval",
     idempotency: "volume_seed",
     surfaces: {
@@ -371,6 +388,7 @@ export const OPERATIONS = {
   "service.stop": serviceAct("service_stop", "approval"),
   "servers.forget_all": operation({
     options: Schema.Struct({ organization: Name }),
+    requires: "servers:remove",
     gate: "none",
     idempotency: { none: "It retries every Server and forgets only when none answers, so a second call finds nothing." },
     surfaces: {
@@ -387,13 +405,13 @@ export const OPERATIONS = {
 
 export type OperationName = keyof typeof OPERATIONS;
 
-/** The idempotency tool of each Volume Run kind a caller requests. */
-export const VOLUME_TOOLS = {
-  mirror: OPERATIONS["volume.mirror"].idempotency,
-  sync: OPERATIONS["volume.sync"].idempotency,
-  move: OPERATIONS["volume.move"].idempotency,
-  release: OPERATIONS["volume.release"].idempotency,
-  delete_mirror: OPERATIONS["volume.remove_mirror"].idempotency,
-  restore: OPERATIONS["volume.restore"].idempotency,
-  seed: OPERATIONS["volume.seed"].idempotency,
-} as const satisfies Record<VolumeRunRequestKind, OperationTool>;
+/** The operation each Volume Run kind a caller requests is. */
+export const VOLUME_OPERATIONS = {
+  mirror: OPERATIONS["volume.mirror"],
+  sync: OPERATIONS["volume.sync"],
+  move: OPERATIONS["volume.move"],
+  release: OPERATIONS["volume.release"],
+  delete_mirror: OPERATIONS["volume.remove_mirror"],
+  restore: OPERATIONS["volume.restore"],
+  seed: OPERATIONS["volume.seed"],
+} as const satisfies Record<VolumeRunRequestKind, { readonly idempotency: OperationTool; readonly requires: Permission }>;

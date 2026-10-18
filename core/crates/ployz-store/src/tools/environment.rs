@@ -7,12 +7,12 @@ use serde_json::{Value, json};
 
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
-use super::step::{Ask, CloudQuery, DashboardPage};
+use super::step::{Ask, CloudQuery, DashboardPage, Gate};
 use crate::catalog::NODE_NAME;
 use crate::{
     ConfigsQuery, DeploymentsQuery, DiffQuery, DomainName, DomainRow, DomainsQuery,
     EnvironmentName, PrPlansQuery, ProjectName, ProjectsQuery, RepositoryName, ServicesQuery,
-    SetPrPlan, SourceKind, VolumesQuery,
+    SetEnvironmentProtected, SetPrPlan, SourceKind, VolumesQuery,
 };
 
 pub(crate) const REPOSITORY: &str = "^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$";
@@ -223,6 +223,51 @@ impl Tool for EnvironmentPr {
             "at": at(&services.environment),
             "pull_request_environments": enabled,
             "repository": repository,
+        }))
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EnvironmentProtect {
+    /// true to refuse removing this Environment until it is unprotected, false to allow it.
+    protected: bool,
+    /// Project name.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    project: Option<ProjectName>,
+    /// Environment name, e.g. production.
+    #[serde(default)]
+    #[schemars(with = "Option<String>", pattern(NODE_NAME))]
+    environment: Option<EnvironmentName>,
+}
+
+impl Tool for EnvironmentProtect {
+    const NAME: &'static str = "environment_protect";
+    const DESCRIPTION: &'static str = "Protect a Project's own Environment so it cannot be removed, or unprotect it. Branches and PR Environments cannot be Protected.";
+    /// Cloud asks a human before an agent unprotects one.
+    const GATE: Gate = Gate::Cloud;
+    const EFFECT: Effect = Effect::Change;
+
+    fn example() -> Value {
+        json!({ "environment": "production", "protected": true })
+    }
+
+    fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
+        let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        let written = cx.write(&SetEnvironmentProtected {
+            environment: scope.clone(),
+            protected: self.protected,
+            seen: None,
+        })?;
+        let listing = written
+            .view
+            .environments
+            .iter()
+            .find(|listing| listing.id == written.environment);
+        Ok(json!({
+            "at": listing.map(|listing| format!("{}/{}", written.view.project.name, listing.name)),
+            "protected": listing.is_some_and(|listing| listing.protected),
         }))
     }
 }

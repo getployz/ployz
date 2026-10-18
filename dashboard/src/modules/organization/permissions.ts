@@ -44,17 +44,25 @@ export type Permission = (typeof LEAST_ROLE)[number][0];
 
 export const PERMISSIONS: ReadonlyArray<Permission> = LEAST_ROLE.map(([permission]) => permission);
 
+/** Whether `permission` only reads. */
+export const reads = (permission: Permission) => permission.endsWith(":read");
+
 const RANK = { member: 0, admin: 1, owner: 2 } satisfies Record<RankedRole, number>;
+
+/** Admin permissions support doesn't hold. Support keeps the manage set it had before these existed. */
+const WITHHELD_FROM_SUPPORT: ReadonlyArray<Permission> = ["environments:protect"];
 
 export const ROLE_PERMISSIONS = {
   owner: holdings("owner"),
   admin: holdings("admin"),
   member: holdings("member"),
-  support: holdings("admin"),
+  support: holdings("admin", WITHHELD_FROM_SUPPORT),
 } as const satisfies Record<PermissionRole, ReadonlySet<Permission>>;
 
-function holdings(role: RankedRole): ReadonlySet<Permission> {
-  return new Set(LEAST_ROLE.filter(([, least]) => RANK[least] <= RANK[role]).map(([permission]) => permission));
+function holdings(role: RankedRole, withheld: ReadonlyArray<Permission> = []): ReadonlySet<Permission> {
+  return new Set(LEAST_ROLE
+    .filter(([permission, least]) => RANK[least] <= RANK[role] && !withheld.includes(permission))
+    .map(([permission]) => permission));
 }
 
 // member.role is unchecked text, so a stored role outside the four holds nothing rather than throwing.

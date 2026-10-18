@@ -7,6 +7,7 @@ import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import { type Caller, callerCan } from "#/modules/identity/actor";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { lacks } from "#/modules/organization/access.server";
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -45,11 +46,12 @@ type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "sess
  * Only an owner or admin gets one: a holder is full control of the Server.
  */
 export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: ServerAccessCaller) {
-  if (!callerCan(caller, "servers:shell")) {
+  const lacking = lacks({ ...caller, support: null }, "servers:shell");
+  if (lacking !== null) {
     const slug = caller.organization.slug;
     return { ok: false as const, refusal: {
       code: "forbidden",
-      message: `Server access needs an admin. Ask an owner or admin of ${slug}.`,
+      message: callerCan({ role: caller.role }, "servers:shell") ? lacking : `Server access needs an admin. Ask an owner or admin of ${slug}.`,
       details: { organization: slug },
     } satisfies StoreRefusal };
   }

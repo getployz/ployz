@@ -345,6 +345,10 @@ pub(crate) const ENV_PR_APPROVE: Verb = Verb::cloud(
 )
 .docs("environments/preview-environments.md")
 .needs(Permission::ChangesDeploy);
+pub(crate) const ENV_PROTECT: Verb =
+    Verb::cloud("env protect", Never, env::protect_command, env::protect)
+        .docs("environments/environments.md")
+        .needs(Permission::EnvironmentsProtect);
 pub(crate) const ENV_RM: Verb = Verb::cloud("env rm", Always, env::rm_command, env::rm)
     .docs("cli/overview.md")
     .needs(Permission::EnvironmentDelete);
@@ -451,7 +455,8 @@ pub(crate) const PROJECT_LS: Verb =
     Verb::cloud("project ls", Never, project::ls_command, project::ls).docs("cli/overview.md");
 pub(crate) const PROJECT_NEW: Verb =
     Verb::cloud("project new", Never, project::new_command, project::new)
-        .needs(Permission::ProjectCreate);
+        .needs(Permission::ProjectCreate)
+        .docs("account/try-without-an-account.md");
 pub(crate) const PROJECT_RENAME: Verb = Verb::cloud(
     "project rename",
     Never,
@@ -586,7 +591,8 @@ pub(crate) const SERVICE_ADD: Verb = Verb::cloud(
     Never,
     service::authored::add_command,
     service::authored::add,
-);
+)
+.docs("account/try-without-an-account.md");
 pub(crate) const SERVICE_INSPECT: Verb = Verb::cloud(
     "service inspect",
     Never,
@@ -800,6 +806,7 @@ pub(crate) const VERBS: &[Verb] = &[
     ENV_ON_MERGE,
     ENV_PR,
     ENV_PR_APPROVE,
+    ENV_PROTECT,
     ENV_RM,
     ENV_SETUP,
     ENV_SHUTDOWN,

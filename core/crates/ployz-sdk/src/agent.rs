@@ -82,20 +82,32 @@ fn turn(step: &tools::Step, state: &tools::State) -> Result<serde_json::Value> {
 #[napi]
 impl Client {
     /// Answer a `CloudQuery` from this session's Servers. Servers that do not answer
-    /// are named in `seen.unanswered`.
+    /// are named in `seen.unanswered`. `readable` names the only Namespaces whose
+    /// Services the answer may describe; null or absent admits every Namespace.
     ///
     /// # Errors
-    /// Returns `invalid_argument` for a malformed query, `unsupported` for one only
-    /// Cloud answers, or the session's error.
+    /// Returns `invalid_argument` for a malformed query or Namespace, `unsupported`
+    /// for one only Cloud answers, or the session's error.
     #[napi(
         ts_return_type = "Promise<ServersAnswer | ContainersAnswer | LogsAnswer | MetricsAnswer>"
     )]
     pub async fn agent_ask(
         &self,
         #[napi(ts_arg_type = "CloudQuery")] query: serde_json::Value,
+        #[napi(ts_arg_type = "readonly string[] | null")] readable: Option<Vec<String>>,
     ) -> Result<serde_json::Value> {
         let query: CloudQuery = from_js(query).map_err(invalid_argument)?;
-        ployz::sdk::agent::ask(&self.inner, query)
+        let readable = match readable {
+            None => ployz::sdk::agent::Readable::All,
+            Some(names) => ployz::sdk::agent::Readable::Only(
+                names
+                    .into_iter()
+                    .map(|name| Namespace::parse(&name))
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(invalid_argument)?,
+            ),
+        };
+        ployz::sdk::agent::ask(&self.inner, query, &readable)
             .await
             .map_err(rpc_to_napi)
     }

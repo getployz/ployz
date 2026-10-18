@@ -51,6 +51,31 @@ check that the code matches, and click **Approve**. Then wait for the approval:
 ployz login --wait
 ```
 
+If the user has no Ployz account, or isn't there to approve, start in a sandbox instead. One call
+gives you a token and an organization of your own, with no sign-in.
+
+```sh
+curl -fsS -X POST https://ployz.dev/api/agent/signup
+```
+
+Put the `token` from the reply before every `ployz` command, as in
+`PLOYZ_TOKEN=ployz_... ployz deploy`. A command with the token acts in the sandbox. Set it on each
+command, because a shell you open later doesn't keep an `export`. Give the user the `claimUrl`.
+They open it and sign in with GitHub to keep what you built. Ployz starts removing the sandbox and
+its projects 24 hours after the call unless someone keeps it. Custom domains, tokens, invites,
+billing and GitHub wait for a claim. See https://ployz.dev/docs/account/try-without-an-account.
+
+In a sandbox, `ployz mcp login` waits for a claim, because it makes a token. In step 4, skip it
+and register `ployz mcp` with the sandbox token instead. If `ployz` is already registered, remove
+it first with `claude mcp remove -s user ployz`.
+
+```sh
+claude mcp add -s user ployz -e PLOYZ_TOKEN=ployz_... -- ployz mcp
+```
+
+In Codex, run `codex mcp add ployz --env PLOYZ_TOKEN=ployz_... -- ployz mcp` instead, after
+`codex mcp remove ployz` if it is already registered.
+
 ## 4. Add the Ployz tools
 
 `ployz mcp` serves the Ployz tools over MCP. Register it with the agent you are running in:
@@ -87,3 +112,6 @@ Tell the user:
 
 Name `~/.claude/skills/ployz` as well if step 2 wrote it, and leave out any step that didn't
 succeed, with what went wrong.
+
+In a sandbox, the user isn't signed in. Replace "and you're signed in" with "and I'm working in a
+sandbox", and give them the `claimUrl` to open within 24 hours.

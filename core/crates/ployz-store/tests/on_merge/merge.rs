@@ -515,6 +515,29 @@ fn what_landed_deploys_at_once_if_the_push_came_first() {
 }
 
 #[test]
+fn a_merge_into_a_protected_environment_still_lands_and_deploys() {
+    let (store, who) = shop();
+    let production = store
+        .read(&who, &EnvironmentsQuery::default())
+        .unwrap()
+        .environments
+        .into_iter()
+        .find(|listing| listing.name.as_str() == "production")
+        .unwrap();
+    assert!(production.protected);
+    watching(&store, &who);
+    set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
+    system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
+
+    let landed = merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(deployed(&landed), [["web"]]);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.A"),
+        Some(json!("2"))
+    );
+}
+
+#[test]
 fn a_merge_whose_commit_was_never_pushed_deploys_from_the_head_that_contains_it() {
     let (store, who) = shop();
     watching(&store, &who);

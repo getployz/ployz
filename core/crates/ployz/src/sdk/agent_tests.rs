@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use ployz_core::metrics::{
-    MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
+    HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
 };
 use ployz_core::{
     ConfiguredHealthcheck, ContainerId, ContainerKind, HealthcheckCommand, HealthcheckSpec,
@@ -13,7 +13,9 @@ use ployz_store::tools::{LineCap, LogText, LogsQuery, ServerName, ServerRef, Tim
 use ployz_store::{DeploymentId, EnvironmentId};
 use tokio::time::Instant;
 
-use super::{NANOS_PER_SECOND, ServiceCopy, Started, copies_of, logs, start_one, summarize};
+use super::{
+    NANOS_PER_SECOND, Readable, ServiceCopy, Started, copies_of, logs, start_one, summarize,
+};
 use crate::global_fixtures::{container_id, machine, running_on};
 use crate::sdk::test_support as support;
 
@@ -51,11 +53,21 @@ fn marked(
     deployment: &str,
     kind: MarkerKind,
 ) -> MetricMarker {
+    marked_in("prod/web", machine, at, deployment, kind)
+}
+
+fn marked_in(
+    service: &str,
+    machine: ployz_core::MachineId,
+    at: i64,
+    deployment: &str,
+    kind: MarkerKind,
+) -> MetricMarker {
     MetricMarker {
         machine_id: machine,
         container_id: ContainerId::parse("b".repeat(64)).unwrap(),
         service_id: ServiceId::parse("c".repeat(32)).unwrap(),
-        service: QualifiedService::parse("prod/web").unwrap(),
+        service: QualifiedService::parse(service).unwrap(),
         deployment_id: Some(deployment.to_owned()),
         replica: "web-1".into(),
         ts: at * SECOND,
@@ -120,6 +132,7 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
         &history,
         &[one.clone(), two],
         Some(&ours),
+        &Readable::All,
         (Timestamp(900), 1_000 * SECOND),
     );
 
@@ -175,6 +188,110 @@ fn a_metrics_answer_keeps_one_deployments_deaths_and_names_the_silent_server() {
             peak: None,
         }),
         "a metric with no reading is absent, never zero"
+    );
+}
+
+// Catches a Server answer that lists, counts or filters to Service events outside the
+// Namespaces its caller may read.
+#[test]
+fn a_server_answer_describes_only_the_readable_namespaces_and_keeps_host_totals() {
+    let one = support::machine('a', "one");
+    let staging = "00000000-0000-4000-8000-000000000201";
+    let production = "00000000-0000-4000-8000-000000000202";
+    let host = HostPoint {
+        ts: 1_000 * SECOND,
+        cpu_busy: Some(0.25),
+        memory: None,
+        interfaces: BTreeMap::new(),
+        disk: None,
+    };
+    let markers = vec![
+        marked_in(
+            "shop-stage/web",
+            one.machine.id,
+            990,
+            staging,
+            MarkerKind::Restart,
+        ),
+        marked_in(
+            "shop-prod/web",
+            one.machine.id,
+            991,
+            production,
+            MarkerKind::Oom,
+        ),
+        marked_in(
+            "shop-prod/web",
+            one.machine.id,
+            992,
+            production,
+            MarkerKind::Exit {
+                exit_code: Some(137),
+                oom: true,
+                stopped: false,
+            },
+        ),
+    ];
+    let history = crate::sdk::MetricHistory {
+        step_nanos: Some(10 * SECOND),
+        points: MetricPoints::Machine(vec![host.clone()]),
+        machines: vec![MachineSuccess {
+            machine_id: one.machine.id,
+            value: MetricHistoryReply {
+                points: MetricPoints::Machine(vec![host]),
+                step_nanos: 10 * SECOND,
+                gaps: Vec::new(),
+                markers,
+            },
+        }],
+        unanswered: Vec::new(),
+    };
+    let staging_only = Readable::Only([Namespace::parse("shop-stage").unwrap()].into());
+    let summary = |deployment: Option<&DeploymentId>, readable: &Readable| {
+        let answer = summarize(
+            &history,
+            std::slice::from_ref(&one),
+            deployment,
+            readable,
+            (Timestamp(900), 1_000 * SECOND),
+        );
+        let namespaces = answer
+            .events
+            .iter()
+            .map(|event| event.namespace.to_string())
+            .collect::<Vec<_>>();
+        (
+            (answer.oom_kills, answer.exits, answer.restarts),
+            namespaces,
+            answer.metrics.first().and_then(|row| row.now.clone()),
+        )
+    };
+
+    assert_eq!(
+        summary(None, &staging_only),
+        (
+            (0, 0, 1),
+            vec!["shop-stage".to_owned()],
+            Some("25%".to_owned())
+        )
+    );
+    let production = DeploymentId::parse(production).unwrap();
+    assert_eq!(
+        summary(Some(&production), &staging_only),
+        ((0, 0, 0), Vec::new(), Some("25%".to_owned())),
+        "a production Deployment filter finds nothing outside the ceiling"
+    );
+    assert_eq!(
+        summary(None, &Readable::All),
+        (
+            (1, 1, 1),
+            vec![
+                "shop-prod".to_owned(),
+                "shop-prod".to_owned(),
+                "shop-stage".to_owned()
+            ],
+            Some("25%".to_owned())
+        )
     );
 }
 

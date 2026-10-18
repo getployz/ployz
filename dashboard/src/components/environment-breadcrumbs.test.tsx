@@ -22,7 +22,7 @@ function TopBar() {
 }
 
 const listing = (name: string, extra: Partial<EnvironmentListing> = {}): EnvironmentListing =>
-  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], ...extra });
+  ({ id: `id-${name}`, name, default: false, parent: null, removal: null, merged: false, branch_setup: [], protected: false, protections: 0, ...extra });
 
 async function renderAt(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
@@ -36,7 +36,7 @@ async function renderAt(path: string) {
     listing("fix-web", { parent: "production" }),
     listing("pr-142", { parent: "staging", removal: { id: "d", number: 3, status: "running", saved: 0, services: [], runner: null, upload: null, remove: true, admitted_by: null, admitted_at: 0, started_at: null, ended_at: null, message: null, environment_id: "pr-142", in_flight: true, outcome: null } }),
     listing("pr-146", { parent: "production", merged: true }),
-    listing("production", { default: true }),
+    listing("production", { default: true, protected: true }),
     listing("staging"),
   ] });
   seed(environmentsQuery("docs"), { view: "environments", project: { id: "docs", name: "docs" }, environments: [
@@ -152,4 +152,13 @@ it("offers no Branch controls on a Branch: they're the Sync button's", async () 
   fireEvent.click(screen.getByRole("button", { name: "Environment: fix-web" }));
   await screen.findByRole("option", { name: "New branch of fix-web" });
   expect(screen.queryByRole("option", { name: /^Manage fix-web/u })).toBeNull();
+});
+
+it("marks a Protected Environment beside its crumb, and no other", async () => {
+  await using _app = await renderAt("/cloud/acme/store/production/logs");
+  expect(screen.getByText("Protected")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Environment: production" }));
+  fireEvent.click(await screen.findByRole("option", { name: "staging" }));
+  await screen.findByRole("button", { name: "Environment: staging" });
+  expect(screen.queryByText("Protected")).toBeNull();
 });

@@ -91,6 +91,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0018_deployment_timing",
         Step::Sql(include_str!("migrations/0018_deployment_timing.sql")),
     ),
+    (
+        "0019_environment_protected",
+        Step::Sql(include_str!("migrations/0019_environment_protected.sql")),
+    ),
 ];
 
 enum Step {
@@ -215,6 +219,58 @@ pub(crate) trait Tx {
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError>;
     /// Run a script of parameterless statements, as the driver splits it.
     fn batch(&mut self, sql: &str) -> Result<(), RpcError>;
+    /// The evidence of the caller this transaction acts for. The Store's own work acts
+    /// for nobody. Read only by [`admit_protect`].
+    fn acting_for(&self) -> Option<&crate::Trusted> {
+        None
+    }
+}
+
+/// The one Protected Environment fence: a caller without
+/// [`EnvironmentsProtect`](crate::Permission::EnvironmentsProtect) is refused when
+/// `touches` says this write reaches into a Protected Environment, and the refusal's
+/// details name what it reaches. It runs in the write's own transaction, so a protect
+/// that lands first still fences the write.
+pub(crate) fn admit_protect(
+    tx: &mut dyn Tx,
+    touches: impl FnOnce(&mut dyn Tx) -> Result<Option<serde_json::Value>, RpcError>,
+) -> Result<(), RpcError> {
+    let Some(Err(mut refused)) = tx
+        .acting_for()
+        .map(|trusted| trusted.admit(crate::Permission::EnvironmentsProtect))
+    else {
+        return Ok(());
+    };
+    let Some(reached) = touches(tx)? else {
+        return Ok(());
+    };
+    if let (serde_json::Value::Object(details), serde_json::Value::Object(reached)) =
+        (&mut refused.details, reached)
+    {
+        details.extend(reached);
+    }
+    Err(refused)
+}
+
+/// A transaction acting for the caller `trusted` describes: see [`admit_protect`].
+pub(crate) struct Acting<'tx, 'trusted> {
+    pub(crate) tx: &'tx mut dyn Tx,
+    pub(crate) trusted: &'trusted crate::Trusted,
+}
+
+impl Tx for Acting<'_, '_> {
+    fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
+        self.tx.execute(sql, params)
+    }
+    fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
+        self.tx.query(sql, params)
+    }
+    fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
+        self.tx.batch(sql)
+    }
+    fn acting_for(&self) -> Option<&crate::Trusted> {
+        Some(self.trusted)
+    }
 }
 
 /// A bound parameter. Only the column types the schema uses exist.

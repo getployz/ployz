@@ -249,6 +249,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             view.namespace.clone(),
             view.runtime_names.get(name).unwrap_or(name).clone(),
         );
+        let mut failed = false;
         for row in &node.rows {
             let RowState::Failed {
                 reason: row_reason,
@@ -273,11 +274,14 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
                 server: row.server.clone(),
                 log: log.clone(),
             });
+            failed = true;
+        }
+        // One hint per Service, by its config name: it reads every Server's logs, and a
+        // token that reads through Cloud can serve it too.
+        if failed {
             hints.push(Hint::Inspect(command(&[
                 "logs",
-                &service.to_string(),
-                "--machine",
-                &row.machine_id.to_string(),
+                name.as_str(),
                 "--project",
                 view.environment.project.as_str(),
                 "--env",
@@ -368,13 +372,18 @@ mod tests {
                 | Hint::Valid(_) => None,
             })
             .collect();
-        assert_eq!(commands.len(), 2);
-        assert!(commands.iter().all(|args| {
-            args.iter().any(|arg| arg == "shop-production/private-web")
-                && args.iter().any(|arg| arg == "--env")
-                && args.iter().any(|arg| arg == "production")
-        }));
-        assert_ne!(commands.first(), commands.get(1));
+        assert_eq!(
+            commands,
+            [[
+                "ployz",
+                "logs",
+                "web",
+                "--project",
+                "shop",
+                "--env",
+                "production"
+            ]]
+        );
     }
     #[test]
     fn applied_result_with_a_qualified_gap_is_partial_without_changing_its_status() {
