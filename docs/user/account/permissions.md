@@ -23,7 +23,8 @@ A token acts as you, narrowed by its preset:
 
 - **Full** does everything you can.
 - **Read only** reads and changes nothing.
-- **Deploy** reads, and stages and deploys changes only in the one environment you name.
+- **Deploy** reads what you can read, but stages and deploys changes only in the one environment
+  you name.
 
 Give CI a Deploy token for the one environment it ships to. See
 [Make an organization token](../cli/overview.md#make-an-organization-token). An agent you connect
