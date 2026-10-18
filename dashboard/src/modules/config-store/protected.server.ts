@@ -4,19 +4,25 @@ import { Effect } from "effect";
 import type { OperationAsked } from "#/modules/approvals/approvals.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { gitSourceEnvironment } from "#/modules/config-store/git-evidence.server";
-import { type Caller, callerPermissions } from "#/modules/identity/actor";
-import { refusalOf } from "#/modules/organization/access.server";
+import { type Caller, callerEnvironments } from "#/modules/identity/actor";
+import { beyondEnvironments, lacksPermission, refusalOf } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
 import { type EnvironmentRef, StoreRefused, type StoreRead, type StoreRefusal } from "./store.contract";
 
 const notProtector: StoreRefusal = { code: "forbidden", message: refusalOf("environments:protect"), details: null };
 
 /**
- * The refusal of an agent's unprotect for a `caller` who doesn't hold `environments:protect`, or null when they do. The
- * Store would refuse the write too; this refuses before a human is asked to approve it.
+ * The refusal of an agent's unprotect of `environment` for a `caller` who doesn't hold `environments:protect`, or whose
+ * token's Environments leave it out, or null when they may. The Store would refuse the write too; this refuses before a
+ * human is asked to approve it.
  */
-export const protectorOnly = (caller: Pick<Caller, "role" | "support">): StoreRefusal | null =>
-  callerPermissions(caller).includes("environments:protect") ? null : notProtector;
+export const protectorOnly = (caller: Pick<Caller, "role" | "support" | "credential">, environment: string): StoreRefusal | null => {
+  const lacking = lacksPermission(caller, "environments:protect");
+  if (lacking !== null) return { code: "forbidden", message: lacking, details: null };
+  const environments = callerEnvironments(caller);
+  const beyond = beyondEnvironments(environments, { environment });
+  return beyond === null ? null : { code: "forbidden", message: beyond, details: { environments: environments ?? [] } };
+};
 
 /**
  * Refuses `command` when it changes an Environment's protection, or connects, changes or clears a repository or deploy

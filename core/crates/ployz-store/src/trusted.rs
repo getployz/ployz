@@ -166,9 +166,10 @@ fn outside(allowed: &BTreeSet<EnvironmentName>) -> RpcError {
     )
 }
 
-/// Every Environment `written` wrote, by name: each command's in a Batch, and the
-/// Branch a Sync closed as well as the one it staged into. A closed Branch may be gone
-/// already, so a Sync names both from what it answered.
+/// Every Environment `written` wrote, by name: each command's in a Batch, the Branch a
+/// Sync closed as well as the one it staged into, and the one a protection write
+/// changed, which writes no config. A closed Branch may be gone already, so a Sync
+/// names both from what it answered.
 fn wrote(
     tx: &mut dyn Tx,
     written: &crate::Written,
@@ -183,6 +184,12 @@ fn wrote(
         if synced.closing {
             names.push(synced.from.name.clone());
         }
+    } else if let crate::Written::Protected(protected) = written {
+        names.push(
+            crate::scope::load_by_id(tx, &protected.environment)?
+                .summary
+                .name,
+        );
     } else if let Some(id) = written.environment() {
         names.push(crate::scope::load_by_id(tx, id)?.summary.name);
     }

@@ -230,7 +230,7 @@ export const runAgentCall = Effect.fn("Agent.runCall")(function* (caller: AgentC
     if ("refused" in unprotect) return done({ ok: false, refusal: unprotect.refused });
     const { asked, command } = unprotect;
     if (asked !== null) {
-      const refused = protectorOnly(caller);
+      const refused = protectorOnly(caller, asked.preview.environment);
       if (refused !== null) return done({ ok: false, refusal: refused });
       const gated = yield* gateOperation(caller, call.approvalId, asked);
       if (!gated.ok) return asking(gated.refusal) ?? done({ ok: false, refusal: gated.refusal });

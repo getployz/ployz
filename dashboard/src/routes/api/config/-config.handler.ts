@@ -61,7 +61,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     : null;
   if (unprotect !== null && "refused" in unprotect) return refusal(unprotect.refused);
   if (unprotect?.asked) {
-    const refused = protectorOnly(caller);
+    const refused = protectorOnly(caller, unprotect.asked.preview.environment);
     if (refused !== null) return refusal(refused);
     const gated = yield* gateOperation(caller, request.headers.get("x-ployz-approval"), unprotect.asked);
     if (!gated.ok) return refusal(gated.refusal);

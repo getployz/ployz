@@ -142,7 +142,9 @@ fn protecting_flips_either_way_and_returns_the_projects_environments() {
     else {
         panic!("protecting writes Protected")
     };
+    assert_eq!(view.environment, EnvironmentId::parse(uuid(4)).unwrap());
     let listed: Vec<_> = view
+        .view
         .environments
         .iter()
         .map(|listing| (listing.name.to_string(), listing.protected))
@@ -163,6 +165,54 @@ fn protecting_flips_either_way_and_returns_the_projects_environments() {
     assert_eq!(
         protection(&store, &who),
         [("production".into(), false), ("staging".into(), false)]
+    );
+}
+
+/// A token holding only `environments:protect`, limited to `environments`.
+fn protecting_only(environments: &[&str]) -> Trusted {
+    Trusted {
+        permissions: Some([Permission::EnvironmentsProtect].into()),
+        environments: Some(
+            environments
+                .iter()
+                .map(|name| EnvironmentName::parse(*name).unwrap())
+                .collect(),
+        ),
+        ..Trusted::default()
+    }
+}
+
+#[test]
+fn a_token_limited_to_an_environment_protects_it_and_no_other() {
+    let (store, who) = shop();
+    let who = person(&who);
+    let token = protecting_only(&["staging"]);
+
+    store
+        .write_trusted(&who, &set("staging", true), &token)
+        .unwrap();
+    assert_eq!(
+        protection(&store, &who),
+        [("production".into(), true), ("staging".into(), true)]
+    );
+    store
+        .write_trusted(&who, &set("staging", false), &token)
+        .unwrap();
+    assert_eq!(
+        protection(&store, &who),
+        [("production".into(), true), ("staging".into(), false)]
+    );
+
+    for protected in [false, true] {
+        let refused = store
+            .write_trusted(&who, &set("production", protected), &token)
+            .unwrap_err();
+        assert_eq!(refused.code.as_str(), "forbidden", "{refused:?}");
+        assert_eq!(refused.message, "This token can deploy only to staging.");
+    }
+    assert_eq!(
+        protection(&store, &who),
+        [("production".into(), true), ("staging".into(), false)]
     );
 }
 

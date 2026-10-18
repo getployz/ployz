@@ -261,14 +261,12 @@ impl Tool for EnvironmentProtect {
             seen: None,
         })?;
         let listing = written
+            .view
             .environments
             .iter()
-            .find(|listing| match &scope.environment {
-                Some(name) => listing.name == *name,
-                None => listing.default,
-            });
+            .find(|listing| listing.id == written.environment);
         Ok(json!({
-            "at": listing.map(|listing| format!("{}/{}", written.project.name, listing.name)),
+            "at": listing.map(|listing| format!("{}/{}", written.view.project.name, listing.name)),
             "protected": listing.is_some_and(|listing| listing.protected),
         }))
     }
