@@ -27,6 +27,8 @@ import { callStore, readStore } from "#/modules/config-store/config-store.server
 import { permissionsOf } from "#/modules/organization/permissions";
 import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
+import { syncOrganizationSlug } from "#/modules/organization/organization-state.server";
+import { resolveCaller } from "#/modules/identity/caller.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
@@ -582,6 +584,46 @@ it.live(
           orgs.json.organizations?.filter((row) => row.current).map((row) => row.slug),
           [bob.organization.slug],
         );
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a dashboard Organization switch moves only the browser's session, so the CLI keeps acting where org use put it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const browser = yield* auth.resolveActor(new Headers({ cookie: alice.cookie }));
+        yield* drizzle.insert(member).values({ userId: browser.userId, organizationId: bob.organization.id });
+        const device = yield* signIn("alice");
+        const deviceHeaders = new Headers({ authorization: `Bearer ${device.session}` });
+        const used = yield* auth.handler(new Request(`${origin}/api/auth/organization/set-active`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${device.session}`, "content-type": "application/json" },
+          body: JSON.stringify({ organizationSlug: bob.organization.slug }),
+        }));
+        assert.strictEqual(used.status, 200);
+        const deviceSessionId = (yield* resolveCaller(deviceHeaders)).credential.id;
+        const row = (id: string) => drizzle
+          .select({ activeOrganizationId: session.activeOrganizationId, updatedAt: session.updatedAt })
+          .from(session).where(eq(session.id, id));
+        const deviceBefore = yield* row(deviceSessionId);
+
+        yield* syncOrganizationSlug(browser, { organizationSlug: bob.organization.slug });
+        yield* syncOrganizationSlug(browser, { organizationSlug: alice.organization.slug });
+
+        assert.deepStrictEqual(yield* row(deviceSessionId), deviceBefore);
+        assert.strictEqual((yield* row(browser.credential.id))[0]?.activeOrganizationId, alice.organization.id);
+        assert.strictEqual((yield* resolveCaller(deviceHeaders)).organization.slug, bob.organization.slug);
+        // What `ployz mcp login` sends: its agent token lands in the device's Organization, not the browser's.
+        const minted = yield* cli("POST", "tokens", device, { name: "agent", kind: "agent", expires_in_days: 30 });
+        assert.strictEqual(minted.json.token?.organization, bob.organization.slug);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

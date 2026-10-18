@@ -9,15 +9,29 @@ import { organization } from "./tables";
 
 let harness: PostgresTestHarness;
 let actor: string;
+let browser: string;
+let device: string;
 
 const create = (input: { name: string; slug: string }) =>
-  harness.runEffect(createOrganization({ userId: actor }, Schema.decodeUnknownSync(CreateOrganization)(input)));
+  harness.runEffect(createOrganization(
+    { userId: actor, credential: { kind: "session", id: browser } },
+    Schema.decodeUnknownSync(CreateOrganization)(input),
+  ));
+
+const sessionRow = async (id: string) => {
+  const [row] = await harness.db.select().from(session).where(eq(session.id, id));
+  return row;
+};
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
   const rows = await harness.db.insert(user).values({ email: "ada@example.test", name: "Ada" }).returning({ id: user.id });
   [actor] = rows.map((row) => row.id) as [string];
-  await harness.db.insert(session).values({ userId: actor, token: "t", expiresAt: new Date(Date.now() + 60_000) });
+  const sessions = await harness.db.insert(session).values([
+    { userId: actor, token: "browser", expiresAt: new Date(Date.now() + 60_000) },
+    { userId: actor, token: "device", expiresAt: new Date(Date.now() + 60_000), updatedAt: new Date(Date.UTC(2026, 0, 1)) },
+  ]).returning({ id: session.id });
+  [browser, device] = sessions.map((row) => row.id) as [string, string];
 }, 60_000);
 
 afterAll(async () => {
@@ -25,7 +39,7 @@ afterAll(async () => {
 });
 
 describe("createOrganization", () => {
-  it("makes the actor its owner, suffixes a taken slug, and opens it for the actor's sessions", async () => {
+  it("makes the actor its owner, suffixes a taken slug, and opens it for the actor's session only", async () => {
     expect(await create({ name: "  Acme  ", slug: "Acme Labs" })).toBe("acme-labs");
     const second = await create({ name: "Acme", slug: "acme-labs" });
     expect(second).toMatch(/^acme-labs-[0-9a-f]{8}$/u);
@@ -37,8 +51,10 @@ describe("createOrganization", () => {
     const members = await harness.db.select({ userId: member.userId, role: member.role }).from(member)
       .where(eq(member.organizationId, created.id));
     expect(members).toEqual([{ userId: actor, role: "owner" }]);
-    const [opened] = await harness.db.select().from(session).where(eq(session.userId, actor));
-    expect(opened).toMatchObject({ activeOrganizationId: created.id, activeOrganizationSlug: second });
+    expect(await sessionRow(browser)).toMatchObject({ activeOrganizationId: created.id, activeOrganizationSlug: second });
+    expect(await sessionRow(device)).toMatchObject({
+      activeOrganizationId: null, activeOrganizationSlug: null, updatedAt: new Date(Date.UTC(2026, 0, 1)),
+    });
   });
 
   it("never takes a slug a Cloud page uses", async () => {

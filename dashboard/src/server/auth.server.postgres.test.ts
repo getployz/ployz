@@ -6,6 +6,7 @@ import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.serve
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { organization as organizationTable } from "#/modules/organization/tables";
 import { hashClaimSecret } from "#/modules/identity/claim-required.server";
 import { eq, like } from "drizzle-orm";
 import { vi } from "vitest";
@@ -69,10 +70,11 @@ it.live(
           new Headers({ cookie }),
         );
         assert.strictEqual(actor.userId.length, 36);
-        assert.deepStrictEqual(Object.keys(actor), ["userId"]);
+        assert.deepStrictEqual(Object.keys(actor), ["userId", "credential"]);
 
         const restored = yield* auth.getSession(new Headers({ cookie }));
         assert.strictEqual(restored?.session.userId, actor.userId);
+        assert.deepStrictEqual(actor.credential, { kind: "session", id: restored?.session.id });
 
         assert.strictEqual(restored?.user.openStartedDeployments, true);
         assert.strictEqual(restored?.user.isAnonymous, false);
@@ -253,6 +255,41 @@ it.live(
         const signedOut = yield* call("/sign-out", { bearer: token, body: {} });
         assert.strictEqual(signedOut.status, 200);
         assert.isNull((yield* call("/get-session", { bearer: token })).json);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "starts a CLI device in the Organization the approving page named, not the user's first",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const cookie = yield* signUp("switcher");
+        const browser = (yield* auth.getSession(new Headers({ cookie }))) ?? assert.fail("no browser session");
+        const first = browser.session.activeOrganizationId ?? assert.fail("no first Organization");
+        const [named] = yield* drizzle.insert(organizationTable).values({ name: "Named", slug: "named" })
+          .returning({ id: organizationTable.id });
+        const namedId = named?.id ?? assert.fail("no Organization");
+        yield* drizzle.insert(member).values({ userId: browser.user.id, organizationId: namedId, role: "member" });
+        yield* drizzle.update(sessionTable).set({ activeOrganizationId: namedId, activeOrganizationSlug: "named" })
+          .where(eq(sessionTable.id, browser.session.id));
+
+        const { userCode, poll } = yield* startDevice();
+        yield* call(`/device?user_code=${userCode}`, { cookie });
+        assert.strictEqual((yield* call("/device/approve", { cookie, body: { userCode } })).status, 200);
+        const token = (yield* poll()).json?.access_token ?? assert.fail("no access token");
+
+        const device = yield* call("/get-session", { bearer: token });
+        assert.notStrictEqual(namedId, first);
+        assert.strictEqual(device.json?.session?.activeOrganizationId, namedId);
+        assert.deepStrictEqual(
+          yield* drizzle.select().from(verification).where(like(verification.identifier, "device-organization:%")),
+          [],
+        );
       }).pipe(Effect.provide(layer));
     }),
   60_000,

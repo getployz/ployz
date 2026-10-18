@@ -45,11 +45,12 @@ const person = Effect.fn(function* (name: string, email: string) {
   yield* drizzle.insert(user).values({ id, email, name });
   const personalOrganizationId = yield* ensurePersonalOrganizationForUser({ id, name, email });
   const [slugRow] = yield* drizzle.select({ slug: organization.slug }).from(organization).where(eq(organization.id, personalOrganizationId));
-  yield* drizzle.insert(session).values({
+  const [signedIn] = yield* drizzle.insert(session).values({
     userId: id, token: `session-${id}`, expiresAt: new Date(Date.now() + DAY_MS),
     activeOrganizationId: personalOrganizationId, activeOrganizationSlug: slugRow?.slug ?? null,
-  });
-  return { actor: { userId: id }, personalOrganizationId };
+  }).returning({ id: session.id });
+  const actor = { userId: id, credential: { kind: "session", id: signedIn?.id ?? "" } } as const;
+  return { actor, personalOrganizationId };
 });
 
 /**
@@ -119,7 +120,7 @@ it.live("a person who claims the sandbox becomes its sole owner and the agent's 
     expect(gated).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
   })));
 
-it.live("the claim removes the empty Organization sign-in made and moves the person's sessions onto the sandbox", () =>
+it.live("the claim removes the empty Organization sign-in made and moves the person's session onto the sandbox", () =>
   inCloud(Effect.gen(function* () {
     const agent = yield* sandbox();
     const ada = yield* claimSignUp("Ada", "ada@example.test", agent.secret);
