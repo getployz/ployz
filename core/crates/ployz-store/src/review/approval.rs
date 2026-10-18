@@ -54,6 +54,8 @@ pub enum DestructiveKind {
     StopsService,
     /// A running Service's containers restart, dropping requests in flight.
     RestartsService,
+    /// A Protected Environment can be removed, and anyone who can stage can change its source.
+    UnprotectsEnvironment,
 }
 
 impl DestructiveEffect {
@@ -73,6 +75,7 @@ impl DestructiveEffect {
             DestructiveKind::RevokesInvite => format!("revoke the invite for {name}"),
             DestructiveKind::StopsService => format!("stop Service {name}"),
             DestructiveKind::RestartsService => format!("restart Service {name}"),
+            DestructiveKind::UnprotectsEnvironment => format!("unprotect Environment {name}"),
         }
     }
 }

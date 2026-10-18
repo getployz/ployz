@@ -60,6 +60,7 @@ pub(crate) enum Verb {
     RemoveMirror,
     Stop,
     Restart,
+    Unprotect,
 }
 
 impl Verb {
@@ -77,6 +78,7 @@ impl Verb {
             Self::RemoveMirror => "mirror removal",
             Self::Stop => "stop",
             Self::Restart => "restart",
+            Self::Unprotect => "unprotecting",
         }
     }
 
@@ -94,6 +96,7 @@ impl Verb {
             Self::RemoveMirror => "removed",
             Self::Stop => "stopped",
             Self::Restart => "restarted",
+            Self::Unprotect => "unprotected",
         }
     }
 
@@ -111,7 +114,8 @@ impl Verb {
             | Self::Release
             | Self::RemoveMirror
             | Self::Stop
-            | Self::Restart => "of",
+            | Self::Restart
+            | Self::Unprotect => "of",
         }
     }
 }
@@ -194,13 +198,14 @@ impl Asked {
     }
 }
 
-/// A role change, a stop or a restart interrupts or alters something; it leaves nothing gone.
+/// A role change, a stop, a restart or an unprotect interrupts or alters something; it leaves nothing gone.
 fn destroys(kind: DestructiveKind) -> bool {
     !matches!(
         kind,
         DestructiveKind::ChangesRole
             | DestructiveKind::StopsService
             | DestructiveKind::RestartsService
+            | DestructiveKind::UnprotectsEnvironment
     )
 }
 
@@ -224,6 +229,7 @@ fn line(effect: &DestructiveEffect) -> String {
         DestructiveKind::RevokesInvite => format!("revokes the invite for {name}"),
         DestructiveKind::StopsService => format!("stops Service {name} until started again"),
         DestructiveKind::RestartsService => format!("restarts Service {name}"),
+        DestructiveKind::UnprotectsEnvironment => format!("unprotects Environment {name}"),
     }
 }
 

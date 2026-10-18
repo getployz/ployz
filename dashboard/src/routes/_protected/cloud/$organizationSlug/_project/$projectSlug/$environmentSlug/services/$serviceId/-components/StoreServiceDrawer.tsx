@@ -39,7 +39,7 @@ import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { HealthcheckSettings } from "./HealthcheckField";
-import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
+import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef, useSourceLock } from "./StoreGitFields";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
@@ -544,6 +544,7 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
   // Its parts change as one row, so what was deployed is the whole source.
   const deployed = `Deployed: ${sourceText(state.changes.get("source")?.before ?? null) || "none"}`;
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
+  const locked = useSourceLock(state.organizationSlug, state.environment);
 
   if (state.source === "uploaded") {
     return (
@@ -574,10 +575,11 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
           {removed.map((candidate) => <RemovedSource key={candidate} state={state} kind={candidate} />)}
         </SettingsList>
       ) : null}
-      <SettingsEmpty title="No source">A deploy without a source fails.</SettingsEmpty>
+      <SettingsEmpty title="No source">A deploy without a source fails.{locked ? ` Connecting a repository: ${locked}` : null}</SettingsEmpty>
       <SettingsFoot>
         {(["repository", "image"] as const).map((candidate) => (
-          <SettingsAddButton key={candidate} onClick={() => setPicking({ kind: candidate, replacing: false })}>{SOURCES[candidate].label}</SettingsAddButton>
+          <SettingsAddButton key={candidate} disabled={candidate === "repository" && locked !== undefined}
+            onClick={() => setPicking({ kind: candidate, replacing: false })}>{SOURCES[candidate].label}</SettingsAddButton>
         ))}
       </SettingsFoot>
       {dialogs}
@@ -592,12 +594,12 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
         label={kind === "repository"
           ? <a className="truncate hover:underline" href={`${githubWeb}/${value}`} target="_blank" rel="noreferrer" title={change ? deployed : undefined}>{value}</a>
           : <span className="truncate font-mono" title={change ? deployed : undefined}>{value}</span>}
-        hint={connecting ? "Connects on your next deploy." : state.service.template ? `From the ${templateLabel(state.service.template)} template.` : undefined}
+        hint={kind === "repository" && locked ? locked : connecting ? "Connects on your next deploy." : state.service.template ? `From the ${templateLabel(state.service.template)} template.` : undefined}
         tone={connecting ? "new" : change ? "changed" : undefined}
         commit="change"
         actions={<>
           <Button type="button" variant="ghost" size="icon-sm" aria-label={`Change ${setting.title.toLowerCase()}`}
-            onClick={() => setPicking({ kind, replacing: false })}>
+            disabled={kind === "repository" && locked !== undefined} onClick={() => setPicking({ kind, replacing: false })}>
             <PencilIcon />
           </Button>
           <DropdownMenu>
@@ -606,13 +608,16 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuGroup>
-                <DropdownMenuItem onClick={() => setPicking({ kind: other(kind), replacing: true })}>
+                {/* Switching either way connects or clears the repository. */}
+                <DropdownMenuItem disabled={locked !== undefined} onClick={() => setPicking({ kind: other(kind), replacing: true })}>
                   Switch to {SOURCES[other(kind)].label.toLowerCase()}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                <DropdownMenuItem variant="destructive" onClick={disconnect}>Disconnect</DropdownMenuItem>
+                <DropdownMenuItem variant="destructive" disabled={kind === "repository" && locked !== undefined} onClick={disconnect}>
+                  Disconnect
+                </DropdownMenuItem>
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -621,7 +626,7 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
     {kind === "repository" ? (
       <>
         <StoreBranchField organizationSlug={state.organizationSlug} repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
-          change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
+          change={state.changes.get("branch")} locked={locked} onSet={(branch) => set("branch", branch)} />
         <StoreOptionalField state={state} name="rootDir" addLabel="Root directory" unset="/" />
         {/* Its Deployment Policy: when a push to the branch deploys. */}
         <StoreSettingField state={state} name="autoDeploy" />

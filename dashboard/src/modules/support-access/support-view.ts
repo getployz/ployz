@@ -171,7 +171,8 @@ export function writtenForSupport(written: ConfigWritten, shows: SupportShows): 
     case "on_merge": return redactions(shows).onMerge(written);
     case "deployment": return redactions(shows).summary(written);
     case "default_environment":
-    case "branch_setup": return redactions(shows).environments(written);
+    case "branch_setup":
+    case "protected": return redactions(shows).environments(written);
     case "removal": return redactions(shows).removal(written);
     case "automated": return redactions(shows).automated(written);
     case "batch": return { ...written, results: written.results.map((result) => writtenForSupport(result, shows)) };

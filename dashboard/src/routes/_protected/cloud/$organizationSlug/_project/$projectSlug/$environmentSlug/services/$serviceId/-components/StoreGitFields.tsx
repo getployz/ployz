@@ -9,7 +9,9 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, Select
 import { serviceSetting } from "#/modules/config-store/catalog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
-import { useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { environmentsQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { can } from "#/modules/organization/permissions";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
@@ -28,14 +30,38 @@ export function useRepositoryRef(organizationSlug: string, environment: Environm
 
 type GitRef = { repositoryId: number; installationId: number };
 
+/**
+ * Why you can't connect a repository or change a deploy branch in `environment`, or undefined when you can: in a
+ * Protected Environment only those who may protect it do. Undefined until the listing and your role load; the Store refuses either way.
+ */
+export function useSourceLock(organizationSlug: string, environment: EnvironmentRef) {
+  const listing = useCachedStoreView(organizationSlug, environmentsQuery(environment.project ?? ""));
+  const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  const current = listing?.ok
+    ? listing.value.environments.find((row) => environment.environment == null ? row.default : row.name === environment.environment)
+    : undefined;
+  return current?.protected && role !== undefined && !can(role, "environments:protect") ? "Only an owner or admin can change this." : undefined;
+}
+
 /** The branch a Git Service builds, picked from the repository's branches (typed when GitHub isn't known yet). */
-export function StoreBranchField({ organizationSlug, repository, gitRef, value, change, onSet }: {
+export function StoreBranchField({ organizationSlug, repository, gitRef, value, change, locked, onSet }: {
   organizationSlug: string; repository: string; gitRef: GitRef | undefined; value: string; change: ServiceSettingChange | undefined;
+  /** Why the branch can't change here, when it can't. */
+  locked?: string;
   onSet: (branch: string) => PersistableTransaction;
 }) {
   const setting = serviceSetting("branch");
   const [picking, setPicking] = useState(false);
   const [shown, hold] = useCommitHold(value);
+  if (locked) {
+    return (
+      <SettingsRow label={setting.title} hint={locked} commit="none" control={
+        <Button type="button" variant="outline" disabled data-changed={change ? true : undefined}>
+          <GitBranchIcon data-icon="inline-start" />{shown || "Default branch"}<span className="sr-only">Change branch</span>
+        </Button>
+      } />
+    );
+  }
   if (!gitRef) {
     return (
       <SettingsRow label={setting.title} hint={setting.description} commit="confirm"

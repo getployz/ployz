@@ -1747,6 +1747,39 @@
       "read_only": false
     },
     {
+      "description": "Protect a Project's own Environment so it cannot be removed, or unprotect it. Branches and PR Environments cannot be Protected. May stop to ask a human to approve.",
+      "destructive": false,
+      "gate": "cloud",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name, e.g. production.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "project": {
+            "description": "Project name.",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+            "type": "string"
+          },
+          "protected": {
+            "description": "true to refuse removing this Environment until it is unprotected, false to allow it.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "protected"
+        ],
+        "type": "object"
+      },
+      "name": "environment_protect",
+      "output_schema": {
+        "type": "object"
+      },
+      "read_only": false
+    },
+    {
       "description": "What this Environment still needs before it can deploy: servers, a GitHub connection, a cluster domain. Never asks a human to approve.",
       "destructive": false,
       "gate": "never",

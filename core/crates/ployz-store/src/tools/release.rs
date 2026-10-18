@@ -79,6 +79,7 @@ impl Tool for Review {
                     DestructiveKind::RevokesInvite => "revokes invite",
                     DestructiveKind::StopsService => "stops service",
                     DestructiveKind::RestartsService => "restarts service",
+                    DestructiveKind::UnprotectsEnvironment => "unprotects environment",
                 };
                 format!("{kind} {}", effect.name)
             })

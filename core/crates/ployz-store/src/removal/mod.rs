@@ -268,6 +268,7 @@ pub(crate) fn remove(
             for member in self::members(tx, &project.id)? {
                 members.push(scope::lock_id(tx, who, &member.id)?);
             }
+            guard_project(tx, &project.id)?;
             (
                 Target::Project(project.id.clone()),
                 project.name.to_string(),
@@ -869,8 +870,8 @@ fn still_running<'a>(
     Ok(running)
 }
 
-/// Refuse to remove the Default Environment, or one with Branches, on its own:
-/// Branches use it live, and the Default goes with its Project.
+/// Refuse to remove the Default Environment, a Protected one, or one with Branches,
+/// on its own: Branches use it live, and the Default goes with its Project.
 pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
     let summary = &environment.summary;
     let default = tx.query(
@@ -884,6 +885,26 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
                 summary.name, summary.project
             ),
             json!({ "next": show(&summary.project, &summary.name) }),
+        ));
+    }
+    let protected = tx.query(
+        "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
+        &[summary.id.as_str().into()],
+    )?;
+    if !protected.is_empty() {
+        return Err(error::unsupported(
+            format!("{} is Protected: unprotect it first", summary.name),
+            json!({
+                "protected": summary.name,
+                "next": next(
+                    "environment_protect",
+                    json!({
+                        "project": summary.project,
+                        "environment": summary.name,
+                        "protected": false,
+                    }),
+                ),
+            }),
         ));
     }
     let branches = tx
@@ -917,6 +938,28 @@ pub(crate) struct Member {
 }
 
 /// A Project's Environments with their Parents, in ID order.
+/// Refuse a caller who may not protect from removing a Project that holds a
+/// Protected Environment: removing the Project removes it too.
+fn guard_project(tx: &mut dyn Tx, project: &ProjectId) -> Result<(), RpcError> {
+    crate::storage::admit_protect(tx, |tx| protected_in(tx, project))
+}
+
+/// The Protected Environments in `project`, if it holds any.
+fn protected_in(tx: &mut dyn Tx, project: &ProjectId) -> Result<Option<Value>, RpcError> {
+    let rows = tx.query(
+        "SELECT name FROM config_environment WHERE project_id = ?1 AND protected <> 0 ORDER BY name",
+        &[project.as_str().into()],
+    )?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let protected = rows
+        .iter()
+        .map(|row| row.parse::<EnvironmentName>(0, "Environment"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(json!({ "protected": protected })))
+}
+
 pub(crate) fn members(tx: &mut dyn Tx, project: &ProjectId) -> Result<Vec<Member>, RpcError> {
     let rows = tx.query(
         "SELECT e.id, e.name, b.parent_id FROM config_environment e \
