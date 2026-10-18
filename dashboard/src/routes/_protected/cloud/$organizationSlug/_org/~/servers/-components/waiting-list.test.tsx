@@ -151,7 +151,7 @@ const filterBy = (text: string) => fireEvent.change(screen.getByRole("textbox", 
 const settle = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
 it("rejects only the picked rows the filter still shows", async () => {
-  renderList([host("web-1"), host("web-2"), host("db-1")]);
+  renderList([host("web-1"), host("web-2"), host("db-1"), ...Array.from({ length: VISIBLE_ROWS }, (_, index) => host(`db-${index + 2}`))]);
   fireEvent.click(pick("web-1"));
   fireEvent.click(pick("db-1"));
 
@@ -233,10 +233,18 @@ it("asks nothing more once the list is gone, even when a pending probe comes bac
   expect(probe).toHaveBeenCalledOnce();
 });
 
-it("shows every token when the one it was asked for has no waiting servers", () => {
-  renderList([host("a"), host("b")], "no-such-token");
+it("shows no filters while every waiting server fits in the box", () => {
+  renderList([host("a"), host("b")]);
 
   expect(rowNames()).toEqual(["a", "b"]);
+  expect(screen.queryByRole("textbox", { name: "Filter" })).toBeNull();
+});
+
+it("shows every token when the one it was asked for has no waiting servers", () => {
+  const names = Array.from({ length: VISIBLE_ROWS + 1 }, (_, index) => `h${String(index).padStart(2, "0")}`);
+  renderList(names.map((name) => host(name)), "no-such-token");
+
+  expect(rowNames()).toEqual(names.slice(0, rowNames().length));
   expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "Token" }).value).toBe("");
 });
 

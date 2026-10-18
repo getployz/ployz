@@ -77,6 +77,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const [openId, setOpenId] = useState<string | null>(null);
   const [enroll, setEnroll] = useState<readonly WaitingServerView[] | null>(null);
   const only = servers.length === 1 ? servers[0] : undefined;
+  // Filters earn their place only once the list overflows its box; below that every server is shown.
+  const bulk = servers.length > VISIBLE_ROWS;
   const arrived = firstRun && only && readiness(only) === "ready" ? only : undefined;
   const ordered = useMemo(() => [...servers].sort((a, b) => a.arrivalAt.localeCompare(b.arrivalAt) || a.firstSeenAt.localeCompare(b.firstSeenAt) || a.id.localeCompare(b.id)), [servers]);
   const statusContext = useMemo(() => ({ servers, now }), [servers, now]);
@@ -88,7 +90,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const tokens = [...new Set(servers.map((server) => server.fleetToken))].sort();
   const shownToken = tokens.includes(tokenFilter) ? tokenFilter : "";
   const matches = hostnameOrIpMatcher(query);
-  const rows = ordered.filter((server) =>
+  const rows = !bulk ? ordered : ordered.filter((server) =>
     (filter === "all" || readiness(server) === filter)
     && (provider === "" || providerOf(server) === provider)
     && (shownToken === "" || server.fleetToken === shownToken)
@@ -168,7 +170,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
           </div>
         </div>
       )}
-      <div className="flex flex-wrap items-center gap-2.5">
+      {bulk ? <div className="flex flex-wrap items-center gap-2.5">
         <div className="flex flex-wrap items-center gap-1">
           <div role="group" aria-label="Readiness" className="flex items-center gap-1">
             {READINESS_FILTERS.map((option) => (
@@ -199,7 +201,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
             className="h-7 w-40 text-[13px]"
           />
         </div>
-      </div>
+      </div> : null}
       <div className="overflow-x-auto rounded-lg border">
         <div role="table" aria-label="Waiting servers" className="min-w-[680px] text-[13px]">
           <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
