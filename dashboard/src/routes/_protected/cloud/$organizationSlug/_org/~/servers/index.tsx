@@ -79,7 +79,7 @@ function RouteComponent() {
       ) : page.kind === "unreachable" ? (
         <ServersUnreachable organizationSlug={organizationSlug} />
       ) : page.kind === "first-run" ? (
-        <FirstRunCard organizationSlug={organizationSlug} arrived={page.intake} />
+        <FirstRunCard key={organizationSlug} organizationSlug={organizationSlug} arrived={page.intake} />
       ) : (
         <>
           {page.stale ? <ServersStaleAlert /> : null}
