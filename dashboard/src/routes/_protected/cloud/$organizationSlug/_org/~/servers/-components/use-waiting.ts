@@ -3,8 +3,22 @@ import { useEffect } from "react";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { PROBE_WINDOW_MS } from "#/modules/machines/waiting/checkin-wire";
+import type { FleetTokenLifetime } from "#/modules/machines/waiting/fleet-token";
+import { createFleetTokenServerFn } from "#/modules/machines/waiting/fleet-token.functions";
 import { cancelServerEnrollmentServerFn, openProbeSelectionServerFn, rejectWaitingServersServerFn } from "#/modules/machines/waiting/waiting.functions";
 import { waitingServerDetailQueryOptions, fleetTokenKeys, serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+
+export type MintInput = { name: string | null; expiresIn: FleetTokenLifetime; autoEnroll: { readonly maxServers: number } | null };
+
+/** Mints a fleet token. The secret lives only in the result, so it shows once. */
+export function useMintFleetToken(organizationSlug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: MintInput) => createFleetTokenServerFn({ data: { organizationSlug, ...input } }),
+    onError: (cause) => toast.error(toErrorMessage(cause, "Couldn't create the token.")),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: fleetTokenKeys.all }),
+  });
+}
 
 export function useWaitingServers(organizationSlug: string) {
   return useQuery(waitingServersQueryOptions(organizationSlug));
