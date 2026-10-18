@@ -20,6 +20,9 @@ your app always gets the database of the environment it runs in.
 
 To change or remove a variable, open the menu at the end of its row.
 
+From the CLI, `ployz set web.env.LOG_LEVEL=info` adds a plain variable to the service `web`, and
+`ployz deploy` ships it. To add a secret, see [Seal a secret](#seal-a-secret).
+
 Your running service keeps its old values until you deploy. Changing a variable
 [rebuilds](../builds/overview.md) a service built from GitHub on that deploy.
 
@@ -73,12 +76,23 @@ references the variable still blocks the rename: change that file first.
 A sealed variable is encrypted when you save it, and the dashboard never shows its value again.
 Your service still gets the real value when it deploys.
 
-- New variables are plain unless you tick **Sealed**.
+From the CLI, pipe the value into `ployz set` with `--secret`, then run `ployz deploy`:
+
+```sh
+printf %s "$STRIPE_KEY" | ployz set web.env.STRIPE_KEY --secret
+```
+
+The value comes from stdin, never the command line, so it stays out of your shell history. Run
+the same command again to replace it. To seal every variable in a `.env` file, run
+`ployz set web --from-env-file .env --secret`.
+
+- In the dashboard, new variables are plain unless you tick **Sealed**.
 - To seal a plain variable, choose **Seal** from its menu. You can't unseal it. Saving the
   sealed value removes its earlier values from History too, so older versions show **Sealed**.
   A retried deployment of an older version gets the sealed value, not the one it had.
-- To change a sealed value, delete the variable and add it again. Setting a sealed variable to
-  a plain value is refused, so a secret never turns into plain text by mistake.
+- To change a sealed value in the dashboard, delete the variable and add it again. Setting a
+  sealed variable to a plain value is refused, so a secret never turns into plain text by
+  mistake.
 - Undo or Roll back in History never brings back an old sealed value. A sealed variable that
   History brings back comes back **Not set**: choose **Set value** to give it one. Until then,
   deploys leave it out of your service.
