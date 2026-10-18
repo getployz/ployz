@@ -21,7 +21,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, KeyError};
+pub(crate) use client::{CheckinClient, CheckinKey, FleetToken, Hold, KeyError};
 pub(crate) use enroll::Committed;
 use probe::Probes;
 use wire::{Answer, CheckinRequest, PrepState};
@@ -172,9 +172,7 @@ impl Host for System {
     }
 
     async fn disable_loop(&self) -> Result<(), String> {
-        let disabled = systemctl(&["disable", unit::CHECKIN]).await;
-        let stopped = systemctl(&["stop", "--no-block", unit::PREPARE]).await;
-        disabled.and(stopped)
+        systemctl(&["disable", unit::CHECKIN]).await
     }
 
     fn stale_ployzd(&self) -> Option<String> {
@@ -286,8 +284,17 @@ pub(crate) enum Next {
         after: Duration,
         why: String,
     },
+    RefusedOnce {
+        after: Duration,
+    },
+    Held {
+        after: Duration,
+        hold: Hold,
+        why: String,
+    },
     Stop(StopReason, String),
     ClockOff(String),
+    NotCloud(String),
     Enrolled,
 }
 
@@ -299,7 +306,9 @@ pub(crate) enum Seen {
     Joined,
     Stop,
     Refused,
+    Held,
     Unreachable,
+    NotCloud,
     ClockOff,
     Outdated,
     ProbeFailed,
@@ -377,6 +386,8 @@ impl LocalCheckin {
             self.answer,
             Seen::Stop
                 | Seen::Refused
+                | Seen::Held
+                | Seen::NotCloud
                 | Seen::ClockOff
                 | Seen::Outdated
                 | Seen::ProbeFailed
@@ -396,7 +407,9 @@ impl LocalCheckin {
         match self.answer {
             Seen::Stop => Headline::ended(self.reason.map_or("Stopped", StopReason::title)),
             Seen::Refused => Headline::open("Token refused"),
+            Seen::Held => Headline::open("Held by Cloud"),
             Seen::Unreachable => Headline::open("Can't reach Cloud"),
+            Seen::NotCloud => Headline::open("Not Ployz Cloud"),
             Seen::ClockOff => Headline::open("Clock is off"),
             Seen::Outdated => Headline::open("Needs a newer ployz"),
             Seen::ProbeFailed => Headline::open("Can't inspect this host"),
@@ -438,20 +451,35 @@ pub(crate) async fn run<H: Host>(
     key: &CheckinKey,
     paths: &Paths,
 ) -> CheckinEnd {
-    let mut last_log = None;
+    let mut said = Said::default();
     let mut probes = Probes::load(paths.probe());
     loop {
         match pass_from(host, client, key, paths, Utc::now(), false, &mut probes).await {
             Next::Wait { after, log } => {
-                if let Some(line) = log.filter(|line| last_log != Some(*line)) {
+                if let Some(line) = said.fresh(log.map(str::to_owned)) {
                     crate::ui::note(line);
                 }
-                last_log = log;
+                tokio::time::sleep(after).await;
+            }
+            // Cloud holds a full token back pass after pass, so the hold is logged once.
+            Next::Held { after, why, .. } => {
+                let line = format!("{why} Trying again in {}s.", after.as_secs());
+                if let Some(line) = said.fresh(Some(line)) {
+                    crate::ui::note(line);
+                }
                 tokio::time::sleep(after).await;
             }
             Next::Retry { after, why } => {
-                last_log = None;
+                said.fresh(None);
                 crate::ui::note(format!("{why} Trying again in {}s.", after.as_secs()));
+                tokio::time::sleep(after).await;
+            }
+            Next::RefusedOnce { after } => {
+                said.fresh(None);
+                crate::ui::note(format!(
+                    "{REFUSED_ONCE}. Trying again in {}s.",
+                    after.as_secs()
+                ));
                 tokio::time::sleep(after).await;
             }
             Next::Stop(reason, message) => {
@@ -470,8 +498,8 @@ pub(crate) async fn run<H: Host>(
                 crate::ui::note(format!("{}. {message}", reason.title()));
                 return stop(host, client, paths, reason).await;
             }
-            Next::ClockOff(why) => {
-                last_log = None;
+            Next::ClockOff(why) | Next::NotCloud(why) => {
+                said.fresh(None);
                 crate::ui::note(format!(
                     "{why}. Trying again in {}s.",
                     client::BACKOFF.as_secs()
@@ -480,6 +508,21 @@ pub(crate) async fn run<H: Host>(
             }
             Next::Enrolled => return enroll::finish(host, paths).await,
         }
+    }
+}
+
+/// The last line the loop logged, so a line repeated pass after pass is logged once.
+#[derive(Default)]
+struct Said(Option<String>);
+
+impl Said {
+    /// The line, unless the loop just logged it. None says nothing, so any next line is fresh.
+    fn fresh(&mut self, line: Option<String>) -> Option<String> {
+        if line == self.0 {
+            return None;
+        }
+        self.0.clone_from(&line);
+        line
     }
 }
 
@@ -569,16 +612,35 @@ pub(crate) async fn pass<H: Host>(
     .await
 }
 
-/// The pass an explicit `--install` makes: a failed preparation starts over at once, with its
-/// automatic retries restored. Its state file stays, since ployzd records there what it added.
+/// What an explicit `--install` pass got back, and what it saw for status.json. The install
+/// records `seen` only once it keeps the token sent: a replacement Cloud didn't take leaves the
+/// held token's status, and its enrollment, as they were.
+pub(crate) struct InstallPass {
+    pub(crate) next: Next,
+    pub(crate) seen: Option<LocalCheckin>,
+}
+
+#[cfg(test)]
+impl InstallPass {
+    /// Records what the pass saw, as a pass the install keeps does.
+    pub(crate) fn record(self, paths: &Paths) -> Next {
+        if let Some(seen) = &self.seen {
+            record(seen, paths);
+        }
+        self.next
+    }
+}
+
+/// The pass an explicit `--install` makes. It leaves preparation alone, since the token may yet be
+/// refused; `restart_preparation` runs once Cloud has answered.
 pub(crate) async fn install_pass<H: Host>(
     host: &H,
     client: &mut CheckinClient,
     key: &CheckinKey,
     paths: &Paths,
     now: DateTime<Utc>,
-) -> Next {
-    pass_from(
+) -> InstallPass {
+    let (next, seen) = check_in(
         host,
         client,
         key,
@@ -587,7 +649,8 @@ pub(crate) async fn install_pass<H: Host>(
         true,
         &mut Probes::load(paths.probe()),
     )
-    .await
+    .await;
+    InstallPass { next, seen }
 }
 
 async fn pass_from<H: Host>(
@@ -599,12 +662,30 @@ async fn pass_from<H: Host>(
     installing: bool,
     probes: &mut Probes,
 ) -> Next {
+    let (next, seen) = check_in(host, client, key, paths, now, installing, probes).await;
+    if let Some(seen) = seen {
+        record(&seen, paths);
+    }
+    next
+}
+
+/// One check-in, and the status it saw. No status means an enroll attempt ran and recorded its
+/// own.
+async fn check_in<H: Host>(
+    host: &H,
+    client: &mut CheckinClient,
+    key: &CheckinKey,
+    paths: &Paths,
+    now: DateTime<Utc>,
+    installing: bool,
+    probes: &mut Probes,
+) -> (Next, Option<LocalCheckin>) {
     let previous = LocalCheckin::read(&paths.status()).ok().flatten();
     let enrollment = previous.as_ref().filter(|status| {
         status.token_fingerprint.as_deref() == Some(client.fingerprint().as_str())
     });
     if !installing && enrollment.is_some_and(|status| status.answer == Seen::Joined) {
-        return Next::Enrolled;
+        return (Next::Enrolled, None);
     }
     let refusal = previous
         .as_ref()
@@ -625,15 +706,8 @@ async fn pass_from<H: Host>(
     // Read after the unit is seen stopped, so a run that finished in between reads as finished.
     let (mut state, written) = read_prep_state(&paths.prepare_state).unzip();
     // An older ployzd may not know how to prepare, and its blocker already says what to do.
-    let due = if running || stale.is_some() {
+    let due = if running || stale.is_some() || installing {
         None
-    } else if installing
-        && state
-            .as_ref()
-            .is_none_or(|state| state.installing() || state.failed_at().is_some())
-    {
-        prepare_retries = 0;
-        Some(PrepareRun::Start)
     } else {
         // Only a step left installing is dated by its state file. A failure carries its own time.
         let written = written
@@ -652,7 +726,7 @@ async fn pass_from<H: Host>(
             }
             Err(why) => crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE)),
         }
-    } else if !running && prepare_retries >= PREPARE_TRIES {
+    } else if !running && !installing && prepare_retries >= PREPARE_TRIES {
         state.get_or_insert_with(PrepState::fresh).give_up(GAVE_UP);
     }
     let prep = state.as_ref().map_or(
@@ -688,11 +762,11 @@ async fn pass_from<H: Host>(
         Ok(probe) => probe,
         Err(why) => {
             status.message = Some(why.clone());
-            record(&status, paths);
-            return Next::Retry {
+            let next = Next::Retry {
                 after: probes.retry_after(client::BACKOFF),
                 why: format!("Could not probe this server: {why}."),
             };
+            return (next, Some(status));
         }
     };
     let mut report = probe.report(host.hostname(), state.as_ref());
@@ -712,6 +786,7 @@ async fn pass_from<H: Host>(
     if request.probe.is_some() && matches!(&reply, client::Reply::Answer(_)) {
         probes.reported();
     }
+    let throttled = matches!(reply, client::Reply::Throttled(..));
     let next = match reply {
         client::Reply::Answer(Answer::Wait(_))
             if !installing
@@ -724,7 +799,7 @@ async fn pass_from<H: Host>(
             status.answer = Seen::Joined;
             Next::Enrolled
         }
-        client::Reply::Answer(Answer::Wait(after)) | client::Reply::RateLimited(after) => {
+        client::Reply::Answer(Answer::Wait(after)) => {
             status.answer = Seen::Wait;
             if status.enroll_failed() {
                 status.message = status
@@ -757,7 +832,7 @@ async fn pass_from<H: Host>(
         }
         client::Reply::Answer(Answer::Enroll(instruction)) => {
             probes.close().await;
-            return enroll::attempt(
+            let next = enroll::attempt(
                 host,
                 client,
                 key,
@@ -770,6 +845,7 @@ async fn pass_from<H: Host>(
                 status,
             )
             .await;
+            return (next, None);
         }
         client::Reply::Answer(Answer::Stop(reason, message)) => {
             status.answer = Seen::Stop;
@@ -795,21 +871,43 @@ async fn pass_from<H: Host>(
                 status.answer = Seen::Refused;
                 status.message = Some(REFUSED_ONCE.to_owned());
                 status.refused = Some(first);
-                Next::Retry {
+                Next::RefusedOnce {
                     after: client::BACKOFF
                         .saturating_sub(waited)
                         .max(Duration::from_secs(1)),
-                    why: format!("{REFUSED_ONCE}."),
                 }
             }
         }
-        client::Reply::Unreachable(after, why) => {
+        client::Reply::Held(after, hold, why) => {
+            status.answer = Seen::Held;
+            status.message = Some(why.clone());
+            Next::Held {
+                after,
+                hold,
+                why: format!("Cloud held this check-in back: {why}"),
+            }
+        }
+        client::Reply::Unreachable(after, why) | client::Reply::Throttled(after, why) => {
+            // A report still owed retries sooner after a failure, but never sooner than a Retry-After asked.
+            let after = if throttled {
+                after
+            } else {
+                probes.retry_after(after)
+            };
             status.answer = Seen::Unreachable;
             status.message = Some(why.clone());
             Next::Retry {
-                after: probes.retry_after(after),
-                why: format!("Could not reach Ployz Cloud: {why}."),
+                after,
+                why: format!(
+                    "Could not reach Ployz Cloud: {}.",
+                    why.trim_end_matches('.')
+                ),
             }
+        }
+        client::Reply::NotCloud(why) => {
+            status.answer = Seen::NotCloud;
+            status.message = Some(why.clone());
+            Next::NotCloud(why)
         }
         client::Reply::ClockOff(why) => {
             status.answer = Seen::ClockOff;
@@ -828,8 +926,33 @@ async fn pass_from<H: Host>(
     if matches!(next, Next::Stop(..) | Next::Enrolled) {
         probes.close().await;
     }
-    record(&status, paths);
-    next
+    (next, Some(status))
+}
+
+/// After Cloud answers an explicit `--install`: a failed or unfinished preparation starts over at
+/// once, with its automatic retries restored. Its state file stays, since ployzd records there what
+/// it added.
+pub(crate) async fn restart_preparation<H: Host>(host: &H, paths: &Paths, now: DateTime<Utc>) {
+    let running = host.prepare_running().await.unwrap_or_else(|why| {
+        crate::ui::note(format!("Could not read {}: {why}", unit::PREPARE));
+        true
+    });
+    let state = read_prep_state(&paths.prepare_state).map(|(state, _)| state);
+    let finished = state
+        .as_ref()
+        .is_some_and(|state| !state.installing() && state.failed_at().is_none());
+    if running || finished || host.stale_ployzd().is_some() {
+        return;
+    }
+    if let Err(why) = host.start_prepare().await {
+        crate::ui::note(format!("Could not start {}: {why}", unit::PREPARE));
+        return;
+    }
+    if let Some(mut status) = LocalCheckin::read(&paths.status()).ok().flatten() {
+        status.prepare_started = Some(now);
+        status.prepare_retries = 0;
+        record(&status, paths);
+    }
 }
 
 /// Says in status.json why the loop can't start, keeping what the last pass saw of the host.
@@ -853,7 +976,7 @@ pub(crate) fn no_ployzd(paths: &Paths, why: &str, now: DateTime<Utc>) {
     record(&status, paths);
 }
 
-fn record(status: &LocalCheckin, paths: &Paths) {
+pub(crate) fn record(status: &LocalCheckin, paths: &Paths) {
     if let Err(error) = status.write(&paths.status()) {
         crate::ui::note(format!(
             "Could not write {}: {error}",

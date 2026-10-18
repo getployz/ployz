@@ -502,6 +502,7 @@ pub(crate) const SERVER_CHECKIN: Verb = Verb::local(
     server::checkin::command,
     server::checkin::checkin,
 )
+.stdin(&[("--token-stdin", Stdin::Only)])
 .refuses_json()
 .keeps_running(KeepsRunning::Always)
 .docs("troubleshooting/servers.md");

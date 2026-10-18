@@ -92,10 +92,10 @@ See [Add many servers](add-many-servers.md). You can also make a token from your
 ployz server token create --expires 7d
 ```
 
-It prints the token once, with the line to run on each host:
+It prints the token once. On each host, run this line and paste the token at the prompt:
 
 ```sh
-curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
+curl -fsSL https://ployz.sh | sudo sh -s -- --enroll
 ```
 
 - **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
@@ -109,9 +109,10 @@ ployz server token ls
 ployz server token revoke amber-falcon
 ```
 
-The [Tokens](#your-tokens) page on **Servers** shows the same list. Revoking also drops the hosts still waiting on that token. The install line puts the token in the
-host's process list while it runs; a Fleet Token is short-lived and you can revoke it, so that
-exposure ends when you do.
+The [Tokens](#your-tokens) page on **Servers** shows the same list. Revoking also drops the hosts
+still waiting on that token. The prompt keeps the token out of shell history, sudo logs and the
+host's process list. See [Install with a Fleet Token](#install-with-a-fleet-token) for cloud-init
+and rerun outcomes.
 
 ## Use an empty spare disk for volumes
 
@@ -154,13 +155,92 @@ takes longer: 15–20 minutes on a 2-vCPU Amazon Linux Server, a few minutes on 
 tools stay installed, so ZFS can be rebuilt when the kernel updates.
 
 If your server can't run ZFS, put `PLOYZ_SKIP_ZFS=1` after `sudo` in the install line, as in
-`curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 PLOYZ_ENROLL_TOKEN=pflt_… sh`. With
+`curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- --enroll`. With
 `ployz server add`, add `--storage none`.
 
 The server then shows **Docker only**. If none of your servers has managed volumes, every new volume,
 a database's included, fails to deploy until you open it and tick **Use a plain Docker volume
 (not recommended)** under **Advanced**; see
 [When your servers show Docker only](../services/volumes.md#when-your-servers-show-docker-only).
+
+## Install with a Fleet Token
+
+A Fleet Token starts with `pflt_`. Give it to the install script and the host asks to join
+instead of joining:
+
+```sh
+curl -fsSL https://ployz.sh | sudo sh -s -- --enroll
+```
+
+The script prints `Installs Docker and Ployz. Nothing joins until you say so.` and asks for the
+token at a `Fleet Token:` prompt that doesn't show what you paste. The token never appears on a
+command line, so it stays out of `sudo`'s log, shell history and `ps`. The script checks that the
+token looks like one before it changes anything. It installs the CLI and runs
+`ployz server checkin --install`, which checks in with the token and only once Cloud has answered
+writes it to `/etc/ployz/fleet-token`, readable by root only. That ends with
+`Waiting for approval`, within seconds: Docker installs and ZFS builds in the background while the
+host waits, and the host shows on the **Servers** page at once. Two first installs end without
+it and still exit cleanly, with the service set up and checking in:
+
+- **Cloud can't be reached.** Connection errors, timeouts and server errors print the reason and
+  `The check-in service keeps trying.` The install writes the token without Cloud having answered
+  it, and the host checks in every minute until Cloud does.
+- **Cloud holds the check-in back.** Cloud's own message follows `Cloud held this check-in back:`,
+  for example `This Fleet Token already has 5 waiting servers.` The host isn't on the
+  **Servers** page yet. It asks again when Cloud says to.
+
+- **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
+  `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- --enroll`. It does what
+  `--storage none` does for `ployz server add`.
+- **From user data.** cloud-init runs user data as root with no terminal to prompt at, so pass the
+  token in `PLOYZ_ENROLL_TOKEN` instead:
+
+  ```yaml
+  #cloud-config
+  runcmd:
+    - curl -fsSL https://ployz.sh | PLOYZ_ENROLL_TOKEN=pflt_… sh
+  ```
+
+  Any process on the server, containers included, can read user data from the provider's
+  metadata service for as long as the server runs. Give a token you put there a short expiry.
+- **Run it again.** The same line on the same host updates its token and keeps it one server.
+  The host keeps `/etc/ployz/fleet-token` until Cloud takes the new token, even when that file
+  doesn't hold a token. If Cloud can't be reached, is busy, or the probe fails, a rerun with a
+  different token ends with `Until Cloud takes the new Fleet Token, this install keeps
+  /etc/ployz/fleet-token and changes nothing else. Run the install again.` and an error. If the
+  new token already has as many waiting servers as it allows, the rerun ends with `Cloud didn't
+  take the new Fleet Token, so this install keeps /etc/ployz/fleet-token and changes nothing
+  else.` and an error. Two installs at once take turns writing the file, so a token Cloud didn't
+  take never replaces one it took. A rerun with the same token keeps trying, as a first install
+  does.
+- **A token file it can't read.** If `/etc/ployz/fleet-token` exists but can't be read, the
+  install ends with `Could not read /etc/ployz/fleet-token` and an error before it writes
+  anything. Fix or remove that file and run the install again.
+- **An expired token** prints `Token expired.`, Cloud's reason, and `Run the install again with a
+  new token.`, and the script exits with an error. A revoked one says so the same way.
+- **A token Cloud doesn't know**, or a missing `PLOYZ_CLOUD_URL` when you
+  [run your own Cloud](../self-hosting.md), ends the install with
+  `Cloud at … refused this Fleet Token.` and an error. It says to check `PLOYZ_CLOUD_URL` only
+  when you set it.
+- **Something other than Ployz Cloud answers**, such as a 404 or a web page from a wrong
+  `PLOYZ_CLOUD_URL`, a proxy or a firewall, the install ends with an error that names the URL it
+  reached and says it `isn't how Ployz Cloud answers. A proxy or firewall in between may have
+  answered instead`. It says to check `PLOYZ_CLOUD_URL` only when you set it.
+
+When the install ends with an error because the token isn't shaped like one, Cloud refused it,
+the clock is off, Cloud didn't answer or take a new token on a rerun, the token file couldn't be
+read, or something other than Cloud answered, it has installed only the `ployz` CLI and started nothing. On a first install no
+check-in service is set up and preparation never starts. On a host that already checks in, the
+running service keeps its old token and goes on as before.
+
+An error after Cloud has answered the token, such as systemd failing to start the service, leaves
+a partial install. The new token is already in `/etc/ployz/fleet-token`, and the service files
+and preparation may be set up. Fix the cause and run the install again.
+
+Without `--enroll`, the script uses `PLOYZ_ENROLL_TOKEN` only when it starts with `pflt_`. For
+any other value it says so and only installs the CLI, as it does without a token. If the host
+waits longer than you expect, see
+[A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 
 ## Open the firewall
 

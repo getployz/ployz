@@ -203,11 +203,13 @@ async fn heartbeat(
             tracing::warn!(%message, "Ignoring rejection of a committed enrollment");
         }
         client::Reply::Answer(Answer::Stop(StopReason::Rejected, message)) => return Some(message),
-        client::Reply::Unreachable(_, why) => {
+        client::Reply::Unreachable(_, why)
+        | client::Reply::Throttled(_, why)
+        | client::Reply::NotCloud(why) => {
             crate::ui::note(format!("Could not report the enroll stage: {why}"));
         }
         client::Reply::Answer(_)
-        | client::Reply::RateLimited(_)
+        | client::Reply::Held(..)
         | client::Reply::Refused(_)
         | client::Reply::ClockOff(_)
         | client::Reply::Outdated(_) => {}

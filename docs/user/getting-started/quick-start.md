@@ -73,6 +73,10 @@ line shows up under **Waiting** on the **Servers** page. Select it and click **E
 choose its storage and name. With one waiting server in a new organization, that sheet opens
 automatically. See [Add many servers](../servers/add-many-servers.md) for the full flow.
 
+Starting servers from a script or from cloud-init user data? Install them with a
+[Fleet Token](../servers/add-a-server.md#install-with-a-fleet-token). Each one installs
+Docker and Ployz, then waits until you say it can join.
+
 ## Deploy
 
 Once the server has joined, **Deploy** appears in the bottom bar, next to **Apply 2 changes**: the new

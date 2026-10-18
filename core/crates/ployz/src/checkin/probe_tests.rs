@@ -757,7 +757,7 @@ async fn a_dropped_owner_s_save_never_lands_over_a_newer_window() {
 #[test]
 fn a_wait_carries_the_handout_and_an_unreadable_one_leaves_the_wait() {
     let body = br#"{"kind":"wait","retryAfter":10,"probe":{"nonce":"n0nce-n0nce-n0nce-n0nc","handout":"h","windowMs":10000,"listen":["udp:51820","tcp:80","tcp:443"],"send":[{"target":"203.0.113.7","port":51820}]}}"#;
-    let Answer::Probe(after, handout) = wire::answer(body) else {
+    let Some(Answer::Probe(after, handout)) = wire::answer(body) else {
         panic!("expected a probe");
     };
     assert_eq!(after, Duration::from_secs(10));
@@ -770,7 +770,7 @@ fn a_wait_carries_the_handout_and_an_unreadable_one_leaves_the_wait() {
         br#"{"kind":"wait","retryAfter":10,"probe":{"nonce":"n","listen":["sctp:1"]}}"#;
     assert_eq!(
         wire::answer(unreadable),
-        Answer::Wait(Duration::from_secs(10))
+        Some(Answer::Wait(Duration::from_secs(10)))
     );
 }
 

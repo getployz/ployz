@@ -976,7 +976,7 @@ fn the_zfs_device_reaches_server_add() {
             )
             .as_bytes(),
     );
-    let Answer::Enroll(instruction) = answer else {
+    let Some(Answer::Enroll(instruction)) = answer else {
         panic!("enroll instruction");
     };
     assert_eq!(
@@ -1143,7 +1143,7 @@ fn the_host_adapter_overrides_remote_context_and_connection_environment() {
         );
         return;
     }
-    let Answer::Enroll(instruction) = wire::answer(instruction("none").as_bytes()) else {
+    let Some(Answer::Enroll(instruction)) = wire::answer(instruction("none").as_bytes()) else {
         panic!("enroll");
     };
     let root = crate::cli::command()

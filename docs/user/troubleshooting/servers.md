@@ -212,49 +212,62 @@ prepares Docker and ZFS meanwhile.
    The `reason` line says by how much, and says too when Cloud refused the token itself: a token
    refusal from a server whose clock is that far off doesn't count against the token until the
    clock is right. Set the clock right, for example with
-   `timedatectl set-ntp true`, and the running loop checks in again within a minute. If
-   `ployz server checkin --install` itself said so, the loop isn't running: fix the clock and run
-   that command again.
-6. `Needs a newer ployz` means Ployz Cloud couldn't read this server's check-in. The loop tries
+   `timedatectl set-ntp true`, and the running loop checks in again within a minute. If the
+   install itself said so, it started nothing: fix the clock and run the install again.
+6. `Not Ployz Cloud` means the check-in URL reaches something that answers but isn't Ployz
+   Cloud, such as a 404 or a web page. That can be a wrong `PLOYZ_CLOUD_URL`, or a proxy or
+   firewall in between. The `reason` line names the URL. The loop tries again every minute. Point
+   the URL at your Ployz Cloud, or let the server through, and run the install again.
+7. `Held by Cloud` means Ployz Cloud answered but held the check-in back, and the `reason` line
+   gives Cloud's message. `This Fleet Token already has N waiting servers.` means the token has
+   as many waiting servers as it allows. Rejected servers count too, so rejecting them frees
+   nothing, and a server you add frees its place once Cloud's cleanup runs, at least a week after
+   it joins. Run the install again with another token, or revoke the full one: that removes its
+   waiting servers that haven't started joining and stops them checking in. Servers already
+   joining finish, and joined servers stay. Otherwise Cloud is busy, and the loop asks again when
+   Cloud says to.
+8. `Needs a newer ployz` means Ployz Cloud couldn't read this server's check-in. The loop tries
    again every hour. Install a newer `ployz` and run `sudo ployz server checkin --install`.
-7. `Token refused` means Ployz Cloud refused the Fleet Token once. The loop asks again once a
+9. `Token refused` means Ployz Cloud refused the Fleet Token once. The loop asks again once a
    minute has passed on Cloud's clock since that refusal, even across a restart, and goes on as
-   before if Cloud accepts it. A new token in the file starts over with its own two chances.
-8. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
+   before if Cloud accepts it. A new token in the file starts over with its own two chances. A
+   refusal during the install itself ends it with an error instead, since the token was only just
+   given, and starts nothing.
+10. `Rejected`, `Token expired` or `Token revoked` are final: the loop stops, deletes
    `/etc/ployz/fleet-token` if it still holds the token Cloud answered, and won't start again at
    boot. A token Cloud refuses twice in a row, at least a minute apart by Cloud's clock, because you revoked or
    deleted it, reads `Token revoked`. If you put a new token in the file as the loop stops, it
    keeps it and restarts with it, unless Cloud rejected the server. Put a new Fleet Token in that file and run `sudo ployz server checkin --install`
    again to start a new check-in attempt. A non-rejection response clears the local rejection
    status, but Cloud can still reject the server. If the token file goes missing, the loop stops
-   the next time it starts.
-9. A `blocked` line saying `ployzd ... is older than this ployz` means you upgraded `ployz` but
+   the next time it starts. Preparation already under way finishes.
+11. A `blocked` line saying `ployzd ... is older than this ployz` means you upgraded `ployz` but
    not `ployzd`. The loop keeps checking in with the older one, and Cloud shows the server as
    blocked until you run `sudo ployz server checkin --install`. It uses the first older one that
    answers, trying the one install chose, then PATH, then its own copy, and doesn't prepare Docker
    or ZFS with it. `No ployzd` means there is none at all: the loop exits until the same command
    installs one.
-10. Once you approve the server, the loop enrolls it and the **this server** line walks through
+12. Once you approve the server, the loop enrolls it and the **this server** line walks through
     `Installing`, `Enrolling`, `Queued to join`, `Setting up ZFS`, `Joining` and `Publishing`,
     the same stages Ployz Cloud shows. `Queued to join` means other servers are joining the
     fleet first. When it reads `Joined`, the loop turns itself off and deletes
     `/etc/ployz/fleet-token`.
-11. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
+13. `Enroll failed` means a stage failed, and the line after it names the stage and why, for
     example `Enroll failed at enrolling: Docker is not running`. The server goes back to waiting
     and Ployz Cloud shows the same failure. Fix the cause, then approve the server again in Ployz
     Cloud. If the loop restarts mid-enroll, it picks up the same attempt rather than starting a
     second one and keeps the last reported stage. If the join committed but a follow-up failed,
     the server stays Joined, the loop cleans up, and its log and status name that follow-up.
-12. Rejecting a server stops enrollment at the next safe point. A package install finishes
+14. Rejecting a server stops enrollment at the next safe point. A package install finishes
     before stopping at the enroll or queue step. Storage setup finishes once begun in the
     current run. After a restart from storage setup, rejection stops enrollment at the enroll
     or queue step. Once the daemon accepts the join and Cloud records `Joining` or
     `Publishing`, rejection lets enrollment finish, including after a restart. Cloud keeps
     its enrollment token valid and continues answering the attempt until it joins or fails.
     Expiring or revoking a Fleet Token lets an open enrollment finish.
-13. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
+15. If Cloud selects a ZFS disk, this version logs the selection and builds ZFS on the default
     disk. Selecting a particular disk on the host is not yet supported.
-14. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
+16. When you check ports on waiting servers, each one listens on TCP 80 and 443 and UDP 51820 for
     at most 10 seconds, then closes them. Nothing stays listening after that. A check that arrives
     while `ployz server checkin --install` runs makes it pause for those seconds, and it says so.
     The server tells Cloud what it heard only after it closes the ports. One that restarts while it
