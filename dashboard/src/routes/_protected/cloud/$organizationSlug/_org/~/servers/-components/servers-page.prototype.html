@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Servers page · prototype</title>
+<style>
+:root {
+  --background: #fff; --foreground: #171717; --card: #fff; --primary: #171717; --primary-foreground: #fafafa;
+  --muted: #f4f4f4; --muted-foreground: #6b6b6b; --border: #e3e3e3; --changed: #d0268c;
+  --success: #3d8a5f; --warning: #b26a00; --destructive: #c42b2b; --info: #2f6fd6;
+}
+.dark { --background: #0a0a0a; --foreground: #ededed; --card: #121212; --primary: #ededed; --primary-foreground: #0a0a0a;
+  --muted: #1f1f1f; --muted-foreground: #9a9a9a; --border: #2a2a2a; --changed: hsl(324 69% 60%);
+  --success: #4fb37a; --warning: #e0a03a; --destructive: #ef5b5b; --info: #6a9df0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 14px/1.45 "Geist", ui-sans-serif, system-ui, sans-serif; background: var(--background); color: var(--foreground); }
+button, input { font: inherit; color: inherit; }
+.mono { font-family: "Geist Mono", ui-monospace, monospace; }
+.app { display: flex; height: 100vh; min-height: 640px; }
+.rail { width: 220px; flex: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 12px 8px; gap: 2px; }
+.logo { width: 26px; height: 26px; border-radius: 7px; background: var(--changed); margin: 4px 8px 22px; }
+.place { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--muted-foreground); }
+.place.on { background: var(--muted); color: var(--foreground); }
+.place svg { width: 17px; height: 17px; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.top { height: 52px; flex: none; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; padding: 0 20px; }
+.top h1 { font-size: 15px; font-weight: 600; margin: 0; }
+.top .summary { color: var(--muted-foreground); font-size: 13px; margin-left: 6px; }
+.top .grow { flex: 1; }
+.content { flex: 1; overflow: auto; padding: 28px 32px 120px; }
+.wrap { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.btn { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); cursor: pointer; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 13px; }
+.btn:hover { background: var(--muted); }
+.btn.ink { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+.btn.ink:hover { opacity: .9; }
+.btn.ghost { border-color: transparent; background: none; color: var(--muted-foreground); }
+.btn.ghost:hover { color: var(--foreground); background: var(--muted); }
+.btn.sm { height: 28px; padding: 0 10px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
+.dot.off { background: var(--destructive); }
+.dot.warn { background: var(--warning); }
+.dot.mute { background: var(--muted-foreground); }
+.dot.pulse { background: var(--info); animation: pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity: .3; } }
+.t-muted { color: var(--muted-foreground); }
+.t-off { color: var(--destructive); }
+.t-warn { color: var(--warning); }
+.t-info { color: var(--info); }
+.t-ok { color: var(--success); }
+.small { font-size: 12px; }
+
+/* First run */
+.hero { border: 1px solid var(--border); border-radius: 14px; padding: 36px 40px; display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 40px; background: var(--card); }
+.hero h2 { margin: 0 0 6px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.hero p { margin: 0; color: var(--muted-foreground); }
+.cmd { margin-top: 22px; border: 1px solid var(--border); border-radius: 10px; background: var(--background); display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 14px; }
+.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; font-size: 13px; }
+.cmd code .tok { color: var(--changed); }
+.tabs { display: flex; gap: 2px; margin-top: 18px; }
+.tab { height: 26px; padding: 0 10px; border-radius: 6px; border: 0; background: none; color: var(--muted-foreground); font-size: 12px; cursor: pointer; }
+.tab.on { background: var(--muted); color: var(--foreground); }
+.meta { display: flex; gap: 14px; margin-top: 10px; font-size: 12px; color: var(--muted-foreground); }
+.meta a { color: inherit; }
+.listen { margin-top: 24px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted-foreground); }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 18px; border-left: 1px solid var(--border); padding-left: 24px; }
+.steps li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; }
+.steps .n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); display: grid; place-items: center; font-size: 11px; color: var(--muted-foreground); }
+.steps .n.now { border-color: var(--foreground); color: var(--foreground); }
+.steps b { font-weight: 500; display: block; }
+.steps span { font-size: 12px; color: var(--muted-foreground); }
+
+/* Intake tray */
+.tray { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card); }
+.tray.fresh { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 12%, transparent); }
+.thead { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.thead h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.mix { display: flex; gap: 12px; font-size: 12px; color: var(--muted-foreground); }
+.mix span { display: inline-flex; align-items: center; gap: 5px; }
+.mix .dot { width: 6px; height: 6px; }
+.stack { height: 4px; display: flex; gap: 2px; margin: 0 14px 12px; border-radius: 4px; overflow: hidden; }
+.stack i { display: block; height: 100%; }
+.trow { display: grid; grid-template-columns: 18px 150px 210px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 0 14px; height: 48px; border-top: 1px solid var(--border); font-size: 13px; }
+.trow.go { cursor: pointer; }
+.trow.go:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.trow .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .spec { color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trow .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg { display: grid; grid-template-columns: repeat(6, 1fr); gap: 3px; width: 120px; }
+.seg i { height: 4px; border-radius: 4px; background: var(--muted); }
+.seg i.on { background: var(--success); }
+.seg i.cur { background: var(--info); animation: pulse 1s infinite alternate; }
+.more { display: flex; align-items: center; justify-content: center; height: 40px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted-foreground); cursor: pointer; }
+.more:hover { color: var(--foreground); background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.check { width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--border); display: grid; place-items: center; }
+.check.on { background: var(--foreground); border-color: var(--foreground); }
+.check.on::after { content: ""; width: 7px; height: 4px; border: 2px solid var(--background); border-top: 0; border-right: 0; transform: rotate(-45deg) translate(1px, -1px); }
+.check.dis { opacity: .35; }
+.tools { display: flex; align-items: center; gap: 6px; padding: 0 14px 12px; flex-wrap: wrap; }
+.filter { height: 26px; padding: 0 9px; border-radius: 6px; border: 1px solid transparent; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 12px; }
+.filter.on { border-color: var(--border); background: var(--background); color: var(--foreground); }
+.search { height: 28px; border: 1px solid var(--border); border-radius: 7px; background: var(--background); padding: 0 10px; width: 180px; outline: none; font-size: 12px; }
+.selbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); background: color-mix(in srgb, var(--muted) 50%, transparent); font-size: 13px; }
+
+/* Fleet */
+.fhead { display: flex; align-items: center; gap: 14px; }
+.fhead h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.health { display: flex; gap: 14px; font-size: 12px; color: var(--muted-foreground); }
+.health span { display: inline-flex; align-items: center; gap: 5px; }
+.health .dot { width: 6px; height: 6px; }
+.agg { margin-left: auto; display: flex; gap: 16px; font-size: 12px; color: var(--muted-foreground); }
+.agg .bar { width: 70px; }
+.list { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.srow { display: grid; grid-template-columns: 8px minmax(130px, 1fr) minmax(0, 1.4fr) 110px 110px 92px 14px; gap: 16px; align-items: center; padding: 0 14px; height: 52px; border-top: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+.srow:first-child { border-top: 0; }
+.srow:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.srow.new { animation: arrive 2.4s ease-out; }
+@keyframes arrive { from { background: color-mix(in srgb, var(--success) 18%, transparent); } }
+.srow .who { min-width: 0; }
+.srow .who b { font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .who span { font-size: 12px; color: var(--muted-foreground); }
+.chips { display: flex; gap: 4px; overflow: hidden; }
+.chip { background: var(--muted); border-radius: 6px; padding: 1px 8px; font-size: 12px; white-space: nowrap; }
+.chip.out { background: none; border: 1px solid var(--border); color: var(--muted-foreground); }
+.meter { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted-foreground); }
+.bar { flex: 1; height: 4px; border-radius: 4px; background: var(--muted); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--muted-foreground); }
+.bar > i.hot { background: var(--warning); }
+.right { text-align: right; white-space: nowrap; }
+.chev { color: var(--muted-foreground); }
+.colhead { display: grid; grid-template-columns: 8px minmax(130px, 1fr) minmax(0, 1.4fr) 110px 110px 92px 14px; gap: 16px; padding: 0 14px 6px; font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; }
+
+/* Switcher */
+.switch { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 2px; padding: 4px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); box-shadow: 0 8px 30px rgb(0 0 0 / .35); z-index: 9; }
+.switch button { height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--muted-foreground); cursor: pointer; font-size: 12px; }
+.switch button.on { background: var(--muted); color: var(--foreground); }
+.switch .sep { width: 1px; background: var(--border); margin: 4px; }
+.toast { position: fixed; top: 64px; right: 24px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); font-size: 13px; opacity: 0; transition: opacity .2s; }
+.toast.on { opacity: 1; }
+
+/* Mobile */
+.add-short { display: none; }
+@media (max-width: 640px) {
+  .app { flex-direction: column; height: auto; min-height: 100vh; }
+  .rail { position: fixed; inset: auto 0 0 0; width: auto; height: 60px; flex-direction: row; justify-content: space-around; align-items: center; padding: 0 8px env(safe-area-inset-bottom); border-right: 0; border-top: 1px solid var(--border); background: var(--background); z-index: 8; }
+  .logo { display: none; }
+  .place { flex-direction: column; gap: 3px; height: auto; padding: 6px 14px; font-size: 11px; background: none !important; }
+  .place.on { color: var(--foreground); }
+  .top { position: sticky; top: 0; z-index: 7; background: var(--background); padding: 0 16px; height: 56px; }
+  .top .summary { display: none; }
+  .add-long { display: none; }
+  .add-short { display: inline; }
+  .content { padding: 16px 16px 150px; overflow: visible; }
+  .wrap { gap: 16px; }
+
+  .hero { grid-template-columns: 1fr; padding: 22px 18px; gap: 22px; border-radius: 12px; }
+  .hero h2 { font-size: 18px; }
+  .cmd { flex-direction: column; align-items: stretch; padding: 12px; }
+  .cmd code { white-space: normal; word-break: break-all; line-height: 1.6; }
+  .cmd .btn { height: 36px; justify-content: center; }
+  .meta { flex-wrap: wrap; gap: 6px 12px; }
+  .steps { border-left: 0; border-top: 1px solid var(--border); padding: 20px 0 0; }
+
+  .thead { flex-wrap: wrap; row-gap: 6px; padding: 12px; }
+  .thead .mix { order: 3; width: 100%; flex-wrap: wrap; gap: 4px 12px; }
+  .stack { margin: 0 12px 12px; }
+  .tools { padding: 0 12px 12px; flex-wrap: nowrap; overflow-x: auto; }
+  .tools .search { display: none; }
+  .tools > span[style] { display: none; }
+  .trow { grid-template-columns: 18px minmax(0, 1fr) auto; grid-template-areas: "c n r" ". s s" ". w w"; height: auto; row-gap: 2px; padding: 11px 12px; }
+  .trow > :nth-child(1) { grid-area: c; }
+  .trow > :nth-child(2) { grid-area: n; }
+  .trow > :nth-child(3) { grid-area: s; font-size: 12px; }
+  .trow > :nth-child(4) { grid-area: w; white-space: normal; font-size: 12px; }
+  .trow > :nth-child(5) { grid-area: r; }
+  .trow .seg { width: 100%; margin: 6px 0 4px; }
+  .trow .why.mono { display: none; }
+  .cmd code { word-break: normal; overflow-wrap: anywhere; }
+  .selbar, .more { font-size: 12px; }
+
+  .fhead { flex-wrap: wrap; row-gap: 6px; }
+  .agg { margin-left: 0; width: 100%; }
+  .agg .meter { flex: 1; }
+  .agg .bar { width: auto; }
+  .srow { grid-template-columns: 8px minmax(0, 1fr) minmax(0, 1fr) 10px; grid-template-areas: "d who st ch" ". chips chips chips" ". cpu mem mem"; height: auto; row-gap: 8px; column-gap: 12px; padding: 12px; }
+  .srow > :nth-child(1) { grid-area: d; }
+  .srow > :nth-child(2) { grid-area: who; }
+  .srow > :nth-child(3) { grid-area: chips; flex-wrap: wrap; }
+  .srow > :nth-child(4) { grid-area: cpu; }
+  .srow > :nth-child(5) { grid-area: mem; }
+  .srow > :nth-child(6) { grid-area: st; }
+  .srow > :nth-child(7) { grid-area: ch; }
+  .srow.off > :nth-child(4), .srow.off > :nth-child(5) { display: none; }
+  .filter { white-space: nowrap; flex: none; }
+  .srow > :nth-child(3):empty, .srow > :nth-child(4):empty { display: none; }
+
+  .switch { bottom: 72px; left: 12px; right: 12px; transform: none; overflow-x: auto; }
+  .switch button { flex: none; }
+  .toast { top: auto; bottom: 130px; left: 16px; right: 16px; text-align: center; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="logo"></div>
+    <div class="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Projects</div>
+    <div class="place on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/></svg>Servers</div>
+    <div class="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 21V5l8-2v18M12 9h8v12M8 8v.01M8 12v.01M8 16v.01M16 13v.01M16 17v.01"/></svg>Organization</div>
+  </aside>
+  <main class="main">
+    <header class="top">
+      <h1>Servers</h1><span class="summary" id="summary"></span>
+      <span class="grow"></span>
+      <span id="topActions"></span>
+    </header>
+    <div class="content"><div class="wrap" id="page"></div></div>
+  </main>
+</div>
+<div class="switch" id="switch"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const TOKEN = "pz_et_7Kq2vX9mLw4rN8bT";
+const SERVICES = [["web", "api", "worker"], ["postgres"], ["web", "api"], ["redis", "worker"], ["clickhouse"], ["web", "api", "worker", "cron", "mailer"], [], ["caddy"], ["web"], ["minio"], ["api", "worker"], ["postgres", "pgbouncer"]];
+const FLEET = Array.from({ length: 12 }, (_, i) => ({
+  name: ["hz-fsn1-1", "hz-fsn1-2", "hz-fsn1-3", "hz-nbg1-1", "hz-nbg1-2", "hz-hel1-1", "vu-syd-1", "vu-syd-2", "do-sgp1-1", "hz-fsn1-4", "hz-fsn1-5", "hz-hel1-2"][i],
+  where: ["Hetzner · Falkenstein", "Hetzner · Falkenstein", "Hetzner · Falkenstein", "Hetzner · Nuremberg", "Hetzner · Nuremberg", "Hetzner · Helsinki", "Vultr · Sydney", "Vultr · Sydney", "DigitalOcean · Singapore", "Hetzner · Falkenstein", "Hetzner · Falkenstein", "Hetzner · Helsinki"][i],
+  services: SERVICES[i],
+  cpu: [22, 61, 14, 38, 87, 9, 0, 33, 18, 44, 27, 52][i],
+  mem: [48, 72, 30, 55, 91, 21, 0, 40, 36, 58, 44, 66][i],
+  state: i === 6 ? "offline" : i === 3 ? "upgrading" : "online",
+}));
+
+const WAITING = [
+  { name: "hz-fsn1-6", ip: "49.12.88.140", spec: "8 vCPU · 32 GB · 240 GB NVMe", state: "ready" },
+  { name: "hz-fsn1-7", ip: "49.12.88.141", spec: "8 vCPU · 32 GB · 240 GB NVMe", state: "ready" },
+  { name: "hz-fsn1-8", ip: "49.12.88.142", spec: "8 vCPU · 32 GB · 240 GB NVMe", state: "ready" },
+  { name: "hz-fsn1-9", ip: "49.12.88.143", spec: "8 vCPU · 32 GB · 240 GB NVMe", state: "ready" },
+  { name: "ovh-gra-1", ip: "51.75.12.9", spec: "4 vCPU · 16 GB · 80 GB", state: "preparing", why: "Installing Docker" },
+  { name: "lxc-home-1", ip: "203.0.113.7", spec: "2 vCPU · 4 GB · 32 GB", state: "blocked", why: "Unprivileged LXC", fix: "Run as a privileged container, or join as Docker only" },
+];
+const ENROLLING = [
+  { name: "hz-nbg1-3", step: 2, label: "Setting up ZFS", detail: "/dev/nvme1n1" },
+  { name: "hz-nbg1-4", step: 4, label: "In line", detail: "1 server ahead" },
+];
+
+const STATES = [
+  ["first", "First run"],
+  ["arrived", "First arrival"],
+  ["fleet", "Steady fleet"],
+  ["intake", "Fleet + intake"],
+  ["bulk", "Bulk batch"],
+];
+let view = location.hash.slice(1) || "first";
+let picked = new Set(WAITING.filter((w) => w.state === "ready").map((w) => w.name));
+let filter = "all";
+
+function toast(text) { const t = $("#toast"); t.textContent = text; t.classList.add("on"); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove("on"), 1600); }
+
+function renderSwitch() {
+  $("#switch").innerHTML = STATES.map(([id, label]) => `<button class="${id === view ? "on" : ""}" data-v="${id}">${label}</button>`).join("")
+    + `<span class="sep"></span><button data-theme>${document.documentElement.classList.contains("dark") ? "Light" : "Dark"}</button>`;
+}
+$("#switch").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.theme !== undefined) document.documentElement.classList.toggle("dark");
+  else { view = b.dataset.v; location.hash = view; filter = "all"; }
+  render();
+});
+
+/* ---------- pieces ---------- */
+function topActions(hasServers) {
+  if (!hasServers) return `<button class="btn ghost" data-toast="Tokens page">Tokens</button>`;
+  return `<button class="btn ghost" data-toast="Tokens page">Tokens</button><button class="btn ink" data-toast="Add servers dialog">+ <span class="add-long">Add servers</span><span class="add-short">Add</span></button>`;
+}
+
+function firstRun() {
+  return `<section class="hero">
+    <div>
+      <h2>Add your first server</h2>
+      <p>Run this on any Linux server with root. It shows up below in a few seconds.</p>
+      <div class="tabs"><button class="tab on">Shell</button><button class="tab">cloud-init</button><button class="tab">Terraform</button></div>
+      <div class="cmd"><code class="mono">curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=<span class="tok">${TOKEN}</span> sh</code>
+        <button class="btn sm" data-toast="Copied">Copy</button></div>
+      <div class="meta"><span>Token <b class="mono" style="font-weight:500;color:var(--foreground)">default</b> · reusable · never expires</span><a href="#" data-toast="Token settings">Change</a></div>
+      <div class="listen"><span class="dot pulse"></span>Listening for servers…</div>
+    </div>
+    <ol class="steps">
+      <li><span class="n now">1</span><div><b>Run the line</b><span>Installs the agent. Docker too, if missing.</span></div></li>
+      <li><span class="n">2</span><div><b>Review</b><span>See its size, disks and blockers before it joins.</span></div></li>
+      <li><span class="n">3</span><div><b>Enroll</b><span>Sets up storage and networking, then it's ready for deploys.</span></div></li>
+    </ol>
+  </section>`;
+}
+
+function arrived() {
+  const w = WAITING[0];
+  return `<section class="tray fresh">
+    <div class="thead"><span class="dot"></span><h2>${w.name} is ready to enroll</h2><span class="t-muted small">arrived 4s ago</span><span style="flex:1"></span>
+      <button class="btn ghost sm" data-toast="Rejected">Reject</button><button class="btn ink sm" data-toast="Enrolling ${w.name}">Enroll</button></div>
+    <div class="trow"><span></span><span class="name mono">${w.ip}</span><span class="spec">${w.spec}</span><span class="t-muted">ZFS on <span class="mono">/dev/nvme1n1</span> · Ubuntu 24.04 · Docker 27.3</span><span class="t-ok small">No blockers</span></div>
+  </section>
+  <div class="listen t-muted small" style="margin-top:-4px"><span class="dot pulse"></span>Still listening. Run the line on more servers and they queue here.</div>`;
+}
+
+function intake({ bulk = false } = {}) {
+  const pool = bulk ? bulkWaiting() : WAITING;
+  const counts = { ready: 0, preparing: 0, blocked: 0, offline: 0 };
+  pool.forEach((w) => counts[w.state]++);
+  const total = pool.length;
+  const colors = { ready: "var(--success)", preparing: "var(--info)", blocked: "var(--warning)", offline: "var(--destructive)" };
+  const mix = Object.entries(counts).filter(([, n]) => n > 0)
+    .map(([k, n]) => `<span><i class="dot" style="background:${colors[k]}"></i>${n} ${k}</span>`).join("");
+  const stack = Object.entries(counts).filter(([, n]) => n > 0).map(([k, n]) => `<i style="flex:${n};background:${colors[k]}"></i>`).join("");
+  const rows = (bulk ? pool.filter((w) => filter === "all" || w.state === filter).slice(0, 8) : pool);
+  const pickedReady = bulk ? Math.min(counts.ready, 50) : picked.size;
+  const filters = ["all", ...Object.keys(counts).filter((k) => counts[k] > 0)];
+  const enrolling = bulk ? [] : ENROLLING;
+  return `<section class="tray">
+    <div class="thead"><h2>Waiting to join</h2><span class="t-muted small">${total}</span><div class="mix">${mix}</div><span style="flex:1"></span>
+      ${bulk ? `<button class="btn ink sm" data-toast="Enrolling ${pickedReady}">Enroll ${pickedReady} ready</button>`
+        : `<button class="btn ink sm" data-toast="Enrolling ${picked.size}" ${picked.size ? "" : "disabled"}>Enroll ${picked.size}</button>`}
+    </div>
+    <div class="stack">${stack}</div>
+    ${bulk ? `<div class="tools">${filters.map((f) => `<button class="filter ${f === filter ? "on" : ""}" data-f="${f}">${f[0].toUpperCase() + f.slice(1)} <span class="t-muted">${f === "all" ? total : counts[f]}</span></button>`).join("")}
+      <span style="flex:1"></span><input class="search" placeholder="Filter, or hz-fsn1-*"></div>` : ""}
+    ${rows.map((w) => {
+      const can = w.state === "ready" || w.state === "preparing";
+      const on = bulk ? w.state === "ready" : picked.has(w.name);
+      const right = w.state === "ready" ? `<span class="t-ok small">Ready</span>`
+        : w.state === "preparing" ? `<span class="t-info small">${w.why}</span>`
+        : w.state === "offline" ? `<span class="t-off small">Offline</span>`
+        : `<button class="btn ghost sm" data-toast="Rejected">Reject</button>`;
+      const why = w.state === "blocked" ? `<span class="why"><span class="t-warn">${w.why}</span> <span class="t-muted">· ${w.fix}</span></span>` : `<span class="why t-muted mono small">${w.ip}</span>`;
+      return `<div class="trow go" data-pick="${can ? w.name : ""}"><span class="check ${on ? "on" : ""} ${can ? "" : "dis"}"></span><span class="name">${w.name}</span><span class="spec">${w.spec}</span>${why}<span class="right">${right}</span></div>`;
+    }).join("")}
+    ${enrolling.map((e) => `<div class="trow"><span class="dot pulse" style="margin-left:4px"></span><span class="name">${e.name}</span>
+      <span class="seg">${Array.from({ length: 6 }, (_, i) => `<i class="${i < e.step ? "on" : i === e.step ? "cur" : ""}"></i>`).join("")}</span>
+      <span class="why"><span>${e.label}</span> <span class="t-muted">· ${e.detail}</span></span><button class="btn ghost sm" data-toast="Cancelled">Cancel</button></div>`).join("")}
+    ${bulk ? `<div class="more">Showing 8 of ${filter === "all" ? total : counts[filter]} · Open full list</div>` : ""}
+  </section>`;
+}
+
+function bulkWaiting() {
+  const out = [];
+  for (let i = 0; i < 184; i++) {
+    const state = i % 23 === 7 ? "blocked" : i % 17 === 3 ? "preparing" : i % 41 === 9 ? "offline" : "ready";
+    out.push({ name: `hz-fsn1-${String(i + 10).padStart(3, "0")}`, ip: `49.12.${90 + (i >> 8)}.${i % 256}`, spec: "8 vCPU · 32 GB · 240 GB NVMe", state,
+      why: state === "preparing" ? "Installing Docker" : "Secure Boot on", fix: "Turn it off in the provider console" });
+  }
+  return out;
+}
+
+function fleet({ fresh = false } = {}) {
+  const online = FLEET.filter((s) => s.state === "online").length;
+  const off = FLEET.filter((s) => s.state === "offline").length;
+  const up = FLEET.filter((s) => s.state === "upgrading").length;
+  const live = FLEET.filter((s) => s.state !== "offline");
+  const cpu = Math.round(live.reduce((a, s) => a + s.cpu, 0) / live.length);
+  const mem = Math.round(live.reduce((a, s) => a + s.mem, 0) / live.length);
+  const order = { offline: 0, upgrading: 1, online: 2 };
+  const rows = [...FLEET].sort((a, b) => order[a.state] - order[b.state]);
+  return `<section style="display:flex;flex-direction:column;gap:10px">
+    <div class="fhead"><h2>Fleet</h2>
+      <div class="health"><span><i class="dot"></i>${online} online</span>${up ? `<span><i class="dot pulse"></i>${up} upgrading</span>` : ""}${off ? `<span class="t-off"><i class="dot off"></i>${off} offline</span>` : ""}</div>
+      <div class="agg"><span class="meter">CPU <span class="bar"><i style="width:${cpu}%"></i></span>${cpu}%</span><span class="meter">Mem <span class="bar"><i style="width:${mem}%"></i></span>${mem}%</span></div>
+    </div>
+    <div class="list">
+      ${fresh ? `<div class="srow new"><span class="dot"></span><span class="who"><b>hz-nbg1-5</b><span>Hetzner · Nuremberg · joined just now</span></span><span class="t-muted">Nothing yet</span><span></span><span></span><span class="right t-ok small">New</span><span class="chev">›</span></div>` : ""}
+      ${rows.map((s) => {
+        const word = s.state === "offline" ? `<span class="t-off">Offline</span>` : s.state === "upgrading" ? `<span class="t-info">Upgrading</span>` : "";
+        const chips = s.services.length === 0 ? `<span class="t-muted">Nothing yet</span>`
+          : s.services.slice(0, 3).map((n) => `<span class="chip">${n}</span>`).join("") + (s.services.length > 3 ? `<span class="chip out">+${s.services.length - 3}</span>` : "");
+        const meter = (v, l) => s.state === "offline" ? `<span class="meter t-muted">—</span>` : `<span class="meter">${l}<span class="bar"><i class="${v > 80 ? "hot" : ""}" style="width:${v}%"></i></span>${v}%</span>`;
+        return `<div class="srow ${s.state === "offline" ? "off" : ""}" data-toast="Open ${s.name}"><span class="dot ${s.state === "offline" ? "off" : s.state === "upgrading" ? "pulse" : ""}"></span>
+          <span class="who"><b>${s.name}</b><span>${s.state === "offline" ? "Last seen 14 min ago" : s.where}</span></span>
+          <span class="chips">${chips}</span>${meter(s.cpu, "CPU")}${meter(s.mem, "Mem")}<span class="right small">${word}</span><span class="chev">›</span></div>`;
+      }).join("")}
+    </div>
+  </section>`;
+}
+
+function render() {
+  renderSwitch();
+  const hasServers = view === "fleet" || view === "intake" || view === "bulk";
+  $("#topActions").innerHTML = topActions(hasServers || view === "arrived");
+  $("#summary").textContent = view === "first" ? "" : view === "arrived" ? "1 waiting" : view === "fleet" ? "12" : view === "intake" ? "12 · 6 waiting · 2 joining" : "12 · 184 waiting";
+  $("#page").innerHTML = {
+    first: () => firstRun(),
+    arrived: () => arrived(),
+    fleet: () => fleet(),
+    intake: () => intake() + fleet({ fresh: true }),
+    bulk: () => intake({ bulk: true }) + fleet(),
+  }[view]();
+}
+
+document.addEventListener("click", (e) => {
+  const t = e.target.closest("[data-toast]"); if (t) { toast(t.dataset.toast); return; }
+  const f = e.target.closest("[data-f]"); if (f) { filter = f.dataset.f; render(); return; }
+  const p = e.target.closest("[data-pick]"); if (p && p.dataset.pick && view === "intake") {
+    const n = p.dataset.pick; picked.has(n) ? picked.delete(n) : picked.add(n); render();
+  }
+});
+render();
+</script>
+</body>
+</html>
