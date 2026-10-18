@@ -12,7 +12,7 @@ use clap::{ArgMatches, Command};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::{
-    Answered, Install, LoopPloyzd, Token, command, install_outcome, install_start,
+    Answered, Install, LoopPloyzd, Token, answer_install, command, install_outcome, install_start,
     keep_answered_token, loop_ployzd, loop_start, replaces_token, stdin_token,
 };
 use crate::checkin::{
@@ -782,18 +782,26 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
             cloud: String::new(),
         });
         let landed = paths.token_file.clone();
+        let other_status = paths.status();
         let (url, server) = answering_once(status, body, move || {
             fs::write(landed, format!("{OLD_TOKEN}\n")).unwrap();
+            fs::write(other_status, OTHER_STATUS).unwrap();
         })
         .await;
         let key = CheckinKey::load_or_create(&paths.key()).unwrap();
         let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
         assert!(!replaces_token(&paths.token_file, |held| client.sends(held)).unwrap());
-        let next = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
+        let pass = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
         server.await.unwrap();
-        let kept = keep_answered_token(next, &client, &paths.token_file, PIPED)
+        let kept = answer_install(pass, &client, &paths, PIPED)
             .unwrap_err()
             .to_string();
+        // The other install's token keeps its status, and with it any enrollment.
+        assert_eq!(
+            fs::read_to_string(paths.status()).unwrap(),
+            OTHER_STATUS,
+            "{status}"
+        );
         assert!(
             kept.contains(&format!(
                 "this install keeps {}",
@@ -806,6 +814,41 @@ async fn an_install_keeps_a_token_another_install_wrote_while_cloud_was_answerin
             format!("{OLD_TOKEN}\n"),
             "{status}"
         );
+    }
+}
+
+const OTHER_STATUS: &str = "the status another install's token earned\n";
+
+#[tokio::test]
+async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = temp_paths(&dir);
+    let ployzd = dir.path().join("bin/ployzd");
+    probing_daemon(&ployzd, "0.0.1");
+    let host = Chosen(System {
+        ployzd,
+        stale: Some("Older.".to_owned()),
+        cloud: String::new(),
+    });
+    let key = CheckinKey::load_or_create(&paths.key()).unwrap();
+    fs::create_dir_all(paths.token_file.parent().unwrap()).unwrap();
+    fs::create_dir_all(paths.status().parent().unwrap()).unwrap();
+    let full = r#"{"error":"This Fleet Token already has 1000 waiting servers."}"#;
+    for (held, kept) in [(OLD_TOKEN, false), (NEW_TOKEN, true)] {
+        fs::write(&paths.token_file, format!("{held}\n")).unwrap();
+        fs::write(paths.status(), OTHER_STATUS).unwrap();
+        let (url, server) = answering_once("429 Too Many Requests", full, || {}).await;
+        let mut client = CheckinClient::new(&url, FleetToken::parse(NEW_TOKEN).unwrap()).unwrap();
+        let pass = checkin::install_pass(&host, &mut client, &key, &paths, Utc::now()).await;
+        server.await.unwrap();
+        assert_eq!(answer_install(pass, &client, &paths, PIPED).is_ok(), kept);
+        let status = fs::read_to_string(paths.status()).unwrap();
+        if kept {
+            let seen = LocalCheckin::read(&paths.status()).unwrap().unwrap();
+            assert!(seen.token_fingerprint.is_some(), "{status}");
+        } else {
+            assert_eq!(status, OTHER_STATUS, "{held}");
+        }
     }
 }
 

@@ -244,8 +244,8 @@ async fn install(
     let prepare_unit = unit::prepare(&host.ployzd, skip_zfs)
         .map_err(|why| Error::coded(RpcErrorCode::InvalidArgument, why))?;
     crate::ui::stream("Checking in");
-    let next = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
-    let answered = keep_answered_token(next, client, &paths.token_file, install_with)?;
+    let pass = checkin::install_pass(&host, client, key, paths, Utc::now()).await;
+    let answered = answer_install(pass, client, paths, install_with)?;
     write_unit(unit::CHECKIN, &checkin_unit)?;
     write_unit(unit::PREPARE, &prepare_unit)?;
     systemd(&["daemon-reload"]).await?;
@@ -257,6 +257,23 @@ async fn install(
         crate::ui::stream("Waiting for approval");
     }
     Ok(())
+}
+
+/// Keeps the token Cloud answered, and records the answer only for the token the install keeps. A
+/// replacement Cloud didn't take leaves the held token's status, and its enrollment, untouched.
+fn answer_install(
+    pass: checkin::InstallPass,
+    client: &CheckinClient,
+    paths: &Paths,
+    install_with: Install<'_>,
+) -> Result<Answered, Error> {
+    let answered = keep_answered_token(pass.next, client, &paths.token_file, install_with);
+    if let Some(seen) = &pass.seen
+        && !replaces_token(&paths.token_file, |held| client.sends(held)).unwrap_or(true)
+    {
+        checkin::record(seen, paths);
+    }
+    answered
 }
 
 fn keep_answered_token(

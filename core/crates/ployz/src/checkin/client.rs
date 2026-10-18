@@ -176,6 +176,8 @@ pub(super) enum Reply {
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
+    /// A 429 that isn't Cloud's own hold. The wait is what it asked for, so it is never cut short.
+    Throttled(Duration, String),
     Held(Duration, Hold, String),
     /// The URL answered, and the answer can't have come from Ployz Cloud.
     NotCloud(String),
@@ -308,8 +310,11 @@ pub(super) fn reply(
     if status == StatusCode::TOO_MANY_REQUESTS {
         let after = retry_after.unwrap_or(BACKOFF).min(wire::WAIT_CAP);
         return match cloud_hold(body) {
+            // A full token stays full until someone enrolls or removes its waiting servers, so its
+            // servers wait a full backoff rather than ask every second.
+            Some((Hold::Full, why)) => Reply::Held(after.max(BACKOFF), Hold::Full, why),
             Some((hold, why)) => Reply::Held(after, hold, why),
-            None => Reply::Unreachable(after, format!("Cloud answered {status}")),
+            None => Reply::Throttled(after, format!("Cloud answered {status}")),
         };
     }
     if let Some(why) = cloud_error(body) {

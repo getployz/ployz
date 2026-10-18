@@ -325,24 +325,29 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
     let held = |after, body: &str| {
         client::reply(StatusCode::TOO_MANY_REQUESTS, after, None, body.as_bytes())
     };
-    for (message, hold) in [
+    // A full token stays full for a while, so it waits at least the backoff; a busy Cloud asks
+    // to be tried again when it said.
+    let backoff = Duration::from_secs(60);
+    for (message, hold, waits) in [
         (
             "This Fleet Token already has 1000 waiting servers.",
             Hold::Full,
+            backoff,
         ),
         (
             "This Fleet Token already has 5 waiting servers.",
             Hold::Full,
+            backoff,
         ),
-        ("Too many check-ins.", Hold::Busy),
-        ("Busy, retry.", Hold::Busy),
+        ("Too many check-ins.", Hold::Busy, Duration::from_secs(1)),
+        ("Busy, retry.", Hold::Busy, Duration::from_secs(1)),
     ] {
         assert_eq!(
             held(
                 Some(Duration::from_secs(1)),
                 &format!(r#"{{"error":"{message}"}}"#)
             ),
-            Reply::Held(Duration::from_secs(1), hold, message.to_owned())
+            Reply::Held(waits, hold, message.to_owned())
         );
     }
     assert_eq!(
@@ -369,7 +374,7 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
     ] {
         assert_eq!(
             held(Some(Duration::from_secs(9)), body),
-            Reply::Unreachable(
+            Reply::Throttled(
                 Duration::from_secs(9),
                 "Cloud answered 429 Too Many Requests".to_owned()
             ),
@@ -378,7 +383,7 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
     }
     assert!(matches!(
         held(None, ""),
-        Reply::Unreachable(after, _) if after == Duration::from_secs(60)
+        Reply::Throttled(after, _) if after == backoff
     ));
 }
 
@@ -398,7 +403,7 @@ async fn a_check_in_cloud_held_back_names_its_reason_in_status() {
     else {
         panic!("Cloud's 429 holds the check-in back");
     };
-    assert_eq!(after, Duration::from_secs(1));
+    assert_eq!(after, Duration::from_secs(60));
     assert_eq!(hold, Hold::Full);
     assert_eq!(
         why,
@@ -951,7 +956,9 @@ async fn a_handout_on_the_install_pass_listens_out_its_window_and_the_loop_repor
         }
     });
 
-    install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+    install_pass(&host, &mut client(&url), &key(), &paths, Utc::now())
+        .await
+        .record(&paths);
     assert_eq!(greeted.await.unwrap(), 22);
 
     let mut restarted = Probes::load(paths.probe());
@@ -1137,6 +1144,45 @@ async fn a_failed_pass_while_cloud_waits_on_the_report_retries_inside_its_settle
     );
 }
 
+#[test]
+fn the_loop_logs_a_line_repeated_pass_after_pass_once() {
+    let held = || Some("Cloud held this check-in back: full. Trying again in 60s.".to_owned());
+    let mut said = Said::default();
+    assert_eq!(said.fresh(held()), held());
+    assert_eq!(said.fresh(held()), None);
+    assert_eq!(said.fresh(None), None);
+    assert_eq!(said.fresh(held()), held());
+    let busy = Some("Cloud held this check-in back: busy. Trying again in 1s.".to_owned());
+    assert_eq!(said.fresh(busy.clone()), busy);
+}
+
+#[tokio::test]
+async fn a_429_from_in_front_of_cloud_waits_what_it_asked_even_with_a_report_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::default();
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let (url, server) = answering_cloud(
+        "429 Too Many Requests\r\nRetry-After: 60".to_owned(),
+        "<html>Slow down</html>".to_owned(),
+        1,
+    )
+    .await;
+    let throttled = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    server.await.unwrap();
+    retries_after(&throttled, 60);
+}
+
 #[tokio::test]
 async fn a_rate_limited_report_keeps_its_retry_grace() {
     let dir = tempfile::tempdir().unwrap();
@@ -1282,7 +1328,8 @@ async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
         &paths,
         Utc::now(),
     )
-    .await;
+    .await
+    .record(&paths);
     let request = server.await.unwrap().remove(0);
     assert!(
         request.contains(r#""probe":{"handout":"h","heardFrom":["2001:db8::1"],"bindFailed":[]}"#),
@@ -1301,7 +1348,8 @@ async fn an_install_pass_reports_the_saved_window_and_keeps_it() {
         &paths,
         Utc::now(),
     )
-    .await;
+    .await
+    .record(&paths);
     assert!(matches!(next, Next::Retry { .. }), "{next:?}");
     assert_eq!(saved(&paths).await, Some(kept));
 }
@@ -1390,7 +1438,9 @@ async fn refused_pass(
     let mut client = CheckinClient::new(&url, FleetToken::literal(token)).unwrap();
     let host = FakeHost::default();
     if installing {
-        install_pass(&host, &mut client, &key(), paths, now).await
+        install_pass(&host, &mut client, &key(), paths, now)
+            .await
+            .record(paths)
     } else {
         pass(&host, &mut client, &key(), paths, now).await
     }
@@ -1860,7 +1910,8 @@ async fn an_explicit_install_restarts_a_preparation_that_used_up_its_retries() {
         &paths,
         at("2026-10-16T01:31:00Z"),
     )
-    .await;
+    .await
+    .record(&paths);
     assert_eq!(reinstalled.prepares.load(Ordering::SeqCst), 0);
     let answered = at("2026-10-16T01:32:00Z");
     restart_preparation(&reinstalled, &paths, answered).await;
@@ -1887,7 +1938,9 @@ async fn an_install_starts_no_preparation_before_cloud_answers_the_token() {
         let status = status.replace("{date}", &Utc::now().to_rfc2822());
         let (url, _server) = answering_cloud(status, body.to_owned(), 1).await;
         let host = FakeHost::default();
-        install_pass(&host, &mut client(&url), &key(), &paths, Utc::now()).await;
+        install_pass(&host, &mut client(&url), &key(), &paths, Utc::now())
+            .await
+            .record(&paths);
         assert_eq!(host.prepares.load(Ordering::SeqCst), 0, "{body}");
     }
 }
