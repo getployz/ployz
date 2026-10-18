@@ -23,7 +23,8 @@ export type RefusalCode =
  */
 export type MoveStart = "rounds" | "cut" | "final" | "start";
 
-export type Refusal = { readonly code: RefusalCode; readonly message: string };
+/** `next` is the one command that clears the refusal; the CLI prints it on its own line. */
+export type Refusal = { readonly code: RefusalCode; readonly message: string; readonly next?: string };
 
 /**
  * What a Release finds in flight: a cut that stopped on a read-only root, a writer that may still keep the moved-off
@@ -179,7 +180,7 @@ export function planFromCopies(input: PlanInput, members: readonly Member[]): Pl
   const { to } = input.args;
   if (isDestination(input.args, root)) return { ok: false, refusal: alreadyOn(name, to) };
   const elsewhere = mirrors.find((member) => !isDestination(input.args, member));
-  if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+  if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
@@ -227,7 +228,7 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   }
   const elsewhere = others.find((member) => member !== root);
   if (root !== null) {
-    if (elsewhere !== undefined) return refuse("second_mirror", `${name} already has a mirror, ${named(elsewhere)}`);
+    if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
 
@@ -237,6 +238,12 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   const at = newestGuid(source.view.copy);
   if (at === null) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
+}
+
+/** A Server cannot tell a mirror from the copy a move left, so this names it a copy. */
+function copyElsewhere(name: string, copy: Member): Refusal {
+  const slot = copyName(name, copy.machine.name);
+  return { code: "second_mirror", message: `${name} already has a copy on ${copy.machine.name}, ${slot}`, next: `ployz volume mirror rm ${slot}` };
 }
 
 export const alreadyOn = (name: string, server: string): Refusal => ({ code: "invalid", message: `${name}'s writer is already on ${server}` });

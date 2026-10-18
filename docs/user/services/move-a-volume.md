@@ -31,7 +31,8 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
 - A move leaves the old server holding an old copy. It serves nothing and never refreshes. Its ×
   deletes it right away, after you confirm **Delete copy**. Its **Restore** stages a restore from its
   last point. While a staged restore reads the copy, × says "A restore reads this copy."
-- A move or mirror onto a server that holds an old copy deletes that copy first. Details says so.
+- A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
+  the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
   changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
   primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
@@ -126,6 +127,15 @@ move. Ployz waits for Docker, up to ten minutes for each stop or start.
 
 The old server keeps a read-only copy, shown as `data-web-1`. Moving back sends only what
 changed since. If the volume already has a mirror on `web-2`, the move starts from it.
+
+A volume holds one other copy, so a move to a third server is refused while that copy stays:
+
+```
+error: data already has a copy on web-1, data-web-1
+next: ployz volume mirror rm data-web-1
+```
+
+Remove the old copy with that command, then move again.
 
 A deploy never waits for a move. Until `web-2` is told to start your service, a deploy takes the
 move over: the run ends with "a Deploy took this run over", your service deploys on the old
