@@ -166,7 +166,7 @@ describe("skips", () => {
     expect(reasonFor(row("a", { report: { prep: { docker: "installing", zfs: "installing" } } }))).toEqual([]);
   });
 
-  it.each(["0.3.0", "0.3.1", "0.4.0"])("keeps a host whose CLI is %s", (cliVersion) => {
+  it.each(["0.3.0-beta.6", "0.3.0", "0.3.1", "0.4.0"])("keeps a host whose CLI is %s", (cliVersion) => {
     expect(reasonFor(row("a", { report: { cliVersion } }))).toEqual([]);
   });
 
