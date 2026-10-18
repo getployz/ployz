@@ -8,13 +8,14 @@ const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id`, row: `${name}:node` as RowId, name, private_dns: privateDns, source: "image", change: null, template: null });
 
 describe("newServiceName", () => {
-  it("names a Service from its image or repository, with a random suffix past names and Private DNS already taken", () => {
+  it("names a Service from its image or repository, numbered past names and Private DNS already taken", () => {
     expect(newServiceName({ type: "image", image: "ghcr.io/acme/API_Server:1.4" }, [])).toBe("api-server");
     expect(newServiceName({ type: "git", repository: "acme/Shop.Web", branch: null }, [])).toBe("shop-web");
     // `frontend` was `web` once: its Private DNS keeps the name taken.
-    expect(newServiceName({ type: "image", image: "web" }, [listed("frontend", "web")])).toMatch(/^web-[a-z0-9]{4}$/u);
+    expect(newServiceName({ type: "image", image: "web" }, [listed("frontend", "web")])).toBe("web-2");
+    expect(newServiceName({ type: "image", image: "web" }, [listed("web"), listed("web-2")])).toBe("web-3");
     expect(newServiceName({ type: "image", image: `${"a".repeat(70)}:1` }, [listed("a".repeat(63))]))
-      .toMatch(new RegExp(`^${"a".repeat(58)}-[a-z0-9]{4}$`, "u"));
+      .toBe(`${"a".repeat(61)}-2`);
     expect(newServiceName({ type: "empty" }, [])).toMatch(/^[a-z]+-[a-z]+$/u);
   });
 });
@@ -22,11 +23,11 @@ describe("newServiceName", () => {
 const project = (name: string): ProjectListing => ({ id: `${name}-id`, name, default_environment: "production", environments: ["production"] });
 
 describe("newProjectName", () => {
-  it("names a Project after its first Service's repository or image, with a random suffix past Project names taken", () => {
+  it("names a Project after its first Service's repository or image, numbered past Project names taken", () => {
     expect(newProjectName({ type: "git", repository: "getployz/Shop.Web", branch: "main" }, [project("api")])).toBe("shop-web");
     expect(newProjectName({ type: "image", image: "ghcr.io/acme/web:1.2" }, [])).toBe("web");
-    expect(newProjectName({ type: "git", repository: "getployz/api", branch: null }, [project("api")]))
-      .toMatch(/^api-[a-z0-9]{4}$/u);
+    expect(newProjectName({ type: "git", repository: "getployz/api", branch: null }, [project("api")])).toBe("api-2");
+    expect(newProjectName({ type: "image", image: "nginx" }, [project("nginx"), project("nginx-2")])).toBe("nginx-3");
   });
 });
 
