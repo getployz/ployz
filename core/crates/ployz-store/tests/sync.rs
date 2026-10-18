@@ -896,7 +896,14 @@ fn a_token_for_the_parent_alone_cannot_close_the_branch_it_syncs_from() {
         ..sync(&view(&store, &who), None)
     };
     let production_only = Trusted {
-        permissions: Some([Permission::ChangesStage, Permission::ChangesDeploy].into()),
+        permissions: Some(
+            [
+                Permission::ChangesStage,
+                Permission::ChangesDeploy,
+                Permission::EnvironmentsProtect,
+            ]
+            .into(),
+        ),
         environments: Some([EnvironmentName::parse("production").unwrap()].into()),
         ..Trusted::default()
     };

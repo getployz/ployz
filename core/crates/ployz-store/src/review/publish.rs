@@ -149,13 +149,9 @@ pub(crate) fn publish(
         }
         error
     })?;
-    review::approve(
-        who,
-        &environment.summary.id,
-        &review,
-        (&target, review::Shipping::Publish),
-        trusted,
-    )?;
+    review::guard_saving(tx, &environment.summary.id, review.saved.as_ref(), &target)?;
+    let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
+    review::approve(who, &review, (&target, review::Shipping::Publish), &gate)?;
     let lost = review::lost(losses);
     let (saved, created) = review::publish(
         tx,

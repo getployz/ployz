@@ -887,11 +887,7 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
             json!({ "next": show(&summary.project, &summary.name) }),
         ));
     }
-    let protected = tx.query(
-        "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
-        &[summary.id.as_str().into()],
-    )?;
-    if !protected.is_empty() {
+    if crate::scope::protected(tx, &summary.id)? {
         return Err(error::unsupported(
             format!("{} is Protected: unprotect it first", summary.name),
             json!({

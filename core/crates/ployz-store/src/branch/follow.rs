@@ -4,6 +4,7 @@
 //! Branch discards stays a hint until the Parent changes that row again.
 
 use super::*;
+use crate::Trusted;
 
 /// A Parent's deployed value that followed into its Branch but isn't staged there:
 /// the Branch changed the row itself, or discarded it.
@@ -179,6 +180,7 @@ pub(crate) fn take(
     who: &Actor,
     parent: &EnvironmentName,
     take: &Take,
+    trusted: &Trusted,
 ) -> Result<Taken, RpcError> {
     let Some(at) = &take.into else {
         return Err(error::invalid(
@@ -215,6 +217,13 @@ pub(crate) fn take(
     }
     let none = BTreeMap::new();
     let staged = checked.apply(tx, who, &mut branch, &picks, &none, Owner::None)?;
+    review::approve_move(
+        tx,
+        who,
+        &branch,
+        review::Moving::Take(&from.summary.id),
+        trusted,
+    )?;
     Ok(Taken {
         from: from.summary,
         into: branch.summary,

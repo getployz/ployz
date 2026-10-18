@@ -1,3 +1,7 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
 //! Protected Environments, on SQLite and on Postgres (see `backend`): a new Project's
 //! Default starts Protected, the switch flips either way, only a Project's own
 //! Environments take it, and only a caller holding `environments:protect` saves one a new repository
@@ -8,12 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AuthorizedRepository, Automated, Change, ConfigStore, CreateBranch, CreateEnvironment,
-    CreateGitService, CreateProject, CreateService, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentsQuery, OrganizationId, Permission, Principal, ProjectId,
-    ProjectName, Publish, Published, PullRequest, SeenProtection, ServiceLineageId,
-    SetDefaultEnvironment, SetEnvironmentProtected, SetPrPlan, SettingPath, SyncChanges, SyncQuery,
-    SystemEvent, Trusted, Written,
+    Actor, Approval, ApprovalDigest, AuthorizedRepository, Automated, Change, ConfigStore,
+    CreateBranch, CreateEnvironment, CreateGitService, CreateProject, CreateService, Edit,
+    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, OrganizationId, Permission,
+    Principal, ProjectId, ProjectName, Publish, Published, PullRequest, SeenProtection,
+    ServiceLineageId, SetDefaultEnvironment, SetEnvironmentProtected, SetPrPlan, SettingPath,
+    SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -420,6 +424,10 @@ fn edit(
 
 /// Sync everything fix-web changed into production.
 fn sync_up(store: &ConfigStore, who: &Actor, protects: bool) -> Result<(), RpcError> {
+    sync_as(store, who, &acme_as(protects))
+}
+
+fn sync_as(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Result<(), RpcError> {
     let view = store
         .read(
             who,
@@ -442,7 +450,7 @@ fn sync_up(store: &ConfigStore, who: &Actor, protects: bool) -> Result<(), RpcEr
                 values: BTreeMap::new(),
                 id: None,
             },
-            &acme_as(protects),
+            trusted,
         )
         .map(drop)
 }
@@ -453,14 +461,43 @@ fn publish(
     environment: &str,
     protects: bool,
 ) -> Result<Published, RpcError> {
+    publish_as(store, who, environment, &acme_as(protects))
+}
+
+fn publish_as(
+    store: &ConfigStore,
+    who: &Actor,
+    environment: &str,
+    trusted: &Trusted,
+) -> Result<Published, RpcError> {
     store.write_trusted(
         who,
         &Publish {
             environment: at(environment),
             ..Publish::default()
         },
-        &acme_as(protects),
+        trusted,
     )
+}
+
+/// Assert `refused` asks an admin to approve `what` in Protected production, and
+/// return Cloud's evidence for a caller without `environments:protect` holding that
+/// approval.
+fn admin_approved(refused: RpcError, what: &str) -> Trusted {
+    assert_eq!(refused.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(
+        refused.message,
+        format!("production is Protected; an admin must approve this {what}.")
+    );
+    assert_eq!(refused.details["protected"], json!(true));
+    assert!(refused.details["effects"].is_array());
+    let version = refused.details["diff"]["version"].as_str().unwrap();
+    let approval = refused.details["approval"].as_str().unwrap();
+    assert!(approval.starts_with(&format!("{version}:")), "{approval}");
+    Trusted {
+        approval: Approval::Approved(ApprovalDigest::parse(approval).unwrap()),
+        ..acme_as(false)
+    }
 }
 
 fn assert_forbidden<T: std::fmt::Debug>(result: Result<T, RpcError>, details: Value) {
@@ -640,7 +677,7 @@ fn a_source_staged_before_protecting_still_publishes_only_for_environments_prote
 }
 
 #[test]
-fn a_change_leaving_every_repository_and_branch_saves_for_anyone() {
+fn a_save_into_protected_production_asks_an_admin_even_when_cloud_requires_nothing() {
     let (store, system) = shop();
     let who = person(&system);
     store
@@ -657,7 +694,59 @@ fn a_change_leaving_every_repository_and_branch_saves_for_anyone() {
         )
         .unwrap();
 
-    assert!(publish(&store, &who, "production", false).unwrap().created);
+    let refused = publish(&store, &who, "production", false).unwrap_err();
+    let approved = admin_approved(refused, "deploy");
+    assert!(
+        publish_as(&store, &who, "production", &approved)
+            .unwrap()
+            .created
+    );
+    assert!(
+        publish(&store, &who, "production", false).is_ok(),
+        "a resave asks nothing"
+    );
+
+    edit(
+        &store,
+        &who,
+        "production",
+        &[("api.replicas", Some(json!(2)))],
+        false,
+    )
+    .unwrap();
+    assert!(publish(&store, &who, "production", true).unwrap().created);
+}
+
+/// Production's staged `web.env.FLAG`, if any.
+fn production_env(store: &ConfigStore, who: &Actor) -> Option<Value> {
+    let query = ployz_store::EnvironmentQuery {
+        environment: at("production"),
+        path: Some(SettingPath::parse("web.env.FLAG").unwrap()),
+        all: false,
+    };
+    let settings = store.read(who, &query).ok()?.settings;
+    settings.into_iter().next().map(|setting| setting.value)
+}
+
+#[test]
+fn a_sync_into_protected_production_asks_an_admin_and_stages_nothing_until_approved() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.FLAG", Some(json!("on")))],
+        false,
+    )
+    .unwrap();
+
+    let refused = sync_up(&store, &who, false).unwrap_err();
+    assert!(production_env(&store, &who).is_none());
+    let approved = admin_approved(refused, "sync");
+    sync_as(&store, &who, &approved).unwrap();
+    assert_eq!(production_env(&store, &who), Some(json!("on")));
 }
 
 #[test]

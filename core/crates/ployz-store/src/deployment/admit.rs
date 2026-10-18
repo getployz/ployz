@@ -18,7 +18,7 @@ use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
-use crate::{Actor, Approval, Asks, Trusted};
+use crate::{Actor, Trusted};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
 /// the removal of an Environment from the Servers.
@@ -148,15 +148,9 @@ pub(crate) fn admit(
         Admit::Retry(retry) => {
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
-            if let Some(review) = asked {
+            if let Some((review, gate)) = asked {
                 trusted.writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
-                review::approve_retry(
-                    who,
-                    &retried.environment_id,
-                    &review,
-                    &retry.deployment,
-                    trusted,
-                )?;
+                review::approve_retry(who, &review, &retry.deployment, &gate)?;
             }
             if retried.remove
                 && let Some(outcome) =
@@ -174,20 +168,21 @@ pub(crate) fn admit(
 }
 
 /// The review a retry of `source` asks a human to approve, taken before the retry
-/// queues: none unless every Deploy asks.
-fn retry_review(
+/// queues, with the gate it passes: none unless the retry asks.
+fn retry_review<'a>(
     tx: &mut dyn Tx,
     who: &Actor,
     source: &DeploymentId,
-    trusted: &Trusted,
-) -> Result<Option<review::Review>, RpcError> {
-    if trusted.asks == Asks::Destroys || trusted.approval == Approval::NotRequired {
+    trusted: &'a Trusted,
+) -> Result<Option<(review::Review, review::Gate<'a>)>, RpcError> {
+    let id = deployment::owned(tx, who, source)?.summary.environment_id;
+    let gate = review::Gate::new(tx, &id, trusted)?;
+    if !gate.asks_retry() {
         return Ok(None);
     }
-    let id = deployment::owned(tx, who, source)?.summary.environment_id;
     scope::lock_all(tx, [id.clone()])?;
     let environment = scope::load_by_id(tx, &id)?;
-    review::review(tx, &environment).map(Some)
+    Ok(Some((review::review(tx, &environment)?, gate)))
 }
 
 /// The gate every Deploy passes, the user's or the Store's own: a Server to run
@@ -273,7 +268,9 @@ fn deploy(
         ),
         trusted.volumes.as_ref(),
     )?;
-    review::approve(who, id, &review, (&saved_intent, shipping), trusted)?;
+    review::guard_saving(tx, id, review.saved.as_ref(), &saved_intent)?;
+    let gate = review::Gate::new(tx, id, trusted)?;
+    review::approve(who, &review, (&saved_intent, shipping), &gate)?;
     let (saved, _) = review::publish(
         tx,
         who,
