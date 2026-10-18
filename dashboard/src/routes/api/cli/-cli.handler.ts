@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decideApproval } from "#/modules/approvals/approvals.server";
+import { decideAndApply } from "#/modules/approvals/apply.server";
 import { disconnectGithub, githubBranches, githubConnection, GithubRepositories } from "#/modules/github/github-cli.server";
 import { type Caller, TOKEN_KINDS } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -438,7 +438,7 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       );
     case "POST approvals/:id": {
       const decision = yield* decodeBody(ApprovalDecision, request, "An approval takes `approve` with the digest you reviewed, or `reject`.");
-      return yield* decideApproval(caller, id ?? "", decision, freshOperationDigest).pipe(
+      return yield* decideAndApply(caller, id ?? "", decision, freshOperationDigest).pipe(
         Effect.map((decided) => decided.ok ? { approval: decided.approval } : refusal(decided.refusal)),
         Effect.catchTag("NotFound", (missing) => Effect.succeed(missingRefusal(missing.message))),
       );

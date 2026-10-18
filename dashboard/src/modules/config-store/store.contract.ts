@@ -14,6 +14,10 @@ export class StoreRefused extends Data.TaggedError("StoreRefused")<StoreRefusal>
   }
 }
 
+const protectedDetails = Schema.is(Schema.Struct({ protected: Schema.Literal(true) }));
+/** The Store's refusal of a write into a Protected Environment by someone who can't protect it: it waits for someone who can. */
+export const isProtectedAsk = ({ code, details }: StoreRefusal) => code === "approval_required" && protectedDetails(details);
+
 /**
  * What a Store read or write returns across the server-function boundary. A refusal is an outcome, not a failure:
  * `conflict` carries fresh state and `not_found` names what's missing, so callers need the code and details intact.

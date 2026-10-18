@@ -66,6 +66,8 @@ type BottomBarProps = {
   proposals?: Pick<ReviewProps, "included" | "onRemoveIncluded" | "onIncludeNewer">;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Save only still works. */
   noServers?: boolean;
+  /** The Environment is Protected and you can't protect it: Deploy asks an owner or admin first. */
+  asks?: boolean;
   /** Secrets without a value: the next Deploy leaves them out. */
   notSet?: number;
   /** A write the Store hasn't answered for yet, in words (Discarding…). */
@@ -97,6 +99,7 @@ export function BottomBar({
   notes,
   proposals,
   noServers = false,
+  asks = false,
   notSet = 0,
   busy = new Set(),
   discarding,
@@ -211,7 +214,7 @@ export function BottomBar({
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>
           {admitting ? <Spinner data-icon="inline-start" /> : null}
-          {busy.has("deploying") ? "Deploying…" : busy.has("saving") ? "Saving…" : savesOnly ? "Save only" : active.length > 0 ? "Deploy next" : "Deploy"}
+          {busy.has("deploying") ? "Deploying…" : busy.has("saving") ? "Saving…" : savesOnly ? "Save only" : asks ? "Request deploy" : active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>}
@@ -241,7 +244,7 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave: saveable,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,

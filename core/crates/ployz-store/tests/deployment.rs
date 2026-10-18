@@ -3854,3 +3854,67 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
     .unwrap();
     assert!(matches!(empty, RowState::Failed { log: None, .. }));
 }
+
+/// Cloud's evidence for a person who holds every permission but `environments:protect`.
+fn unprotecting(approval: Approval) -> Trusted {
+    Trusted {
+        approval,
+        permissions: Some(
+            Permission::ALL
+                .iter()
+                .copied()
+                .filter(|permission| *permission != Permission::EnvironmentsProtect)
+                .collect(),
+        ),
+        ..Trusted::default()
+    }
+}
+
+fn assert_admin_asked(refused: &RpcError) {
+    assert_eq!(refused.code.as_str(), "approval_required");
+    assert_eq!(
+        refused.message,
+        "production is Protected; an admin must approve this deploy."
+    );
+    assert_eq!(refused.details["protected"], json!(true));
+}
+
+#[test]
+fn a_deploy_into_a_protected_environment_asks_an_admin_even_when_cloud_requires_nothing() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    let refused =
+        deploy_trusted(&store, &who, 2, &unprotecting(Approval::NotRequired)).unwrap_err();
+    assert_admin_asked(&refused);
+    deploy_trusted(&store, &who, 2, &unprotecting(approved(&refused))).unwrap();
+
+    set_replicas(&store, &who, "api", 3);
+    let admin = Trusted {
+        permissions: Some(Permission::ALL.iter().copied().collect()),
+        ..Trusted::default()
+    };
+    deploy_trusted(&store, &who, 3, &admin).unwrap();
+}
+
+#[test]
+fn a_retry_into_a_protected_environment_asks_an_admin() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let retry = |approval| {
+        store.write_trusted(
+            &who,
+            &Admit::Retry(Retry {
+                id: id(3),
+                deployment: id(2),
+            }),
+            &unprotecting(approval),
+        )
+    };
+    let refused = retry(Approval::NotRequired).unwrap_err();
+    assert_admin_asked(&refused);
+    retry(approved(&refused)).unwrap();
+}

@@ -1,27 +1,49 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, DiffView, JsonValue } from "@ployz/sdk";
-import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
 import {
   type ApprovalDecision,
+  type ApprovalReview,
   approvalCommand,
   approvalSubject,
   type OperationVerb,
+  type ServiceApply,
 } from "#/modules/approvals/approvals";
 import { operationApprovals } from "#/modules/approvals/tables";
+import { user } from "#/modules/identity/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
-import type { Actor, Caller } from "#/modules/identity/actor";
-import { lacks } from "#/modules/organization/access.server";
+import { type Actor, type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
+import { beyondEnvironments, lacks, refusalOf } from "#/modules/organization/access.server";
+import type { Permission } from "#/modules/organization/permissions";
 import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { uuidFrom } from "#/server/uuid-from";
 
 type ApprovalRow = typeof operationApprovals.$inferSelect;
+
+/** A UUID that only `approvalId` produces, so a second Deploy under one approval replays the first instead of running. */
+const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${approvalId}`);
+
+/**
+ * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, so a second one replays the
+ * first, and a save (the Store's publish) of exactly the reviewed version, which the Store refuses as stale once that save
+ * committed.
+ */
+export const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
+  if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
+  if (command.command === "publish" && command.version == null && reviewed !== null) return { ...command, version: reviewed.version };
+  return command;
+};
+
+/** A review as anyone reads it: what runs once approved stays in Cloud, since a Sync's carries the secrets it sets. */
+const shownReview = ({ apply: _apply, ...review }: ApprovalReview): ApprovalReview => review;
 
 /** An approval as the CLI reads it. */
 function approvalView(row: ApprovalRow) {
@@ -31,7 +53,9 @@ function approvalView(row: ApprovalRow) {
     digest: row.digest,
     command: row.command,
     reason: row.reason,
-    review: row.review,
+    review: shownReview(row.review),
+    protected: row.review.protected !== undefined,
+    requested_by: row.requestedByUserId,
     created_at: row.createdAt.toISOString(),
     decided_at: row.decidedAt?.toISOString() ?? null,
   };
@@ -44,6 +68,32 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
   const [row] = yield* drizzle.select().from(operationApprovals)
     .where(and(eq(operationApprovals.id, id), eq(operationApprovals.organizationId, organizationId)));
   return row;
+});
+
+/** The names of the people who asked for `approvals`, keyed by their user id, so a card says whom it waits for. */
+export const askerNames = Effect.fn("Approvals.askerNames")(function* (approvals: readonly ApprovalView[]) {
+  const ids = [...new Set(approvals.flatMap((approval) => approval.requested_by ?? []))];
+  if (ids.length === 0) return new Map<string, string>();
+  const { drizzle } = yield* Database;
+  const people = yield* drizzle.select({ id: user.id, name: user.name }).from(user).where(inArray(user.id, ids));
+  return new Map(people.map((person) => [person.id, person.name]));
+});
+
+/** Who asked for approval `id`, and what to run as them once approved. */
+export const readAsker = Effect.fn("Approvals.readAsker")(function* (organizationId: string, id: string) {
+  const row = yield* readRow(organizationId, id);
+  return row === undefined ? undefined : { requestedByUserId: row.requestedByUserId, credentialId: row.credentialId, review: row.review };
+});
+
+/**
+ * Hands a row this decider approved back when what it waited on didn't run: to pending, or superseded when the plan
+ * moved, so a later approval reviews what is there now.
+ */
+export const undoApproval = Effect.fn("Approvals.undo")(function* (organizationId: string, id: string, moved: boolean) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(operationApprovals)
+    .set({ status: moved ? "superseded" : "pending", decidedByUserId: null, decidedAt: null, updatedAt: new Date() })
+    .where(and(eq(operationApprovals.id, id), eq(operationApprovals.organizationId, organizationId), eq(operationApprovals.status, "approved")));
 });
 
 type EnvironmentAsked = { id: string; project: string; name: string };
@@ -124,8 +174,10 @@ const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => E
   return (yield* readRow(row.organizationId, row.id)) ?? row;
 });
 
-export function operationDigest({ verb, preview, effects }: Pick<OperationAsked, "verb" | "preview" | "effects">) {
-  return `${verb}:${createHash("sha256").update(canonicalJson({ preview, effects })).digest("hex")}`;
+/** Protection is part of what was approved, so an approval doesn't survive the Environment being protected or unprotected. */
+export function operationDigest({ verb, preview, effects, protected: guarded }: Pick<OperationAsked, "verb" | "preview" | "effects" | "protected">) {
+  const reviewed: JsonValue = guarded === undefined ? { preview, effects } : { preview, effects, protected: guarded };
+  return `${verb}:${createHash("sha256").update(canonicalJson(reviewed)).digest("hex")}`;
 }
 
 /** "the request to deploy production": a denial names what was asked, never the approval's ID. */
@@ -180,6 +232,7 @@ const RefusedReview = Schema.Struct({
   approval: Schema.String,
   effects: Schema.mutable(Schema.Array(Schema.declare<DestructiveEffect>((value): value is DestructiveEffect => isEffect(value)))),
   diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),
+  protected: Schema.optional(Schema.Literal(true)),
 });
 
 const requester = (caller: Caller) => ({
@@ -191,15 +244,24 @@ const requester = (caller: Caller) => ({
 
 /**
  * A person who asks again for what is pending takes the request over, so their own prompt can approve it: they could
- * run it from `ployz` anyway. An agent asking again takes nothing, so no other agent's credential inherits the request.
+ * run it from `ployz` anyway. Their review comes with it, so a dashboard ask keeps what to run and one from `ployz`
+ * runs nothing on approval. An agent asking again takes nothing, so no other agent's credential inherits the request.
  */
-const askedAgain = (caller: Caller) =>
-  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller) };
+const askedAgain = (caller: Caller, review: ApprovalReview) =>
+  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller), review };
+
+/** A protected ask names its Environment; one from the dashboard also keeps what to run once approved. */
+const storeReview = (caller: Caller, command: ConfigCommand, shown: { effects: DestructiveEffect[]; diff: DiffView }, guarded: boolean): ApprovalReview => {
+  if (!guarded) return shown;
+  const review = { ...shown, protected: { environment: shown.diff.environment.name } };
+  return caller.via === "dashboard" ? { ...review, apply: command } : review;
+};
 
 /**
  * Record the Store's `approval_required` as one pending approval per digest and answer the refusal with its ID added
  * as `details.approval_id`. Asking again while it is pending answers the same row. Recording sweeps the Environment's
- * approvals for plans the Store moved past, this one too when it arrives late.
+ * approvals for plans the Store moved past, this one too when it arrives late. A refusal marked `protected` asks a
+ * protector; a dashboard ask keeps `command` to run as the asker once approved.
  */
 export const requestApproval = Effect.fn("Approvals.request")(function* (
   caller: Caller,
@@ -213,7 +275,9 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
     return refused;
   }
   const { approval: digest, effects, diff } = decoded.value;
+  const guarded = decoded.value.protected === true;
   const organizationId = caller.organization.id;
+  const review = storeReview(caller, command, { effects, diff }, guarded);
   const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(operationApprovals).values({
@@ -221,16 +285,17 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       subject: diff.environment.id,
       ...requester(caller),
       command: approvalCommand(command),
-      review: { effects, diff },
+      review,
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: askedAgain(caller),
+      set: askedAgain(caller, review),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
-  return { ...refused, details: { effects, approval: digest, diff, approval_id: recorded.id } };
+  const details = { effects, approval: digest, diff, approval_id: recorded.id };
+  return { ...refused, details: guarded ? { ...details, protected: true } : details };
 });
 
 /** An operation that may wait for a human: its sweep key, verb, name, preview, and what it destroys. */
@@ -241,6 +306,10 @@ export type OperationAsked = {
   name: string;
   preview: JsonValue;
   effects: DestructiveEffect[];
+  /** The Protected Environment it lands in when its asker can't protect it, so a protector approves it, even from the dashboard. */
+  protected?: string;
+  /** What to run as the asker once approved: a dashboard ask that waits for a protector. */
+  apply?: ServiceApply;
 };
 
 const requestOperationApproval = Effect.fn("Approvals.requestOperation")(function* (
@@ -251,6 +320,9 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
 ) {
   const organizationId = caller.organization.id;
   const operation = { verb: asked.verb, name: asked.name };
+  const shown = { effects: asked.effects, operation: { ...operation, preview: asked.preview } };
+  const guarded = asked.protected === undefined ? shown : { ...shown, protected: { environment: asked.protected } };
+  const review: ApprovalReview = asked.apply === undefined ? guarded : { ...guarded, apply: asked.apply };
   const recorded = yield* recordAndSweep(organizationId, asked.subject, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(operationApprovals).values({
@@ -258,12 +330,12 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
       subject: asked.subject,
       ...requester(caller),
       command: asked.verb,
-      review: { effects: asked.effects, operation: { ...operation, preview: asked.preview } },
+      review,
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: askedAgain(caller),
+      set: askedAgain(caller, review),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
@@ -306,12 +378,13 @@ export const gateOperation = Effect.fn("Approvals.gateOperation")(function* (
   approvalId: string | null,
   asked: OperationAsked,
 ): Effect.fn.Return<Gated, never, Database> {
-  // A person who confirmed it in the dashboard already approved it; only `ployz` and agents wait on one.
-  if (caller.via === "dashboard") return { ok: true, approvalId: null };
+  // A person who confirmed it in the dashboard already approved it; only `ployz`, agents, and an ask into a Protected
+  // Environment by someone who can't protect it wait on one.
+  if (caller.via === "dashboard" && asked.protected === undefined) return { ok: true, approvalId: null };
   const trusted = yield* trustedApproval(caller.organization.id, approvalId);
   if (!trusted.ok) return trusted;
   if (asked.effects.length === 0) return { ok: true, approvalId: null };
-  if (!(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
+  if (asked.protected === undefined && !(yield* hasApprover(caller.organization.id))) return { ok: true, approvalId: null };
   const digest = operationDigest(asked);
   if (trusted.approval !== "required" && trusted.approval.approved === digest) return { ok: true, approvalId };
   return { ok: false, refusal: yield* requestOperationApproval(caller, asked, digest).pipe(Effect.orDie) };
@@ -340,24 +413,44 @@ export const pendingApprovals = <R = never>(organizationId: string, operationDig
     return fresh.filter((row) => row.status === "pending").map(approvalView);
   }).pipe(Effect.withSpan("Approvals.pending"));
 
-type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: StoreRefusal };
+/** `decided` is set when this call decided it, not when it answers a decision already made. */
+type Decided = { ok: true; approval: ApprovalView; decided?: true } | { ok: false; refusal: StoreRefusal };
 
-/** Who decides: a person in the dashboard, or a Caller through the credential it signed in with. */
+/**
+ * Who decides: a person in the dashboard with what they hold there, or a Caller through the credential it signed in
+ * with. A dashboard decider that names no permissions holds none.
+ */
 export type Decider = Actor & { readonly organization: { readonly id: string } } & (
-  | { readonly via: "dashboard" }
+  | { readonly via: "dashboard"; readonly permissions?: ReadonlyArray<Permission>; readonly environments?: ReadonlyArray<string> | undefined }
   | Pick<Caller, "via" | "credential" | "role" | "support">
 );
 
-const mayApprove = (decider: Decider, row: ApprovalRow) => {
-  if (decider.via === "dashboard") return true;
-  if (row.via === "cli") return true;
-  return row.via === "agent" && row.credentialKind === "token" && decider.userId === row.requestedByUserId;
+const held = (decider: Decider) => "role" in decider && decider.credential !== undefined
+  ? { permissions: callerPermissions(decider), environments: callerEnvironments({ credential: decider.credential }) }
+  : { permissions: "permissions" in decider ? decider.permissions ?? [] : [], environments: "environments" in decider ? decider.environments : undefined };
+
+/**
+ * Why `decider` may not decide `row`, or null when they may. An ask into a Protected Environment is decided by someone
+ * who can protect it, other than its asker, however they decide. Any other is denied by
+ * any member and approved by a person in Ployz Cloud, or the prompt that asked.
+ */
+const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): string | null => {
+  const guarded = row.review.protected;
+  if (guarded !== undefined) {
+    if (decider.userId === row.requestedByUserId) return "You asked for this, so someone else who can protect it decides.";
+    const { permissions, environments } = held(decider);
+    if (!permissions.includes("environments:protect")) return refusalOf("environments:protect");
+    return beyondEnvironments(environments, { environment: guarded.environment });
+  }
+  if (!approve || decider.via === "dashboard" || row.via === "cli") return null;
+  if (row.via === "agent" && row.credentialKind === "token" && decider.userId === row.requestedByUserId) return null;
+  return "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
 };
 
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
- * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
- * may deny; who may approve is `mayApprove`'s. The row records who decided.
+ * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
+ * `mayNotDecide`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
   caller: Decider,
@@ -385,9 +478,9 @@ export const decideApproval = <R = never>(
   if (lacking !== null) {
     return { ok: false, refusal: { code: "forbidden", message: lacking, details: { approval: approvalView(row) } } } satisfies Decided;
   }
-  if ("approve" in decision && !mayApprove(caller, row)) {
-    const message = "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
-    return { ok: false, refusal: { code: "forbidden", message, details: { approval: approvalView(row) } } } satisfies Decided;
+  const refused = mayNotDecide(caller, row, "approve" in decision);
+  if (refused !== null) {
+    return { ok: false, refusal: { code: "forbidden", message: refused, details: { approval: approvalView(row) } } } satisfies Decided;
   }
   if (row.status !== "pending") return settled(row);
   if ("approve" in decision && decision.approve.digest !== row.digest) {
@@ -402,7 +495,7 @@ export const decideApproval = <R = never>(
       : { status: "denied", reason: decision.reject.reason ?? null, ...decided })
     .where(and(eq(operationApprovals.id, row.id), eq(operationApprovals.status, "pending")))
     .returning();
-  if (updated !== undefined) return { ok: true, approval: approvalView(updated) } satisfies Decided;
+  if (updated !== undefined) return { ok: true, approval: approvalView(updated), decided: true } satisfies Decided;
   const current = yield* readRow(caller.organization.id, id);
   return current === undefined ? yield* new NotFound({ message: "No such approval." }) : settled(current);
 }).pipe(Effect.withSpan("Approvals.decide"));

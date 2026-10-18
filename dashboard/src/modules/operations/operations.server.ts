@@ -18,6 +18,8 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { beyondEnvironments, lacksPermission } from "#/modules/organization/access.server";
 import type { Permission } from "#/modules/organization/permissions";
 import { requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
+import { environmentProtected } from "#/modules/config-store/store-lookup.server";
+import { protectorOnly } from "#/modules/config-store/protected.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { admitRun, planVolumeRun } from "#/modules/volume-run/volume-run.server";
@@ -210,10 +212,26 @@ const interrupts = (input: {
   };
 };
 
+/**
+ * A stop or restart in a Protected Environment by someone who can't protect it waits for someone who can, even from
+ * the dashboard, which keeps what to run as its asker once approved.
+ */
+const guarded = Effect.fn("Operations.guarded")(function* (
+  caller: Caller,
+  input: { readonly environmentId: string; readonly project: string; readonly environment: string; readonly service: string; readonly verb: ServiceVerb },
+  asked: OperationAsked,
+) {
+  if (input.verb === "start" || protectorOnly(caller, input.environment) === null) return asked;
+  if (!(yield* environmentProtected(caller.organization.id, input.project, input.environmentId))) return asked;
+  const apply = caller.via === "dashboard" ? { apply: { environmentId: input.environmentId, service: input.service, verb: input.verb } } : {};
+  return { ...asked, protected: input.environment, ...apply } satisfies OperationAsked;
+});
+
 export const actService = (
   caller: Caller,
   input: {
     readonly environmentId: string;
+    readonly project: string;
     readonly environment: string;
     readonly place: string;
     readonly service: string;
@@ -229,10 +247,11 @@ export const actService = (
     caller.organization.id,
     { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.gen(function* () {
-      const { environment: _environment, ...act } = input;
+      const { environment: _environment, project: _project, ...act } = input;
       const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...act });
-      const asked = interrupts(input);
-      if (asked === null) return run;
+      const interrupted = interrupts(input);
+      if (interrupted === null) return run;
+      const asked = yield* guarded(caller, input, interrupted);
       const gated = yield* gate(caller, call, asked);
       if (!gated.ok) return refused(gated.refusal);
       if (gated.approvalId === null) return run;

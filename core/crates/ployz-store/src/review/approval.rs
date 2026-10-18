@@ -13,6 +13,8 @@ use ts_rs::TS;
 use crate::error;
 use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
 use crate::review::{DiffView, Head, Review, Shipping};
+use crate::scope::{Environment, EnvironmentSummary};
+use crate::storage::Tx;
 use crate::{Actor, Approval, Asks, Permission, Trusted};
 
 /// One thing a publication destroys, by the node it changes and the row.
@@ -250,38 +252,110 @@ fn digest(version: &str, bound: &serde_json::Value) -> ApprovalDigest {
         .expect("a version and a 16-digit hex digest form an approval")
 }
 
+/// What a write into one Environment must clear. Cloud says who asks; in a Protected
+/// Environment a caller without `environments:protect` asks for every write that
+/// ships, and Cloud's word that nothing is required does not exempt it. Cloud's own
+/// writes name no caller, so they never ask here.
+pub(crate) struct Gate<'a> {
+    trusted: &'a Trusted,
+    protected: bool,
+}
+
+impl<'a> Gate<'a> {
+    pub(crate) fn new(
+        tx: &mut dyn Tx,
+        environment: &EnvironmentId,
+        trusted: &'a Trusted,
+    ) -> Result<Self, RpcError> {
+        let protected = trusted
+            .permissions
+            .as_ref()
+            .is_some_and(|held| !held.contains(&Permission::EnvironmentsProtect))
+            && crate::scope::protected(tx, environment)?;
+        Ok(Self { trusted, protected })
+    }
+
+    /// Whether a retry asks a human at all.
+    pub(crate) fn asks_retry(&self) -> bool {
+        self.protected
+            || (self.trusted.asks == Asks::EveryDeploy
+                && self.trusted.approval != Approval::NotRequired)
+    }
+
+    /// Refuse unless Cloud approved `bound` at `diff`'s version; a Protected ask binds
+    /// that too, so an approval given before protection doesn't carry over.
+    fn require(
+        &self,
+        mut bound: serde_json::Value,
+        message: String,
+        (effects, diff): (&BTreeSet<DestructiveEffect>, &DiffView),
+    ) -> Result<(), RpcError> {
+        if self.protected
+            && let Some(bound) = bound.as_object_mut()
+        {
+            bound.insert("protected".to_owned(), json!(true));
+        }
+        let digest = digest(&diff.version, &bound);
+        match &self.trusted.approval {
+            Approval::NotRequired if !self.protected => Ok(()),
+            Approval::Approved(approved) if *approved == digest => Ok(()),
+            Approval::NotRequired | Approval::Required | Approval::Approved(_) => {
+                let mut details = json!({"effects": effects, "approval": digest, "diff": diff});
+                if self.protected
+                    && let Some(details) = details.as_object_mut()
+                {
+                    details.insert("protected".to_owned(), json!(true));
+                }
+                Err(error::approval_required(message, details))
+            }
+        }
+    }
+
+    fn message(&self, diff: &DiffView, what: &str, otherwise: impl FnOnce() -> String) -> String {
+        if self.protected {
+            let name = &diff.environment.name;
+            format!("{name} is Protected; an admin must approve this {what}.")
+        } else {
+            otherwise()
+        }
+    }
+}
+
 /// Refuse shipping `target` while it destroys something, unless no approval is
 /// required or Cloud holds a human's approval of exactly this version and set.
 /// Publishing already-Saved State asks nothing: the Publish that saved it did. Under
-/// [`Asks::EveryDeploy`] every Deploy asks, even one that destroys nothing or ships
-/// already-Saved State, and the approval covers only the Services and upload it
-/// deploys.
+/// [`Asks::EveryDeploy`], or into a Protected Environment for a caller who asks
+/// there, every Deploy and Publish asks, even one that destroys nothing or ships
+/// already-Saved State, and a Deploy's approval covers only the Services and upload
+/// it deploys.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
-/// fresh `diff`.
+/// fresh `diff`, and `protected` when the Environment's protection asked.
 pub(crate) fn approve(
     who: &Actor,
-    environment: &EnvironmentId,
     review: &Review,
     (target, shipping): (&SavedEnvironmentIntent, Shipping<'_>),
-    trusted: &Trusted,
+    gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
     let diff = &review.view;
+    let environment = &diff.environment.id;
     let effects = &diff.effects;
     let resaves = review
         .saved
         .as_ref()
         .is_some_and(|saved| saved.intent == *target);
     let asks = match shipping {
+        Shipping::Publish if gate.protected && !resaves => Asks::EveryDeploy,
+        Shipping::Deploy { .. } if gate.protected => Asks::EveryDeploy,
         Shipping::Publish => Asks::Destroys,
-        Shipping::Deploy { .. } => trusted.asks,
+        Shipping::Deploy { .. } => gate.trusted.asks,
     };
     if asks == Asks::Destroys && (effects.is_empty() || resaves) {
         return Ok(());
     }
     if !effects.is_empty() {
-        trusted.admit(Permission::ChangesDestroy)?;
+        gate.trusted.admit(Permission::ChangesDestroy)?;
     }
     let mut bound = bound(who, environment, effects);
     if let Shipping::Deploy { services, upload } = shipping
@@ -291,22 +365,23 @@ pub(crate) fn approve(
         bound.insert("services".to_owned(), json!(services));
         bound.insert("upload".to_owned(), json!(upload));
     }
-    let message = if effects.is_empty() {
-        "A human must approve this deploy first.".to_owned()
-    } else {
-        let asked = effects
-            .iter()
-            .map(DestructiveEffect::describe)
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("A human must approve this first: {asked}")
-    };
-    let digest = digest(&diff.version, &bound);
-    require(&trusted.approval, digest, message, (effects, diff))
+    let message = gate.message(diff, "deploy", || {
+        if effects.is_empty() {
+            "A human must approve this deploy first.".to_owned()
+        } else {
+            let asked = effects
+                .iter()
+                .map(DestructiveEffect::describe)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("A human must approve this first: {asked}")
+        }
+    });
+    gate.require(bound, message, (effects, diff))
 }
 
 /// Refuse retrying Deployment `source` unless Cloud holds a human's approval of this
-/// retry. Only [`Asks::EveryDeploy`] asks: a retry ships nothing a review hasn't.
+/// retry, when [`Gate::asks_retry`]: a retry ships nothing a review hasn't.
 /// `review` is taken before the retry queues, so its version moves once it does: one
 /// approval admits one retry.
 ///
@@ -314,14 +389,13 @@ pub(crate) fn approve(
 /// `approval_required`, naming the `version:digest` to approve and the `diff`.
 pub(crate) fn approve_retry(
     who: &Actor,
-    environment: &EnvironmentId,
     review: &Review,
     source: &DeploymentId,
-    trusted: &Trusted,
+    gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
     let bound = json!({
         "organization": who.organization,
-        "environment": environment,
+        "environment": review.view.environment.id,
         "retry": source,
     });
     // The retry ships its source's frozen state: none of the staged changes, and it
@@ -330,28 +404,76 @@ pub(crate) fn approve_retry(
     diff.effects.clear();
     diff.changes.clear();
     diff.total_count = 0;
-    let digest = digest(&diff.version, &bound);
-    let message = "A human must approve this retry first.".to_owned();
-    require(
-        &trusted.approval,
-        digest,
-        message,
-        (&BTreeSet::new(), &diff),
-    )
+    let message = gate.message(&diff, "deploy", || {
+        "A human must approve this retry first.".to_owned()
+    });
+    gate.require(bound, message, (&BTreeSet::new(), &diff))
 }
 
-fn require(
-    trusted: &Approval,
-    digest: ApprovalDigest,
-    message: String,
-    (effects, diff): (&BTreeSet<DestructiveEffect>, &DiffView),
-) -> Result<(), RpcError> {
-    match trusted {
-        Approval::NotRequired => Ok(()),
-        Approval::Approved(approved) if *approved == digest => Ok(()),
-        Approval::Required | Approval::Approved(_) => Err(error::approval_required(
-            message,
-            json!({"effects": effects, "approval": digest, "diff": diff}),
-        )),
+/// What a Sync or Take moves into an Environment: from which source, and the
+/// request's own choices, which its approval covers.
+#[derive(Clone, Copy)]
+pub(crate) enum Moving<'a> {
+    Sync(&'a EnvironmentSummary, &'a serde_json::Value),
+    Take(&'a EnvironmentSummary, &'a serde_json::Value),
+}
+
+/// A Sync or Take into an Environment that is Protected for the caller, read before
+/// it writes: the version Cloud's approval stays fresh against is the one the
+/// refusal rolls back to.
+pub(crate) struct MoveAsks<'a> {
+    gate: Gate<'a>,
+    version: String,
+}
+
+/// Whether a Sync or Take into `into` asks, read before it writes anything.
+///
+/// # Errors
+/// When the caller's grant can't write `into`.
+pub(crate) fn move_asks<'a>(
+    tx: &mut dyn Tx,
+    into: &Environment,
+    trusted: &'a Trusted,
+) -> Result<Option<MoveAsks<'a>>, RpcError> {
+    let gate = Gate::new(tx, &into.summary.id, trusted)?;
+    if !gate.protected {
+        return Ok(None);
     }
+    trusted.writes(&into.summary.name)?;
+    let version = crate::review::review(tx, into)?.view.version;
+    Ok(Some(MoveAsks { gate, version }))
+}
+
+/// Refuse a Sync or Take into `into`, once written, when [`move_asks`] said it
+/// asks, unless Cloud holds a human's approval of exactly this move: its source at
+/// its revision, the request's choices, and `into` at the version it held before.
+/// The refusal rolls the write back and shows what the move staged.
+///
+/// # Errors
+/// `approval_required`, naming the `version:digest` to approve and `into`'s `diff`.
+pub(crate) fn approve_move(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    into: &Environment,
+    asks: Option<MoveAsks<'_>>,
+    moving: Moving<'_>,
+) -> Result<(), RpcError> {
+    let Some(MoveAsks { gate, version }) = asks else {
+        return Ok(());
+    };
+    let (what, from, request) = match moving {
+        Moving::Sync(from, request) => ("sync", from, request),
+        Moving::Take(from, request) => ("take", from, request),
+    };
+    let bound = json!({
+        "organization": who.organization,
+        "environment": into.summary.id,
+        what: from.id,
+        "from_revision": from.revision,
+        "request": request,
+    });
+    let mut diff = crate::review::review(tx, into)?.view;
+    diff.version = version;
+    let message = gate.message(&diff, what, String::new);
+    gate.require(bound, message, (&diff.effects, &diff))
 }

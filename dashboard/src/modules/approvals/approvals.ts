@@ -11,13 +11,22 @@ export type OperationVerb = "drain" | "set" | "clean" | "remove" | "forget" | "r
 /** An operation as a human approves it: its verb, what it acts on by name, and the preview its digest covers. */
 export type OperationReview = { verb: OperationVerb; name: string; preview: JsonValue };
 
+/** A stop or restart the dashboard asked for, run as its asker once a protector approves it. */
+export type ServiceApply = { environmentId: string; service: string; verb: "stop" | "restart" };
+
+/**
+ * An ask into the Protected Environment `environment` by someone who can't protect it: someone who can, other than its
+ * asker, decides it.
+ */
+export type Guarded = { environment: string };
+
 /**
  * What a human approves: the Destructive Effects, and either the Review they come from as the Store refused it, or the
- * operation's preview.
+ * operation's preview. A dashboard ask into a Protected Environment also keeps what runs as its asker once approved.
  */
 export type ApprovalReview =
-  | { effects: DestructiveEffect[]; diff: DiffView }
-  | { effects: DestructiveEffect[]; operation: OperationReview };
+  | { effects: DestructiveEffect[]; diff: DiffView; protected?: Guarded; apply?: ConfigCommand }
+  | { effects: DestructiveEffect[]; operation: OperationReview; protected?: Guarded; apply?: ServiceApply };
 
 const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.slice(1).replaceAll("_", " ")}`;
 
@@ -27,7 +36,8 @@ const capitalized = (word: string) => `${word.charAt(0).toUpperCase()}${word.sli
  */
 export function approvalSubject(command: string, review: ApprovalReview) {
   if ("operation" in review) return { verb: capitalized(review.operation.verb), name: review.operation.name, project: null };
-  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove" : command === "shut_down" ? "Shut down" : "Deploy";
+  const verb = command === "publish" ? "Save" : command === "retry" ? "Retry" : command === "remove" ? "Remove"
+    : command === "shut_down" ? "Shut down" : command === "sync" ? "Sync" : command === "take" ? "Take" : "Deploy";
   return { verb, name: review.diff.environment.name, project: review.diff.environment.project };
 }
 
@@ -38,6 +48,8 @@ export function approvalBadge(command: string, { effects }: ApprovalReview) {
   if (command === "stop") return "Stops service";
   if (command === "restart") return "Restarts service";
   if (command === "unprotect") return "Unprotects";
+  if (command === "sync") return "Syncs";
+  if (command === "take") return "Takes";
   if (effects.length === 0) return "Deploys";
   if (effects.every((effect) => effect.kind === "deletes_volume")) {
     return `Deletes ${effects.length} ${effects.length === 1 ? "volume" : "volumes"}`;
@@ -57,9 +69,13 @@ const agentShips = (via: Caller["via"], command: ConfigCommand) =>
 const agentDestroys = (via: Caller["via"], command: ConfigCommand) =>
   via === "agent" && (command.command === "remove" || (command.command === "admit" && command.admit === "shut_down"));
 
-/** The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, an agent's retry, and an agent's Project or Environment removal or shutdown. */
+/**
+ * The writes that may wait for a human: a Save (the Store's publish), a manual Deploy, a Sync or Take (into a Protected
+ * Environment), an agent's retry, and an agent's Project or Environment removal or shutdown.
+ */
 export function asksApproval(via: Caller["via"], command: ConfigCommand) {
   return command.command === "publish" || (command.command === "admit" && command.admit === "deploy")
+    || command.command === "sync" || command.command === "take"
     || agentShips(via, command) || agentDestroys(via, command);
 }
 

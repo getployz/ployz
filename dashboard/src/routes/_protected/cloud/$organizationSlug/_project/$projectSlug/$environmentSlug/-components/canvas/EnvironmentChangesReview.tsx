@@ -20,6 +20,8 @@ export type EnvironmentChangesReviewProps = {
   groups: ChangeGroup[];
   totalChanges: number;
   canDeploy: boolean;
+  /** Deploy asks an owner or admin first. */
+  asks?: boolean;
   /** Working State differs from Saved State: Save only saves it without deploying. */
   canSave: boolean;
   onSave: () => void;
@@ -292,7 +294,7 @@ export function Value({ kind, before, after }: { kind: ChangeKind; before: strin
 }
 
 /** Discard all, quiet on the left; Save only and Deploy on the right. */
-function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, busy = new Set() }: EnvironmentChangesReviewProps) {
+function Footer({ groups, canDeploy, asks = false, canSave, onSave, onDiscardAll, onDeploy, busy = new Set() }: EnvironmentChangesReviewProps) {
   return (
     <DialogFooter>
       {groups.some((group) => group.canDiscard) ? (
@@ -303,7 +305,7 @@ function Footer({ groups, canDeploy, canSave, onSave, onDiscardAll, onDeploy, bu
       </Button>
       {canDeploy ? (
         <Button disabled={busy.has("saving") || busy.has("deploying")} onClick={onDeploy}>
-          {busy.has("deploying") ? <><Spinner data-icon="inline-start" />Deploying…</> : "Deploy changes"}
+          {busy.has("deploying") ? <><Spinner data-icon="inline-start" />Deploying…</> : asks ? "Request deploy" : "Deploy changes"}
         </Button>
       ) : null}
     </DialogFooter>

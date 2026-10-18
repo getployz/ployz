@@ -6,7 +6,7 @@ import { AGENT, agentResume, agentStart, CATALOG, finish, GATED, untilWrite } fr
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks, approvalCommand } from "#/modules/approvals/approvals";
-import { gateOperation, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
+import { gateOperation, onceFor, requestApproval, reviewedDiff, trustedApproval } from "#/modules/approvals/approvals.server";
 import type { Ran } from "#/modules/commands/command.server";
 import { findCommand, inputSchema, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
@@ -17,7 +17,6 @@ import type { JsonObject } from "#/db/tables";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { answerForSupport, refusalForSupport } from "#/modules/support-access/support-view";
 import { projectJsonValue } from "#/lib/json";
-import { uuidFrom } from "#/server/uuid-from";
 
 /** A Caller acting through an agent: the sidebar, or a remote MCP client. */
 export type AgentCaller = Omit<Caller, "via"> & { readonly via: "agent" };
@@ -90,20 +89,6 @@ const ACTS = {
   forget_server: "server forget",
   volume: "Volume run",
 } as const satisfies Record<Act["action"]["action"], string>;
-
-/** A UUID that only `approvalId` produces, so a second Deploy under one approval replays the first instead of running. */
-const approvalUuid = (approvalId: string) => uuidFrom(`ployz.agent.deploy:${approvalId}`);
-
-/**
- * `command` pinned to what one approval allows exactly once: a Deploy keyed by the approval, so a second one replays the
- * first, and a save (the Store's publish) of exactly the reviewed version, which the Store refuses as stale once that save
- * committed.
- */
-const onceFor = (command: ConfigCommand, approvalId: string, reviewed: DiffView | null): ConfigCommand => {
-  if (command.command === "admit") return { ...command, id: approvalUuid(approvalId) };
-  if (command.command === "publish" && command.version == null && reviewed !== null) return { ...command, version: reviewed.version };
-  return command;
-};
 
 const StaleReview = Schema.Struct({
   diff: Schema.Struct({

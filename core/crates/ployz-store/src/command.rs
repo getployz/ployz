@@ -397,7 +397,7 @@ commands! {
     Sync(crate::SyncChanges) -> Synced(crate::Synced)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::branch::sync(tx, who, sealing, c);
+        => crate::branch::sync(tx, who, sealing, c, trusted);
     /// Undo a Sync while what it staged is undeployed and unchanged, or forget the
     /// offer it made.
     UndoSync(crate::UndoSync) -> Undone(crate::Undone)
@@ -413,7 +413,7 @@ commands! {
     Take(crate::Take) -> Taken(crate::Taken)
         needs ChangesStage
         agent none "No tool works on branches."
-        => crate::branch::take(tx, who, c);
+        => crate::branch::take(tx, who, c, trusted);
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode) -> Branch(crate::Branched)
         needs ChangesStage

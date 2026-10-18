@@ -272,7 +272,11 @@ fn deploying_a_staged_destroy_needs_changes_destroy() {
         .write_trusted(
             &who,
             &deploy_production(2),
-            &holding(&[Permission::ChangesDeploy, Permission::ChangesDestroy]),
+            &holding(&[
+                Permission::ChangesDeploy,
+                Permission::ChangesDestroy,
+                Permission::EnvironmentsProtect,
+            ]),
         )
         .unwrap();
 }

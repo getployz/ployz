@@ -4,8 +4,8 @@
 
 use super::proposal;
 use super::*;
-use crate::SealingKey;
 use crate::variables::{VariableKey, validate_text};
+use crate::{SealingKey, Trusted};
 
 /// Sync one Environment's changes into another of its Project, staged in the
 /// receiver's Working State. Nothing is deleted, published or deployed.
@@ -179,6 +179,7 @@ pub(crate) fn sync(
     who: &Actor,
     sealing: &SealingKey,
     request: &SyncChanges,
+    trusted: &Trusted,
 ) -> Result<Synced, RpcError> {
     let side = (&request.from, request.into.as_ref());
     let target = target(tx, who, side)?;
@@ -211,6 +212,7 @@ pub(crate) fn sync(
         }
         closable(tx, &from)?;
     }
+    let asks = review::move_asks(tx, &into, trusted)?;
     if let Some(found) = &mut found {
         proposal::rebind(tx, &into, found, &from)?;
     }
@@ -241,9 +243,29 @@ pub(crate) fn sync(
     let staged = checked.apply(tx, who, &mut into, &picks, &values, owner)?;
     proposal::keep_carried(tx, &into, &proposal, &before)?;
     if close_after {
+        trusted.writes(&from.summary.name)?;
         let because = crate::removal::mark::Closed::Synced;
         crate::removal::close(tx, who, &from.summary.id, because, &mut Default::default())?;
     }
+    let fingerprints = request
+        .values
+        .iter()
+        .map(|(row, value)| (row, sealing.fingerprint(value)))
+        .collect::<BTreeMap<_, _>>();
+    let asked = json!({
+        "version": request.version,
+        "picks": request.picks,
+        "skip": request.skip,
+        "values": fingerprints,
+        "close_after": close_after,
+    });
+    review::approve_move(
+        tx,
+        who,
+        &into,
+        asks,
+        review::Moving::Sync(&from.summary, &asked),
+    )?;
     Ok(Synced {
         sync: id,
         from: from.summary,
@@ -526,7 +548,12 @@ pub(crate) fn undo(tx: &mut dyn Tx, who: &Actor, request: &UndoSync) -> Result<U
 }
 
 /// Stage the hints `take` names, from the Parent.
-pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Taken, RpcError> {
+pub(crate) fn take(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    take: &Take,
+    trusted: &Trusted,
+) -> Result<Taken, RpcError> {
     let HintSource::Parent(parent) = &take.from;
-    follow::take(tx, who, parent, take)
+    follow::take(tx, who, parent, take, trusted)
 }

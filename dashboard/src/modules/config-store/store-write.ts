@@ -7,7 +7,7 @@ import { observeFailure, type Persistable } from "#/collections/query-collection
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
-import { commandEnvironment, commandEnvironments, StoreRefused } from "./store.contract";
+import { commandEnvironment, commandEnvironments, isProtectedAsk, StoreRefused } from "./store.contract";
 import { cachedRevision, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
 import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 
@@ -36,6 +36,9 @@ function writtenRevision(written: ConfigWritten): number | null {
 
 const isStaleRevision = Schema.is(Schema.Struct({ revision: Schema.Number }));
 const isStale = (error: Error) => error instanceof StoreRefused && error.code === "conflict" && isStaleRevision(error.details);
+
+/** A write into a Protected Environment that now waits for an owner or admin to approve it. */
+export const isRequested = (error: Error) => error instanceof StoreRefused && isProtectedAsk(error.refusal);
 
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
@@ -112,7 +115,9 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         // Only a write that sent `expect` meets a stale revision, whose `conflict` names the revision; any other
         // `conflict` (a taken name, a referenced variable) says its own.
         // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
-        if (isUnauthorized(error)) {
+        if (isRequested(error)) {
+          toast.success("Requested");
+        } else if (isUnauthorized(error)) {
           toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign(signInHere()) } });
         } else if (!(promise && shownInline.has(promise)) && !(error instanceof StoreRefused && handled.includes(error.code))) {
           toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error.message);

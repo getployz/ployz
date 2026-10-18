@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Schema } from "effect";
 import { APPROVAL_STATUSES, approvalSubject, destroyedLine } from "#/modules/approvals/approvals";
-import { type ApprovalView, decideApproval } from "#/modules/approvals/approvals.server";
+import { decideAndApply } from "#/modules/approvals/apply.server";
+import type { ApprovalView } from "#/modules/approvals/approvals.server";
 import { defineCommand, type Ran } from "#/modules/commands/command.server";
 import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
 
@@ -106,7 +107,7 @@ export const orgApprovalApprove = defineCommand({
   render: "message",
   run: (caller, { id }) => Effect.gen(function* () {
     const { digest } = yield* freshApproval(caller.organization.id, id);
-    const decided = yield* decideApproval(caller, id, { approve: { digest } }, freshOperationDigest);
+    const decided = yield* decideAndApply(caller, id, { approve: { digest } }, freshOperationDigest);
     return told(decided, (subject) => `Approved: ${subject}. The command waiting on it goes ahead.`);
   }),
 });
@@ -129,7 +130,7 @@ export const orgApprovalDeny = defineCommand({
   }),
   output: Answered,
   render: "message",
-  run: (caller, { id, reason }) => decideApproval(caller, id, { reject: reason === undefined ? {} : { reason } }, freshOperationDigest).pipe(
+  run: (caller, { id, reason }) => decideAndApply(caller, id, { reject: reason === undefined ? {} : { reason } }, freshOperationDigest).pipe(
     Effect.map((decided) => told(decided, (subject) => `Denied: ${subject}.`)),
   ),
 });

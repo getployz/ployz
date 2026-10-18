@@ -369,7 +369,7 @@ export const writeStoreAsMember = (actor: Actor, organizationSlug: string, comma
 }).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));
 
 /** Deleting an Environment or a Project takes its delete permission, protecting one its own; every other write only staging. */
-const writePermission = (command: ConfigCommand): Permission => {
+export const writePermission = (command: ConfigCommand): Permission => {
   if (command.command === "set_environment_protected") return "environments:protect";
   if (command.command !== "remove") return "changes:stage";
   return command.environment == null ? "project:delete" : "environment:delete";

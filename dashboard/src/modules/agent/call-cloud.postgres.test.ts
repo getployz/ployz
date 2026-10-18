@@ -352,7 +352,7 @@ describe("callCloud", () => {
       select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
       from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
     const caller: Caller = { ...member, userId };
-    return { services, drizzle, caller, send };
+    return { services, drizzle, caller, send, store };
   });
 
   // Catches an agent stopping or restarting a Service without asking, or a start (which interrupts nothing) made to ask.
@@ -411,6 +411,30 @@ describe("callCloud", () => {
 
       const clicked = yield* callCloud({ ...caller, via: "dashboard" }, { act: stop("4") }).pipe(Effect.provide(services));
       expect(clicked).toEqual({ ok: true, value: expect.objectContaining({ run: "stop web", state: "accepted" }) });
+    }));
+
+  it.live("a member's stop approved before production was protected asks a protector once it is", () =>
+    Effect.gen(function* () {
+      const { services, drizzle, caller, store } = yield* deployedWeb;
+      const agent: Caller = { ...caller, role: "member" };
+      const stop = (attempt: string): Act => ({
+        attempt: attempt.repeat(32),
+        digest: "d".repeat(64),
+        action: { action: "service", environment: ENVIRONMENT, service: "web", only: null, verb: "stop" },
+      });
+
+      const protect = (on: boolean) => Effect.promise(() => store.write(ORGANIZATION, { command: "set_environment_protected", environment: { project: null, environment: null }, protected: on }));
+      yield* protect(false);
+      const asked = yield* callCloud(agent, { act: stop("1") }).pipe(Effect.provide(services));
+      const { approval, approval_id } = Schema.decodeUnknownSync(Asked)(asked.ok ? null : asked.refusal.details);
+      expect(yield* decideApproval({ ...caller, via: "dashboard" }, approval_id, { approve: { digest: approval } }).pipe(Effect.provide(services))).toMatchObject({ ok: true });
+      yield* protect(true);
+
+      const guarded = yield* callCloud(agent, { act: stop("2") }, approval_id).pipe(Effect.provide(services));
+      expect(guarded).toEqual({ ok: false, refusal: expect.objectContaining({ code: "approval_required" }) });
+      const fresh = Schema.decodeUnknownSync(Asked)(guarded.ok ? null : guarded.refusal.details);
+      expect(fresh.approval).not.toBe(approval);
+      expect(yield* drizzle.select().from(serviceAct)).toEqual([]);
     }));
 
   // Catches an approval to stop web on one Server stopping it on another Server that has the same name.

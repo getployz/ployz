@@ -14,7 +14,8 @@ import { nodeName, settingName } from "#/modules/config-store/store-branches";
 import { useStoreBusy, useStoreNeverSyncs } from "#/modules/config-store/store-pending";
 import { flipRow, flipsMoved, showNeverSyncing, syncLine, syncPicks, syncSections, type Flips } from "#/modules/config-store/store-sync";
 import { syncQuery, useStoreView } from "#/modules/config-store/store-view.queries";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { isRequested, useStoreWriter } from "#/modules/config-store/store-write";
+import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 
 /**
@@ -47,6 +48,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
   const [values, setValues] = useState<Readonly<Partial<Record<RowId, string>>>>({});
   const [closeAfter, setCloseAfter] = useState(true);
   const pending = useStoreBusy(organizationSlug, from).has("syncing");
+  const asks = useProtectedAsk(organizationSlug, { project: from.project, environment: into });
   const [stale, setStale] = useState(false);
   // The id of the last Sync sent and what it asked: an identical retry reuses it, so a lost response never syncs twice,
   // and changed picks, values or version mint a new one, so the Store never answers them with the old Sync.
@@ -80,6 +82,8 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
         values: typed, version: view.value.version, id, close_after: closeAfterSync,
       }, ["conflict"]).isPersisted.promise;
     } catch (error) {
+      // Asked for instead: the writer says Requested, and an owner or admin syncs it on approval.
+      if (error instanceof Error && isRequested(error)) return onClose();
       // Any other refusal is the writer's toast.
       setStale(error instanceof StoreRefused && error.code === "conflict");
       return;
@@ -148,7 +152,7 @@ export function SyncDialog({ organizationSlug, from, into: first, places = [], c
           {rows.length ? <>
             <Button variant="outline" onClick={onClose}>Cancel</Button>
             <Button disabled={picked.length === 0 || pending} onClick={() => void sync()}>
-              {pending ? <><Spinner data-icon="inline-start" />Syncing…</> : `Sync ${plural(picked.length, "change")}`}
+              {pending ? <><Spinner data-icon="inline-start" />Syncing…</> : asks ? "Request sync" : `Sync ${plural(picked.length, "change")}`}
             </Button>
           </> : <Button variant="outline" onClick={onClose}>Done</Button>}
         </DialogFooter>

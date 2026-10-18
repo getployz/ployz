@@ -469,6 +469,15 @@ pub(crate) fn resolve(
     Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
 }
 
+/// Whether Environment `id` is Protected.
+pub(crate) fn protected(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<bool, RpcError> {
+    let rows = tx.query(
+        "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
+        &[id.as_str().into()],
+    )?;
+    Ok(!rows.is_empty())
+}
+
 /// Load an Environment by its ID, without locking it.
 pub(crate) fn load_by_id(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Environment, RpcError> {
     let rows = tx.query(

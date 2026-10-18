@@ -27,7 +27,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 pub use approval::{DestructiveEffect, DestructiveKind};
-pub(crate) use approval::{approve, approve_retry};
+pub(crate) use approval::{Gate, Moving, approve, approve_move, approve_retry, move_asks};
 
 use crate::Actor;
 use crate::error;
@@ -621,8 +621,7 @@ pub(crate) fn publish(
     {
         return Ok((latest.revision, false));
     }
-    let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
-    guard_source(tx, environment, before, &intent.services)?;
+    guard_saving(tx, environment, latest, &intent)?;
     let revision = Revision(latest.map_or(0, |latest| latest.revision.0) + 1);
     let accepted = (!accepted.is_empty())
         .then(|| serde_json::to_string(accepted).expect("Volume losses are JSON"));
@@ -645,6 +644,18 @@ pub(crate) fn publish(
     )?;
     scrub_sealed(tx, environment)?;
     Ok((revision, true))
+}
+
+/// [`guard_source`] for saving `intent` over Saved State `latest`. Shipping asks it
+/// before an approval, so no approval is asked of a write the caller may not make.
+pub(crate) fn guard_saving(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    latest: Option<&Saved>,
+    intent: &SavedEnvironmentIntent,
+) -> Result<(), RpcError> {
+    let before = latest.map_or(&[][..], |latest| latest.intent.services.as_slice());
+    guard_source(tx, environment, before, &intent.services)
 }
 
 /// Refuse a caller who may not protect when `after` changes what a GitHub merge ships
@@ -677,14 +688,7 @@ pub(crate) fn touches_source(
         )
         .map(|service| service.slug.as_str())
         .collect();
-    if changed.is_empty()
-        || tx
-            .query(
-                "SELECT id FROM config_environment WHERE id = ?1 AND protected <> 0",
-                &[environment.as_str().into()],
-            )?
-            .is_empty()
-    {
+    if changed.is_empty() || !crate::scope::protected(tx, environment)? {
         return Ok(None);
     }
     Ok(Some(json!({ "services": changed })))

@@ -41,6 +41,7 @@ import { SyncButton } from "../sync/SyncButton";
 import { OnMergeButton } from "../sync/OnMerge";
 import { SyncDialog } from "../sync/SyncDialog";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { useStoreBusy, useStoreDiscarding } from "#/modules/config-store/store-pending";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
@@ -252,6 +253,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const [including, setIncluding] = useState<string | null>(null);
   const busy = useStoreBusy(params.organizationSlug, ref);
   const discarding = useStoreDiscarding(params.organizationSlug, ref);
+  const asks = useProtectedAsk(params.organizationSlug, ref);
   return (
     <>
       <BottomBar
@@ -278,6 +280,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
           onIncludeNewer: ({ source }) => setIncluding(source.name),
         }}
         noServers={noServers}
+        asks={asks}
         busy={busy}
         discarding={discarding}
       />

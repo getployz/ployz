@@ -45,6 +45,8 @@ export const actServiceServerFn = createServerFn({ method: "POST" })
       { ...body, ...found, verb: data.verb, digest: bodyDigest(tool, body) },
       { key: data.requestId, approvalId: null },
     );
+    // A stop or restart in a Protected Environment its asker can't protect waits for someone who can.
+    if (!admission.ok && admission.refusal.code === "approval_required") return { requested: true as const };
     if (!admission.ok) return yield* new Conflict({ message: admission.refusal.message, userFacing: true });
     return { id: admission.id };
   })));

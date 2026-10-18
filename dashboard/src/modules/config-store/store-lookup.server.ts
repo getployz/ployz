@@ -15,7 +15,12 @@ export const findService = Effect.fn("ConfigStore.findService")(function* (organ
     const view = yield* readStore(organizationId, { query: "namespace", environment: { project: owned.project, environment: owned.environment } });
     if (view.environment.id !== environmentId) continue;
     const runtime = view.services[service];
-    return runtime === undefined ? null : { namespace: owned.namespace, runtime, environment: owned.environment, place: `${owned.project}/${owned.environment}` };
+    return runtime === undefined ? null : { namespace: owned.namespace, runtime, project: owned.project, environment: owned.environment, place: `${owned.project}/${owned.environment}` };
   }
   return null;
+});
+
+export const environmentProtected = Effect.fn("ConfigStore.environmentProtected")(function* (organizationId: string, project: string, environmentId: string) {
+  const { environments } = yield* readStore(organizationId, { query: "environments", project });
+  return environments.find(({ id }) => id === environmentId)?.protected === true;
 });

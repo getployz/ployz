@@ -1,3 +1,4 @@
+import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { Suspense, useState, type ComponentProps, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
@@ -131,6 +132,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   const act = useServiceAct({ organizationSlug, environmentId, service: service?.name ?? "" });
+  const asks = useProtectedAsk(organizationSlug, store);
   const shownName = useStorePendingName(organizationSlug, store, "service", service?.name ?? "");
   const arriving = useStorePendingNodes(organizationSlug, store).arriving.some((ghost) => ghost.id === params.serviceId);
   // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
@@ -201,7 +203,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}
-        actions={<ServiceActions state={state} namespace={namespace} act={act} />}>
+        actions={<ServiceActions state={state} namespace={namespace} act={act} asks={asks} />}>
         <div className="min-w-0"><CanvasInspectorNameEditor
           value={shownName}
           schema={nameSchema(service, services)}
