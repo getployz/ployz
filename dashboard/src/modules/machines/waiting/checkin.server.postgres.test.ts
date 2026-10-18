@@ -933,7 +933,7 @@ it("keeps plain tokens and older clients waiting in a founded Organization", asy
   const plain = await fleetToken("review");
   const auto = await autoToken();
   expect(await send(plain.token, newHost(), readyAuto)).toEqual(wait);
-  expect(await send(auto.token, newHost(), { ...readyAuto, cliVersion: "0.3.0" })).toEqual(wait);
+  expect(await send(auto.token, newHost(), { ...readyAuto, cliVersion: "0.2.9" })).toEqual(wait);
   expect(await autoAttempts()).toHaveLength(0);
 });
 
