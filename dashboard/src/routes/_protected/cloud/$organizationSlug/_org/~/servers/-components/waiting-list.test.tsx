@@ -121,7 +121,7 @@ it("reads each prep step in the status cell", () => {
   ]);
 
   expect(statusOf("docker-installing")).toBe("Installing Docker5s ago");
-  expect(statusOf("zfs-building")).toBe("Building ZFS5s ago");
+  expect(statusOf("zfs-building")).toBe("ReadyBuilding ZFS · 5s ago");
   expect(statusOf("all-ready")).toBe("Ready5s ago");
   expect(statusOf("docker-failed")).toBe("Docker install failedapt-get exited 100. Run the line again.");
   expect(statusOf("zfs-failed")).toMatch(/^ReadyZFS build failed/);

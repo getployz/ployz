@@ -31,7 +31,7 @@ const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView
 
 export const ROW_PX = 52;
 // Below sm a row stacks its specs under the name, so it needs a third line.
-const STACKED_ROW_PX = 68;
+const STACKED_ROW_PX = 72;
 export const VISIBLE_ROWS = 10;
 const GRID = "grid grid-cols-[20px_minmax(0,1fr)_auto] content-center items-center gap-x-3 gap-y-0.5 px-3 sm:grid-cols-[20px_minmax(0,1fr)_150px_170px_200px]";
 
@@ -319,8 +319,8 @@ function WaitingStatus({ id }: { id: string }) {
   const reason = returned === null ? null : returned.state === "cancelled" ? "Cancelled"
     : stage === undefined ? "Failed" : `Failed at ${STAGES[stage]}`;
   const detail = reason === null ? status.detail : `${status.detail} · ${reason}${returned?.message ? ` · ${returned.message}` : ""}`;
-  return <TwoLineCell>
-    <span className={cn("font-medium", readiness(server) === "blocked" && "text-destructive")}>{status.bold}</span>
+  return <TwoLineCell className="text-right sm:text-left">
+    <span className={cn("font-medium", readiness(server) === "blocked" && "text-warning")}>{status.bold}</span>
     <span title={detail}>{detail}</span>
   </TwoLineCell>;
 }
