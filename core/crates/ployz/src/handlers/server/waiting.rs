@@ -515,36 +515,23 @@ fn size(bytes: u64) -> String {
 pub(super) mod tests {
     use super::*;
 
+    /// What Cloud answers `GET waiting-servers` and `GET waiting-servers/:id`, written by the
+    /// dashboard test that serves them.
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/waiting-servers.json");
+
+    fn served(pointer: &str) -> Value {
+        let fixture: Value = serde_json::from_str(FIXTURE).unwrap();
+        fixture.pointer(pointer).unwrap().clone()
+    }
+
     pub(crate) fn waiting(status: &str, prep: Option<Value>) -> Waiting {
-        let mut report = json!({
-            "hostname": "web-1",
-            "provider": "hetzner",
-            "os": { "id": "ubuntu", "version": "24.04" },
-            "kernel": "6.8.0",
-            "arch": "x86_64",
-            "virt": "kvm",
-            "cpuCount": 4,
-            "memoryTotalBytes": 8_000_000_000_u64,
-            "disks": [{ "path": "/dev/sda", "sizeBytes": 40_000_000_000_u64, "role": "root" }],
-            "docker": { "kind": "absent" },
-            "cgroup": "v2",
-            "zfs": { "kind": "eligible", "targets": [{ "kind": "main_disk" }] },
-            "blockers": [],
-            "warnings": [],
-        });
-        if let (Some(prep), Some(fields)) = (prep, report.as_object_mut()) {
-            fields.insert("prep".into(), prep);
-        }
-        let raw = json!({
-            "id": "6b0f3c1e-0000-4000-8000-000000000001",
-            "name": "web-1",
-            "status": status,
-            "observed_ip": "203.0.113.9",
-            "fleet_token": "amber-falcon",
-            "report": report,
-            "first_seen_at": "2026-10-16T00:00:00.000Z",
-            "last_check_in_at": "2026-10-16T00:05:00.000Z",
-        });
+        let mut raw = served("/list/waiting_servers/0");
+        raw["status"] = json!(status);
+        let report = raw["report"].as_object_mut().unwrap();
+        match prep {
+            Some(prep) => report.insert("prep".into(), prep),
+            None => report.remove("prep"),
+        };
         Waiting {
             row: serde_json::from_value(raw.clone()).unwrap(),
             raw,
