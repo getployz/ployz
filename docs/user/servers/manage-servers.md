@@ -199,7 +199,9 @@ Every server runs builds, runs services and takes web traffic. To turn one off, 
 back on: that starts the server's web server, which the switch below and `ployz server set` do.
 
 Under **Services** on a server's page, turn off **Run services here** and nothing new starts on
-the server. What already runs there stays until you drain it. Your next deploy also moves it.
+the server. What already runs there stays until you drain it, or until your next deploy moves it
+to your other servers. If no other server runs services, deploys fail until you turn the switch
+back on or add a server.
 
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move: **Skipped** when no project owns it, which draining leaves where it is,
