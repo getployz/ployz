@@ -184,12 +184,14 @@ jobs:
       run:
         working-directory: dashboard/uptime
     needs: changes
-    if: contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
+    # Main always runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
       actions: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -206,7 +208,16 @@ jobs:
       - run: cargo nextest run --locked
       - name: Build the Railway image
         working-directory: .
-        run: docker build --file dashboard/uptime/Dockerfile .
+        run: docker build --file dashboard/uptime/Dockerfile --tag ployz-uptime:ci .
+      - name: Publish the Railway image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ghcr.io/getployz/ployz-uptime:${{ github.sha }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker tag ployz-uptime:ci "$IMAGE"
+          docker push "$IMAGE"
 
   macos-cli:
     defaults:
@@ -230,7 +241,7 @@ jobs:
     permissions:
       contents: read
       actions: write
-      # Release tags still publish the Cloud image.
+      # Main commits and release tags publish the Cloud image.
       packages: write
     secrets: inherit
 
