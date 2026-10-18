@@ -386,13 +386,10 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         &connect,
     ];
     assert_eq!(hints.len(), 2, "{stderr}");
-    let machine_id = machine.machine.id.to_string();
     for (hint, args) in hints.iter().zip([
         vec![
             "logs",
-            "shop-production/web",
-            "--machine",
-            &machine_id,
+            "web",
             "--project",
             "shop",
             "--env",

@@ -149,6 +149,7 @@ pub(crate) fn admit(
             let asked = retry_review(tx, who, &retry.deployment, trusted)?;
             let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
             if let Some(review) = asked {
+                trusted.writes(&scope::load_by_id(tx, &retried.environment_id)?.summary.name)?;
                 review::approve_retry(
                     who,
                     &retried.environment_id,
@@ -235,6 +236,7 @@ fn deploy(
 ) -> Result<DeploymentSummary, RpcError> {
     trusted.runnable()?;
     let environment = scope::lock(tx, who, &admit.environment)?;
+    trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
     // Cloud reserves the Cluster Domain before admitting a generated domain.
     let cluster_domain = trusted

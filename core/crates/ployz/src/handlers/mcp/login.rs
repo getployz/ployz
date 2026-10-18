@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::super::account::in_cloud;
 use super::super::{Error, config_path, leaf_matches};
-use crate::cloud_account::{self, Credential, TokenKind};
+use crate::cloud_account::{self, Credential, TokenKind, TokenPreset};
 use crate::cloud_login::{LoginError, Secret};
 use crate::ui;
 
@@ -97,9 +97,14 @@ pub(crate) fn login(root: &ArgMatches) -> Result<(), Error> {
         Err(error) => return Err(error.into()),
     };
     let (made, saved, revoked, left) = in_cloud(root, async |_, credential| {
-        let made =
-            cloud_account::new_token(credential, "ployz mcp", TokenKind::Agent, LIFETIME_DAYS)
-                .await?;
+        let made = cloud_account::new_token(
+            credential,
+            "ployz mcp",
+            TokenKind::Agent,
+            &TokenPreset::Full,
+            LIFETIME_DAYS,
+        )
+        .await?;
         let saved = if made.kind == TokenKind::Agent {
             save(
                 &config,

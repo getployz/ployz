@@ -3,8 +3,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, asc, eq, gt, like } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
+import { readStore } from "#/modules/config-store/config-store.server";
 import { requireClaimed } from "#/modules/identity/claim-required.server";
 import { organizationToken, session } from "#/modules/identity/tables";
+import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset } from "#/modules/identity/token-grant";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 
@@ -34,12 +36,19 @@ export const mintOrganizationTokenUnchecked = Effect.fn("OrganizationToken.mint"
   readonly name: string;
   readonly kind: TokenKind;
   readonly expiresAt: Date;
+  readonly grant?: TokenGrant;
 }) {
   const database = yield* Database;
   const secret = `${ORGANIZATION_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+  const { grant = FULL_GRANT, ...row } = input;
   const [created] = yield* database.drizzle
     .insert(organizationToken)
-    .values({ ...input, secretHash: hashOrganizationTokenSecret(secret) })
+    .values({
+      ...row,
+      permissions: grant.permissions === null ? null : [...grant.permissions],
+      environments: grant.environments === null ? null : [...grant.environments],
+      secretHash: hashOrganizationTokenSecret(secret),
+    })
     .returning({ id: organizationToken.id, kind: organizationToken.kind, expiresAt: organizationToken.expiresAt });
   if (created === undefined) return yield* Effect.die("insert returned no row");
   return { id: created.id, kind: created.kind, expiresAt: created.expiresAt, secret };
@@ -48,16 +57,18 @@ export const mintOrganizationTokenUnchecked = Effect.fn("OrganizationToken.mint"
 /** Makes a token in the Caller's Organization acting as the Caller. The secret is returned here and never again. */
 export const createOrganizationToken = Effect.fn("OrganizationToken.create")(function* (
   caller: Caller,
-  input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind },
+  input: { readonly name: string; readonly expiresInDays: number; readonly kind?: TokenKind; readonly preset?: TokenPreset },
 ) {
   yield* requireClaimed(caller.organization.id, "mint_token");
   yield* requireSignedIn(caller);
+  const grant = presetGrant(input.preset ?? { preset: "full" });
   const minted = yield* mintOrganizationTokenUnchecked({
     organizationId: caller.organization.id,
     userId: caller.userId,
     name: input.name,
     kind: caller.via === "agent" ? "agent" : (input.kind ?? "cli"),
     expiresAt: new Date(Date.now() + input.expiresInDays * DAY_MS),
+    grant,
   });
   return {
     id: minted.id,
@@ -65,8 +76,17 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
     kind: minted.kind,
     organization: caller.organization.slug,
     expires_at: minted.expiresAt.toISOString(),
+    scope: grantLabel(grant),
     secret: minted.secret,
   };
+});
+
+/** A Deploy token's Environment, refused when no Project in the Organization has one by that name. */
+export const knownEnvironment = Effect.fn("OrganizationToken.knownEnvironment")(function* (caller: Caller, preset: TokenPreset) {
+  if (preset.preset !== "deploy") return preset;
+  const { projects } = yield* readStore(caller.organization.id, { query: "projects" });
+  if (projects.some((project) => project.environments.includes(preset.environment))) return preset;
+  return yield* new Validation({ message: `No Project here has an Environment named ${preset.environment}.`, userFacing: true });
 });
 
 /** Owners and admins reach every token in the Organization; anyone else only their own. */
@@ -86,6 +106,8 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
       kind: organizationToken.kind,
       createdAt: organizationToken.createdAt,
       expiresAt: organizationToken.expiresAt,
+      permissions: organizationToken.permissions,
+      environments: organizationToken.environments,
     })
     .from(organizationToken)
     .where(tokensReachableBy(caller))
@@ -104,6 +126,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
       id: token.id,
       name: token.name,
       kind: token.kind,
+      scope: grantLabel({ permissions: token.permissions, environments: token.environments }),
       created_at: token.createdAt.toISOString(),
       expires_at: token.expiresAt.toISOString(),
       expired: token.expiresAt <= now,

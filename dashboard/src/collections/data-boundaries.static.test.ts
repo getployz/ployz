@@ -56,6 +56,7 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/-components/members-settings.tsx": "invite, remove or leave in flight",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/tokens-settings.tsx": "token mint in flight",
   "routes/invite/$token.tsx": "joining in flight",
   "routes/claim/$secret.tsx": "keeping the Organization in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "portal opening",

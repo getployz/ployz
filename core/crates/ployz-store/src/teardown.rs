@@ -34,6 +34,15 @@ pub struct EnvironmentsView {
     pub environments: Vec<EnvironmentListing>,
 }
 
+/// The Environment a protection write changed, and its Project's Environments after it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ProtectedView {
+    pub environment: EnvironmentId,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub view: EnvironmentsView,
+}
+
 /// One Environment as `env ls` shows it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentListing {
@@ -198,7 +207,7 @@ pub(crate) fn set_protected(
     tx: &mut dyn Tx,
     who: &Actor,
     set: &SetEnvironmentProtected,
-) -> Result<EnvironmentsView, RpcError> {
+) -> Result<ProtectedView, RpcError> {
     let environment = scope::lock(tx, who, &set.environment)?;
     let summary = &environment.summary;
     if let Some(seen) = &set.seen {
@@ -235,13 +244,17 @@ pub(crate) fn set_protected(
         },
         &[summary.id.as_str().into()],
     )?;
-    environments(
+    let view = environments(
         tx,
         who,
         &EnvironmentsQuery {
             project: Some(environment.summary.project),
         },
-    )
+    )?;
+    Ok(ProtectedView {
+        environment: environment.summary.id,
+        view,
+    })
 }
 
 /// Refuse `conflict` unless `environment` is the one `seen` and its protection is still

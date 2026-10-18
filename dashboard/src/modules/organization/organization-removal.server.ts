@@ -3,8 +3,8 @@ import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
-import { requireAccess } from "#/modules/organization/access.server";
-import { type Actor, type Caller, callerCan } from "#/modules/identity/actor";
+import { lacks, requireAccess } from "#/modules/organization/access.server";
+import type { Actor, Caller } from "#/modules/identity/actor";
 import { deleteEnrollmentTokens, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { fleetToken, waitingServer } from "#/modules/machines/waiting/tables";
 import { eq } from "drizzle-orm";
@@ -23,7 +23,7 @@ import { Database } from "#/server/database.server";
  * with rows of its own to take along or a last check to make under the Organization's lock.
  */
 export const removeOrganization = Effect.fn("Organization.remove")(function* <E = never>(
-  caller: Pick<Caller, "userId" | "organization" | "role">,
+  caller: Pick<Caller, "userId" | "organization" | "role"> & Partial<Pick<Caller, "credential">>,
   slug: string,
   deleting: Deleting<E> = (drop) => drop,
 ) {
@@ -35,9 +35,8 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
       details: { next: `ployz org use ${slug}` },
     });
   }
-  if (!callerCan(caller, "org:delete")) {
-    return refused({ code: "forbidden", message: "Only an owner of this Organization can remove it. No changes made.", details: null });
-  }
+  const lacking = lacks({ ...caller, support: null }, "org:delete");
+  if (lacking !== null) return refused({ code: "forbidden", message: `${lacking} No changes made.`, details: { permission: "org:delete" } });
   const refusal = yield* cloudStore.pipe(
     Effect.flatMap((store) => storeTry(() => store.removeOrganization(id))),
     Effect.as(null),

@@ -16,6 +16,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
 import type { Actor, Caller } from "#/modules/identity/actor";
+import { lacks } from "#/modules/organization/access.server";
 import { isOwnedOnlyByAgents } from "#/modules/identity/claim-required.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
@@ -344,7 +345,7 @@ type Decided = { ok: true; approval: ApprovalView } | { ok: false; refusal: Stor
 /** Who decides: a person in the dashboard, or a Caller through the credential it signed in with. */
 export type Decider = Actor & { readonly organization: { readonly id: string } } & (
   | { readonly via: "dashboard" }
-  | Pick<Caller, "via" | "credential">
+  | Pick<Caller, "via" | "credential" | "role" | "support">
 );
 
 const mayApprove = (decider: Decider, row: ApprovalRow) => {
@@ -380,6 +381,10 @@ export const decideApproval = <R = never>(
     return { ok: false, refusal: { code: "forbidden", message: "Agents can't answer approvals.", details: { approval: approvalView(found) } } } satisfies Decided;
   }
   const row = yield* freshen(found, operationDigest);
+  const lacking = caller.via === "dashboard" ? null : lacks(caller, "approvals:answer");
+  if (lacking !== null) {
+    return { ok: false, refusal: { code: "forbidden", message: lacking, details: { approval: approvalView(row) } } } satisfies Decided;
+  }
   if ("approve" in decision && !mayApprove(caller, row)) {
     const message = "Only a person in Ployz Cloud, or the prompt that asked, can approve this.";
     return { ok: false, refusal: { code: "forbidden", message, details: { approval: approvalView(row) } } } satisfies Decided;

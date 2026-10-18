@@ -12,7 +12,7 @@ import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-
 import { commandEnvironments, MAX_SHOWN_VIEWS, StoreRefused } from "#/modules/config-store/store.contract";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
-import { type Permission, permissionsOf } from "#/modules/organization/permissions";
+import type { Permission } from "#/modules/organization/permissions";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -293,7 +293,7 @@ export const callStore = <C extends StoreCall>(
   userId: string | null,
   call: C,
   source: StoreSource = { source: "dashboard" },
-  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions"> = { approval: "not_required" },
+  gate: Pick<ConfigTrusted, "approval" | "asks" | "permissions" | "environments"> = { approval: "not_required" },
 ) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
@@ -337,16 +337,13 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 const callStoreWith = <C extends StoreCall>(access: Access, actor: Actor, call: C) =>
-  Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: permissionsFor(access) }), (result) =>
+  Effect.map(callStore(access.organization.id, actor.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: access.permissions, environments: access.environments }), (result) =>
     access.kind === "support" ? answerForSupport(call, result, access.shows) : result);
-
-/** What `access` holds, as the Store is told it: the member's role, or support's set. */
-const permissionsFor = (access: Access): Permission[] => permissionsOf(access.kind === "member" ? access.role : "support");
 
 /** One Store call in `organizationId` by the user `by` admits, with what they hold, or by Cloud itself (null). */
 export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Access | null, call: C) => by === null
   ? callStore(organizationId, null, call)
-  : callStore(organizationId, by.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: permissionsFor(by) });
+  : callStore(organizationId, by.userId, call, { source: "dashboard" }, { approval: "not_required", permissions: by.permissions, environments: by.environments });
 
 /**
  * The dashboard's write: `command` as `actor`, answered with the views the tab shows of the Environments it reads or
@@ -354,7 +351,7 @@ export const callStoreBy = <C extends StoreCall>(organizationId: string, by: Acc
  * the write. A query of another Environment, past `MAX_SHOWN_VIEWS`, or whose reread fails, is dropped; the tab refetches those.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand, shows: readonly ConfigQuery[] = []) => Effect.gen(function* () {
-  const access = yield* requireAccess(actor, organizationSlug, writePermission(command));
+  const access = yield* requireAccess(actor, organizationSlug, writePermission(command), "store");
   const result = yield* callStoreWith(access, actor, { operation: "write", command });
   if (!result.ok) return result satisfies StoreWriteResult;
   const keys = new Set(commandEnvironments(command).map(environmentKey));

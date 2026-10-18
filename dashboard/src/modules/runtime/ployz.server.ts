@@ -124,7 +124,8 @@ export interface PloyzSession {
     machine: MachineTarget,
     container: string,
   ) => Effect.Effect<{ readonly container: ContainerObservation }, PloyzSdkError>;
-  readonly agentAsk: (query: CloudQuery) => Effect.Effect<unknown, PloyzSdkError>;
+  /** Describes only the Services in `readable` Namespaces, or every Service when null. */
+  readonly agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null) => Effect.Effect<unknown, PloyzSdkError>;
   readonly observeService: (namespace: string, service: string) => Effect.Effect<ServiceCopies, PloyzSdkError>;
   readonly stopContainer: (machine: string, container: string) => Effect.Effect<void, PloyzSdkError>;
   /** How a started Container ended up: past its healthcheck and serving, unconfirmed, or failing its healthcheck. */
@@ -310,7 +311,7 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("volume switch", () => client.volumeSwitch(machine, request)),
     inspectContainer: (machine, container) =>
       sdkPromise("inspect container", () => client.inspectContainer(machine, container)),
-    agentAsk: (query) => sdkPromise("agent ask", () => client.agentAsk(query)),
+    agentAsk: (query, readable) => sdkPromise("agent ask", () => client.agentAsk(query, readable)),
     observeService: (namespace, service) => sdkPromise("observe service", () => client.observeService(namespace, service)),
     stopContainer: (machine, container) => sdkPromise("stop container", () => client.stopContainer(machine, container)),
     startContainer: (machine, container) => sdkPromise("start container", () => client.startContainer(machine, container)),

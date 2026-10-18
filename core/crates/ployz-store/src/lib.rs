@@ -102,8 +102,8 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, SeenProtection, SetDefaultEnvironment,
-    SetEnvironmentProtected,
+    ProjectListing, ProjectsQuery, ProjectsView, ProtectedView, SeenProtection,
+    SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 

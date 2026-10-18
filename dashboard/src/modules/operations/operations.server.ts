@@ -4,7 +4,7 @@ import type { AcceptedLoss, DestructiveEffect, EnvironmentRef, MachineId, Server
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { askAgain, gateOperation, operationDigest, type OperationAsked } from "#/modules/approvals/approvals.server";
-import { callerOrSupportCan, type Caller } from "#/modules/identity/actor";
+import { callerEnvironments, type Caller } from "#/modules/identity/actor";
 import { machineRemoveAttemptConsuming } from "#/modules/machines/machine-removal.repository";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.server";
@@ -13,9 +13,10 @@ import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { planKeyedServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/machines/server-operations.server";
 import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
-import { OPERATIONS, VOLUME_TOOLS } from "#/modules/operations/operations";
+import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
-import { refusalOf } from "#/modules/organization/access.server";
+import { beyondEnvironments, lacksPermission } from "#/modules/organization/access.server";
+import type { Permission } from "#/modules/organization/permissions";
 import { requestServiceAct, serviceActExists } from "#/modules/service-act/service-act.server";
 import { planCliServerUpgrade } from "#/modules/server-upgrade/server-upgrade.server";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -53,11 +54,37 @@ const gate = (caller: Caller, call: OperationCall, asked: OperationAsked) => {
   const loss = uncovered(asked, call);
   return loss === null ? gateOperation(caller, call.approvalId, asked) : Effect.succeed(loss);
 };
-const actor = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });
+const actor = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id, credential: caller.credential });
+
+/**
+ * Why `caller` may not run an operation that `requires` a permission, or null when they may. A token holds only what
+ * its grant leaves of its maker's role, and writes only the Environments it names: never a Server-wide operation,
+ * which has no `environment`.
+ */
+export const unheld = (caller: Caller, requires: Permission, environment?: string | null) => {
+  const lacking = unpermitted(caller, requires);
+  if (lacking !== null) return lacking;
+  const environments = callerEnvironments(caller);
+  const beyond = beyondEnvironments(environments, environment === undefined || environment === null ? "organization" : { environment });
+  return beyond === null ? null : refused({ code: "forbidden", message: beyond, details: { environments: environments ?? [] } });
+};
+
+/** `unheld` for the permission alone: what an operation checks before it looks up where it lands. */
+export const unpermitted = (caller: Caller, requires: Permission) => {
+  const lacking = lacksPermission(caller, requires);
+  return lacking === null ? null : refused({ code: "forbidden", message: lacking, details: { permission: requires } });
+};
+
+/** `run`, unless `caller` may not run an operation that `requires` a permission. */
+const holding = <A, E, R>(caller: Caller, requires: Permission, environment: string | null | undefined, run: Effect.Effect<A, E, R>) =>
+  Effect.suspend((): Effect.Effect<A | ReturnType<typeof refused>, E, R> => {
+    const refusal = unheld(caller, requires, environment);
+    return refusal === null ? run : Effect.succeed(refusal);
+  });
 
 /** Null when no Server of the Organization has `machineId`. */
 export const drainServer = (caller: Caller, machineId: MachineId, call: OperationCall) =>
-  Effect.gen(function* () {
+  holding(caller, OPERATIONS["server.drain"].requires, undefined, Effect.gen(function* () {
     const plan = yield* planDrain(caller.organization.id, machineId);
     if (plan === null) return null;
     return yield* admitOperation(caller.organization.id, { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } }, Effect.gen(function* () {
@@ -68,23 +95,24 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
       })
         .pipe(Effect.map((id) => ({ ok: true, id }) as const));
     }));
-  });
+  }));
 
 export const upgradeServer = (caller: Caller, input: { readonly machineId: MachineId; readonly channel: string | undefined }, call: OperationCall) =>
-  admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input));
+  holding(caller, OPERATIONS["server.upgrade"].requires, undefined,
+    admitOperation(caller.organization.id, { tool: OPERATIONS["server.upgrade"].idempotency, key: call.key, body: input }, planCliServerUpgrade(actor(caller), input)));
 
 export const setServer = (caller: Caller, machineId: MachineId, change: ServerPolicyChange, call: OperationCall) =>
-  admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
+  holding(caller, OPERATIONS["server.set"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["server.set"].idempotency, key: call.key, body: { machineId, change } }, Effect.gen(function* () {
     const plan = change.acceptsIngress === false ? yield* planIngressOff(caller.organization.id, machineId, change) : null;
     if (plan !== null) {
       const gated = yield* gate(caller, call, plan);
       if (!gated.ok) return refused(gated.refusal);
     }
     return yield* planKeyedServerPolicyChange(caller, machineId, change);
-  }));
+  })));
 
 export const cleanNamespace = (caller: Caller, namespace: string, call: OperationCall) =>
-  admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
+  holding(caller, OPERATIONS["namespace.clean"].requires, undefined, admitOperation(caller.organization.id, { tool: OPERATIONS["namespace.clean"].idempotency, key: call.key, body: { namespace } }, Effect.gen(function* () {
     const plan = yield* planClean(caller.organization.id, namespace);
     const gated = yield* gate(caller, call, plan);
     if (!gated.ok) return refused(gated.refusal);
@@ -94,7 +122,7 @@ export const cleanNamespace = (caller: Caller, namespace: string, call: Operatio
       confirmDataLoss: plan.doomed.map(({ identity }) => identity),
       approvalId: gated.approvalId,
     }).pipe(Effect.map((id) => ({ ok: true, id }) as const));
-  }));
+  })));
 
 /** Resets Server `machineId`, deleting exactly the Data Loss the caller `confirmed`. Null when no Server has `machineId`. */
 export const removeServer = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[], call: OperationCall) =>
@@ -107,7 +135,8 @@ export const forgetServer = (caller: Caller, machineId: MachineId, call: Operati
 /** The dashboard's Forget of Server `machineId`: only a Caller who may remove Servers; answers the removal's id. */
 export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, key: string) =>
   Effect.gen(function* () {
-    if (!callerOrSupportCan(caller, "servers:remove")) return yield* new Forbidden({ message: refusalOf("servers:remove") });
+    const refusal = unheld(caller, OPERATIONS["server.forget"].requires);
+    if (refusal !== null) return yield* new Forbidden({ message: refusal.refusal.message, userFacing: true });
     const admission = yield* forgetServer(caller, machineId, { key, approvalId: null });
     if (admission === null) return yield* new NotFound({ message: "The server was not found." });
     if (admission.ok) return { id: admission.id };
@@ -115,7 +144,7 @@ export const forgetServerFromDashboard = (caller: Caller, machineId: MachineId, 
   });
 
 const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataLossIdentity[] | null, call: OperationCall) =>
-  Effect.gen(function* () {
+  holding(caller, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
     const consumed = Schema.is(Uuid)(call.approvalId)
       ? yield* machineRemoveAttemptConsuming(caller.organization.id, call.approvalId, machineId, noReset)
@@ -137,7 +166,7 @@ const removal = (caller: Caller, machineId: MachineId, confirmed: readonly DataL
         ...(noReset ? { confirmDataLoss: [], noReset: true } : { confirmDataLoss: [...confirmed] }),
       }).pipe(Effect.map((started) => ({ ok: true, id: started.id }) as const));
     }));
-  });
+  }));
 
 /** A Volume Run whose id is its attempt, so a replayed request reads back the run it started. */
 export const runVolume = (
@@ -145,7 +174,7 @@ export const runVolume = (
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
   call: OperationCall,
 ) =>
-  admitOperation(caller.organization.id, { tool: VOLUME_TOOLS[input.kind], key: call.key, body: input }, Effect.gen(function* () {
+  holding(caller, VOLUME_OPERATIONS[input.kind].requires, input.environment.environment, admitOperation(caller.organization.id, { tool: VOLUME_OPERATIONS[input.kind].idempotency, key: call.key, body: input }, Effect.gen(function* () {
     const planned = yield* planVolumeRun(caller.organization.id, input);
     if (!planned.ok) return refused(planned.refusal);
     if (planned.asked !== null) {
@@ -156,7 +185,7 @@ export const runVolume = (
       .pipe(Effect.map((inserted) => inserted.ok
         ? { ok: true, id: inserted.run.id } as const
         : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));
-  }));
+  })));
 
 /** What a stop or restart interrupts, as a human approves it; a start interrupts nothing. */
 const interrupts = (input: {
@@ -185,6 +214,7 @@ export const actService = (
   caller: Caller,
   input: {
     readonly environmentId: string;
+    readonly environment: string;
     readonly place: string;
     readonly service: string;
     readonly namespace: string;
@@ -195,11 +225,12 @@ export const actService = (
   },
   call: OperationCall,
 ) =>
-  admitOperation(
+  holding(caller, OPERATIONS[`service.${input.verb}`].requires, input.environment, admitOperation(
     caller.organization.id,
     { tool: OPERATIONS[`service.${input.verb}`].idempotency, key: call.key, body: { environmentId: input.environmentId, service: input.service, only: input.only } },
     Effect.gen(function* () {
-      const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...input });
+      const { environment: _environment, ...act } = input;
+      const run = (attemptId: string) => requestServiceAct(actor(caller), { attemptId, ...act });
       const asked = interrupts(input);
       if (asked === null) return run;
       const gated = yield* gate(caller, call, asked);
@@ -210,4 +241,4 @@ export const actService = (
       if (yield* serviceActExists(caller.organization.id, approved)) return refused(yield* askAgain(caller, asked));
       return () => run(approved);
     }),
-  );
+  ));

@@ -171,11 +171,20 @@ Roles are `owner`, `admin` and `member`. Only an owner can make, change or remov
 Any member can run `ployz org member ls`. Pending invites name who was invited, so
 `ployz org invite ls` refuses anyone but an owner or admin.
 
-Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`, `logs`, `ps`,
-`metrics`, `service start`, `service stop`, `service restart`, `service port-forward`,
+Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`,
+`service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
 `server rm`, `server forget <server>` and `server clean` without a namespace. A member gets
-`Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. See
+`Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
+`deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
+`This token's grant doesn't include servers:shell.`
+
+`logs`, `ps` and `metrics` work for anyone who can read logs and metrics, including members and
+`read` and `deploy` tokens. Without server access they read through Ployz Cloud instead: `logs`
+shows each server's newest 200 lines at most, with secrets scrubbed, and can't use `--follow`,
+`--until`, `--machine` or a container name. Name the environment with `--project` and `--env`
+if the directory isn't linked. A `deploy` token reads only its own environment, so
+`ployz logs --env production` with a staging token fails with `This token can deploy only to staging.` See
 [Reach a server from the CLI](../servers/manage-servers.md#reach-a-server-from-the-cli).
 
 Pick a member by email or by name. When two members share a name, the command refuses with
@@ -219,24 +228,37 @@ connect another. `ployz github disconnect <login>` disconnects one from this org
 CI jobs and scripts sign in with a token instead of a browser. Set it as `PLOYZ_TOKEN`:
 
 ```sh
-# On your computer: make a token. It's shown once, so copy it.
-ployz token new ci
+# On your computer: make a token that can deploy only to staging. It's shown once, so copy it.
+ployz token new ci --preset deploy --environment staging
 
 # In CI, with the token stored as the secret PLOYZ_TOKEN
-ployz up --project my-app --env production
+ployz up --project my-app --env staging
 ```
 
 Always pass `--project` in CI, or `ployz up` creates a new project named after the checkout.
 
-The token acts as you in this organization: whoever holds it can deploy and run commands in your
-services. It expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
+A token acts as you in this organization, narrowed by its preset:
+
+| Preset | What it can do |
+| ------ | -------------- |
+| `full` (the default) | Everything you can, and it follows your role if it changes. |
+| `read` | Read what you can read. It can't change anything. |
+| `deploy` | Read what you can, and stage and deploy changes to the one Environment `--environment` names, in any project. That Environment must already exist in one of your projects. |
+
+A deploy token that tries to change another Environment is refused and nothing changes. With the token above, `ployz up --project my-app --env production`
+fails with `This token can deploy only to staging.` A token refused for its preset names what it lacks, such as
+`This token's grant doesn't include servers:shell.` A token never does more than your role allows. Tokens made before presets existed
+are `full`. You can also make, see and revoke tokens under **Organization → Tokens** in the
+dashboard.
+
+Whoever holds a `full` token can deploy and run commands in your services. A token expires after 90 days unless you pass `--expires-in` (1 to 365 days), and stops
 working at once if you leave the organization or are removed from it. To revoke it,
 find its ID with `ployz token ls`, then run `ployz token rm ID`. If it names a server that's
 offline, run it again once that server is back. Owners and admins see and can revoke every
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. `ployz token ls` shows each token's KIND: `cli` for
+another that outlives it, or revoke the rest. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
 one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
 answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.

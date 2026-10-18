@@ -44,6 +44,9 @@ export type Permission = (typeof LEAST_ROLE)[number][0];
 
 export const PERMISSIONS: ReadonlyArray<Permission> = LEAST_ROLE.map(([permission]) => permission);
 
+/** Whether `permission` only reads. */
+export const reads = (permission: Permission) => permission.endsWith(":read");
+
 const RANK = { member: 0, admin: 1, owner: 2 } satisfies Record<RankedRole, number>;
 
 /** Admin permissions support doesn't hold. Support keeps the manage set it had before these existed. */

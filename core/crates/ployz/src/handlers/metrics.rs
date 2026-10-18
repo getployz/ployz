@@ -5,10 +5,12 @@ use clap::{ArgGroup, ArgMatches, Command};
 use ployz_core::{MachineTarget, QualifiedService, ServiceSelector, metrics::MetricRange};
 
 use super::{
-    Error, leaf_matches,
+    Error,
+    cloud_read::{self, MetricsAsked},
+    leaf_matches,
     operator::{in_scope, scope},
     store::scoped,
-    with_client,
+    with_reader,
 };
 use crate::{
     cli::{
@@ -63,19 +65,26 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
             "--since is in the future; use 1h or an earlier time",
         ));
     }
-    let asked = match leaf.get_one::<String>("server") {
-        Some(server) => Asked::Server(MachineTarget::parse(server.as_str())?),
+    let (asked, fallback) = match leaf.get_one::<String>("server") {
+        Some(server) => (
+            Asked::Server(MachineTarget::parse(server.as_str())?),
+            MetricsAsked::Server(server.clone()),
+        ),
         None => {
             let named = leaf
                 .get_one::<String>("service")
                 .expect("the subject group requires a Service or a Server");
-            Asked::Service {
-                service: qualified(root, named)?,
-                named: named.clone(),
-            }
+            let service = qualified(root, named)?;
+            (
+                Asked::Service {
+                    service: service.clone(),
+                    named: named.clone(),
+                },
+                MetricsAsked::Service(service),
+            )
         }
     };
-    with_client(root, |client| {
+    let credential = with_reader(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
             let (subject, name) = match asked {
@@ -113,6 +122,9 @@ pub fn metrics(root: &ArgMatches) -> Result<(), Error> {
                 }
             })
         })
+    })?;
+    credential.map_or(Ok(()), |credential| {
+        cloud_read::metrics(&credential, fallback, since_seconds)
     })
 }
 

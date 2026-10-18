@@ -95,6 +95,7 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     json!({ "token": {
                         "id": "t1", "name": TOKEN_NAME, "organization": "acme",
                         "expires_at": "2030-01-01", "secret": "test-token-secret",
+                        "scope": "Full as you",
                     } }),
                 ),
                 "GET /api/cli/tokens" => (
@@ -102,7 +103,7 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                     json!({
                         "tokens": [{ "id": "t1", "name": TOKEN_NAME,
                             "created_at": "2026-01-01", "expires_at": "2030-01-01",
-                            "expired": false, "current": false }],
+                            "expired": false, "current": false, "scope": "Full as you" }],
                         "devices": [], "revoking": [],
                     }),
                 ),

@@ -197,10 +197,12 @@ macro_rules! commands {
                             let fits = |at: &mut Call<'_>, first: &$answer| {
                                 $($same)::+(&mut *at.tx, at.who, self, first)
                             };
-                            return replayable(at, self, &ids, fits, run);
+                            let answer = replayable(at, self, &ids, fits, run)?;
+                            return refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()));
                         }
                     )?
-                    run(at)
+                    let answer = run(at)?;
+                    refuse_outside_environments(at, answer, |answer| Written::$written(answer.into()))
                 }
 
                 fn to_command(&self) -> Value {
@@ -449,7 +451,7 @@ commands! {
         agent none "No tool works on branches."
         => crate::branch::set_branch_setup(tx, who, c);
     /// Protect a Project's own Environment from removal, or unprotect it.
-    SetEnvironmentProtected(crate::SetEnvironmentProtected) -> Protected(crate::EnvironmentsView)
+    SetEnvironmentProtected(crate::SetEnvironmentProtected) -> Protected(crate::ProtectedView)
         needs EnvironmentsProtect
         agent [EnvironmentProtect]
         => crate::teardown::set_protected(tx, who, c);
@@ -765,8 +767,8 @@ pub enum Written {
     DefaultEnvironment(crate::EnvironmentsView),
     /// A Branch setup changed: the Project's Environments after it.
     BranchSetup(crate::EnvironmentsView),
-    /// An Environment was protected or unprotected: the Project's Environments after it.
-    Protected(crate::EnvironmentsView),
+    /// An Environment was protected or unprotected: which, and the Project's Environments after it.
+    Protected(crate::ProtectedView),
     /// Where a removal stands.
     Removal(crate::Removal),
     RemovalCancelled(crate::RemovalCancelled),
@@ -774,6 +776,18 @@ pub enum Written {
     PrPlans(crate::PrPlansView),
     /// What each command of a Batch did.
     Batch(Batched),
+}
+
+fn refuse_outside_environments<A: Clone>(
+    at: &mut Call<'_>,
+    answer: A,
+    written: impl FnOnce(A) -> Written,
+) -> Result<A, RpcError> {
+    if at.trusted.environments.is_some() {
+        at.trusted
+            .refuse_written_outside_environments(&mut *at.tx, &written(answer.clone()))?;
+    }
+    Ok(answer)
 }
 
 /// Run `create` once for the caller-minted `ids`. Replaying the identical command
