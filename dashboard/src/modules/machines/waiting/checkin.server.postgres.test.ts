@@ -2,10 +2,11 @@ import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
 import { Cause, Effect, Exit, Random, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { asTestDouble } from "#/lib/test-double";
 import { InngestClient } from "#/modules/inngest/client";
 import type { CheckinRequest, CheckinResponse, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
-import { startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
+import { cancelServerEnrollment, startArrivalEnrollment, startServerEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { bindServerEnrollment, closeStaleServerEnrollments, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -17,6 +18,8 @@ import {
   showWaitingServer,
   waitingServerStatus,
 } from "#/modules/machines/waiting/waiting-servers.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { makePloyzLayer, type Ployz } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -29,8 +32,15 @@ let harness: PostgresTestHarness;
 const inngest = new Inngest({ id: "checkin-test" });
 vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
-const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient>) =>
-  harness.runEffect(Effect.provideService(operation, InngestClient, inngest));
+const unreachable = makePloyzLayer({ connect: async () => { throw new Error("Endpoint unavailable"); } });
+const runtime = asTestDouble<OrganizationRuntime["Service"]>()({ cancel: () => Effect.void });
+
+const run = <A, E>(operation: Effect.Effect<A, E, Database | SecretEncryption | InngestClient | OrganizationRuntime | Ployz>) =>
+  harness.runEffect(operation.pipe(
+    Effect.provideService(InngestClient, inngest),
+    Effect.provideService(OrganizationRuntime, runtime),
+    Effect.provide(unreachable),
+  ));
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
@@ -973,6 +983,23 @@ it.each(["failed", "cancelled"] as const)("frees an arrival slot when an attempt
   await endAuto(attempt?.id ?? "", state);
   expect(await send(token, next, readyAuto)).toEqual(arrivalWait);
   expect(await send(token, first, readyAuto)).toEqual(wait);
+});
+
+it.each(["failed", "cancelled"] as const)("keeps a host whose arrival attempt %s in Waiting until someone enrolls it again", async (state) => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  const attempt = (await autoAttempts())[0]?.id ?? "";
+  if (state === "failed") await endAuto(attempt, state);
+  else expect(await run(cancelServerEnrollment(ada, { organizationSlug: "ada", id: attempt }))).toEqual({ id: attempt, cancelling: true });
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toMatchObject([{ state }]);
+  const input = { ids: [(await one()).id], names: { kind: "hostnames" }, storage: { kind: "none" }, runs: { services: true, ingress: true, builds: true } } as const;
+  await run(startServerEnrollment(ada, { organizationSlug: "ada", ...input }));
+  expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
+  expect(await autoAttempts()).toMatchObject([{ state }, { state: "instructed" }]);
 });
 
 it("keeps joined usage after the seven-day sweep and refuses another arrival", async () => {
