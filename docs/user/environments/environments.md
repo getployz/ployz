@@ -201,8 +201,22 @@ To change it, open the environment's **Settings → Environment** and flip **Pro
 disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
 Protected. When an agent turns protection off, it waits for you to approve.
 
+A member can still ask for changes in a Protected environment. Their buttons read **Request
+deploy**, **Request sync**, **Request restart** and **Request stop**, and clicking one shows
+**Requested**. The request waits under **Waiting on you** in the [Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy)
+of every owner or admin. Once one approves it, it runs as the member who asked. The member sees
+their own request marked **Waiting on an owner or admin.** and can't approve it. Neither can an
+owner or admin approve a request they made. A deploy, sync or take from `ployz` or an agent asks
+the same way.
+
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
 [GitHub branch protection](../deploy/github.md#protected-environments).
+
+Only an owner or admin can make a **Deploy** token for a Protected environment. A member who tries
+sees "production is Protected; only an owner or admin can make a Deploy token for it."
+
+Protected guards what runs through Ployz. An admin can open a shell on a server, and from there
+reach any environment on it.
 
 ### Delete an environment
 

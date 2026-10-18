@@ -12,6 +12,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { plural } from "#/lib/plural";
 import { actAlert, actBadge } from "#/modules/service-act/service-act-view";
+import { refetchApprovals } from "#/components/agent-sidebar/approvals.queries";
 import { actServiceServerFn } from "#/modules/service-act/service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "#/modules/service-act/service-act.queries";
 import type { StoreService } from "./StoreServiceDrawer";
@@ -42,8 +43,14 @@ export function useServiceAct(subject: Subject) {
     const requestId = crypto.randomUUID();
     setRequested({ verb, id: requestId });
     actServiceServerFn({ data: { ...subject, verb, requestId } }).then(
-      ({ id }) => {
-        setRequested((current) => (current?.id === requestId ? { verb, id } : current));
+      (result) => {
+        if ("requested" in result) {
+          setRequested((current) => (current?.id === requestId ? null : current));
+          toast("Requested");
+          void refetchApprovals(queryClient, subject.organizationSlug);
+          return;
+        }
+        setRequested((current) => (current?.id === requestId ? { verb, id: result.id } : current));
         void queryClient.invalidateQueries({ queryKey: serviceActKeys.all });
       },
       (error: Error) => {
@@ -59,7 +66,8 @@ export function useServiceAct(subject: Subject) {
 
 export type ServiceAct = ReturnType<typeof useServiceAct>;
 
-export function ServiceActions({ state, namespace, act }: { state: StoreService; namespace: string | null; act: ServiceAct }) {
+/** `asks`: the Environment is Protected and you can't protect it, so a restart or stop asks an owner or admin first. */
+export function ServiceActions({ state, namespace, act, asks }: { state: StoreService; namespace: string | null; act: ServiceAct; asks: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const containers = useServiceRuntime(state, namespace)?.containers ?? [];
   const { name } = state.service;
@@ -82,11 +90,11 @@ export function ServiceActions({ state, namespace, act }: { state: StoreService;
           <DropdownMenuGroup>
             {stopped
               ? <DropdownMenuItem onClick={() => act.act("start")}>Start</DropdownMenuItem>
-              : <DropdownMenuItem onClick={() => act.act("restart")}>Restart</DropdownMenuItem>}
+              : <DropdownMenuItem onClick={() => act.act("restart")}>{asks ? "Request restart" : "Restart"}</DropdownMenuItem>}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
-            <DropdownMenuItem variant="destructive" disabled={stopped} onClick={() => setConfirming(true)}>Stop</DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" disabled={stopped} onClick={() => setConfirming(true)}>{asks ? "Request stop" : "Stop"}</DropdownMenuItem>
           </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -94,8 +102,8 @@ export function ServiceActions({ state, namespace, act }: { state: StoreService;
         open={confirming}
         onOpenChange={setConfirming}
         title={`Stop ${name}?`}
-        description={`${containers.length === 1 ? "Its container stops" : `All ${plural(containers.length, "container")} stop`} on ${servers === 1 ? "its server" : "every server"} until you start it or deploy.`}
-        actionLabel="Stop"
+        description={`${containers.length === 1 ? "Its container stops" : `All ${plural(containers.length, "container")} stop`} on ${servers === 1 ? "its server" : "every server"} until you start it or deploy.${asks ? " An owner or admin approves it first." : ""}`}
+        actionLabel={asks ? "Request stop" : "Stop"}
         variant="destructive"
         onConfirm={() => {
           setConfirming(false);

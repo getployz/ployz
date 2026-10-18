@@ -138,17 +138,23 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
   const store = yield* cloudStore;
   const config = yield* AppConfig;
   const organizations = yield* listLinkedOrganizationIds(payload.installationId);
-  const views: { organizationId: string; view: PullRequestView }[] = [];
+  const views: { organizationId: string; view: PullRequestView; guarded: string[] }[] = [];
   for (const organizationId of organizations) {
     const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
-    if (view.check) views.push({ organizationId, view });
+    if (!view.check) continue;
+    const guarded: string[] = [];
+    for (const { environment, destinations } of view.environments) {
+      const { environments } = yield* storeTry(() => store.read(organizationId, { query: "environments", project: environment.project }));
+      guarded.push(...destinations.flatMap((into) => environments.some((each) => each.name === into.name && each.protected) ? [into.name] : []));
+    }
+    views.push({ organizationId, view, guarded });
   }
   if (views.length === 0) return "skipped" as const;
   const { drizzle } = yield* Database;
   const slugs = yield* drizzle.select({ id: organization.id, slug: organization.slug }).from(organization)
     .where(inArray(organization.id, views.map((entry) => entry.organizationId)));
   const run = storePrCheckRun(
-    views.map(({ organizationId, view }) => ({ slug: slugs.find((row) => row.id === organizationId)?.slug ?? "", view })),
+    views.map(({ organizationId, ...rest }) => ({ slug: slugs.find((row) => row.id === organizationId)?.slug ?? "", ...rest })),
     config.app.url.href,
   );
   if (!run) return "skipped" as const;

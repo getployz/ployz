@@ -9,9 +9,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, Select
 import { serviceSetting } from "#/modules/config-store/catalog";
 import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
-import { environmentsQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
-import { can } from "#/modules/organization/permissions";
+import { useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { useProtectedAsk } from "#/modules/config-store/use-protected-ask";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
@@ -35,12 +34,7 @@ type GitRef = { repositoryId: number; installationId: number };
  * Protected Environment only those who may protect it do. Undefined until the listing and your role load; the Store refuses either way.
  */
 export function useSourceLock(organizationSlug: string, environment: EnvironmentRef) {
-  const listing = useCachedStoreView(organizationSlug, environmentsQuery(environment.project ?? ""));
-  const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  const current = listing?.ok
-    ? listing.value.environments.find((row) => environment.environment == null ? row.default : row.name === environment.environment)
-    : undefined;
-  return current?.protected && role !== undefined && !can(role, "environments:protect") ? "Only an owner or admin can change this." : undefined;
+  return useProtectedAsk(organizationSlug, environment) ? "Only an owner or admin can change this." : undefined;
 }
 
 /** The branch a Git Service builds, picked from the repository's branches (typed when GitHub isn't known yet). */

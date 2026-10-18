@@ -100,6 +100,15 @@ describe("storePrCheckRun", () => {
     expect(lines.slice(kept)).toEqual([`…and ${5000 - kept} more lines`, "", "[View in Ployz](https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge)"]);
   });
 
+  it("says a merge deploys into a Protected Environment without changing the conclusion", () => {
+    const run = storePrCheckRun([{ slug: "acme", view: view(lands), guarded: ["production"] }], "https://ployz.test/");
+    expect(run?.conclusion).toBe("success");
+    expect(run?.summary).toBe(
+      "- `web · A`: 1 → 2\n\nMerging deploys to production, a Protected Environment."
+        + "\n\n[View in Ployz](https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge)",
+    );
+  });
+
   it("posts nothing when no Store has a word", () => {
     expect(storePrCheckRun([{ slug: "acme", view: view(null) }], "https://ployz.test/")).toBeNull();
     expect(storePrCheckRun([], "https://ployz.test/")).toBeNull();

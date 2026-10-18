@@ -27,7 +27,7 @@ import { runStoreDeployment } from "#/modules/config-store/store-deployment.serv
 import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
-import { createOrganizationToken, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
+import { createOrganizationToken, knownEnvironment, mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import type { TokenGrant } from "#/modules/identity/token-grant";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache, organizationGithubInstallation } from "#/modules/github/tables";
@@ -373,6 +373,31 @@ it.live(
         assert.isTrue((yield* writeStoreAsMember(bob, slug, branch("main"))).ok, "a member changes the branch once it isn't Protected");
         const values = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web") });
         assert.deepInclude(values.ok && values.value.view === "environment" ? values.value.values : null, { branch: "main" });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "only an owner or admin makes a Deploy token for a Protected Environment",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const { session, bob, organizationId, slug, role } = yield* protectedShop();
+        yield* activeIn(bob.userId, organizationId, slug);
+        const production = { preset: "deploy", environment: "production" } as const;
+        const minted = (session: string) => Effect.gen(function* () {
+          const exit = yield* Effect.exit(knownEnvironment(yield* resolveCaller(signedIn(session)), production));
+          return Exit.isSuccess(exit) ? "minted" : Cause.squash(exit.cause);
+        });
+
+        assert.deepInclude(yield* minted(bob.session), {
+          _tag: "Validation", message: "production is Protected; only an owner or admin can make a Deploy token for it.",
+        });
+        assert.strictEqual(yield* minted(session), "minted");
+        yield* role("admin");
+        assert.strictEqual(yield* minted(bob.session), "minted");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

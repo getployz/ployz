@@ -1,15 +1,21 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Effect, Schema } from "effect";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
-import { type ApprovalView, decideApproval } from "#/modules/approvals/approvals.server";
+import { decideAndApply } from "#/modules/approvals/apply.server";
+import type { ApprovalView } from "#/modules/approvals/approvals.server";
 import { freshApproval, freshOperationDigest, freshPendingApprovals } from "#/modules/machines/server-operations.server";
 import { type Access, requireAccess } from "#/modules/organization/access.server";
 import { approvalForSupport } from "#/modules/support-access/support-view";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
-/** An approval as `access` may read it: support sees its review under the Organization's rules. */
-const shownTo = (access: Access) => <T extends ApprovalView | null>(approval: T): T =>
-  access.kind === "support" && approval !== null ? approvalForSupport(approval, access.shows) : approval;
+/**
+ * An approval as `access` may read it: support sees its review under the Organization's rules, and `yours` marks one
+ * they asked for.
+ */
+const shownTo = (access: Access) => (approval: ApprovalView) => ({
+  ...(access.kind === "support" ? approvalForSupport(approval, access.shows) : approval),
+  yours: approval.requested_by === access.userId,
+});
 
 export const listPendingApprovalsServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])
@@ -36,7 +42,7 @@ export const decideApprovalServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, decision: ApprovalDecision })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "approvals:answer");
-    return yield* decideApproval({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest).pipe(
+    return yield* decideAndApply({ ...access, via: "dashboard" }, data.id, data.decision, freshOperationDigest).pipe(
       Effect.map((decided) => decided.ok
         ? { ok: true as const, approval: shownTo(access)(decided.approval) }
         : { ok: false as const, message: decided.refusal.message }),

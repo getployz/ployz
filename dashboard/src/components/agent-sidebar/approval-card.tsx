@@ -47,6 +47,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const subject = approvalSubject(approval.command, approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
   const others = otherChanges(approval.review);
+  const waits = approval.protected && approval.yours;
 
   const decide = async (decision: ApprovalDecision) => {
     if (sending) return;
@@ -61,6 +62,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const approve = () => decide({ approve: { digest: approval.digest } });
   const deny = () => decide({ reject: reason?.trim() ? { reason: reason.trim() } : {} });
   const onKeyDown = (event: KeyboardEvent) => {
+    if (waits) return;
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void (reason === null ? approve() : deny());
@@ -111,7 +113,9 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
         )}
         {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
       </CardContent>
-      <CardFooter className="gap-1.5">
+      {waits ? (
+        <CardFooter><p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p></CardFooter>
+      ) : <CardFooter className="gap-1.5">
         <Button size="sm" variant="destructive" disabled={sending} onClick={() => void approve()}>
           Approve{reason === null && <Kbd>⌘↵</Kbd>}
         </Button>
@@ -123,7 +127,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
             Deny with a reason…
           </Button>
         )}
-      </CardFooter>
+      </CardFooter>}
     </Card>
   );
 }

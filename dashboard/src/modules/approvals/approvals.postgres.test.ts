@@ -16,6 +16,7 @@ import {
   trustedApproval,
 } from "#/modules/approvals/approvals.server";
 import { asTestDouble } from "#/lib/test-double";
+import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
@@ -103,6 +104,21 @@ const personOwner = Effect.gen(function* () {
   const [person] = yield* drizzle.insert(user).values({ email: "grace@example.test", name: "Grace" }).returning();
   yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
 });
+
+/** A member who can't protect, asking from the dashboard. */
+const dashboardMember = Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  const [person] = yield* drizzle.insert(user).values({ email: "ada.member@example.test", name: "Ada Member" }).returning();
+  const userId = person?.id ?? "";
+  yield* drizzle.insert(member).values({ userId, organizationId: ORGANIZATION, role: "member" });
+  return {
+    userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "ada-session" }, role: "member", support: null, via: "dashboard",
+  } satisfies Caller;
+});
+
+/** The Store's refusal as it reads for a write into a Protected Environment by someone who can't protect it. */
+const protectedRefusal = <T extends { details: unknown }, E, R>(refusal: Effect.Effect<T, E, R>) =>
+  refusal.pipe(Effect.map((refused) => ({ ...refused, details: { ...(refused.details as object), protected: true } })));
 
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
 const asked = (refused: { details: unknown }) => refused.details as Asked;
@@ -321,6 +337,67 @@ it.live("nothing turns asking off: no Organization setting is kept, and a call w
     }));
     expect(settings).toEqual([{ table: null }]);
     expect(yield* provided(trustedApproval(ORGANIZATION, null))).toEqual({ ok: true, approval: "required" });
+  }));
+
+it.live("a member's deploy into a Protected Environment opens an Approval, which keeps what it runs to itself", () =>
+  Effect.gen(function* () {
+    const { provided, refusal } = yield* shopRemovingWeb();
+    const ada = yield* provided(dashboardMember);
+    const opened = yield* provided(requestApproval(ada, publish, yield* protectedRefusal(refusal)));
+    expect(opened.details).toMatchObject({ protected: true });
+    const approval = yield* provided(getApproval(ORGANIZATION, asked(opened).approval_id));
+    expect(approval).toMatchObject({ status: "pending", protected: true, requested_by: ada.userId, review: { protected: { environment: "production" } } });
+    expect(approval.review).not.toHaveProperty("apply");
+  }));
+
+it.live("whoever asked into a Protected Environment can't decide it, either way", () =>
+  Effect.gen(function* () {
+    const { provided, refusal } = yield* shopRemovingWeb();
+    const ada = yield* provided(dashboardMember);
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal(refusal))));
+    for (const decision of [{ approve: { digest: opened.approval } }, { reject: {} }]) {
+      expect(yield* provided(decideApproval(ada, opened.approval_id, decision)))
+        .toMatchObject({ ok: false, refusal: { message: "You asked for this, so someone else who can protect it decides." } });
+    }
+    expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "pending" });
+  }));
+
+it.live("an admin's approval runs a protected dashboard ask as its asker, with the digest, once", () =>
+  Effect.gen(function* () {
+    const { provided, refusal, caller, store } = yield* shopRemovingWeb();
+    const ada = yield* provided(dashboardMember);
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal(refusal))));
+    const write = vi.spyOn(store, "write");
+    const approve = { approve: { digest: opened.approval } };
+    expect(yield* provided(decideAndApply(caller, opened.approval_id, approve))).toMatchObject({ ok: true, approval: { status: "approved" } });
+    expect(write.mock.calls).toHaveLength(1);
+    const [, command, trusted, principal] = write.mock.calls[0] ?? expect.fail("nothing written");
+    expect(command).toMatchObject({ command: "publish", version: expect.any(String) });
+    expect(trusted).toMatchObject({ approval: { approved: opened.approval }, permissions: expect.not.arrayContaining(["environments:protect"]) });
+    expect(principal).toBe("Ada Member");
+    // Approving again answers the row and runs nothing more.
+    expect(yield* provided(decideAndApply(caller, opened.approval_id, approve))).toMatchObject({ ok: true });
+    expect(write.mock.calls).toHaveLength(1);
+  }));
+
+it.live("an agent's protected sync or take of one plan is one card, however often it asks", () =>
+  Effect.gen(function* () {
+    const { refusal, store, pending, cli } = yield* shopRemovingWeb();
+    const guarded = yield* protectedRefusal(refusal);
+    vi.spyOn(store, "write").mockRejectedValue(new RpcError({ ...guarded, code: "approval_required" }));
+    const version = "1";
+    const sync: ConfigCommand = { command: "sync", from: { project: null, environment: "staging" }, into: here, version };
+    const take: ConfigCommand = { command: "take", from: "staging", into: here, version };
+    for (const command of [sync, take]) {
+      const ids = new Set<string | undefined>();
+      for (const _ of [1, 2]) {
+        const answer = yield* cli(command, undefined, "agent");
+        expect(answer.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
+        ids.add(answer.json.error?.details?.approval_id);
+      }
+      expect(ids.size).toBe(1);
+    }
+    expect(yield* pending).toHaveLength(1);
   }));
 
 it.live("the dashboard's writes never ask", () =>

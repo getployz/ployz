@@ -64,8 +64,9 @@ export const PR_CHECK_NAME = "Ployz · ready to merge";
 /**
  * The check run the Store's views of one pull request say to post, if any. Each Organization's Store says what the
  * merge lands (or, once merged, what didn't); several Organizations' words join into the one check, neutral if any is.
+ * A merge into a Protected Environment still deploys, so `guarded`, the Protected ones it lands in, only adds a line.
  */
-export function storePrCheckRun(views: readonly { slug: string; view: PullRequestView }[], appUrl: string) {
+export function storePrCheckRun(views: readonly { slug: string; view: PullRequestView; guarded?: readonly string[] }[], appUrl: string) {
   const saying = views.flatMap(({ slug, view }) =>
     view.check && view.pull_request ? [{ slug, view, check: view.check, head: view.pull_request.head }] : []);
   const [first] = saying;
@@ -83,8 +84,17 @@ export function storePrCheckRun(views: readonly { slug: string; view: PullReques
     conclusion: saying.some(({ check }) => check.conclusion === "neutral") ? "neutral" as const : "success" as const,
     detailsUrl: details.href,
     title: saying.map(({ check }) => check.title).join("; "),
-    summary: fitSummary(saying.map(({ check }) => check.summary).join("\n\n"), `\n\n[View in Ployz](${details.href})`),
+    summary: fitSummary(
+      [...saying.map(({ check }) => check.summary), ...guardedLine(views.flatMap((each) => each.guarded ?? []))].join("\n\n"),
+      `\n\n[View in Ployz](${details.href})`,
+    ),
   };
+}
+
+function guardedLine(guarded: readonly string[]) {
+  const names = [...new Set(guarded)];
+  if (names.length === 0) return [];
+  return [`Merging deploys to ${listNames(names)}, ${names.length === 1 ? "a Protected Environment" : "Protected Environments"}.`];
 }
 
 /** The most a check run's summary may hold, in UTF-8 bytes: GitHub refuses a longer one. */

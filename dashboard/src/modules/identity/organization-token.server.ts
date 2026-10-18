@@ -81,12 +81,28 @@ export const createOrganizationToken = Effect.fn("OrganizationToken.create")(fun
   };
 });
 
-/** A Deploy token's Environment, refused when no Project in the Organization has one by that name. */
+/**
+ * A Deploy token's Environment, refused when no Project in the Organization has one by that name, or when one by that
+ * name is Protected and the Caller can't protect it: the token would deploy where its maker only asks.
+ */
 export const knownEnvironment = Effect.fn("OrganizationToken.knownEnvironment")(function* (caller: Caller, preset: TokenPreset) {
   if (preset.preset !== "deploy") return preset;
   const { projects } = yield* readStore(caller.organization.id, { query: "projects" });
-  if (projects.some((project) => project.environments.includes(preset.environment))) return preset;
-  return yield* new Validation({ message: `No Project here has an Environment named ${preset.environment}.`, userFacing: true });
+  const named = projects.filter((project) => project.environments.includes(preset.environment));
+  if (named.length === 0) {
+    return yield* new Validation({ message: `No Project here has an Environment named ${preset.environment}.`, userFacing: true });
+  }
+  if (callerCan(caller, "environments:protect")) return preset;
+  for (const project of named) {
+    const { environments } = yield* readStore(caller.organization.id, { query: "environments", project: project.name });
+    if (environments.some((environment) => environment.name === preset.environment && environment.protected)) {
+      return yield* new Validation({
+        message: `${preset.environment} is Protected; only an owner or admin can make a Deploy token for it.`,
+        userFacing: true,
+      });
+    }
+  }
+  return preset;
 });
 
 /** Owners and admins reach every token in the Organization; anyone else only their own. */

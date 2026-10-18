@@ -66,6 +66,10 @@ deploys: Ployz doesn't decide who can merge. Use
 [GitHub branch protection](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)
 on the branch to require reviews before a merge.
 
+The **Ployz · ready to merge** check on a pull request into that branch adds a line like
+**Merging deploys to production, a Protected Environment.** The line is informational: it never
+changes whether the check passes.
+
 ## Deploy on push
 
 **Auto-deploy** is on for every new service. Each push to the service's Git branch deploys it, in

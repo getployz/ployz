@@ -117,6 +117,13 @@ panel under **Waiting on you**, and you answer it the same way. That includes
 `ployz server rm`, `ployz server drain` and `ployz server clean`, whose cards are named for the
 server, like **Remove fra-1**.
 
+A member's request to deploy, sync, take, restart or stop in a
+[Protected environment](../environments/environments.md#protect-an-environment) also appears under
+**Waiting on you**, for owners and admins. Approving it runs the change as the member who asked.
+The member sees their own card marked **Waiting on an owner or admin.**, with no **Approve**, and
+no one can approve a request they made themselves. An agent that asks for the same sync or take
+again while it waits doesn't add a second card.
+
 ## Good to know
 
 - **Needs an Anthropic API key.** On a [Self-hosted Cloud](../self-hosting.md) without
