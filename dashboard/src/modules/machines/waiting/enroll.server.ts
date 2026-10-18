@@ -1,10 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, gte, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
-import { insertEnrollmentToken, readJoinLine } from "#/modules/machines/enrollment.server";
+import { insertEnrollmentToken, readJoinStatus } from "#/modules/machines/enrollment.server";
 import { isDeadFoundingClaim, lockOrganizationEnrollment, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import type { StoredReport } from "#/modules/machines/waiting/checkin-wire";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
@@ -33,6 +33,7 @@ export type EnrollCandidate = {
   readonly observedIp: string;
   readonly rejected: boolean;
   readonly enrolling: boolean;
+  readonly joined?: boolean;
   readonly tokenEnded: "expired" | "revoked" | null;
 };
 
@@ -55,6 +56,7 @@ export type EnrollPlan =
 
 function skipReason(row: EnrollCandidate | undefined): string | null {
   if (row === undefined || row.rejected) return "Not waiting";
+  if (row.joined) return "Already joined";
   if (row.enrolling) return "Already enrolling";
   if (row.tokenEnded !== null) return `Fleet Token ${row.tokenEnded}`;
   const blocker = row.report.blockers[0];
@@ -156,6 +158,7 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
       observedIp: waitingServer.observedIp,
       rejected: sql<boolean>`${waitingServer.rejectedAt} is not null`,
       enrolling: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.endedAt} is null)`,
+      joined: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined')`,
       tokenEnded: sql<"expired" | "revoked" | null>`case when ${fleetToken.revokedAt} is not null then 'revoked' when ${fleetToken.expiresAt} <= now() then 'expired' end`,
     })
     .from(waitingServer)
@@ -193,9 +196,8 @@ const releaseDeadClaim = Effect.fn("ServerEnrollment.releaseDeadClaim")(function
   }));
 });
 
-const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
+const enrollmentAuthority = Effect.fn("ServerEnrollment.authority")(function* (
   organizationId: string,
-  input: EnrollInput,
   mode: "start" | "preview",
 ) {
   const { drizzle } = yield* Database;
@@ -204,6 +206,18 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
   const pairing = persisted?.founderMachineId === null && persisted.removalEndpoints?.every((endpoint) => endpoint.status === "confirmed")
     ? undefined
     : persisted;
+  const founded = pairing !== undefined && pairing.founderMachineId !== null;
+  const founding = founded ? undefined : yield* openFounderAttempt(organizationId);
+  const paired = pairing !== undefined && !(mode === "preview" && (yield* isDeadFoundingClaim(pairing)));
+  return { pairing, founded, hasFirst: paired || founding !== undefined };
+});
+
+const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
+  organizationId: string,
+  input: EnrollInput,
+  mode: "start" | "preview",
+) {
+  const { pairing, founded, hasFirst } = yield* enrollmentAuthority(organizationId, mode);
   if (pairing !== undefined && pairing.removalEndpoints !== null) {
     const retryable = pairing.removalEndpoints.some((endpoint) => endpoint.status === "pending");
     return yield* new Conflict({
@@ -213,14 +227,11 @@ const planEnrollment = Effect.fn("ServerEnrollment.plan")(function* (
       userFacing: true,
     });
   }
-  const founded = pairing !== undefined && pairing.founderMachineId !== null;
-  const founding = founded ? undefined : yield* openFounderAttempt(organizationId);
-  const paired = pairing !== undefined && !(mode === "preview" && (yield* isDeadFoundingClaim(pairing)));
   const ids = input.ids.filter((id) => /^[0-9a-f-]{36}$/u.test(id));
   const plan = planServerEnrollment(
     input,
     ids.length === 0 ? [] : yield* candidatesOf(organizationId, ids, mode === "start"),
-    { hasFirst: paired || founding !== undefined },
+    { hasFirst },
   );
   if (plan.kind === "refused") return yield* new Validation({ message: plan.message, userFacing: true });
   return { ...plan, founded };
@@ -314,7 +325,9 @@ export type ServerEnrollmentView = {
   readonly endedAt: string | null;
 };
 
-export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function* (
+export const RECENT_ENROLLMENT_MS = 60 * 60 * 1000;
+
+export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string; readonly id?: string },
 ) {
@@ -338,17 +351,28 @@ export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function
     .innerJoin(waitingServer, eq(waitingServer.id, serverEnrollment.waitingServerId))
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
-      input.id === undefined ? isNull(waitingServer.rejectedAt) : eq(serverEnrollment.id, input.id),
+      input.id === undefined ? and(isNull(waitingServer.rejectedAt), or(
+        isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS)),
+      )) : eq(serverEnrollment.id, input.id),
     ))
-    .orderBy(asc(serverEnrollment.requestedAt), asc(serverEnrollment.id));
-  const line = yield* readJoinLine(organization.id);
-  return rows.map(({ instruction, report, ...row }): ServerEnrollmentView => ({
+    .orderBy(asc(serverEnrollment.requestedAt), asc(waitingServer.firstSeenAt), asc(waitingServer.id), asc(serverEnrollment.id));
+  const { ahead, joining } = yield* readJoinStatus(organization.id);
+  const { hasFirst } = yield* enrollmentAuthority(organization.id, "preview");
+  const attempts = rows.map(({ instruction, report, ...row }): ServerEnrollmentView => ({
     ...row,
     name: instruction.name,
     storage: instruction.storage,
     queued: row.state === "instructed" && !isReadyFor(report, instruction.storage),
-    ahead: row.endedAt === null ? line.get(row.id) ?? null : null,
+    ahead: row.endedAt === null ? ahead.get(row.id) ?? null : null,
     requestedAt: row.requestedAt.toISOString(),
     endedAt: row.endedAt?.toISOString() ?? null,
   }));
+  return { attempts, hasFirst, joining };
+});
+
+export const readServerEnrollments = Effect.fn("ServerEnrollment.read")(function* (
+  actor: Actor,
+  input: { readonly organizationSlug: string; readonly id?: string },
+) {
+  return (yield* readServerEnrollmentStatus(actor, input)).attempts;
 });

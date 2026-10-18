@@ -61,8 +61,9 @@ Run the same line on as many servers as you like while the token works. Each one
 and Ployz and shows up under **Waiting** on the **Servers** page within seconds, above your other
 servers. New ones go to the bottom of the list, and the list never reorders while you look at it.
 
-A waiting server doesn't join yet: Ployz can't let it in, so it can't run your apps. To add a
-server you can deploy to now, use [`ployz server add`](#add-one-server-that-joins-right-away) above.
+Select a waiting server and click **Enroll** to choose its name, storage and what it runs.
+You can enroll while it prepares. Follow [Add many servers](add-many-servers.md) for the full
+review and enrollment flow.
 
 Each row shows the server's name, the IP address Ployz Cloud saw it check in from, its provider,
 size, disks and storage, and its status. **Installing Docker** and **Building ZFS** mean it is
@@ -84,8 +85,8 @@ joined stay.
 
 ## Add many servers with a Fleet Token
 
-A Fleet Token lets any number of hosts register and wait under **Waiting**. Ployz can't let them
-join yet. Make one from your machine:
+A Fleet Token lets hosts register under **Waiting** for you to review and enroll together.
+See [Add many servers](add-many-servers.md). You can also make a token from your machine:
 
 ```sh
 ployz server token create --expires 7d
@@ -97,7 +98,7 @@ It prints the token once, with the line to run on each host:
 curl -fsSL https://ployz.sh | sudo PLOYZ_ENROLL_TOKEN=pflt_… sh
 ```
 
-- **Hosts wait.** A host that runs the line checks in and waits; it doesn't join.
+- **Hosts wait for you.** A host that runs the line checks in under **Waiting** until you enroll it from **Servers**.
 - **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
 - **Expiry and revoke stop new hosts only.** Servers already in stay.
 

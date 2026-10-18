@@ -5,7 +5,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { useServers } from "#/modules/machines/use-servers";
-import { waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
+import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
 import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { prefetchRemote } from "#/collections/route-data";
@@ -26,6 +26,7 @@ export const Route = createFileRoute(
     latestServerUpgradesQueryOptions(params.organizationSlug),
     channelReleaseQueryOptions(NEWEST_RELEASE),
     waitingServersQueryOptions(params.organizationSlug),
+    serverEnrollmentsQueryOptions(params.organizationSlug),
   ),
   component: RouteComponent,
 });

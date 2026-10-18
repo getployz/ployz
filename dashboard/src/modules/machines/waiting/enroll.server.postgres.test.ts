@@ -16,9 +16,11 @@ import {
   cancelServerEnrollment,
   previewServerEnrollment,
   readServerEnrollments,
+  readServerEnrollmentStatus,
   startServerEnrollment,
 } from "#/modules/machines/waiting/enroll.server";
 import { bindServerEnrollment, closeServerEnrollment, closeStaleServerEnrollments, releaseJoiner } from "#/modules/machines/waiting/enrollment-run.server";
+import { listWaitingServers } from "#/modules/machines/waiting/waiting-servers.server";
 import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { createServerEnrollmentRun, executeServerEnrollment } from "#/modules/machines/waiting/server-enrollment.inngest";
@@ -1079,4 +1081,103 @@ it("shows how many joins are ahead of an attempt waiting for a join slot, and nu
 
   await harness.pool.query("update machine_enrollment_token set updated_at = now() - interval '1 minute' where server_enrollment_id = $1", [first]);
   expect(await ahead()).toEqual(new Map([[first, null], [second, 1], [third, null]]));
+});
+
+
+it("never reselects a joined host in a later Cloud preview or start", async () => {
+  const [joined, fresh] = await waiting("already-joined", "fresh");
+  if (!joined || !fresh) throw new Error("two hosts");
+  const first = await run(enroll([joined]));
+  const id = first.attempts[0]?.id;
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now(), encrypted_token = null where id = $1", [id]);
+  const input = { organizationSlug: "ada", ids: [joined.id ?? "", fresh.id ?? ""], first: fresh.id, storage: { kind: "none" }, names: { kind: "hostnames" }, runs: { services: true, ingress: true, builds: true } } as const;
+  const preview = await run(previewServerEnrollment(ada, input));
+  expect(preview.rows.map((row) => row.waitingServerId)).toEqual([fresh.id]);
+  expect(preview.skipped).toEqual([{ id: joined.id, reason: "Already joined" }]);
+  const next = await run(startServerEnrollment(ada, input));
+  expect(next.attempts.map((row) => row.waitingServerId)).toEqual([fresh.id]);
+  expect(next.skipped).toEqual(preview.skipped);
+});
+
+it("restores arrival order when every enrollment in a batch has the same request time", async () => {
+  const hosts = await waiting("web-1", "web-2", "web-3");
+  const first = hosts[0];
+  if (!first) throw new Error("first host");
+  for (const [index, target] of hosts.entries()) {
+    await harness.pool.query("update waiting_server set first_seen_at = $1 where id = $2", [new Date(1000 * index), target.id]);
+  }
+  await run(enroll(hosts, { first: first.id }));
+  const result = await run(readServerEnrollments(ada, { organizationSlug: "ada" }));
+  expect(result.map((row) => row.name)).toEqual(["web-1", "web-2", "web-3"]);
+  expect(new Set(result.map((row) => row.requestedAt)).size).toBe(1);
+});
+
+it("requires a new first server after Forget despite retained Joined history", async () => {
+  const [old, fresh, another] = await waiting("old", "fresh", "another");
+  if (!old || !fresh || !another) throw new Error("three hosts");
+  const original = await run(enroll([old]));
+  await harness.pool.query("update server_enrollment set state = 'joined', ended_at = now(), encrypted_token = null where id = $1", [original.attempts[0]?.id]);
+  const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+  expect(await run(forgetServers({ userId: ada.userId, organizationId: adaOrg }).pipe(
+    Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+  ))).toMatchObject({ ok: true });
+  const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
+  expect(status.attempts[0]?.state).toBe("joined");
+  expect(status.hasFirst).toBe(false);
+  const started = await run(enroll([fresh, another], { first: fresh.id }));
+  expect(started.attempts.map((row) => row.role)).toEqual(["founder", "joiner"]);
+  expect((await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }))).hasFirst).toBe(true);
+});
+
+it("counts live join slots instead of stale workflow stages after completion and expiry", async () => {
+  const founder = "f".repeat(32);
+  await harness.pool.query(
+    "insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_machine_id, founder_claim_machine_id) values ($1, $2, 'founder', $3, $3)",
+    [adaOrg, encryption.encrypt("ployz1:founded"), founder],
+  );
+  const hosts = await waiting(...Array.from({ length: 10 }, (_, n) => `web-${n}`));
+  await run(enroll(hosts));
+  await harness.pool.query("update server_enrollment set state = 'running', stage = 'publishing'");
+  await harness.pool.query("update machine_enrollment_token set claimed_machine_id = replace(id::text, '-', ''), claimed_public_key = 'k', claimed_at = now()");
+  const tokenIds = (await harness.pool.query<{ id: string }>("select id from machine_enrollment_token order by id limit 2")).rows;
+  await harness.pool.query("update machine_enrollment_token set joined_machine_id = claimed_machine_id where id = $1", [tokenIds[0]?.id]);
+  await harness.pool.query("update machine_enrollment_token set claimed_at = now() - interval '10 minutes' where id = $1", [tokenIds[1]?.id]);
+  const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
+  expect(status.attempts.filter((row) => row.stage === "publishing" && row.endedAt === null)).toHaveLength(10);
+  expect(status.joining).toBe(8);
+});
+
+it.each(["failed", "cancelled"] as const)("projects a %s return and its effective arrival in one Waiting response", async (state) => {
+  const [first, second] = await waiting("first", "second");
+  if (!first?.id || !second?.id) throw new Error("two hosts");
+  await harness.pool.query("update waiting_server set first_seen_at = now() - interval '2 hours' where id = $1", [first.id]);
+  const started = await run(enroll([first], { first: first.id }));
+  expect((await run(listWaitingServers(ada, { organizationSlug: "ada" }))).map((row) => row.id)).toEqual([second.id]);
+  await harness.pool.query("update server_enrollment set state = $1, ended_at = now(), stage = 'storage', failure = '{\"stage\":\"storage\",\"message\":\"Disk missing\"}' where id = $2", [state, started.attempts[0]?.id]);
+  const result = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  expect(result.map((row) => row.id)).toEqual([second.id, first.id]);
+  const returned = result[1];
+  expect(returned?.returned).toEqual({ state, stage: "storage", message: "Disk missing" });
+  expect(Date.parse(returned?.arrivalAt ?? "")).toBeGreaterThan(Date.parse(result[0]?.arrivalAt ?? ""));
+  expect(returned).not.toHaveProperty("probe");
+  expect(returned?.report).not.toHaveProperty("kernel");
+});
+
+it("polls open attempts and one hour of ended attempts while preserving direct history reads", async () => {
+  const hosts = await waiting("old-joined", "recent-joined", "old-failed", "recent-failed", "open");
+  const first = hosts[0];
+  if (!first?.id) throw new Error("first host");
+  const started = await run(enroll(hosts, { first: first.id }));
+  const byHost = new Map(started.attempts.map((row) => [row.waitingServerId, row.id]));
+  for (const [index, each] of hosts.entries()) {
+    if (index === 4) continue;
+    await harness.pool.query("update server_enrollment set state = $1, ended_at = now() - ($2::int * interval '1 minute') where id = $3", [index < 2 ? "joined" : "failed", index % 2 === 0 ? 120 : 5, byHost.get(each.id ?? "")]);
+  }
+  const status = await run(readServerEnrollmentStatus(ada, { organizationSlug: "ada" }));
+  expect(status.attempts.map((row) => row.name).sort()).toEqual(["open", "recent-failed", "recent-joined"]);
+  const oldId = byHost.get(first.id);
+  if (oldId === undefined) throw new Error("old attempt");
+  expect((await run(readServerEnrollments(ada, { organizationSlug: "ada", id: oldId })))[0]?.name).toBe("old-joined");
+  const waitingRows = await run(listWaitingServers(ada, { organizationSlug: "ada" }));
+  expect(waitingRows.find((row) => row.report.hostname === "old-failed")?.returned?.state).toBe("failed");
 });
