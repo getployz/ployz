@@ -27,8 +27,8 @@ list. Each item links to the page that does it.
 - **Set CPU and memory limits.** Otherwise one busy service can use all of its server's CPU and
   memory and starve the others. See [Scaling](services/scaling.md#run-more-replicas).
 - **Keep production Protected.** A new project's production starts Protected, so only an owner
-  or admin can change where it deploys from or delete it. Check it under **Settings →
-  Environment**. See [Protect an environment](environments/environments.md#protect-an-environment).
+  or admin can change where it deploys from, and nobody can delete it until it's unprotected.
+  Check it under **Settings → Environment**. See [Protect an environment](environments/environments.md#protect-an-environment).
 - **Wait for CI.** A push deploys at once, even when your tests fail. See
   [Wait for CI](deploy/github.md#wait-for-ci).
 - **Use your own domain.** Generated addresses are for getting started. See
