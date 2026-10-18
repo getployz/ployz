@@ -10,7 +10,7 @@ import { PROBE_RETRY_MS, PROBE_SETTLE_MS } from "./use-waiting";
 import type { ServerEnrollmentView } from "#/modules/machines/waiting/enroll.server";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { EnrollSheet } from "./enroll-sheet";
-import { ROW_PX, VISIBLE_ROWS, WaitingList, WaitingSection } from "./waiting-list";
+import { IntakeTray, ROW_PX, VISIBLE_ROWS, WaitingList } from "./waiting-list";
 
 let probe: ReturnType<typeof stubProbe>;
 let reject: ReturnType<typeof stubReject>;
@@ -282,7 +282,7 @@ it.each(["waiting-first", "status-first"])("keeps returned rows at their effecti
   const statusKey = serverEnrollmentsQueryOptions("ada").queryKey;
   client.setQueryData(waitingKey, [second]);
   client.setQueryData(statusKey, { attempts: [attempt], hasFirst: true, joining: 0 });
-  render(<QueryClientProvider client={client}><WaitingSection organizationSlug="ada" token={undefined} /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><IntakeTray organizationSlug="ada" token={undefined} firstRun={false} /></QueryClientProvider>);
   expect(rowNames()).toEqual(["second"]);
   const waiting = deferred<WaitingServerView[]>();
   const status = deferred<Awaited<ReturnType<typeof waitingFunctions.serverEnrollmentStatusServerFn>>>();
@@ -408,4 +408,24 @@ it("keeps preview data while editing, debounces names, and permits a background 
   expect(screen.getByText("ZFS on main disk")).toBeTruthy();
   await act(async () => edited.resolve(planFor(["id-one"])));
   await vi.waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Enroll 1" }).disabled).toBe(false));
+});
+
+it("heads the tray with the readiness mix, hiding empty parts, and shows CPU, RAM and disk per row", () => {
+  renderList([host("alpha"), host("bravo"), host("charlie", { status: "blocked", blockers: [{ code: "no_systemd", message: "Needs systemd" }] })]);
+  expect(screen.getByRole("heading", { name: "Waiting to join" })).toBeTruthy();
+  expect(screen.getByText("2 ready")).toBeTruthy();
+  expect(screen.getByText("1 blocked")).toBeTruthy();
+  expect(screen.queryByText("0 offline")).toBeNull();
+  expect([...document.querySelectorAll<HTMLElement>("[data-mix]")].map((part) => [part.dataset["mix"], part.style.flex])).toEqual([["ready", "2 1 0%"], ["blocked", "1 1 0%"]]);
+  expect(screen.getAllByText("4 vCPU · 8 GB · 80 GB")).toHaveLength(3);
+  expect(statusOf("charlie")).toBe("No systemdNeeds systemd");
+});
+
+it("names the first arrival on first run and enrolls it from the heading", async () => {
+  vi.spyOn(waitingFunctions, "planServerEnrollmentServerFn").mockImplementation(async ({ data }) => planFor(data.ids));
+  render(<QueryClientProvider client={flowClient()}><WaitingList organizationSlug="ada" servers={[host("web")]} now={NOW} firstRun /></QueryClientProvider>);
+  expect(screen.getByRole("heading", { name: "web is ready to enroll" })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: "Waiting to join" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Enroll" }));
+  await vi.waitFor(() => expect(screen.getByRole("region", { name: "Enrollment preview" })).toBeTruthy());
 });

@@ -1,28 +1,29 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button } from "#/components/ui/button";
+import { Card, CardContent } from "#/components/ui/card";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Input } from "#/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select";
+import { Separator } from "#/components/ui/separator";
 import { cn } from "#/lib/utils";
 import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment";
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollmentCounters, EnrollingList, STAGES } from "./enrolling-list";
+import { EnrollingList, STAGES } from "./enrolling-list";
 import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
-  disksText,
   hostnameOrIpMatcher,
   providerOf,
   READINESS_FILTERS,
   readiness,
+  type Readiness,
   type ReadinessFilter,
   selectable,
-  sizeText,
+  specText,
   statusCell,
-  volumesText,
 } from "./waiting-row";
 
 const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView[]; now: number }>({ servers: [], now: 0 });
@@ -30,28 +31,43 @@ const WaitingStatusContext = createContext<{ servers: readonly WaitingServerView
 export const ROW_PX = 52;
 export const VISIBLE_ROWS = 10;
 const BOX_RECT = { width: 0, height: ROW_PX * VISIBLE_ROWS };
-const GRID = "grid grid-cols-[20px_minmax(0,1fr)_130px_92px_150px_150px_160px] items-center gap-3 px-3";
+const GRID = "grid grid-cols-[20px_minmax(0,1fr)_150px_170px_200px] items-center gap-3 px-3";
 
-export function WaitingSection({ organizationSlug, token }: { organizationSlug: string; token: string | undefined }) {
+/** The readiness mix, in the order a server moves through it, with the colour of its bar segment. */
+const MIX = [
+  { value: "ready", bar: "bg-success", text: "text-success" },
+  { value: "preparing", bar: "bg-info", text: "text-info" },
+  { value: "blocked", bar: "bg-warning", text: "text-warning" },
+  { value: "offline", bar: "bg-destructive", text: "text-destructive" },
+] as const satisfies readonly { value: Readiness; bar: string; text: string }[];
+
+/** Servers waiting to join and servers enrolling, in one tray. The page renders it only when it holds something. */
+export function IntakeTray({ organizationSlug, token, firstRun }: { organizationSlug: string; token: string | undefined; firstRun: boolean }) {
   const waiting = useWaitingServers(organizationSlug);
   const enrollments = useEnrollmentStatus(organizationSlug);
   const cancel = useCancelEnrollment(organizationSlug);
   const servers = waiting.data ?? [];
   const attempts = enrollments.data?.attempts ?? [];
-  if (waiting.isError || enrollments.isError) return <p role="alert">Couldn’t load waiting servers or enrollments. <Button variant="outline" onClick={() => { void waiting.refetch(); void enrollments.refetch(); }}>Retry</Button></p>;
-  return <>
-    <EnrollmentCounters waiting={servers} attempts={attempts} joining={enrollments.data?.joining ?? 0} />
-    <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} />
-    <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
-  </>;
+  const enrolling = attempts.some((row) => row.endedAt === null || row.state === "joined");
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-4">
+        {/* Stays mounted while the last waiting server enrolls, so its sheet survives the row leaving. */}
+        <WaitingList organizationSlug={organizationSlug} servers={servers} now={waiting.dataUpdatedAt} token={token} hasFirst={enrollments.data?.hasFirst ?? true} firstRun={firstRun} />
+        {servers.length > 0 && enrolling ? <Separator /> : null}
+        <EnrollingList attempts={attempts} onCancel={cancel.mutate} />
+      </CardContent>
+    </Card>
+  );
 }
 
-export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true }: {
+export function WaitingList({ organizationSlug, servers, now, token, hasFirst = true, firstRun = false }: {
   organizationSlug: string;
   servers: readonly WaitingServerView[];
   now: number;
   token?: string | undefined;
   hasFirst?: boolean;
+  firstRun?: boolean;
 }) {
   const [filter, setFilter] = useState<ReadinessFilter>("all");
   const [provider, setProvider] = useState("");
@@ -63,6 +79,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
   const autoOpened = useRef<string | null>(null);
   const only = servers.length === 1 ? servers[0] : undefined;
   const lone = !hasFirst && only && selectable(only) ? only : undefined;
+  const arrived = firstRun && only && readiness(only) === "ready" ? only : undefined;
   useEffect(() => {
     if (lone && autoOpened.current !== lone.id) {
       autoOpened.current = lone.id;
@@ -121,12 +138,46 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
     setOpenId(null);
   };
 
+  const sheets = <>
+    {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
+    <WaitingDetailSheet
+      open={openId !== null}
+      failed={detail.isError}
+      server={openId === null ? null : detail.data ?? null}
+      now={now}
+      onOpenChange={(next) => { if (!next) setOpenId(null); }}
+      onReject={(id) => rejectIds([id])}
+    />
+  </>;
+  if (servers.length === 0) return sheets;
+  const mix = MIX.filter((part) => (counts.get(part.value) ?? 0) > 0);
+
   return (
     <WaitingStatusContext value={statusContext}><section aria-labelledby="waiting-heading" className="flex flex-col gap-2.5">
+      {arrived === undefined ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h2 id="waiting-heading" className="text-sm font-semibold">Waiting to join</h2>
+            <span className="text-xs text-muted-foreground tabular-nums">{servers.length}</span>
+            <span className="flex items-center gap-2.5 text-xs tabular-nums">
+              {mix.map((part) => <span key={part.value} className={part.text}>{counts.get(part.value)} {part.value}</span>)}
+            </span>
+          </div>
+          <div aria-hidden="true" className="flex h-1 gap-0.5 overflow-hidden rounded-full">
+            {mix.map((part) => <span key={part.value} data-mix={part.value} className={part.bar} style={{ flex: counts.get(part.value) }} />)}
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2.5">
+          <h2 id="waiting-heading" className="text-sm font-semibold">{arrived.report.hostname} is ready to enroll</h2>
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => rejectIds([arrived.id])}>Reject</Button>
+            <Button size="sm" variant="ink" onClick={() => setEnroll([arrived])}>Enroll</Button>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2.5">
-        <h2 id="waiting-heading" className="text-sm font-semibold">Waiting</h2>
-        <span className="text-xs text-muted-foreground tabular-nums">{servers.length}</span>
-        <div className="ml-auto flex flex-wrap items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <div role="group" aria-label="Readiness" className="flex items-center gap-1">
             {READINESS_FILTERS.map((option) => (
               <button
@@ -158,7 +209,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
         </div>
       </div>
       <div className="overflow-x-auto rounded-lg border">
-        <div role="table" aria-label="Waiting servers" className="min-w-[860px] text-[13px]">
+        <div role="table" aria-label="Waiting servers" className="min-w-[680px] text-[13px]">
           <div role="row" className={cn(GRID, "h-9 text-xs text-muted-foreground")}>
             <span role="columnheader">
               <Checkbox
@@ -169,10 +220,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
               />
             </span>
             <span role="columnheader">Name</span>
-            <span role="columnheader">Source IP</span>
-            <span role="columnheader">Size</span>
-            <span role="columnheader">Disks</span>
-            <span role="columnheader">Volumes</span>
+            <span role="columnheader">IP</span>
+            <span role="columnheader">CPU · RAM · disk</span>
             <span role="columnheader">Status</span>
           </div>
           <div ref={scroller} role="rowgroup" data-slot="waiting-box" className="overflow-y-auto" style={{ maxHeight: ROW_PX * VISIBLE_ROWS }}>
@@ -210,15 +259,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
           <Button size="sm" variant="secondary" onClick={() => setEnroll(rows.filter((row) => pickedIds.has(row.id)))}>Enroll {chosen.length}</Button>
         </div>
       ) : null}
-      {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
-      <WaitingDetailSheet
-        open={openId !== null}
-        failed={detail.isError}
-        server={openId === null ? null : detail.data ?? null}
-        now={now}
-        onOpenChange={(next) => { if (!next) setOpenId(null); }}
-        onReject={(id) => rejectIds([id])}
-      />
+      {sheets}
     </section></WaitingStatusContext>
   );
 }
@@ -231,8 +272,6 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOp
   onOpen: (id: string) => void;
 }) {
   const { report } = server;
-  const disks = disksText(report);
-  const volumes = volumesText(report);
   const state = readiness(server);
   return (
     <div
@@ -261,12 +300,7 @@ const WaitingRow = memo(function WaitingRow({ server, picked, full, onPick, onOp
         <span className="font-mono">{server.observedIp}</span>
         <span>{providerOf(server)}</span>
       </TwoLineCell>
-      <span role="cell" className="truncate text-muted-foreground">{sizeText(report)}</span>
-      <span role="cell" className="truncate">
-        {disks.main}
-        {disks.spare === "" ? null : <span className="text-muted-foreground"> {disks.spare}</span>}
-      </span>
-      <TwoLineCell><span>{volumes.bold}</span><span>{volumes.detail}</span></TwoLineCell>
+      <span role="cell" className="truncate text-muted-foreground">{specText(report)}</span>
       <WaitingStatus id={server.id} />
     </div>
   );

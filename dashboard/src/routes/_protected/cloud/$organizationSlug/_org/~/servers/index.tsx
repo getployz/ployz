@@ -14,7 +14,7 @@ import { SERVER_LIST, ServerRow } from "./-components/server-row";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
-import { WaitingSection } from "./-components/waiting-list";
+import { IntakeTray } from "./-components/waiting-list";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/",
@@ -52,7 +52,7 @@ function RouteComponent() {
         />
       </div>
       {/* Above the list: the skeleton below is a guess at the list's height, and Waiting must not jump when it settles. */}
-      <WaitingSection organizationSlug={organizationSlug} token={token} />
+      <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={false} />
       {state === "loading" ? (
         <ServersSkeleton />
       ) : state === "unreachable" ? (
