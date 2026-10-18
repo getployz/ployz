@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
@@ -136,9 +136,17 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
 }
 
 function ChangeLines({ label, changes, className }: { label?: string; changes: ChangeLine[]; className: string }) {
-  return (
-    <ul aria-label={label} className={cn("flex flex-col gap-0.5 font-mono text-xs", className)}>
+  const id = useId();
+  const list = (
+    <ul aria-labelledby={label ? id : undefined} className={cn("flex flex-col gap-0.5 font-mono text-xs", className)}>
       {changes.map((change) => <li key={change.key}>{change.mark} {change.node} {change.text}</li>)}
     </ul>
+  );
+  if (!label) return list;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <p id={id} className="text-xs text-muted-foreground">{label}</p>
+      {list}
+    </div>
   );
 }

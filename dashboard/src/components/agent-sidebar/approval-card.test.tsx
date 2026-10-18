@@ -162,6 +162,7 @@ it("says who asked, and shows the change their ask saves apart from what else it
   const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
   expect(card.getByText("Asked by Linus Torvalds")).toBeTruthy();
   expect(card.getByRole("list", { name: "Saves" }).textContent).toBe("+ api LINUS_CHANGE requested");
+  expect(card.getByText("Saves")).toBeTruthy();
   fireEvent.click(card.getByText("2 other changes"));
   expect(card.getByText(/api new service/)).toBeTruthy();
   expect(card.getByText(/web .*1 → 2/)).toBeTruthy();
