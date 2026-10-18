@@ -76,17 +76,12 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     };
     let view = store(root)?.read(&query)?;
     let changes = view.review_changes();
-    let hint = (view.draft_count > 0)
-        .then(|| {
-            next(
-                matches,
-                &["deploy", "--skip-deploy", "--expect-version", &view.version],
-            )
-        })
-        .or_else(|| {
-            (!view.changes.is_empty())
-                .then(|| next(matches, &["deploy", "--expect-version", &view.version]))
-        });
+    // A draft reversal alone changes nothing on the Servers, so only a Save records it.
+    let hint = if !view.changes.is_empty() {
+        Some(next(matches, &["deploy"]))
+    } else {
+        (view.draft_count > 0).then(|| next(matches, &["deploy", "--skip-deploy"]))
+    };
     let shown = Diffed {
         domain_changes: super::store::domain_changes(
             changes.iter().flat_map(|change| &change.settings),
@@ -149,7 +144,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
         }
         if view.published && !view.changes.is_empty() {
             crate::ui::stream(format_args!(
-                "Saved as #{}. Not deployed.",
+                "Saved as version #{}. Not deployed.",
                 view.saved.map_or(0, |saved| saved.0)
             ));
         }
@@ -203,9 +198,8 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
     let hint = next(matches, &["diff"]);
     crate::ui::finish(&Next::new(&discarded, Some(hint.clone())), || {
         crate::ui::stream(format_args!(
-            "Discarded {} in {where_} (revision {}).",
-            path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string()),
-            discarded.environment.revision
+            "Discarded {} in {where_}.",
+            path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string())
         ));
         crate::ui::hint(&crate::ui::Hint::Inspect(hint));
     })
@@ -293,7 +287,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
     crate::ui::finish(&staged, || {
         crate::ui::stream(format_args!(
-            "{} Saved revision {} in the draft. Review before saving or deploying.",
+            "{} version #{} in the draft. Review before saving or deploying.",
             if action == ployz_store::HistoryAction::Restore {
                 "Restored"
             } else {
