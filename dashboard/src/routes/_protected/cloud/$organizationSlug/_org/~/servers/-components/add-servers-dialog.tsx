@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import type { ButtonVariants } from "#/components/ui/button-variants";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
@@ -106,26 +107,23 @@ function MintFlow({ organizationSlug, onDone }: { organizationSlug: string; onDo
           ))}
         </div>
       </div>
-      <div className="border-t pt-4">
-        <div className="flex items-center gap-3 text-sm">
-          <Switch checked={autoEnroll} onCheckedChange={setAutoEnroll} aria-label="Enroll on arrival" />
-          <span>
-            <span className="block font-medium">Enroll on arrival</span>
-            <span className="text-muted-foreground">Skip the review. They join as they arrive.</span>
-          </span>
-        </div>
+      <FieldGroup className="border-t pt-4">
+        <Field orientation="horizontal">
+          <Switch id="enroll-on-arrival" checked={autoEnroll} onCheckedChange={setAutoEnroll} />
+          <FieldContent>
+            <FieldLabel htmlFor="enroll-on-arrival">Enroll on arrival</FieldLabel>
+            <FieldDescription>Skip the review. They join as they arrive.</FieldDescription>
+          </FieldContent>
+        </Field>
         {autoEnroll ? (
-          <div className="mt-3 flex flex-col gap-2 text-sm">
-            <label className="flex items-center gap-2">
-              Up to
-              <Input aria-label="Maximum servers" type="number" min={1} max={1000} step={1} value={maxServers} onChange={(event) => setMaxServers(event.target.value)} aria-invalid={!maxOk} className="w-20 tabular-nums" />
-              servers
-            </label>
-            <p className="text-muted-foreground">Only joins an existing cluster. Enroll the first server yourself.</p>
-            <p className="text-warning">Anyone with this token can join up to {maxOk ? max : "N"} servers before it expires.</p>
-          </div>
+          <Field>
+            <FieldLabel htmlFor="enroll-max">Maximum servers</FieldLabel>
+            <Input id="enroll-max" type="number" min={1} max={1000} step={1} value={maxServers} onChange={(event) => setMaxServers(event.target.value)} aria-invalid={!maxOk} className="w-20 tabular-nums" />
+            <FieldDescription>Only joins an existing cluster. Enroll the first server yourself.</FieldDescription>
+            <FieldDescription className="text-warning">Anyone with this token can join up to {maxOk ? max : "N"} servers before it expires.</FieldDescription>
+          </Field>
         ) : null}
-      </div>
+      </FieldGroup>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onDone}>Cancel</Button>
         <Button type="submit" variant="ink" disabled={!nameOk || !maxOk || mint.isPending}>

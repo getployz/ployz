@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { RelativeTime } from "#/components/relative-time";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { TableCell, TableRow } from "#/components/ui/table";
 import type { FleetTokenView } from "#/modules/machines/waiting/fleet-token";
@@ -10,7 +11,7 @@ export function TokenRow({ organizationSlug, token, onRevoke }: { organizationSl
       <TableCell>
         <div className="flex items-center gap-2">
           <span className="font-mono font-medium">{token.name}</span>
-          {token.autoEnrollMax !== null ? <span className="rounded-md bg-muted px-1.5 py-0.5 text-xs">Auto up to {token.autoEnrollMax}</span> : null}
+          {token.autoEnrollMax !== null ? <Badge variant="secondary">Auto up to {token.autoEnrollMax}</Badge> : null}
         </div>
         <div className="text-xs text-muted-foreground">
           <RelativeTime date={new Date(token.createdAt)} /> · {token.createdBy}
