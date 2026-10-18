@@ -1344,6 +1344,55 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
 }
 
 #[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
+async fn a_railpack_upload_without_its_source_takes_an_env_change_on_its_held_image() {
+    let (root, service, builds) = fixture();
+    fs::remove_file(root.join("Dockerfile")).unwrap();
+    let railpack = |greeting: &str, with_source: bool| {
+        let mut input = uploaded(&root, with_source);
+        let snapshot = &mut input.deployment["snapshots"][0];
+        snapshot["config"]["build"]["buildMethod"] = json!("railpack");
+        snapshot["resolvedEnv"] = json!({"GREETING": greeting});
+        input
+    };
+    let (session, server) = session(service).await;
+    let built = session
+        .prepare(railpack("hello", true))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = built
+        .build_receipts()
+        .iter()
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    built.close();
+
+    let mut changed = railpack("hello-staging", false);
+    changed.build_receipts = receipts.clone();
+    let deployed = session.prepare(changed).unwrap().finished().await.unwrap();
+    assert!(deployed.preview().operations.iter().any(|row| {
+        row.operation.spec().is_some_and(|spec| {
+            spec.container
+                .environment
+                .get("GREETING")
+                .map(String::as_str)
+                == Some("hello-staging")
+        })
+    }));
+    deployed.close();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        1,
+        "nothing rebuilt"
+    );
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn a_build_still_queued_at_its_start_limit_reports_queued_and_starts_nothing() {
     let (root, service, builds) = fixture();
     builds.hold_in_queue.store(true, Ordering::SeqCst);
