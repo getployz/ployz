@@ -1,11 +1,14 @@
 import { generateKeyPairSync, type KeyObject, sign } from "node:crypto";
-import { Cause, Effect, Exit, Random } from "effect";
+import { Cause, Effect, Exit, Random, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
 import type { CheckinRequest, CheckinResponse, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
-import { createFleetToken, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
+import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { bindServerEnrollment, closeStaleServerEnrollments, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
+import { rustMachineIdSchema } from "#/modules/machines/enrollment";
 import { openProbeSelection } from "#/modules/machines/waiting/probe.server";
 import { pruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
 import { rejectWaitingServers } from "#/modules/machines/waiting/reject.server";
@@ -81,6 +84,8 @@ const newHost = (): Host => {
 
 type Send = {
   readonly hostname?: string;
+  readonly cliVersion?: string;
+  readonly report?: Partial<HostReport>;
   readonly prep?: Prep;
   readonly probe?: CheckinRequest["probe"];
   readonly skew?: number;
@@ -92,8 +97,8 @@ const request = (token: string, host: Host, options: Send = {}) => {
   const base = {
     protocolVersion: 1,
     checkinKey: host.key,
-    cliVersion: "0.3.0",
-    report: { ...report, hostname: options.hostname ?? report.hostname },
+    cliVersion: options.cliVersion ?? "0.3.0",
+    report: { ...report, ...options.report, hostname: options.hostname ?? report.hostname },
   } as const;
   const withPrep: CheckinRequest = options.prep === undefined ? base : { ...base, prep: options.prep };
   const checkin: CheckinRequest = options.probe === undefined ? withPrep : { ...withPrep, probe: options.probe };
@@ -867,4 +872,194 @@ it("reads status from the last check-in and the report", () => {
   expect(waitingServerStatus({ ...report, blockers: [{ code: "cgroup_v1", message: "cgroup v1." }] }, recent, now)).toBe("blocked");
   expect(waitingServerStatus({ ...report, prep: { docker: "failed", zfs: "off" } }, recent, now)).toBe("preparing");
   expect(waitingServerStatus({ ...report, prep: { docker: "ready", zfs: "installing" } }, recent, now)).toBe("waiting");
+});
+
+const readyAuto = { cliVersion: "0.3.1", prep: { docker: "ready", zfs: "ready" } } as const;
+const arrivalWait = { kind: "wait", retryAfter: 2 };
+const autoToken = (maxServers = 2) => run(createFleetToken(ada, { organizationSlug: "ada", name: "auto", expiresIn: "30d", autoEnroll: { maxServers } }));
+const foundOrganization = () => harness.pool.query(`insert into organization_pairing (organization_id, founder_machine_id, founder_claim_machine_id, founder_public_key, encrypted_pairing_secret)
+  values ($1, repeat('a', 32), repeat('a', 32), repeat('b', 64), '{}')`, [adaOrg]);
+const autoAttempts = async () => (await harness.pool.query<{ id: string; waiting_server_id: string; role: string; state: string; instruction: unknown }>("select * from server_enrollment order by requested_at, id")).rows;
+const endAuto = async (id: string, state: "joined" | "failed" | "cancelled") => {
+  const runId = `auto-${id}`;
+  await run(bindServerEnrollment({ attemptId: id, organizationId: adaOrg }, runId));
+  const ending = state === "joined"
+    ? { state, machineId: Schema.decodeUnknownSync(rustMachineIdSchema)("a".repeat(32)) }
+    : state === "failed" ? { state, failure: { stage: null, message: "Install failed" } } : { state };
+  expect(await run(endServerEnrollment(id, runId, ending))).toBe(true);
+};
+
+it("holds an arrival token's maximum under concurrent signed check-ins", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(5);
+  const answers = await Promise.all(Array.from({ length: 20 }, (_, n) => send(token, newHost(), { ...readyAuto, hostname: `auto-${n}`, ip: `198.51.100.${n + 1}` })));
+  expect(answers.filter((answer) => answer.kind === "wait" && answer.retryAfter === 2)).toHaveLength(5);
+  expect(answers.filter((answer) => answer.kind === "wait" && answer.retryAfter === 10)).toHaveLength(15);
+  const attempts = await autoAttempts();
+  expect(attempts).toHaveLength(5);
+  expect(attempts.every((attempt) => attempt.role === "joiner" && attempt.state === "instructed")).toBe(true);
+  expect((await harness.pool.query("select count(*)::int as count from operation_outbox where name = 'server/enrollment.requested'")).rows).toEqual([{ count: 5 }]);
+});
+
+it("revokes an arrival token mid-burst without deadlock and keeps every started attempt", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const arrivals = Array.from({ length: 12 }, (_, n) => send(token, newHost(), { ...readyAuto, hostname: `burst-${n}`, ip: `198.51.100.${n + 1}` }));
+  const revoked = run(revokeFleetToken(ada, { organizationSlug: "ada", id }));
+  const answers = await Promise.all(arrivals);
+  await revoked;
+  const started = answers.filter((answer) => answer.kind === "wait" && answer.retryAfter === 2).length;
+  expect(await autoAttempts()).toHaveLength(started);
+  expect(await rows()).toHaveLength(started);
+});
+
+it("never founds on arrival, including while the first server is still founding", async () => {
+  const { token } = await autoToken();
+  const host = newHost();
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+  await foundOrganization();
+  await harness.pool.query("update organization_pairing set founder_machine_id = null");
+  expect(await send(token, host, readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+  await harness.pool.query("update organization_pairing set founder_machine_id = repeat('a', 32)");
+  expect(await send(token, host, readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner", name: "web-1" });
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("keeps plain tokens and older clients waiting in a founded Organization", async () => {
+  await foundOrganization();
+  const plain = await fleetToken("review");
+  const auto = await autoToken();
+  expect(await send(plain.token, newHost(), readyAuto)).toEqual(wait);
+  expect(await send(auto.token, newHost(), { ...readyAuto, cliVersion: "0.2.9" })).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+});
+
+it.each([
+  { label: "blocker", options: { ...readyAuto, report: { blockers: [{ code: "disk_too_small", message: "Disk too small" }] } } },
+  { label: "Docker installing", options: { ...readyAuto, prep: { docker: "installing", zfs: "ready" } } },
+  { label: "Docker failed", options: { ...readyAuto, prep: { docker: "failed", zfs: "ready" } } },
+  { label: "ZFS installing", options: { ...readyAuto, prep: { docker: "ready", zfs: "installing" } } },
+] satisfies ReadonlyArray<{ label: string; options: Send }>)
+("waits for $label before using an arrival slot, then plans the finished build", async ({ options }) => {
+  await foundOrganization();
+  const { token } = await autoToken();
+  const host = newHost();
+  expect(await send(token, host, options)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+  expect(await send(token, host, { ...readyAuto, report: { zfs: { kind: "eligible", targets: [{ kind: "disk", byId: "spare-auto" }] } } })).toEqual(arrivalWait);
+  expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", storage: { kind: "zfs", device: "/dev/disk/by-id/spare-auto" } });
+});
+
+it.each(["failed", "skipped", "off"] as const)("uses Docker volumes after ZFS preparation is %s", async (zfs) => {
+  await foundOrganization();
+  const { token } = await autoToken();
+  const host = newHost();
+  expect(await send(token, host, { ...readyAuto, prep: { docker: "ready", zfs }, report: { zfs: { kind: "eligible", targets: [{ kind: "main_disk" }] } } })).toEqual(arrivalWait);
+  expect(await send(token, host, readyAuto)).toMatchObject({ kind: "enroll", storage: { kind: "none" } });
+});
+
+it.each(["failed", "cancelled"] as const)("frees an arrival slot when an attempt is %s", async (state) => {
+  await foundOrganization();
+  const { token } = await autoToken(1);
+  const first = newHost();
+  const next = newHost();
+  expect(await send(token, first, readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, next, readyAuto)).toEqual(wait);
+  const attempt = (await autoAttempts())[0];
+  expect(attempt).toBeDefined();
+  await endAuto(attempt?.id ?? "", state);
+  expect(await send(token, next, readyAuto)).toEqual(arrivalWait);
+  expect(await send(token, first, readyAuto)).toEqual(wait);
+});
+
+it("keeps joined usage after the seven-day sweep and refuses another arrival", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(1);
+  const first = newHost();
+  expect(await send(token, first, readyAuto)).toEqual(arrivalWait);
+  const attempt = (await autoAttempts())[0];
+  await endAuto(attempt?.id ?? "", "joined");
+  expect(await run(endServerEnrollment(attempt?.id ?? "", `auto-${attempt?.id}`, { state: "joined", machineId: Schema.decodeUnknownSync(rustMachineIdSchema)("a".repeat(32)) }))).toBe(false);
+  await harness.pool.query("update server_enrollment set ended_at = now() - interval '8 days'");
+  expect(await run(closeStaleServerEnrollments())).toEqual({ failed: 0, removed: 1 });
+  expect(await autoAttempts()).toHaveLength(0);
+  expect(await rows()).toHaveLength(0);
+  expect(await send(token, newHost(), readyAuto)).toEqual(wait);
+  expect(await autoAttempts()).toHaveLength(0);
+  expect((await run(listFleetTokens(ada, { organizationSlug: "ada" })))[0]).toMatchObject({ autoEnrollMax: 1, joined: 1, waiting: 1 });
+});
+
+it("keeps an open arrival running after revoke but refuses any new arrivals", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken();
+  const first = newHost();
+  expect(await send(token, first, readyAuto)).toEqual(arrivalWait);
+  expect(await run(revokeFleetToken(ada, { organizationSlug: "ada", id }))).toEqual({ waitingRemoved: 0 });
+  expect(await send(token, first, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
+  expect(await send(token, newHost(), readyAuto)).toMatchObject({ kind: "stop", reason: "token_revoked" });
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
+// Holds a ready arrival host's row from another session, so a test can queue transactions behind it in a known order.
+const holdArrivalHost = async (token: string) => {
+  const host = newHost();
+  await send(token, host, { ...readyAuto, prep: { docker: "installing", zfs: "ready" } });
+  await harness.pool.query(`update waiting_server set report = jsonb_set(report, '{prep,docker}', '"ready"')`);
+  const holder = await harness.pool.connect();
+  await holder.query("begin");
+  await holder.query("select id from waiting_server for update");
+  const release = async () => {
+    await holder.query("commit");
+    holder.release();
+  };
+  return { host, release };
+};
+const lockWaiters = async (count: number) => {
+  await expect.poll(async () => (await harness.pool.query<{ waiting: number }>(
+    "select count(*)::int as waiting from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
+  )).rows[0]?.waiting, { timeout: 5_000, interval: 10 }).toBeGreaterThanOrEqual(count);
+};
+const arrive = (id: string, host: Host) => run(startArrivalEnrollment({ id, organizationId: adaOrg, autoEnrollMax: 10 }, host.key));
+
+it("lets a check-in overlap its host's arrival without deadlock", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const { host, release } = await holdArrivalHost(token);
+  const arrival = arrive(id, host);
+  await lockWaiters(1);
+  const checkin = send(token, host, readyAuto);
+  await lockWaiters(2);
+  await release();
+  expect(await arrival).toBe(true);
+  expect(await checkin).toMatchObject({ kind: "enroll", role: "joiner" });
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("starts one arrival when two overlap for the same host, and the other just waits", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const { host, release } = await holdArrivalHost(token);
+  const first = arrive(id, host);
+  await lockWaiters(1);
+  const second = arrive(id, host);
+  await lockWaiters(2);
+  await release();
+  expect([...(await Promise.all([first, second]))].sort()).toEqual([false, true]);
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("answers an admitted check-in with a plain wait when its arrival fails", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(10);
+  await harness.pool.query(`create function refuse_enrollment() returns trigger language plpgsql as $$ begin raise exception 'refused'; end $$;
+    create trigger refuse_enrollment before insert on server_enrollment execute function refuse_enrollment();`);
+  try {
+    expect(await send(token, newHost(), readyAuto)).toEqual(wait);
+    expect(await rows()).toHaveLength(1);
+  } finally {
+    await harness.pool.query("drop trigger refuse_enrollment on server_enrollment; drop function refuse_enrollment();");
+  }
 });

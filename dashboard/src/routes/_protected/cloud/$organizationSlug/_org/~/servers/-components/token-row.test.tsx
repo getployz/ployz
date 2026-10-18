@@ -31,10 +31,15 @@ async function renderRow(view: FleetTokenView) {
   return within(await screen.findByRole("row"));
 }
 
-it("describes a token with an automatic join limit as waiting for review, with its count", async () => {
+it("shows the arrival limit and joined count beside waiting servers", async () => {
   const row = await renderRow(token({ autoEnrollMax: 3, waiting: 2, joined: 1 }));
   expect(row.getByRole("link", { name: "2 waiting" }).getAttribute("href")).toBe("/cloud/ada/~/servers?token=rack-1");
-  expect(row.getByText("· 1 joined")).toBeTruthy();
+  expect(row.getByText("· 1/3 joined")).toBeTruthy();
+  expect(row.getByText("Auto up to 3")).toBeTruthy();
+});
+
+it("keeps a review token's joined count without an automatic limit", async () => {
+  const row = await renderRow(token({ joined: 2 }));
+  expect(row.getByText("· 2 joined")).toBeTruthy();
   expect(row.queryByText(/Auto up to/)).toBeNull();
-  expect(row.queryByText(/\/3 joined/)).toBeNull();
 });

@@ -7,6 +7,27 @@ Use one Fleet Token to prepare several Linux servers and review them before they
 Each host needs the [server requirements and firewall ports](add-a-server.md#what-you-need).
 Keep the token secret. Anyone with it can register hosts for you to review.
 
+## Enroll on arrival
+
+To join hosts automatically, turn on **Enroll on arrival** in **Add servers** and set
+**Up to** to a maximum of 1 to 1000 servers. The CLI equivalent is
+`ployz server token create --auto --max 3 --expires 7d`.
+Anyone with this token can join servers up to that limit until it expires or you revoke it.
+
+Arrival enrollment only joins an existing cluster. In a new organization, enroll the first
+server yourself. Ready hosts then join on their next check-in. Blocked hosts and hosts still
+installing Docker or building ZFS keep waiting. Ployz keeps the hostnames and enables
+Services, Web traffic, and Builds. It uses ZFS with a spare disk when available, or the main
+disk otherwise. Hosts where ZFS cannot run, or its preparation failed, was skipped, or was
+turned off, use Docker volumes.
+
+Open **Tokens** to see **Auto up to N** and **x/N joined**. Open enrollments also reserve
+capacity. Failed or cancelled enrollments free their capacity for another arrival.
+Successful joins count for the token's lifetime, including after their waiting rows age out
+after seven days or a joined server is removed. Hosts beyond the limit stay in Waiting and
+can be enrolled manually. Manual enrolls of its hosts use its capacity too and can take the
+count past N. Revoke stops new arrivals while open enrollments finish.
+
 ## Prepare your hosts
 
 1. Open **Servers** and click **Add servers**.

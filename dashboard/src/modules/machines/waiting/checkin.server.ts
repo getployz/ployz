@@ -13,6 +13,7 @@ import {
 import { createServerEnrollmentReportedEvent, type ServerEnrollmentCheckinReport } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { openAttemptFor, type OpenAttempt } from "#/modules/machines/waiting/enrollment-run.server";
+import { startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { hashFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { decodeStoredProbe, handOutProbe, probeAfterCheckIn } from "#/modules/machines/waiting/probe.server";
 import { countWithinRateLimit, sometimesPruneStaleRateLimits } from "#/modules/machines/waiting/rate-limit.server";
@@ -259,6 +260,7 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
     .select({
       id: fleetToken.id,
       organizationId: fleetToken.organizationId,
+      autoEnrollMax: fleetToken.autoEnrollMax,
       revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
       expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
     })
@@ -298,7 +300,16 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const answer = yield* database.transaction(admit(token, request, input.observedIp));
-    if (answer !== OWNERSHIP_CHANGED) return answer;
+    if (answer === OWNERSHIP_CHANGED) continue;
+    if (answer.kind === "wait" && token.autoEnrollMax !== null) {
+      // The host is already admitted, so a failed start costs only this round; the next check-in tries again.
+      const started = yield* startArrivalEnrollment(
+        { id: token.id, organizationId: token.organizationId, autoEnrollMax: token.autoEnrollMax },
+        request.checkinKey,
+      ).pipe(Effect.catch((error) => Effect.logWarning("An arrival enroll did not start.", error).pipe(Effect.as(false))));
+      if (started) return { ...answer, retryAfter: 2 };
+    }
+    return answer;
   }
   return yield* new CheckinRefused({ status: 429, message: "Busy, retry." });
 });

@@ -9,6 +9,7 @@ import { AddServersDialog } from "./add-servers-dialog";
 const TOKEN = "pflt_test-fixture-token";
 
 beforeEach(() => {
+  vi.spyOn(fleetTokenFunctions, "listFleetTokensServerFn").mockResolvedValue([]);
   vi.spyOn(waitingFunctions, "listWaitingServersServerFn").mockResolvedValue([]);
 });
 
@@ -84,4 +85,24 @@ it("describes the token it submitted, not the form as it reads after", async () 
   }));
 
   expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
+});
+
+it("submits a bounded arrival token and describes it after minting", async () => {
+  const create = vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn").mockResolvedValue({
+    token: TOKEN, id: "token-auto", name: "auto", expiresAt: "2026-11-17T10:00:00Z", cloudOrigin: "https://ployz.dev",
+  });
+  render(<QueryClientProvider client={new QueryClient()}><AddServersDialog organizationSlug="ada" /></QueryClientProvider>);
+  fireEvent.click(screen.getByRole("button", { name: "Add servers" }));
+  expect(screen.queryByRole("spinbutton", { name: "Maximum servers" })).toBeNull();
+  fireEvent.click(screen.getByRole("switch", { name: "Enroll on arrival" }));
+  const max = screen.getByRole("spinbutton", { name: "Maximum servers" });
+  for (const value of ["", "0", "1001", "1.5"]) {
+    fireEvent.change(max, { target: { value } });
+    expect(screen.getByRole("button", { name: "Create" }).hasAttribute("disabled")).toBe(true);
+  }
+  fireEvent.change(max, { target: { value: "3" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create" }));
+  expect(await screen.findByText("Auto up to 3")).toBeTruthy();
+  expect(screen.getByText("Installs Docker and Ployz. Up to 3 servers join your existing cluster when ready.")).toBeTruthy();
+  expect(create).toHaveBeenCalledWith({ data: { organizationSlug: "ada", name: null, expiresIn: "1d", autoEnroll: { maxServers: 3 } } });
 });

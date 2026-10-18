@@ -1,15 +1,18 @@
 import { Link } from "@tanstack/react-router";
 import { RelativeTime } from "#/components/relative-time";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { TableCell, TableRow } from "#/components/ui/table";
 import type { FleetTokenView } from "#/modules/machines/waiting/fleet-token";
 
-/** Every token's servers wait for review until automatic joins ship, so a configured join limit isn't shown. */
 export function TokenRow({ organizationSlug, token, onRevoke }: { organizationSlug: string; token: FleetTokenView; onRevoke: () => void }) {
   return (
     <TableRow>
       <TableCell>
-        <div className="font-mono font-medium">{token.name}</div>
+        <div className="flex items-center gap-2">
+          <span className="font-mono font-medium">{token.name}</span>
+          {token.autoEnrollMax !== null ? <Badge variant="secondary">Auto up to {token.autoEnrollMax}</Badge> : null}
+        </div>
         <div className="text-xs text-muted-foreground">
           <RelativeTime date={new Date(token.createdAt)} /> · {token.createdBy}
         </div>
@@ -25,7 +28,7 @@ export function TokenRow({ organizationSlug, token, onRevoke }: { organizationSl
             {token.waiting} waiting
           </Link>
         ) : <span className="text-muted-foreground">0 waiting</span>}
-        <span className="text-muted-foreground"> · {token.joined} joined</span>
+        <span className="text-muted-foreground"> · {token.joined}{token.autoEnrollMax === null ? "" : `/${token.autoEnrollMax}`} joined</span>
       </TableCell>
       <TableCell className={token.expired ? "text-muted-foreground" : undefined}>
         {token.expired ? "Expired" : <RelativeTime date={new Date(token.expiresAt)} />}

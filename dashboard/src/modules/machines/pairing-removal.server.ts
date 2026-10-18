@@ -64,6 +64,15 @@ export const lockOrganizationEnrollment = Effect.fn("PairingRemoval.lockOrganiza
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
 });
 
+/**
+ * The shared side of {@link lockOrganizationEnrollment}, for arrival enrolls. They add joiners to a founded
+ * Organization, so they only need every writer above kept out, not each other; their token's row lock counts them.
+ */
+export const shareOrganizationEnrollment = Effect.fn("PairingRemoval.shareOrganizationEnrollment")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock_shared(${ORGANIZATION_ENROLLMENT_LOCK}, hashtext(${organizationId}))`);
+});
+
 export const deleteEnrollmentTokens = Effect.fn("PairingRemoval.deleteEnrollmentTokens")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
   yield* cancelOpenServerEnrollments(organizationId);

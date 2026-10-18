@@ -118,6 +118,8 @@ it("counts each token's hosts still waiting, not enrolling or joined, and the on
       ('${org}', '00000000-0000-4000-8000-000000000602', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'failed', now()),
       ('${org}', '00000000-0000-4000-8000-000000000605', '${created.id}', 'joiner', '{}', gen_random_uuid(), 'running', null);
   `);
+  await harness.pool.query(`insert into fleet_token_join (attempt_id, fleet_token_id)
+    select id, fleet_token_id from server_enrollment where state = 'joined'`);
   const [listed] = await harness.runEffect(listFleetTokens(ada, { organizationSlug: "ada" }));
   expect(listed).toMatchObject({ name: "rack-1", createdBy: "Ada", waiting: 2, joined: 1 });
 });

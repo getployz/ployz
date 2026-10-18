@@ -40,12 +40,12 @@ const deliver = (eventId: string) =>
 
 /**
  * Writes `event` in the caller's transaction and sends it once that commits. A send that fails leaves the row for
- * the sweep; the request stays committed either way.
+ * the sweep; the request stays committed either way. `detach` answers without waiting for the send.
  */
-export const enqueueEvent = Effect.fn("Outbox.enqueue")(function* (event: OutboxEvent) {
+export const enqueueEvent = Effect.fn("Outbox.enqueue")(function* (event: OutboxEvent, delivery: "await" | "detach" = "await") {
   const { drizzle } = yield* Database;
   yield* drizzle.insert(operationOutbox).values({ eventId: event.id, name: event.name, data: event.data }).onConflictDoNothing();
-  yield* afterDatabaseCommit(deliver(event.id));
+  yield* afterDatabaseCommit(delivery === "detach" ? Effect.forkDetach(deliver(event.id)) : deliver(event.id));
 });
 
 /** Sends the events whose own delivery failed; returns how many went. */
