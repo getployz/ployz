@@ -4,6 +4,7 @@
 //     [--bad-signature] [--skew seconds] [--prep docker=installing,zfs=installing] [--hostname name]
 //     [--pad-bytes N] [--ip addr] [--seed text] [--cli-version 0.3.1] [--zfs-eligible]
 //     [--attempt id:stage[:failure message]] [--probe-report handout] [--url http://localhost:port]
+//     [--blocker code:message] [--provider name] [--disk-gb N]
 // --seed derives each host's key from text, so a later run checks in as the same hosts. Each host claims its own source address through x-forwarded-for (198.18.0.0/15), which dev Cloud trusts; --ip
 // sends every host from one address instead.
 import { createHash, createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, sign } from "node:crypto";
@@ -29,6 +30,9 @@ const { values: flags } = parseArgs({
     attempt: { type: "string" },
     "probe-report": { type: "string" },
     url: { type: "string" },
+    blocker: { type: "string" },
+    provider: { type: "string" },
+    "disk-gb": { type: "string", default: "80" },
   },
 });
 if (flags.token === undefined) throw new Error("checkin-sim: --token pflt_... is required");
@@ -45,6 +49,10 @@ const interval = Number(flags.interval);
 const attempt = flags.attempt === undefined ? undefined : (() => {
   const [attemptId, stage, message] = flags.attempt.split(":");
   return message === undefined ? { attemptId, stage } : { attemptId, stage, failure: { stage, message } };
+})();
+const blocker = flags.blocker === undefined ? undefined : (() => {
+  const split = flags.blocker.indexOf(":");
+  return { code: flags.blocker.slice(0, split), message: flags.blocker.slice(split + 1) };
 })();
 const prep = flags.prep === undefined ? undefined : Object.fromEntries(flags.prep.split(",").map((pair) => pair.split("=")));
 
@@ -69,19 +77,20 @@ const hosts = Array.from({ length: hostCount }, (_, index) => {
 function report(host) {
   return {
     hostname: host.hostname,
+    ...(flags.provider === undefined ? {} : { provider: flags.provider }),
     os: { id: "debian", version: "12" },
     kernel: "6.1.0",
     arch: "x86_64",
     virt: "kvm",
     cpuCount: 4,
     memoryTotalBytes: 8_589_934_592,
-    disks: [{ path: "/dev/vda", sizeBytes: 85_899_345_920, role: "root" }],
+    disks: [{ path: "/dev/vda", sizeBytes: Number(flags["disk-gb"]) * 1_073_741_824, role: "root" }],
     docker: { kind: "absent" },
     cgroup: "v2",
     zfs: flags["zfs-eligible"]
       ? { kind: "eligible", targets: [{ kind: "main_disk" }] }
       : { kind: "ineligible", code: "no_disk", message: "No empty disk." },
-    blockers: [],
+    blockers: blocker === undefined ? [] : [blocker],
     warnings: Number(flags["pad-bytes"]) > 0 ? [{ code: "padding", message: "x".repeat(Number(flags["pad-bytes"])) }] : [],
   };
 }

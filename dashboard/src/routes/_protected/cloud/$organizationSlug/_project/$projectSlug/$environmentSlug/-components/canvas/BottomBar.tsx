@@ -21,7 +21,7 @@ import { deploymentDestination } from "../deployments/run-search";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import type { Busy } from "#/modules/config-store/store-pending";
-import { AddServerDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog";
+import { AddServersDialog } from "#/routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-servers-dialog";
 
 /**
  * Where the bottom bar renders while the agent is closed: the scene, outside the canvas that turns inert under a panel.
@@ -206,7 +206,7 @@ export function BottomBar({
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       {noServers ? (
-        <AddServerDialog organizationSlug={params.organizationSlug} label="Add a server" variant="intent" />
+        <AddServersDialog organizationSlug={params.organizationSlug} label="Add servers" variant="intent" />
       ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={savesOnly ? !saveable : !deployable || admitting} aria-keyshortcuts="Shift+Enter"
           onClick={(event) => { if (!savesOnly && !event.altKey) deploy(); else if (saveable) save(); }} />}>

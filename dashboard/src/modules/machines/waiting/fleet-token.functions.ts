@@ -1,12 +1,17 @@
 import { createServerFn } from "@tanstack/react-start";
+import { Effect } from "effect";
 import { CreateFleetTokenInput, ListFleetTokensInput, RevokeFleetTokenInput } from "#/modules/machines/waiting/fleet-token";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
+import { AppConfig } from "#/server/config.server";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
 export const createFleetTokenServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(CreateFleetTokenInput))
-  .handler(({ context, data }) => runActor(context, createFleetToken(context.actor, data)));
+  .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
+    const created = yield* createFleetToken(context.actor, data);
+    return { ...created, cloudOrigin: (yield* AppConfig).app.url.origin };
+  })));
 
 export const listFleetTokensServerFn = createServerFn({ method: "GET" })
   .middleware([publicErrorMiddleware, actorMiddleware])

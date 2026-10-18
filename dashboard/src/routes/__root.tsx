@@ -17,6 +17,7 @@ import {
 } from "../utils/theme";
 import { getTimeZone, writeTimeZone } from "../utils/time-zone";
 import appCss from "../styles.css?url";
+import geistLatin from "@fontsource-variable/geist/files/geist-latin-wght-normal.woff2?url";
 import type { QueryClient } from "@tanstack/react-query";
 import type { DbClient } from "@tanstack/react-db";
 import { useEffect } from "react";
@@ -56,6 +57,8 @@ export const Route = createRootRouteWithContext<{
         rel: "stylesheet",
         href: appCss,
       },
+      // Fetched with the page, so text never paints in the fallback and then moves when Geist arrives.
+      { rel: "preload", as: "font", type: "font/woff2", href: geistLatin, crossOrigin: "anonymous" },
       {
         rel: "icon",
         type: "image/svg+xml",
