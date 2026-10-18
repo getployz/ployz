@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { Effect, Redacted } from "effect";
 import { StoreRefused } from "#/modules/config-store/store.contract";
-import { member, user } from "#/modules/identity/tables";
+import { member, organizationToken, user } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
@@ -35,6 +35,9 @@ export const isAnonymousOrganization = (organizationId: string) =>
 
 export const isOwnedOnlyByAgents = (organizationId: string) =>
   ownerKinds(organizationId).pipe(Effect.map((kinds) => kinds.includes(true) && !kinds.includes(false)));
+
+/** A token still runs by the database clock, the one clock a claim and a teardown both read. */
+export const tokenRuns = sql`${organizationToken.expiresAt} > clock_timestamp()`;
 
 /** The secret in the Organization's claim URL. Derived from its id, so every refusal names the same one. */
 export const claimSecretFor = Effect.fn("Identity.claimSecretFor")(function* (organizationId: string) {
