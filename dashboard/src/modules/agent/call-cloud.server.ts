@@ -61,11 +61,12 @@ const notConnected = Effect.fn("CallCloud.notConnected")(function* (organization
     : unreachable();
 });
 
-const runtimeAsk = (organizationId: string, query: CloudQuery) =>
+/** Ask the runtime, describing only the Services in `readable` Namespaces, or every Service when null. */
+const runtimeAsk = (organizationId: string, query: CloudQuery, readable: ReadonlyArray<string> | null) =>
   Effect.gen(function* () {
     const connected = yield* session(organizationId);
     if (connected === null) return yield* notConnected(organizationId);
-    return yield* connected.agentAsk(query).pipe(
+    return yield* connected.agentAsk(query, readable).pipe(
       Effect.map(answer),
       Effect.catch((error) => Effect.succeed(refusal(rpcErrorCode(error) ?? "unavailable", sdkFailureMessage(error)))),
     );
@@ -81,8 +82,12 @@ const findVolume = Effect.fn("CallCloud.findVolume")(function* (organizationId: 
   return null;
 });
 
-const copies = Effect.fn("CallCloud.copies")(function* (organizationId: string, namespace: string, only: string | null) {
+const copies = Effect.fn("CallCloud.copies")(function* (caller: Caller, namespace: string, only: string | null) {
+  const organizationId = caller.organization.id;
   const owned = (yield* owners(organizationId)).find((row) => row.namespace === namespace);
+  // Which Server holds a copy is a read of its Environment, refused before any Server is looked at.
+  const refused = unheld(caller, "volumes:read", owned?.environment ?? null);
+  if (refused !== null) return refused;
   if (owned === undefined) return noSuch("Namespace");
   const { volumes } = yield* readStore(organizationId, { query: "volumes", environment: { project: owned.project, environment: owned.environment } });
   const named = volumes.filter(({ name }) => only === null || name === only);
@@ -115,20 +120,21 @@ const copies = Effect.fn("CallCloud.copies")(function* (organizationId: string, 
 });
 
 /**
- * Why `caller` may not read with `permission`, or null when it may. A read of one Namespace lands in its Environment,
- * so a token held to Environments reads only theirs; a read of no Namespace lands nowhere, unless `organizationWide`.
+ * Read `query` from the runtime as `caller` may with `permission`. A read of one Namespace lands in its Environment,
+ * so a token held to Environments reads only theirs. Such a token may not make a read of no Namespace that is
+ * `organizationWide`; any other read of no Namespace describes only the Services in its Environments.
  */
-const unread = Effect.fn("CallCloud.unread")(function* (caller: Caller, permission: Permission, namespace: string | null, organizationWide = false) {
-  const lacking = unpermitted(caller, permission);
-  if (lacking !== null || callerEnvironments(caller) === undefined) return lacking;
-  if (namespace === null) return organizationWide ? unheld(caller, permission) : null;
-  const owned = (yield* owners(caller.organization.id)).find((row) => row.namespace === namespace);
-  return unheld(caller, permission, owned?.environment ?? null);
-});
-
 const runtimeRead = Effect.fn("CallCloud.runtimeRead")(function* (caller: Caller, query: CloudQuery, permission: Permission, namespace: string | null, organizationWide = false) {
-  const refused = yield* unread(caller, permission, namespace, organizationWide);
-  return refused ?? (yield* runtimeAsk(caller.organization.id, query));
+  const lacking = unpermitted(caller, permission);
+  if (lacking !== null) return lacking;
+  if (callerEnvironments(caller) === undefined) return yield* runtimeAsk(caller.organization.id, query, null);
+  const owned = yield* owners(caller.organization.id);
+  if (namespace !== null || organizationWide) {
+    const refused = unheld(caller, permission, owned.find((row) => row.namespace === namespace)?.environment ?? null);
+    if (refused !== null) return refused;
+  }
+  const readable = owned.filter((row) => unheld(caller, permission, row.environment) === null).map((row) => row.namespace);
+  return yield* runtimeAsk(caller.organization.id, query, readable);
 });
 
 const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQuery) {
@@ -158,7 +164,7 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
     case "metrics":
       return yield* runtimeRead(caller, query, "metrics:read", query.subject.kind === "service" ? query.subject.namespace : null);
     case "copies":
-      return yield* copies(organizationId, query.namespace, query.volume);
+      return yield* copies(caller, query.namespace, query.volume);
     case "operations":
       return yield* operationsOn(organizationId, query.subject, query.attempt, query.limit).pipe(
         Effect.map((operations) => answer<OperationsAnswer>({ operations })),

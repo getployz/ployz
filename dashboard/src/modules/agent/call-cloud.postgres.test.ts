@@ -74,11 +74,12 @@ describe("callCloud", () => {
     }),
   });
 
-  const connected = (asked: Array<CloudQuery>): ScopedRuntimeClientSession => ({
+  const connected = (asked: Array<CloudQuery>, readables: Array<ReadonlyArray<string> | null> = []): ScopedRuntimeClientSession => ({
     status: "connected",
     connected: asTestDouble<PloyzSession>()({
-      agentAsk: (query: CloudQuery) => Effect.sync(() => {
+      agentAsk: (query: CloudQuery, readable: ReadonlyArray<string> | null) => Effect.sync(() => {
         asked.push(query);
+        readables.push(readable);
         return TAIL;
       }),
     }),
@@ -137,7 +138,7 @@ describe("callCloud", () => {
     }));
 
   // Catches a read token kept from logs it may read, or a token held to staging reading production's logs, metrics or containers.
-  it.live("lets a Read only token read logs, and holds a Deploy token's logs, metrics and containers to its Environment", () =>
+  it.live("lets a Read only token read logs, and holds a Deploy token's logs, metrics, containers, copies and Server metrics to its Environment", () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud());
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
@@ -167,13 +168,22 @@ describe("callCloud", () => {
       expect(yield* heard(reader, logs(production))).toEqual({ ok: true, value: TAIL });
       expect(yield* heard(deployer, logs(staging))).toEqual({ ok: true, value: TAIL });
       expect(asked).toEqual([logs(production), logs(staging)]);
-      for (const query of [logs(production), metrics(production), containers(production)]) {
+      const copies: CloudQuery = { query: "copies", namespace: production, volume: null };
+      for (const query of [logs(production), metrics(production), containers(production), copies]) {
         expect(yield* heard(deployer, query)).toEqual(refused);
       }
       expect(yield* heard(deployer, { query: "server_logs", process: "ployz", server: null, lines: 100, since: null })).toEqual(refused);
       expect(asked).toHaveLength(2);
       expect(yield* heard(deployer, metrics(staging))).toEqual({ ok: true, value: TAIL });
       expect(yield* heard(deployer, containers(staging))).toEqual({ ok: true, value: TAIL });
+
+      // A Server's metrics keep its host totals for the Deploy token, but describe only the Services it may read.
+      const readables: Array<ReadonlyArray<string> | null> = [];
+      const serverMetrics: CloudQuery = { query: "metrics", subject: { kind: "server", server: { machine: MACHINE, name: "web-2" } }, since: { kind: "minutes_ago", minutes: 10 }, deployment: null };
+      for (const caller of [member, reader, deployer]) {
+        expect(yield* callCloud(caller, { ask: serverMetrics }).pipe(runtime(connected([], readables), []), Effect.provide(services))).toEqual({ ok: true, value: TAIL });
+      }
+      expect(readables).toEqual([null, null, [staging]]);
     }));
 
   const REMOVE: Act = {
