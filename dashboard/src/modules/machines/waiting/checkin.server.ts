@@ -302,7 +302,11 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
     const answer = yield* database.transaction(admit(token, request, input.observedIp));
     if (answer === OWNERSHIP_CHANGED) continue;
     if (answer.kind === "wait" && token.autoEnrollMax !== null) {
-      const started = yield* startArrivalEnrollment(token, request.checkinKey);
+      // The host is already admitted, so a failed start costs only this round; the next check-in tries again.
+      const started = yield* startArrivalEnrollment(
+        { id: token.id, organizationId: token.organizationId, autoEnrollMax: token.autoEnrollMax },
+        request.checkinKey,
+      ).pipe(Effect.catch((error) => Effect.logWarning("An arrival enroll did not start.", error).pipe(Effect.as(false))));
       if (started) return { ...answer, retryAfter: 2 };
     }
     return answer;

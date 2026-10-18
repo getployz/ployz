@@ -25,7 +25,8 @@ Open **Tokens** to see **Auto up to N** and **x/N joined**. Open enrollments als
 capacity. Failed or cancelled enrollments free their capacity for another arrival.
 Successful joins count for the token's lifetime, including after their waiting rows age out
 after seven days or a joined server is removed. Hosts beyond the limit stay in Waiting and
-can be enrolled manually. Revoke stops new arrivals while open enrollments finish.
+can be enrolled manually. Manual enrolls of its hosts use its capacity too and can take the
+count past N. Revoke stops new arrivals while open enrollments finish.
 
 ## Prepare your hosts
 

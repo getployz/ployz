@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { InngestClient } from "#/modules/inngest/client";
 import type { CheckinRequest, CheckinResponse, HostReport, Prep } from "#/modules/machines/waiting/checkin-wire";
 import { checkIn, checkinMessage, WAITING_PER_TOKEN } from "#/modules/machines/waiting/checkin.server";
+import { startArrivalEnrollment } from "#/modules/machines/waiting/enroll.server";
 import { createFleetToken, listFleetTokens, revokeFleetToken } from "#/modules/machines/waiting/fleet-token.server";
 import { bindServerEnrollment, closeStaleServerEnrollments, endServerEnrollment } from "#/modules/machines/waiting/enrollment-run.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
@@ -1000,4 +1001,65 @@ it("keeps an open arrival running after revoke but refuses any new arrivals", as
   expect(await send(token, first, readyAuto)).toMatchObject({ kind: "enroll", role: "joiner" });
   expect(await send(token, newHost(), readyAuto)).toMatchObject({ kind: "stop", reason: "token_revoked" });
   expect(await autoAttempts()).toHaveLength(1);
+});
+
+// Holds a ready arrival host's row from another session, so a test can queue transactions behind it in a known order.
+const holdArrivalHost = async (token: string) => {
+  const host = newHost();
+  await send(token, host, { ...readyAuto, prep: { docker: "installing", zfs: "ready" } });
+  await harness.pool.query(`update waiting_server set report = jsonb_set(report, '{prep,docker}', '"ready"')`);
+  const holder = await harness.pool.connect();
+  await holder.query("begin");
+  await holder.query("select id from waiting_server for update");
+  const release = async () => {
+    await holder.query("commit");
+    holder.release();
+  };
+  return { host, release };
+};
+const lockWaiters = async (count: number) => {
+  await expect.poll(async () => (await harness.pool.query<{ waiting: number }>(
+    "select count(*)::int as waiting from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'",
+  )).rows[0]?.waiting, { timeout: 5_000, interval: 10 }).toBeGreaterThanOrEqual(count);
+};
+const arrive = (id: string, host: Host) => run(startArrivalEnrollment({ id, organizationId: adaOrg, autoEnrollMax: 10 }, host.key));
+
+it("lets a check-in overlap its host's arrival without deadlock", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const { host, release } = await holdArrivalHost(token);
+  const arrival = arrive(id, host);
+  await lockWaiters(1);
+  const checkin = send(token, host, readyAuto);
+  await lockWaiters(2);
+  await release();
+  expect(await arrival).toBe(true);
+  expect(await checkin).toMatchObject({ kind: "enroll", role: "joiner" });
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("starts one arrival when two overlap for the same host, and the other just waits", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const { host, release } = await holdArrivalHost(token);
+  const first = arrive(id, host);
+  await lockWaiters(1);
+  const second = arrive(id, host);
+  await lockWaiters(2);
+  await release();
+  expect([...(await Promise.all([first, second]))].sort()).toEqual([false, true]);
+  expect(await autoAttempts()).toHaveLength(1);
+});
+
+it("answers an admitted check-in with a plain wait when its arrival fails", async () => {
+  await foundOrganization();
+  const { token } = await autoToken(10);
+  await harness.pool.query(`create function refuse_enrollment() returns trigger language plpgsql as $$ begin raise exception 'refused'; end $$;
+    create trigger refuse_enrollment before insert on server_enrollment execute function refuse_enrollment();`);
+  try {
+    expect(await send(token, newHost(), readyAuto)).toEqual(wait);
+    expect(await rows()).toHaveLength(1);
+  } finally {
+    await harness.pool.query("drop trigger refuse_enrollment on server_enrollment; drop function refuse_enrollment();");
+  }
 });
