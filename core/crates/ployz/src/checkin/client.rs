@@ -176,7 +176,7 @@ pub(super) enum Reply {
     /// Cloud refused the token, at the time its `Date` header gives.
     Refused(DateTime<Utc>),
     Unreachable(Duration, String),
-    /// A 429 that isn't Cloud's own hold. The wait is what it asked for, so it is never cut short.
+    /// A 429 that isn't Cloud's own hold, waiting what its Retry-After asked, so never cut short.
     Throttled(Duration, String),
     Held(Duration, Hold, String),
     /// The URL answered, and the answer can't have come from Ployz Cloud.
@@ -267,6 +267,8 @@ impl CheckinClient {
             .map(|cloud| cloud.to_utc());
         let body = match response.bytes().await {
             Ok(body) => body,
+            // A 429 asked for its wait in a header, so a body cut short still keeps that wait.
+            Err(_) if status == StatusCode::TOO_MANY_REQUESTS => Default::default(),
             Err(error) => return Reply::Unreachable(BACKOFF, error.without_url().to_string()),
         };
         let reply = reply(status, retry_after, cloud, &body);
@@ -314,7 +316,10 @@ pub(super) fn reply(
             // servers wait a full backoff rather than ask every second.
             Some((Hold::Full, why)) => Reply::Held(after.max(BACKOFF), Hold::Full, why),
             Some((hold, why)) => Reply::Held(after, hold, why),
-            None => Reply::Throttled(after, format!("Cloud answered {status}")),
+            None => match retry_after {
+                Some(_) => Reply::Throttled(after, format!("Cloud answered {status}")),
+                None => Reply::Unreachable(BACKOFF, format!("Cloud answered {status}")),
+            },
         };
     }
     if let Some(why) = cloud_error(body) {

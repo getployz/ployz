@@ -855,17 +855,18 @@ async fn an_install_records_what_cloud_said_only_for_the_token_it_keeps() {
 #[test]
 fn an_install_waits_for_another_to_finish_writing_the_token_before_it_reads_it() {
     let dir = tempfile::tempdir().unwrap();
-    let token_file = dir.path().join("fleet-token");
-    let other = fs::File::open(dir.path()).unwrap();
+    let paths = temp_paths(&dir);
+    let token_file = paths.token_file.clone();
+    fs::create_dir_all(token_file.parent().unwrap()).unwrap();
+    let other = fs::File::open(token_file.parent().unwrap()).unwrap();
     rustix::fs::flock(&other, rustix::fs::FlockOperation::LockExclusive).unwrap();
-    let committing = token_file.clone();
     let install = std::thread::spawn(move || {
         let next = Next::Retry {
             after: std::time::Duration::from_secs(60),
             why: "Could not reach Ployz Cloud: refused.".to_owned(),
         };
-        keep_answered_token(next, &sending(NEW_TOKEN), &committing, PIPED)
-            .map_err(|error| error.to_string())
+        let pass = checkin::InstallPass { next, seen: None };
+        answer_install(pass, &sending(NEW_TOKEN), &paths, PIPED).map_err(|error| error.to_string())
     });
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(

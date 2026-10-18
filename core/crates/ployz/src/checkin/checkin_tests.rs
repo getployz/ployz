@@ -383,7 +383,7 @@ fn only_cloud_holding_a_check_in_back_says_why_it_was_held() {
     }
     assert!(matches!(
         held(None, ""),
-        Reply::Throttled(after, _) if after == backoff
+        Reply::Unreachable(after, _) if after == backoff
     ));
 }
 
@@ -1181,6 +1181,63 @@ async fn a_429_from_in_front_of_cloud_waits_what_it_asked_even_with_a_report_owe
     .await;
     server.await.unwrap();
     retries_after(&throttled, 60);
+}
+
+#[tokio::test]
+async fn a_429_without_retry_after_from_in_front_of_cloud_still_retries_a_report_soon() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(&dir);
+    let mut probes = Probes::default();
+    handed(&paths, &mut probes, "h", udp_port(), 300).await;
+    probes.finish().await;
+    let (url, server) = answering_cloud(
+        "429 Too Many Requests".to_owned(),
+        "<html>Slow down</html>".to_owned(),
+        1,
+    )
+    .await;
+    let throttled = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths,
+        Utc::now(),
+        false,
+        &mut probes,
+    )
+    .await;
+    server.await.unwrap();
+    retries_after(&throttled, 10);
+}
+
+#[tokio::test]
+async fn a_429_cut_off_mid_body_still_waits_what_it_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0; 16384];
+        let _ = stream.read(&mut buf).await.unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 120\r\nContent-Length: 100\r\n\r\n<html>Slow",
+            )
+            .await
+            .unwrap();
+    });
+    let throttled = pass_from(
+        &FakeHost::default(),
+        &mut client(&url),
+        &key(),
+        &paths(&dir),
+        Utc::now(),
+        false,
+        &mut Probes::default(),
+    )
+    .await;
+    server.await.unwrap();
+    retries_after(&throttled, 120);
 }
 
 #[tokio::test]

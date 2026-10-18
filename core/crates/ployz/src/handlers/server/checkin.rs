@@ -267,6 +267,11 @@ fn answer_install(
     paths: &Paths,
     install_with: Install<'_>,
 ) -> Result<Answered, Error> {
+    // Held across the gate and the record, so another install can't swap the token in between.
+    let _lock = match install_with.token {
+        Token::Piped => Some(lock_token_file(&paths.token_file)?),
+        Token::InFile => None,
+    };
     let answered = keep_answered_token(pass.next, client, &paths.token_file, install_with);
     if let Some(seen) = &pass.seen
         && !replaces_token(&paths.token_file, |held| client.sends(held)).unwrap_or(true)
@@ -276,6 +281,7 @@ fn answer_install(
     answered
 }
 
+/// A piped token is written here, so the caller holds `lock_token_file` around this.
 fn keep_answered_token(
     next: Next,
     client: &CheckinClient,
@@ -290,7 +296,6 @@ fn keep_answered_token(
     match install_with.token {
         Token::InFile => keep_token_private(token_file)?,
         Token::Piped => {
-            let _lock = lock_token_file(token_file)?;
             if let Some(why) = unconfirmed
                 && replaces_token(token_file, |held| client.sends(held))?
             {

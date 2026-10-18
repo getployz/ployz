@@ -888,7 +888,7 @@ async fn check_in<H: Host>(
             }
         }
         client::Reply::Unreachable(after, why) | client::Reply::Throttled(after, why) => {
-            // A report still owed retries sooner after a failure, but never sooner than a 429 asked.
+            // A report still owed retries sooner after a failure, but never sooner than a Retry-After asked.
             let after = if throttled {
                 after
             } else {
