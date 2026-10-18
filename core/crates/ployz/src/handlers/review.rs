@@ -16,18 +16,24 @@ pub(super) fn diff_command(command: Command) -> Command {
 
 pub(super) fn history_command(command: Command) -> Command {
     // Global, so `--project`/`--env` reach the action before or after its name.
-    scoped(command.about("Show immutable saved versions"))
+    scoped(command.about("Show saved versions to undo or roll back to"))
         .mut_arg("project", |arg| arg.global(true))
         .mut_arg("env", |arg| arg.global(true))
         .subcommand_required(false)
 }
 
 pub(super) fn restore_command(command: Command) -> Command {
-    history_action(command, "Stage a saved version in the draft")
+    history_action(
+        command,
+        "Roll back to a saved version's settings. Deploy to apply.",
+    )
 }
 
 pub(super) fn undo_command(command: Command) -> Command {
-    history_action(command, "Stage the inverse of one saved change")
+    history_action(
+        command,
+        "Undo one saved version's changes. Deploy to apply.",
+    )
 }
 
 fn history_action(command: Command, about: &'static str) -> Command {
@@ -293,13 +299,12 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "history")))?;
     crate::ui::finish(&staged, || {
         crate::ui::stream(format_args!(
-            "{} Saved revision {} in the draft. Review before saving or deploying.",
+            "Staged {} #{revision}. Deploy to apply.",
             if action == ployz_store::HistoryAction::Restore {
-                "Restored"
+                "a rollback to"
             } else {
-                "Undid"
-            },
-            revision
+                "an undo of"
+            }
         ));
         for variable in &staged.not_set {
             crate::ui::stream(format_args!(

@@ -139,6 +139,10 @@ Deleting a deployed volume deletes its data from your servers for good.
 3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
 
+If that deploy fails, deploying again deletes the data without asking again, because your
+confirmation stays with the change. See
+[Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
+
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.
 
 ## Good to know
