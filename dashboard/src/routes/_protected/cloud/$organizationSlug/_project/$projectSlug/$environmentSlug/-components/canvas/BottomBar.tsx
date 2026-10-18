@@ -244,7 +244,7 @@ export function BottomBar({
 
   const includeNewer = proposals?.onIncludeNewer;
   const reviewProps = {
-    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, canSave: saveable,
+    environment: params.environmentSlug, groups, totalChanges, canDeploy: deployable, asks, canSave: saveable,
     onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, busy, discarding,
     onSave: save,
     onDiscardAll: discardAll,

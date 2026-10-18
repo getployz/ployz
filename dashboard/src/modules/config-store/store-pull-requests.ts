@@ -66,7 +66,7 @@ export const PR_CHECK_NAME = "Ployz · ready to merge";
  * merge lands (or, once merged, what didn't); several Organizations' words join into the one check, neutral if any is.
  * A merge into a Protected Environment still deploys, so `guarded`, the Protected ones it lands in, only adds a line.
  */
-export function storePrCheckRun(views: readonly { slug: string; view: PullRequestView; guarded?: readonly string[] }[], appUrl: string) {
+export function storePrCheckRun(views: readonly { slug: string; view: PullRequestView; guarded?: readonly Guarded[] }[], appUrl: string) {
   const saying = views.flatMap(({ slug, view }) =>
     view.check && view.pull_request ? [{ slug, view, check: view.check, head: view.pull_request.head }] : []);
   const [first] = saying;
@@ -91,8 +91,12 @@ export function storePrCheckRun(views: readonly { slug: string; view: PullReques
   };
 }
 
-function guardedLine(guarded: readonly string[]) {
-  const names = [...new Set(guarded)];
+/** A Protected Environment a merge lands in. */
+export interface Guarded { project: string; environment: string }
+
+function guardedLine(guarded: readonly Guarded[]) {
+  const projects = new Set(guarded.map((each) => each.project));
+  const names = [...new Set(guarded.map((each) => projects.size > 1 ? `${each.environment} in ${each.project}` : each.environment))];
   if (names.length === 0) return [];
   return [`Merging deploys to ${listNames(names)}, ${names.length === 1 ? "a Protected Environment" : "Protected Environments"}.`];
 }

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Option, Schema } from "effect";
-import { approvalAsks, asksApproval } from "#/modules/approvals/approvals";
+import { approvalAsks, approvalCommand, asksApproval } from "#/modules/approvals/approvals";
 import { gateOperation, hasApprover, requestApproval, trustedApproval } from "#/modules/approvals/approvals.server";
 import { callStore, refusal } from "#/modules/config-store/config-store.server";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
@@ -47,10 +47,12 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // An approval the write names must be this Organization's, even where nobody is asked.
-  const asks = call.operation === "write" && asksApproval(caller.via, call.command);
+  // An approval the write names must be this Organization's, even where nobody is asked. A retry from `ployz` asks
+  // only into a Protected Environment, so it carries the approval it was given there.
+  const named = request.headers.get("x-ployz-approval");
+  const asks = call.operation === "write" && (asksApproval(caller.via, call.command) || (named !== null && approvalCommand(call.command) === "retry"));
   const trusted = asks
-    ? yield* trustedApproval(caller.organization.id, request.headers.get("x-ployz-approval"))
+    ? yield* trustedApproval(caller.organization.id, named)
     : { ok: true, approval: "not_required" } as const;
   if (!trusted.ok) return refusal(trusted.refusal);
   // `ployz mcp` unprotecting an Environment waits for a human, as the sidebar does; a person at the CLI decided already.
@@ -63,7 +65,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (unprotect?.asked) {
     const refused = protectorOnly(caller, unprotect.asked.preview.environment);
     if (refused !== null) return refusal(refused);
-    const gated = yield* gateOperation(caller, request.headers.get("x-ployz-approval"), unprotect.asked);
+    const gated = yield* gateOperation(caller, named, unprotect.asked);
     if (!gated.ok) return refusal(gated.refusal);
   }
   const approval = asks && (yield* hasApprover(caller.organization.id)) ? trusted.approval : "not_required";

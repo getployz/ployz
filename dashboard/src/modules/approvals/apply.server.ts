@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigCommand, DiffView } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Cause, Effect, Predicate } from "effect";
+import { toErrorMessage } from "#/lib/error-message";
 import type { ApprovalDecision, ServiceApply } from "#/modules/approvals/approvals";
 import { type ApprovalView, type Decider, decideApproval, onceFor, type OperationDigest, readAsker, undoApproval } from "#/modules/approvals/approvals.server";
 import { callStore, writePermission } from "#/modules/config-store/config-store.server";
@@ -15,8 +16,9 @@ import { type Access, requireAccessById } from "#/modules/organization/access.se
 /** Why an approved ask didn't run; `moved` when the plan it reviewed is gone, so it must be asked again. */
 type NotRun = { readonly message: string; readonly moved: boolean };
 
-const notRun = (refusal: StoreRefusal): NotRun =>
-  ({ message: refusal.message, moved: refusal.code === "approval_required" || refusal.code === "conflict" });
+/** A Store conflict means the plan moved; a service's conflict is a run still going, so the ask can wait it out. */
+const notRun = (refusal: StoreRefusal, conflict: "moved" | "busy"): NotRun =>
+  ({ message: refusal.message, moved: refusal.code === "approval_required" || (refusal.code === "conflict" && conflict === "moved") });
 
 const askerCaller = (access: Access, credentialId: string): Caller => ({
   userId: access.userId,
@@ -35,7 +37,7 @@ const applyStore = Effect.fn("Approvals.applyStore")(function* (organizationId: 
     permissions: access.permissions,
     environments: access.environments,
   });
-  return result.ok ? null : notRun(result.refusal);
+  return result.ok ? null : notRun(result.refusal, "moved");
 });
 
 const applyService = Effect.fn("Approvals.applyService")(function* (
@@ -53,7 +55,7 @@ const applyService = Effect.fn("Approvals.applyService")(function* (
     { ...body, ...found, verb, digest: bodyDigest(`service_${verb}`, body) },
     { key: null, approvalId: approval.id },
   );
-  return admission.ok ? null : notRun(admission.refusal);
+  return admission.ok ? null : notRun(admission.refusal, "busy");
 });
 
 /**
@@ -83,9 +85,10 @@ export const decideAndApply = <R = never>(
   const decided = yield* decideApproval(decider, id, decision, operationDigest);
   if (!decided.ok || decided.decided !== true || !("approve" in decision)) return decided;
   const failed = yield* applyApproved(decider.organization.id, decided.approval).pipe(
-    Effect.catchTags({
-      Forbidden: (error) => Effect.succeed({ message: error.message, moved: false } satisfies NotRun),
-      NotFound: (error) => Effect.succeed({ message: error.message, moved: true } satisfies NotRun),
+    Effect.catchCause((cause) => {
+      const error = Cause.squash(cause);
+      const moved = Predicate.isTagged(error, "NotFound");
+      return Effect.succeed({ message: toErrorMessage(error, "Something went wrong."), moved } satisfies NotRun);
     }),
   );
   if (failed === null) return decided;

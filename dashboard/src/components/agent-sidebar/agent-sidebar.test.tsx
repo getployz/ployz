@@ -53,6 +53,16 @@ it("counts the approvals waiting on a human on the Agent button", () => {
   expect(screen.getByRole("status").textContent).toBe("");
 });
 
+it("files an ask into a Protected Environment under Requested for whoever asked, not as waiting on them", { timeout: 20_000 }, async () => {
+  show([asTestDouble<ApprovalView>()({ ...waiting, protected: true, yours: true })]);
+  const toggle = screen.getByRole("button", { name: "Agent" });
+  expect(toggle.textContent).toBe("Agent");
+  fireEvent.click(toggle);
+  const panel = await screen.findByRole("region", { name: "Ployz agent" }, { timeout: 15_000 });
+  expect(within(panel).getByRole("region", { name: "Requested" })).toBeTruthy();
+  expect(within(panel).queryByRole("region", { name: "Waiting on you" })).toBeNull();
+});
+
 it("opens into the conversation and closes from the same button", { timeout: 20_000 }, async () => {
   show([waiting]);
   const toggle = screen.getByRole("button", { name: "Agent, 1 approval waiting" });

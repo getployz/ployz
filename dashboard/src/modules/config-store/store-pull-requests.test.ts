@@ -101,12 +101,18 @@ describe("storePrCheckRun", () => {
   });
 
   it("says a merge deploys into a Protected Environment without changing the conclusion", () => {
-    const run = storePrCheckRun([{ slug: "acme", view: view(lands), guarded: ["production"] }], "https://ployz.test/");
+    const run = storePrCheckRun([{ slug: "acme", view: view(lands), guarded: [{ project: "shop", environment: "production" }] }], "https://ployz.test/");
     expect(run?.conclusion).toBe("success");
     expect(run?.summary).toBe(
       "- `web · A`: 1 → 2\n\nMerging deploys to production, a Protected Environment."
         + "\n\n[View in Ployz](https://ployz.test/cloud/acme/shop/pr-146?panel=on-merge)",
     );
+  });
+
+  it("names the project of each Protected Environment when the merge lands in several projects", () => {
+    const guarded = [{ project: "shop", environment: "production" }, { project: "blog", environment: "production" }];
+    const run = storePrCheckRun([{ slug: "acme", view: view(lands), guarded }], "https://ployz.test/");
+    expect(run?.summary).toContain("Merging deploys to production in shop and production in blog, Protected Environments.");
   });
 
   it("posts nothing when no Store has a word", () => {

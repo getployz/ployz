@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import type { Approval, ConfigCommand, DestructiveEffect, DiffView, JsonValue } from "@ployz/sdk";
-import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, type SQL, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson } from "#/lib/json";
 import { Uuid } from "#/lib/schema";
@@ -14,6 +14,7 @@ import {
   type ServiceApply,
 } from "#/modules/approvals/approvals";
 import { operationApprovals } from "#/modules/approvals/tables";
+import { user } from "#/modules/identity/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal } from "#/modules/config-store/store.contract";
@@ -67,6 +68,15 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
   const [row] = yield* drizzle.select().from(operationApprovals)
     .where(and(eq(operationApprovals.id, id), eq(operationApprovals.organizationId, organizationId)));
   return row;
+});
+
+/** The names of the people who asked for `approvals`, keyed by their user id, so a card says whom it waits for. */
+export const askerNames = Effect.fn("Approvals.askerNames")(function* (approvals: readonly ApprovalView[]) {
+  const ids = [...new Set(approvals.flatMap((approval) => approval.requested_by ?? []))];
+  if (ids.length === 0) return new Map<string, string>();
+  const { drizzle } = yield* Database;
+  const people = yield* drizzle.select({ id: user.id, name: user.name }).from(user).where(inArray(user.id, ids));
+  return new Map(people.map((person) => [person.id, person.name]));
 });
 
 /** Who asked for approval `id`, and what to run as them once approved. */
@@ -164,8 +174,10 @@ const freshen = <R>(row: ApprovalRow, operationDigest?: OperationDigest<R>) => E
   return (yield* readRow(row.organizationId, row.id)) ?? row;
 });
 
-export function operationDigest({ verb, preview, effects }: Pick<OperationAsked, "verb" | "preview" | "effects">) {
-  return `${verb}:${createHash("sha256").update(canonicalJson({ preview, effects })).digest("hex")}`;
+/** Protection is part of what was approved, so an approval doesn't survive the Environment being protected or unprotected. */
+export function operationDigest({ verb, preview, effects, protected: guarded }: Pick<OperationAsked, "verb" | "preview" | "effects" | "protected">) {
+  const reviewed: JsonValue = guarded === undefined ? { preview, effects } : { preview, effects, protected: guarded };
+  return `${verb}:${createHash("sha256").update(canonicalJson(reviewed)).digest("hex")}`;
 }
 
 /** "the request to deploy production": a denial names what was asked, never the approval's ID. */
@@ -232,10 +244,11 @@ const requester = (caller: Caller) => ({
 
 /**
  * A person who asks again for what is pending takes the request over, so their own prompt can approve it: they could
- * run it from `ployz` anyway. An agent asking again takes nothing, so no other agent's credential inherits the request.
+ * run it from `ployz` anyway. Their review comes with it, so a dashboard ask keeps what to run and one from `ployz`
+ * runs nothing on approval. An agent asking again takes nothing, so no other agent's credential inherits the request.
  */
-const askedAgain = (caller: Caller) =>
-  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller) };
+const askedAgain = (caller: Caller, review: ApprovalReview) =>
+  caller.via === "agent" ? { updatedAt: new Date() } : { updatedAt: new Date(), ...requester(caller), review };
 
 /** A protected ask names its Environment; one from the dashboard also keeps what to run once approved. */
 const storeReview = (caller: Caller, command: ConfigCommand, shown: { effects: DestructiveEffect[]; diff: DiffView }, guarded: boolean): ApprovalReview => {
@@ -264,6 +277,7 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
   const { approval: digest, effects, diff } = decoded.value;
   const guarded = decoded.value.protected === true;
   const organizationId = caller.organization.id;
+  const review = storeReview(caller, command, { effects, diff }, guarded);
   const recorded = yield* recordAndSweep(organizationId, diff.environment.id, Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [row] = yield* drizzle.insert(operationApprovals).values({
@@ -271,12 +285,12 @@ export const requestApproval = Effect.fn("Approvals.request")(function* (
       subject: diff.environment.id,
       ...requester(caller),
       command: approvalCommand(command),
-      review: storeReview(caller, command, { effects, diff }, guarded),
+      review,
       digest,
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: askedAgain(caller),
+      set: askedAgain(caller, review),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), staleEnvironment(organizationId, diff.environment));
@@ -321,7 +335,7 @@ const requestOperationApproval = Effect.fn("Approvals.requestOperation")(functio
     }).onConflictDoUpdate({
       target: [operationApprovals.organizationId, operationApprovals.digest],
       targetWhere: sql`${operationApprovals.status} = 'pending'`,
-      set: askedAgain(caller),
+      set: askedAgain(caller, review),
     }).returning({ id: operationApprovals.id });
     return row ?? (yield* Effect.die("an upsert returned no row"));
   }), stale);
@@ -424,7 +438,6 @@ const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): str
   const guarded = row.review.protected;
   if (guarded !== undefined) {
     if (decider.userId === row.requestedByUserId) return "You asked for this, so someone else who can protect it decides.";
-    if (!approve) return null;
     const { permissions, environments } = held(decider);
     if (!permissions.includes("environments:protect")) return refusalOf("environments:protect");
     return beyondEnvironments(environments, { environment: guarded.environment });
@@ -436,8 +449,8 @@ const mayNotDecide = (decider: Decider, row: ApprovalRow, approve: boolean): str
 
 /**
  * Approve exactly the digest the human saw, or deny with a reason. Repeating a decision answers the row; anything
- * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. A member or support
- * may deny; who may decide is `mayNotDecide`'s. The row records who decided.
+ * else on a row no longer pending, or a digest that isn't the row's, refuses `conflict` with the row. Who may decide is
+ * `mayNotDecide`'s. The row records who decided.
  */
 export const decideApproval = <R = never>(
   caller: Decider,

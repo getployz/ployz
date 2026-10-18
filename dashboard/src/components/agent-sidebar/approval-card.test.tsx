@@ -142,3 +142,35 @@ it("says the plan changed when the approval was superseded, and settles", () => 
   expect(screen.queryByRole("button", { name: /Approve/ })).toBeNull();
   expect(onSettled).toHaveBeenCalled();
 });
+
+it("says who asked, and shows the change their ask saves apart from what else it deploys", () => {
+  const diff = asTestDouble<DiffView>()({
+    ...approval.review.diff,
+    changes: [
+      { type: "service", id: "s2", name: "api", lifecycle: "create", comparison: "introduction", data: null, settings: [] },
+      { type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+        { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true, row: null },
+      ] },
+    ],
+    draft_changes: [
+      { type: "service", id: "s2", name: "api", lifecycle: "update", comparison: "saved", data: null, settings: [
+        { path: "api.env.LINUS_CHANGE", kind: "add", before: null, after: "requested", canRestore: true, row: null },
+      ] },
+    ],
+  });
+  show(asTestDouble<ApprovalView>()({ ...approval, protected: true, yours: false, asker: "Linus Torvalds", review: { effects: [], diff } }));
+  const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
+  expect(card.getByText("Asked by Linus Torvalds")).toBeTruthy();
+  expect(card.getByRole("list", { name: "Saves" }).textContent).toBe("+ api LINUS_CHANGE requested");
+  fireEvent.click(card.getByText("2 other changes"));
+  expect(card.getByText(/api new service/)).toBeTruthy();
+  expect(card.getByText(/web .*1 → 2/)).toBeTruthy();
+});
+
+it("leaves the asker's own card unsigned, waiting on someone who can protect it", () => {
+  show(asTestDouble<ApprovalView>()({ ...approval, protected: true, yours: true, asker: "Linus Torvalds" }));
+  const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
+  expect(card.queryByText(/Asked by/)).toBeNull();
+  expect(card.getByText("Waiting on an owner or admin.")).toBeTruthy();
+  expect(card.queryByRole("button", { name: /Approve/ })).toBeNull();
+});

@@ -212,6 +212,7 @@ pub(crate) fn sync(
         }
         closable(tx, &from)?;
     }
+    let asks = review::move_asks(tx, &into, trusted)?;
     if let Some(found) = &mut found {
         proposal::rebind(tx, &into, found, &from)?;
     }
@@ -246,12 +247,24 @@ pub(crate) fn sync(
         let because = crate::removal::mark::Closed::Synced;
         crate::removal::close(tx, who, &from.summary.id, because, &mut Default::default())?;
     }
+    let fingerprints = request
+        .values
+        .iter()
+        .map(|(row, value)| (row, sealing.fingerprint(value)))
+        .collect::<BTreeMap<_, _>>();
+    let asked = json!({
+        "version": request.version,
+        "picks": request.picks,
+        "skip": request.skip,
+        "values": fingerprints,
+        "close_after": close_after,
+    });
     review::approve_move(
         tx,
         who,
         &into,
-        review::Moving::Sync(&from.summary.id),
-        trusted,
+        asks,
+        review::Moving::Sync(&from.summary, &asked),
     )?;
     Ok(Synced {
         sync: id,

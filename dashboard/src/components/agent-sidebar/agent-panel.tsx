@@ -29,7 +29,7 @@ import { isPageContext, type PageContext } from "#/modules/agent/page-context";
 import { chatTitle } from "#/modules/agent/thread-title";
 import type { Failure } from "#/modules/agent/provider-error";
 import { ApprovalCard } from "./approval-card";
-import { pendingApprovalsOptions } from "./approvals.queries";
+import { pendingApprovalsOptions, waitsOnYou } from "./approvals.queries";
 import { agentThreadsOptions, refetchAgentThreads, type ThreadSummary } from "./threads.queries";
 import { ToolCard, toolOutcome, ToolStep } from "./tool-row";
 
@@ -164,14 +164,15 @@ function Conversation({ organizationSlug, scope, page, threadId, onChat, dock }:
       <MessageScroller className="flex-1">
         <MessageScrollerViewport>
           <MessageScrollerContent aria-busy={chat.isLoading} className="gap-3 p-3">
-            {waiting.length > 0 && (
-              <MessageScrollerItem>
-                <section aria-label="Waiting on you" className="flex flex-col gap-2">
-                  <h3 className="text-xs font-medium text-muted-foreground">Waiting on you</h3>
-                  {waiting.map((approval) => <ApprovalCard key={approval.id} organizationSlug={organizationSlug} id={approval.id} seed={approval} />)}
-                </section>
-              </MessageScrollerItem>
-            )}
+            {[{ heading: "Waiting on you", approvals: waiting.filter(waitsOnYou) }, { heading: "Requested", approvals: waiting.filter((approval) => !waitsOnYou(approval)) }]
+              .filter(({ approvals }) => approvals.length > 0).map(({ heading, approvals }) => (
+                <MessageScrollerItem key={heading}>
+                  <section aria-label={heading} className="flex flex-col gap-2">
+                    <h3 className="text-xs font-medium text-muted-foreground">{heading}</h3>
+                    {approvals.map((approval) => <ApprovalCard key={approval.id} organizationSlug={organizationSlug} id={approval.id} seed={approval} />)}
+                  </section>
+                </MessageScrollerItem>
+              ))}
             {chat.messages.length === 0 && waiting.length === 0 && !chat.isHydrating && !chat.error && (
               <MessageScrollerItem>
                 <Empty>

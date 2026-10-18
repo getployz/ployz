@@ -12,6 +12,7 @@ import {
   type OperationDigest,
   operationDigest,
   pendingApprovals,
+  readAsker,
   requestApproval,
   trustedApproval,
 } from "#/modules/approvals/approvals.server";
@@ -362,6 +363,25 @@ it.live("whoever asked into a Protected Environment can't decide it, either way"
     expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "pending" });
   }));
 
+it.live("another member can't decide a protected ask either way; an owner can deny it", () =>
+  Effect.gen(function* () {
+    const { provided, protectedRefusal, caller } = yield* shopRemovingWeb();
+    const ada = yield* provided(dashboardMember);
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
+    const bob = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bob.member@example.test", name: "Bob Member" }).returning();
+      const userId = person?.id ?? "";
+      yield* drizzle.insert(member).values({ userId, organizationId: ORGANIZATION, role: "member" });
+      return { ...ada, userId, credential: { kind: "session", id: "bob-session" } } satisfies Caller;
+    }));
+    for (const decision of [{ approve: { digest: opened.approval } }, { reject: {} }]) {
+      expect(yield* provided(decideApproval(bob, opened.approval_id, decision))).toMatchObject({ ok: false, refusal: { code: "forbidden" } });
+    }
+    expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "pending" });
+    expect(yield* provided(decideApproval(caller, opened.approval_id, { reject: { reason: "not today" } }))).toMatchObject({ ok: true, approval: { status: "denied" } });
+  }));
+
 it.live("an admin's approval runs a protected dashboard ask as its asker, with the digest, once", () =>
   Effect.gen(function* () {
     const { provided, protectedRefusal, caller, store } = yield* shopRemovingWeb();
@@ -380,23 +400,93 @@ it.live("an admin's approval runs a protected dashboard ask as its asker, with t
     expect(write.mock.calls).toHaveLength(1);
   }));
 
-it.live("an agent's protected sync or take of one plan is one card, however often it asks", () =>
+it.live("an approved dashboard ask that fails to run waits again, unless its plan moved", () =>
+  Effect.gen(function* () {
+    const { provided, protectedRefusal, caller, store } = yield* shopRemovingWeb();
+    const ada = yield* provided(dashboardMember);
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
+    const approve = { approve: { digest: opened.approval } };
+    const write = vi.spyOn(store, "write").mockRejectedValueOnce(new Error("socket hang up"));
+    expect(yield* provided(decideAndApply(caller, opened.approval_id, approve)))
+      .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("It's still waiting for approval.") } });
+    expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "pending" });
+
+    write.mockRejectedValueOnce(new RpcError({ code: "conflict", message: "Production moved on.", details: null }));
+    expect(yield* provided(decideAndApply(caller, opened.approval_id, approve)))
+      .toMatchObject({ ok: false, refusal: { message: expect.stringContaining("it has to be asked again") } });
+    expect(yield* provided(getApproval(ORGANIZATION, opened.approval_id))).toMatchObject({ status: "superseded" });
+  }));
+
+it.live("whoever asks again for a protected ask takes it over with their own way to run it", () =>
+  Effect.gen(function* () {
+    const { provided, protectedRefusal, cli, caller, store } = yield* shopRemovingWeb();
+    const ada = yield* provided(dashboardMember);
+    const { secret } = yield* provided(createOrganizationToken(ada, { name: "ada", expiresInDays: 1 }));
+    const runs = Effect.fn(function* (id: string) {
+      const asker = yield* provided(readAsker(ORGANIZATION, id));
+      return asker !== undefined && "apply" in asker.review;
+    });
+    const guarded = yield* protectedRefusal;
+
+    const fromCli = (yield* cli(publish, undefined, undefined, secret)).json.error?.details?.approval_id ?? expect.fail("no approval_id");
+    expect(yield* runs(fromCli)).toBe(false);
+    const fromDashboard = asked(yield* provided(requestApproval(ada, publish, guarded))).approval_id;
+    expect(fromDashboard).toBe(fromCli);
+    expect(yield* runs(fromCli)).toBe(true);
+    yield* cli(publish, undefined, "agent", secret);
+    expect(yield* runs(fromCli)).toBe(true);
+    yield* cli(publish, undefined, undefined, secret);
+    expect(yield* runs(fromCli)).toBe(false);
+
+    yield* provided(requestApproval(ada, publish, guarded));
+    const write = vi.spyOn(store, "write");
+    const digest = asked(guarded).approval;
+    expect(yield* provided(decideAndApply(caller, fromCli, { approve: { digest } }))).toMatchObject({ ok: true });
+    expect(write.mock.calls.map(([, command]) => command.command)).toEqual(["publish"]);
+  }));
+
+it.live("an agent's protected sync waits on one card at the version it reviewed, which an owner's approval runs", () =>
+  Effect.gen(function* () {
+    const { provided, write, store, pending, cli, caller } = yield* shopRemovingWeb(false);
+    const production = { project: null, environment: "production" };
+    const fixWeb = { project: null, environment: "fix-web" };
+    yield* write({ command: "create_branch", id: "00000000-0000-4000-8000-00000000a5f1", from: production, name: "fix-web", copy: ["web"], live: [], setup: [], keep: false });
+    yield* write({ command: "edit", environment: fixWeb, expect: null, changes: [{ op: "set", path: "web.env.FLAG", value: "on" }] });
+    yield* write({ command: "set_environment_protected", environment: production, protected: true });
+    const view = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "sync", from: fixWeb, into: production }));
+    const sync: ConfigCommand = { command: "sync", from: fixWeb, into: production, version: view.view === "sync" ? view.version : expect.fail("no sync") };
+    const { secret: ada } = yield* provided(createOrganizationToken(yield* provided(dashboardMember), { name: "ada", expiresInDays: 1 }));
+
+    const ids = new Set<string | undefined>();
+    let digest = "";
+    for (const _ of [1, 2]) {
+      const answer = yield* cli(sync, undefined, "agent", ada);
+      expect(answer.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
+      ids.add(answer.json.error?.details?.approval_id);
+      digest = answer.json.error?.details?.approval ?? expect.fail("no digest");
+    }
+    expect(ids.size).toBe(1);
+    const [id] = [...ids];
+    expect(yield* pending).toEqual([id]);
+    expect(yield* provided(pendingApprovals(ORGANIZATION))).toMatchObject([{ id, status: "pending" }]);
+
+    yield* provided(decideApproval(caller, id ?? "", { approve: { digest } }));
+    expect(yield* cli(sync, id, "agent", ada)).toMatchObject({ status: 200, json: { written: "synced" } });
+  }));
+
+it.live("an agent's protected take of one plan is one card, however often it asks", () =>
   Effect.gen(function* () {
     const { protectedRefusal, store, pending, cli } = yield* shopRemovingWeb();
     const guarded = yield* protectedRefusal;
     vi.spyOn(store, "write").mockRejectedValue(new RpcError({ ...guarded, code: "approval_required" }));
-    const version = "1";
-    const sync: ConfigCommand = { command: "sync", from: { project: null, environment: "staging" }, into: here, version };
-    const take: ConfigCommand = { command: "take", from: "staging", into: here, version };
-    for (const command of [sync, take]) {
-      const ids = new Set<string | undefined>();
-      for (const _ of [1, 2]) {
-        const answer = yield* cli(command, undefined, "agent");
-        expect(answer.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
-        ids.add(answer.json.error?.details?.approval_id);
-      }
-      expect(ids.size).toBe(1);
+    const take: ConfigCommand = { command: "take", from: "staging", into: here, version: "1" };
+    const ids = new Set<string | undefined>();
+    for (const _ of [1, 2]) {
+      const answer = yield* cli(take, undefined, "agent");
+      expect(answer.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
+      ids.add(answer.json.error?.details?.approval_id);
     }
+    expect(ids.size).toBe(1);
     expect(yield* pending).toHaveLength(1);
   }));
 
@@ -615,6 +705,25 @@ it.live("a retry `ployz mcp` asks for waits on a human as a Retry; the CLI's doe
     expect(yield* cli(retry(2))).toMatchObject({ status: 200 });
     expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.asks]))
       .toEqual([["admit", "every_deploy"], ["admit", "destroys"]]);
+  }));
+
+it.live("a member's CLI retry into a Protected Environment runs once an owner approves it", () =>
+  Effect.gen(function* () {
+    const { provided, cli, write, caller } = yield* shopRemovingWeb(false);
+    yield* provided(enrollStoreServer(ORGANIZATION));
+    yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* drizzle.execute(sql`update config_deployment set status = 'failed' where id = ${DEPLOYMENT}`);
+    }));
+    yield* write({ command: "set_environment_protected", environment: here, protected: true });
+    const { secret: ada } = yield* provided(createOrganizationToken(yield* provided(dashboardMember), { name: "ada", expiresInDays: 1 }));
+    const retry: ConfigCommand = { command: "admit", admit: "retry", id: "00000000-0000-4000-8000-0000000a5401", deployment: DEPLOYMENT };
+
+    const asked = yield* cli(retry, undefined, undefined, ada);
+    expect(asked.json.error).toMatchObject({ code: "approval_required", details: { protected: true } });
+    const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
+    yield* provided(decideApproval(caller, id, { approve: { digest: asked.json.error?.details?.approval ?? "" } }));
+    expect(yield* cli(retry, id, undefined, ada)).toMatchObject({ status: 200 });
   }));
 
 type Shop = Effect.Success<ReturnType<typeof shopRemovingWeb>>;

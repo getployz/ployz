@@ -13,9 +13,9 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Approval, ApprovalDigest, AuthorizedRepository, Automated, Change, ConfigStore,
-    CreateBranch, CreateEnvironment, CreateGitService, CreateProject, CreateService, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, OrganizationId, Permission,
-    Principal, ProjectId, ProjectName, Publish, Published, PullRequest, SeenProtection,
+    CreateBranch, CreateEnvironment, CreateGitService, CreateProject, CreateService, DiffQuery,
+    Edit, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentsQuery, OrganizationId,
+    Permission, Principal, ProjectId, ProjectName, Publish, Published, PullRequest, SeenProtection,
     ServiceLineageId, SetDefaultEnvironment, SetEnvironmentProtected, SetPrPlan, SettingPath,
     SyncChanges, SyncQuery, SystemEvent, Trusted, Written,
 };
@@ -428,6 +428,15 @@ fn sync_up(store: &ConfigStore, who: &Actor, protects: bool) -> Result<(), RpcEr
 }
 
 fn sync_as(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Result<(), RpcError> {
+    sync_closing(store, who, trusted, false)
+}
+
+fn sync_closing(
+    store: &ConfigStore,
+    who: &Actor,
+    trusted: &Trusted,
+    close_after: bool,
+) -> Result<(), RpcError> {
     let view = store
         .read(
             who,
@@ -443,7 +452,7 @@ fn sync_as(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Result<(), Rp
             &SyncChanges {
                 from: at("fix-web"),
                 into: Some(at("production")),
-                close_after: false,
+                close_after,
                 version: view.version,
                 picks: None,
                 skip: Vec::new(),
@@ -726,6 +735,55 @@ fn production_env(store: &ConfigStore, who: &Actor) -> Option<Value> {
     };
     let settings = store.read(who, &query).ok()?.settings;
     settings.into_iter().next().map(|setting| setting.value)
+}
+
+#[test]
+fn a_sync_approval_covers_only_the_changes_it_reviewed() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.FLAG", Some(json!("on")))],
+        false,
+    )
+    .unwrap();
+    let before = store
+        .read(
+            &who,
+            &DiffQuery {
+                environment: at("production"),
+            },
+        )
+        .unwrap()
+        .version;
+
+    let refused = sync_up(&store, &who, false).unwrap_err();
+    let approval = refused.details["approval"].as_str().unwrap().to_owned();
+    assert!(approval.starts_with(&format!("{before}:")), "{approval}");
+    let approved = admin_approved(refused, "sync");
+
+    let closing = sync_closing(&store, &who, &approved, true).unwrap_err();
+    assert_eq!(closing.code, RpcErrorCode::from("approval_required"));
+    assert_ne!(closing.details["approval"], json!(approval));
+
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.FLAG", Some(json!("off")))],
+        false,
+    )
+    .unwrap();
+    let changed = sync_as(&store, &who, &approved).unwrap_err();
+    assert_eq!(changed.code, RpcErrorCode::from("approval_required"));
+    assert_ne!(changed.details["approval"], json!(approval));
+    assert!(production_env(&store, &who).is_none());
+
+    sync_as(&store, &who, &admin_approved(changed, "sync")).unwrap();
+    assert_eq!(production_env(&store, &who), Some(json!("off")));
 }
 
 #[test]

@@ -4,6 +4,9 @@ import { decideApprovalServerFn, getApprovalServerFn, listPendingApprovalsServer
 
 export type ApprovalView = Awaited<ReturnType<typeof getApprovalServerFn>>;
 
+/** Whether `approval` waits on this person, rather than on an owner or admin they asked into a Protected Environment. */
+export const waitsOnYou = (approval: Pick<ApprovalView, "protected" | "yours">) => !(approval.protected && approval.yours);
+
 /** How often the sidebar rereads approvals: a CLI or another tab can ask, or answer, at any moment. */
 const APPROVAL_POLL_MS = 2_000;
 

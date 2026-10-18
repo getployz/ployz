@@ -3,14 +3,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, XIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Kbd } from "#/components/ui/kbd";
 import { TraceLine } from "#/components/ui/trace";
 import { Textarea } from "#/components/ui/textarea";
+import { cn } from "#/lib/utils";
 import { approvalBadge, approvalSubject, type ApprovalDecision, destroyedLine } from "#/modules/approvals/approvals";
 import { approvalOptions, decideApproval, landDecision, refetchApprovals, type ApprovalView } from "./approvals.queries";
-import { otherChanges } from "./approval-review";
+import { type ChangeLine, reviewedChanges } from "./approval-review";
 
 /**
  * One destructive Save, Deploy or Server operation waiting on a human, drawn from its Cloud row and reread while it waits, so a
@@ -46,7 +47,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
-  const others = otherChanges(approval.review);
+  const { asked, others } = reviewedChanges(approval.review);
   const waits = approval.protected && approval.yours;
 
   const decide = async (decision: ApprovalDecision) => {
@@ -77,7 +78,10 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
       aria-label={`${subject.verb} ${place} needs approval`}
       className="outline-none focus-visible:ring-2">
       <CardHeader className="flex items-center justify-between gap-2">
-        <CardTitle>{subject.verb} {place}</CardTitle>
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <CardTitle>{subject.verb} {place}</CardTitle>
+          {approval.asker && !approval.yours && <CardDescription className="text-xs">Asked by {approval.asker}</CardDescription>}
+        </div>
         <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
@@ -94,16 +98,15 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
             })}
           </ul>
         )}
+        {asked.length > 0 && <ChangeLines label="Saves" changes={asked} className="text-foreground" />}
         {others.length > 0 && (
-          <Collapsible>
+          <Collapsible defaultOpen={effects.length === 0 && asked.length === 0}>
             <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
               <ChevronRightIcon aria-hidden className="size-3 transition-transform group-data-panel-open:rotate-90" />
-              {others.length} other {others.length === 1 ? "change" : "changes"}
+              {others.length} {effects.length + asked.length > 0 ? "other " : ""}{others.length === 1 ? "change" : "changes"}
             </CollapsibleTrigger>
             <CollapsibleContent>
-              <ul className="flex flex-col gap-0.5 pt-1 pl-4 font-mono text-xs text-muted-foreground">
-                {others.map((change) => <li key={change.key}>{change.mark} {change.node} {change.text}</li>)}
-              </ul>
+              <ChangeLines changes={others} className="pt-1 pl-4 text-muted-foreground" />
             </CollapsibleContent>
           </Collapsible>
         )}
@@ -129,5 +132,13 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
         )}
       </CardFooter>}
     </Card>
+  );
+}
+
+function ChangeLines({ label, changes, className }: { label?: string; changes: ChangeLine[]; className: string }) {
+  return (
+    <ul aria-label={label} className={cn("flex flex-col gap-0.5 font-mono text-xs", className)}>
+      {changes.map((change) => <li key={change.key}>{change.mark} {change.node} {change.text}</li>)}
+    </ul>
   );
 }

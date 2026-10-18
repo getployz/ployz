@@ -13,7 +13,7 @@ use ts_rs::TS;
 use crate::error;
 use crate::id::{ApprovalDigest, DeploymentId, EnvironmentId, Hostname};
 use crate::review::{DiffView, Head, Review, Shipping};
-use crate::scope::Environment;
+use crate::scope::{Environment, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, Approval, Asks, Permission, Trusted};
 
@@ -410,16 +410,44 @@ pub(crate) fn approve_retry(
     gate.require(bound, message, (&BTreeSet::new(), &diff))
 }
 
-/// What a Sync or Take moves into an Environment: from which source.
+/// What a Sync or Take moves into an Environment: from which source, and the
+/// request's own choices, which its approval covers.
 #[derive(Clone, Copy)]
 pub(crate) enum Moving<'a> {
-    Sync(&'a EnvironmentId),
-    Take(&'a EnvironmentId),
+    Sync(&'a EnvironmentSummary, &'a serde_json::Value),
+    Take(&'a EnvironmentSummary, &'a serde_json::Value),
 }
 
-/// Refuse a Sync or Take into `into`, once written, while it is Protected for the
-/// caller, unless Cloud holds a human's approval of exactly this move at the version
-/// it leaves `into` at. The refusal rolls the write back.
+/// A Sync or Take into an Environment that is Protected for the caller, read before
+/// it writes: the version Cloud's approval stays fresh against is the one the
+/// refusal rolls back to.
+pub(crate) struct MoveAsks<'a> {
+    gate: Gate<'a>,
+    version: String,
+}
+
+/// Whether a Sync or Take into `into` asks, read before it writes anything.
+///
+/// # Errors
+/// When the caller's grant can't write `into`.
+pub(crate) fn move_asks<'a>(
+    tx: &mut dyn Tx,
+    into: &Environment,
+    trusted: &'a Trusted,
+) -> Result<Option<MoveAsks<'a>>, RpcError> {
+    let gate = Gate::new(tx, &into.summary.id, trusted)?;
+    if !gate.protected {
+        return Ok(None);
+    }
+    trusted.writes(&into.summary.name)?;
+    let version = crate::review::review(tx, into)?.view.version;
+    Ok(Some(MoveAsks { gate, version }))
+}
+
+/// Refuse a Sync or Take into `into`, once written, when [`move_asks`] said it
+/// asks, unless Cloud holds a human's approval of exactly this move: its source at
+/// its revision, the request's choices, and `into` at the version it held before.
+/// The refusal rolls the write back and shows what the move staged.
 ///
 /// # Errors
 /// `approval_required`, naming the `version:digest` to approve and `into`'s `diff`.
@@ -427,25 +455,25 @@ pub(crate) fn approve_move(
     tx: &mut dyn Tx,
     who: &Actor,
     into: &Environment,
+    asks: Option<MoveAsks<'_>>,
     moving: Moving<'_>,
-    trusted: &Trusted,
 ) -> Result<(), RpcError> {
-    let gate = Gate::new(tx, &into.summary.id, trusted)?;
-    if !gate.protected {
+    let Some(MoveAsks { gate, version }) = asks else {
         return Ok(());
-    }
-    trusted.writes(&into.summary.name)?;
-    let review = crate::review::review(tx, into)?;
-    let (what, from) = match moving {
-        Moving::Sync(from) => ("sync", from),
-        Moving::Take(from) => ("take", from),
+    };
+    let (what, from, request) = match moving {
+        Moving::Sync(from, request) => ("sync", from, request),
+        Moving::Take(from, request) => ("take", from, request),
     };
     let bound = json!({
         "organization": who.organization,
         "environment": into.summary.id,
-        what: from,
+        what: from.id,
+        "from_revision": from.revision,
+        "request": request,
     });
-    let diff = &review.view;
-    let message = gate.message(diff, what, String::new);
-    gate.require(bound, message, (&diff.effects, diff))
+    let mut diff = crate::review::review(tx, into)?.view;
+    diff.version = version;
+    let message = gate.message(&diff, what, String::new);
+    gate.require(bound, message, (&diff.effects, &diff))
 }

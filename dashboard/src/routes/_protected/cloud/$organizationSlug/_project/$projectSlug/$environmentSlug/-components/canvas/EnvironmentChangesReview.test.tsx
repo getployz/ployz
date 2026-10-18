@@ -234,6 +234,14 @@ it("offers a Save message when the draft reverses Saved with no runtime changes"
   expect(screen.queryByRole("button", { name: "Deploy changes" })).toBeNull();
 });
 
+it("asks for the deploy when the Environment needs an owner or admin", () => {
+  const onDeploy = vi.fn();
+  review({ groups: [api([row("api.replicas")])], canDeploy: true, asks: true, onDeploy });
+  fireEvent.click(screen.getByRole("button", { name: "Request deploy" }));
+  expect(onDeploy).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("button", { name: "Deploy changes" })).toBeNull();
+});
+
 describe("Included", () => {
   const staging: Included = {
     proposal: "p-staging", source: { kind: "environment", id: "e-staging", name: "staging", live: true },

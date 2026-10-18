@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Option } from "effect";
-import { storePrCheckRun } from "./store-pull-requests";
+import { type Guarded, storePrCheckRun } from "./store-pull-requests";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
@@ -138,14 +138,14 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
   const store = yield* cloudStore;
   const config = yield* AppConfig;
   const organizations = yield* listLinkedOrganizationIds(payload.installationId);
-  const views: { organizationId: string; view: PullRequestView; guarded: string[] }[] = [];
+  const views: { organizationId: string; view: PullRequestView; guarded: Guarded[] }[] = [];
   for (const organizationId of organizations) {
     const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
     if (!view.check) continue;
-    const guarded: string[] = [];
+    const guarded: Guarded[] = [];
     for (const { environment, destinations } of view.environments) {
       const { environments } = yield* storeTry(() => store.read(organizationId, { query: "environments", project: environment.project }));
-      guarded.push(...destinations.flatMap((into) => environments.some((each) => each.name === into.name && each.protected) ? [into.name] : []));
+      guarded.push(...destinations.flatMap((into) => environments.some((each) => each.name === into.name && each.protected) ? [{ project: environment.project, environment: into.name }] : []));
     }
     views.push({ organizationId, view, guarded });
   }
