@@ -531,7 +531,7 @@ describe("organization enrollment coordinator", () => {
     await harness.pool.query("update machine_enrollment_token set server_enrollment_id = $1 where token_hash = $2", [attempt.id, hashEnrollmentToken(token)]);
     await harness.runEffect(recordStage(attempt.id, "rejection-run", stage));
     const checkin = () => {
-      const body = Buffer.from(JSON.stringify({ protocolVersion: 1, checkinKey: key, cliVersion: "0.3.1",
+      const body = Buffer.from(JSON.stringify({ protocolVersion: 1, checkinKey: key, cliVersion: "0.3.0",
         report: { hostname: "rejected", os: { id: "ubuntu", version: "24.04" }, kernel: "6.8", arch: "x86_64", virt: "kvm",
           cpuCount: 4, memoryTotalBytes: 8589934592, disks: [], docker: { kind: "absent" }, cgroup: "v2",
           zfs: { kind: "ineligible", code: "unavailable", message: "Unavailable" }, blockers: [], warnings: [] },

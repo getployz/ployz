@@ -108,7 +108,7 @@ const host = (name: string): Host => {
 };
 
 const checkin = async (target: Host, prep?: Prep) => {
-  const base = { protocolVersion: 1, checkinKey: target.key, cliVersion: "0.3.1", report: { ...report, hostname: target.name } } as const;
+  const base = { protocolVersion: 1, checkinKey: target.key, cliVersion: "0.3.0", report: { ...report, hostname: target.name } } as const;
   const body = Buffer.from(JSON.stringify(prep === undefined ? base : { ...base, prep } satisfies CheckinRequest));
   const timestamp = BigInt(Math.floor(Date.now() / 1000));
   const signature = sign(null, checkinMessage(target.key, timestamp, body), target.privateKey).toString("base64url");

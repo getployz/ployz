@@ -31,7 +31,8 @@ export type EnrollInstruction = {
 
 export type EnrollmentFailure = { readonly stage: EnrollmentStage | null; readonly message: string };
 
-export const ENROLL_MIN_CLI_VERSION = "0.3.1";
+/** The first release that enrolls from Cloud plans. */
+export const ENROLL_MIN_CLI_VERSION = "0.3.0";
 
 export const ZFS_BUILD_FAILED = "ZFS build failed";
 
