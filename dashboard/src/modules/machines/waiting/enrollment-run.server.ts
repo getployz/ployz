@@ -6,7 +6,7 @@ import { createServerEnrollmentCancelEvent } from "#/modules/inngest/events";
 import type { MachineId } from "#/db/tables";
 import { machineEnrollmentToken } from "#/modules/machines/tables";
 import { ENROLLMENT_STAGES, type EnrollmentFailure, type EnrollmentStage } from "#/modules/machines/waiting/server-enrollment";
-import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -81,7 +81,16 @@ type Ending =
   | { readonly state: "cancelled" };
 
 const endAndRevokeTokens = (where: ReturnType<typeof and>, ending: Ending) =>
-  Effect.flatMap(Database, (database) => database.transaction(endAndRevokeTokensNow(where, ending))).pipe(Effect.map((ended) => ended.length));
+  Effect.flatMap(Database, (database) => database.transaction(Effect.gen(function* () {
+    if (ending.state === "joined") {
+      const { drizzle } = yield* Database;
+      // The ledger's foreign key takes this lock too; acquire it before attempts, as removal does.
+      yield* drizzle.select({ id: fleetToken.id }).from(fleetToken)
+        .innerJoin(serverEnrollment, eq(serverEnrollment.fleetTokenId, fleetToken.id))
+        .where(where).orderBy(fleetToken.id).for("key share", { of: fleetToken });
+    }
+    return (yield* endAndRevokeTokensNow(where, ending)).length;
+  })));
 
 // Every bulk end locks its attempts in id order first, so two of them over the same attempts can't deadlock.
 const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where: ReturnType<typeof and>, ending: Ending) {
@@ -98,7 +107,10 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
     failure: ending.state === "failed" ? ending.failure : null,
     encryptedToken: null,
     endedAt: now,
-  }).where(and(inArray(serverEnrollment.id, locked.map((row) => row.id)), where)).returning({ id: serverEnrollment.id, enrollTokenId: serverEnrollment.enrollTokenId });
+  }).where(and(inArray(serverEnrollment.id, locked.map((row) => row.id)), where)).returning({ id: serverEnrollment.id, enrollTokenId: serverEnrollment.enrollTokenId, fleetTokenId: serverEnrollment.fleetTokenId });
+  if (ending.state === "joined" && ended.length > 0) {
+    yield* drizzle.insert(fleetTokenJoin).values(ended.map((row) => ({ attemptId: row.id, fleetTokenId: row.fleetTokenId })));
+  }
   if (ending.state !== "joined" && ended.length > 0) {
     yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: now }).where(and(
       inArray(machineEnrollmentToken.id, ended.map((row) => row.enrollTokenId)),

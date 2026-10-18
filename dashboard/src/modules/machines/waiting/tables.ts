@@ -90,6 +90,7 @@ export const serverEnrollment = pgTable(
     uniqueIndex("server_enrollment_one_open_idx").on(table.waitingServerId).where(sql`ended_at is null`),
     uniqueIndex("server_enrollment_one_founder_idx").on(table.organizationId).where(sql`ended_at is null and role = 'founder'`),
     index("server_enrollment_organization_idx").on(table.organizationId),
+    index("server_enrollment_token_open_idx").on(table.fleetTokenId).where(sql`ended_at is null`),
   ],
 );
 
@@ -98,6 +99,12 @@ export const checkinRateLimit = pgTable("checkin_rate_limit", {
   windowStart: timestamp("window_start", { mode: "date", withTimezone: true }).notNull(),
   count: integer("count").notNull(),
 });
+
+export const fleetTokenJoin = pgTable("fleet_token_join", {
+  attemptId: uuid("attempt_id").primaryKey(),
+  fleetTokenId: uuid("fleet_token_id").notNull().references(() => fleetToken.id, { onDelete: "cascade" }),
+  createdAt,
+}, (table) => [index("fleet_token_join_token_idx").on(table.fleetTokenId)]);
 
 export const rateLimitEvent = pgTable(
   "rate_limit_event",

@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, gte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, gt, gte, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { createServerEnrollmentRequestedEvent } from "#/modules/inngest/events";
@@ -17,7 +17,7 @@ import {
   type EnrollStorage,
   isReadyFor,
 } from "#/modules/machines/waiting/server-enrollment";
-import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
+import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { enqueueEvent } from "#/modules/operations/outbox.server";
 import { requireAccess } from "#/modules/organization/access.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -252,41 +252,89 @@ export const startServerEnrollment = Effect.fn("ServerEnrollment.start")(functio
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
-  const encryption = yield* SecretEncryption;
   yield* releaseDeadClaim(organization.id);
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockOrganizationEnrollment(organization.id);
     const plan = yield* planEnrollment(organization.id, input, "start");
-    const { drizzle } = yield* Database;
-    const attempts = [];
-    for (const row of plan.rows) {
-      const id = randomUUID();
-      const issued = yield* insertEnrollmentToken({
-        organizationId: organization.id,
-        userId: actor.userId,
-        attempt: { role: row.role, serverEnrollmentId: id },
-      });
-      const state: EnrollmentState = row.role === "founder" || plan.founded ? "instructed" : "awaiting_founder";
-      yield* drizzle.insert(serverEnrollment).values({
-        id,
-        organizationId: organization.id,
-        waitingServerId: row.waitingServerId,
-        fleetTokenId: row.fleetTokenId,
-        role: row.role,
-        instruction: row.instruction,
-        enrollTokenId: issued.id,
-        encryptedToken: encryption.encrypt(issued.token),
-        state,
-        requestedByUserId: actor.userId,
-      });
-      yield* enqueueEvent(createServerEnrollmentRequestedEvent({ attemptId: id, organizationId: organization.id }));
-      attempts.push({ id, waitingServerId: row.waitingServerId, role: row.role, name: row.instruction.name, state });
-    }
-    return { attempts, skipped: plan.skipped, spread: plan.spread };
+    return yield* startPlannedEnrollment(organization.id, actor.userId, plan);
   })).pipe(
     Effect.catchIf(isUniqueViolation, () =>
       Effect.fail(new Conflict({ message: "Another enrollment just started for these servers, or another first server.", userFacing: true }))),
   );
+});
+
+const startPlannedEnrollment = Effect.fn("ServerEnrollment.startPlanned")(function* (
+  organizationId: string,
+  userId: string,
+  plan: Extract<EnrollPlan, { kind: "planned" }> & { readonly founded: boolean },
+) {
+  const encryption = yield* SecretEncryption;
+  const { drizzle } = yield* Database;
+  const attempts = [];
+  for (const row of plan.rows) {
+    const id = randomUUID();
+    const issued = yield* insertEnrollmentToken({
+      organizationId,
+      userId,
+      attempt: { role: row.role, serverEnrollmentId: id },
+    });
+    const state: EnrollmentState = row.role === "founder" || plan.founded ? "instructed" : "awaiting_founder";
+    yield* drizzle.insert(serverEnrollment).values({
+      id,
+      organizationId,
+      waitingServerId: row.waitingServerId,
+      fleetTokenId: row.fleetTokenId,
+      role: row.role,
+      instruction: row.instruction,
+      enrollTokenId: issued.id,
+      encryptedToken: encryption.encrypt(issued.token),
+      state,
+      requestedByUserId: userId,
+    });
+    yield* enqueueEvent(createServerEnrollmentRequestedEvent({ attemptId: id, organizationId }));
+    attempts.push({ id, waitingServerId: row.waitingServerId, role: row.role, name: row.instruction.name, state });
+  }
+  return { attempts, skipped: plan.skipped, spread: plan.spread };
+});
+
+export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")(function* (
+  token: { readonly id: string; readonly organizationId: string },
+  checkinKey: string,
+) {
+  const { drizzle } = yield* Database;
+  yield* lockOrganizationEnrollment(token.organizationId);
+  const [pairing] = yield* drizzle.select({ founder: organizationPairing.founderMachineId, removal: organizationPairing.removalEndpoints })
+    .from(organizationPairing).where(eq(organizationPairing.organizationId, token.organizationId)).for("update");
+  if (pairing === undefined || pairing.founder === null || pairing.removal !== null) return false;
+  const [live] = yield* drizzle.select({ max: fleetToken.autoEnrollMax, userId: fleetToken.createdByUserId })
+    .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, sql`now()`))).for("update");
+  if (live === undefined || live.max === null) return false;
+  const [host] = yield* drizzle.select({
+    id: waitingServer.id, report: waitingServer.report, observedIp: waitingServer.observedIp,
+    unavailable: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and (${serverEnrollment.state} = 'joined' or ${serverEnrollment.endedAt} is null))`,
+    used: sql<number>`(select count(*) from ${fleetTokenJoin} where ${fleetTokenJoin.fleetTokenId} = ${token.id})
+      + (select count(*) from ${serverEnrollment} where ${serverEnrollment.fleetTokenId} = ${token.id} and ${serverEnrollment.endedAt} is null)`.mapWith(Number),
+  }).from(waitingServer).where(and(
+    eq(waitingServer.organizationId, token.organizationId), eq(waitingServer.checkinKey, checkinKey),
+    eq(waitingServer.fleetTokenId, token.id), isNull(waitingServer.rejectedAt),
+  )).for("update");
+  if (host === undefined || host.unavailable || host.used >= live.max) return false;
+  const { report } = host;
+  if (report.blockers.length > 0 || (report.prep !== undefined && (report.prep.docker !== "ready" || report.prep.zfs === "installing"))) return false;
+  const input: EnrollInput = {
+    ids: [host.id], names: { kind: "hostnames" },
+    storage: report.prep !== undefined && report.prep.zfs !== "ready"
+      ? { kind: "none" }
+      : { kind: "zfs", useSpareDisk: true, fallbackToDocker: true },
+    runs: { services: true, ingress: true, builds: true },
+  };
+  const plan = planServerEnrollment(input, [{
+    id: host.id, fleetTokenId: token.id, report, observedIp: host.observedIp,
+    rejected: false, enrolling: false, tokenEnded: null,
+  }], { hasFirst: true });
+  if (plan.kind !== "planned" || plan.rows.length === 0) return false;
+  yield* startPlannedEnrollment(token.organizationId, live.userId, { ...plan, founded: true });
+  return true;
 });
 
 export const cancelServerEnrollment = Effect.fn("ServerEnrollment.cancel")(function* (
