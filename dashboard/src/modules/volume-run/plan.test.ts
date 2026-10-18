@@ -194,6 +194,13 @@ describe("plan_from_copies_table", () => {
     });
   });
 
+  it.each([["move", move("fsn-3")], ["mirror", mirror("fsn-3")]])("names the copy on a third Server and its removal when a %s finds one", (_, input) => {
+    expect(planFromCopies(input, [member("fsn-1", "writer"), member("fsn-2", "mirror"), member("fsn-3", "empty")])).toEqual({
+      ok: false,
+      refusal: { code: "second_mirror", message: "data already has a copy on fsn-2, data-fsn-2", next: "ployz volume mirror rm data-fsn-2" },
+    });
+  });
+
   it.each([["release", release], ["sync", sync()], ["mirror rm", remove(null)]])("tells a %s facing two unfinished cuts to keep the newer and release it", (_, input) => {
     expect(planFromCopies(input, [member("fsn-1", "cut", { epoch: 8 }), member("fsn-2", "cut", { epoch: 9 })])).toEqual({
       ok: false,
