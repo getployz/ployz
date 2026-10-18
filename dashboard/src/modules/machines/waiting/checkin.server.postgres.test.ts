@@ -900,6 +900,18 @@ it("holds an arrival token's maximum under concurrent signed check-ins", async (
   expect((await harness.pool.query("select count(*)::int as count from operation_outbox where name = 'server/enrollment.requested'")).rows).toEqual([{ count: 5 }]);
 });
 
+it("revokes an arrival token mid-burst without deadlock and keeps every started attempt", async () => {
+  await foundOrganization();
+  const { token, id } = await autoToken(10);
+  const arrivals = Array.from({ length: 12 }, (_, n) => send(token, newHost(), { ...readyAuto, hostname: `burst-${n}`, ip: `198.51.100.${n + 1}` }));
+  const revoked = run(revokeFleetToken(ada, { organizationSlug: "ada", id }));
+  const answers = await Promise.all(arrivals);
+  await revoked;
+  const started = answers.filter((answer) => answer.kind === "wait" && answer.retryAfter === 2).length;
+  expect(await autoAttempts()).toHaveLength(started);
+  expect(await rows()).toHaveLength(started);
+});
+
 it("never founds on arrival, including while the first server is still founding", async () => {
   const { token } = await autoToken();
   const host = newHost();

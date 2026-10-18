@@ -302,7 +302,7 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
     const answer = yield* database.transaction(admit(token, request, input.observedIp));
     if (answer === OWNERSHIP_CHANGED) continue;
     if (answer.kind === "wait" && token.autoEnrollMax !== null) {
-      const started = yield* database.transaction(startArrivalEnrollment(token, request.checkinKey));
+      const started = yield* startArrivalEnrollment(token, request.checkinKey);
       if (started) return { ...answer, retryAfter: 2 };
     }
     return answer;
