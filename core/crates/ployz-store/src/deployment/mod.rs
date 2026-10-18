@@ -11,6 +11,8 @@ mod lowering;
 pub(crate) mod query;
 #[cfg(test)]
 mod retire_tests;
+#[cfg(test)]
+mod reference_tests;
 mod rows;
 pub(crate) use history::*;
 pub(crate) use lifecycle::*;
