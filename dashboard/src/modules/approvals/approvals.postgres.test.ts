@@ -18,6 +18,7 @@ import {
 import { asTestDouble } from "#/lib/test-double";
 import { decideAndApply } from "#/modules/approvals/apply.server";
 import { operationApprovals } from "#/modules/approvals/tables";
+import { permissionsOf } from "#/modules/organization/permissions";
 import { writeStoreAsMember } from "#/modules/config-store/config-store.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { ownedNamespaces } from "#/modules/machines/namespace-cleanup.server";
@@ -74,6 +75,9 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
   const withApproval = (approval: Approval) => ({ ...acmeWeb(), approval });
   const refusal = Effect.flip(storeTry(() => store.write(ORGANIZATION, publish, withApproval("required"))))
     .pipe(Effect.map((refused) => refused.refusal));
+  const protectedRefusal = write({ command: "set_environment_protected", environment: here, protected: true }).pipe(
+    Effect.andThen(Effect.flip(storeTry(() => store.write(ORGANIZATION, publish, { ...withApproval("required"), permissions: permissionsOf("member") })))),
+    Effect.map((refused) => refused.refusal));
   const caller: Caller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "token", id: "token-1", grant: FULL_GRANT }, role: "owner", support: null, via: "cli" };
   const pending = provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -91,7 +95,7 @@ const shopRemovingWeb = Effect.fn(function* (removeWeb = true) {
     }));
     return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
   }));
-  return { provided, write, refusal, caller, userId, store, pending, withApproval, cli };
+  return { provided, write, refusal, protectedRefusal, caller, userId, store, pending, withApproval, cli };
 });
 
 const anonymous = (userId: string) => Effect.gen(function* () {
@@ -115,10 +119,6 @@ const dashboardMember = Effect.gen(function* () {
     userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "ada-session" }, role: "member", support: null, via: "dashboard",
   } satisfies Caller;
 });
-
-/** The Store's refusal as it reads for a write into a Protected Environment by someone who can't protect it. */
-const protectedRefusal = <T extends { details: unknown }, E, R>(refusal: Effect.Effect<T, E, R>) =>
-  refusal.pipe(Effect.map((refused) => ({ ...refused, details: { ...(refused.details as object), protected: true } })));
 
 type Asked = { approval: string; approval_id: string; effects: unknown[] };
 const asked = (refused: { details: unknown }) => refused.details as Asked;
@@ -341,9 +341,9 @@ it.live("nothing turns asking off: no Organization setting is kept, and a call w
 
 it.live("a member's deploy into a Protected Environment opens an Approval, which keeps what it runs to itself", () =>
   Effect.gen(function* () {
-    const { provided, refusal } = yield* shopRemovingWeb();
+    const { provided, protectedRefusal } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = yield* provided(requestApproval(ada, publish, yield* protectedRefusal(refusal)));
+    const opened = yield* provided(requestApproval(ada, publish, yield* protectedRefusal));
     expect(opened.details).toMatchObject({ protected: true });
     const approval = yield* provided(getApproval(ORGANIZATION, asked(opened).approval_id));
     expect(approval).toMatchObject({ status: "pending", protected: true, requested_by: ada.userId, review: { protected: { environment: "production" } } });
@@ -352,9 +352,9 @@ it.live("a member's deploy into a Protected Environment opens an Approval, which
 
 it.live("whoever asked into a Protected Environment can't decide it, either way", () =>
   Effect.gen(function* () {
-    const { provided, refusal } = yield* shopRemovingWeb();
+    const { provided, protectedRefusal } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal(refusal))));
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
     for (const decision of [{ approve: { digest: opened.approval } }, { reject: {} }]) {
       expect(yield* provided(decideApproval(ada, opened.approval_id, decision)))
         .toMatchObject({ ok: false, refusal: { message: "You asked for this, so someone else who can protect it decides." } });
@@ -364,9 +364,9 @@ it.live("whoever asked into a Protected Environment can't decide it, either way"
 
 it.live("an admin's approval runs a protected dashboard ask as its asker, with the digest, once", () =>
   Effect.gen(function* () {
-    const { provided, refusal, caller, store } = yield* shopRemovingWeb();
+    const { provided, protectedRefusal, caller, store } = yield* shopRemovingWeb();
     const ada = yield* provided(dashboardMember);
-    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal(refusal))));
+    const opened = asked(yield* provided(requestApproval(ada, publish, yield* protectedRefusal)));
     const write = vi.spyOn(store, "write");
     const approve = { approve: { digest: opened.approval } };
     expect(yield* provided(decideAndApply(caller, opened.approval_id, approve))).toMatchObject({ ok: true, approval: { status: "approved" } });
@@ -382,8 +382,8 @@ it.live("an admin's approval runs a protected dashboard ask as its asker, with t
 
 it.live("an agent's protected sync or take of one plan is one card, however often it asks", () =>
   Effect.gen(function* () {
-    const { refusal, store, pending, cli } = yield* shopRemovingWeb();
-    const guarded = yield* protectedRefusal(refusal);
+    const { protectedRefusal, store, pending, cli } = yield* shopRemovingWeb();
+    const guarded = yield* protectedRefusal;
     vi.spyOn(store, "write").mockRejectedValue(new RpcError({ ...guarded, code: "approval_required" }));
     const version = "1";
     const sync: ConfigCommand = { command: "sync", from: { project: null, environment: "staging" }, into: here, version };
