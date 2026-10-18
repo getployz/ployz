@@ -1,4 +1,4 @@
-import type { serverListState } from "#/modules/machines/server-status";
+import type { ServerListState } from "#/modules/machines/server-status";
 
 /**
  * What the Servers page shows. The intake tray (servers waiting or enrolling) comes from Cloud, not the Runtime, so it
@@ -11,7 +11,7 @@ export type ServersPageState =
   | { readonly kind: "fleet"; readonly intake: boolean; readonly stale: boolean };
 
 export function serversPageState({ list, servers, waiting, enrolling }: {
-  list: ReturnType<typeof serverListState>;
+  list: ServerListState;
   servers: number;
   waiting: number;
   enrolling: number;

@@ -1,4 +1,4 @@
-import type { ServerListItem } from "#/modules/machines/use-servers";
+import type { ServerStatus } from "#/modules/machines/server-status";
 import type { ServerUpgradeLine } from "#/modules/server-upgrade/server-upgrade";
 
 const PARTS = [
@@ -9,8 +9,10 @@ const PARTS = [
   { key: "behind", label: "needs upgrade", dot: "bg-warning" },
 ] as const;
 
+type FleetServer = { readonly machine: { readonly id: string }; readonly status: ServerStatus };
+
 /** Servers per status, plus those behind their release line. Behind overlaps the status counts. */
-export function fleetHealth(servers: readonly ServerListItem[], upgrades: ReadonlyMap<string, ServerUpgradeLine>) {
+export function fleetHealth(servers: readonly FleetServer[], upgrades: ReadonlyMap<string, ServerUpgradeLine>) {
   const counts = { online: 0, building: 0, offline: 0, unknown: 0, behind: 0 };
   for (const server of servers) {
     counts[server.status] += 1;
@@ -20,7 +22,7 @@ export function fleetHealth(servers: readonly ServerListItem[], upgrades: Readon
   return counts;
 }
 
-export function FleetHealth({ servers, upgrades }: { servers: readonly ServerListItem[]; upgrades: ReadonlyMap<string, ServerUpgradeLine> }) {
+export function FleetHealth({ servers, upgrades }: { servers: readonly FleetServer[]; upgrades: ReadonlyMap<string, ServerUpgradeLine> }) {
   const counts = fleetHealth(servers, upgrades);
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">

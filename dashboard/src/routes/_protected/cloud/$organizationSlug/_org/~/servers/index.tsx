@@ -1,19 +1,21 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { ServerIcon } from "lucide-react";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Button } from "#/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { useServers } from "#/modules/machines/use-servers";
 import { serverEnrollmentsQueryOptions, waitingServersQueryOptions } from "#/modules/machines/waiting/waiting.queries";
 import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
 import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { AddServersDialog } from "./-components/add-servers-dialog";
+import { FirstRunCard } from "./-components/first-run-card";
+import { FleetHealth } from "./-components/fleet-health";
 import { SERVER_LIST, ServerRow } from "./-components/server-row";
+import { serversPageState } from "./-components/servers-page-state";
 import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 import { ServersUpgradeBar, useServersUpgrade } from "./-components/servers-upgrade";
+import { useEnrollmentStatus, useWaitingServers } from "./-components/use-waiting";
 import { IntakeTray } from "./-components/waiting-list";
 
 export const Route = createFileRoute(
@@ -36,7 +38,17 @@ function RouteComponent() {
   const { token } = Route.useSearch();
   const { state, servers } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
-  const upgrade = state === "live" && servers.length > 0 ? upgrades : null;
+  const waiting = useWaitingServers(organizationSlug);
+  const enrollments = useEnrollmentStatus(organizationSlug);
+  const page = serversPageState({
+    list: state,
+    servers: servers.length,
+    waiting: waiting.data?.length ?? 0,
+    enrolling: enrollments.data?.attempts.length ?? 0,
+  });
+  const upgrade = page.kind === "fleet" && !page.stale ? upgrades : null;
+  // First run has its own install card; the dialog returns once a server has shown up.
+  const canAdd = page.kind !== "first-run" || page.intake;
 
   return (
     <DashboardPage width="content">
@@ -46,28 +58,35 @@ function RouteComponent() {
         <Button variant="ghost" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers/tokens" params={{ organizationSlug }} />}>
           Tokens
         </Button>
-        <AddServersDialog
-          organizationSlug={organizationSlug}
-          label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
-        />
+        {canAdd ? (
+          <AddServersDialog
+            organizationSlug={organizationSlug}
+            label={upgrade === null ? "Add servers" : <span className="max-sm:sr-only">Add servers</span>}
+          />
+        ) : null}
       </div>
-      {/* Above the list: the skeleton below is a guess at the list's height, and Waiting must not jump when it settles. */}
-      <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={false} />
-      {state === "loading" ? (
+      {waiting.isError || enrollments.isError ? (
+        <p role="alert">
+          Couldn’t load waiting servers or enrollments.{" "}
+          <Button variant="outline" onClick={() => { void waiting.refetch(); void enrollments.refetch(); }}>Retry</Button>
+        </p>
+      ) : null}
+      {/* Above the list: the skeleton below is a guess at the list's height, and the tray must not jump when it settles. */}
+      {page.intake ? <IntakeTray organizationSlug={organizationSlug} token={token} firstRun={page.kind === "first-run"} /> : null}
+      {page.kind === "loading" ? (
         <ServersSkeleton />
-      ) : state === "unreachable" ? (
+      ) : page.kind === "unreachable" ? (
         <ServersUnreachable organizationSlug={organizationSlug} />
-      ) : servers.length === 0 ? (
-        <Empty variant="first-run">
-          <EmptyHeader>
-            <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
-            <EmptyTitle>Add your first server</EmptyTitle>
-            <EmptyDescription>Run one line on any Linux servers. They wait here for you to review.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+      ) : page.kind === "first-run" ? (
+        page.intake ? (
+          <p className="text-sm text-muted-foreground">Still listening. Run the line on more servers and they queue here.</p>
+        ) : (
+          <FirstRunCard organizationSlug={organizationSlug} />
+        )
       ) : (
         <>
-          {state === "stale" ? <ServersStaleAlert /> : null}
+          {page.stale ? <ServersStaleAlert /> : null}
+          <FleetHealth servers={servers} upgrades={upgrades.rows} />
           <nav aria-label="Servers" className={SERVER_LIST}>
             {servers.map((server) => (
               <ServerRow
@@ -75,7 +94,7 @@ function RouteComponent() {
                 organizationSlug={organizationSlug}
                 server={server}
                 upgrade={upgrade?.rows.get(server.machine.id) ?? null}
-                stale={state === "stale"}
+                stale={page.stale}
               />
             ))}
           </nav>
