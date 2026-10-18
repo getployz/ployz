@@ -11,7 +11,7 @@ import { ENROLLMENT_STAGES } from "#/modules/machines/waiting/server-enrollment"
 import { SELECTION_MAX } from "#/modules/machines/waiting/probe";
 import type { WaitingServerView } from "#/modules/machines/waiting/waiting-servers.server";
 import { EnrollSheet } from "./enroll-sheet";
-import { EnrollingList, STAGES } from "./enrolling-list";
+import { EnrollingList, enrollingRows, STAGES } from "./enrolling-list";
 import { useCancelEnrollment, useEnrollmentStatus, useRejectWaiting, useSettledProbe, useWaitingServerDetail, useWaitingServers } from "./use-waiting";
 import { WaitingDetailSheet } from "./waiting-detail-sheet";
 import {
@@ -48,7 +48,7 @@ export function IntakeTray({ organizationSlug, token, firstRun }: { organization
   const cancel = useCancelEnrollment(organizationSlug);
   const servers = waiting.data ?? [];
   const attempts = enrollments.data?.attempts ?? [];
-  const enrolling = attempts.some((row) => row.endedAt === null || row.state === "joined");
+  const enrolling = enrollingRows(attempts).length > 0;
   return (
     <Card>
       <CardContent className="flex flex-col gap-4">

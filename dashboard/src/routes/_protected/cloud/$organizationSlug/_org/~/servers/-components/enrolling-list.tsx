@@ -20,8 +20,13 @@ export function enrollmentStage(row: ServerEnrollmentView) {
   return stage === undefined ? "Starting" : STAGES[stage];
 }
 
+/** Open attempts, and joined ones, which stay for an hour so the arrival is seen. Failed ones show back in Waiting. */
+export function enrollingRows(attempts: readonly ServerEnrollmentView[]) {
+  return attempts.filter((row) => row.endedAt === null || row.state === "joined");
+}
+
 export const EnrollingList = memo(function EnrollingList({ attempts, onCancel }: { attempts: readonly ServerEnrollmentView[]; onCancel: (id: string) => void }) {
-  const rows = attempts.filter((row) => row.endedAt === null || row.state === "joined");
+  const rows = enrollingRows(attempts);
   const scroller = useRef<HTMLDivElement>(null);
   const height = Math.min(rows.length, 10) * 52;
   const virtual = useVirtualizer({

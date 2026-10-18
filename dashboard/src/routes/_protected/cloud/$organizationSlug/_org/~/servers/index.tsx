@@ -8,6 +8,7 @@ import { NEWEST_RELEASE } from "#/modules/server-upgrade/server-upgrade";
 import { channelReleaseQueryOptions, latestServerUpgradesQueryOptions } from "#/modules/server-upgrade/server-upgrade.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { AddServersDialog } from "./-components/add-servers-dialog";
+import { enrollingRows } from "./-components/enrolling-list";
 import { FirstRunCard } from "./-components/first-run-card";
 import { FleetHealth } from "./-components/fleet-health";
 import { SERVER_LIST, ServerRow } from "./-components/server-row";
@@ -44,7 +45,7 @@ function RouteComponent() {
     list: state,
     servers: servers.length,
     waiting: waiting.data?.length ?? 0,
-    enrolling: enrollments.data?.attempts.length ?? 0,
+    enrolling: enrollingRows(enrollments.data?.attempts ?? []).length,
   });
   const upgrade = page.kind === "fleet" && !page.stale ? upgrades : null;
   // First run has its own install card; the dialog returns once a server has shown up.
