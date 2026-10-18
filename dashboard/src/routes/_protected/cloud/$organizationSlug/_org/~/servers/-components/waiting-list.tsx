@@ -176,14 +176,14 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
       )}
       {bulk ? <div className="flex flex-wrap items-center gap-2.5">
         <div className="flex flex-wrap items-center gap-1">
-          <div role="group" aria-label="Readiness" className="flex items-center gap-1">
+          <div role="group" aria-label="Readiness" className="flex w-full items-center gap-1 overflow-x-auto sm:w-auto">
             {READINESS_FILTERS.map((option) => (
               <button
                 key={option.value}
                 type="button"
                 aria-pressed={filter === option.value}
                 onClick={() => setFilter(option.value)}
-                className="h-7 rounded-md border border-transparent px-2.5 text-[13px] text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
+                className="h-7 shrink-0 whitespace-nowrap rounded-md border border-transparent px-2.5 text-[13px] text-muted-foreground aria-pressed:border-border aria-pressed:bg-card aria-pressed:text-foreground"
               >
                 {option.label} <span className="text-muted-foreground tabular-nums">{counts.get(option.value) ?? 0}</span>
               </button>
@@ -250,8 +250,8 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
         </div>
       </div>
       {chosen.length > 0 ? (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-xl bg-primary py-2 pr-2 pl-4 text-sm text-primary-foreground shadow-lg">
-          <span className="tabular-nums">{chosen.length} selected</span>
+        <div className="fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 min-wf-nav:bottom-6 items-center gap-3 rounded-xl bg-primary py-2 pr-2 pl-4 text-sm text-primary-foreground shadow-lg">
+          <span className="whitespace-nowrap tabular-nums">{chosen.length} selected</span>
           {full ? <span className="text-primary-foreground/70">{SELECTION_MAX} max</span> : null}
           <Button size="sm" variant="ghost" className="text-primary-foreground" onClick={() => setPicked(new Set())}>Clear</Button>
           <Button size="sm" variant="destructive" onClick={() => rejectIds(chosen)}>Reject</Button>
