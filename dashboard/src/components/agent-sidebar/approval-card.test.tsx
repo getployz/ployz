@@ -168,6 +168,25 @@ it("says who asked, and shows the change their ask saves apart from what else it
   expect(card.getByText(/web .*1 → 2/)).toBeTruthy();
 });
 
+it("lists a Sync's changes without claiming it saves the target's unsaved edit", () => {
+  const diff = asTestDouble<DiffView>()({
+    ...approval.review.diff,
+    changes: [
+      { type: "service", id: "s1", name: "web", lifecycle: "update", comparison: "head", data: null, settings: [
+        { path: "web.replicas", kind: "update", before: 1, after: 2, canRestore: true, row: null },
+      ] },
+    ],
+    draft_changes: [
+      { type: "service", id: "s3", name: "redis", lifecycle: "create", comparison: "saved", data: null, settings: [] },
+    ],
+  });
+  show(asTestDouble<ApprovalView>()({ ...approval, command: "sync", protected: true, yours: false, asker: "Linus Torvalds", review: { effects: [], diff } }));
+  const card = within(screen.getByLabelText("Sync shop/production needs approval"));
+  expect(card.queryByText("Saves")).toBeNull();
+  expect(card.queryByText(/redis/)).toBeNull();
+  expect(card.getByText(/web .*1 → 2/)).toBeTruthy();
+});
+
 it("leaves the asker's own card unsigned, waiting on someone who can protect it", () => {
   show(asTestDouble<ApprovalView>()({ ...approval, protected: true, yours: true, asker: "Linus Torvalds" }));
   const card = within(screen.getByLabelText("Deploy shop/production needs approval"));

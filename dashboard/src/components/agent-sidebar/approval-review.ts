@@ -23,13 +23,14 @@ function changeLines(diff: DiffView, changes: DiffView["changes"], effects: Appr
 }
 
 /**
- * What a Save or Deploy changes besides what it destroys: `asked` is the asker's own unsaved edit, which this ask saves,
- * and `others` everything else it deploys.
+ * What an ask changes besides what it destroys: `asked` is the asker's own unsaved edit, which only a Save or Deploy
+ * saves, and `others` everything else it deploys. A Sync or Take leaves the target's unsaved edit alone.
  */
-export function reviewedChanges(review: ApprovalReview) {
+export function reviewedChanges(command: string, review: ApprovalReview) {
   if (!("diff" in review)) return { asked: [], others: [] };
   const { effects, diff } = review;
-  const asked = changeLines(diff, diff.draft_changes ?? [], effects);
+  const saves = command === "publish" || command === "admit";
+  const asked = saves ? changeLines(diff, diff.draft_changes ?? [], effects) : [];
   const keys = new Set(asked.map((line) => line.key));
   return { asked, others: changeLines(diff, diff.changes, effects).filter((line) => !keys.has(line.key)) };
 }

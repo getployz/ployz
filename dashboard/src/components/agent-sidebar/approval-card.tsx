@@ -47,7 +47,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
   const { effects } = approval.review;
   const subject = approvalSubject(approval.command, approval.review);
   const place = subject.project === null ? subject.name : `${subject.project}/${subject.name}`;
-  const { asked, others } = reviewedChanges(approval.review);
+  const { asked, others } = reviewedChanges(approval.command, approval.review);
   const waits = approval.protected && approval.yours;
 
   const decide = async (decision: ApprovalDecision) => {
