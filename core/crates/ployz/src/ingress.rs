@@ -455,6 +455,23 @@ mod tests {
         assert!(cause.contains("exited with code 1"), "{cause}");
     }
 
+    /// A create that lost the Serving Pointer race had its Ingress Proxy removed again,
+    /// so that Server is still without ingress and the repair must say so.
+    #[test]
+    fn a_superseded_create_is_a_failed_repair() {
+        let superseded = DeployOutcome::Superseded {
+            completed: Vec::new(),
+            service: QualifiedService::system_ingress(),
+            unexecuted: Vec::new(),
+            services: Vec::new(),
+        };
+        assert!(
+            matches!(failure(&superseded), Some(IngressFailure::Failed { .. })),
+            "{:?}",
+            failure(&superseded)
+        );
+    }
+
     #[tokio::test]
     async fn builds_the_caddy_service_spec() {
         let constraints: BTreeSet<_> =

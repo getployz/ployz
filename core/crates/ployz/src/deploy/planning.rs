@@ -16,6 +16,8 @@ use super::{
 };
 
 pub(super) mod capacity;
+#[cfg(test)]
+mod ingress_repairs;
 mod observation;
 mod placement;
 mod storage;
