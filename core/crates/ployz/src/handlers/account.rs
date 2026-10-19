@@ -458,16 +458,19 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(matches)?);
     let (removal, acting) = runtime()?.block_on(async {
         let credential = cloud_account::from_env(&store).await?;
-        let (removing, others): (Vec<_>, Vec<_>) = cloud_account::organizations(&credential)
-            .await?
-            .into_iter()
-            .partition(|organization| organization.current);
-        let Some(removing) = removing.into_iter().next() else {
-            return Err(LoginError::TokenRefused.into());
+        let list = cloud_account::organizations(&credential).await?;
+        let Some(removing) = list.iter().find(|organization| organization.current) else {
+            return Err(match &credential {
+                Credential::Device(signed_in) => {
+                    LoginError::NotMember(signed_in.organization.slug.clone())
+                }
+                Credential::Token { .. } => LoginError::TokenRefused,
+            }
+            .into());
         };
         // Cloud removes by ID, which a slug rename never moves; the slug only names it here.
         if removing.slug != *slug {
-            return Err(if others.iter().any(|other| other.slug == *slug) {
+            return Err(if list.iter().any(|other| other.slug == *slug) {
                 Error::coded(
                     RpcErrorCode::InvalidArgument,
                     format!(
@@ -482,8 +485,8 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         }
         // A device acts in the Organization it removes; afterwards Cloud refuses it
         // everything, `org ls` included, so it moves to another of the user's first.
-        let others = match &credential {
-            Credential::Device(_) => others,
+        let others: Vec<_> = match &credential {
+            Credential::Device(_) => list.iter().filter(|other| !other.current).collect(),
             Credential::Token { .. } => Vec::new(),
         };
         let removal = cloud_account::remove_organization(&credential, &removing.id).await?;

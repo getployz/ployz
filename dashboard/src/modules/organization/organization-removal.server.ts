@@ -32,7 +32,7 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* <E 
     return refused({
       code: "invalid_argument",
       message: `This credential acts in Organization ${slug}, not the one named. No changes made.`,
-      details: null,
+      details: { next: "ployz org ls" },
     });
   }
   const lacking = lacks({ ...caller, support: null }, "org:delete");
