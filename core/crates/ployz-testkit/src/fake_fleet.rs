@@ -25,7 +25,7 @@ use ployz_core::{
     CapabilityAdvertisement, ContainerDetails, ContainerId, ContainerKind, ContainerList,
     ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
     ContainerRefusal, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant,
-    ContractDescription, CopyRole, DockerVolume, DockerVolumeId, DockerVolumeName,
+    ContractDescription, CopyRole, CopyRotation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, EnsuredContainer, HealthObservation, HistoryContainer,
     HistoryContainerKind, HistoryRow, HistoryStream, LiveLogTarget, LocalMachinePhase, LogBody,
     LogDirection, LogEntry, LogHistoryRequest, LogMetadata, LogOrigin, MANAGED_LABEL, Machine,
@@ -33,15 +33,17 @@ use ployz_core::{
     MachineRelease, MachineRpc, MachineRpcServer, MachineRuntime, MachineUpgradeAttempt,
     MachineUpgradeOutcome, MachineVersion, MembershipObservation, NAMESPACE_LABEL, Namespace,
     OpaquePayload, PROTOCOL_MAJOR, ProvisionedCopy, ProvisionedVolumeMaximumBytes,
-    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RoutingRequest, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RunTarget, RuntimeWatchFrame, ServiceId, ServiceName, SlotId,
-    SlotRole, StorageBacking, StorageCapacity, VolumeCopy, VolumeCopyView, VolumeInventory,
-    WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RotationEdge,
+    RoutesRead, RoutingRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RunTarget,
+    RuntimeWatchFrame, ServiceId, ServiceName, SlotId, StorageBacking, StorageCapacity, VolumeCopy,
+    VolumeCopyView, VolumeInventory, WireGuardPublicKey, WriterEpoch, encode_runtime_watch_frame, SlotRole,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::rotation;
 use tokio::{net::UnixListener, sync::mpsc, task::JoinHandle};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming, codec::CompressionEncoding};
@@ -88,6 +90,8 @@ pub struct FleetContainer {
     pub deployment: Option<u64>,
     #[serde(default)]
     pub logs: Vec<String>,
+    #[serde(default)]
+    pub rotation: CopyRotation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -797,18 +801,29 @@ impl Fleet {
                 )
             }
             RpcRequestBody::EnsureContainer(request) => {
-                let (container_id, state) = match request.want {
-                    ContainerWant::Running {
-                        container: RunTarget::Existing(ContainerLocator::Id(id)),
-                        ..
-                    } => (id, RunState::Running),
-                    ContainerWant::Stopped {
-                        container: ContainerLocator::Id(id),
-                        ..
-                    } => (id, RunState::Exited),
-                    _ => return Err(unimplemented("ensure_container for this want")),
+                let (ContainerWant::Running {
+                    container: RunTarget::Existing(ContainerLocator::Id(container_id)),
+                    ..
+                }
+                | ContainerWant::Stopped {
+                    container: ContainerLocator::Id(container_id),
+                    ..
+                }
+                | ContainerWant::Out {
+                    container: ContainerLocator::Id(container_id),
+                    ..
+                }
+                | ContainerWant::Held {
+                    container: ContainerLocator::Id(container_id),
+                    ..
+                }) = request.want
+                else {
+                    return Err(unimplemented("ensure_container for this want"));
                 };
-                unary(self.set_state(target, container_id, state)?)
+                unary(self.ensure(target, container_id, &request.want)?)
+            }
+            RpcRequestBody::ReadRoutes(request) if request.routes_only => {
+                unary(self.routes(&request.service).into())
             }
             RpcRequestBody::InspectStorage(_) => unary(self.by_id(target)?.storage().into()),
             RpcRequestBody::ListVolumes(_) => unary(
@@ -922,11 +937,13 @@ impl Fleet {
         }
     }
 
-    fn set_state(
+    /// Apply `want` to one Container: its rotation moves by the owner's edge table,
+    /// and a start or a stop changes whether it runs.
+    fn ensure(
         &mut self,
         target: MachineId,
         container_id: ContainerId,
-        state: RunState,
+        want: &ContainerWant,
     ) -> Result<RpcResponse, Status> {
         let machine = self.by_id_mut(target)?;
         let Some(container) = machine
@@ -945,16 +962,56 @@ impl Fleet {
             }
             .into());
         };
-        container.spec.state = state;
+        let decided = rotation::decide(&container.spec.rotation, want);
+        if let Ok(edge) = &decided {
+            if let RotationEdge::Write(to) = edge {
+                container.spec.rotation = to.clone();
+            }
+            match want {
+                ContainerWant::Running { .. } => container.spec.state = RunState::Running,
+                ContainerWant::Stopped { .. } => container.spec.state = RunState::Exited,
+                ContainerWant::Gone { .. }
+                | ContainerWant::Out { .. }
+                | ContainerWant::Held { .. } => {}
+            }
+        }
         let machine = self.by_id(target)?;
         let observed = machine
             .container(&container_id)
             .ok_or_else(|| Status::internal("the changed Container vanished"))?;
-        Ok(EnsuredContainer::Ensured {
-            now: ContainerNow::Present(machine.observe(observed)?),
-            health: None,
+        let now = ContainerNow::Present(machine.observe(observed)?);
+        Ok(match decided {
+            Ok(_) => EnsuredContainer::Ensured { now, health: None },
+            Err(refusal) => EnsuredContainer::Refused { now, refusal },
         }
         .into())
+    }
+
+    /// Every online Machine's proxy routes the In copies of `service` the fleet holds;
+    /// an offline Machine reads Down.
+    fn routes(&self, service: &QualifiedService) -> RoutesRead {
+        let routed: BTreeSet<ContainerId> = self
+            .machines
+            .iter()
+            .flat_map(|machine| &machine.containers)
+            .filter(|container| {
+                container.spec.rotation == CopyRotation::In
+                    && container.spec.namespace == service.namespace
+                    && container.spec.service == service.name
+            })
+            .map(|container| container.id)
+            .collect();
+        let (online, offline): (Vec<_>, Vec<_>) =
+            self.machines.iter().partition(|machine| machine.online);
+        RoutesRead {
+            routes: online
+                .iter()
+                .map(|machine| (machine.id, Some(routed.clone())))
+                .collect(),
+            complete: true,
+            down: offline.iter().map(|machine| machine.id).collect(),
+            ..RoutesRead::default()
+        }
     }
 
     fn observations(&self) -> Vec<MachineObservation> {
@@ -1075,7 +1132,7 @@ impl MachineState {
             labels.insert(DEPLOYMENT_LABEL.to_owned(), deployment.to_string());
         }
         ContainerObservation::try_from(ContainerObservationParts {
-            rotation: None,
+            rotation: Some(spec.rotation.clone()),
             r#gen: None,
             container_id: container.id,
             display_name: spec.name.clone(),
