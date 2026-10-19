@@ -226,7 +226,8 @@ pub(super) fn value_warnings(view: &DeploymentView) -> Vec<String> {
                     variable,
                 } => format!("{variable} may break {config}/{file}."),
                 DeploymentWarning::IngressNotServing { .. }
-                | DeploymentWarning::IngressUnchecked { .. } => return None,
+                | DeploymentWarning::IngressUnchecked { .. }
+                | DeploymentWarning::Deploy { .. } => return None,
             })
         })
         .collect()
