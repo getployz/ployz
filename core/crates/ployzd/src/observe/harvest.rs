@@ -31,8 +31,8 @@ use super::{
     docker_file_age,
     frame::{self, DamageScan},
     layout::{
-        ContainerKind, ContainerMeta, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason, LINKING_FILE,
-        LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
+        ContainerKind, ContainerMeta, EXITED_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
+        LINKING_FILE, LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
     },
     metrics::{
         sampler,
@@ -109,6 +109,8 @@ pub(super) struct Harvester {
     /// The newest Docker event seen. A reconnect resumes from it, so events
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
+    /// The newest time of each container's events, by action.
+    delivered: HashMap<(ContainerId, String), i64>,
     /// What the events said of each container's current run.
     runs: HashMap<ContainerId, Run>,
     /// Exits that wait on the inspect that follows them: Docker can send
@@ -275,6 +277,7 @@ impl Harvester {
             inspected,
             data_dir,
             last_event_nanos: None,
+            delivered: HashMap::new(),
             runs: HashMap::new(),
             exits: HashMap::new(),
             stop_signals: HashMap::new(),
@@ -328,6 +331,7 @@ impl Harvester {
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
         self.runs.retain(|id, _| present.contains(id));
+        self.delivered.retain(|(id, _), _| present.contains(id));
         self.stop_signals.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
@@ -378,7 +382,7 @@ impl Harvester {
         else {
             return;
         };
-        if self.first_delivery(&message) {
+        if self.first_delivery(id, &message) {
             self.mark(id, &message);
         }
         let held = matches!(
@@ -400,15 +404,21 @@ impl Harvester {
     }
 
     /// Records the event's time and says whether it is new: a stream resumed
-    /// from the newest event repeats that event.
-    fn first_delivery(&mut self, message: &EventMessage) -> bool {
+    /// from the newest event repeats that event. Containers that die together
+    /// send events at the same time.
+    fn first_delivery(&mut self, id: ContainerId, message: &EventMessage) -> bool {
         let Some(at) = message.time_nano else {
             return true;
         };
-        if self.last_event_nanos.is_some_and(|last| at <= last) {
+        let last = self
+            .delivered
+            .entry((id, message.action.clone().unwrap_or_default()))
+            .or_insert(i64::MIN);
+        if at <= *last {
             return false;
         }
-        self.last_event_nanos = Some(at);
+        *last = at;
+        self.last_event_nanos = self.last_event_nanos.max(Some(at));
         true
     }
 
@@ -509,15 +519,33 @@ impl Harvester {
         }
     }
 
+    /// Records an exit once: a forgotten container's `die` can come again
+    /// in a resumed stream, and its exit settled again from less evidence.
     fn record(&mut self, marker: MetricMarker) {
         let id = marker.container_id;
         let crashed = marker.is_crash();
+        let store_dir = self.store.container(&id);
+        let died = matches!(marker.kind, MarkerKind::Exit { .. }).then_some(marker.ts);
+        if let Some(died) = died {
+            match read_exited(&store_dir) {
+                Ok(Some(exited)) if died <= exited => return,
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(container = %id, %error, "cannot read which exit was recorded last");
+                }
+            }
+        }
         if let Err(error) = segment::append(&self.store, &[Row::Marker(marker.clone())]) {
             tracing::warn!(container = %id, %error, "cannot append a metric marker");
             return;
         }
         if crashed && let Err(error) = self.crashes.push(marker) {
             tracing::warn!(container = %id, %error, "cannot queue a crash for Cloud");
+        }
+        if let Some(died) = died
+            && let Err(error) = write_exited(&store_dir, died)
+        {
+            tracing::warn!(container = %id, %error, "cannot record which exit was recorded last");
         }
     }
 
@@ -1266,6 +1294,25 @@ fn read_scanned(store_dir: &Path) -> io::Result<Option<u64>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// When the newest exit recorded for the container died. A container's runs
+/// die one after another, so no exit it has not recorded died before it.
+fn read_exited(store_dir: &Path) -> io::Result<Option<i64>> {
+    match fs::read_to_string(store_dir.join(EXITED_FILE)) {
+        Ok(exited) => Ok(exited.trim().parse().ok()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn write_exited(store_dir: &Path, died: i64) -> io::Result<()> {
+    create_private_dir(store_dir)?;
+    crate::filesystem::atomic_write(
+        &store_dir.join(EXITED_FILE),
+        died.to_string().as_bytes(),
+        0o600,
+    )
 }
 
 fn gap_recorded(store_dir: &Path, gap: &Gap) -> io::Result<bool> {
@@ -3387,6 +3434,104 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn containers_that_die_together_each_queue_a_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let other = "cd".repeat(32);
+        let mut die = event("die", T0 + 1, &[service, ("exitCode", "1")]);
+        running.harvester.on_docker_event(die.clone());
+        die.actor.as_mut().unwrap().id = Some(other.clone());
+        running.harvester.on_docker_event(die.clone());
+        // A stream resumed from the newest event delivers both again.
+        running.harvester.on_docker_event(die);
+        running
+            .harvester
+            .on_docker_event(event("die", T0 + 1, &[service, ("exitCode", "1")]));
+        running.settle_exits(|| Inspected::Gone);
+        let other = ContainerId::parse(&other).unwrap();
+        while running.harvester.exits.contains_key(&other) {
+            running.harvester.on_inspected(other, Inspected::Gone);
+        }
+        assert_eq!(crashes(&host).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_crash_delivered_again_after_a_rescan_forgets_its_container_is_recorded_once() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        host.container(&[]);
+        let die = event(
+            "die",
+            T0 + 1,
+            &[("ployz.service.id", SERVICE_ID), ("exitCode", "1")],
+        );
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Gone);
+        host.remove_from_docker();
+        running.harvester.rescan();
+        assert!(running.harvester.delivered.is_empty());
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| Inspected::Gone);
+        assert_eq!(crashes(&host).len(), 1);
+        assert_eq!(host.markers().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_stops_exit_delivered_again_after_a_rescan_forgets_its_container_queues_no_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        host.container(&[]);
+        let service = ("ployz.service.id", SERVICE_ID);
+        let die = event("die", T0 + 2, &[service, ("exitCode", "1")]);
+        running
+            .harvester
+            .on_docker_event(event("kill", T0 + 1, &[service, ("signal", "15")]));
+        running.harvester.on_docker_event(die.clone());
+        running
+            .harvester
+            .on_docker_event(event("stop", T0 + 3, &[service]));
+        running.settle_exits(|| Inspected::Gone);
+        host.remove_from_docker();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| Inspected::Gone);
+        assert_eq!(crashes(&host), []);
+    }
+
+    #[tokio::test]
+    async fn a_restarted_harvester_records_a_crash_it_recorded_before_once() {
+        let host = host().with_machine();
+        let die = event(
+            "die",
+            T0 + 1,
+            &[("ployz.service.id", SERVICE_ID), ("exitCode", "1")],
+        );
+        for _ in 0..2 {
+            let mut running = host.harvester();
+            running.harvester.on_docker_event(die.clone());
+            running.settle_exits(|| Inspected::Gone);
+        }
+        assert_eq!(crashes(&host).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn each_crash_of_a_crash_looping_container_is_recorded() {
+        let host = host().with_machine();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let die = |at| event("die", at, &[service, ("exitCode", "1")]);
+        for (die_at, start_at) in [(T0 + 1, T0 + 2), (T0 + 3, T0 + 4)] {
+            let mut running = host.harvester();
+            running.harvester.on_docker_event(die(die_at));
+            running
+                .harvester
+                .on_docker_event(event("start", start_at, &[service]));
+            running.settle_exits(|| Inspected::Unanswered);
+        }
+        assert_eq!(crashes(&host).len(), 2);
     }
 
     #[tokio::test]

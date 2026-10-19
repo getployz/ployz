@@ -10,6 +10,7 @@
 //!         scanned                       seq of the newest file the damage
 //!                                       scan has read past
 //!         first-set.json                FirstSeen, until max-file judges it
+//!         exited                        when the newest exit recorded died
 //!         <seq>-<ino>.log               a hardlink to one Docker log file, raw
 //!     metrics/
 //!       raw/
@@ -61,6 +62,8 @@ pub const SCANNED_FILE: &str = "scanned";
 pub const SCANNED_TEMP_FILE: &str = "scanned.tmp";
 pub const FIRST_SET_FILE: &str = "first-set.json";
 pub const FIRST_SET_TEMP_FILE: &str = "first-set.tmp";
+pub const EXITED_FILE: &str = "exited";
+pub const EXITED_TEMP_FILE: &str = "exited.tmp";
 pub const METRICS_DIR: &str = "metrics";
 pub const RAW_DIR: &str = "raw";
 pub const ROLLUP_DIR: &str = "rollup";
