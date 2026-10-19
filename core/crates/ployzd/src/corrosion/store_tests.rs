@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     net::TcpListener,
     sync::{Arc, Mutex},
     time::SystemTime,
@@ -529,7 +529,7 @@ async fn machine_reads_reject_document_identity_different_from_row_key() {
 }
 
 #[tokio::test]
-async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
+async fn serving_pointers_round_trip_and_skip_malformed_rows() {
     let db = corrosion_db();
     let pointer = |deploy: &str, container: &str| ServingPointer {
         deploy: DeploymentLogId::parse(deploy).unwrap(),
@@ -566,24 +566,6 @@ async fn serving_pointers_round_trip_and_set_aside_malformed_rows() {
     assert_eq!(pointers.get(&web), Some(&pointer("d2", "b")));
     let broken = QualifiedService::parse("app/broken").unwrap();
     assert_eq!(pointers.get(&broken), None);
-    let broken_row = [(
-        "serving/app/broken",
-        "EOF while parsing an object at line 1 column 1",
-    )];
-    let mut warned = BTreeSet::new();
-    assert_eq!(pointers.newly_malformed(&mut warned), broken_row);
-    let next_pass = store.serving_pointers().await.unwrap();
-    assert_eq!(next_pass.newly_malformed(&mut warned), []);
-    assert_eq!(next_pass.newly_malformed(&mut warned), []);
-    assert_eq!(
-        super::ServingPointers::default().newly_malformed(&mut warned),
-        []
-    );
-    assert_eq!(
-        next_pass.newly_malformed(&mut warned),
-        broken_row,
-        "a repaired then re-broken row warns again"
-    );
     task.abort();
 }
 

@@ -2,12 +2,12 @@
 
 use ployz_core::{
     CertificateHost, ContainerAddress, ContainerId, ContainerObservation, DeploymentLogId,
-    HttpProtocol, IngressHost, Machine, MachineId, PortPublication, QualifiedService,
-    ServiceContainer, hostname_owners, service_containers, serving_containers,
+    HttpProtocol, IngressHost, Machine, MachineId, PortPublication, ProxyRoutes, QualifiedService,
+    ServiceContainer, hostname_owners, proxy_routes, service_containers,
 };
 use serde::Serialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs, io,
     num::{NonZeroU16, NonZeroUsize},
     os::unix::fs::PermissionsExt,
@@ -18,10 +18,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     corrosion::{
-        CertificateChallenge, CertificateMaterial, CertificateRow, Error as CorrosionError,
-        IngressRouteAck, IngressRouteChange, ReplicatedStore, ServingPointers, Subscription,
-        published_cover,
+        AdminClient, CertificateChallenge, CertificateMaterial, CertificateRow,
+        Error as CorrosionError, IngressRouteAck, IngressRouteChange, MachineView, ReplicatedStore,
+        Subscription, published_cover,
     },
+    dns::{DownMachines, load_down_machines},
     docker::LABEL_DEPLOYMENT,
     filesystem::{atomic_write, set_ployz_group},
 };
@@ -42,17 +43,30 @@ pub(crate) mod caddy;
 
 use caddy::CaddyAdmin;
 
+/// Deploy column of every route ack. Acks name the Containers routed, not a deploy.
+fn rotation_ack_deploy() -> DeploymentLogId {
+    DeploymentLogId::parse("rotation").expect("rotation is a valid deploy id")
+}
+
 /// Run the Caddy watcher.
 pub(crate) async fn run(
     machine: Machine,
     replicated: ReplicatedStore,
+    machines: MachineView,
+    admin: AdminClient,
     data_dir: PathBuf,
     runtime_dir: PathBuf,
     shutdown: CancellationToken,
 ) -> io::Result<()> {
+    let local = machine.id;
     caddy::run(
         machine,
         replicated,
+        move || {
+            let machines = machines.clone();
+            let admin = admin.clone();
+            async move { load_down_machines(&machines, &admin, &local).await }
+        },
         caddy::config_path(&data_dir),
         runtime_dir.join("caddy/admin.sock"),
         shutdown,
@@ -184,18 +198,18 @@ impl IngressSite {
 }
 
 impl IngressProjection {
-    /// Derive the complete ingress-relevant value from replicated observations.
+    /// Derive the complete ingress-relevant value from observed Service
+    /// Containers and the routes this proxy chose for them.
     #[must_use]
     pub(crate) fn derive(
         machine: &Machine,
-        observations: &[ContainerObservation],
+        containers: &[ServiceContainer],
         certificates: &BTreeMap<CertificateHost, CertificateRow>,
-        pointers: &ServingPointers,
+        routes: &ProxyRoutes,
     ) -> Self {
-        let containers = service_containers(observations.iter().cloned());
         let owners = hostname_owners(containers.iter().map(ServiceContainer::as_observation));
         let mut sites = BTreeMap::<IngressHost, SiteBuilder>::new();
-        for container in &containers {
+        for container in containers {
             let observation = container.as_observation();
             let owner = observation.identity();
             for port in &observation.resolved_spec.ports {
@@ -216,9 +230,9 @@ impl IngressProjection {
             }
         }
 
-        let mut serving = serving_containers(&containers, |service| pointers.get(service));
+        let mut serving: Vec<_> = routes.values().flatten().collect();
         serving.sort_by_key(|serving| container_order(&machine.id, serving.as_container()));
-        for serving in &serving {
+        for serving in serving {
             let observation = serving.as_observation();
             let address = serving.address();
             let owner = observation.identity();
@@ -265,7 +279,7 @@ impl IngressProjection {
                 site.certificate.get_or_insert_default().material = Some(material.clone());
             }
         }
-        let traces = PublicationTrace::by_service(&containers);
+        let traces = PublicationTrace::by_service(containers);
         let sites = sites
             .into_iter()
             .map(|(hostname, site)| {
@@ -343,12 +357,9 @@ fn creation_key(container: &ServiceContainer) -> (i64, &str) {
     )
 }
 
-fn newest_local_ingress(
-    machine: &Machine,
-    observations: &[ContainerObservation],
-) -> Option<ContainerId> {
-    service_containers(observations.iter().cloned())
-        .into_iter()
+fn newest_local_ingress(machine: &Machine, containers: &[ServiceContainer]) -> Option<ContainerId> {
+    containers
+        .iter()
         .filter(|container| {
             let observation = container.as_observation();
             observation.machine_id == machine.id && is_system_ingress(observation)
@@ -363,9 +374,10 @@ fn newest_local_ingress(
 ///
 /// Returns when connecting to Caddy administration fails. Replicated-store
 /// subscription failures are retried until shutdown.
-pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture>(
+pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture, LoadDown, DownFuture>(
     machine: Machine,
     replicated: ReplicatedStore,
+    mut load_down: LoadDown,
     config_file: PathBuf,
     shutdown: CancellationToken,
     mut connect: Connect,
@@ -373,23 +385,26 @@ pub(crate) async fn watch_caddy<A: CaddyAdmin, Connect, ConnectFuture>(
 where
     Connect: FnMut() -> ConnectFuture,
     ConnectFuture: Future<Output = Result<Option<A>, caddy::Error>>,
+    LoadDown: FnMut() -> DownFuture,
+    DownFuture: Future<Output = Result<HashSet<MachineId>, CorrosionError>>,
 {
     let mut last_input = None;
     let mut acked = BTreeMap::new();
-    let mut warned_pointers = BTreeSet::new();
+    // What Caddy holds now, which rule f keeps while every copy is out of reach.
+    let mut routed = ProxyRoutes::new();
+    let mut down = DownMachines::new(machine.id);
     'watch: loop {
         let subscriptions = async {
             tokio::try_join!(
                 replicated.subscribe_container_changes(),
                 replicated.subscribe_certificate_changes(),
-                replicated.subscribe_serving_pointer_changes(),
             )
         };
         let changes = tokio::select! {
             changes = subscriptions => changes,
             () = shutdown.cancelled() => return Ok(()),
         };
-        let (mut container_changes, mut certificate_changes, mut pointer_changes) = match changes {
+        let (mut container_changes, mut certificate_changes) = match changes {
             Ok(changes) => changes,
             Err(error) => {
                 if wait_to_retry(&error, &shutdown).await {
@@ -399,34 +414,32 @@ where
             }
         };
         loop {
+            down.update(load_down().await);
             let input = match (
                 replicated.containers().await,
                 replicated.certificate_state().await,
-                replicated.serving_pointers().await,
             ) {
-                (Ok(containers), Ok(certificates), Ok(pointers)) => {
-                    pointers.warn_newly_malformed(&mut warned_pointers);
-                    let acks = route_acks(&containers.observations, &pointers);
+                (Ok(containers), Ok(certificates)) => {
+                    let containers = service_containers(containers.observations);
+                    let routes =
+                        proxy_routes(&containers, |machine| down.contains(machine), &routed);
                     Ok((
                         (
                             IngressProjection::derive(
                                 &machine,
-                                &containers.observations,
+                                &containers,
                                 &certificates,
-                                &pointers,
+                                &routes,
                             ),
-                            newest_local_ingress(&machine, &containers.observations),
-                            pointers,
+                            newest_local_ingress(&machine, &containers),
                         ),
-                        acks,
+                        routes,
                     ))
                 }
-                (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
-                    Err(io::Error::other(error))
-                }
+                (Err(error), _) | (_, Err(error)) => Err(io::Error::other(error)),
             };
             match input {
-                Ok((input, acks)) => {
+                Ok((input, routes)) => {
                     if last_input.as_ref() != Some(&input) {
                         let result = async {
                             let admin = connect().await.map_err(io::Error::other)?;
@@ -447,7 +460,9 @@ where
                         }
                         last_input = Some(input);
                     }
-                    publish_route_acks(&replicated, &machine.id, &mut acked, acks).await;
+                    publish_route_acks(&replicated, &machine.id, &mut acked, route_acks(&routes))
+                        .await;
+                    routed = routes;
                 }
                 Err(error) => {
                     last_input = None;
@@ -460,7 +475,6 @@ where
             match wait_for_debounced_change(
                 &mut container_changes,
                 &mut certificate_changes,
-                &mut pointer_changes,
                 &shutdown,
             )
             .await
@@ -475,28 +489,21 @@ where
     }
 }
 
-fn route_acks(
-    observations: &[ContainerObservation],
-    pointers: &ServingPointers,
-) -> BTreeMap<QualifiedService, IngressRouteAck> {
-    let mut acks: BTreeMap<_, _> = pointers
+/// One ack per routed Service, listing exactly the Containers Caddy applied.
+fn route_acks(routes: &ProxyRoutes) -> BTreeMap<QualifiedService, IngressRouteAck> {
+    routes
         .iter()
-        .map(|(service, pointer)| {
+        .map(|(service, route)| {
             let ack = IngressRouteAck {
-                deploy: pointer.deploy.clone(),
-                containers: BTreeSet::new(),
+                deploy: rotation_ack_deploy(),
+                containers: route
+                    .iter()
+                    .map(|serving| serving.as_observation().container_id)
+                    .collect(),
             };
             (service.clone(), ack)
         })
-        .collect();
-    let containers = service_containers(observations.iter().cloned());
-    for serving in serving_containers(&containers, |service| pointers.get(service)) {
-        let observation = serving.as_observation();
-        if let Some(ack) = acks.get_mut(&observation.identity()) {
-            ack.containers.insert(observation.container_id);
-        }
-    }
-    acks
+        .collect()
 }
 
 async fn publish_route_acks(
@@ -569,17 +576,14 @@ enum DebouncedChange {
 async fn wait_for_debounced_change(
     container_changes: &mut Subscription,
     certificate_changes: &mut Subscription,
-    pointer_changes: &mut Subscription,
     shutdown: &CancellationToken,
 ) -> Result<DebouncedChange, CorrosionError> {
     tokio::select! {
         changed = container_changes.changed() => changed?,
         changed = certificate_changes.changed() => changed?,
-        changed = pointer_changes.changed() => changed?,
         () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
             return Ok(if container_changes.snapshot_in_progress()
                 || certificate_changes.snapshot_in_progress()
-                || pointer_changes.snapshot_in_progress()
             {
                 DebouncedChange::Resubscribe
             } else {
@@ -596,11 +600,9 @@ async fn wait_for_debounced_change(
             () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
             changed = container_changes.changed() => changed?,
             changed = certificate_changes.changed() => changed?,
-            changed = pointer_changes.changed() => changed?,
             () = &mut quiet => {
                 if !container_changes.snapshot_in_progress()
                     && !certificate_changes.snapshot_in_progress()
-                    && !pointer_changes.snapshot_in_progress()
                 {
                     return Ok(DebouncedChange::Changed);
                 }
@@ -608,7 +610,6 @@ async fn wait_for_debounced_change(
                     () = shutdown.cancelled() => return Ok(DebouncedChange::Shutdown),
                     changed = container_changes.changed() => changed?,
                     changed = certificate_changes.changed() => changed?,
-                    changed = pointer_changes.changed() => changed?,
                     () = tokio::time::sleep(WATCH_RESNAPSHOT) => {
                         return Ok(DebouncedChange::Resubscribe);
                     }

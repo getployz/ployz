@@ -686,13 +686,8 @@ impl ReplicatedStore {
                     let pointer = serde_json::from_str(encoded).map_err(|e| e.to_string())?;
                     Ok((service, pointer))
                 });
-            match decoded {
-                Ok((service, pointer)) => {
-                    pointers.by_service.insert(service, pointer);
-                }
-                Err(reason) => {
-                    pointers.malformed.insert(key.to_owned(), reason);
-                }
+            if let Ok((service, pointer)) = decoded {
+                pointers.by_service.insert(service, pointer);
             }
         }
         Ok(pointers)
@@ -1161,7 +1156,6 @@ pub(crate) enum IngressRouteChange {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ServingPointers {
     by_service: BTreeMap<QualifiedService, ServingPointer>,
-    malformed: BTreeMap<String, String>,
 }
 
 impl ServingPointers {
@@ -1173,31 +1167,12 @@ impl ServingPointers {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&QualifiedService, &ServingPointer)> {
         self.by_service.iter()
     }
-
-    pub(crate) fn warn_newly_malformed(&self, already_warned: &mut BTreeSet<String>) {
-        for (key, reason) in self.newly_malformed(already_warned) {
-            eprintln!("ignoring malformed Serving Pointer {key}: {reason}");
-        }
-    }
-
-    pub(super) fn newly_malformed<'a>(
-        &'a self,
-        already_warned: &mut BTreeSet<String>,
-    ) -> Vec<(&'a str, &'a str)> {
-        already_warned.retain(|key| self.malformed.contains_key(key));
-        self.malformed
-            .iter()
-            .filter(|(key, _)| already_warned.insert((*key).clone()))
-            .map(|(key, reason)| (key.as_str(), reason.as_str()))
-            .collect()
-    }
 }
 
 impl FromIterator<(QualifiedService, ServingPointer)> for ServingPointers {
     fn from_iter<I: IntoIterator<Item = (QualifiedService, ServingPointer)>>(pointers: I) -> Self {
         Self {
             by_service: pointers.into_iter().collect(),
-            malformed: BTreeMap::new(),
         }
     }
 }

@@ -1,12 +1,12 @@
 //! Projection tests for Internal DNS answers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, DeploymentLogId,
-    HealthObservation, MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
-    ServingPointer,
+    ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, CopyRotation,
+    DeploymentLogId, HealthObservation, MachineId, Namespace, ResolvedServiceSpec, ServiceId,
+    ServiceName,
 };
 use serde_json::json;
 use tokio::net::{TcpListener, UnixListener};
@@ -493,135 +493,120 @@ fn membership_filter_excludes_down_keeps_suspect_local_and_fails_open() {
     let down = MachineId::parse("c".repeat(32)).unwrap();
     let service = ServiceId::parse("d".repeat(32)).unwrap();
     let name = ServiceName::parse("api").unwrap();
-    let observations = [
+    let copy = |suffix: u8, machine: &MachineId, octet: u8| {
         observation(
-            1,
-            &local,
+            suffix,
+            machine,
             &service,
             &name,
             ContainerKind::ServiceContainer,
             running(HealthObservation::Healthy),
-            Some([10, 210, 1, 2]),
-        ),
-        observation(
-            2,
-            &suspect,
-            &service,
-            &name,
-            ContainerKind::ServiceContainer,
-            running(HealthObservation::Healthy),
-            Some([10, 210, 2, 2]),
-        ),
-        observation(
-            3,
-            &down,
-            &service,
-            &name,
-            ContainerKind::ServiceContainer,
-            running(HealthObservation::Healthy),
-            Some([10, 210, 3, 2]),
-        ),
-    ];
+            Some([10, 210, octet, 2]),
+        )
+    };
+    let observations = vec![copy(1, &local, 1), copy(2, &suspect, 2), copy(3, &down, 3)];
     let down_machines = HashSet::from([local, down]);
-    let mut inputs = ProjectionInputs {
-        local_id: local,
-        observations: observations.to_vec(),
-        pointers: ServingPointers::default(),
-        warned_pointers: BTreeSet::new(),
-        down_machines: None,
+    let answers = |inputs: &mut ProjectionInputs| {
+        addresses(plan(&inputs.build(), "api.app.internal.", RecordType::A))
     };
 
-    assert!(!inputs.update_membership(Err(CorrosionError::Protocol("not loaded".into()))));
-    assert_eq!(inputs.down_machines, None);
-    assert!(inputs.update_membership(Ok(down_machines.clone())));
-    assert!(!inputs.update_membership(Err(CorrosionError::Protocol("unavailable".into()))));
-    assert_eq!(inputs.down_machines.as_ref(), Some(&down_machines));
-
-    assert_eq!(
-        addresses(plan(
-            &Projection::from_observations(
-                &observations,
-                &ServingPointers::default(),
-                &local,
-                Some(&down_machines)
-            ),
-            "api.app.internal.",
-            RecordType::A,
-        )),
-        vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
+    let mut unloaded = ProjectionInputs::new(local);
+    unloaded.observations = observations.clone();
+    assert!(
+        !unloaded
+            .down
+            .update(Err(CorrosionError::Protocol("not loaded".into())))
     );
     assert_eq!(
-        addresses(plan(
-            &Projection::from_observations(
-                &observations,
-                &ServingPointers::default(),
-                &local,
-                None
-            ),
-            "api.app.internal.",
-            RecordType::A,
-        )),
+        answers(&mut unloaded),
         vec![
             Ipv4Addr::new(10, 210, 1, 2),
             Ipv4Addr::new(10, 210, 2, 2),
             Ipv4Addr::new(10, 210, 3, 2),
         ]
     );
+
+    let mut inputs = ProjectionInputs::new(local);
+    inputs.observations = observations;
+    assert!(inputs.down.update(Ok(down_machines.clone())));
+    assert!(!inputs.down.update(Ok(down_machines)));
+    assert!(
+        !inputs
+            .down
+            .update(Err(CorrosionError::Protocol("unavailable".into())))
+    );
+    assert!(inputs.down.contains(&down));
+    assert!(!inputs.down.contains(&local));
+    assert_eq!(
+        answers(&mut inputs),
+        vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 2, 2)]
+    );
 }
 
 #[test]
-fn pointed_set_wins_over_a_newer_unpointed_container() {
+fn a_down_machine_keeps_its_answers_while_no_other_copy_serves() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("b".repeat(32)).unwrap();
+    let service = ServiceId::parse("d".repeat(32)).unwrap();
+    let name = ServiceName::parse("api").unwrap();
+    let mut inputs = ProjectionInputs::new(local);
+    inputs.observations = vec![observation(
+        1,
+        &remote,
+        &service,
+        &name,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 2, 2]),
+    )];
+    let answers = |inputs: &mut ProjectionInputs| {
+        addresses(plan(&inputs.build(), "api.app.internal.", RecordType::A))
+    };
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
+
+    inputs.down.update(Ok(HashSet::from([remote])));
+
+    assert_eq!(answers(&mut inputs), vec![Ipv4Addr::new(10, 210, 2, 2)]);
+}
+
+#[test]
+fn only_in_copies_answer() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let service = ServiceId::parse("b".repeat(32)).unwrap();
     let name = ServiceName::parse("api").unwrap();
-    let pointed = observation(
-        1,
-        &machine,
-        &service,
-        &name,
-        ContainerKind::ServiceContainer,
-        running(HealthObservation::Healthy),
-        Some([10, 210, 1, 2]),
-    );
-    let mut newer = observation(
-        2,
-        &machine,
-        &service,
-        &name,
-        ContainerKind::ServiceContainer,
-        running(HealthObservation::Healthy),
-        Some([10, 210, 1, 3]),
-    );
-    newer
-        .try_update(|parts| {
-            parts.created_at_unix_nanos = 1;
-            parts.resolved_spec.container.image = "example.test/image:next".into();
-        })
-        .unwrap();
-    let observations = [pointed.clone(), newer];
-    let pointers = ServingPointers::from_iter([(
-        pointed.identity(),
-        ServingPointer {
-            deploy: DeploymentLogId::parse("d1").unwrap(),
-            containers: vec![pointed.container_id],
-            previous: None,
-            retiring: Vec::new(),
-            deciding: None,
-        },
-    )]);
+    let copy = |suffix: u8, octet: u8, rotation: CopyRotation| {
+        let mut copy = observation(
+            suffix,
+            &machine,
+            &service,
+            &name,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, octet]),
+        );
+        copy.try_update(|parts| parts.rotation = Some(rotation))
+            .unwrap();
+        copy
+    };
+    let observations = [
+        copy(1, 2, CopyRotation::In),
+        copy(2, 3, CopyRotation::Pending),
+        copy(
+            3,
+            4,
+            CopyRotation::Held(DeploymentLogId::parse("d1").unwrap()),
+        ),
+        copy(4, 5, CopyRotation::Out),
+    ];
 
-    let answers = |pointers: &ServingPointers| {
+    assert_eq!(
         addresses(plan(
-            &Projection::from_observations(&observations, pointers, &machine, None),
+            &unfiltered_projection(&observations),
             "api.app.internal.",
             RecordType::A,
-        ))
-    };
-    assert_eq!(
-        answers(&ServingPointers::default()),
-        vec![Ipv4Addr::new(10, 210, 1, 3)]
+        )),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
     );
-    assert_eq!(answers(&pointers), vec![Ipv4Addr::new(10, 210, 1, 2)]);
 }
 
 #[tokio::test]
@@ -766,12 +751,9 @@ pub(super) fn write_script(path: &std::path::Path, body: &str) {
 }
 
 fn unfiltered_projection(observations: &[ContainerObservation]) -> Projection {
-    Projection::from_observations(
-        observations,
-        &ServingPointers::default(),
-        &MachineId::parse("0".repeat(32)).unwrap(),
-        None,
-    )
+    let mut inputs = ProjectionInputs::new(MachineId::parse("0".repeat(32)).unwrap());
+    inputs.observations = observations.to_vec();
+    inputs.build()
 }
 
 fn plan(projection: &Projection, name: &str, record_type: RecordType) -> ResponsePlan {
@@ -806,7 +788,7 @@ fn observation(
     address: Option<[u8; 4]>,
 ) -> ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        rotation: None,
+        rotation: Some(CopyRotation::In),
         r#gen: None,
         container_id: ContainerId::parse(format!("{suffix:x}").repeat(64)).unwrap(),
         display_name: format!("{service_name}-{suffix}"),

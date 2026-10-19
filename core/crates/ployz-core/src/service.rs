@@ -16,7 +16,7 @@ mod serving;
 pub use eligibility::{
     ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
 };
-pub use serving::{ServingContainer, SlotOccupancy, serving_containers};
+pub use serving::{ProxyRoutes, ServingContainer, SlotOccupancy, proxy_routes, serving_containers};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
