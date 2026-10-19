@@ -665,6 +665,11 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Failed);
+    let outcome = serde_json::to_value(&failed.deployment.outcome).unwrap();
+    assert_eq!(
+        outcome["reason"],
+        json!("data: deleting its data failed: in use")
+    );
 
     admit(&store, &who, 3, &["data"], Some(observed(&['a']))).unwrap();
     // A Volume being removed waits while it runs.
