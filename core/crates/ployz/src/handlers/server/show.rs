@@ -159,7 +159,7 @@ pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     };
     match waiting::named(&listed, selector)?.as_slice() {
         [] => Err(error.hint(waiting::copied_hint(selector))),
-        [host] => waiting::show(host),
+        [host] => waiting::show(&runtime.block_on(waiting::detail(&credential, &host.row.id))?),
         hosts => Err(waiting::ambiguous(
             format!(
                 "{} waiting servers are named {}. Show one by its id",
