@@ -683,6 +683,55 @@ fn history_reads_a_removed_service_and_skips_a_server_that_did_not_answer() {
     assert!(history_selectors(&scope, &[arg("gone")], None, None).is_err());
 }
 
+#[test]
+fn every_service_logs_skip_a_service_with_nothing_on_the_asked_servers() {
+    let edge = machine_observation(1, "edge");
+    let core = machine_observation(2, "core");
+    let placed = |id: char, service: &str, seed: u8, machine: &MachineObservation| {
+        let container = container_on(
+            &id.to_string().repeat(64),
+            service,
+            ServiceId::parse(seed.to_string().repeat(32)).unwrap(),
+            ContainerKind::ServiceContainer,
+            machine.machine.id,
+            service,
+        );
+        ployz_core::MachineSuccess {
+            machine_id: machine.machine.id,
+            value: vec![container],
+        }
+    };
+    let live =
+        ployz_core::derive_live_services::<ployz_core::RpcError>(ployz_core::PartialResult {
+            successes: vec![placed('a', "api", 3, &edge), placed('b', "web", 4, &core)],
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        });
+    let services = live.services();
+    let asked = HashSet::from([edge.machine.id]);
+
+    let targets = log_targets(&services, &asked, &[], None, None).unwrap();
+    assert_eq!(
+        targets
+            .iter()
+            .map(|(service, containers)| (service.to_string(), containers.len()))
+            .collect::<Vec<_>>(),
+        vec![("app/api".to_owned(), 1)]
+    );
+    let named = [ServiceArg {
+        service: service_selector("app/web"),
+        containers: Vec::new(),
+    }];
+    assert!(matches!(
+        log_targets(&services, &asked, &named, None, None),
+        Err(OperatorError::NoContainersOnMachines { .. })
+    ));
+    assert!(matches!(
+        log_targets(&services, &HashSet::new(), &[], None, None),
+        Err(OperatorError::NoServices)
+    ));
+}
+
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(ToOwned::to_owned).collect()
 }
@@ -760,13 +809,31 @@ fn container(
     service_id: ServiceId,
     kind: ContainerKind,
 ) -> ContainerObservation {
+    container_on(
+        id,
+        name,
+        service_id,
+        kind,
+        MachineId::parse("2".repeat(32)).unwrap(),
+        "api",
+    )
+}
+
+fn container_on(
+    id: &str,
+    name: &str,
+    service_id: ServiceId,
+    kind: ContainerKind,
+    machine_id: MachineId,
+    service: &str,
+) -> ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
         rotation: None,
         r#gen: None,
         container_id: ContainerId::parse(id).unwrap(),
         display_name: name.into(),
         created_at_unix_nanos: 0,
-        machine_id: MachineId::parse("2".repeat(32)).unwrap(),
+        machine_id,
         namespace: Namespace::parse("app").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Running {
@@ -775,7 +842,7 @@ fn container(
         effective_healthcheck: None,
         resolved_spec: ResolvedServiceSpec {
             service_id,
-            name: ServiceName::parse("api").unwrap(),
+            name: ServiceName::parse(service).unwrap(),
             mode: ployz_core::ServiceMode::Replicated {
                 replicas: std::num::NonZeroU32::new(1).unwrap(),
             },
