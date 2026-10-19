@@ -49,6 +49,9 @@ Before your first server, the **Servers** page shows one card instead of a list.
 under **Shown once. Expires in 7d.** Copy it now: Ployz can't show the token again. The card then
 says **Listening for servers…** until the first one checks in.
 
+Only an owner or admin can make a token. For a member, **Get install command** and **Add servers**
+say so instead.
+
 Once you have a server, or one is waiting, make more tokens with **Add servers**:
 
 1. Go to **Servers** and click **Add servers**. While you have no server, the bottom bar of your
