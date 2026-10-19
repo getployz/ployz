@@ -1,4 +1,4 @@
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link } from "@tanstack/react-router";
 import { LatestButton, LOG_TIME_COLUMN, LogEmpty, LogHeader, LogSkeleton, useLogScroll } from "./log-scroll";
@@ -11,6 +11,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectI
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { compareLogRows, type ContainerLogRow } from "#/modules/runtime/container-log.collection";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
@@ -32,8 +33,13 @@ function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const scope = useCollectionScope();
   const stream = getContainerLogStream(selection, scope);
   const { collection } = stream;
+  useEffect(() => stream.view(), [stream]);
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { opened, offline, refused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { opened, offline: streamOffline, refused: streamRefused, hidden, missing, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  // The log stream connects on its own, so its failing to says the servers are offline only when the Runtime Watch agrees.
+  const watched = useRuntimeLens(selection.organizationSlug).status === "observed";
+  const offline = streamOffline && !watched;
+  const refused = streamRefused || (streamOffline && watched);
   const timestamp = logTimestamp(useTimeZone());
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
