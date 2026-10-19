@@ -43,18 +43,7 @@ fn refuse_taken_among(
     let working = &environment.working;
     let (kind, name, taken) = match name {
         Name::Service(name) => {
-            let reserved = match name {
-                "volumes" => Some("Volumes as volumes.NAME"),
-                "configs" => Some("Configs as configs.NAME"),
-                "setup" => Some("a Branch's Setup Commands as setup.SERVICE"),
-                _ => None,
-            };
-            if let Some(paths) = reserved {
-                return Err(error::invalid(
-                    format!("{name} is reserved: paths name {paths}"),
-                    json!({ "service": name }),
-                ));
-            }
+            refuse_reserved(name)?;
             let taken = working.services.iter().any(|service| {
                 other(&service.id)
                     && (service.slug == name || service.config.private_dns.as_str() == name)
@@ -126,6 +115,20 @@ fn refuse_taken_among(
     Ok(())
 }
 
+/// Refuse a Service name that a path prefix means.
+fn refuse_reserved(name: &str) -> Result<(), RpcError> {
+    let paths = match name {
+        "volumes" => "Volumes as volumes.NAME",
+        "configs" => "Configs as configs.NAME",
+        "setup" => "a Branch's Setup Commands as setup.SERVICE",
+        _ => return Ok(()),
+    };
+    Err(error::invalid(
+        format!("{name} is reserved: paths name {paths}"),
+        json!({ "service": name }),
+    ))
+}
+
 /// Refuse each name `target` gives a node that the node doesn't hold in
 /// `environment` now, when another node holds it.
 pub(crate) fn refuse_new_taken(
@@ -137,6 +140,11 @@ pub(crate) fn refuse_new_taken(
     let mut claims: Vec<(&str, Name<'_>)> = Vec::new();
     for service in &target.services {
         let held = now.services.iter().find(|held| held.id == service.id);
+        // A reserved name stays only on a Service that has it as its name now, not
+        // one that has it as its Private DNS name.
+        if held.is_none_or(|held| held.slug != service.slug) {
+            refuse_reserved(&service.slug)?;
+        }
         for name in [service.slug.as_str(), service.config.private_dns.as_str()] {
             if held.is_none_or(|held| held.slug != name && held.config.private_dns.as_str() != name)
             {

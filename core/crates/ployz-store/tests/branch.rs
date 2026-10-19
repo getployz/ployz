@@ -855,8 +855,26 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
     // A Service named setup from before the name was reserved.
     backend::execute(
         &url,
-        r#"UPDATE config_environment SET working = replace(working, '"slug":"db"', '"slug":"setup"')"#,
+        r#"UPDATE config_environment SET working = replace(replace(working, '"slug":"db"', '"slug":"setup"'), '"privateDns":"db"', '"privateDns":"setup"')"#,
     );
+    let saved = store
+        .write_trusted(
+            &who,
+            &ployz_store::Publish {
+                id: None,
+                environment: at("production"),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..Trusted::default()
+            },
+        )
+        .unwrap()
+        .saved
+        .unwrap();
     let rename_first = "A Service in production is named setup, and setup.SERVICE now means \
         a Branch's Setup Command; rename it first: \
         ployz service rename setup NAME --env production --project shop";
@@ -908,6 +926,33 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
         )
         .unwrap_err();
     assert_eq!(read.message, "production is not a Branch");
+
+    // Restoring the saved Service name setup is refused, though db still holds
+    // setup as its Private DNS name.
+    let restore = |accept_overwrite, version| ployz_store::StageHistory {
+        environment: at("production"),
+        revision: saved,
+        action: ployz_store::HistoryAction::Restore,
+        change: None,
+        version,
+        accept_overwrite,
+    };
+    let preview = store.read(
+        &who,
+        &ployz_store::HistoryPreviewQuery {
+            environment: at("production"),
+            revision: saved,
+            action: ployz_store::HistoryAction::Restore,
+            change: None,
+        },
+    );
+    let restored = match preview {
+        Ok(preview) => store
+            .write(&who, &restore(true, preview.version))
+            .unwrap_err(),
+        Err(refused) => refused,
+    };
+    assert_eq!(restored.message, reserved);
 }
 
 #[test]

@@ -375,6 +375,10 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ("deployment ls", CliNext::Tool("deployment_list", None)),
     ("diff", CliNext::Tool("review", None)),
     ("domain add", CliNext::Tool("domain_add", Some("service"))),
+    (
+        "service rename",
+        CliNext::Fix(FixRow::Open(DashboardPage::Environments)),
+    ),
     ("volume inspect", CliNext::Tool("environment_show", None)),
     ("volume set", CliNext::VolumeSharedWrites),
 ];
