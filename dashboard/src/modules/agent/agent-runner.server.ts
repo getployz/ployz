@@ -79,16 +79,39 @@ const denialForAgent = (what: string, refusal: StoreRefusal): StoreRefusal => {
   return { code: refusal.code, message: `A human denied this ${what}${reason === null ? "." : `: ${reason}`}`, details: { approval: { reason } } };
 };
 
-const ACTS = {
-  service: "Service act",
-  drain: "drain",
-  upgrade: "upgrade",
-  set_server: "server policy change",
-  clean: "cleanup",
-  remove_server: "server removal",
-  forget_server: "server forget",
-  volume: "Volume run",
-} as const satisfies Record<Act["action"]["action"], string>;
+/** An act in the words a denial names it by, as in `restart whoami`. */
+const actWords = (action: Act["action"]): string => {
+  switch (action.action) {
+    case "service":
+      return `${action.verb} ${action.service}`;
+    case "drain":
+      return `drain ${action.server.name}`;
+    case "upgrade":
+      return `upgrade ${action.server.name}`;
+    case "set_server":
+      return `policy change on ${action.server.name}`;
+    case "clean":
+      return `cleanup of ${action.leftover}`;
+    case "remove_server":
+      return `removal of ${action.server.name}`;
+    case "forget_server":
+      return `forget ${action.server.name}`;
+    case "volume":
+      switch (action.run.run) {
+        case "mirror":
+          return `Volume mirror to ${action.run.to.name}`;
+        case "move":
+          return `Volume move to ${action.run.to.name}`;
+        case "restore":
+          return `Volume restore from ${action.run.from.name}`;
+        case "remove_mirror":
+          return "Volume mirror removal";
+        case "sync":
+        case "release":
+          return `Volume ${action.run.run}`;
+      }
+  }
+};
 
 const StaleReview = Schema.Struct({
   diff: Schema.Struct({
@@ -149,7 +172,7 @@ const runGatedAct = Effect.fn("Agent.runGatedAct")(function* (caller: AgentCalle
     const asked = asking(result.refusal);
     if (asked !== null) return asked;
   }
-  return { result: { ok: false, refusal: denialForAgent(ACTS[act.action.action], result.refusal) } as const };
+  return { result: { ok: false, refusal: denialForAgent(actWords(act.action), result.refusal) } as const };
 });
 
 /** A published command's answer as the model hears it; the line `ployz` prints for a human is not for the model. */

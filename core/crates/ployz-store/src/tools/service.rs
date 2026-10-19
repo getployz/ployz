@@ -136,8 +136,15 @@ impl Tool for ServiceAdd {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
         let staged = match (self.image, self.repository) {
-            (Some(_), Some(_)) | (None, None) => {
-                return Err(Refusal::invalid("Give image or repository, not both", "image").into());
+            (None, None) => {
+                return Err(Refusal::invalid("Give an image or a repository", "image").into());
+            }
+            (Some(_), Some(_)) => {
+                return Err(Refusal::invalid(
+                    "Give an image or a repository, not both",
+                    "repository",
+                )
+                .into());
             }
             (Some(image), None) => {
                 if self.branch.is_some() {
