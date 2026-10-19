@@ -17,9 +17,10 @@ Server is ready it reads `switching N/N` until they switch together, then
 `switched N/N`. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
-`ployz ps`, not in the live block. A Service the deploy only removes reads
-`waiting to remove`, then `stopping` and `removing`, then `removed`. The block ends
-with a summary that counts the Servers involved. In CI or redirected output,
+`ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
+then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
+the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. The block
+ends with a summary that counts the Servers involved. In CI or redirected output,
 Ployz prints changes as lines and says `still waiting:` after 30 seconds without a
 change. To capture those lines through a pipe, use `ployz deploy 2>&1 | cat`.
 `--json` keeps the result on stdout; progress stays on stderr. `--events FILE` also

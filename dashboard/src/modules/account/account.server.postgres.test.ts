@@ -41,3 +41,11 @@ it("signs out a browser session and one with no user agent, but never a CLI sess
   expect(await remaining(ada)).toEqual([cli]);
   expect(await remaining(bob)).toEqual([bobs]);
 });
+
+it("shows an IPv6 address in its short form and leaves IPv4 as it is", async () => {
+  const sessions = await harness.db.insert(session).values(["2401:e320:0e9e:2310:0000:0000:0000:0000", "203.0.113.7", "::ffff:203.0.113.7"].map((ipAddress) => ({
+    userId: bob, ipAddress, token: randomUUID(), expiresAt: new Date(Date.now() + 86_400_000),
+  }))).returning({ id: session.id });
+  const shown = new Map((await harness.runEffect(listAccountSessions({ userId: bob }))).map((row) => [row.id, row.ipAddress]));
+  expect(sessions.map((row) => shown.get(row.id))).toEqual(["2401:e320:e9e:2310::", "203.0.113.7", "::ffff:203.0.113.7"]);
+});
