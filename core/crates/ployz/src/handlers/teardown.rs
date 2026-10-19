@@ -657,7 +657,7 @@ impl Removed {
             Removal::Removed { residuals } => {
                 for residual in residuals {
                     crate::ui::stream(format_args!(
-                        "No Server was left to take {} off; if a Server ran it, it still does.",
+                        "No Server was left to take {} off; if a Server still runs it, it keeps running until you remove it there.",
                         residual.environment
                     ));
                 }
