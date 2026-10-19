@@ -99,11 +99,11 @@ it("selects the installation of the highlighted row when one repository is reach
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const scope = { queryClient, organizationSlug: "shared-org", sessionId: "shared-session" };
   getGithubReposCollection(scope);
-  const row = (installation_id: number) => ({
+  const row = (installation_id: number, repo_updated_at: string) => ({
     id: 42, installation_id, name: "repo", full_name: "acme/repo", default_branch: "main", private: true,
-    html_url: "https://github.com/acme/repo", repo_updated_at: new Date().toISOString(), synced_at: new Date().toISOString(),
+    html_url: "https://github.com/acme/repo", repo_updated_at, synced_at: repo_updated_at,
   });
-  const first = row(12); const start = Date.now(); while (Date.now() === start) {} queryClient.setQueryData(githubReposQueryKey(scope), [first, row(13)]);
+  queryClient.setQueryData(githubReposQueryKey(scope), [row(12, "2026-01-02T00:00:00.000Z"), row(13, "2026-01-01T00:00:00.000Z")]);
   queryClient.setQueryData(githubKeys.access("shared-org"), { hasInstallations: true });
   queryClient.setQueryData(githubKeys.web(), { origin: "https://github.com" });
   const select = vi.fn();
