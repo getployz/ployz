@@ -243,12 +243,17 @@ describe("publicDomain", () => {
 });
 
 describe("deployChip", () => {
-  const deployment = (status: "queued" | "running", services: string[]) => ({ status, services, started_at: status === "running" ? 100 : null, admitted_at: 90 });
+  const deployment = (status: "queued" | "running", services: string[], ships = services) => ({ status, services, ships, started_at: status === "running" ? 100 : null, admitted_at: 90 });
 
   it("puts a Deploy in flight first: running, else queued, when it targets the Service or every Service", () => {
     expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
     expect(deployChip(service, 0, [deployment("queued", ["web"])])).toEqual({ kind: "queued" });
     expect(deployChip(service, 0, [deployment("running", ["api"])])).toBeNull();
+  });
+
+  it("counts a Service a Deploy ships because a Service it names references it", () => {
+    expect(deployChip(service, 0, [deployment("queued", ["api"], ["api", "web"])])).toEqual({ kind: "queued" });
+    expect(deployChip(service, 0, [deployment("running", ["api"], ["api", "web"])], new Set(["web"]))).toEqual({ kind: "deploying", since: 100 });
   });
 
   it("says what the next Deploy does otherwise", () => {

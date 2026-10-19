@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shippedService, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -373,4 +373,13 @@ it("shows a Cancel at once as Cancelling while the Deployment runs or waits, and
   expect(showCancelling({ status: "running", in_flight: true }, true)).toEqual({ status: "cancelling", in_flight: true });
   expect(showCancelling({ status: "queued", in_flight: true }, false)).toEqual({ status: "queued", in_flight: true });
   expect(showCancelling({ status: "applied", in_flight: false }, true)).toEqual({ status: "applied", in_flight: false });
+});
+
+it("counts a Service as shipped by a full Deploy, one that names it, and one that ships it because a named one references it", () => {
+  const narrowed = { services: ["web"], ships: ["web", "db"] };
+  expect(shippedService(narrowed, "web")).toBe(true);
+  expect(shippedService(narrowed, "db")).toBe(true);
+  expect(shippedService(narrowed, "api")).toBe(false);
+  expect(shippedService({ services: [], ships: ["web"] }, "api")).toBe(true);
+  expect(shippedService({ services: ["web"], ships: [] }, "web")).toBe(true);
 });
