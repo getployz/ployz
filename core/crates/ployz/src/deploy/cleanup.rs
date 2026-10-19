@@ -6,24 +6,28 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerLocator, ContainerObservation, ContainerRefusal,
-    ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain, EnsuredContainer,
-    HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError,
-    RunRotation, RunTarget,
+    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerObservation,
+    ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId, Drain,
+    EnsuredContainer, HealthVerdict, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
+    RpcError, RpcErrorCode, RunRotation, RunTarget, StopOptions,
 };
+use serde_json::Value;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::MachineOperations;
-use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout};
+use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 
 /// How often a wait re-reads the routes.
 pub(crate) const ACK_POLL: Duration = Duration::from_secs(1);
 /// How long a wait gives every live proxy to list or drop a copy.
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
 
+/// How long Docker gives a Container to stop when neither the user nor its spec
+/// names a grace.
+const DOCKER_STOP_GRACE_SECONDS: u16 = 10;
+
 /// A run id for a hold or a bring-in outside a Deploy.
-#[expect(dead_code, reason = "the user commands mint their run with it")]
 pub(crate) fn fresh_run() -> DeploymentLogId {
     DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
         .expect("a simple uuid is a deployment log id")
@@ -325,4 +329,253 @@ pub(crate) async fn remove<C: MachineOperations>(
         }
         EnsuredContainer::Refused { refusal, .. } => Ok(Step::Refused(refusal)),
     }
+}
+
+/// Where a user start or restart left the copy.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum UserStarted {
+    /// In and healthy.
+    In,
+    /// Started outside rotation: a proxy copy, a hook, or a restarted Pending
+    /// copy. Its health is the caller's to wait for.
+    Running,
+    /// Started but not In: its health failed or could not be read.
+    NotIn(Option<HealthVerdict>),
+}
+
+/// A user stop, per R1's caller table. A routed or routable copy is Held (under
+/// its own run when it is Held already) and stopped once no live proxy lists it.
+/// A copy proxies still list is left running and Held.
+pub(crate) async fn user_stop<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    stop: StopOptions,
+    queued: u32,
+) -> Result<(), RpcError> {
+    let observed = observe(client, machine_id, container_id).await?;
+    let copy = Copy::observed(&observed);
+    if routable(&observed) && copy.rotation != CopyRotation::Out {
+        let run = match &copy.rotation {
+            CopyRotation::Held(run) => run.clone(),
+            _ => fresh_run(),
+        };
+        let step = hold(client, &copy, run, &CancellationToken::new()).await?;
+        left_running(&copy, "Held", step)?;
+    }
+    stopped(client, &copy, &observed.resolved_spec, stop, queued).await
+}
+
+/// A user start, per R1's caller table: a Held, Pending or stopped In copy is
+/// brought In once healthy. An Out copy is refused.
+pub(crate) async fn user_start<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+) -> Result<UserStarted, RpcError> {
+    let observed = observe(client, machine_id, container_id).await?;
+    let copy = Copy::observed(&observed);
+    if !routable(&observed) {
+        return run_pending(client, &copy).await;
+    }
+    let run = match &copy.rotation {
+        CopyRotation::Out => return Err(deploy_again(&copy)),
+        CopyRotation::Held(run) => Some(run.clone()),
+        CopyRotation::Pending | CopyRotation::In => None,
+    };
+    started(bring_in(client, &copy, &observed.resolved_spec, run).await?)
+}
+
+/// A user restart, per R1's caller table. An In copy is Held, stopped once no
+/// live proxy lists it, and brought back In under the same run; it comes back
+/// In even when the stop fails. A Held copy is only brought In. A Pending copy
+/// is stopped and started outside rotation. An Out copy is refused.
+pub(crate) async fn user_restart<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    stop: StopOptions,
+) -> Result<UserStarted, RpcError> {
+    let observed = observe(client, machine_id, container_id).await?;
+    let copy = Copy::observed(&observed);
+    let spec = &observed.resolved_spec;
+    let run = match (routable(&observed), &copy.rotation) {
+        (true, CopyRotation::Out) => return Err(deploy_again(&copy)),
+        (true, CopyRotation::Held(run)) => {
+            return started(bring_in(client, &copy, spec, Some(run.clone())).await?);
+        }
+        (true, CopyRotation::In) => fresh_run(),
+        (false, _) | (true, CopyRotation::Pending) => {
+            let stopped = stopped(client, &copy, spec, stop, 1).await;
+            let started = run_pending(client, &copy).await;
+            stopped?;
+            return started;
+        }
+    };
+    let held = Copy {
+        rotation: CopyRotation::Held(run.clone()),
+        ..copy.clone()
+    };
+    let stopped = match hold(client, &copy, run.clone(), &CancellationToken::new()).await? {
+        Step::Refused(refusal) => return Err(refusal.into_error()),
+        Step::Done => stopped(client, &held, spec, stop, 1).await,
+        Step::NotConfirmed(machines) => Err(unavailable(format!(
+            "Container {} was not restarted: the proxies on {} did not confirm they stopped routing it.",
+            copy.container_id,
+            listed(&machines)
+        ))),
+        Step::Cancelled => Err(unavailable(format!(
+            "Container {} was not restarted: the wait for its proxies was cancelled.",
+            copy.container_id
+        ))),
+    };
+    let started = started(bring_in(client, &held, spec, Some(run)).await?);
+    stopped?;
+    started
+}
+
+/// A user removal, per R1's Removal rows: an In or Held copy goes Out, and is
+/// removed once no live proxy lists it. A Pending or Out copy, a hook and a
+/// proxy copy are removed directly. A copy already gone counts as removed.
+pub(crate) async fn user_remove<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+) -> Result<(), RpcError> {
+    let observed = match observe(client, machine_id, container_id).await {
+        Err(error) if error.code == RpcErrorCode::NotFound => return Ok(()),
+        observed => observed?,
+    };
+    let copy = Copy::observed(&observed);
+    let step = if routable(&observed) {
+        retire(
+            client,
+            &copy,
+            true,
+            AnonymousVolumes::Remove,
+            &CancellationToken::new(),
+        )
+        .await?
+    } else {
+        remove(client, &copy, AnonymousVolumes::Remove).await?
+    };
+    left_running(&copy, "Out", step)
+}
+
+async fn observe<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+) -> Result<ContainerObservation, RpcError> {
+    client
+        .inspect_container(machine_id, container_id)
+        .await
+        .map(|details| details.container)
+}
+
+/// Whether the copy takes part in rotation. Hooks stay Pending for life, and
+/// proxy copies are never routed (D11).
+fn routable(observed: &ContainerObservation) -> bool {
+    observed.kind == ContainerKind::ServiceContainer
+        && observed.identity() != QualifiedService::system_ingress()
+}
+
+/// Stop `copy` behind the default drain, bounded by its grace.
+async fn stopped<C: MachineOperations>(
+    client: &C,
+    copy: &Copy,
+    spec: &ResolvedServiceSpec,
+    stop: StopOptions,
+    queued: u32,
+) -> Result<(), RpcError> {
+    let grace = stop
+        .grace_period_seconds
+        .or_else(|| {
+            spec.container
+                .stop_timeout_secs
+                .and_then(|seconds| u16::try_from(seconds).ok())
+        })
+        .unwrap_or(DOCKER_STOP_GRACE_SECONDS);
+    let want = ContainerWant::Stopped {
+        container: copy.locator(),
+        drain: Drain::DEFAULT,
+        stop,
+    };
+    client
+        .ensure_unsettled(
+            &copy.machine_id,
+            want,
+            stop_rpc_timeout(Some(grace), queued),
+        )
+        .await?
+        .into_settled()
+        .map(|_| ())
+}
+
+async fn run_pending<C: MachineOperations>(
+    client: &C,
+    copy: &Copy,
+) -> Result<UserStarted, RpcError> {
+    let want = ContainerWant::Running {
+        container: RunTarget::Existing(copy.locator()),
+        rotation: RunRotation::Pending,
+    };
+    client
+        .ensure_unsettled(&copy.machine_id, want, Some(TARGET_RPC_TIMEOUT))
+        .await?
+        .into_settled()?;
+    Ok(UserStarted::Running)
+}
+
+fn started(brought: BroughtIn) -> Result<UserStarted, RpcError> {
+    match brought {
+        BroughtIn::In => Ok(UserStarted::In),
+        BroughtIn::NotIn { health } => Ok(UserStarted::NotIn(health)),
+        BroughtIn::Refused(refusal) => Err(refusal.into_error()),
+    }
+}
+
+fn left_running(copy: &Copy, rotation: &str, step: Step) -> Result<(), RpcError> {
+    match step {
+        Step::Done => Ok(()),
+        Step::Refused(refusal) => Err(refusal.into_error()),
+        Step::NotConfirmed(machines) => Err(unavailable(format!(
+            "Container {} is left running and {rotation}: the proxies on {} did not confirm they stopped routing it.",
+            copy.container_id,
+            listed(&machines)
+        ))),
+        Step::Cancelled => Err(unavailable(format!(
+            "Container {} is left running and {rotation}: the wait for its proxies was cancelled.",
+            copy.container_id
+        ))),
+    }
+}
+
+fn deploy_again(copy: &Copy) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Container {} is out of rotation and cannot start again. Deploy the Service again.",
+            copy.container_id
+        ),
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
+fn unavailable(message: String) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Unavailable,
+        message,
+        details: Value::Null,
+        cause: Vec::new(),
+    }
+}
+
+fn listed(machines: &[MachineId]) -> String {
+    machines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }

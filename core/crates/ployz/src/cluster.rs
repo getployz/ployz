@@ -6,18 +6,18 @@ use std::{
 
 use futures_util::future::join_all;
 use ployz_core::{
-    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerLocator, ContainerNow,
-    ContainerObservation, ContainerWant, CopyRole, DataLoss, DataLossConfirmation,
-    DescribeContractRequest, DockerVolumeId, DockerVolumeName, Drain, EnsureContainerRequest,
-    EnvironmentValues, ForgetRequest, Forgotten, InspectRequest, InspectStorageRequest,
-    LeaveRequest, Left, ListContainersRequest, ListImagesRequest, ListMachinesRequest,
-    ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
-    Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
-    MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
-    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
-    RemoveVolumeRequest, RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode,
-    RpcResponseBody, RunRotation, RunTarget, StopOptions, StorageCapacity, UnconfirmedDataLoss,
-    VolumeInventory, VolumeRemoval, VolumeRemovalOutcome, derive_live_services, op,
+    BridgeEndpointCapacity, ContainerAction, ContainerId, ContainerNow, ContainerObservation,
+    ContainerWant, CopyRole, DataLoss, DataLossConfirmation, DescribeContractRequest,
+    DockerVolumeId, DockerVolumeName, EnsureContainerRequest, EnvironmentValues, ForgetRequest,
+    Forgotten, InspectRequest, InspectStorageRequest, LeaveRequest, Left, ListContainersRequest,
+    ListImagesRequest, ListMachinesRequest, ListVolumesRequest, LiveServices, LocalMachineRemoved,
+    MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine, MachineFailure, MachineId, MachineImages,
+    MachineName, MachineObservation, MachineRpcClient, MachineStorageObservation, MachineSuccess,
+    MachineTarget, NameMatches, Namespace, ObservedDataLoss, OpaquePayload, PartialResult,
+    RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, RemoveVolumeRequest, RemoveVolumesRequest,
+    ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody, StopOptions,
+    StorageCapacity, UnconfirmedDataLoss, VolumeInventory, VolumeRemoval, VolumeRemovalOutcome,
+    derive_live_services, op,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -32,11 +32,13 @@ use tonic::{
 use crate::{
     connect::{
         BoxProxyStream, CONNECT_CONFIRM_TIMEOUT, ConnectError, Connector, TARGET_RPC_TIMEOUT,
-        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, stop_rpc_timeout,
-        target_request,
+        TransportError, UNARY_RETRY_DELAYS, apply_timeout, rpc_error, target_request,
     },
     context::{Connection, ConnectionSource},
-    deploy::{DeploySnapshot, VolumeSnapshot},
+    deploy::{
+        DeploySnapshot, VolumeSnapshot,
+        cleanup::{self, UserStarted},
+    },
     service::ContainerOperationFailure,
 };
 
@@ -1839,39 +1841,35 @@ async fn change_container_rpc(
     grace_period_seconds: Option<u16>,
     queued: u32,
 ) -> Result<(), RpcError> {
-    let container = ContainerLocator::Id(*container_id);
-    let (want, timeout) = match action {
-        ContainerAction::Start => (
-            ContainerWant::Running {
-                container: RunTarget::Existing(container),
-                rotation: RunRotation::Pending,
-            },
-            Some(TARGET_RPC_TIMEOUT),
-        ),
-        ContainerAction::Stop => (
-            ContainerWant::Stopped {
-                container,
-                drain: Drain::DEFAULT,
-                stop: StopOptions {
-                    signal,
-                    grace_period_seconds,
-                },
-            },
-            stop_rpc_timeout(grace_period_seconds, queued),
-        ),
-        ContainerAction::Remove => (
-            ContainerWant::Gone {
-                container,
-                drain: Drain::DEFAULT,
-                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-            },
-            stop_rpc_timeout(grace_period_seconds, queued),
-        ),
+    let stop = StopOptions {
+        signal,
+        grace_period_seconds,
     };
-    client
-        .ensure_container(machine_id, want, timeout)
-        .await
-        .map(|_| ())
+    match action {
+        ContainerAction::Start => cleanup::user_start(client, machine_id, container_id)
+            .await
+            .and_then(admitted),
+        ContainerAction::Restart => cleanup::user_restart(client, machine_id, container_id, stop)
+            .await
+            .and_then(admitted),
+        ContainerAction::Stop => {
+            cleanup::user_stop(client, machine_id, container_id, stop, queued).await
+        }
+        ContainerAction::Remove => cleanup::user_remove(client, machine_id, container_id).await,
+    }
+}
+
+/// A started copy that did not come In failed its healthcheck.
+fn admitted(started: UserStarted) -> Result<(), RpcError> {
+    match started {
+        UserStarted::In | UserStarted::Running => Ok(()),
+        UserStarted::NotIn(_) => Err(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: "The Container started but did not pass its healthcheck, so proxies do not route to it.".into(),
+            details: Value::Null,
+            cause: Vec::new(),
+        }),
+    }
 }
 
 #[cfg(test)]
