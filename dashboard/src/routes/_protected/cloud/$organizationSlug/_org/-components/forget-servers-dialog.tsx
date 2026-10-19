@@ -35,13 +35,13 @@ export function ForgetServersDialog({ organizationSlug, open, onOpenChange }: {
   async function confirm() {
     const forgotten = await forget({ data: { organizationSlug } });
     if (!forgotten.ok) throw new Error(forgotten.refusal.message);
-    toast.success("Your Servers are forgotten. Add a server to deploy again.");
+    toast.success("Your servers are forgotten. Add a server to deploy again.");
   }
 
   return (
-    <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all Servers?" place={organizationSlug}
-      confirmLabel="Forget Servers"
-      sentence={<>Use this when your Servers were deleted. Your projects and settings stay. Volume data on these Servers
+    <DeletionDialog open={open} onOpenChange={onOpenChange} title="Forget all servers?" place={organizationSlug}
+      confirmLabel="Forget servers"
+      sentence={<>Use this when your servers were deleted. Your projects and settings stay. Volume data on these servers
         can't be recovered.</>}
       callbacks={{ load, confirm }} />
   );

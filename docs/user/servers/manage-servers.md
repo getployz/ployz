@@ -524,10 +524,11 @@ CLI stops waiting after 30 minutes and says so; the removal keeps running in Plo
 
 If you deleted all your servers at your provider, forget them:
 
-1. Go to **Organization** and, under **Danger**, click **Forget Servers**. When the **Servers**
-   page can't reach your servers, **Forget them and start over.** opens the same dialog.
+1. Go to **Organization** and, under **Danger**, click **Forget servers**. When the **Servers**
+   page can't reach your servers, **Forget them and start over.** opens the same dialog. Only an
+   owner or admin can forget servers. For anyone else the button is disabled.
 2. Ployz lists the servers and their volumes. Type your organization's slug and click **Forget
-   Servers**.
+   servers**.
 
 Ployz refuses while any server answers. Your projects, settings and deployment history stay, but
 volume data on the forgotten servers can't be recovered. When you add a server again, Ployz deploys

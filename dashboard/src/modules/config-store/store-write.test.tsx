@@ -132,6 +132,15 @@ it("says a signed-out edit wasn't saved and offers to sign in", async () => {
   await waitFor(() => expect(test.replicas()).toBe(1));
 });
 
+it("says a write that failed in Cloud was undone, even when the failure carries no message", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  test.write.mockImplementationOnce(() => Promise.reject({ error: "boom" }));
+  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" }).isPersisted.promise;
+  await expect(order).rejects.toEqual({ error: "boom" });
+  expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
+});
+
 it("seals a variable at once, and a refused seal leaves it as it was", async () => {
   const plain = view(2, 1);
   plain.settings.push({ path: "web.env.TOKEN", value: "abc", default: null, apply: "staged" });

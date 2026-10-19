@@ -34,7 +34,7 @@ function ConnectPage() {
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-md">
-        {choices === null ? <ConnectSignIn /> : <ConnectConsent email={choices.email} organizations={choices.organizations} agent={choices.agent} />}
+        {choices === null ? <ConnectSignIn /> : <ConnectConsent email={choices.email} organizations={choices.organizations} selected={choices.selected} agent={choices.agent} />}
       </div>
     </main>
   );
@@ -45,9 +45,9 @@ function ConnectSignIn() {
   return <LoginPanel title="Sign in to connect an agent" description="Your agent will act as you in one Organization." action="Continue with GitHub" callbackURL={callbackURL} />;
 }
 
-function ConnectConsent({ email, organizations, agent }: { email: string; organizations: ReadonlyArray<Organization>; agent: Agent | null }) {
+function ConnectConsent({ email, organizations, selected, agent }: { email: string; organizations: ReadonlyArray<Organization>; selected: string | null; agent: Agent | null }) {
   const decide = useServerFn(connectAgentServerFn);
-  const [organizationId, setOrganizationId] = useState(organizations[0]?.id ?? "");
+  const [organizationId, setOrganizationId] = useState(selected ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 

@@ -19,7 +19,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function openNewToken() {
+async function openNewToken(access: "read" | null = "read") {
   vi.spyOn(tokenFunctions, "listTokensServerFn").mockResolvedValue([]);
   let resolve: (made: Made) => void = () => {};
   const create = vi.spyOn(tokenFunctions, "createTokenServerFn").mockReturnValue(new Promise((settle) => { resolve = settle; }));
@@ -40,9 +40,17 @@ async function openNewToken() {
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   fireEvent.click(await screen.findByRole("button", { name: "New token" }));
   fireEvent.change(screen.getByLabelText("Name"), { target: { value: "ci" } });
-  fireEvent.change(screen.getByLabelText("Access"), { target: { value: "read" } });
+  if (access !== null) fireEvent.change(screen.getByLabelText("Access"), { target: { value: access } });
   return { create, history, made: (secret: string) => act(async () => resolve({ secret } as Made)) };
 }
+
+it("starts at Read only when there is no Environment to deploy to", async () => {
+  await openNewToken(null);
+
+  expect(screen.getByLabelText<HTMLSelectElement>("Access").value).toBe("read");
+  expect(screen.getByRole<HTMLOptionElement>("option", { name: "Deploy" }).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Make token" }).hasAttribute("disabled")).toBe(false);
+});
 
 it("makes one token when Make token is double-clicked", async () => {
   const { create, made } = await openNewToken();
