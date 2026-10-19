@@ -2780,7 +2780,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         else {
             panic!("an admit writes a Deployment");
         };
-        summary
+        *summary
     };
     let nick = Actor {
         principal: Some(Principal::parse("nick").unwrap()),

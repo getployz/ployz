@@ -55,9 +55,9 @@ fn admitted() -> Reply {
         path: "/api/config/write",
         kind: "admit",
         status: 200,
-        body: serde_json::to_value(Written::Deployment(
+        body: serde_json::to_value(Written::Deployment(Box::new(
             view(7, DeploymentStatus::Queued).deployment,
-        ))
+        )))
         .unwrap(),
         interrupt: None,
         delay: Duration::ZERO,
