@@ -1371,6 +1371,116 @@ fn an_edit_keeps_each_reference_on_the_removed_service_it_names() {
     assert_eq!(invented.unwrap_err().code, RpcErrorCode::InvalidArgument);
 }
 
+#[test]
+fn a_nameless_removal_keeps_its_number_when_its_service_comes_back_and_goes() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    store
+        .write(
+            &who(),
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("jobs").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &[
+            ("web.env.URL", json!("w")),
+            ("jobs.env.URL", json!("j")),
+            ("api.env.FIRST", json!("${{ web.URL }}")),
+            ("api.env.SECOND", json!("${{ jobs.URL }}")),
+        ],
+    )
+    .unwrap();
+    store
+        .write_trusted(
+            &who(),
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted {
+                approval: ployz_store::Approval::NotRequired,
+                ..ployz_store::Trusted::default()
+            },
+        )
+        .unwrap();
+    let remove_both = || {
+        for gone in ["web", "jobs"] {
+            store
+                .write(
+                    &who(),
+                    &ployz_store::RemoveService {
+                        environment: EnvironmentRef::default(),
+                        service: ServiceName::parse(gone).unwrap(),
+                    },
+                )
+                .unwrap();
+        }
+    };
+    remove_both();
+    execute(&url, "UPDATE config_environment SET removed = '{}'");
+    set(&store, &[("api.env.OTHER", json!("x"))]).unwrap();
+    let shown = || {
+        (
+            value(&store, "api.env.FIRST"),
+            value(&store, "api.env.SECOND"),
+        )
+    };
+    let nameless = (
+        json!("${{ <deleted>.URL }}"),
+        json!("${{ <deleted #2>.URL }}"),
+    );
+    assert_eq!(shown(), nameless);
+
+    store
+        .write(
+            &who(),
+            &ployz_store::Discard {
+                environment: EnvironmentRef::default(),
+                target: ployz_store::DiscardTarget::Saved,
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    remove_both();
+    assert_eq!(shown(), nameless);
+    set(
+        &store,
+        &[("api.env.SECOND", json!("${{ <deleted #2>.URL }}/v2"))],
+    )
+    .unwrap();
+}
+
+/// Run `sql` on the database at `url`, beside the Store.
+fn execute(url: &str, sql: &str) {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute(sql, [])
+                .unwrap();
+        }
+        None => {
+            postgres::Client::connect(url, postgres::NoTls)
+                .unwrap()
+                .execute(sql, &[])
+                .unwrap();
+        }
+    }
+}
+
 /// `DeploymentWarning` before broken references, as older clients still read it.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]

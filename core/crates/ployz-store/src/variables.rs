@@ -199,7 +199,7 @@ pub(crate) fn set(
         (Some(Input::Text(text)), _) => {
             let old = current.map_or(&[][..], |current| current.value.parts());
             let (parts, fingerprint) =
-                text_parts(key, &text, &names, &environment.shown_names(), old)?;
+                text_parts(key, &text, &names, &[&environment.shown_names()], old)?;
             let typed = typed_address::in_plain(&parts, key, &others, &names)?;
             (stored(parts), fingerprint, typed)
         }
@@ -383,13 +383,13 @@ fn referrers(
     Ok(found)
 }
 
-/// The lineage each `${{ name.KEY }}` of an edit reads: the Service `shown`
-/// (lineage → name as reads show it) calls `name`. A removed Service's, such as
-/// `${{ <deleted redis>.KEY }}`, only where the edited value, `old`, reads that
-/// `KEY` of it: an edit keeps the references it had and adds none to a removed
-/// Service.
+/// The lineage each `${{ name.KEY }}` of an edit reads: the Service the first of
+/// `shown` (lineage → name as reads show it) to call it `name` names. A removed
+/// Service's, such as `${{ <deleted redis>.KEY }}`, only where the edited value,
+/// `old`, reads that `KEY` of it: an edit keeps the references it had and adds
+/// none to a removed Service.
 pub(crate) fn lineage_of<'a>(
-    shown: &'a BTreeMap<String, String>,
+    shown: &'a [&'a BTreeMap<String, String>],
     old: &'a [ValuePart],
 ) -> impl FnMut(&str, &str) -> Option<String> + 'a {
     move |name, key| {
@@ -407,6 +407,7 @@ pub(crate) fn lineage_of<'a>(
         };
         shown
             .iter()
+            .flat_map(|shown| shown.iter())
             .filter(|(_, shown)| shown.as_str() == name)
             .map(|(lineage, _)| lineage)
             .find(|lineage| !removed || read(lineage))
@@ -420,7 +421,7 @@ pub(crate) fn text_parts(
     key: &VariableKey,
     text: &str,
     names: &BTreeMap<String, String>,
-    shown: &BTreeMap<String, String>,
+    shown: &[&BTreeMap<String, String>],
     old: &[ValuePart],
 ) -> Result<(Vec<ValuePart>, String), RpcError> {
     validate_text(key, text)?;

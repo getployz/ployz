@@ -61,11 +61,20 @@ pub(crate) struct Environment {
 }
 
 /// A Service that left an Environment's Working State: its name when it left, if
-/// any record has one, and its place among the Environment's removals.
+/// any record had one, its number among the removals shown by that name, and its
+/// place among all the Environment's removals. None of them ever changes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Removed {
     pub(crate) name: Option<String>,
+    pub(crate) nth: usize,
     pub(crate) order: u64,
+}
+
+impl Removed {
+    /// How reads show it, such as `<deleted redis#2>`.
+    fn label(&self) -> String {
+        ployz_core::config::deleted_owner(self.name.as_deref(), self.nth)
+    }
 }
 
 /// The [`Removed`] Services of an Environment, by lineage.
@@ -74,16 +83,12 @@ pub(crate) struct Removed {
 pub(crate) struct RemovedServices(BTreeMap<String, Removed>);
 
 impl RemovedServices {
-    /// Record that `lineage` left, called `name`. One recorded already keeps its
-    /// place and name, and only takes a name it lacked.
+    /// Record that `lineage` left, called `name`. One recorded already stays as it
+    /// was first recorded.
     pub(crate) fn record(&mut self, lineage: &str, name: Option<&str>) {
-        let order = self.next();
-        let entry = self
-            .0
-            .entry(lineage.to_owned())
-            .or_insert(Removed { name: None, order });
-        if entry.name.is_none() {
-            entry.name = name.map(str::to_owned);
+        if !self.0.contains_key(lineage) {
+            let removed = self.next(name);
+            self.0.insert(lineage.to_owned(), removed);
         }
     }
 
@@ -91,15 +96,8 @@ impl RemovedServices {
     /// `other`'s order. `keep` picks the lineages to take.
     pub(crate) fn append(&mut self, other: &Self, keep: impl Fn(&str) -> bool) {
         for (lineage, removed) in other.in_order() {
-            if keep(lineage) && !self.0.contains_key(lineage) {
-                let order = self.next();
-                self.0.insert(
-                    lineage.to_owned(),
-                    Removed {
-                        name: removed.name.clone(),
-                        order,
-                    },
-                );
+            if keep(lineage) {
+                self.record(lineage, removed.name.as_deref());
             }
         }
     }
@@ -111,12 +109,18 @@ impl RemovedServices {
             .filter_map(|(lineage, removed)| Some((lineage, removed.name.as_ref()?)))
     }
 
-    fn next(&self) -> u64 {
-        self.0
-            .values()
-            .map(|removed| removed.order + 1)
-            .max()
-            .unwrap_or(1)
+    /// The next removal, called `name`: after every one recorded, and numbered
+    /// after every one recorded by that name.
+    fn next(&self, name: Option<&str>) -> Removed {
+        let removals = self.0.values();
+        let alike = removals
+            .clone()
+            .filter(|removed| removed.name.as_deref() == name);
+        Removed {
+            name: name.map(str::to_owned),
+            nth: alike.map(|removed| removed.nth + 1).max().unwrap_or(1),
+            order: removals.map(|removed| removed.order + 1).max().unwrap_or(1),
+        }
     }
 
     fn in_order(&self) -> Vec<(&String, &Removed)> {
@@ -125,34 +129,21 @@ impl RemovedServices {
         removals
     }
 
-    /// `names`, and each removed Service as reads show it, such as `<deleted redis>`:
-    /// the nth removal shown alike adds `#n`, counting every recorded removal, so a
-    /// shown name keeps meaning the same Service. `referenced` names lineages read
-    /// that no record holds yet; they number after the recorded ones.
+    /// `names`, and each removed Service as reads show it, by the label it was
+    /// recorded with, such as `<deleted redis#2>`, so a shown name always means the
+    /// same Service. `referenced` names lineages read that no record holds yet;
+    /// they show as the next nameless removals would.
     pub(crate) fn shown(
         &self,
         mut names: BTreeMap<String, String>,
         referenced: impl IntoIterator<Item = String>,
     ) -> BTreeMap<String, String> {
-        let unrecorded: Vec<String> = referenced
-            .into_iter()
-            .filter(|lineage| !self.0.contains_key(lineage))
-            .collect();
-        let removals = self
-            .in_order()
-            .into_iter()
-            .map(|(lineage, removed)| (lineage, removed.name.as_deref()))
-            .chain(unrecorded.iter().map(|lineage| (lineage, None)));
-        let mut alike = BTreeMap::new();
-        for (lineage, name) in removals {
-            let nth = alike.entry(name).or_insert(0);
-            *nth += 1;
-            if !names.contains_key(lineage) {
-                names.insert(
-                    lineage.clone(),
-                    ployz_core::config::deleted_owner(name, *nth),
-                );
-            }
+        let mut removed = self.clone();
+        for lineage in referenced {
+            removed.record(&lineage, None);
+        }
+        for (lineage, removed) in removed.0 {
+            names.entry(lineage).or_insert_with(|| removed.label());
         }
         names
     }
@@ -718,6 +709,27 @@ pub(crate) fn persist_working(
     crate::review::sealed::record(tx, environment.summary.id.as_str(), &environment.working)?;
     // A row the draft changed is its own now, whatever proposal brought it.
     crate::branch::release_changed(tx, environment)
+}
+
+/// Persist the removals `environment` records, leaving its Working State as it is.
+pub(crate) fn persist_removed(
+    tx: &mut dyn Tx,
+    environment: &mut Environment,
+) -> Result<(), RpcError> {
+    let mut removed = removed_of(tx, &environment.summary.id)?;
+    removed.append(&environment.removed, |_| true);
+    environment.removed = removed;
+    tx.execute(
+        "UPDATE config_environment SET removed = ?1 WHERE id = ?2",
+        &[
+            serde_json::to_string(&environment.removed)
+                .expect("names are JSON")
+                .as_str()
+                .into(),
+            environment.summary.id.as_str().into(),
+        ],
+    )?;
+    Ok(())
 }
 
 pub(crate) struct ValidatedWorking {

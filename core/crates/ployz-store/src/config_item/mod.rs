@@ -228,7 +228,7 @@ pub(crate) fn put_file(
         &put.file,
         &put.content,
         &names,
-        &environment.shown_names(),
+        &[&environment.shown_names()],
         old,
     )?;
     let config = environment.config_mut(&put.config)?;
@@ -585,7 +585,7 @@ fn parts(
     file: &ConfigFileName,
     text: &str,
     names: &BTreeMap<String, String>,
-    shown: &BTreeMap<String, String>,
+    shown: &[&BTreeMap<String, String>],
     old: &[ValuePart],
 ) -> Result<Vec<ValuePart>, RpcError> {
     if text.len() > MAX_FILE_BYTES {

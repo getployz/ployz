@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 
 use crate::backend;
 use crate::support::{
-    HEAD, LATER, MERGE, at, check, config, exclude, history, labels, merged, on_merge, passed,
-    production_diff, pull, push, row, runner, save, set, shop_copying, system, unset, uuid, value,
-    vouched, watching,
+    HEAD, LATER, MERGE, at, check, config, exclude, history, labels, merge_value, merged, on_merge,
+    passed, production_diff, pull, push, row, runner, save, set, shop_copying, system, unset, uuid,
+    value, vouched, watching,
 };
 
 fn node(name: &str) -> NodeName {
@@ -1411,4 +1411,36 @@ fn a_merge_that_removes_a_mounted_config_takes_it_out_with_the_service() {
         .map(|node| node.node.name().to_owned())
         .collect();
     assert_eq!(nodes, vec!["web".to_owned(), "sentry".to_owned()]);
+}
+
+#[test]
+fn an_edit_reads_a_service_by_the_name_the_preview_shows_it_after_production_removed_it() {
+    let (store, who) = shop_with_nodes();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[(
+            "web.env.DB_URL",
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432"),
+        )],
+    );
+    remove_service(&store, &who, "production", "db");
+    let shown = json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432");
+    let url = row(&store, &who, "web.env.DB_URL");
+    assert_eq!((url.preview, url.lands), (shown.clone(), shown));
+
+    store
+        .write(
+            &who,
+            &merge_value(
+                "web.env.DB_URL",
+                Some("${{ db.PLOYZ_PRIVATE_DOMAIN }}:6432"),
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        row(&store, &who, "web.env.DB_URL").lands,
+        json!("${{ <deleted db>.PLOYZ_PRIVATE_DOMAIN }}:6432")
+    );
 }

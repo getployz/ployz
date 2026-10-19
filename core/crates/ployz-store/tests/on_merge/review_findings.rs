@@ -1029,3 +1029,65 @@ fn an_edit_reads_a_removed_service_by_the_name_both_sides_share() {
         json!("${{ <deleted redis#2>.URL }}!")
     );
 }
+
+#[test]
+fn a_merge_only_saved_names_the_removed_service_its_values_read() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: at("pr-5"),
+                name: ServiceName::parse("redis").unwrap(),
+                image: Some("redis:7".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "pr-5",
+        &[
+            ("redis.env.URL", json!("r")),
+            ("web.env.HOSTS", json!("${{ redis.URL }}")),
+        ],
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::RemoveService {
+                environment: at("pr-5"),
+                service: ServiceName::parse("redis").unwrap(),
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.HOSTS", json!("draft"))],
+    );
+
+    merged(&store, &who, "2026-09-29T11:00:00Z", MERGE);
+    assert_eq!(
+        value(&store, &who, "production", "web.env.HOSTS"),
+        Some(json!("draft"))
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("production"),
+                target: ployz_store::DiscardTarget::Saved,
+                path: None,
+                version: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        value(&store, &who, "production", "web.env.HOSTS"),
+        Some(json!("${{ <deleted redis>.URL }}"))
+    );
+}

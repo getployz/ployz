@@ -198,9 +198,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
     let way = Move::merge(tx, from, &into)?;
     let plan = way.plan(&saved);
     let stored = edits(tx, &from.summary.id, &into.summary.id)?;
-    let removed = landed_removals(from, &into);
-    let (from_names, into_names) = (from.shown_with(&removed), into.shown_with(&removed));
-    let edit_names = edit_names(from, &into);
+    let names = MergeNames::of(from, &into);
     let mut rows = Vec::new();
     for row in plan.rows() {
         let (ride, conflict, arrives) = match &row.verdict {
@@ -234,11 +232,11 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
         };
         let at = named(&[&from.working, &saved], &row.id)
             .ok_or_else(|| error::corrupt("On merge row"))?;
-        let preview = shown(&from.working, &from_names, &row.id, &row.from);
-        let production = shown(&saved, &into_names, &row.id, &row.into);
+        let preview = shown(&from.working, &names.from, &row.id, &row.from);
+        let production = shown(&saved, &names.into, &row.id, &row.into);
         let lands = match (stored.get(&row.id), arrives) {
             _ if ride == Ride::Kept => production.clone(),
-            (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &edit_names),
+            (Some(edit), _) if ride == Ride::Edited => shown_edit(edit, &names.edit),
             (_, Arrives::NeedsValue) => json!({ "secret": false }),
             _ => preview.clone(),
         };
@@ -328,17 +326,33 @@ fn landed_removals(from: &Environment, into: &Environment) -> RemovedServices {
     removed
 }
 
-/// The names an Edit into `into` shows and reads Services by: `into`'s, and each
-/// Service removed in `from` that `into` doesn't name, as the merge shows it.
-fn edit_names(from: &Environment, into: &Environment) -> BTreeMap<String, String> {
-    let removed = landed_removals(from, into);
-    let mut names = into.shown_with(&removed);
-    for (lineage, name) in from.shown_with(&removed) {
-        if is_deleted_owner(&name) {
-            names.entry(lineage).or_insert(name);
+/// How the On merge list shows Services, by lineage: in `from`'s values, in
+/// `into`'s, and in an Edit.
+struct MergeNames {
+    from: BTreeMap<String, String>,
+    into: BTreeMap<String, String>,
+    /// `into`'s, and each Service removed in `from` that `into` doesn't name.
+    edit: BTreeMap<String, String>,
+}
+
+impl MergeNames {
+    fn of(from: &Environment, into: &Environment) -> Self {
+        let removed = landed_removals(from, into);
+        let (from, into) = (from.shown_with(&removed), into.shown_with(&removed));
+        let mut edit = into.clone();
+        for (lineage, name) in &from {
+            if is_deleted_owner(name) {
+                edit.entry(lineage.clone()).or_insert_with(|| name.clone());
+            }
         }
+        Self { from, into, edit }
     }
-    names
+
+    /// Every name the list shows a Service by, so an Edit reads any it was shown;
+    /// an Edit's own first.
+    fn read(&self) -> [&BTreeMap<String, String>; 3] {
+        [&self.edit, &self.from, &self.into]
+    }
 }
 
 /// An Edit as reads show it.
@@ -479,7 +493,7 @@ pub(crate) fn set_merge_value(
                 &VariableKey::parse(key)?,
                 value,
                 &landing.into.names(),
-                &edit_names(&from, &landing.into),
+                &MergeNames::of(&from, &landing.into).read(),
                 &old,
             )?;
             let mut value = json!(variables::stored(parts));
@@ -858,8 +872,9 @@ fn land_one(
         working = with_variable_ids_of(&saved, &working, next);
     }
     let consumed = end_included(tx, &into, Some(&from.summary.id))?;
+    // Saved took the merge whatever Working keeps, so the record takes its removals.
+    destination.removed.append(&from.removed, |_| true);
     if working != destination.working {
-        destination.removed.append(&from.removed, |_| true);
         let carried = Carried::of(tx, &from.summary.id, &from.working)?;
         crate::branch::land(
             tx,
@@ -871,6 +886,8 @@ fn land_one(
         )?;
     } else if consumed {
         scope::persist_working(tx, &mut destination)?;
+    } else {
+        scope::persist_removed(tx, &mut destination)?;
     }
 
     // The pair shares the PR Environment's values: an Edit is the Destination's own
