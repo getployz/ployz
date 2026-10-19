@@ -111,8 +111,8 @@ pub struct DeploymentsView {
     /// None before the first Deploy.
     pub latest: Option<DeploymentSummary>,
     /// Its Deployments in flight (queued, running, cancelling), newest number
-    /// first, whatever page they fall on: a promoted hold lists where it was
-    /// created, behind any holds made since.
+    /// first, whatever page they fall on: holds made since push them down the
+    /// list, however few rows a page holds.
     pub in_flight: Vec<DeploymentSummary>,
 }
 

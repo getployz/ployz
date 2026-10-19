@@ -263,8 +263,9 @@ fn hold_is_never_unclaimed() {
 /// Holds on two branches pass CI in the other order from how they were pushed. Each
 /// is numbered as it queues, so numbers follow what ran, and the Environment's live
 /// revision is the later-applied one's.
-#[test]
-fn holds_number_in_the_order_they_pass_ci() {
+/// A shop with web on main and api on dev, both waiting for CI: web's hold on `H2`
+/// pushed first, then api's on `H3`. Returns the two holds, web's first.
+fn two_branches_held() -> (ConfigStore, Actor, DeploymentSummary, DeploymentSummary) {
     let (store, who) = shop();
     set(&store, &who, "web.waitForCi", json!(true));
     set(&store, &who, "api.waitForCi", json!(true));
@@ -305,7 +306,7 @@ fn holds_number_in_the_order_they_pass_ci() {
             changed: None,
         }),
     );
-    // The two list newest push first; pick each by its commit all the same.
+    // The two list newest hold first; pick each by its commit all the same.
     let holds = held(&store, &who);
     assert_eq!(holds.len(), 2);
     let by_head = |head: &str| {
@@ -315,8 +316,14 @@ fn holds_number_in_the_order_they_pass_ci() {
             .cloned()
             .unwrap()
     };
-    let (api_hold, web_hold) = (by_head(H3), by_head(H2));
+    let (web_hold, api_hold) = (by_head(H2), by_head(H3));
     assert_eq!((web_hold.number, api_hold.number), (None, None));
+    (store, who, web_hold, api_hold)
+}
+
+#[test]
+fn holds_number_in_the_order_they_pass_ci() {
+    let (store, who, web_hold, api_hold) = two_branches_held();
     assert_eq!(
         (web_hold.label(), api_hold.label()),
         (H2[..7].to_owned(), H3[..7].to_owned())
@@ -341,8 +348,8 @@ fn holds_number_in_the_order_they_pass_ci() {
     let web_saved = find(&store, &who, &web_hold).saved;
     assert!(web_saved > api_saved);
 
-    // The list keeps the order the holds were pushed in, api's last; the numbers
-    // say which ran first, and the list shows them.
+    // Each moved to the top of the list as it queued, so the list runs in number
+    // order, web's #2 first, however the holds were pushed.
     let numbers: Vec<_> = deployments(&store, &who)
         .iter()
         .map(|deployment| (deployment.id.clone(), deployment.number))
@@ -350,8 +357,8 @@ fn holds_number_in_the_order_they_pass_ci() {
     assert_eq!(
         numbers,
         [
-            (api_hold.id.clone(), Some(1)),
-            (web_hold.id.clone(), Some(2))
+            (web_hold.id.clone(), Some(2)),
+            (api_hold.id.clone(), Some(1))
         ]
     );
     let history = store
@@ -1065,6 +1072,68 @@ fn pages_past_a_promoted_hold() {
     assert_eq!(numbered, [Some(3), Some(2), Some(1)]);
 }
 
+/// Web's hold `W` is made, then api's `A`; A passes CI first and queues as #1, a
+/// numbered row newer than W in the list. W then passes and queues as #2, which
+/// moves it to the top: numbered Deployments list in number order. Pages of one
+/// walk #2, #1, each once, and name W the latest throughout. (A manual Deploy
+/// supersedes every hold, so only a promoted hold can number ahead of one waiting.)
+#[test]
+fn a_promoted_hold_lists_above_the_deployments_numbered_while_it_waited() {
+    let (store, who, web_hold, api_hold) = two_branches_held();
+    let page = |cursor: Option<String>| {
+        store
+            .read(
+                &who,
+                &DeploymentsQuery {
+                    limit: Some(1),
+                    cursor,
+                    ..DeploymentsQuery::default()
+                },
+            )
+            .unwrap()
+    };
+    let [api] = <[_; 1]>::try_from(passed(&store, H3, 10).admitted).unwrap();
+    assert_eq!(
+        (&api.deployment.id, api.deployment.number),
+        (&api_hold.id, Some(1))
+    );
+    backend::run(&store, &api.deployment.id);
+    let waiting = page(None);
+    assert_eq!(
+        waiting
+            .deployments
+            .iter()
+            .map(|row| &row.id)
+            .collect::<Vec<_>>(),
+        [&api_hold.id]
+    );
+    let [web] = <[_; 1]>::try_from(passed(&store, H2, 11).admitted).unwrap();
+    assert_eq!(
+        (&web.deployment.id, web.deployment.number),
+        (&web_hold.id, Some(2))
+    );
+    let mut rows = Vec::new();
+    let mut cursor = None;
+    loop {
+        let next = page(cursor);
+        assert_eq!(
+            next.latest.as_ref().map(|latest| &latest.id),
+            Some(&web_hold.id)
+        );
+        rows.extend(next.deployments);
+        cursor = next.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(
+        rows.iter()
+            .map(|row| (&row.id, row.number))
+            .collect::<Vec<_>>(),
+        [(&web_hold.id, Some(2)), (&api_hold.id, Some(1))]
+    );
+}
+
 /// A hold on `H2` passes CI and queues as #1; a hold on `H3` is then made and
 /// cancelled. A page of one shows only that cancelled hold, #1 sitting behind
 /// it, yet the view carries #1 as in flight, and as the latest.
@@ -1122,10 +1191,9 @@ fn in_flight_comes_with_the_view_from_past_the_first_page() {
 }
 
 /// A cancelled hold `C` on `H2`, then a hold `H` on `H3` above it, both pushed within
-/// a second. A page of one ends on H; H then promotes to #4, which once moved it
-/// below C in the list and had a later page repeat it. A Deployment lists where it
-/// was created, so the pages after reach C, then #3 to #1, and H never again. The
-/// list's latest numbered Deployment is H all the same.
+/// a second. A page of one ends on H; H then promotes to #4, which moves it to the
+/// top of the list, above the page's cursor, so the pages after reach C, then #3 to
+/// #1, and H never again. The list's latest numbered Deployment is H all the same.
 #[test]
 fn pages_past_a_promoted_hold_above_a_cancelled_one() {
     let (store, who) = shop();

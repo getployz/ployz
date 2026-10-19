@@ -798,10 +798,12 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 });
 
 /// SQL selecting Deployments that may still run: queued, or claimed by a runner
-/// whose lease holds. The inverse of [`lapsed`] for claimed ones.
+/// whose lease holds. The inverse of [`lapsed`] for claimed ones. The status set
+/// comes first, spelled as the `config_deployment_in_flight` index's predicate is,
+/// so SQLite's planner takes the index.
 pub(crate) fn in_flight_sql() -> String {
     format!(
-        "(status = 'queued' OR (status IN ('running', 'cancelling') AND lease > {}))",
+        "(status IN ('queued', 'running', 'cancelling') AND (status = 'queued' OR lease > {}))",
         now()
     )
 }

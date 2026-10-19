@@ -139,10 +139,15 @@ pub(crate) fn admit(
             message,
         ] = frozen_columns;
         let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
+        // Number and list position are both one past the last, taken at the same
+        // moment under the lock: among numbered Deployments the list runs in number
+        // order. A promoted hold moves to the top of the list for it.
+        let listed = next_listed(tx, environment)?;
         if held {
             return tx
                 .execute(
                     "UPDATE config_deployment SET status = 'queued', number = ?13, \
+                     listed = ?14, \
                      saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
                      credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
                      admitted_by = ?11, message = ?12 \
@@ -161,11 +166,11 @@ pub(crate) fn admit(
                         by,
                         message,
                         number.into(),
+                        listed.into(),
                     ],
                 )
                 .map(|_| ());
         }
-        let listed = next_listed(tx, environment)?;
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
@@ -359,7 +364,9 @@ pub(super) fn queue(
 
 /// The list position the next Deployment of `environment` takes: one past the
 /// last. Read under the Environment's lock, as every insert of one is, so two never
-/// take the same.
+/// take the same. A hold takes one at insert and another as it promotes, so a
+/// position only ever moves up: a page cursor past it can skip a hold promoted
+/// since (it heads the list on the next read) but never reads a row twice.
 pub(super) fn next_listed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<i64, RpcError> {
     tx.query(
         "SELECT COALESCE(MAX(listed), 0) + 1 FROM config_deployment WHERE environment_id = ?1",

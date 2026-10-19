@@ -49,4 +49,6 @@ CREATE INDEX config_deployment_hold_head
     ON config_deployment (organization_id, push_repository_id, push_head)
     WHERE status = 'waiting_for_ci';
 CREATE INDEX config_check_suite_head ON config_check_suite (organization_id, repository_id, head);
+CREATE INDEX config_deployment_in_flight ON config_deployment (environment_id, number)
+    WHERE status IN ('queued', 'running', 'cancelling');
 DROP TABLE config_waiting_deploy;

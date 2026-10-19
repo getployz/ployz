@@ -8,13 +8,17 @@ ALTER TABLE config_deployment ADD COLUMN push_head TEXT;
 ALTER TABLE config_deployment ADD COLUMN push_services TEXT;
 -- A Deployment waiting for CI has no number: it takes the next one as it queues.
 ALTER TABLE config_deployment ALTER COLUMN number DROP NOT NULL;
--- Where a Deployment lists among its Environment's: a position taken once, at
--- insert, that promotion never moves, so a page cursor can hold it. Every Deployment
--- so far was numbered at insert, so its number is its position.
+-- Where a Deployment lists among its Environment's: a position taken at insert and
+-- again as a hold promotes, alongside its number, so numbered Deployments list in
+-- number order and a page cursor can hold it. Every Deployment so far was numbered
+-- at insert, so its number is its position.
 ALTER TABLE config_deployment ADD COLUMN listed BIGINT;
 UPDATE config_deployment SET listed = number;
 ALTER TABLE config_deployment ALTER COLUMN listed SET NOT NULL;
 CREATE UNIQUE INDEX config_deployment_listed ON config_deployment (environment_id, listed);
+-- Every read of a Deployments page finds the Environment's in-flight ones.
+CREATE INDEX config_deployment_in_flight ON config_deployment (environment_id, number)
+    WHERE status IN ('queued', 'running', 'cancelling');
 -- A newer head of the branch replaces the one waiting: one per Environment and branch.
 CREATE UNIQUE INDEX config_deployment_hold_branch
     ON config_deployment (environment_id, push_repository_id, push_branch)

@@ -727,7 +727,7 @@ fn follow(
     }
 }
 
-/// The Environment's newest Deployment when it is newer than superseded `view` and targets every Service `view` did.
+/// The newest Deployment newer than superseded `view` that targets every Service `view` did, among the latest and those in flight.
 fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<DeploymentSummary>, Error> {
     let page = store.read(&DeploymentsQuery {
         environment: EnvironmentRef {
@@ -737,9 +737,9 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         limit: None,
         cursor: None,
     })?;
-    // The list runs in creation order, so a hold promoted since can sit behind
-    // newer rows: the newest numbered Deployment comes with the view instead.
-    Ok(page.latest.filter(|newer| {
+    // The latest may ship other Services while an older one in flight ships ours:
+    // the latest, then the in-flight ones newest first, whatever page they fall on.
+    Ok(page.latest.into_iter().chain(page.in_flight).find(|newer| {
         newer.number > view.deployment.number
             && ships_all(&view.deployment.services, &newer.services)
     }))
