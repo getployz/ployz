@@ -1120,7 +1120,16 @@ async fn publish_group<C: MachineOperations>(
     {
         return published;
     }
-    let mut interrupted = false;
+    let routed = *service != QualifiedService::system_ingress();
+    let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
+    let mut listed_on: BTreeSet<MachineId> = new
+        .first()
+        .map(|(_, machine, _)| *machine)
+        .into_iter()
+        .collect();
+    // After an Out that is not confirmed unlisted, a proxy may still list that
+    // copy, and the next Out could leave the Service with nothing routed.
+    let mut halted: Option<Left> = None;
     for (machine_id, container_id) in &old {
         let copy = match inspect(client, machine_id, container_id).await {
             Ok(details) => cleanup::Copy::observed(&details.container),
@@ -1147,23 +1156,78 @@ async fn publish_group<C: MachineOperations>(
                 continue;
             }
         };
-        if interrupted {
-            rows.leave_running(progress, &copy, Left::Interrupted);
+        if copy.rotation == CopyRotation::Pending {
+            if let Some(left) =
+                retired(cleanup::remove(client, &copy, AnonymousVolumes::Remove).await)
+            {
+                rows.leave_running(progress, &copy, left);
+            }
             continue;
         }
-        let left: Option<Left> =
-            match cleanup::retire(client, &copy, false, AnonymousVolumes::Remove, cancellation)
-                .await
+        if let Some(left) = &halted {
+            rows.leave_running(progress, &copy, left.clone());
+            continue;
+        }
+        // The owner refuses this Out (LastIn) until its own view lists a new copy.
+        if routed && copy.rotation == CopyRotation::In && !listed_on.contains(&copy.machine_id) {
+            match cleanup::wait_listed(
+                client,
+                &copy.machine_id,
+                service,
+                &ids,
+                cancellation,
+                |_| {},
+            )
+            .await
             {
-                Ok(step) => step.into(),
-                Err(error) => Some(Left::Failed(error)),
-            };
+                Ok(cleanup::Wait::Done) => {
+                    listed_on.insert(copy.machine_id);
+                }
+                Ok(cleanup::Wait::TimedOut(_)) => {
+                    rows.leave_running(progress, &copy, Left::NotListed);
+                    continue;
+                }
+                Ok(cleanup::Wait::Cancelled) => {
+                    rows.leave_running(progress, &copy, Left::Interrupted);
+                    halted = Some(Left::Interrupted);
+                    continue;
+                }
+                Err(error) => {
+                    rows.leave_running(progress, &copy, Left::Failed(error));
+                    continue;
+                }
+            }
+        }
+        let left = match cleanup::take_out(client, &copy, false, cancellation).await {
+            Ok(cleanup::Step::Done) => {
+                retired(cleanup::remove(client, &copy, AnonymousVolumes::Remove).await)
+            }
+            Ok(step @ cleanup::Step::Refused(_)) => step.into(),
+            Ok(step @ cleanup::Step::Cancelled) => {
+                halted = Some(Left::Interrupted);
+                step.into()
+            }
+            Ok(step @ cleanup::Step::NotConfirmed(_)) => {
+                halted = Some(Left::AfterUnconfirmedOut);
+                step.into()
+            }
+            Err(error) => {
+                halted = Some(Left::AfterUnconfirmedOut);
+                Some(Left::Failed(error))
+            }
+        };
         if let Some(left) = left {
-            interrupted = matches!(left, Left::Interrupted);
             rows.leave_running(progress, &copy, left);
         }
     }
     Published::Listed
+}
+
+fn retired(removed: Result<cleanup::Step, RpcError>) -> Option<Left> {
+    match removed {
+        Ok(step) => step.into(),
+        Err(error) => Some(Left::Failed(error)),
+    }
 }
 
 /// A Rolling replacement's new copy, which goes In before the next Machine's
@@ -1719,6 +1783,16 @@ impl<'a> Rows<'a> {
             Left::NotConfirmed(machines) => (self.not_confirmed(&machines), machines),
             Left::Interrupted => ("interrupted".into(), Vec::new()),
             Left::DeployFailed => ("the Deploy failed".into(), Vec::new()),
+            Left::AfterUnconfirmedOut => {
+                ("an earlier copy's Out was not confirmed".into(), Vec::new())
+            }
+            Left::NotListed => (
+                format!(
+                    "{} did not see the new copies listed",
+                    self.machine_name(&copy.machine_id)
+                ),
+                Vec::new(),
+            ),
             Left::Refused(refusal) => (refusal.message, Vec::new()),
             Left::Failed(error) if unanswered(&error) => (
                 format!("{} did not answer", self.machine_name(&copy.machine_id)),
@@ -1744,6 +1818,10 @@ fn unanswered(error: &RpcError) -> bool {
 enum Left {
     NotConfirmed(Vec<MachineId>),
     Interrupted,
+    /// An earlier Out on this Service was not confirmed unlisted.
+    AfterUnconfirmedOut,
+    /// The owner's view never listed a new copy, so it would refuse the Out.
+    NotListed,
     Refused(ContainerRefusal),
     Failed(RpcError),
     /// This run Held the copy and could not bring it back In, for this reason.

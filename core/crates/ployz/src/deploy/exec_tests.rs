@@ -240,6 +240,11 @@ struct Scripted {
     /// reads after it leaves In; `usize::MAX` never drops it.
     withheld: BTreeMap<QualifiedService, usize>,
     lingering: Mutex<BTreeMap<ContainerId, usize>>,
+    /// This Machine's view of every ack row shows the routes from before the
+    /// run for this many of its reads; its owner checks LastIn on that view.
+    lagging: Mutex<BTreeMap<MachineId, usize>>,
+    /// Once this move is applied, every route read fails.
+    reads_fail_after: Option<Move>,
     /// What each proxy last routed, kept by the real rule.
     served: Mutex<BTreeMap<MachineId, ployz_core::ProxyRoutes>>,
     moves: Mutex<Vec<Move>>,
@@ -274,6 +279,8 @@ impl Scripted {
             moved: Mutex::new(BTreeMap::new()),
             withheld: BTreeMap::new(),
             lingering: Mutex::new(BTreeMap::new()),
+            lagging: Mutex::new(BTreeMap::new()),
+            reads_fail_after: None,
             served: Mutex::new(BTreeMap::new()),
             moves: Mutex::new(Vec::new()),
             listed: Mutex::new(Vec::new()),
@@ -506,6 +513,38 @@ impl Scripted {
             .collect()
     }
 
+    /// `advance` counts the read toward the view catching up.
+    fn lags(&self, machine_id: &MachineId, advance: bool) -> bool {
+        let mut lagging = self.lagging.lock().unwrap();
+        let Some(reads) = lagging.get_mut(machine_id).filter(|reads| **reads > 0) else {
+            return false;
+        };
+        if advance {
+            *reads -= 1;
+        }
+        true
+    }
+
+    /// Every live proxy's route from before the run, as a lagging view shows it.
+    fn before(
+        &self,
+        service: &QualifiedService,
+    ) -> BTreeMap<MachineId, Option<BTreeSet<ContainerId>>> {
+        let listed: BTreeSet<ContainerId> = self
+            .copies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, copy)| copy.service == *service && copy.in_before)
+            .map(|(id, _)| *id)
+            .collect();
+        self.proxies()
+            .into_iter()
+            .filter(|machine| !self.down.contains(machine))
+            .map(|machine| (machine, Some(listed.clone())))
+            .collect()
+    }
+
     fn decide(
         &self,
         machine_id: &MachineId,
@@ -581,7 +620,11 @@ impl Scripted {
                 .map(|(id, _)| *id)
                 .collect();
             drop(copies);
-            let routes = self.routes(&copy.service, false);
+            let routes = if self.lags(machine_id, false) {
+                self.before(&copy.service)
+            } else {
+                self.routes(&copy.service, false)
+            };
             let acked = live.iter().any(|sibling| {
                 routes
                     .values()
@@ -1014,7 +1057,7 @@ impl MachineOperations for Scripted {
 
     async fn read_routes(
         &self,
-        _machine_id: &MachineId,
+        machine_id: &MachineId,
         service: &QualifiedService,
     ) -> Result<RoutesRead, RpcError> {
         if self.read_latency {
@@ -1027,8 +1070,20 @@ impl MachineOperations for Scripted {
                 return Err(error("the route query failed"));
             }
         }
+        if self
+            .reads_fail_after
+            .as_ref()
+            .is_some_and(|applied| self.moves().contains(applied))
+        {
+            return Err(unavailable("the route read failed"));
+        }
+        let routes = if self.lags(machine_id, true) {
+            self.before(service)
+        } else {
+            self.routes(service, true)
+        };
         Ok(RoutesRead {
-            routes: self.routes(service, true),
+            routes,
             complete: true,
             down: self.down.clone(),
             ..RoutesRead::default()
