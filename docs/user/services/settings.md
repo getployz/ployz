@@ -248,6 +248,15 @@ to leave it down. **Always** restarts it whenever it stops. See
 Shown with **On failure**. 10 by default, from 0 to 100; after that many restarts, the replica
 stays stopped.
 
+### Update order
+
+How a deploy replaces this service's replicas. **Automatic** by default: **Stop first** for a
+service with a volume, **Start first** for the rest. Choose **Start first** for no downtime,
+**Stop first** when two copies must never run at once, or **Rolling** to replace one server at a
+time, so a failure leaves the later servers on the old version. A service with a volume takes
+**Start first** only when the volume allows shared writes. See
+[Choose how a deploy replaces replicas](../deploy/deployments.md#choose-how-a-deploy-replaces-replicas).
+
 ## Storage
 
 Shown for a database without a volume. **No volume** warns that data is lost on redeploy.

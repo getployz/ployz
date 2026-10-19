@@ -91,6 +91,9 @@ const OPTION_LABELS = new Map([
   ["no", "Never"],
   ["railpack", "Railpack"],
   ["dockerfile", "Dockerfile"],
+  ["start-first", "Start first"],
+  ["stop-first", "Stop first"],
+  ["rolling", "Rolling"],
 ]);
 
 const SERVICE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
@@ -196,6 +199,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       <HealthcheckSettings {...healthcheck} />
       {field("restartPolicy")}
       {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
+      {field("updateOrder")}
     </>,
     danger: <StoreDangerSection state={state} />,
   } satisfies Record<ServiceSettingsSectionId, ReactNode>;
@@ -291,19 +295,26 @@ const HINTS = new Map<ServiceSettingName, string | undefined>([
   ["startCommand", undefined],
   ["preDeployCommand", undefined],
   ["restartPolicy", undefined],
+  ["updateOrder", undefined],
 ]);
 const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(name) ? HINTS.get(name) : setting.description;
 /** What an unset limit means, shown in its empty field. */
-const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"]]);
+const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"], ["updateOrder", "Automatic"]]);
+/** The choice that unsets a Setting whose empty value means something, such as an automatic update order. */
+const UNSET_CHOICE = "unset";
 
 const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
 
-/** What each restart policy does, shown under its choice. */
+/** What each choice does, shown under it. */
 const OPTION_HELP = new Map([
   ["unless-stopped", "Restart unless you stop it."],
   ["always", "Restart whenever it stops."],
   ["on-failure", "Restart when it exits with an error, up to Max retries."],
   ["no", "Never restart."],
+  [UNSET_CHOICE, "Stop first with a volume, else start first."],
+  ["start-first", "New copies start before old ones stop."],
+  ["stop-first", "Old copies stop first. Brief downtime."],
+  ["rolling", "Stop first, one server at a time."],
 ]);
 
 function ServiceMonitoring({ state, namespace, ...props }: Omit<ComponentProps<typeof MonitoringTab>, "placedOn"> & { state: StoreService; namespace: string | null }) {
@@ -385,24 +396,33 @@ function StoreSettingField({ state, name, noted = false }: { state: StoreService
         control={<StoreSettingInput state={state} name={name} setting={setting} row={row} onCommit={edit} />} />
     );
   }
+  const unset = UNSET.get(name);
+  const options = unset ? [UNSET_CHOICE, ...setting.enum] : setting.enum;
+  const choice = (text: string) => unset && text === "" ? UNSET_CHOICE : text;
+  const label = (option: string) => option === UNSET_CHOICE && unset ? unset : OPTION_LABELS.get(option) ?? option;
+  const shown = choice(current);
   return (
     <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
-      <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) hold(next, edit(next)); }}>
-        <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
-          title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
+      <Select value={shown} onValueChange={(next) => {
+        if (next === null || next === shown) return;
+        const raw = next === UNSET_CHOICE ? "" : next;
+        hold(raw, edit(raw));
+      }}>
+        <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(shown) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
+          title={change ? `Deployed: ${label(choice(settingText(change.before)))}` : undefined}>
           <SelectValue>
             <span className="flex flex-col items-start">
-              <span>{OPTION_LABELS.get(current) ?? current}</span>
-              {OPTION_HELP.has(current) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(current)}</span> : null}
+              <span>{label(shown)}</span>
+              {OPTION_HELP.has(shown) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(shown)}</span> : null}
             </span>
           </SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
-            {setting.enum.map((option) => (
-              <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>
+            {options.map((option) => (
+              <SelectItem key={option} value={option} label={label(option)}>
                 <span className="flex flex-col">
-                  <span>{OPTION_LABELS.get(option) ?? option}</span>
+                  <span>{label(option)}</span>
                   {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
                 </span>
               </SelectItem>

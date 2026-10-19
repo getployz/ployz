@@ -687,6 +687,19 @@
                 "title": "Template",
                 "type": "object"
               },
+              "updateOrder": {
+                "description": "How a Deploy replaces replicas; rolling stops one Server's at a time. Unset is stop-first with a Volume, start-first without.",
+                "enum": [
+                  "start-first",
+                  "stop-first",
+                  "rolling"
+                ],
+                "examples": [
+                  "rolling"
+                ],
+                "title": "Update order",
+                "type": "string"
+              },
               "waitForCi": {
                 "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
                 "examples": [
@@ -746,6 +759,7 @@
                     "rootDir",
                     "startCommand",
                     "template",
+                    "updateOrder",
                     "waitForCi",
                     "watchPaths"
                   ],

@@ -738,7 +738,8 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
                 "web.privateDns",
                 "web.replicas",
                 "web.restartPolicy",
-                "web.startCommand"
+                "web.startCommand",
+                "web.updateOrder"
             ]))
         );
         assert!(added.get("immediate").is_none());
@@ -760,7 +761,7 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            12
+            13
         );
         // Read beside a Service, its domains show even when it has none.
         assert_eq!(got.get("domains"), Some(&json!([])));
@@ -786,6 +787,31 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
         assert_eq!(got.get("domains"), None);
+    }
+}
+
+#[test]
+fn a_service_takes_an_update_order_and_unset_leaves_it_to_each_deploy() {
+    let (code, schema) = ployz(None, &["schema", "web.updateOrder"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        schema.get("enum"),
+        Some(&json!(["start-first", "stop-first", "rolling"]))
+    );
+    for store in &targets() {
+        shop_with_web(store);
+        assert_eq!(setting(store, "web.updateOrder"), Value::Null);
+        let set = ok(store, &["set", "web.updateOrder=rolling"]);
+        assert_eq!(set.get("staged"), Some(&json!(["web.updateOrder"])));
+        assert_eq!(setting(store, "web.updateOrder"), json!("rolling"));
+        let refused = error(store, &["set", "web.updateOrder=blue-green"]);
+        assert_eq!(refused["code"], "invalid_argument", "{refused}");
+        assert_eq!(
+            refused["message"],
+            "updateOrder: Expected start-first, stop-first or rolling"
+        );
+        ok(store, &["unset", "web.updateOrder"]);
+        assert_eq!(setting(store, "web.updateOrder"), Value::Null);
     }
 }
 
@@ -1695,7 +1721,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         // A node's name marks it and each of its rows, changed, unchanged or at its default.
         let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
         let whole = labels(&whole["never_synced"]);
-        assert_eq!(whole.len(), 18);
+        assert_eq!(whole.len(), 19);
         for row in ["web", "web.env.APP_ENV", "web.source", "web.startCommand"] {
             assert!(whole.contains(&row.to_owned()), "{row} in {whole:?}");
         }
@@ -2355,7 +2381,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            12
+            13
         );
 
         ok(store, &["set", "web.memLimit=1GiB"]);

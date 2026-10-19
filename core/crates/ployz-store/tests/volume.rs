@@ -1603,6 +1603,32 @@ fn a_second_service_mounting_a_volume_is_refused_until_shared_writes_is_on() {
 }
 
 #[test]
+fn start_first_on_a_volume_is_refused_until_shared_writes_is_on() {
+    let (store, who) = shop();
+    let order = |order: &str| Change::Set {
+        path: path("web.updateOrder"),
+        value: json!(order),
+    };
+    edit(&store, &who, order("rolling")).unwrap();
+    edit(&store, &who, order("stop-first")).unwrap();
+    let refused = edit(&store, &who, order("start-first")).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "web mounts data, and start-first runs two copies on it; set web.updateOrder=stop-first, or allow shared writes: ployz volume set data --shared-writes"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz set web.updateOrder=stop-first --env production --project shop"
+    );
+
+    set_shared_writes(&store, &who, true).unwrap();
+    edit(&store, &who, order("start-first")).unwrap();
+    let refused = set_shared_writes(&store, &who, false).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{}", refused.message);
+}
+
+#[test]
 fn shared_writes_turns_off_only_while_one_container_writes() {
     let (store, who) = shop();
     set_shared_writes(&store, &who, true).unwrap();
