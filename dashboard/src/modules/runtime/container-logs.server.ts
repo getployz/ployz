@@ -1,8 +1,9 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Exit, Schema, Scope } from "effect";
-import { type ConfigQuery, type LogFilter, SealedNames } from "@ployz/sdk";
+import type { ConfigQuery, LogFilter } from "@ployz/sdk";
 import { authorizeRequest, requireAccessById } from "#/modules/organization/access.server";
 import { type ConnectedRuntimeClient, OrganizationRuntime } from "./organization-runtime.server";
+import { SealedNames } from "./ployz.server";
 import { backfillThenFollow, withheld } from "./container-log-events.server";
 import { sealedFeed } from "./sealed-names.server";
 import { Forbidden, NotFound, Validation } from "#/server/public-error";

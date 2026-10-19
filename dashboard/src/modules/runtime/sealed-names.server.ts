@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect, Exit } from "effect";
-import { SealedNames } from "@ployz/sdk";
 import { sealedNames } from "#/modules/config-store/store-lookup.server";
+import { SealedNames } from "#/modules/runtime/ployz.server";
 
 /** How often an open log read rereads the Sealed names when no reader asks sooner. */
 const RECHECK_MS = 5_000;
