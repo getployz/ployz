@@ -81,7 +81,7 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{subject.verb} {place}</CardTitle>
-          <CardDescription className="text-xs">
+          <CardDescription>
             {approval.asker && !approval.yours && <>Asked by {approval.asker} · </>}<RelativeTime date={new Date(approval.created_at)} />
           </CardDescription>
         </div>
