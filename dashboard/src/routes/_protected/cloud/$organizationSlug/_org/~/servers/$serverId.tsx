@@ -144,6 +144,7 @@ function ServerSettings({ organizationSlug, server, servers, stale }: {
       <ServerServicesSection
         machine={machine}
         organizationSlug={organizationSlug}
+        lastToRunServices={!servers.some((other) => other.machine.id !== machine.id && other.machine.acceptsServices && !needsAttention(other.status))}
         view={drain.view}
         left={drainLeftRows(server.services, strays)}
         onDrain={drain.ask}
