@@ -22,6 +22,10 @@ use crate::logs::{
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 const EXEC_OUTPUT_IDLE: Duration = Duration::from_millis(100);
+/// An exec gets its PID once runc has started it, tens of milliseconds on an
+/// idle host. Five seconds covers a loaded host without holding a hung-up
+/// exec's task open for long.
+const EXEC_START_WAIT: Duration = Duration::from_secs(5);
 
 impl ContainerRuntime {
     pub async fn exec(&self, mut requests: Streaming<OpaquePayload>) -> Result<RpcStream, Status> {
@@ -251,29 +255,43 @@ async fn forward_attached_exec(
 /// Docker has no API to stop an exec, so a client that hangs up kills the
 /// exec's process group the way a closed terminal would. ployzd shares the
 /// host PID namespace, where Docker reports the exec's PID.
-async fn kill_exec(docker: &bollard::Docker, exec_id: &str) {
-    let inspected = match docker.inspect_exec(exec_id).await {
-        Ok(inspected) => inspected,
-        Err(error) => {
-            tracing::warn!(error = %ployz_core::error_chain::inline(&error), "inspecting an abandoned exec failed");
-            return;
+pub(super) async fn kill_exec(docker: &bollard::Docker, exec_id: &str) {
+    // Docker answers the start request before it starts the process, so a
+    // client can hang up while the exec has no PID yet.
+    let killed = tokio::time::timeout(EXEC_START_WAIT, async {
+        let mut delay = Duration::from_millis(10);
+        loop {
+            let inspected = match docker.inspect_exec(exec_id).await {
+                Ok(inspected) => inspected,
+                Err(error) => {
+                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "inspecting an abandoned exec failed");
+                    return;
+                }
+            };
+            let pid = inspected
+                .pid
+                .and_then(|pid| i32::try_from(pid).ok())
+                .filter(|pid| *pid > 0);
+            match (inspected.running, pid) {
+                (Some(false), _) if inspected.exit_code.is_some() => return,
+                (Some(true), Some(pid)) => {
+                    if let Err(error) = nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    ) {
+                        tracing::warn!(%error, pid, "killing an abandoned exec failed");
+                    }
+                    return;
+                }
+                _ => {}
+            }
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(500));
         }
-    };
-    if inspected.running != Some(true) {
-        return;
-    }
-    let Some(pid) = inspected
-        .pid
-        .and_then(|pid| i32::try_from(pid).ok())
-        .filter(|pid| *pid > 0)
-    else {
-        return;
-    };
-    if let Err(error) = nix::sys::signal::killpg(
-        nix::unistd::Pid::from_raw(pid),
-        nix::sys::signal::Signal::SIGKILL,
-    ) {
-        tracing::warn!(%error, pid, "killing an abandoned exec failed");
+    })
+    .await;
+    if killed.is_err() {
+        tracing::warn!(exec_id, "an abandoned exec never reported a PID to kill");
     }
 }
 

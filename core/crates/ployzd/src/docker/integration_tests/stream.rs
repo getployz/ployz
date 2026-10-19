@@ -131,6 +131,53 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     server.abort();
 }
 
+#[tokio::test]
+async fn a_hung_up_exec_is_killed_once_docker_reports_its_pid() {
+    let mut command = tokio::process::Command::new("sleep");
+    command.arg("300").process_group(0).kill_on_drop(true);
+    let mut exec_process = command.spawn().unwrap();
+    let pid = exec_process.id().unwrap();
+    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let docker_address = docker_listener.local_addr().unwrap();
+    let docker_server = tokio::spawn(async move {
+        for inspected in [
+            r#"{"Running":false,"ExitCode":null,"Pid":0}"#.to_owned(),
+            r#"{"Running":true,"ExitCode":null,"Pid":0}"#.to_owned(),
+            format!(r#"{{"Running":true,"ExitCode":null,"Pid":{pid}}}"#),
+        ] {
+            let mut inspect = accept_docker_request(&docker_listener).await;
+            inspect
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{inspected}",
+                        inspected.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let docker = bollard::Docker::connect_with_http(
+        &format!("http://{docker_address}"),
+        5,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
+
+    crate::docker::stream::kill_exec(&docker, "starting").await;
+
+    let status = tokio::time::timeout(Duration::from_secs(5), exec_process.wait())
+        .await
+        .expect("the exec must be killed once Docker reports its PID")
+        .unwrap();
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(9)
+    );
+    docker_server.await.unwrap();
+}
+
 async fn accept_docker_request(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
     let (stream, _) = listener.accept().await.unwrap();
     let mut reader = BufReader::new(stream);
@@ -290,7 +337,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     request_sender
         .send(exec_config(
             &created.container_id,
-            ["sh", "-c", "sleep 301; echo done"],
+            ["sh", "-c", "echo started; sleep 301; echo done"],
             false,
         ))
         .await
@@ -302,15 +349,29 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     else {
         panic!("exec must report its id first");
     };
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::Stdout(b"started\n".to_vec())
+    );
     drop(output);
     drop(request_sender);
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while docker.client.inspect_exec(&exec_id).await.unwrap().running != Some(false) {
+    let exit_code = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(exit_code) = docker
+                .client
+                .inspect_exec(&exec_id)
+                .await
+                .unwrap()
+                .exit_code
+            {
+                break exit_code;
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
     .expect("an exec whose client disconnected must stop its command");
+    assert_eq!(exit_code, 137, "the disconnected exec must be killed");
     let leftover = exec_frames(
         &mut client,
         &created.container_id,
