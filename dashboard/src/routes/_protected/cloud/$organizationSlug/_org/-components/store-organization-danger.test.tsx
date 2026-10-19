@@ -17,7 +17,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function renderAs(role: "owner" | "admin" | "member") {
+async function renderAs(role: "owner" | "admin" | "member" | null) {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
   vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
@@ -25,7 +25,7 @@ async function renderAs(role: "owner" | "admin" | "member") {
   const noProjects: StoreResult<{ view: "projects" } & ProjectsView> = { ok: true, value: { view: "projects", projects: [] } };
   queryClient.setQueryData(storeViewOptions("ada", scope, projectsQuery()).queryKey, noProjects);
   queryClient.setQueryData(organizationMembersQueryOptions("ada").queryKey, {
-    members: [{ name: "Linus", email: "linus@example.com", role, joined_at: "2026-01-01T00:00:00Z", you: true }],
+    members: role === null ? [] : [{ name: "Linus", email: "linus@example.com", role, joined_at: "2026-01-01T00:00:00Z", you: true }],
     invites: [],
     mail: false,
   });
@@ -60,4 +60,11 @@ it("lets an owner do both", async () => {
 
   expect(await disabled("Forget servers")).toBe(false);
   expect(await disabled("Delete organization")).toBe(false);
+});
+
+it("disables both for a visitor with no member row, as on a support visit", async () => {
+  await renderAs(null);
+
+  expect(await disabled("Forget servers")).toBe(true);
+  expect(await disabled("Delete organization")).toBe(true);
 });

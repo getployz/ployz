@@ -99,7 +99,8 @@ function NewTokenDialog({ organizationSlug, onMade, onOpenChange }: {
   const environments = [...new Set(requireView(useStoreView(organizationSlug, projectsQuery())).projects.flatMap((project) => project.environments))].sort();
   const [name, setName] = useState("");
   const [choice, setChoice] = useState<Choice>(environments.length > 0 ? "deploy" : "read");
-  const [environment, setEnvironment] = useState(environments.includes("staging") ? "staging" : (environments[0] ?? ""));
+  const [picked, setEnvironment] = useState<string | null>(null);
+  const environment = picked !== null && environments.includes(picked) ? picked : environments.includes("staging") ? "staging" : (environments[0] ?? "");
   const preset: TokenPreset = choice === "deploy" ? { preset: "deploy", environment } : { preset: choice };
   const make = useExclusiveMutation({
     mutationFn: () => createTokenServerFn({ data: { organizationSlug, name: name.trim(), expiresInDays: 90, preset } }),

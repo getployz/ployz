@@ -2,7 +2,7 @@ import { MutationObserver } from "@tanstack/react-query";
 import { Schema } from "effect";
 import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ployz/sdk";
 import { toast } from "sonner";
-import { isUnauthorized, toErrorMessage } from "#/lib/error-message";
+import { isUnauthorized } from "#/lib/error-message";
 import { observeFailure, type Persistable } from "#/collections/query-collection";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -122,7 +122,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         } else if (isUnauthorized(error)) {
           toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign(signInHere()) } });
         } else if (!(promise && shownInline.has(promise)) && !(error instanceof StoreRefused && handled.includes(error.code))) {
-          toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : toErrorMessage(error, FAILED) || FAILED);
+          toast.error(expects && isStale(error) ? CONFLICT : error instanceof TypeError ? UNREACHABLE : error instanceof StoreRefused && error.message ? error.message : FAILED);
         }
         // What the write was refused against shows: the rollback, or a Sync's fresh review.
         await invalidateViews(queryClient, organizationSlug, keysOf(command));

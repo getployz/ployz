@@ -141,6 +141,16 @@ it("says a write that failed in Cloud was undone, even when the failure carries 
   expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
 });
 
+it("says a write was undone when Cloud fails with its own unavailable error", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const unavailable = { _tag: "PublicError", code: "UNAVAILABLE", message: "Ployz Cloud had a problem. Try again." };
+  test.write.mockImplementationOnce(() => Promise.reject(unavailable));
+  const order = test.writer.commit({ command: "set_build_order", build_order: "servers-only" }).isPersisted.promise;
+  await expect(order).rejects.toEqual(unavailable);
+  expect(error).toHaveBeenCalledWith("Ployz Cloud couldn't save this change, so it was undone. Try again.");
+});
+
 it("seals a variable at once, and a refused seal leaves it as it was", async () => {
   const plain = view(2, 1);
   plain.settings.push({ path: "web.env.TOKEN", value: "abc", default: null, apply: "staged" });

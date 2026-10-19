@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { STALL_MS } from "#/hooks/use-exclusive-mutation";
+import { asTestDouble } from "#/lib/test-double";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import * as storeFunctions from "#/modules/config-store/store.functions";
 import { projectsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
@@ -41,7 +42,7 @@ async function openNewToken(access: "read" | null = "read") {
   fireEvent.click(await screen.findByRole("button", { name: "New token" }));
   fireEvent.change(screen.getByLabelText("Name"), { target: { value: "ci" } });
   if (access !== null) fireEvent.change(screen.getByLabelText("Access"), { target: { value: access } });
-  return { create, history, made: (secret: string) => act(async () => resolve({ secret } as Made)) };
+  return { create, history, queryClient, scope, made: (secret: string) => act(async () => resolve({ secret } as Made)) };
 }
 
 it("starts at Read only when there is no Environment to deploy to", async () => {
@@ -49,6 +50,19 @@ it("starts at Read only when there is no Environment to deploy to", async () => 
 
   expect(screen.getByLabelText<HTMLSelectElement>("Access").value).toBe("read");
   expect(screen.getByRole<HTMLOptionElement>("option", { name: "Deploy" }).disabled).toBe(true);
+  expect(screen.getByRole("button", { name: "Make token" }).hasAttribute("disabled")).toBe(false);
+});
+
+it("deploys to the first Environment that arrives while the dialog is open", async () => {
+  const { queryClient, scope } = await openNewToken(null);
+  const production: StoreResult<{ view: "projects" } & ProjectsView> = {
+    ok: true,
+    value: { view: "projects", projects: [asTestDouble<ProjectsView["projects"][number]>()({ name: "shop", environments: ["production"] })] },
+  };
+  act(() => queryClient.setQueryData(storeViewOptions("ada", scope, projectsQuery()).queryKey, production));
+  fireEvent.change(screen.getByLabelText("Access"), { target: { value: "deploy" } });
+
+  expect(screen.getByLabelText<HTMLSelectElement>("Environment").value).toBe("production");
   expect(screen.getByRole("button", { name: "Make token" }).hasAttribute("disabled")).toBe(false);
 });
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { ServerOffIcon, Trash2Icon } from "lucide-react";
@@ -10,11 +9,10 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
 import { projectsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
-import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
+import { useYouMay } from "#/modules/organization/members.queries";
 import { removeOrganizationServerFn } from "#/modules/organization/organization-removal.functions";
-import { can } from "#/modules/organization/permissions";
 import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/settings/settings-section";
-import { ForgetServersDialog } from "./forget-servers-dialog";
+import { ForgetServersDialog, useForgetServersRefusal } from "./forget-servers-dialog";
 
 /**
  * Delete organization over the Config Store, as `ployz org rm`: once it has no Project, whose Environments all left the
@@ -55,10 +53,8 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
     }
   }
 
-  // Support has no row here; Cloud still checks it. Until the members load, the role is unknown, so both wait.
-  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  const forgetRefused = yourRole !== undefined && !can(yourRole, "servers:remove") ? "Only an owner or admin can forget them." : undefined;
-  const disabledReason = yourRole !== undefined && !can(yourRole, "org:delete")
+  const forgetRefused = useForgetServersRefusal(organizationSlug);
+  const disabledReason = !useYouMay(organizationSlug, "org:delete")
     ? "Only an owner can delete it."
     : projects.length > 0
       ? `Delete its projects first: ${projects.map((project) => project.name).join(", ")}.`
