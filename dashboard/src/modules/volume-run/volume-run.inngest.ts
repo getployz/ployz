@@ -72,10 +72,11 @@ type RunSteps = {
   readonly runEffect: EffectRunner;
   readonly run: RunContext;
   readonly runId: string;
+  readonly attempt: number;
 };
 
 export async function runVolume(
-  { event, step, runId }: { event: { data: unknown }; step: StepTools; runId: string },
+  { event, step, runId, attempt }: { event: { data: unknown }; step: StepTools; runId: string; attempt: number },
   runEffect: EffectRunner,
 ) {
   const request = await step.run("normalize-request", () => {
@@ -88,7 +89,7 @@ export async function runVolume(
   const run: RunContext = claim.run;
 
   if (request.took !== undefined) await step.run("01-fence", () => runEffect(fenceTaken(run, runId)));
-  const steps: RunSteps = { step, runEffect, run, runId };
+  const steps: RunSteps = { step, runEffect, run, runId, attempt };
   if (run.kind === "release" && run.phase === "committed" && run.current !== null) return finishRelease(steps, run.current, run.args.plan);
   if (run.kind === "release" && run.args.plan?.forward !== undefined) {
     return fail(steps, "01-changed", releaseChangedMessage(run.volumeName));
@@ -170,14 +171,15 @@ const finish = ({ step, runEffect, run, runId }: RunSteps, id: string, message: 
 
 /**
  * One SetVolumeCopy. A Machine answers Busy while a Container step or another switch holds the Volume, so the run
- * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms; a step
- * an older version of this function memoized has none.
+ * sleeps and asks again with the same request, which spends no retry. `at` is when the Machine answered, in ms. A
+ * retried attempt has none: the attempt before may have made the change and lost the answer, so this answer is late.
+ * A step an older version of this function memoized has none either.
  */
-async function settle({ step, runEffect, run, runId }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
+async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: string, ask: Effect.Effect<CopyAnswer, Error, AppServices>, still: string) {
   for (let check = 0; check < BUSY_CHECKS; check += 1) {
     if (check > 0) await step.sleep(`${id}-wait-${check}`, BUSY_WAIT);
     const answer: CopyAnswer & { readonly at?: number } = await step.run(check === 0 ? id : `${id}-${check}`, () =>
-      runEffect(ask).then((answered) => ({ ...answered, at: Date.now() })));
+      runEffect(ask).then((answered) => (attempt === 0 ? { ...answered, at: Date.now() } : answered)));
     if (!answer.ok && answer.reason === "stale") {
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
       throw new Stale(answer.message);
