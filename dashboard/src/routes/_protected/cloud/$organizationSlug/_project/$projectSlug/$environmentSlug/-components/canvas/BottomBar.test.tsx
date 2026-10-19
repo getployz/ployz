@@ -111,7 +111,8 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
 });
 
 it("deploys a rollback to the version the Servers already run, which only has something to save", async () => {
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   const staged = await bar();
   const deployButton = staged.getByRole("button", { name: /^Deploy/ });
   expect(deployButton).toHaveProperty("disabled", false);
@@ -124,7 +125,8 @@ it("deploys a rollback to the version the Servers already run, which only has so
 
 it("saves without deploying from Alt+click on Deploy and from Save only under ⋮", async () => {
   onSave.mockResolvedValue(true);
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   const staged = await bar();
   act(() => { fireEvent.keyDown(window, { key: "Alt", altKey: true }); });
   const button = staged.getByRole("button", { name: /^Save only/ });
@@ -142,7 +144,8 @@ it("saves without deploying from Alt+click on Deploy and from Save only under �
 
 it("offers no second Save while one is unanswered", async () => {
   busy = new Set(["saving"]);
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   const staged = await bar();
   expect(staged.getByRole("button", { name: /Saving…/ })).toHaveProperty("disabled", true);
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
@@ -155,7 +158,8 @@ it("offers no second Save while one is unanswered", async () => {
 
 it("offers no Save or second Deploy while a Deploy is unanswered", async () => {
   busy = new Set(["deploying"]);
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   const staged = await bar();
   expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
   fireEvent.click(staged.getByRole("button", { name: "Details" }));
@@ -165,7 +169,8 @@ it("offers no Save or second Deploy while a Deploy is unanswered", async () => {
 
 it("shows a Deploy as pending even behind an older unanswered Discard", async () => {
   busy = new Set(["discarding", "deploying"]);
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   const staged = await bar();
   expect(staged.getByRole("button", { name: /Deploying…/ })).toHaveProperty("disabled", true);
   await act(async () => { fireEvent.click(staged.getByRole("button", { name: "More change actions" })); });
@@ -295,7 +300,8 @@ it("hides while nothing is staged or running", async () => {
 
 it("preserves the Change message when a Save is refused or fails", async () => {
   onSave.mockResolvedValue(false);
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save only" })); });
@@ -306,7 +312,8 @@ it("preserves the Change message when a Save is refused or fails", async () => {
 
 it("clears the Change message once a Save succeeds", async () => {
   onSave.mockResolvedValue(true);
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Change message" }), { target: { value: "Explain this change" } });
   await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save only" })); });
@@ -317,7 +324,8 @@ it("clears the Change message once a Save succeeds", async () => {
 it("keeps a Change message edited while the Save is in flight", async () => {
   let saved: (value: boolean) => void = () => {};
   onSave.mockReturnValue(new Promise<boolean>((resolve) => { saved = resolve; }));
-  open(canvasUrl, [replicas], 1, true);
+  // Nothing differs from what runs, so the bar counts no change to deploy, only one to save.
+  open(canvasUrl, [replicas], 0, true);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
   const box = () => screen.getByRole("textbox", { name: "Change message" });
   fireEvent.change(box(), { target: { value: "Explain this change" } });
