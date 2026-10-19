@@ -21,9 +21,9 @@ use ployz_core::{
     MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList, MachineName,
     MachineObservation, MachinePath, MachineRpcServer, MachineStorageObservation,
     MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss, OpaquePayload, PROTOCOL_MAJOR,
-    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest, ServingPointer,
-    ServingPointerPublication, ServingPointerRead, VolumeInventory, VolumeObservationFailure,
+    QualifiedService, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered, RoutesRead, RpcError,
+    RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame, RuntimeWatchRequest,
+    ServingPointer, ServingPointerPublication, VolumeInventory, VolumeObservationFailure,
     VolumeRemoved, WireGuardPublicKey, encode_runtime_watch_frame, op,
 };
 use ployz_testkit::fake_machine::{Fake, FakeMachine, FakeStream};
@@ -914,6 +914,7 @@ impl FakeMachine for DiscoveryService {
         let now = match ensure.want {
             ployz_core::ContainerWant::Running {
                 container: ployz_core::RunTarget::New(new),
+                ..
             } => {
                 let resolved_spec = new.resolved_spec.clone();
                 self.created_containers.lock().unwrap().push(new);
@@ -945,7 +946,9 @@ impl FakeMachine for DiscoveryService {
                 ployz_core::ContainerNow::Absent { of: container }
             }
             ployz_core::ContainerWant::Running { .. }
-            | ployz_core::ContainerWant::Stopped { .. } => {
+            | ployz_core::ContainerWant::Stopped { .. }
+            | ployz_core::ContainerWant::Out { .. }
+            | ployz_core::ContainerWant::Held { .. } => {
                 return Err(Status::unimplemented("unused"));
             }
         };
@@ -1165,12 +1168,11 @@ impl FakeMachine for DiscoveryService {
             RpcResponse::from(publication).encode().unwrap(),
         ))
     }
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let RpcRequestBody::ReadServingPointer(read) =
-            request.into_inner().decode_request().unwrap().body
+        let RpcRequestBody::ReadRoutes(read) = request.into_inner().decode_request().unwrap().body
         else {
             panic!("expected pointer read");
         };
@@ -1184,10 +1186,11 @@ impl FakeMachine for DiscoveryService {
             })
             .collect();
         Ok(Response::new(
-            RpcResponse::from(ServingPointerRead {
+            RpcResponse::from(RoutesRead {
                 all_routed: pointer.is_some(),
                 pointer,
                 acks,
+                ..RoutesRead::default()
             })
             .encode()
             .unwrap(),

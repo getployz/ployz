@@ -24,7 +24,7 @@ use ts_rs::TS;
 pub use self::due::{Due, DueQuery};
 pub(crate) use self::due::{admit, close, sweep};
 pub(crate) use self::due::{due, shut_down};
-use self::mark::{Accepted, Mark, State};
+use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView, RemovedVolume, VolumeLoss, docker_volume};
 pub(crate) use self::review::{
     consented, covered, held, removed, review, short_digest, still_removed,
@@ -38,6 +38,7 @@ use crate::id::{
 use crate::review::{DestructiveEffect, approval};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
+use crate::teardown::{EnvironmentRemoval, RemovedBecause};
 use crate::trusted::Approval;
 use crate::{Actor, Trusted};
 
@@ -856,6 +857,30 @@ pub(crate) fn latest(
         .into_iter()
         .next()
         .filter(|latest| latest.remove))
+}
+
+/// Where `environment`'s removal stands, as `env ls` shows it: its latest
+/// Deployment when that removes it, else a live mark waiting for the sweep.
+pub(crate) fn listed(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<EnvironmentRemoval>, RpcError> {
+    if let Some(removal) = latest(tx, environment)? {
+        return Ok(Some(EnvironmentRemoval::Deployment(Box::new(removal))));
+    }
+    Ok(
+        mark::naming(tx, environment)?.map(|mark| EnvironmentRemoval::Pending {
+            because: match mark.accepted.get(environment) {
+                Some(Accepted::Everything { because }) => match because {
+                    Closed::PullRequest => RemovedBecause::PullRequest,
+                    Closed::Idle => RemovedBecause::Idle,
+                    Closed::Synced => RemovedBecause::Synced,
+                },
+                _ => RemovedBecause::Removed,
+            },
+            since: mark.at,
+        }),
+    )
 }
 
 /// Refuse to take an Environment off the Servers while a Branch of it may still
