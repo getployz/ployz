@@ -167,6 +167,27 @@ export const deleteCachedGithubRepositoriesById = Effect.fn(
     );
 });
 
+const cachedRepositoryRows = (data: {
+  readonly installationId: number;
+  readonly repositories: readonly GithubRepository[];
+  readonly syncedAt: Date;
+}) => data.repositories.map((repository) => ({
+  installationId: data.installationId,
+  repositoryId: repository.id,
+  name: repository.name,
+  fullName: repository.full_name,
+  defaultBranch: repository.default_branch,
+  private: repository.private,
+  htmlUrl: repository.html_url,
+  repoUpdatedAt: new Date(repository.repo_updated_at),
+  syncedAt: data.syncedAt,
+}));
+
+const repositoryCacheKey = [
+  schemaGithubRepositoryCache.installationId,
+  schemaGithubRepositoryCache.repositoryId,
+];
+
 export const upsertCachedGithubRepositories = Effect.fn(
   "Github.upsertCachedRepositories",
 )(function* (data: {
@@ -178,24 +199,9 @@ export const upsertCachedGithubRepositories = Effect.fn(
   const database = yield* Database;
   yield* database.drizzle
     .insert(schemaGithubRepositoryCache)
-    .values(
-      data.repositories.map((repository) => ({
-        installationId: data.installationId,
-        repositoryId: repository.id,
-        name: repository.name,
-        fullName: repository.full_name,
-        defaultBranch: repository.default_branch,
-        private: repository.private,
-        htmlUrl: repository.html_url,
-        repoUpdatedAt: new Date(repository.repo_updated_at),
-        syncedAt: data.syncedAt,
-      })),
-    )
+    .values(cachedRepositoryRows(data))
     .onConflictDoUpdate({
-      target: [
-        schemaGithubRepositoryCache.installationId,
-        schemaGithubRepositoryCache.repositoryId,
-      ],
+      target: repositoryCacheKey,
       set: {
         name: sql`excluded.name`,
         fullName: sql`excluded.full_name`,
@@ -203,10 +209,26 @@ export const upsertCachedGithubRepositories = Effect.fn(
         private: sql`excluded.private`,
         htmlUrl: sql`excluded.html_url`,
         repoUpdatedAt: sql`excluded.repo_updated_at`,
-        // A sync that started earlier never moves a row back, so its prune can't drop a repository a later sync listed.
-        syncedAt: sql`greatest(${schemaGithubRepositoryCache.syncedAt}, excluded.synced_at)`,
+        syncedAt: sql`excluded.synced_at`,
       },
+      // A row written after this listing began holds newer GitHub state; leave it, and its stamp keeps this sync's prune off it.
+      setWhere: sql`${schemaGithubRepositoryCache.syncedAt} <= excluded.synced_at`,
     });
+});
+
+/** Caches repositories the cache lacks, stamped when written, after GitHub listed them. A sync started before then can't prune them; one started after lists them. */
+export const insertMissingCachedGithubRepositories = Effect.fn(
+  "Github.insertMissingCachedRepositories",
+)(function* (data: {
+  readonly installationId: number;
+  readonly repositories: readonly GithubRepository[];
+}) {
+  if (data.repositories.length === 0) return;
+  const database = yield* Database;
+  yield* database.drizzle
+    .insert(schemaGithubRepositoryCache)
+    .values(cachedRepositoryRows({ ...data, syncedAt: new Date() }))
+    .onConflictDoNothing({ target: repositoryCacheKey });
 });
 
 export const pruneCachedGithubRepositories = Effect.fn(

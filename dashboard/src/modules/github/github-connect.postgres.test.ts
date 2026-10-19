@@ -6,7 +6,7 @@ import { MAX_OFFERED_INSTALLATIONS } from "./github-connect";
 import { acceptGithubOfferInput } from "./github-connect.functions";
 import { acceptGithubOffer, completeGithubConnect, listGithubOffer, listOrganizationGithub, startGithubConnect } from "./github-connect.server";
 import { listInstallationReposPage } from "./github.api";
-import { listGithubInstallationsForOrganization, pruneCachedGithubRepositories, upsertCachedGithubRepositories } from "./github.repository";
+import { findGithubRepositoryByNameForOrganization, listGithubInstallationsForOrganization, pruneCachedGithubRepositories, upsertCachedGithubRepositories } from "./github.repository";
 import { GITHUB_REPOSITORIES_PAGE_SIZE, type GithubApiService } from "./github-observation.api";
 import { executeSyncGithubRepositories } from "./inngest-sync/sync";
 import type { PloyzStepTools } from "#/modules/inngest/client";
@@ -50,6 +50,8 @@ const users = fakeGithubUsers({
 });
 // Installation 9 holds more repositories than one page lists.
 const REPOSITORY_COUNTS = new Map([[8, 3], [9, 150]]);
+// Repositories renamed on GitHub, which made them private on a new default branch too.
+const renamed = new Map<number, string>();
 // Runs once, just before installation 9's second page is listed, to land another sync's write mid-listing.
 let beforeSecondPage: Effect.Effect<void> | undefined;
 const installationRepositories: GithubApiService["installationRepositories"] = ({ installationId, page }) => Effect.suspend(() => {
@@ -63,10 +65,13 @@ const listRepositories: GithubApiService["installationRepositories"] = ({ instal
     .slice((page - 1) * GITHUB_REPOSITORIES_PAGE_SIZE, page * GITHUB_REPOSITORIES_PAGE_SIZE);
   return Effect.succeed({
     total_count: total,
-    repositories: ids.map((id) => ({
-      id, name: `repo-${id}`, full_name: `owner/repo-${id}`, private: false, default_branch: "main",
-      html_url: `https://github.test/owner/repo-${id}`, updated_at: new Date("2026-01-01T00:00:00Z"),
-    })),
+    repositories: ids.map((id) => {
+      const name = renamed.get(id) ?? `repo-${id}`;
+      return {
+        id, name, full_name: `owner/${name}`, private: renamed.has(id), default_branch: renamed.has(id) ? "trunk" : "main",
+        html_url: `https://github.test/owner/${name}`, updated_at: new Date("2026-01-01T00:00:00Z"),
+      };
+    }),
   });
 };
 const github = { ...fakeGithubApi().service, ...users.service, installationRepositories };
@@ -213,4 +218,51 @@ it.live("keeps every listed repository when an older sync writes while the conne
       ));
     }
     expect(yield* hopper()).toBe(150);
+  }), 60_000);
+
+it.live("keeps a repository GitHub added after a sync that started during the connect listed", () =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(yield* storeTestCloud({ github }));
+    const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
+    const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
+    const hopper = () => run(listOrganizationGithub(ada, "shop")).pipe(
+      Effect.map(({ accounts }) => accounts.find((account) => account.login === "hopper")?.repositories),
+    );
+
+    // A sync starts after the connect does and lists only the first page; GitHub then grants the rest, which the connect lists.
+    let syncStartedAt = new Date(0);
+    beforeSecondPage = Effect.gen(function* () {
+      yield* Effect.sleep("5 millis");
+      syncStartedAt = new Date();
+      const page = yield* listInstallationReposPage(9, 1);
+      yield* upsertCachedGithubRepositories({ installationId: 9, repositories: page.repositories, syncedAt: syncStartedAt });
+    }).pipe(run, Effect.orDie);
+    const existing = stateOf(yield* run(startGithubConnect(ada, "shop", true)));
+    const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
+    yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
+    expect(beforeSecondPage).toBeUndefined();
+
+    yield* run(pruneCachedGithubRepositories(9, syncStartedAt));
+    expect(yield* hopper()).toBe(150);
+  }), 60_000);
+
+it.live("keeps what the connect read when a sync that listed earlier writes after it", () =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(yield* storeTestCloud({ github }));
+    const run = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
+    const ada = { userId: yield* run(seedStoreOrganization(SHOP)) };
+    const found = (fullName: string) => run(findGithubRepositoryByNameForOrganization({ organizationId: SHOP, fullName }));
+
+    const olderSyncStartedAt = new Date(Date.now() - 1000);
+    const olderPage = yield* run(listInstallationReposPage(9, 1));
+    renamed.set(9000, "secret");
+    const existing = stateOf(yield* run(startGithubConnect(ada, "shop", true)));
+    const offer = landing(yield* run(completeGithubConnect(ada, new URLSearchParams({ state: existing, code: "carol-code" }))))["offer"] ?? "";
+    yield* run(acceptGithubOffer(ada, { organizationSlug: "shop", offer, installationIds: [9] }));
+    yield* run(upsertCachedGithubRepositories({ installationId: 9, repositories: olderPage.repositories, syncedAt: olderSyncStartedAt }));
+    yield* run(pruneCachedGithubRepositories(9, olderSyncStartedAt));
+    renamed.clear();
+
+    expect(yield* found("owner/secret")).toEqual({ fullName: "owner/secret", repositoryId: 9000, installationId: 9, defaultBranch: "trunk" });
+    expect(yield* found("owner/repo-9000")).toBeNull();
   }), 60_000);

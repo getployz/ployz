@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 import { listInstallationReposPage } from "#/modules/github/github.api";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import {
+  insertMissingCachedGithubRepositories,
   pruneCachedGithubRepositories,
   upsertCachedGithubRepositories,
 } from "#/modules/github/github.repository";
@@ -43,12 +44,12 @@ const syncRepositoryPage = Effect.fn("Github.syncRepositoryPage")(
   },
 );
 
-/** Caches every repository GitHub lists, for a caller that waits on it. Only the Inngest sync, one at a time per installation, prunes. */
+/** Caches the repositories GitHub lists that the cache lacks, for a caller outside the sync's per-installation concurrency key. Only the sync updates and prunes. */
 export const cacheGithubRepositories = Effect.fn("Github.cacheRepositories")(
   function* (installationId: number) {
-    const syncedAt = new Date();
     for (let pageNumber = 1; ; pageNumber++) {
-      const page = yield* syncRepositoryPage(installationId, pageNumber, syncedAt);
+      const page = yield* listInstallationReposPage(installationId, pageNumber);
+      yield* insertMissingCachedGithubRepositories({ installationId, repositories: page.repositories });
       if (!page.hasNextPage) break;
     }
   },
