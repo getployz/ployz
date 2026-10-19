@@ -95,7 +95,7 @@ service or remove a domain, the agent stops and shows a card. It does the same b
 a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
 command that deletes data. The card leads with what would be
 destroyed. Everything else the change does is folded under a count, like **2 other changes**;
-click it to see them.
+click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
 
 1. Read the list of what gets destroyed.
 2. Click **Approve** (or press ⌘↵) to let the deploy go ahead.

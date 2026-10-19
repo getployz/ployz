@@ -1,6 +1,7 @@
 import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRightIcon, XIcon } from "lucide-react";
+import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "#/components/ui/card";
@@ -80,7 +81,9 @@ function PendingCard({ organizationSlug, approval, autoFocus }: { organizationSl
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{subject.verb} {place}</CardTitle>
-          {approval.asker && !approval.yours && <CardDescription className="text-xs">Asked by {approval.asker}</CardDescription>}
+          <CardDescription className="text-xs">
+            {approval.asker && !approval.yours && <>Asked by {approval.asker} · </>}<RelativeTime date={new Date(approval.created_at)} />
+          </CardDescription>
         </div>
         <Badge variant="destructive">{approvalBadge(approval.command, approval.review)}</Badge>
       </CardHeader>

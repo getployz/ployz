@@ -160,7 +160,7 @@ it("says who asked, and shows the change their ask saves apart from what else it
   });
   show(asTestDouble<ApprovalView>()({ ...approval, protected: true, yours: false, asker: "Linus Torvalds", review: { effects: [], diff } }));
   const card = within(screen.getByLabelText("Deploy shop/production needs approval"));
-  expect(card.getByText("Asked by Linus Torvalds")).toBeTruthy();
+  expect(card.getByText(/^Asked by Linus Torvalds ·/)).toBeTruthy();
   expect(card.getByRole("list", { name: "Saves" }).textContent).toBe("+ api LINUS_CHANGE requested");
   expect(card.getByText("Saves")).toBeTruthy();
   fireEvent.click(card.getByText("2 other changes"));
@@ -193,4 +193,17 @@ it("leaves the asker's own card unsigned, waiting on someone who can protect it"
   expect(card.queryByText(/Asked by/)).toBeNull();
   expect(card.getByText("Waiting on an owner or admin.")).toBeTruthy();
   expect(card.queryByRole("button", { name: /Approve/ })).toBeNull();
+});
+
+it("says how long ago it was asked, so a stale ask reads apart from a fresh one", () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-08T12:09:00.000Z"));
+  try {
+    show(asTestDouble<ApprovalView>()({ ...approval, yours: false, asker: "Linus Torvalds" }));
+    show(asTestDouble<ApprovalView>()({ ...approval, id: "a2", created_at: "2026-10-08T12:08:30.000Z", yours: true, asker: null }));
+    const ages = [...document.querySelectorAll("[data-slot=card-description]")].map((line) => line.textContent);
+    expect(ages).toEqual(["Asked by Linus Torvalds · 9 minutes ago", "30 seconds ago"]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
