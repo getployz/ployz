@@ -49,7 +49,9 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   // before the field it leaves blurs, so a press ships only if no such write was in flight at any point since it began.
   const gesture = useRef({ mark: Number.POSITIVE_INFINITY, saving: false });
   useEffect(() => {
-    const mark = () => {
+    // A held key's repeats are the same press. A held Enter's repeat clicks are deliberate presses of their own.
+    const mark = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.repeat) return;
       gesture.current = { mark: writeMark(queryClient), saving: reviewMoving(queryClient, organizationSlug, environment, Number.POSITIVE_INFINITY) };
     };
     document.addEventListener("pointerdown", mark, true);

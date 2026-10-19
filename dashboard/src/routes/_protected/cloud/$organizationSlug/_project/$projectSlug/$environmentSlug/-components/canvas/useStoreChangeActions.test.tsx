@@ -134,6 +134,24 @@ it("sends nothing for a Deploy held down while a draft saves, then deploys the n
   expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
 });
 
+it("sends nothing for a Deploy whose Space is held while a draft saves", async () => {
+  const test = setup();
+  let land: (value: typeof edited) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise<typeof edited>((resolve) => { land = resolve; }));
+  press("Stage replicas");
+
+  const deploy = screen.getByText("Deploy now");
+  fireEvent.keyDown(deploy, { key: " " });
+  land(edited);
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+  fireEvent.keyDown(deploy, { key: " ", repeat: true });
+  act(() => { fireEvent.click(deploy); });
+  await act(() => Promise.resolve());
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(admittedIds).toEqual([]);
+});
+
 it("judges each press with no pointer or key before it once, so the one after a staging press deploys", async () => {
   const test = setup();
   test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
