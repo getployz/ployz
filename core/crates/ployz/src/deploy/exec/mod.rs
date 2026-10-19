@@ -1892,7 +1892,13 @@ pub(in crate::deploy) async fn move_container<C: MachineOperations>(
     // The moved copy keeps the source copy's gen: a Move is not a new rollout.
     let r#gen = match client.inspect_container(from, old).await {
         Ok(details) => details.container.copy_gen(),
-        Err(_) => Gen::FIRST,
+        Err(error) if error.code == RpcErrorCode::NotFound => Gen::FIRST,
+        Err(error) => {
+            return Err(MoveContainerError::NotServing {
+                error: machine_error(MachineAction::InspectContainer, error),
+                replacement_removed: !adopts,
+            });
+        }
     };
     let progress = Progress::new(Vec::new(), None);
     let started = run_new(
