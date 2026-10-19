@@ -87,7 +87,8 @@ fn replacement() -> Reply {
             environment: newer.environment,
             deployments: vec![newer.deployment.clone()],
             next_cursor: None,
-            latest: Some(newer.deployment),
+            latest: Some(newer.deployment.clone()),
+            in_flight: vec![newer.deployment],
         })))
         .unwrap(),
         interrupt: None,

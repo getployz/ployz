@@ -110,6 +110,10 @@ pub struct DeploymentsView {
     /// holds waiting for CI take no number, so a burst of them never hides it.
     /// None before the first Deploy.
     pub latest: Option<DeploymentSummary>,
+    /// Its Deployments in flight (queued, running, cancelling), newest number
+    /// first, whatever page they fall on: a promoted hold lists where it was
+    /// created, behind any holds made since.
+    pub in_flight: Vec<DeploymentSummary>,
 }
 
 /// One Deployment, by ID.
@@ -303,10 +307,12 @@ pub(crate) fn page(
     let (deployments, next) =
         deployment::page(tx, &environment.summary.id, limit, cursor.as_ref())?;
     let latest = deployment::latest_numbered(tx, &environment.summary.id)?;
+    let in_flight = deployment::all_in_flight(tx, &environment.summary.id)?;
     Ok(DeploymentsView {
         environment: environment.summary,
         deployments,
         next_cursor: next.map(|cursor| cursor.encode()),
         latest,
+        in_flight,
     })
 }

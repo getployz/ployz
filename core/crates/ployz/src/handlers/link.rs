@@ -515,8 +515,8 @@ struct Status {
     attention: Vec<Attention>,
 }
 
-/// Enough recent Deployments to hold every in-flight one and the latest that ended.
-const RECENT: usize = 5;
+/// The page itself goes unread: the view carries the in-flight set and the latest Deployment apart from it.
+const RECENT: usize = 1;
 
 /// `ployz status`: one call that orients an agent.
 pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
@@ -558,10 +558,12 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             limit: Some(RECENT),
             cursor: None,
         })?;
+        // The newest numbered Deployment, when it ended; the list runs in creation
+        // order, so a promoted hold can sit behind a row with a lower number.
         let ended = page
-            .deployments
-            .iter()
-            .find(|deployment| deployment.status.ended());
+            .latest
+            .as_ref()
+            .filter(|deployment| deployment.status.ended());
         if let Some(ended) = ended {
             let reason = match ended.status {
                 DeploymentStatus::Failed => Some("deployment_failed"),
@@ -583,11 +585,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 });
             }
         }
-        deploying = page
-            .deployments
-            .into_iter()
-            .filter(|deployment| deployment.status.in_flight())
-            .collect();
+        deploying = page.in_flight;
     }
     for reference in diff.iter().flat_map(|diff| &diff.broken) {
         attention.push(Attention {

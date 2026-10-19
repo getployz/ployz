@@ -1065,6 +1065,62 @@ fn pages_past_a_promoted_hold() {
     assert_eq!(numbered, [Some(3), Some(2), Some(1)]);
 }
 
+/// A hold on `H2` passes CI and queues as #1; a hold on `H3` is then made and
+/// cancelled. A page of one shows only that cancelled hold, #1 sitting behind
+/// it, yet the view carries #1 as in flight, and as the latest.
+#[test]
+fn in_flight_comes_with_the_view_from_past_the_first_page() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    publish(&store, &who);
+    system(&store, &push(None, Some(H2), None));
+    let promoted = passed(&store, H2, 10);
+    let queued = &promoted.admitted[0].deployment;
+    assert_eq!(queued.number, Some(1));
+    assert_eq!(queued.status, DeploymentStatus::Queued);
+    system(&store, &push(Some(H2), Some(H3), None));
+    let [hold] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
+    store
+        .write(
+            &who,
+            &Cancel {
+                deployment: hold.id.clone(),
+            },
+        )
+        .unwrap();
+    let first = store
+        .read(
+            &who,
+            &DeploymentsQuery {
+                limit: Some(1),
+                cursor: None,
+                ..DeploymentsQuery::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        first
+            .deployments
+            .iter()
+            .map(|row| &row.id)
+            .collect::<Vec<_>>(),
+        [&hold.id]
+    );
+    assert!(first.next_cursor.is_some());
+    assert_eq!(
+        first
+            .in_flight
+            .iter()
+            .map(|row| &row.id)
+            .collect::<Vec<_>>(),
+        [&queued.id]
+    );
+    assert_eq!(
+        first.latest.as_ref().map(|latest| &latest.id),
+        Some(&queued.id)
+    );
+}
+
 /// A cancelled hold `C` on `H2`, then a hold `H` on `H3` above it, both pushed within
 /// a second. A page of one ends on H; H then promotes to #4, which once moved it
 /// below C in the list and had a later page repeat it. A Deployment lists where it

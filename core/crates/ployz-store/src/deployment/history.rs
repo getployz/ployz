@@ -491,6 +491,26 @@ pub(crate) fn latest_numbered(
         .transpose()
 }
 
+/// Every Deployment of `environment` in flight, newest number first: queued, or
+/// claimed by a runner whose lease holds. A bounded set, however long the list.
+pub(crate) fn all_in_flight(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Vec<DeploymentSummary>, RpcError> {
+    let columns = COLUMNS.as_str();
+    let in_flight = in_flight_sql();
+    let rows = tx.query(
+        &format!(
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND {NUMBERED} AND {in_flight} ORDER BY number DESC"
+        ),
+        &[environment.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| stored(row).map(|stored| stored.summary))
+        .collect()
+}
+
 /// The Servers Deployment `id` failed on, by name, sorted.
 pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String>, RpcError> {
     let stored = load(tx, id)?;

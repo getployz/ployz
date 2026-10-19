@@ -269,9 +269,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardNode={discardNode}
         onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
           : actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
-        // The list runs in insertion order; a promoted hold can take a newer number than a later row, so in-flight goes by number.
-        active={(deployments?.deployments.filter((deployment) => deployment.in_flight) ?? [])
-          .sort((a, b) => (b.number ?? 0) - (a.number ?? 0))}
+        active={deployments?.in_flight ?? []}
         latest={deployments?.latest}
         storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}

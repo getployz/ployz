@@ -737,15 +737,12 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
         limit: None,
         cursor: None,
     })?;
-    // A page leads with the Deployments still waiting for CI: unnumbered, not newer.
-    Ok(page
-        .deployments
-        .into_iter()
-        .find(|newer| newer.number.is_some())
-        .filter(|newer| {
-            newer.number > view.deployment.number
-                && ships_all(&view.deployment.services, &newer.services)
-        }))
+    // The list runs in creation order, so a hold promoted since can sit behind
+    // newer rows: the newest numbered Deployment comes with the view instead.
+    Ok(page.latest.filter(|newer| {
+        newer.number > view.deployment.number
+            && ships_all(&view.deployment.services, &newer.services)
+    }))
 }
 
 /// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
