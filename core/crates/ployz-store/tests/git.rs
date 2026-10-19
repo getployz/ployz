@@ -270,6 +270,76 @@ fn a_git_service_round_trips_get_edit_publish() {
     assert!(store.read(&who, &DiffQuery::default()).unwrap().published);
 }
 
+#[test]
+fn push_policy_on_a_public_repository_applies_and_says_pushes_need_the_app() {
+    let unheard = "Pushes reach Ployz only once the GitHub App is installed on acme/docs.";
+    let notes = |store: &ConfigStore, who: &Actor| {
+        let query = EnvironmentQuery {
+            environment: EnvironmentRef::default(),
+            path: Some(SettingPath::parse("web").unwrap()),
+            all: false,
+        };
+        store
+            .read(who, &query)
+            .unwrap()
+            .settings
+            .into_iter()
+            .filter_map(|row| Some((row.path.to_string(), row.note?)))
+            .collect::<Vec<_>>()
+    };
+    let set_policy = |store: &ConfigStore, who: &Actor| {
+        store
+            .write_trusted(
+                who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![
+                        set("web.waitForCi", json!(true)),
+                        set("web.watchPaths", json!(["src/**"])),
+                    ],
+                },
+                &evidence(),
+            )
+            .unwrap()
+    };
+
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/docs", None), &evidence())
+        .unwrap();
+    let edited = set_policy(&store, &who);
+    assert_eq!(
+        edited
+            .immediate
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["web.waitForCi", "web.watchPaths"]
+    );
+    assert_eq!(
+        serde_json::to_value(&edited.notes).unwrap(),
+        json!([{ "path": "web.waitForCi", "note": unheard }])
+    );
+    assert_eq!(values(&store, &who)["waitForCi"], json!(true));
+    assert_eq!(
+        notes(&store, &who),
+        [
+            ("web.autoDeploy".to_owned(), unheard.to_owned()),
+            ("web.waitForCi".to_owned(), unheard.to_owned()),
+        ]
+    );
+
+    // Through the GitHub App, pushes arrive: nothing to say.
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let edited = set_policy(&store, &who);
+    assert!(edited.notes.is_empty(), "{edited:?}");
+    assert!(notes(&store, &who).is_empty());
+}
+
 fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> DeploymentId {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
