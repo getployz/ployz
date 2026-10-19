@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use ployz_store::{
     Admit, AdmitRemoval, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DueQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary, EnvironmentsQuery, Left,
-    ProjectName, ProjectsQuery, Removal, RemovalsQuery, Remove, RemovedQuery, ServicesQuery,
-    ShutDown, VolumeName, VolumesQuery,
+    DestructiveEffect, DueQuery, EnvironmentName, EnvironmentRef, EnvironmentSummary,
+    EnvironmentsQuery, Left, ProjectName, ProjectsQuery, Removal, RemovalsQuery, Remove,
+    RemovedQuery, ServicesQuery, ShutDown, VolumeName, VolumesQuery,
 };
 use serde_json::json;
 
@@ -134,7 +134,7 @@ pub(super) fn remove(
             accept_volume_loss.insert(name.clone(), accepted);
         }
     }
-    let request = Remove {
+    let mut request = Remove {
         project: project.clone(),
         environment: environment.cloned(),
         version: matches.get_one::<String>("expect-version").cloned(),
@@ -142,15 +142,17 @@ pub(super) fn remove(
         every_copy: BTreeMap::new(),
     };
     let refs: Vec<_> = members.iter().map(at).collect();
-    let removal = store.remove(&request, &refs).map_err(|error| {
-        let first = goes_first(&error, project);
-        let goes = first.is_some();
-        store.accepting(store::with_next(
-            error,
-            |_| goes,
-            || first.unwrap_or_default(),
-        ))
-    })?;
+    let what = target(project, environment);
+    let removal =
+        bound(&mut request, &what, |request| store.remove(request, &refs)).map_err(|error| {
+            let first = goes_first(&error, project);
+            let goes = first.is_some();
+            store.accepting(store::with_next(
+                error,
+                |_| goes,
+                || first.unwrap_or_default(),
+            ))
+        })?;
     let mut ran = Vec::new();
     let result = (|| {
         let (id, left, waiting_on) = match removal {
@@ -263,6 +265,117 @@ pub(super) fn remove(
         }
         Err(error) => Err(error),
     }
+}
+
+/// Send `request` removing `what`. The typed name confirms it, so when it carries
+/// no `--expect-version` and the Store refuses it only for a version, show what goes
+/// and send it once more bound to the version that refusal reviewed. A refusal then
+/// never asks for a version: it names what goes, and a lost Volume nobody accepted.
+/// A plan that changed between the two sends refuses the second, saying so.
+fn bound(
+    request: &mut Remove,
+    what: &str,
+    mut send: impl FnMut(&Remove) -> Result<Removal, StoreCallError>,
+) -> Result<Removal, StoreCallError> {
+    if request.version.is_some() {
+        return send(request);
+    }
+    let refused = match send(request) {
+        Err(StoreCallError::Refused(refused)) => refused,
+        sent => return sent,
+    };
+    let Some(Reviewed {
+        version,
+        effects,
+        unaccepted: false,
+    }) = Reviewed::of(&refused, &request.accept_volume_loss)
+    else {
+        return Err(StoreCallError::Refused(ask(refused, request, what, false)));
+    };
+    ui::note(format_args!("Removing {what} {}.", said(&effects)));
+    request.version = Some(version);
+    send(request).map_err(|error| match error {
+        StoreCallError::Refused(refused) => {
+            StoreCallError::Refused(ask(refused, request, what, true))
+        }
+        error => error,
+    })
+}
+
+/// What a `confirmation_required` removal refusal reviewed.
+struct Reviewed {
+    version: String,
+    effects: Vec<DestructiveEffect>,
+    /// Whether it loses a Volume `accepted` doesn't name.
+    unaccepted: bool,
+}
+
+impl Reviewed {
+    fn of(
+        refused: &ployz_core::RpcError,
+        accepted: &BTreeMap<EnvironmentName, Vec<VolumeName>>,
+    ) -> Option<Self> {
+        if refused.code != RpcErrorCode::ConfirmationRequired {
+            return None;
+        }
+        let details = &refused.details;
+        let lost: BTreeMap<EnvironmentName, Vec<VolumeName>> = match details.get("accept") {
+            Some(accept) => serde_json::from_value(accept.clone()).ok()?,
+            None => BTreeMap::new(),
+        };
+        let unaccepted = lost.iter().any(|(environment, volumes)| {
+            volumes.iter().any(|volume| {
+                !accepted
+                    .get(environment)
+                    .is_some_and(|names| names.contains(volume))
+            })
+        });
+        Some(Self {
+            version: details.get("version")?.as_str()?.to_owned(),
+            effects: serde_json::from_value(details.get("effects")?.clone()).ok()?,
+            unaccepted,
+        })
+    }
+}
+
+/// `refused` as a person who typed the name reads it: what goes, without the
+/// version, and whether it `changed` since this command showed it.
+fn ask(
+    mut refused: ployz_core::RpcError,
+    request: &Remove,
+    what: &str,
+    changed: bool,
+) -> ployz_core::RpcError {
+    let Some(Reviewed {
+        effects,
+        unaccepted,
+        ..
+    }) = Reviewed::of(&refused, &request.accept_volume_loss)
+    else {
+        return refused;
+    };
+    if let Some(details) = refused.details.as_object_mut() {
+        details.remove("version");
+    }
+    let changed = match changed {
+        true => "What this removes changed while it ran, so nothing was removed. ",
+        false => "",
+    };
+    let go = match unaccepted {
+        true => "Accept each lost Volume by name to go ahead",
+        false => "Run it again to go ahead",
+    };
+    refused.message = format!("{changed}Removing {what} {}. {go}", said(&effects));
+    refused
+}
+
+/// Each effect as a person reads it, in one clause.
+fn said(effects: &[DestructiveEffect]) -> String {
+    effects
+        .iter()
+        .map(crate::approval::line)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Where a removal ended, and the removal Deployments this command ran.
@@ -546,6 +659,84 @@ impl Inventory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn asks(version: &str, service: &str) -> StoreCallError {
+        StoreCallError::Refused(ployz_core::RpcError {
+            code: RpcErrorCode::ConfirmationRequired,
+            message: format!("Removing this will remove Service {service}. Pass the version"),
+            details: json!({
+                "volumes": {},
+                "accept": {},
+                "effects": [{ "kind": "removes_service", "name": service, "node": "n", "path": "p" }],
+                "version": version,
+            }),
+            cause: Vec::new(),
+        })
+    }
+
+    fn request() -> Remove {
+        Remove {
+            project: ProjectName::parse("shop").unwrap(),
+            environment: None,
+            version: None,
+            accept_volume_loss: BTreeMap::new(),
+            every_copy: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_removal_binds_the_version_it_was_refused_with_and_sends_once_more() {
+        let mut sent = Vec::new();
+        let removed = bound(&mut request(), "shop", |request| {
+            sent.push(request.version.clone());
+            match request.version.as_deref() {
+                Some("v1") => Ok(Removal::Removed {
+                    residuals: Vec::new(),
+                }),
+                _ => Err(asks("v1", "web")),
+            }
+        });
+        assert!(matches!(removed, Ok(Removal::Removed { .. })));
+        assert_eq!(sent, [None, Some("v1".to_owned())]);
+    }
+
+    #[test]
+    fn a_plan_that_changed_before_the_bound_send_is_refused_without_a_version() {
+        let mut sent = 0;
+        let refused = bound(&mut request(), "shop", |_| {
+            sent += 1;
+            Err(asks(if sent == 1 { "v1" } else { "v2" }, "api"))
+        });
+        let Err(StoreCallError::Refused(refused)) = refused else {
+            panic!("a changed plan goes ahead");
+        };
+        assert_eq!(sent, 2, "it does not loop");
+        assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+        assert_eq!(
+            refused.message,
+            "What this removes changed while it ran, so nothing was removed. Removing shop \
+             removes Service api. Run it again to go ahead"
+        );
+        assert_eq!(refused.details.get("version"), None);
+    }
+
+    #[test]
+    fn a_passed_version_is_sent_as_typed_and_only_once() {
+        let mut request = Remove {
+            version: Some("typed".to_owned()),
+            ..request()
+        };
+        let mut sent = 0;
+        let refused = bound(&mut request, "shop", |_| {
+            sent += 1;
+            Err(asks("v1", "web"))
+        });
+        assert_eq!(sent, 1);
+        let Err(StoreCallError::Refused(refused)) = refused else {
+            panic!("a stale version goes ahead");
+        };
+        assert_eq!(refused.details["version"], "v1");
+    }
 
     #[test]
     fn a_missing_deployment_is_swept_only_once_its_target_is_gone() {

@@ -943,6 +943,102 @@ fn an_agent_adds_lists_renames_and_removes_services() {
 }
 
 #[test]
+fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+        if let Written::Removal(Removal::Removing { left, .. }) = written {
+            for deployment in left.iter().filter_map(|left| left.deployment.as_ref()) {
+                succeed(store, &deployment.id);
+            }
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["env", "new", "staging"]);
+        for environment in ["production", "staging"] {
+            ok(
+                store,
+                &[
+                    "service",
+                    "add",
+                    "web",
+                    "--image",
+                    "nginx:1",
+                    "--env",
+                    environment,
+                ],
+            );
+            applied(store, environment);
+        }
+
+        // Without a terminal the refusal names the command to run: the name, no version.
+        let asked = error(store, &["project", "rm", "shop"]);
+        assert_eq!(asked["code"], "confirmation_required", "{asked}");
+        assert_eq!(
+            asked["details"]["retry"],
+            json!("ployz project rm shop --confirm shop")
+        );
+        // A stale `--expect-version` still binds, so a script that passes one is refused.
+        let stale = error(
+            store,
+            &[
+                "project",
+                "rm",
+                "shop",
+                "--confirm",
+                "shop",
+                "--expect-version",
+                "00000000-0000-4000-8000-000000000000:0000000000000000",
+            ],
+        );
+        assert_eq!(stale["code"], "confirmation_required", "{stale}");
+
+        match store {
+            // No Server is enrolled in process, so the removal Deployment the name
+            // admitted can't take it off: it got past the confirmation in one call.
+            Target::Local(_) => {
+                let (code, admitted) = ployz(
+                    Some(store),
+                    &["env", "rm", "staging", "--confirm", "shop/staging"],
+                );
+                assert_eq!(code, Some(3), "{admitted}");
+                assert_eq!(admitted["remove"], true, "{admitted}");
+            }
+            // This fake Cloud never sweeps, so `--detach` returns once the removal is
+            // under way rather than waiting for the sweep.
+            Target::Cloud { .. } => {
+                let removing = ok(
+                    store,
+                    &[
+                        "env",
+                        "rm",
+                        "staging",
+                        "--confirm",
+                        "shop/staging",
+                        "--detach",
+                    ],
+                );
+                assert_eq!(removing["deployments"][0]["remove"], true, "{removing}");
+                let removing = ok(
+                    store,
+                    &["project", "rm", "shop", "--confirm", "shop", "--detach"],
+                );
+                assert_eq!(removing["deployments"][0]["remove"], true, "{removing}");
+            }
+        }
+    }
+}
+
+#[test]
 fn a_deployed_service_staged_for_removal_still_inspects() {
     fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         if let Written::Deployment(admitted) = written {
@@ -1253,23 +1349,10 @@ fn an_environment_cloud_forgets_and_sweeps_first_still_says_it_was_left_on_old_s
     );
     ok(&cloud, &["deploy", "--env", "staging"]);
 
-    let asked = error(
-        &cloud,
-        &["env", "rm", "staging", "--confirm", "shop/staging"],
-    );
-    assert_eq!(asked["code"], "confirmation_required", "{asked}");
-    let version = asked["details"]["version"].as_str().unwrap();
+    // The typed name confirms removing what ran: no version to pass.
     let removed = ok(
         &cloud,
-        &[
-            "env",
-            "rm",
-            "staging",
-            "--confirm",
-            "shop/staging",
-            "--expect-version",
-            version,
-        ],
+        &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
     assert_eq!(removed["removal"], "removed", "{removed}");
     assert_eq!(
@@ -1318,28 +1401,8 @@ fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud
     ok(&cloud, &["set", "web.cpuLimit=0.2", "--env", "production"]);
     ok(&cloud, &["deploy", "--env", "production", "--detach"]);
 
-    // What ran is destructive to remove: the typed name, then the version it reviewed.
-    let asked = error(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
-    assert_eq!(asked["code"], "confirmation_required", "{asked}");
-    let version = asked["details"]["version"].as_str().unwrap();
-    assert_eq!(
-        asked["details"]["retry"],
-        json!(format!(
-            "ployz project rm shop --confirm shop --expect-version {version}"
-        ))
-    );
-    let removed = ok(
-        &cloud,
-        &[
-            "project",
-            "rm",
-            "shop",
-            "--confirm",
-            "shop",
-            "--expect-version",
-            version,
-        ],
-    );
+    // What ran is destructive to remove, and the typed name alone confirms it.
+    let removed = ok(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
     assert_eq!(removed["removal"], "removing", "{removed}");
     assert_eq!(
         removed["deployments"].as_array().unwrap().len(),
