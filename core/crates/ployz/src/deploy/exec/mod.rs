@@ -14,13 +14,14 @@ use ployz_core::{
     AnonymousVolumes, AnswerWhen, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
     ContainerNow, ContainerObservation, ContainerRuntimeObservation, ContainerWant, CreationKey,
     DependencyHealthFailure, DeployEvent, DeployWarning, DeploymentLogId, DockerVolumeId, Drain,
-    ExecutionError, ExposedPort, FailedOperation, HEALTH_POLL_INTERVAL, HealthFailure,
-    HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
-    MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
-    OperationPhase, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
-    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
-    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, ServingPointer,
-    ServingPointerPublication, SlotKey, StopOptions, TransportProtocol, op,
+    EnsuredContainer, ExecutionError, ExposedPort, FailedOperation, HEALTH_POLL_INTERVAL,
+    HealthFailure, HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest,
+    ListContainersRequest, MachineAction, MachineId, MachineTarget, MembershipObservation,
+    Namespace, NewContainer, OperationPhase, PortPublication, PublishServingPointerRequest,
+    PullPolicy, QualifiedService, ReadRoutesRequest, RemoveVolumeRequest, ResolvedServiceSpec,
+    Retry, RoutesRead, RpcError, RpcErrorCode, RunRotation, RunTarget, ServiceId, ServiceName,
+    ServiceOutcome, ServingPointer, ServingPointerPublication, SlotKey, StopOptions,
+    TransportProtocol, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -37,6 +38,7 @@ use super::{
 };
 use crate::serving_publish::{AMEND_RETRIES, Applied, Protection, Rotation, succession};
 
+use super::cleanup::{ACK_POLL, ACK_WAIT};
 pub(super) use super::progress::Progress;
 
 mod health;
@@ -45,10 +47,6 @@ use health::wait_healthy;
 const DEFAULT_HOOK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const RESTART_WAIT: Duration = Duration::from_secs(60);
 const RESTART_POLL: Duration = Duration::from_millis(250);
-/// How often a Deploy re-reads acks while a dependent waits on them.
-const ACK_POLL: Duration = Duration::from_secs(1);
-/// How long a dependent waits for one Machine to route its dependency's Deploy.
-const ACK_WAIT: Duration = Duration::from_secs(300);
 const HOLD_BEYOND_HEALTH: Duration = Duration::from_secs(60 * 60);
 const HOLD_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -135,7 +133,7 @@ fn outcome_from(
     }
 }
 
-pub(super) trait MachineOperations {
+pub(crate) trait MachineOperations {
     async fn prepare_volumes(
         &self,
         machine_id: &MachineId,
@@ -171,6 +169,19 @@ pub(super) trait MachineOperations {
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
     ) -> Result<ImagePulled, RpcError>;
+    /// Converge one Container within `timeout`, keeping a refusal as typed.
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError>;
+    /// What each Machine routes for `service`, as `machine_id` sees the acks.
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError>;
     async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     async fn publish_pointer(
         &self,
@@ -290,6 +301,31 @@ impl MachineOperations for Client {
             ContainerWant::Gone { .. } => None,
         };
         Client::ensure_settled(self, machine_id, want, timeout).await
+    }
+
+    async fn ensure_unsettled(
+        &self,
+        machine_id: &MachineId,
+        want: ContainerWant,
+        timeout: Option<Duration>,
+    ) -> Result<EnsuredContainer, RpcError> {
+        Client::ensure_unsettled(self, machine_id, want, timeout).await
+    }
+
+    async fn read_routes(
+        &self,
+        machine_id: &MachineId,
+        service: &QualifiedService,
+    ) -> Result<RoutesRead, RpcError> {
+        self.invoke::<op::ReadRoutes>(
+            ReadRoutesRequest {
+                service: service.clone(),
+                routes_only: true,
+            },
+            &MachineTarget::from(machine_id),
+            Some(TARGET_RPC_TIMEOUT),
+        )
+        .await
     }
 
     async fn inspect_container(
@@ -457,6 +493,8 @@ restart_policy! {
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
     wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
     wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
+    wait fn ensure_unsettled(&self, machine_id: &MachineId, want: ContainerWant, timeout: Option<Duration>) -> Result<EnsuredContainer, RpcError>;
+    wait fn read_routes(&self, machine_id: &MachineId, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     wait fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     once("a compare-and-set: a resend after a lost reply reads its own write as Superseded")
     fn publish_pointer(&self, request: PublishServingPointerRequest) -> Result<ServingPointerPublication, RpcError>;
