@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write as _,
     os::unix::fs::{self as unix_fs, OpenOptionsExt, PermissionsExt},
@@ -40,6 +40,9 @@ pub struct MachineSpecStore {
     config_operations: Arc<Mutex<()>>,
     floors: Arc<Mutex<()>>,
     rotations: watch::Sender<()>,
+    /// Held open, never used: SQLite checkpoints a WAL database when its last
+    /// connection closes, which each call's own connection otherwise did.
+    _open: Arc<std::sync::Mutex<Connection>>,
 }
 
 pub(super) struct ConfigOperation<'a> {
@@ -58,12 +61,13 @@ impl MachineSpecStore {
     pub async fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
         let path = path.into();
         let init_path = path.clone();
-        blocking(move || initialize(&init_path)).await?;
+        let open = blocking(move || initialize(&init_path)).await?;
         Ok(Self {
             path,
             config_operations: Arc::new(Mutex::new(())),
             floors: Arc::new(Mutex::new(())),
             rotations: watch::Sender::new(()),
+            _open: Arc::new(std::sync::Mutex::new(open)),
         })
     }
 
@@ -88,6 +92,35 @@ impl MachineSpecStore {
         encoded
             .map(|encoded| serde_json::from_str(&encoded).map_err(Error::from))
             .transpose()
+    }
+
+    /// This Machine's record of each copy's rotation, in one read. A copy that never
+    /// left Pending has no entry.
+    pub async fn rotations(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<BTreeMap<ContainerId, CopyRotation>, Error> {
+        let path = self.path.clone();
+        let encoded = blocking(move || {
+            let connection = connect(&path)?;
+            let mut statement =
+                connection.prepare("SELECT rotation FROM rotations WHERE id = ?1")?;
+            let mut encoded = Vec::new();
+            for container_id in container_ids {
+                if let Some(rotation) = statement
+                    .query_row([container_id.to_string()], |row| row.get::<_, String>(0))
+                    .optional()?
+                {
+                    encoded.push((container_id, rotation));
+                }
+            }
+            Ok(encoded)
+        })
+        .await?;
+        encoded
+            .into_iter()
+            .map(|(container_id, encoded)| Ok((container_id, serde_json::from_str(&encoded)?)))
+            .collect()
     }
 
     #[must_use]
@@ -387,7 +420,7 @@ fn garbage_collect_config_files(
     Ok(())
 }
 
-fn initialize(path: &Path) -> Result<(), Error> {
+fn initialize(path: &Path) -> Result<Connection, Error> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -404,7 +437,7 @@ fn initialize(path: &Path) -> Result<(), Error> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
     connection.execute_batch(SCHEMA)?;
-    Ok(())
+    Ok(connection)
 }
 
 fn connect(path: &Path) -> Result<Connection, Error> {

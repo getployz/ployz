@@ -266,6 +266,19 @@ impl ContainerRuntime {
         Ok(self.specs.rotation(container_id).await?.unwrap_or_default())
     }
 
+    /// The recorded rotations of `container_ids`, in one read. A copy that never left
+    /// Pending has no entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the Machine database cannot be read.
+    pub async fn rotations(
+        &self,
+        container_ids: Vec<ContainerId>,
+    ) -> Result<BTreeMap<ContainerId, ployz_core::CopyRotation>, Error> {
+        Ok(self.specs.rotations(container_ids).await?)
+    }
+
     /// Report this Container as `stopping` until the returned Withdrawal drops,
     /// so the Ingress Proxies stop routing to it before it stops. Each operation
     /// holds its own; the Container returns to ingress once none is held.

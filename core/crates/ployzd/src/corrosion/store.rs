@@ -771,7 +771,27 @@ impl ReplicatedStore {
     pub(crate) async fn ingress_routes(
         &self,
     ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
-        let query = self.api.query(Statement::new(INGRESS_ROUTES, [])).await?;
+        self.ingress_route_rows(Statement::new(INGRESS_ROUTES, []))
+            .await
+    }
+
+    /// One Service's ingress route rows, as [`Self::ingress_routes`] keys them.
+    pub(crate) async fn service_ingress_routes(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
+        self.ingress_route_rows(Statement::new(
+            SERVICE_INGRESS_ROUTES,
+            [json!(service.to_string())],
+        ))
+        .await
+    }
+
+    async fn ingress_route_rows(
+        &self,
+        statement: Statement,
+    ) -> Result<BTreeMap<(MachineId, QualifiedService), IngressRouteRow>, Error> {
+        let query = self.api.query(statement).await?;
         Ok(query
             .rows(["machine_id", "service_id", "deploy", "containers"])?
             .into_iter()
@@ -1113,6 +1133,8 @@ const SERVING_POINTERS: &str =
     "SELECT key AS serving_key, value FROM cluster WHERE key LIKE 'serving/%'";
 const INGRESS_ROUTES: &str =
     "SELECT machine_id, service_id, deploy, containers FROM ingress_routes";
+const SERVICE_INGRESS_ROUTES: &str =
+    "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?";
 const INGRESS_ROUTE_UPSERT: &str = "INSERT INTO ingress_routes (machine_id, service_id, deploy, containers) VALUES (?, ?, ?, ?) ON CONFLICT (machine_id, service_id) DO UPDATE SET deploy = excluded.deploy, containers = excluded.containers";
 const INGRESS_ROUTE_DELETE: &str =
     "DELETE FROM ingress_routes WHERE machine_id = ? AND service_id = ?";

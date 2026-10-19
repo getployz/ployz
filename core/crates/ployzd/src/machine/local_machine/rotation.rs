@@ -3,19 +3,19 @@
 //! the exclusive admission turn right before the write, against the rotation this
 //! Machine recorded. Replicated rows from other Machines only narrow what it does.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use futures_util::{TryFutureExt, future::try_join_all};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerObservation,
     ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation, DeploymentLogId,
-    EnsuredContainer, Gen, HealthVerdict, QualifiedService, RotationEdge, RotationRefusal,
-    RotationTarget, RunRotation, RunTarget,
+    EnsuredContainer, Gen, HealthVerdict, MachineId, QualifiedService, RotationEdge,
+    RotationRefusal, RotationTarget, RunRotation, RunTarget,
 };
 
 use super::{Error, LocalMachine, not_found_refusal, redacted, refuse};
-use crate::route_acks::{Ackers, routed};
+use crate::route_acks::{Ackers, Membership, routed};
 
 /// A rotation a want asks a copy to move to.
 #[derive(Clone, Debug)]
@@ -61,6 +61,14 @@ impl Copy {
             rotation: observed.rotation().clone(),
         }
     }
+}
+
+/// What the LastIn guard reads from replicated rows: each Machine's routed copies
+/// of the Service, the Machines that must ack, and the rows of the routed copies.
+struct Routed {
+    routes: BTreeMap<MachineId, BTreeSet<ContainerId>>,
+    membership: Membership,
+    named: Vec<ContainerObservation>,
 }
 
 enum Checked {
@@ -134,7 +142,7 @@ impl LocalMachine {
                 return Ok(refused(now, not_found_refusal(&locator)));
             }
         };
-        match self.check(&copy, &want, expect.as_ref()).await? {
+        match self.check(&copy, &want, expect.as_ref(), None).await? {
             Checked::Met => {
                 return Ok(EnsuredContainer::Ensured {
                     now: redacted(now),
@@ -190,13 +198,26 @@ impl LocalMachine {
             .id
             .expect("only an existing copy reaches the rotation write");
         let locator = ContainerLocator::Id(id);
+        // Replicated rows are not guarded by the turn, so the LastIn guard's reads of
+        // them run alongside it; the local rotations it reads wait for the turn.
+        let early = matches!(
+            (&want, &copy.rotation),
+            (RotationWant::Out { allow_empty: false }, CopyRotation::In)
+        );
         let local = self.clone();
         let refusal = self
             .finish_mutation({
                 let locator = locator.clone();
                 async move {
                     let containers = local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-                    let turn = match containers.rotation_turn(&id).await {
+                    let (turn, routed) = tokio::join!(containers.rotation_turn(&id), async {
+                        if early {
+                            Some(local.routed(&copy).await)
+                        } else {
+                            None
+                        }
+                    });
+                    let turn = match turn {
                         Ok(turn) => turn,
                         Err(crate::docker::Error::ContainerNotFound(_)) => {
                             return Ok(Some(not_found_refusal(&locator)));
@@ -207,7 +228,7 @@ impl LocalMachine {
                         rotation: turn.rotation().clone(),
                         ..copy
                     };
-                    match local.check(&copy, &want, expect.as_ref()).await? {
+                    match local.check(&copy, &want, expect.as_ref(), routed).await? {
                         Checked::Met => Ok(None),
                         Checked::Refused(refusal) => Ok(Some(refusal)),
                         Checked::Allowed(rotation) => {
@@ -229,11 +250,13 @@ impl LocalMachine {
     }
 
     /// The want against `copy`: [`decide`], then the guards that read other copies.
+    /// `routed` is the LastIn guard's replicated read when it was already taken.
     async fn check(
         &self,
         copy: &Copy,
         want: &RotationWant,
         expect: Option<&CopyRotation>,
+        routed: Option<Result<Routed, Error>>,
     ) -> Result<Checked, Error> {
         let to = match decide(copy, want, expect) {
             Checked::Allowed(to) => to,
@@ -242,7 +265,11 @@ impl LocalMachine {
         let guard = match (want, &copy.rotation) {
             (RotationWant::In { .. }, _) => self.newer_in(copy).await?,
             (RotationWant::Out { allow_empty: false }, CopyRotation::In) => {
-                self.last_in(copy).await?
+                let routed = match routed {
+                    Some(routed) => routed?,
+                    None => self.routed(copy).await?,
+                };
+                self.last_in(copy, routed).await?
             }
             _ => None,
         };
@@ -251,8 +278,9 @@ impl LocalMachine {
 
     /// Refuse In while a newer copy of the Service is already In.
     async fn newer_in(&self, copy: &Copy) -> Result<Option<ContainerRefusal>, Error> {
+        let observed = self.replicated()?.containers().await?.observations;
         let newer = self
-            .in_siblings(copy)
+            .in_siblings(copy, observed)
             .await?
             .into_iter()
             .filter(|sibling| sibling.copy_gen() > copy.r#gen)
@@ -271,13 +299,14 @@ impl LocalMachine {
         }))
     }
 
-    /// Refuse In to Out unless another In copy of the Service is acked by every live
-    /// proxy. A Machine list that is only partly replicated never passes. Only copies
-    /// some ack row names can pass, so only those are read.
-    async fn last_in(&self, copy: &Copy) -> Result<Option<ContainerRefusal>, Error> {
+    /// The LastIn guard's reads of replicated rows. Only copies some ack row names can
+    /// pass, so only those rows are read.
+    async fn routed(&self, copy: &Copy) -> Result<Routed, Error> {
         let replicated = self.replicated()?;
         let (rows, membership) = tokio::try_join!(
-            replicated.ingress_routes().map_err(Error::from),
+            replicated
+                .service_ingress_routes(&copy.service)
+                .map_err(Error::from),
             self.route_membership()
         )?;
         let routes = routed(rows, &copy.service);
@@ -286,18 +315,39 @@ impl LocalMachine {
             .flatten()
             .filter(|routed| Some(**routed) != copy.id)
             .collect::<BTreeSet<_>>();
-        let rows = try_join_all(
+        let named = try_join_all(
             named
                 .into_iter()
                 .map(|candidate| replicated.container(candidate)),
         )
-        .await?;
-        let mut siblings = Vec::new();
-        for sibling in rows.into_iter().flatten() {
-            if self.in_sibling(copy, &sibling).await? {
-                siblings.push(sibling.container_id);
-            }
-        }
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
+        Ok(Routed {
+            routes,
+            membership,
+            named,
+        })
+    }
+
+    /// Refuse In to Out unless another In copy of the Service is acked by every live
+    /// proxy. A Machine list that is only partly replicated never passes.
+    async fn last_in(
+        &self,
+        copy: &Copy,
+        Routed {
+            routes,
+            membership,
+            named,
+        }: Routed,
+    ) -> Result<Option<ContainerRefusal>, Error> {
+        let siblings = self
+            .in_siblings(copy, named)
+            .await?
+            .into_iter()
+            .map(|sibling| sibling.container_id)
+            .collect::<Vec<_>>();
         if siblings.is_empty() {
             return Ok(Some(refuse(
                 ContainerRefusalReason::LastIn,
@@ -336,37 +386,44 @@ impl LocalMachine {
         )))
     }
 
-    /// The other In copies of the Service, read from replicated rows.
-    async fn in_siblings(&self, copy: &Copy) -> Result<Vec<ContainerObservation>, Error> {
-        let mut siblings = Vec::new();
-        for observed in self.replicated()?.containers().await?.observations {
-            if self.in_sibling(copy, &observed).await? {
-                siblings.push(observed);
-            }
-        }
-        Ok(siblings)
-    }
-
-    /// Whether `observed` is another In copy of `copy`'s Service. A copy on this
+    /// The other In copies of `copy`'s Service among `observed`. A copy on this
     /// Machine reads this Machine's own record instead of its row, which may lag.
-    async fn in_sibling(
+    async fn in_siblings(
         &self,
         copy: &Copy,
-        observed: &ContainerObservation,
-    ) -> Result<bool, Error> {
-        if observed.kind != ContainerKind::ServiceContainer
-            || Some(observed.container_id) == copy.id
-            || observed.identity() != copy.service
-        {
-            return Ok(false);
-        }
-        let rotation = if observed.machine_id == self.record().id() {
-            let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
-            containers.rotation(&observed.container_id).await?
+        observed: Vec<ContainerObservation>,
+    ) -> Result<Vec<ContainerObservation>, Error> {
+        let machine_id = self.record().id();
+        let others = observed
+            .into_iter()
+            .filter(|observed| {
+                observed.kind == ContainerKind::ServiceContainer
+                    && Some(observed.container_id) != copy.id
+                    && observed.identity() == copy.service
+            })
+            .collect::<Vec<_>>();
+        let local = others
+            .iter()
+            .filter(|observed| observed.machine_id == machine_id)
+            .map(|observed| observed.container_id)
+            .collect::<Vec<_>>();
+        let recorded = if local.is_empty() {
+            BTreeMap::new()
         } else {
-            observed.rotation().clone()
+            let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
+            containers.rotations(local).await?
         };
-        Ok(rotation == CopyRotation::In)
+        Ok(others
+            .into_iter()
+            .filter(|observed| {
+                let rotation = if observed.machine_id == machine_id {
+                    recorded.get(&observed.container_id)
+                } else {
+                    Some(observed.rotation())
+                };
+                rotation == Some(&CopyRotation::In)
+            })
+            .collect())
     }
 }
 

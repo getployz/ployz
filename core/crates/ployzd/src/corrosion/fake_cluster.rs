@@ -369,6 +369,24 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                     ]
                 }),
         ),
+        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?" =>
+        {
+            let service_id = text_param(&statement.params, 0);
+            events(
+                &["machine_id", "service_id", "deploy", "containers"],
+                kv.ingress_routes
+                    .iter()
+                    .filter(|((_, routed), _)| routed == service_id)
+                    .map(|((machine_id, service_id), (deploy, containers))| {
+                        vec![
+                            json!(machine_id),
+                            json!(service_id),
+                            json!(deploy),
+                            json!(containers),
+                        ]
+                    }),
+            )
+        }
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
