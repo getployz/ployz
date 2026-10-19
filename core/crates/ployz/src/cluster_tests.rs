@@ -317,6 +317,8 @@ fn observation(id: char, machine: char) -> ContainerObservation {
     let service_id = ServiceId::parse(id.to_string().repeat(32)).unwrap();
     let service_name = ServiceName::parse("api").unwrap();
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: "api".into(),
         created_at_unix_nanos: 0,

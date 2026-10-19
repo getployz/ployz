@@ -3,6 +3,8 @@ import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
+import { DnsNameHint } from "#/components/dns-name-hint";
+import { dnsName } from "#/utils/dns-name";
 
 export function ConfigCreatorDialog({ open, onOpenChange, onCreate }: {
   open: boolean;
@@ -11,7 +13,7 @@ export function ConfigCreatorDialog({ open, onOpenChange, onCreate }: {
 }) {
   const [name, setName] = useState("config");
   const [creating, setCreating] = useState(false);
-  const trimmedName = name.trim();
+  const converted = dnsName(name);
 
   function changeOpen(next: boolean) {
     if (creating) return;
@@ -21,10 +23,10 @@ export function ConfigCreatorDialog({ open, onOpenChange, onCreate }: {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!trimmedName) return;
+    if (!converted.name) return;
     setCreating(true);
     try {
-      await onCreate(trimmedName);
+      await onCreate(converted.name);
       onOpenChange(false);
       setName("config");
     } finally {
@@ -44,11 +46,12 @@ export function ConfigCreatorDialog({ open, onOpenChange, onCreate }: {
             <Field>
               <FieldLabel htmlFor="config-name">Name</FieldLabel>
               <Input id="config-name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" autoFocus />
+              <DnsNameHint name={converted} />
             </Field>
           </FieldGroup>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => changeOpen(false)}>Cancel</Button>
-            <Button type="submit" disabled={!trimmedName || creating}>Create config</Button>
+            <Button type="submit" disabled={!converted.name || creating}>Create config</Button>
           </DialogFooter>
         </form>
       </DialogContent>

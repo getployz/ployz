@@ -2054,12 +2054,7 @@ fn an_agent_reviews_saves_and_discards() {
             diff.pointer("/changes/0/settings/0/path"),
             Some(&json!("web.replicas"))
         );
-        assert_eq!(
-            diff.get("next"),
-            Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {version}"
-            )))
-        );
+        assert_eq!(diff.get("next"), Some(&json!("ployz deploy")));
 
         // A review taken before another edit is stale.
         ok(store, &["set", "web.startCommand=nginx"]);
@@ -2089,10 +2084,9 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(saved.get("next"), Some(&json!("ployz deploy")));
         let diff = ok(store, &["diff"]);
         assert_eq!(diff.get("holds_staged"), Some(&json!(true)));
-        let version = diff["version"].as_str().unwrap();
         assert_eq!(
             diff.get("next"),
-            Some(&json!(format!("ployz deploy --expect-version {version}"))),
+            Some(&json!("ployz deploy")),
             "saved is not yet deployed"
         );
 
@@ -2110,9 +2104,7 @@ fn an_agent_reviews_saves_and_discards() {
         let version = inverse["version"].as_str().unwrap();
         assert_eq!(
             inverse.get("next"),
-            Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {version}"
-            )))
+            Some(&json!("ployz deploy --skip-deploy"))
         );
         assert_eq!(
             ok(store, &["history"])["revisions"]
@@ -3922,6 +3914,48 @@ fn history_scope_flags_work_before_or_after_the_action() {
             assert_eq!(preview["environment"]["name"], json!("staging"), "{args:?}");
         }
     }
+}
+
+#[test]
+fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["set", "web.image=web:2"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    assert_eq!(
+        human(&["history", "restore", "1"]),
+        "Staged a rollback to #1. Deploy to apply.\n"
+    );
+    assert_eq!(
+        human(&["history", "restore", "1"]),
+        "Already matches #1. Nothing staged.\n"
+    );
+    assert_eq!(
+        ok(&store, &["history", "restore", "1"])["changed"],
+        json!(false)
+    );
+    assert_eq!(
+        human(&["history", "undo", "2"]),
+        "Nothing to undo in #2. Nothing staged.\n"
+    );
+
+    ok(&store, &["deploy", "--skip-deploy"]);
+    assert_eq!(
+        human(&["history", "undo", "3"]),
+        "Staged an undo of #3. Deploy to apply.\n"
+    );
+    assert_eq!(
+        human(&["history", "undo", "3"]),
+        "Nothing to undo in #3. Nothing staged.\n"
+    );
 }
 
 #[test]

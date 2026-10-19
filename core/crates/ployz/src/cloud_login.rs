@@ -35,7 +35,7 @@ pub(crate) enum LoginError {
     },
     #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
-    #[error("Cloud answered HTTP {status}: {body}")]
+    #[error("Cloud answered HTTP {status}{}", readable(.body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
     Reply(String),
@@ -584,6 +584,17 @@ async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginErr
             status: status.as_u16(),
             body: String::from_utf8_lossy(&body).into_owned(),
         })
+    }
+}
+
+/// `body` as the tail of a status line: a short text or JSON answer is worth
+/// printing, a proxy's HTML error page is not.
+pub(crate) fn readable(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() || body.starts_with('<') {
+        String::new()
+    } else {
+        format!(": {body}")
     }
 }
 

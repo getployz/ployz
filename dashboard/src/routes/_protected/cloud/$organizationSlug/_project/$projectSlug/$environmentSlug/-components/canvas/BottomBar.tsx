@@ -42,7 +42,6 @@ const subscribeStorage = (onChange: () => void) => {
 type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
-  runtimeChanges?: number;
   canSave: boolean;
   /** Deploys, with the user's Deploy message (blank for none). */
   onDeploy: (message: string) => void;
@@ -86,7 +85,6 @@ type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 export function BottomBar({
   groups,
   totalChanges,
-  runtimeChanges = totalChanges,
   canSave,
   onDeploy,
   onSave,
@@ -120,7 +118,8 @@ export function BottomBar({
   const saveable = canSave && !busy.has("saving") && !busy.has("deploying");
   // A double click admits one Deploy: Deploy waits until the Store answers.
   const admitting = busy.has("saving") || busy.has("deploying");
-  const deployable = runtimeChanges > 0 && !noServers;
+  // A rollback to what the Servers already run still deploys: it saves, and its Deployment ends up to date.
+  const deployable = hasChanges && !noServers;
   const shown = hasChanges ? undefined : active[0];
   // Seen in flight here: how a Deployment ends shows only when this bar watched it run. A failure shows from any tab, so a reload keeps it.
   const watched = useRef(new Set<string>());

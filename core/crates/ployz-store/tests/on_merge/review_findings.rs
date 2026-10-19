@@ -276,14 +276,15 @@ fn a_deploy_warns_only_about_the_services_it_ships() {
     let not_set = json!([{ "service": "db", "variable": "TOKEN" }]);
     assert_eq!(warnings(&landed), not_set);
 
-    // A push under web/ ships web alone: db's Not set secret isn't its to warn about.
+    // A push under web/ names web alone, but web reads db, so it ships db's Saved
+    // change too and warns of its Not set secret.
     let pushed = system(
         &store,
         &who,
         &push(Some(MERGE), LATER, Some(&["web/app.rs"])),
     );
     assert_eq!(deployed_services(&pushed), ["web"]);
-    assert_eq!(warnings(&pushed), json!([]));
+    assert_eq!(warnings(&pushed), not_set);
 }
 
 #[test]

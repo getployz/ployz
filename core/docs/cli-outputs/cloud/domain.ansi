@@ -23,7 +23,7 @@ acme.com	web → PORT	Setting up · Deploying
 }
 
 === domain add, duplicate host :: $ ployz domain add web shop.example.org
-Staged domain shop.example.org on web in shop/production (revision 13).
+Staged domain shop.example.org on web in shop/production.
 
 === domain add, unknown service :: $ ployz domain add nosuch
 No Service named nosuch in Environment production

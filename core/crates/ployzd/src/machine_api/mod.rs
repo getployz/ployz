@@ -125,6 +125,7 @@ fn routes(service: local::MachineService) -> Routes {
     Routes::new(
         MachineRpcServer::new(service)
             .send_compressed(CompressionEncoding::Gzip)
+            .max_decoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT)
             .max_encoding_message_size(RUNTIME_WATCH_MESSAGE_SIZE_LIMIT),
     )
 }
