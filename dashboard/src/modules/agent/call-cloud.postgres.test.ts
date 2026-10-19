@@ -192,8 +192,8 @@ describe("callCloud", () => {
     action: { action: "remove_server", server: { machine: MACHINE, name: "web-2" }, loss: null },
   };
 
-  // Catches an Organization that never added a Server told its Servers aren't answering.
-  it.live("tells an Organization with no Servers to add one, for a logs ask and a removal", () =>
+  // Catches an Organization that never added a Server told its Servers aren't answering, or its Server list refused.
+  it.live("lists no Servers for an Organization with none, and tells it to add one for a logs ask and a removal", () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud());
       yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
@@ -202,6 +202,10 @@ describe("callCloud", () => {
         refusal: { code: "unavailable", message: NO_SERVERS_MESSAGE, details: { fix: { fix: "connect_servers" } } },
       };
       for (const opened of [{ status: "unreachable", error: null }, { status: "no_connection" }] as const) {
+        expect(yield* callCloud(member, { ask: { query: "servers", only: null } }).pipe(runtime(opened, []), Effect.provide(services))).toEqual({
+          ok: true,
+          value: { servers: [], seen: expect.objectContaining({ from: "cloud_cache", unanswered: [] }) },
+        });
         expect(yield* callCloud(member, { ask: LOGS }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
         expect(yield* callCloud(member, { act: REMOVE }).pipe(runtime(opened, []), Effect.provide(services))).toEqual(noServers);
       }

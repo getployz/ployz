@@ -193,7 +193,7 @@ for value in cet_abc123 PFLT_abc123; do
 done
 
 enroll PLOYZ_ENROLL_TOKEN=$TOKEN PLOYZ_SKIP_ZFS=1
-[ "$(head -n 1 "$TMP/out")" = "Installs Docker and Ployz. Nothing joins until you say so." ]
+[ "$(head -n 1 "$TMP/out")" = "Installs Docker and Ployz." ]
 [ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
 [ "$(cat "$FLEET_TOKEN_FILE")" = $TOKEN ]
 checked_in_with 1
@@ -227,7 +227,7 @@ if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_UID=1000; then
     echo "enrolled without root" >&2
     exit 1
 fi
-grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- --enroll' "$TMP/err"
+grep -Fq 'Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- 1.2.3 --enroll' "$TMP/err"
 [ ! -e "$TMP/install/ployz" ]
 [ ! -e "$FLEET_TOKEN_FILE" ]
 

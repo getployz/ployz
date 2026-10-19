@@ -188,7 +188,7 @@ instead of joining:
 curl -fsSL https://ployz.sh | sudo sh -s -- --enroll
 ```
 
-The script prints `Installs Docker and Ployz. Nothing joins until you say so.` and asks for the
+The script prints `Installs Docker and Ployz.` and asks for the
 token at a `Fleet Token (Servers > Add servers in Ployz Cloud):` prompt that doesn't show what you paste. The token never appears on a
 command line, so it stays out of `sudo`'s log, shell history and `ps`. The script checks that the
 token looks like one before it changes anything. It installs the CLI and runs
