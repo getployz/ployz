@@ -1203,19 +1203,52 @@ mod rotation_commands {
         assert_eq!(
             routes.routes,
             BTreeMap::from([
-                (fleet.id(0), BTreeSet::from([a])),
-                (fleet.id(1), BTreeSet::from([a])),
+                (fleet.id(0), Some(BTreeSet::from([a]))),
+                (fleet.id(1), Some(BTreeSet::from([a]))),
             ])
         );
+        assert!(routes.complete);
         let other = fleet.read_routes(0, &service("web")).await;
         assert_eq!(
             other.routes,
-            BTreeMap::from([
-                (fleet.id(0), BTreeSet::new()),
-                (fleet.id(1), BTreeSet::new())
-            ]),
-            "every live Machine is listed, routing nothing"
+            BTreeMap::from([(fleet.id(0), None), (fleet.id(1), None)]),
+            "every live Machine is listed, with no row read"
         );
+    }
+
+    #[tokio::test]
+    async fn read_routes_keeps_unknown_apart_from_empty() {
+        let fleet = Fleet::start().await;
+        let api = service("api");
+        let a = fleet.routed(0, "a", "api", 1).await;
+        fleet.ack(0, &api, &[a]).await;
+        fleet
+            .cluster
+            .write_undecodable_route(&fleet.id(1).to_string(), &api.to_string());
+
+        let routes = fleet.read_routes(0, &api).await;
+
+        assert_eq!(
+            routes.routes,
+            BTreeMap::from([
+                (fleet.id(0), Some(BTreeSet::from([a]))),
+                (fleet.id(1), None),
+                (fleet.id(2), None),
+            ])
+        );
+        assert!(routes.complete);
+
+        fleet.ack(2, &api, &[]).await;
+        let late = MachineId::random();
+        fleet.cluster.write_incomplete_machine(late.as_str());
+        let routes = fleet.read_routes(0, &api).await;
+
+        assert_eq!(
+            routes.routes.get(&fleet.id(2)),
+            Some(&Some(BTreeSet::new()))
+        );
+        assert_eq!(routes.routes.get(&late), Some(&None));
+        assert!(!routes.complete, "{routes:?}");
     }
 }
 

@@ -192,6 +192,23 @@ impl FakeCluster {
         gate
     }
 
+    /// Write an ingress route row whose containers column does not decode.
+    pub(crate) fn write_undecodable_route(&self, machine: &str, service: &str) {
+        let mut kv = self.kv.lock().unwrap();
+        kv.ingress_routes.insert(
+            (machine.to_owned(), service.to_owned()),
+            ("d1".to_owned(), "not json".to_owned()),
+        );
+        let _ = kv.ingress_changes.send(());
+    }
+
+    /// Write a Machine row whose document has not fully replicated.
+    pub(crate) fn write_incomplete_machine(&self, machine: &str) {
+        let mut kv = self.kv.lock().unwrap();
+        kv.machines.insert(machine.to_owned(), "{}".to_owned());
+        let _ = kv.machine_changes.send(());
+    }
+
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
         self.kv.lock().unwrap().tokens.clone()
     }

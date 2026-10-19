@@ -1315,10 +1315,13 @@ pub struct ReadRoutesRequest {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RoutesRead {
-    /// Each Machine not reported Down and the copies its proxy acks, empty when it
-    /// has no row for the Service.
+    /// Each Machine not reported Down and the copies its proxy acks. `None` when its
+    /// row for the Service has not arrived or does not decode: unknown, not empty.
     #[serde(default)]
-    pub routes: BTreeMap<MachineId, BTreeSet<ContainerId>>,
+    pub routes: BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>,
+    /// The Machine list replicated in full, so `routes` names every live Machine.
+    #[serde(default)]
+    pub complete: bool,
     /// Machines the membership sample reported Down; their routes no longer count.
     #[serde(default)]
     pub down: BTreeSet<MachineId>,

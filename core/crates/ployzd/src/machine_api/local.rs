@@ -775,16 +775,14 @@ impl MachineRpc for MachineService {
             Ok(pointer) => pointer,
             Err(error) => return respond(cluster_store_error(error)),
         };
-        let rows = match replicated.ingress_routes().await {
+        let rows = match replicated.service_ingress_routes(&request.service).await {
             Ok(rows) => rows,
             Err(error) => return respond(cluster_store_error(error)),
         };
         let acks: BTreeMap<_, _> = rows
             .iter()
-            .filter_map(|((machine_id, service), row)| match row {
-                IngressRouteRow::Acked(ack)
-                    if *service == request.service && routes_pointer(ack, pointer.as_ref()) =>
-                {
+            .filter_map(|((machine_id, _), row)| match row {
+                IngressRouteRow::Acked(ack) if routes_pointer(ack, pointer.as_ref()) => {
                     Some((*machine_id, ack.deploy.clone()))
                 }
                 IngressRouteRow::Acked(_)
@@ -804,10 +802,11 @@ impl MachineRpc for MachineService {
         };
         let mut routed = routed(rows, &request.service);
         let routes = listed(&membership.ackers)
-            .map(|machine| (machine, routed.remove(&machine).unwrap_or_default()))
+            .map(|machine| (machine, routed.remove(&machine)))
             .collect();
         respond(RoutesRead {
             routes,
+            complete: matches!(membership.ackers, Ackers::Known(_)),
             down: membership.down,
             pointer,
             acks,
