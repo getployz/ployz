@@ -115,20 +115,8 @@ impl Tool for VolumeShow {
             }
         };
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
-        if volumes.iter().all(|listing| !listing.deployed) {
-            let shown = volumes
-                .iter()
-                .map(|listing| {
-                    json!({
-                        "volume": &listing.volume.name,
-                        "deployed": false,
-                        "writable_on": null,
-                        "mirror": null,
-                        "runs": null,
-                    })
-                })
-                .collect::<Vec<_>>();
-            return Ok(json!({ "at": at(&place), "volumes": shown, "seen": null }));
+        if volumes.is_empty() {
+            return Ok(json!({ "at": at(&place), "volumes": [], "seen": null }));
         }
         let mut asks = vec![Ask::Cloud(CloudQuery::Copies {
             namespace: namespace.namespace,

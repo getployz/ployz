@@ -1485,10 +1485,10 @@ fn server_set_sends_only_the_values_it_was_given() {
 }
 
 #[test]
-fn volume_show_with_nothing_deployed_lists_without_asking_cloud() {
+fn volume_show_with_no_volumes_lists_none_without_asking_cloud() {
     let store = shop();
     let mut cloud =
-        |_: Cloud| -> Result<Value, RpcError> { panic!("nothing deployed holds a copy") };
+        |_: Cloud| -> Result<Value, RpcError> { panic!("no Volume, no copy to ask about") };
     let shown = drive(
         &store,
         in_org(),
