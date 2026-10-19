@@ -49,7 +49,7 @@ beforeEach(() => {
 failOnStoreUnmountAfterWindow();
 afterEach(() => {
   cleanup();
-  cleanStores(...Object.values(authClient.$store.atoms));
+  cleanStores(authClient.$store.atoms["session"]);
   document.cookie = "theme=; path=/; max-age=0";
   document.documentElement.classList.remove("light", "dark", "system");
   document.documentElement.style.removeProperty("color-scheme");

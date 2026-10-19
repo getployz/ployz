@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, onTestFinished, test, vi } from "vitest";
+import { cleanStores } from "nanostores";
 import type { AuthSession } from "./auth";
 import { failOnStoreUnmountAfterWindow } from "#/test/window-teardown";
 
@@ -13,6 +14,7 @@ test("boots from SSR without waiting for the auth transport", async () => {
   const { authClient, initializeAuthSession } = await import("./auth-client");
   // isolate: false shares Better Auth's session store across files; start from its boot state.
   const session = authClient.$store.atoms["session"];
+  onTestFinished(() => cleanStores(session));
   session?.set({ ...session.get(), data: null, isPending: true });
   const data = { session: { id: "session", userId: "user" }, user: { id: "user" } } as AuthSession;
   initializeAuthSession(data);
