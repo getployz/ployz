@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { createResourceServerChallenge } from "@better-auth/oauth-provider";
-import { type CallToolResult, createMcpHandler, fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
+import { type CallToolResult, createMcpHandler, fromJsonSchema, type jsonSchemaValidator, McpServer } from "@modelcontextprotocol/server";
 import { APIError } from "better-auth/api";
 import { Effect, Option, Schema } from "effect";
 import { AGENT_TOOLS, type AgentCaller, type AgentResult, type AgentTool, runAgentCall } from "#/modules/agent/agent-runner.server";
@@ -49,6 +49,11 @@ const challenge = (resource: string, message: string) => {
 const APPROVAL = {
   type: "string",
   description: "The ID of an approval a person granted. Send it when calling this tool again after it answered approval_required.",
+};
+
+/** Every argument reaches the tool, which refuses a bad one in the same shape as any other refusal. */
+const toolValidates: jsonSchemaValidator = {
+  getValidator: <T>() => (input: unknown) => ({ valid: true, data: input as T, errorMessage: undefined }),
 };
 
 const toolSchema = (tool: AgentTool): JsonObject => {
@@ -100,10 +105,10 @@ const serverFor = (caller: AgentCaller, request: Request, run: Run, appUrl: URL,
   for (const tool of AGENT_TOOLS) {
     server.registerTool(tool.name, {
       description: tool.description,
-      inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool)),
+      inputSchema: fromJsonSchema<JsonObject>(toolSchema(tool), toolValidates),
       annotations: { readOnlyHint: tool.readOnly, destructiveHint: tool.destructive },
     }, async (args) => {
-      const { approval, ...input } = args;
+      const { approval, ...input } = asRecord(args) ?? {};
       const sentKey = asString(input["request_key"]);
       const given = sentKey === null ? headerKey : requestKeyOf(sentKey);
       if (!given.ok) return text({ ok: false, refusal: given.refusal }, true);
