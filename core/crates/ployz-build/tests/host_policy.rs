@@ -130,9 +130,12 @@ case "$1 $2" in
  'buildx create')
     case " $* " in *' cpu-quota=50000 '*' memory=536870912 '*' memory-swap=536870912 '*) ;; *) echo 'worker limits missing' >&2; exit 1 ;; esac ;;
  'create --name')
-    for expected in '--cpu-quota 50000' '--memory 536870912' '--memory-swap 536870912'; do
-        case " $* " in *" $expected "*) ;; *) echo 'preparation limits missing' >&2; exit 1 ;; esac
-    done ;;
+    case " $* " in *' /prepare.sh '*)
+        for expected in '--cpu-quota 50000' '--memory 536870912' '--memory-swap 536870912'; do
+            case " $* " in *" $expected "*) ;; *) echo 'preparation limits missing' >&2; exit 1 ;; esac
+        done
+        touch preparation-created ;;
+    esac ;;
  'buildx prune')
     for expected in '--max-used-space 1073741824' '--min-free-space 2147483648'; do
         case " $* " in *" $expected "*) ;; *) echo 'GC targets missing' >&2; exit 1 ;; esac
@@ -172,6 +175,12 @@ exit 0
         pull: false,
     };
     execute_admitted(&request, admission, &|_| {}).unwrap();
+    assert!(
+        host.policy
+            .state_directory
+            .join("preparation-created")
+            .exists()
+    );
     assert!(Admission::try_acquire_with(&host.policy).is_ok());
 }
 

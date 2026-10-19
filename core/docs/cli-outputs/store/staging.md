@@ -26,7 +26,7 @@ pgdata (create)
 
 stderr:
 ```
-next: ployz deploy --skip-deploy --expect-version 21:0:0.0 --project shop
+next: ployz deploy --project shop
 ```
 
 ### diff --json (staged changes)
@@ -335,7 +335,7 @@ stdout:
   "holds_staged": false,
   "included": [],
   "incoming": [],
-  "next": "ployz deploy --skip-deploy --expect-version 21:0:0.0 --project shop",
+  "next": "ployz deploy --project shop",
   "saved": null,
   "total_count": 11,
   "version": "21:0:0.0"
@@ -351,7 +351,7 @@ $ ployz discard web.healthcheck
 
 stdout:
 ```
-Discarded web.healthcheck in shop/production (revision 22).
+Discarded web.healthcheck in shop/production.
 ```
 
 stderr:
@@ -416,7 +416,7 @@ $ ployz deploy --skip-deploy
 
 stdout:
 ```
-Saved shop/production as #1. Not deployed.
+Saved version #1 of shop/production. Not deployed.
 ```
 
 stderr:
@@ -442,12 +442,12 @@ web (create)
   web.env.DB_URL: null → "postgres://${{ db.PLOYZ_PRIVATE_DOMAIN }}/app"
   web.env.LOG_LEVEL: null → "info"
 pgdata (create)
-Saved as #1. Not deployed.
+Saved as version #1. Not deployed.
 ```
 
 stderr:
 ```
-next: ployz deploy --expect-version 23:1:0.0 --project shop
+next: ployz deploy --project shop
 ```
 
 ### deploy --skip-deploy again (nothing new)
@@ -459,7 +459,7 @@ $ ployz deploy --skip-deploy
 
 stdout:
 ```
-#1 already holds shop/production. Not deployed.
+Version #1 already holds everything staged in shop/production. Not deployed.
 ```
 
 stderr:
@@ -607,7 +607,7 @@ $ ployz discard
 
 stdout:
 ```
-Discarded every staged change in shop/production (revision 26).
+Discarded every staged change in shop/production.
 ```
 
 stderr:
@@ -658,7 +658,7 @@ pgdata (delete)
 
 stderr:
 ```
-next: ployz deploy --skip-deploy --expect-version 26:2:0.0 --project shop
+next: ployz deploy --skip-deploy --project shop
 ```
 
 ### diff in the Parent after a Sync
@@ -682,7 +682,7 @@ pgdata (create)
 
 stderr:
 ```
-next: ployz deploy --skip-deploy --expect-version 33:3:0.0 --project shop
+next: ployz deploy --project shop
 ```
 
 ### diff --json in the Parent after a Sync
@@ -856,7 +856,7 @@ stdout:
     }
   ],
   "incoming": [],
-  "next": "ployz deploy --skip-deploy --expect-version 33:3:0.0 --project shop",
+  "next": "ployz deploy --project shop",
   "saved": 3,
   "total_count": 8,
   "version": "33:3:0.0"

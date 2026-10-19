@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { organizationAccess } from "./github-access";
 import { checkGithubBuildWorkflow } from "./github-build.server";
-import { GITHUB_BUILD_WORKFLOW, githubBuildWorkflowUrl } from "./github-build-workflow";
+import { GITHUB_BUILD_WORKFLOW, githubBuildId, githubBuildWorkflowUrl } from "./github-build-workflow";
 import { GithubApi, GithubObservationError, type GithubObservationErrorCode } from "./github-observation.api";
 
 describe("GitHub build workflow", () => {
@@ -10,6 +10,14 @@ describe("GitHub build workflow", () => {
     expect(GITHUB_BUILD_WORKFLOW).toContain("uses: getployz/build@v1");
     for (const input of ["build", "cloud"]) {
       expect(GITHUB_BUILD_WORKFLOW).toContain(`${input}: \${{ inputs.${input} }}`);
+    }
+  });
+
+  it("dispatches build ids that getployz/build@v1 accepts", () => {
+    const accepted = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
+    const deployment = "36755d9a-dc30-4385-a9bd-86ae1a85e44b";
+    for (const service of ["a", "ployz-soak-node", "s".repeat(63)]) {
+      expect(githubBuildId(deployment, service)).toMatch(accepted);
     }
   });
 

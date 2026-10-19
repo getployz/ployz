@@ -6,7 +6,7 @@ import { Effect, Option, Semaphore } from "effect";
 import { callStoreBy, readStore } from "#/modules/config-store/config-store.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import { StoreRefused, type StoreRefusal } from "#/modules/config-store/store.contract";
-import { MAX_NAME, uniqueName } from "#/modules/config-store/store-services";
+import { uniqueName } from "#/modules/config-store/store-services";
 import { mountChange } from "#/modules/config-store/store-volumes";
 import type { Access } from "#/modules/organization/access.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
@@ -155,7 +155,7 @@ export const stageRestore = Effect.fn("VolumePlacement.stageRestore")(function* 
   if (listed === undefined || namespace === undefined) return yield* Effect.die(`${source.volumeName} vanished from its Environment`);
   const id = randomUUID();
   const time = lossTime(new Date(input.at * 1000)).replace(":", "");
-  const name = uniqueName(`${listed.name.slice(0, MAX_NAME - time.length - 1)}-${time}`, volumes.map((volume) => volume.name));
+  const name = uniqueName(listed.name, volumes.map((volume) => volume.name), { tail: `-${time}` });
   const commands: BatchCommand[] = [
     ...listed.mounts.map((mount): BatchCommand => ({ command: "edit", environment: input.environment, expect: null, changes: [mountChange(mount.service, listed.name, null)] })),
     {

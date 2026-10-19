@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
-import { CreateOrganization, OrganizationSlug, SyncOrganizationSlug } from "./organization-state";
-import { createOrganization, getOrganizationState, openOrCreateOrganization, syncOrganizationSlug } from "./organization-state.server";
+import { CreateOrganization, OrganizationSlug, RenameOrganization, SyncOrganizationSlug } from "./organization-state";
+import { createOrganization, getOrganizationState, openOrCreateOrganization, renameOrganization, syncOrganizationSlug } from "./organization-state.server";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
@@ -30,3 +30,9 @@ export const createOrganizationServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .validator(strictValidator(CreateOrganization))
   .handler(({ context, data }) => runActor(context, createOrganization(context.actor, data)));
+
+/** Renames an Organization; its slug stays. Owners and admins only. */
+export const renameOrganizationServerFn = createServerFn({ method: "POST" })
+  .middleware(middleware)
+  .validator(strictValidator(RenameOrganization))
+  .handler(({ context, data }) => runActor(context, renameOrganization(context.actor, data)));

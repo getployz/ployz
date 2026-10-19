@@ -1,0 +1,15 @@
+[package]
+name = "ployz-verify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+description = "Model checks of Ployz protocols that tests cannot reach"
+
+[dev-dependencies]
+ployz-core.workspace = true
+stateright = "0.31.0"
+
+[lints]
+workspace = true

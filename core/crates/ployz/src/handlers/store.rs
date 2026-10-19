@@ -426,11 +426,24 @@ impl<'m> Store<'m> {
     }
 
     /// The flag this command passes a reviewed version with: `discard`'s and
-    /// `history`'s `--version`, or `--expect-version` elsewhere.
+    /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
+    /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
     fn version_flag(&self) -> (&'static str, &'static str) {
-        match self.matches.try_get_one::<String>("version") {
-            Ok(_) => ("version", "--version"),
-            Err(_) => ("expect-version", "--expect-version"),
+        let root = crate::cli::compiled();
+        let mut command = &root;
+        for word in &self.words {
+            let Some(child) = command.find_subcommand(word) else {
+                break;
+            };
+            command = child;
+        }
+        let takes_version = command
+            .get_arguments()
+            .any(|arg| arg.get_id() == "version" && arg.get_action().takes_values());
+        if takes_version {
+            ("version", "--version")
+        } else {
+            ("expect-version", "--expect-version")
         }
     }
 
@@ -1103,6 +1116,48 @@ mod tests {
             reparsed(&approval),
             ["deploy", "true", "shop", "production", "3:1:0.1", "apr_2"]
         );
+    }
+
+    #[test]
+    fn a_volume_loss_retry_passes_the_version_with_the_flag_its_command_takes() {
+        for words in [
+            &["deploy"][..],
+            &["project", "rm", "shop", "--confirm", "shop"],
+            &["env", "rm", "br", "--confirm", "shop/br"],
+        ] {
+            let root = crate::cli::command()
+                .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+                .unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            let store = Store {
+                backend: Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                matches: leaf_matches(&root),
+                words: words.iter().map(|word| (*word).to_owned()).collect(),
+            };
+            let refused = ployz_core::RpcError {
+                code: RpcErrorCode::ConfirmationRequired,
+                message: "This permanently deletes the data of data".into(),
+                details: json!({ "version": "3:1:0.1", "accept": ["data"] }),
+                cause: Vec::new(),
+            };
+            let hints = store.accepting(StoreCallError::Refused(refused)).hints();
+            let [Hint::Retry(retry)] = &hints[..] else {
+                panic!("{words:?} names no retry");
+            };
+            let reparsed = crate::cli::command()
+                .try_get_matches_from(shell_words::split(retry).unwrap())
+                .unwrap_or_else(|error| panic!("{retry}: {error}"));
+            assert_eq!(
+                leaf_matches(&reparsed)
+                    .get_one::<String>("expect-version")
+                    .map(String::as_str),
+                Some("3:1:0.1"),
+                "{retry}"
+            );
+        }
     }
 
     #[test]

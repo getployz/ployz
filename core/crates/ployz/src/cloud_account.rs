@@ -937,8 +937,15 @@ pub(crate) async fn refusable<T: DeserializeOwned>(
     store_answer(credential, send(credential, method, &url, body).await?).await
 }
 
+/// The most compressed source one upload may hold, the same as Cloud's cap. It stays
+/// under the 100 MB request body Cloudflare passes, in front of ployz.dev or a Tunnel.
+pub(crate) const UPLOAD_LIMIT: usize = 95 * 1024 * 1024;
+/// How long one upload may take, sending included: 95 MiB at about 1.3 Mbit/s.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
-/// Deployment `deployment`, which the CLI admits next.
+/// Deployment `deployment`, which the CLI admits next. An archive over
+/// [`UPLOAD_LIMIT`] is refused here, before it is sent.
 ///
 /// # Errors
 ///
@@ -949,17 +956,43 @@ pub(crate) async fn upload(
     deployment: &str,
     archive: Vec<u8>,
 ) -> Result<(), StoreCallError> {
+    let mib = archive.len().div_ceil(1024 * 1024);
+    if archive.len() > UPLOAD_LIMIT {
+        return Err(StoreCallError::Refused(too_big(&format!(
+            "The source is {mib} MiB compressed, over the {} MiB upload limit.",
+            UPLOAD_LIMIT / 1024 / 1024
+        ))));
+    }
     let url = format!("{}/api/config/upload/{deployment}", credential.cloud());
     let response = cloud_login::http()?
         .post(&url)
+        .timeout(UPLOAD_TIMEOUT)
         .bearer_auth(credential.bearer())
         .header(reqwest::header::CONTENT_TYPE, "application/gzip")
         .body(archive)
         .send()
         .await
         .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    // A proxy in front of Cloud with a lower cap refuses the body before Cloud sees it.
+    if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return Err(StoreCallError::Refused(too_big(&format!(
+            "Cloud refused the {mib} MiB compressed source as too large."
+        ))));
+    }
     store_answer::<serde_json::Value>(credential, response).await?;
     Ok(())
+}
+
+/// The refusal of a source too large to upload: `why`, then how to deploy it anyway.
+fn too_big(why: &str) -> RpcError {
+    RpcError {
+        code: ployz_core::RpcErrorCode::InvalidArgument,
+        message: format!(
+            "{why} Deploy from GitHub instead, or remove large files from the directory. ployz up uploads every file except .git, including ones Git ignores such as node_modules."
+        ),
+        details: serde_json::Value::Null,
+        cause: Vec::new(),
+    }
 }
 
 /// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface,
@@ -1311,6 +1344,67 @@ mod tests {
         // A Cloud without the CLI surface (or with it switched off).
         let error = credentials(&credential).await.unwrap_err();
         assert!(matches!(error, LoginError::Unsupported(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_archive_over_the_limit_is_refused_before_it_is_sent() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let cloud = format!("http://{}", listener.local_addr().unwrap());
+        let archive = vec![0; UPLOAD_LIMIT + 1];
+        let error = upload(&token(&cloud), "d1", archive).await.unwrap_err();
+        let StoreCallError::Refused(refused) = error else {
+            panic!("expected the size refusal");
+        };
+        assert_eq!(refused.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert_eq!(
+            refused.message,
+            "The source is 96 MiB compressed, over the 95 MiB upload limit. Deploy from GitHub instead, or remove large files from the directory. ployz up uploads every file except .git, including ones Git ignores such as node_modules."
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "nothing reached Cloud"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proxy_s_413_reads_as_the_size_refusal() {
+        let cloud = fake_cloud(|_, _| (413, serde_json::json!({})));
+        let error = upload(&token(&cloud), "d1", b"source".to_vec())
+            .await
+            .unwrap_err();
+        let StoreCallError::Refused(refused) = error else {
+            panic!("expected the size refusal");
+        };
+        assert_eq!(refused.code, ployz_core::RpcErrorCode::InvalidArgument);
+        assert!(
+            refused.message.starts_with(
+                "Cloud refused the 1 MiB compressed source as too large. Deploy from GitHub instead"
+            ),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[test]
+    fn a_proxy_s_error_page_prints_as_its_status_alone() {
+        let credential = token("http://cloud.test");
+        let page = b"<!DOCTYPE html>\n<html><head><title>502 Bad Gateway</title></head></html>";
+        let error =
+            answer::<serde_json::Value>(&credential, StatusCode::BAD_GATEWAY, page).unwrap_err();
+        assert_eq!(error.to_string(), "Cloud answered HTTP 502");
+        let LoginError::Status { body, .. } = &error else {
+            panic!("expected a status error, got {error}");
+        };
+        assert!(
+            body.starts_with("<!DOCTYPE"),
+            "the body is kept for refusal parsing"
+        );
+        let error =
+            answer::<serde_json::Value>(&credential, StatusCode::BAD_GATEWAY, b"upstream down")
+                .unwrap_err();
+        assert_eq!(error.to_string(), "Cloud answered HTTP 502: upstream down");
     }
 
     #[tokio::test]

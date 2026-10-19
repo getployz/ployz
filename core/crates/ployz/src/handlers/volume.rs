@@ -350,11 +350,8 @@ fn staged(
     let hint = store::next(matches, &["deploy"]);
     crate::ui::finish(&Next::new(result, Some(hint.clone())), || {
         crate::ui::stream(format_args!(
-            "{what} {} in {}/{} (revision {}).",
-            result.volume.name,
-            result.environment.project,
-            result.environment.name,
-            result.environment.revision
+            "{what} {} in {}/{}.",
+            result.volume.name, result.environment.project, result.environment.name
         ));
         if storage {
             crate::ui::stream(format_args!(

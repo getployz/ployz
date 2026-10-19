@@ -530,6 +530,31 @@ pub(super) fn lower(
             files: lowered,
         });
     }
+    for service in &saved.services {
+        if narrowed && !targeted.contains(&service.id.as_str()) {
+            continue;
+        }
+        let mounted: Vec<&LowerDeploymentConfig> = configs
+            .iter()
+            .filter(|config| {
+                service
+                    .config_attachments
+                    .iter()
+                    .any(|mount| mount.config_resource_id == config.config_resource_id)
+            })
+            .collect();
+        let bytes = mounted
+            .iter()
+            .flat_map(|config| config.files.values())
+            .map(|file| file.content.len())
+            .sum();
+        let names: Vec<&ConfigName> = mounted.iter().map(|config| &config.name).collect();
+        let name =
+            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+        if let Some(error) = crate::config_item::mounts_too_much(&name, &names, bytes) {
+            return Err(error);
+        }
+    }
     let input = |snapshots: Vec<LowerDeploymentSnapshot>| LowerDeploymentInput {
         namespace: namespace.clone(),
         snapshots,
