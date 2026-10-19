@@ -243,6 +243,8 @@ struct Scripted {
     /// This Machine's view of every ack row shows the routes from before the
     /// run for this many of its reads; its owner checks LastIn on that view.
     lagging: Mutex<BTreeMap<MachineId, usize>>,
+    /// Route reads answer that the Machine list is not replicated in full.
+    incomplete: bool,
     /// Once this move is applied, every route read fails.
     reads_fail_after: Option<Move>,
     /// What each proxy last routed, kept by the real rule.
@@ -280,6 +282,7 @@ impl Scripted {
             withheld: BTreeMap::new(),
             lingering: Mutex::new(BTreeMap::new()),
             lagging: Mutex::new(BTreeMap::new()),
+            incomplete: false,
             reads_fail_after: None,
             served: Mutex::new(BTreeMap::new()),
             moves: Mutex::new(Vec::new()),
@@ -1084,7 +1087,7 @@ impl MachineOperations for Scripted {
         };
         Ok(RoutesRead {
             routes,
-            complete: true,
+            complete: !self.incomplete,
             down: self.down.clone(),
             ..RoutesRead::default()
         })

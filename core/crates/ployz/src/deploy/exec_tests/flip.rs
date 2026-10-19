@@ -1248,6 +1248,41 @@ async fn a_new_copy_no_proxy_confirms_names_the_machines_that_did_not_confirm() 
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_new_copy_an_incomplete_route_set_never_confirms_says_the_set_was_incomplete() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted {
+        incomplete: true,
+        ..Scripted::new(vec![created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &new,
+        )])
+    };
+
+    let (outcome, _) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Machine {
+                        action: MachineAction::ReadRoutes,
+                        error,
+                    },
+                    ..
+                },
+                ..
+            } if error.message == "the route set did not name every live Machine"
+        ),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_retirement_no_proxy_confirms_leaves_the_old_copy_running_and_says_it_can_serve_again() {
     let machine = machine('1');
     let (old, new) = (container('a'), container('b'));
