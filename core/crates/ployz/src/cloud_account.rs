@@ -294,6 +294,51 @@ pub(crate) async fn use_organization(
         .map(|signed_in| signed_in.organization)
 }
 
+/// An Organization just made: Cloud picked its slug.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct NewOrganization {
+    pub(crate) id: String,
+    pub(crate) slug: String,
+    pub(crate) name: String,
+}
+
+/// Make an Organization the user owns and switch this device's sign-in to it. Cloud
+/// slugifies `slug` (else `name`) and suffixes it when taken; the user's other sign-ins
+/// stay where they are.
+///
+/// # Errors
+///
+/// Returns [`LoginError::TokenBound`] for a token, Cloud's refusal of the name or slug,
+/// or a Cloud or store failure.
+pub(crate) async fn new_organization(
+    store: &CredentialStore,
+    credential: &Credential,
+    name: &str,
+    slug: Option<&str>,
+) -> Result<NewOrganization, LoginError> {
+    let Credential::Device(signed_in) = credential else {
+        return Err(LoginError::TokenBound);
+    };
+    #[derive(Deserialize)]
+    struct Reply {
+        organization: NewOrganization,
+    }
+    let body = match slug {
+        Some(slug) => serde_json::json!({ "name": name, "slug": slug }),
+        None => serde_json::json!({ "name": name }),
+    };
+    let reply: Reply = call(credential, Method::POST, "organizations", Some(&body)).await?;
+    let made = reply.organization;
+    store.set_organization(
+        signed_in,
+        Organization {
+            id: made.id.clone(),
+            slug: made.slug.clone(),
+        },
+    )?;
+    Ok(made)
+}
+
 /// The Organization's tokens and the caller's signed-in devices.
 ///
 /// # Errors
@@ -1225,6 +1270,69 @@ mod tests {
         assert_eq!(organization.slug, "beta");
         let stored = cloud_login::signed_in(&store).await.unwrap();
         assert_eq!(stored.organization.id, "o2");
+    }
+
+    #[tokio::test]
+    async fn org_new_moves_the_device_into_the_organization_cloud_made() {
+        let cloud = fake_cloud(|route, body| match route {
+            "POST /api/cli/organizations" if body.contains("\"slug\"") => (
+                422,
+                serde_json::json!({ "error": {
+                    "code": "invalid_argument",
+                    "message": "An Organization needs a name of 1 to 64 characters, and a slug of 1 to 64 letters, digits or hyphens.",
+                    "details": null,
+                }}),
+            ),
+            "POST /api/cli/organizations" => {
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(body).unwrap(),
+                    serde_json::json!({ "name": "Acme Corp" })
+                );
+                (
+                    200,
+                    serde_json::json!({ "organization": {
+                        "id": "o2", "slug": "acme-corp-1a2b3c4d", "name": "Acme Corp",
+                    }}),
+                )
+            }
+            other => panic!("unexpected {other}"),
+        });
+        let (_dir, store) = signed_in_store(&cloud);
+        let device = credential(&store, None, None).await.unwrap();
+        let error = new_organization(&store, &token(&cloud), "Acme Corp", None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LoginError::TokenBound), "{error}");
+
+        let error = new_organization(&store, &device, "Acme Corp", Some("!!!"))
+            .await
+            .unwrap_err();
+        let LoginError::Status { status: 422, body } = &error else {
+            panic!("expected the refusal, got {error}");
+        };
+        assert!(refusal(body.as_bytes()).is_some());
+        assert_eq!(
+            cloud_login::signed_in(&store)
+                .await
+                .unwrap()
+                .organization
+                .slug,
+            "acme",
+            "a refused name leaves the device where it was"
+        );
+
+        let made = new_organization(&store, &device, "Acme Corp", None)
+            .await
+            .unwrap();
+        assert_eq!(made.slug, "acme-corp-1a2b3c4d");
+        let stored = cloud_login::signed_in(&store).await.unwrap();
+        assert_eq!(
+            stored.organization,
+            Organization {
+                id: "o2".to_owned(),
+                slug: "acme-corp-1a2b3c4d".to_owned(),
+            }
+        );
     }
 
     #[tokio::test]
