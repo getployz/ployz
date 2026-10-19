@@ -277,7 +277,8 @@ click **Deploy**. If you didn't mean it, cancel, then discard the change in **De
 
 **Save only** asks the same way, under **Next deploy deletes data**. Saving deletes nothing and
 starts no deploy. Your confirmation is saved with the change, so the next deploy deletes that data
-without asking again. That holds for a deploy you start and for one a Git push starts.
+without asking again. That holds for a deploy you start and for one a Git push starts, though a
+push deletes a volume's data only when it deploys every service that used the volume.
 
 Ployz asks again only when what it would delete changed since you confirmed. That happens when
 another server starts holding that data, or someone stages a different copy change on that volume.

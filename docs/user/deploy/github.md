@@ -90,9 +90,12 @@ A push ships the new commit with the settings you last deployed or
 [saved](deployments.md#deploy-your-changes). Staged changes you haven't saved stay
 behind, and services the push doesn't touch keep running as they are.
 
-A push deploys the services on its Git branch and the services they reference. Saved
-changes to any other service wait in the bottom bar for your next deploy: click **Deploy**, or run
-`ployz deploy`.
+A push deploys the services that follow its repository and Git branch, have **Auto-deploy** on
+and match their [watch paths](#deploy-only-when-certain-files-change). It also deploys every
+service a [merged pull request](../environments/preview-environments.md#config-changes-in-a-pull-request)
+changed, whatever it follows, and the services all of these reference. Saved changes to any other
+service wait in the bottom bar for your next deploy, and so does deleting a volume one of them
+still uses: click **Deploy**, or run `ployz deploy`.
 
 ## Wait for CI
 
