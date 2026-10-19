@@ -110,8 +110,12 @@ pub(super) struct Harvester {
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
     /// Where the open stream resumed: it can send any event from that time
-    /// on twice, once buffered and once live.
+    /// on twice, once buffered and once live, until it sends one newer than
+    /// its first delivery, which only a live stream can.
     replay_from: Option<i64>,
+    /// When the open stream's first event arrived. Docker buffered nothing
+    /// newer than that.
+    replay_until: Option<i64>,
     /// The newest time of each container's events, by action.
     delivered: HashMap<(ContainerId, String), i64>,
     /// What the events said of each container's current run.
@@ -281,6 +285,7 @@ impl Harvester {
             data_dir,
             last_event_nanos: None,
             replay_from: None,
+            replay_until: None,
             delivered: HashMap::new(),
             runs: HashMap::new(),
             exits: HashMap::new(),
@@ -296,6 +301,7 @@ impl Harvester {
         ]);
         let mut options = EventsOptionsBuilder::default().filters(&filters);
         self.replay_from = self.last_event_nanos;
+        self.replay_until = None;
         if let Some(since) = self.last_event_nanos.map(docker_time) {
             options = options.since(&since);
         }
@@ -417,6 +423,9 @@ impl Harvester {
         let Some(at) = message.time_nano else {
             return true;
         };
+        if self.replay_from.is_some() && at > *self.replay_until.get_or_insert_with(now_nanos) {
+            self.replay_from = None;
+        }
         let last = self
             .delivered
             .entry((id, message.action.clone().unwrap_or_default()))
@@ -1725,9 +1734,9 @@ mod tests {
     use tracing_subscriber::fmt::MakeWriter;
 
     use super::{
-        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, Newest, Synced, container_meta,
-        foreign_log_driver, judge_first_set, link_exact, read_meta, record_damage, settle_removed,
-        sync_container, write_meta,
+        DamageCursor, GAPS_FILE, Harvester, Inspected, Link, NANOS_PER_SEC, Newest, Synced,
+        container_meta, foreign_log_driver, judge_first_set, link_exact, now_nanos, read_meta,
+        record_damage, settle_removed, sync_container, write_meta,
     };
     use crate::{
         machine::{LocalMachineBody, LocalMachineRecord},
@@ -3612,6 +3621,32 @@ mod tests {
         running.harvester.on_docker_event(die);
         running.settle_exits(|| Inspected::Gone);
         assert_eq!(crashes(&host).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn removed_containers_leave_no_records_once_the_stream_is_live() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 1, &[service]));
+        drop(running.harvester.docker_events());
+        running
+            .harvester
+            .on_docker_event(event("start", T0 + 2, &[service]));
+        fs::create_dir_all(host.root.0.join("containers")).unwrap();
+        let live = now_nanos() + NANOS_PER_SEC;
+        for n in 0..500_i64 {
+            let id = format!("{n:064x}");
+            for (offset, action) in [(0, "start"), (1, "die")] {
+                let mut message = event(action, live + 2 * n + offset, &[service]);
+                message.actor.as_mut().unwrap().id = Some(id.clone());
+                running.harvester.on_docker_event(message);
+            }
+            running.harvester.rescan();
+            assert!(running.harvester.delivered.len() <= 2);
+        }
     }
 
     #[tokio::test]
