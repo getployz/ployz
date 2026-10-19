@@ -820,3 +820,42 @@ fn heartbeat_pairs_each_waiting_row_with_its_state() {
         "{text}"
     );
 }
+
+#[test]
+fn copies_left_running_take_the_check_mark_off_the_switched_row_and_count_in_the_summary() {
+    let web = QualifiedService::parse("shop/web").unwrap();
+    let left = |container: char, reason: &str| DeployWarning::LeftRunning {
+        service: web.clone(),
+        container_id: ployz_core::ContainerId::parse(container.to_string().repeat(64)).unwrap(),
+        machine: "alpha".into(),
+        reason: reason.into(),
+    };
+    let frame = Frame {
+        run: Run::Direct(Namespace::parse("shop").unwrap()),
+        title: "Deploying shop".into(),
+        rows: vec![service("web", 0, 3, &ployz_store::RowState::Completed)],
+        notices: vec![left('a', "interrupted"), left('b', "interrupted")],
+    };
+    let mut written = Vec::new();
+    finish(
+        &mut written,
+        &frame,
+        &frame,
+        Disposition::LocalInterrupted,
+        true,
+        80,
+        false,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    let row = text
+        .lines()
+        .find(|line| line.contains("switched"))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(!row.contains('✔'), "{text}");
+    assert!(row.contains("switched 3/3, 2 left running"), "{text}");
+    assert!(
+        text.contains("1 deployed · 2 copies left running · across 3 servers"),
+        "{text}"
+    );
+}
