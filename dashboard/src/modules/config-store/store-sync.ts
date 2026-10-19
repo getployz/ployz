@@ -1,4 +1,4 @@
-import type { BranchView, DeploymentSummary, RowId, SyncRow, SyncView } from "@ployz/sdk";
+import type { BranchView, EnvironmentRemoval, RowId, SyncRow, SyncView } from "@ployz/sdk";
 import type { NeverSyncing } from "./store-pending";
 import { plural } from "#/lib/plural";
 import { rowText, settingName, sourceChange } from "./store-branches";
@@ -79,11 +79,11 @@ export type SyncButtonState = { label: string; into: string; changes: number; co
  * The Sync button's words, the first that applies: a shutdown under way or failed, Off, then what a Sync into the
  * Parent carries. A PR Environment shuts down until its next push; any other Branch comes off the Servers to close.
  */
-export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: DeploymentSummary | null): SyncButtonState {
+export function syncButtonState(branch: Pick<BranchView, "parent" | "to_parent" | "pull_request">, removal: EnvironmentRemoval | null): SyncButtonState {
   const shuts = branch.pull_request !== null;
   const [into, changes] = [branch.parent, branch.to_parent];
   const say = (label: string, count: number | null = null) => ({ label, into, changes, count });
-  if (removal?.in_flight) return say(shuts ? "Shutting down" : "Closing");
+  if (removal?.kind === "pending" || removal?.in_flight) return say(shuts ? "Shutting down" : "Closing");
   if (removal?.status === "applied") return say(shuts ? "Off" : "Closing");
   if (removal) return say(shuts ? "Shutdown failed" : "Closing failed");
   return changes > 0 ? say("Sync", changes) : say("In sync");

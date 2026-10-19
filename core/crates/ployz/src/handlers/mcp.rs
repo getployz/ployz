@@ -336,6 +336,7 @@ fn may_have_landed(error: &LoginError) -> bool {
         LoginError::Unsupported(_)
         | LoginError::Store { .. }
         | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_)
         | LoginError::OtherCloud { .. }
         | LoginError::SignedOut
         | LoginError::Expired

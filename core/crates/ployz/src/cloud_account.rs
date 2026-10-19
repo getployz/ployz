@@ -87,6 +87,12 @@ pub(crate) fn named_cloud(
     let cloud = cloud.filter(|cloud| !cloud.trim().is_empty());
     let named = match cloud {
         Some(cloud) if token => Some(cloud),
+        None if token => match store.cloud() {
+            Err(LoginError::Corrupt { path, .. }) => {
+                return Err(LoginError::TokenCloudUnreadable(path));
+            }
+            stored => stored?,
+        },
         cloud => store.cloud()?.or(cloud),
     };
     Ok(named.map(|cloud| cloud_origin(&cloud)))
@@ -1096,7 +1102,7 @@ pub(crate) fn revision_seen(cloud: &str) -> Option<String> {
         .cloned()
 }
 
-/// Cloud's refusal of a call, as it sent it.
+/// Cloud's refusal of a call, with a next step that works under `PLOYZ_TOKEN`.
 pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     #[derive(Deserialize)]
     struct Refusal {
@@ -1104,7 +1110,23 @@ pub(crate) fn refusal(body: &[u8]) -> Option<RpcError> {
     }
     serde_json::from_slice::<Refusal>(body)
         .ok()
-        .map(|refusal| refusal.error)
+        .map(|refusal| past_token(refusal.error))
+}
+
+/// `ployz login` while `PLOYZ_TOKEN` is set: the token still wins over the sign-in.
+pub(crate) const SIGN_IN_PAST_TOKEN: &str = "unset PLOYZ_TOKEN && ployz login";
+
+/// Cloud can't know a token caller is a shell with `PLOYZ_TOKEN` set, so its
+/// `ployz login` step becomes one that works while the token is.
+fn past_token(mut refused: RpcError) -> RpcError {
+    let token = std::env::var_os(crate::cli::env::TOKEN).is_some_and(|token| !token.is_empty());
+    if token
+        && let Some(next) = refused.details.get_mut("next")
+        && next == "ployz login"
+    {
+        *next = SIGN_IN_PAST_TOKEN.into();
+    }
+    refused
 }
 
 /// A Cloud route's `PublicError`, as the refusal it stands for.
@@ -1236,6 +1258,26 @@ mod tests {
             Some("http://other.test"),
             "signed out, the Cloud URL still names where commands are read"
         );
+    }
+
+    #[tokio::test]
+    async fn ployz_token_never_guesses_a_cloud_past_an_unreadable_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::beside(&dir.path().join("config.yaml"));
+        std::fs::write(dir.path().join("cloud.json"), "{not json").unwrap();
+        let token = || Some("ployz_secret".to_owned());
+        let refused = credential(&store, token(), None).await.err();
+        assert!(
+            refused
+                .as_ref()
+                .is_some_and(|error| error.to_string().contains("PLOYZ_CLOUD_URL")),
+            "{refused:?}"
+        );
+        let chosen = credential(&store, token(), Some("http://cloud.test".to_owned()))
+            .await
+            .unwrap();
+        assert_eq!(chosen.cloud(), "http://cloud.test");
+        assert!(named_cloud(&store, false, None).is_err());
     }
 
     #[tokio::test]
