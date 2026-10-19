@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { SetupCommand } from "@ployz/sdk";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Navigate, useNavigate } from "@tanstack/react-router";
 import { CodeIcon, EllipsisIcon } from "lucide-react";
 import { SettingsEmpty, SettingsForm, SettingsFormField, SettingsList, SettingsListAdd, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -28,8 +28,8 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
-  // Deleted (here, or elsewhere) while open: nothing to show while the page moves on.
-  if (!listing.ok) return null;
+  // The Project is gone, deleted here or elsewhere: nothing to show, so Projects opens.
+  if (!listing.ok) return <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace />;
   const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
@@ -216,8 +216,8 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const writer = useStoreWriter(organizationSlug);
   const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const [defaultEnvironment, holdDefault] = useCommitHold(listing.ok ? listing.value.environments.find((row) => row.default)?.name ?? null : null);
-  // Deleted while open: nothing to show while the page moves on.
-  if (!listing.ok) return null;
+  // The Project is gone, deleted here or elsewhere: nothing to show, so Projects opens.
+  if (!listing.ok) return <Navigate to="/cloud/$organizationSlug/~" params={{ organizationSlug }} replace />;
   const { environments } = listing.value;
   return (
     <div className="flex flex-col gap-6">
