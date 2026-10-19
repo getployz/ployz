@@ -93,10 +93,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release-tag }}
+          EVENT: ${{ github.event_name }}
         # A release builds its own SDK rather than reuse one an earlier run uploaded.
+        # A PR builds dev, so its upload takes a name no release lookup matches.
         run: |
           python3 ../core/scripts/artifacts.py lookup sdk --extra "features= profile=release" > "$RUNNER_TEMP/lookup.out"
           if [ -n "$RELEASE_TAG" ]; then sed -i 's/^run-id=.*/run-id=/' "$RUNNER_TEMP/lookup.out"; fi
+          if [ "$EVENT" = pull_request ] && grep -qx 'run-id=' "$RUNNER_TEMP/lookup.out"; then sed -i 's/^name=.*/&-pr-dev/' "$RUNNER_TEMP/lookup.out"; fi
           cat "$RUNNER_TEMP/lookup.out" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         if: steps.lookup.outputs.run-id == ''
@@ -111,8 +114,11 @@ jobs:
         if: steps.lookup.outputs.run-id == ''
         with:
           tool: wasm-bindgen@0.2.127
+      # A PR only tests against its SDK, so it builds dev.
       - name: Build and test the SDK
         if: steps.lookup.outputs.run-id == ''
+        env:
+          PLOYZ_SDK_PROFILE: ${{ github.event_name == 'pull_request' && 'dev' || 'release' }}
         run: bash scripts/pr-check.sh sdk
       # Local verify runs download these too, so main keeps them longer.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -176,11 +182,12 @@ jobs:
     needs: [sdk]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # The suite is CPU-bound on a 4-vCPU runner; shards keep each job's tests under a minute.
+    # The suite is CPU-bound on a 4-vCPU runner. Two shards keep each job near three minutes;
+    # a third saved about a minute of wall time but billed a setup and a rounded-up minute more.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -197,7 +204,7 @@ jobs:
       - name: Unit and PostgreSQL tests
         env:
           PLOYZ_TEST_ENV_FILE: .env.test
-        run: pnpm test --shard=${{ matrix.shard }}/3 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
+        run: pnpm test --shard=${{ matrix.shard }}/2 --reporter=default --reporter=github-actions --reporter=junit --outputFile.junit=test-results/junit.xml
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

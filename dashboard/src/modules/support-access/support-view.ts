@@ -139,6 +139,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     services: same,
     namespace: same,
     namespaces: same,
+    sealed_names: same,
     domains: same,
     domain: same,
     volumes: same,

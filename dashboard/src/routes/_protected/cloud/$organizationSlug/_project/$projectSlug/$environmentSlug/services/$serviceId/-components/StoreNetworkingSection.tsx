@@ -12,7 +12,8 @@ import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/sett
 import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
-import { useStoreWriter } from "#/modules/config-store/store-write";
+import { isRequested, showRefusalInline, useStoreWriter } from "#/modules/config-store/store-write";
+import { failureReason } from "#/components/stageable/use-commit-hold";
 import { CustomDomainDialog, type CustomDomain } from "./CustomDomainDialog";
 import { DomainTitle, PendingLabel, PublicDomainRow, storeStatusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";
@@ -20,7 +21,7 @@ import { ManagedDomainDialog } from "./ManagedDomain";
 type Editor =
   | { kind: "generate" }
   | { kind: "generated"; prefix: string }
-  | { kind: "add"; draft?: CustomDomain }
+  | { kind: "add"; draft?: CustomDomain; refusal?: string }
   | { kind: "custom"; hostname: string }
   | null;
 
@@ -207,9 +208,14 @@ export function StoreNetworkingSection({ state, privateFirst = false, validatePr
           defaultTargetPort={null}
           onClose={() => setEditor(null)}
           initial={editor.kind === "add" ? editor.draft : undefined}
+          refusal={editor.kind === "add" ? editor.refusal : undefined}
           onSubmit={({ hostname, targetPort }) => {
-            add(hostname, targetPort).isPersisted.promise.catch(() => {
-              if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
+            const write = add(hostname, targetPort);
+            if (!edited) showRefusalInline(write);
+            write.isPersisted.promise.catch((error: Error) => {
+              if (!edited && !isRequested(error)) {
+                setEditor({ kind: "add", draft: { hostname, targetPort }, refusal: failureReason(error) });
+              }
             });
           }}
         />

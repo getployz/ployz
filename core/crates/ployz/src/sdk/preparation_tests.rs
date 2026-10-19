@@ -798,6 +798,51 @@ async fn builder_selection_reports_missing_capability() {
 }
 
 #[tokio::test]
+async fn failed_builder_selection_records_why_each_machine_was_rejected_without_command_output() {
+    let (root, service, builds) = fixture();
+    let checker = machine('a', "checker");
+    let mut disabled = machine('b', "disabled");
+    disabled.machine.accepts_builds = false;
+    builds.check_failures.lock().unwrap().insert(
+        checker.machine.id,
+        "buildx: failed to authorize: https://registry.example/token?secret=hunter2".into(),
+    );
+    let (mut client, server) = connected(service.with_machines(vec![checker, disabled])).await;
+    let visible = client.machines().await.unwrap();
+    let selection = crate::sdk::prepare::select_build_machine(
+        &mut client,
+        &build_targets(&["linux/amd64"]),
+        &visible,
+        Default::default(),
+        &Default::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    let error = crate::sdk::preparation_error(
+        crate::sdk::prepare::PreparationError::Selection(selection),
+        false,
+    );
+    let recorded = ployz_store::Failure::from(&error);
+    assert_eq!(
+        recorded.reason,
+        "No eligible Build Machine was selected; no build was started."
+    );
+    let cause = recorded.cause.last().expect("a cause names the rejections");
+    assert!(!cause.contains("hunter2"), "{cause}");
+    for reason in [
+        "Server checker",
+        "its build capability check failed",
+        "Server disabled",
+        "builds are turned off",
+    ] {
+        assert!(cause.contains(reason), "{cause}");
+    }
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn builder_selection_requires_one_worker_for_every_command_target_before_upload() {
     let (root, service, builds) = fixture();
     let amd = machine('a', "amd");

@@ -248,26 +248,39 @@ pub(crate) async fn get(
     Ok(one.run)
 }
 
-/// Follow `run` until it ends, saying each state it moves to. It has no deadline:
-/// Cloud ends every run, marking one nobody finished as lost.
+/// Follow `run` until it ends, saying each state it moves to and each step Cloud notes on it.
+/// It has no deadline: Cloud ends every run, marking one nobody finished as lost.
 pub(crate) async fn settle(
     credential: &Credential,
     mut run: VolumeRun,
 ) -> Result<VolumeRun, StoreCallError> {
-    let mut said = run.state.clone();
     while !run.state.ended() {
         tokio::time::sleep(POLL).await;
-        run = get(credential, &run.id).await?;
-        if run.state != said && !run.state.ended() {
-            crate::ui::note(format_args!(
-                "Run {} is {}.",
-                run.id,
-                store::word(&run.state)
-            ));
+        let now = get(credential, &run.id).await?;
+        for line in news(&run, &now) {
+            crate::ui::note(format_args!("{line}"));
         }
-        said = run.state.clone();
+        run = now;
     }
     Ok(run)
+}
+
+/// What a wait says when a running run moves on from `said` to `now`. An ended run says
+/// nothing here: the command's last line reports it.
+fn news(said: &VolumeRun, now: &VolumeRun) -> Vec<String> {
+    let mut lines = Vec::new();
+    if now.state.ended() {
+        return lines;
+    }
+    if now.state != said.state {
+        lines.push(format!("Run {} is {}.", now.id, store::word(&now.state)));
+    }
+    if let Some(message) = &now.message
+        && now.message != said.message
+    {
+        lines.push(format!("{message}."));
+    }
+    lines
 }
 
 pub(super) fn wait_flag() -> clap::Arg {
@@ -634,6 +647,9 @@ fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
     if run.state == MaybeKnown::Known(VolumeRunState::Done) {
         return crate::ui::finish(&OneRun { run: run.clone() }, || {
             crate::ui::stream(format_args!("The {started} is done: run {}.", run.id));
+            if let Some(message) = &run.message {
+                crate::ui::stream(format_args!("{message}."));
+            }
         });
     }
     let why = run.message.as_deref().unwrap_or("Cloud gave no reason");
@@ -759,7 +775,7 @@ fn record(run: &VolumeRun) -> Fields {
         record.push("started by", "Ployz Cloud, for a Volume no config holds");
     }
     if let Some(message) = &run.message {
-        record.push("message", message);
+        record.push(if run.state.ended() { "message" } else { "now" }, message);
     }
     record.push("started", &run.created_at);
     if let Some(finished) = &run.finished_at {

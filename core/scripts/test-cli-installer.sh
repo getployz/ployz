@@ -210,7 +210,7 @@ for args in '--enroll 1.2.3' '1.2.3 --enroll'; do
     [ "$(tail -n 1 "$TMP/out")" = "Waiting for approval" ]
     checked_in_with ''
     printf '%s\n' -g -echo saved-mode | diff - "$STTY_LOG"
-    grep -Fq 'Fleet Token: ' "$TMP/dev/tty"
+    grep -Fq 'Fleet Token (from Servers in Ployz Cloud): ' "$TMP/dev/tty"
 done
 
 # With echo still on, the prompt never shows, so nothing is typed into an echoing terminal.
@@ -220,7 +220,7 @@ if ENROLL_FLAG=--enroll enroll FAKE_NO_ECHO_OFF=1; then
     exit 1
 fi
 grep -Fq 'Could not turn off echo' "$TMP/err"
-if grep -Fq 'Fleet Token: ' "$TMP/dev/tty"; then echo "prompted with echo on" >&2; exit 1; fi
+if grep -Fq 'Fleet Token (from Servers in Ployz Cloud): ' "$TMP/dev/tty"; then echo "prompted with echo on" >&2; exit 1; fi
 [ ! -e "$CHECKIN_LOG" ]
 
 if enroll PLOYZ_ENROLL_TOKEN=$TOKEN FAKE_UID=1000; then

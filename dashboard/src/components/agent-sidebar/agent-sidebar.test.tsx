@@ -18,6 +18,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
 const waiting = asTestDouble<ApprovalView>()({
   id: "a1",
   status: "pending",
+  created_at: "2026-10-19T00:00:00.000Z",
   review: {
     effects: [],
     diff: asTestDouble<DiffView>()({ environment: { id: "e1", project: "shop", name: "production", revision: 1 }, total_count: 0, changes: [] }),

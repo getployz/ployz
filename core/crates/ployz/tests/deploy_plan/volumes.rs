@@ -749,6 +749,45 @@ fn a_provisioned_volume_without_a_writer_refuses_and_names_the_way_back() {
 }
 
 #[test]
+fn a_silent_machine_leaves_the_writer_unknown_instead_of_naming_a_copy() {
+    let intent = automatic_provisioned_intent();
+    for (case, silent) in [
+        ("not asked", None),
+        (
+            "storage read failed",
+            Some(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "connection lost".into(),
+                details: Default::default(),
+                cause: Vec::new(),
+            }),
+        ),
+    ] {
+        let mut snapshot = copies_snapshot(&[('2', CopyRole::Slot)], vec![]);
+        snapshot.machines.push(machine('3', "third"));
+        match silent {
+            None => snapshot.storage_capacity.remove(&machine_id('3')),
+            Some(error) => snapshot
+                .storage_capacity
+                .insert(machine_id('3'), Err(error)),
+        };
+
+        let error = preview_deploy(&intent, &snapshot).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "third did not answer, so Volume data's copies are unknown. Bring third back, or deploy the other services by name",
+            "{case}"
+        );
+        assert_eq!(
+            error.into_rpc_error().code,
+            RpcErrorCode::Unavailable,
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn a_cloud_volume_without_a_writer_is_named_as_authored() {
     let volume = "3f2a6c1e-8d4b-4e7a-9c15-2b6d8e0f4a71";
     let intent = ployz_core::config::lower_deployment(

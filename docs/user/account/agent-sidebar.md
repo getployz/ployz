@@ -26,8 +26,8 @@ replied. It can:
 
 - Show a server, a service's containers, and where each volume's copies live
   (**server show**, **service status**, **volume show**).
-- Read a service's recent logs from each server that ran it, with secrets from the container's
-  environment replaced (**service logs**). Ployz support sees them only if your organization
+- Read a service's recent logs from each server that ran it, with sealed variables and
+  secret-shaped values replaced (**service logs**). Ployz support sees them only if your organization
   shows its logs to support. It reads the latest lines and doesn't follow new ones.
 - Read a server's own recent logs from the Ployz daemon, Docker or Corrosion, up to 200 lines,
   with secret-shaped values replaced (**server logs**). Ployz support can't read them.
@@ -95,7 +95,7 @@ service or remove a domain, the agent stops and shows a card. It does the same b
 a server, cleans up after one, drains the last copy of a volume off one, or runs a volume
 command that deletes data. The card leads with what would be
 destroyed. Everything else the change does is folded under a count, like **2 other changes**;
-click it to see them.
+click it to see them. Under its name the card says when it was asked, like **9 minutes ago**.
 
 1. Read the list of what gets destroyed.
 2. Click **Approve** to let the deploy go ahead.

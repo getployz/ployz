@@ -37,4 +37,29 @@ describe("InviteDialog", () => {
     expect(screen.getByText(message)).toBeTruthy();
     expect(invite).toHaveBeenCalledWith({ email: "grace@example.com", role: "member" });
   });
+
+  it("makes one invite when Make link is double-clicked", async () => {
+    const invite = vi.fn().mockResolvedValue({
+      id: "inv-1",
+      email: "grace@example.com",
+      role: "member",
+      link: "https://cloud.test/invite/t",
+      expires_at: "2026-10-21T00:00:00Z",
+      emailed_to: "grace@example.com",
+      message: "Emailed to grace@example.com.",
+    });
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <InviteDialog organizationName="Acme" mail invite={invite} onInvited={vi.fn()} onOpenChange={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText("Email (optional)"), { target: { value: "grace@example.com" } });
+    const submit = screen.getByRole("button", { name: "Make link" });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    await screen.findByLabelText("Invite link");
+    expect(invite).toHaveBeenCalledTimes(1);
+  });
 });

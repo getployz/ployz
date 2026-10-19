@@ -259,7 +259,7 @@
             "properties": {
               "autoDeploy": {
                 "default": true,
-                "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+                "description": "Deploy the Environment's Saved State on each GitHub App push to its branch. Takes effect at once.",
                 "examples": [
                   false
                 ],
@@ -1384,14 +1384,14 @@
       "read_only": true
     },
     {
-      "description": "Return every Staged change, or one Service's, Volume's or Config's, to what is deployed. Never asks a human to approve.",
+      "description": "Return all Staged changes, or one Service, Volume or Config, to deployed. A named one differing only from saved returns to saved. Never asks a human to approve.",
       "destructive": true,
       "gate": "never",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "config": {
-            "description": "Only this Config's Staged changes.",
+            "description": "Only this Config.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
@@ -1411,12 +1411,12 @@
             "type": "string"
           },
           "service": {
-            "description": "Only this Service's Staged changes. Omit service, volume and config to discard everything Staged.",
+            "description": "Only this Service. Omit service, volume and config for everything.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           },
           "volume": {
-            "description": "Only this Volume's Staged changes.",
+            "description": "Only this Volume.",
             "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
             "type": "string"
           }

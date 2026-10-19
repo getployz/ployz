@@ -447,8 +447,8 @@ export const planVolumeRun = Effect.fn("VolumeRun.plan")(function* (
   }
   const planned = planFromCopies({ ...input, volumeName: volume.volumeName, orphan: false }, members.value);
   if (!planned.ok) {
-    const { code, message } = planned.refusal;
-    return { ok: false, refusal: { code: refusalCode[code], message, details: null } } satisfies VolumeRunPlan;
+    const { code, message, next } = planned.refusal;
+    return { ok: false, refusal: { code: refusalCode[code], message, details: next === undefined ? null : { next } } } satisfies VolumeRunPlan;
   }
   const verb = VERBS[input.kind];
   const { phase } = planned;

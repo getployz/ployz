@@ -13,6 +13,7 @@ fn global_slot(key: &str) -> SlotKey {
 
 fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> NewContainer {
     NewContainer {
+        r#gen: ployz_core::Gen::FIRST,
         slot: global_slot(key),
         resolved_spec,
         deployment_id: None,

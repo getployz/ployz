@@ -56,6 +56,7 @@ impl Fixture {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         let machine = store.record().machine().unwrap().clone();

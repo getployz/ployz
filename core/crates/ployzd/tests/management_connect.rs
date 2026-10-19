@@ -975,6 +975,7 @@ async fn participating_in(network: &str) -> (tempfile::TempDir, RecordOwner, Loc
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();

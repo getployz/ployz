@@ -18,10 +18,10 @@ export async function serveCli<E>(request: Request, reply: Effect.Effect<Respons
 }
 
 /**
- * One CLI call in an Organization: the Caller (a signed-in device or an Organization Token) acts, the JSON body is
- * the input. A token acts only in its own Organization.
+ * One CLI call in an Organization, named by its ID, which a slug rename never moves: the Caller (a signed-in device or
+ * an Organization Token) acts, the JSON body is the input. A token acts only in its own Organization.
  */
-export function handleCliRequest<I extends { readonly organizationSlug: string }, A, E, R>(
+export function handleCliRequest<I extends { readonly organizationId: string }, A, E, R>(
   request: Request,
   input: Schema.Decoder<I>,
   operation: (caller: Caller, input: I) => Effect.Effect<A, E, R>,
@@ -35,7 +35,7 @@ export function handleCliRequest<I extends { readonly organizationSlug: string }
     const decoded = yield* Schema.decodeUnknownEffect(input)(body, { onExcessProperty: "error" }).pipe(
       Effect.mapError(() => new Validation({ message: "Invalid request." })),
     );
-    if (caller.credential.kind === "token" && decoded.organizationSlug !== caller.organization.slug) {
+    if (caller.credential.kind === "token" && decoded.organizationId !== caller.organization.id) {
       return yield* new Forbidden({ message: "This Organization Token acts only in its own Organization." });
     }
     return Response.json(yield* operation(caller, decoded), {

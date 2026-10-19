@@ -31,7 +31,8 @@ Details, and you drop it in Details. A deploy that removes a mirror asks you to 
 - A move leaves the old server holding an old copy. It serves nothing and never refreshes. Its ×
   deletes it right away, after you confirm **Delete copy**. Its **Restore** stages a restore from its
   last point. While a staged restore reads the copy, × says "A restore reads this copy."
-- A move or mirror onto a server that holds an old copy deletes that copy first. Details says so.
+- A move or mirror deletes the old copies on other servers first. Details says so. An old copy on
+  the server you move or mirror onto stays, so Ployz sends only what changed since.
 - When the primary's server stops answering, Copies says "web-1 is not answering" and when
   changes are lost from, for example "Changes after 10:36 lost". **Use mirror**, or **Make
   primary** on the mirror, moves the volume there at the next deploy, which asks you to confirm
@@ -124,8 +125,30 @@ service there. Then Ployz removes the old server's container. Your service is do
 stop to the start on `web-2`. A service that takes a while to stop or start doesn't fail the
 move. Ployz waits for Docker, up to ten minutes for each stop or start.
 
+`ployz volume move --wait` and `ployz volume runs data RUN` say each step as the move reaches it, and so
+does the bottom bar while a deploy moves the volume:
+
+```
+Copying to web-2.
+web stopped for the final copy.
+Starting web on web-2.
+The Move of Volume data onto web-2 is done: run 3f2a9c1e-7b4d-4e2a-9f1c-2b8d6e0a5c47.
+web was stopped 26s.
+```
+
+The last line says how long your service was down. `volume runs` keeps it as the move's message.
+
 The old server keeps a read-only copy, shown as `data-web-1`. Moving back sends only what
 changed since. If the volume already has a mirror on `web-2`, the move starts from it.
+
+A volume holds one other copy, so a move to a third server is refused while that copy stays:
+
+```
+error: data already has a copy on web-1, data-web-1
+next: ployz volume mirror rm data-web-1
+```
+
+Remove the old copy with that command, then move again.
 
 A deploy never waits for a move. Until `web-2` is told to start your service, a deploy takes the
 move over: the run ends with "a Deploy took this run over", your service deploys on the old
