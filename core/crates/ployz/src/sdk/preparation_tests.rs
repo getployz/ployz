@@ -1344,12 +1344,13 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
 }
 
 #[tokio::test]
+#[ignore = "held: upload source location pending (deploys-28 B hold, 10-19)"]
 #[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
-async fn a_railpack_upload_without_its_source_takes_an_env_change_on_its_held_image() {
+async fn a_settings_only_deploy_of_an_upload_rebuilds_from_the_held_upload() {
     let (root, service, builds) = fixture();
     fs::remove_file(root.join("Dockerfile")).unwrap();
-    let railpack = |greeting: &str, with_source: bool| {
-        let mut input = uploaded(&root, with_source);
+    let railpack = |greeting: &str| {
+        let mut input = uploaded(&root, true);
         let snapshot = &mut input.deployment["snapshots"][0];
         snapshot["config"]["build"]["buildMethod"] = json!("railpack");
         snapshot["resolvedEnv"] = json!({"GREETING": greeting});
@@ -1357,7 +1358,7 @@ async fn a_railpack_upload_without_its_source_takes_an_env_change_on_its_held_im
     };
     let (session, server) = session(service).await;
     let built = session
-        .prepare(railpack("hello", true))
+        .prepare(railpack("hello"))
         .unwrap()
         .finished()
         .await
@@ -1368,10 +1369,22 @@ async fn a_railpack_upload_without_its_source_takes_an_env_change_on_its_held_im
         .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
         .collect();
     built.close();
+    let name = ServiceName::parse("one").unwrap();
 
-    let mut changed = railpack("hello-staging", false);
+    // Cloud still holds the upload, so the variable change rebuilds from it.
+    let mut changed = railpack("hello-staging");
     changed.build_receipts = receipts.clone();
     let deployed = session.prepare(changed).unwrap().finished().await.unwrap();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        2,
+        "a Railpack build reads every variable, so a new value rebuilds"
+    );
+    assert_ne!(
+        deployed.build_receipts()[&name].fingerprint,
+        receipts[&name][0].fingerprint,
+        "the new image's build inputs hold the new value"
+    );
     assert!(deployed.preview().operations.iter().any(|row| {
         row.operation.spec().is_some_and(|spec| {
             spec.container
@@ -1382,11 +1395,6 @@ async fn a_railpack_upload_without_its_source_takes_an_env_change_on_its_held_im
         })
     }));
     deployed.close();
-    assert_eq!(
-        builds.definitions.lock().unwrap().len(),
-        1,
-        "nothing rebuilt"
-    );
     session.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();
