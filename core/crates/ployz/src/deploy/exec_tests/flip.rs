@@ -1907,3 +1907,17 @@ async fn a_failed_group_restores_a_copy_held_to_free_host_ports() {
     assert_eq!(client.rotation(&sibling), Some(CopyRotation::In));
     client.assert_done();
 }
+
+#[tokio::test]
+async fn new_copies_carry_the_run_label_the_dependency_wait_selects_by() {
+    let machine = machine('1');
+    let new = container('a');
+    let plan = vec![run(&machine, spec(None, None, None), true)];
+    let client = Scripted::new(vec![created(
+        Call::Run(machine, ContainerKind::ServiceContainer),
+        &new,
+    )]);
+    execute_with(&plan, &client, &CancellationToken::new()).await;
+    client.assert_done();
+    assert_eq!(*client.deploys.lock().unwrap(), vec![Some(run_id())]);
+}
