@@ -29,8 +29,8 @@ impl LogLevel {
 
 /// Reads, in order, a JSON `level`, `lvl`, or `severity` key, a logfmt
 /// `level=`, then a leading `ERROR`, `WARN`, `INFO`, or `DEBUG` word or an
-/// `[error]`-style tag, all case-insensitive. Anything else is `info`,
-/// whichever stream the line came from.
+/// `[error]`-style tag, all case-insensitive, after any leading timestamp.
+/// Anything else is `info`, whichever stream the line came from.
 #[must_use]
 pub fn log_level(line: &[u8]) -> LogLevel {
     let line = line.trim_ascii();
@@ -73,6 +73,7 @@ fn logfmt_level(line: &[u8]) -> Option<LogLevel> {
 }
 
 fn leading_level(line: &[u8]) -> Option<LogLevel> {
+    let line = skip_timestamp(line);
     if let Some(tagged) = line.strip_prefix(b"[") {
         let (tag, _) = split_once(tagged, b']')?;
         return named(tag);
@@ -85,6 +86,23 @@ fn leading_level(line: &[u8]) -> Option<LogLevel> {
                 .is_none_or(|next| !next.is_ascii_alphanumeric())
         })?;
     named(word)
+}
+
+fn skip_timestamp(mut line: &[u8]) -> &[u8] {
+    while let Some((token, rest)) = split_once(line, b' ')
+        && is_timestamp(token)
+    {
+        line = rest.trim_ascii_start();
+    }
+    line
+}
+
+fn is_timestamp(token: &[u8]) -> bool {
+    token.first().is_some_and(u8::is_ascii_digit)
+        && token.iter().any(|byte| matches!(byte, b'-' | b'/' | b':'))
+        && token
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || b"-/:.,+TZ".contains(byte))
 }
 
 fn named(value: &[u8]) -> Option<LogLevel> {

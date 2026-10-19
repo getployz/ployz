@@ -70,8 +70,8 @@ no service arguments, and `--follow` still use live container discovery.
 - **Containers started before your servers ran this release** keep Docker's old log settings, and
   their logs aren't kept, until their next deploy.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
-  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
-  without one counts as **Info**, stderr included.
+  a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`), after any
+  timestamp, sets it. A line without one counts as **Info**, stderr included.
 - **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
   Missing output can have no gap record, such as when a container ran entirely while log
   collection was down.
