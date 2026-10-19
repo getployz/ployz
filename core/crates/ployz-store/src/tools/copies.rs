@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use super::act::{Run, latest, operate, operations, resolve, servers};
-use super::cloud::{CopiesAnswer, OperationsAnswer, ServersAnswer, VolumeCopies};
+use super::act::{Run, latest, operate, operations, resolve, roster, servers};
+use super::cloud::{CopiesAnswer, OperationsAnswer, VolumeCopies};
 use super::machine::{Cx, Effect, Stop, Tool, at, store};
 use super::refusal::{Call, Refusal};
 use super::release::place;
@@ -227,7 +227,7 @@ impl Tool for VolumeMirror {
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
         let target = match &self.server {
             Some(name) => {
-                let answer = cx.cloud::<ServersAnswer>(answers.next())?;
+                let answer = roster(cx, answers.next())?;
                 Some(resolve(&answer, name, "server", true)?.reference())
             }
             None => None,
@@ -371,7 +371,7 @@ impl Tool for VolumeMove {
             self.environment.as_ref(),
             Some(servers()),
         )?;
-        let answer = cx.cloud::<ServersAnswer>(answer)?;
+        let answer = roster(cx, answer)?;
         let to = resolve(&answer, &self.to, "to", true)?.reference();
         on_volume(
             cx,
@@ -481,7 +481,7 @@ impl Tool for VolumeRestore {
             self.environment.as_ref(),
             Some(servers()),
         )?;
-        let answer = cx.cloud::<ServersAnswer>(answer)?;
+        let answer = roster(cx, answer)?;
         let from = resolve(&answer, &self.from, "from", true)?.reference();
         on_volume(
             cx,
