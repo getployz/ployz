@@ -5,7 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { CloudStore, openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, session, user } from "#/modules/identity/tables";
-import { SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
+import { requireAccess, SupportStaff, supportStaffOf } from "#/modules/organization/access.server";
 import { presetGrant } from "#/modules/identity/token-grant";
 import { removeOrganization, removeOrganizationAsMember } from "#/modules/organization/organization-removal.server";
 import { organization } from "#/modules/organization/tables";
@@ -140,5 +140,34 @@ describe("removeOrganization", () => {
       { token: "dan-shop", id: HOME, slug: "home" },
       { token: "eve-shop", id: null, slug: null },
     ]);
+  });
+
+  it("frees the slug, and an old link to it opens the new Organization only for its members", async () => {
+    const KILN = "00000000-0000-4000-8000-00000000c006";
+    const NEW_KILN = "00000000-0000-4000-8000-00000000c007";
+    const [fay, gus] = (await harness.db.insert(user).values([
+      { email: "fay@example.test", name: "Fay" },
+      { email: "gus@example.test", name: "Gus" },
+    ]).returning({ id: user.id })).map((row) => row.id) as [string, string];
+    await harness.db.insert(organization).values({ id: KILN, name: "Kiln", slug: "kiln" });
+    await harness.db.insert(member).values({ userId: fay, organizationId: KILN, role: "owner" });
+    const store = await harness.runEffect(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
+    const result = await harness.runEffect(removeOrganization({ userId: fay, organization: { id: KILN, slug: "kiln" }, role: "owner" }, KILN).pipe(
+      Effect.provideService(CloudStore, { open: Effect.succeed(store) }),
+      Effect.provideService(OrganizationRuntime, asTestDouble<OrganizationRuntimeService>()({})),
+      Effect.provideService(Ployz, asTestDouble<PloyzService>()({})),
+      Effect.provideService(InngestClient, sendsNowhere()),
+    ));
+    expect(result).toMatchObject({ ok: true, value: { removed: true } });
+
+    await harness.db.insert(organization).values({ id: NEW_KILN, name: "Kiln", slug: "kiln" });
+    await harness.db.insert(member).values({ userId: gus, organizationId: NEW_KILN, role: "owner" });
+    const open = (userId: string) => harness.runEffect(Effect.exit(requireAccess({ userId }, "kiln", "org:read").pipe(
+      Effect.map((access) => access.organization.id),
+      Effect.provideService(SupportStaff, supportStaffOf([])),
+    )));
+    const former = await open(fay);
+    expect(Exit.isFailure(former) && Cause.pretty(former.cause)).toContain("The organization was not found.");
+    expect(await open(gus)).toEqual(Exit.succeed(NEW_KILN));
   });
 });

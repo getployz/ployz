@@ -219,6 +219,10 @@ If a server is offline, the organization stays, disabled, until that server is b
 The dashboard then opens another of your organizations. With none left, it offers **Create an
 organization**.
 
+Once it's gone, its slug is free, and a new organization can take it. Old links and emails that
+name the slug open the new organization only for its members. Its **Domain** never comes back: a
+new organization gets a different one.
+
 From the CLI, `ployz org rm ORGANIZATION` does the same. If this device was signed in to that
 organization, it moves to another of yours and says which. With none left, run `ployz logout`,
 then `ployz login`.
