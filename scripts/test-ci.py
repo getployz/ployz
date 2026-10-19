@@ -57,6 +57,20 @@ class CiTest(unittest.TestCase):
             with self.subTest(path=path, pull_request=True):
                 self.assertNotIn("macos-cli", ci["select"]([path], pull_request=True))
 
+    def test_store_postgres_reruns_only_when_its_inputs_change(self):
+        for paths in [["core/crates/ployz-store/src/lib.rs"], ["core/crates/ployz-core/src/rpc.rs"], ["docs/user/services/domains.md"],
+                      ["core/crates/ployz/tests/fixtures/published-manifest.json"], ["core/Cargo.lock"], [".github/workflows/ci.yml"], ["unknown.config"]]:
+            with self.subTest(paths=paths):
+                self.assertTrue(ci["store_postgres"](paths, pull_request=True))
+        for paths in [["core/crates/ployz/src/main.rs"], ["core/crates/ployzd/src/main.rs"], ["dashboard/src/app.tsx"]]:
+            with self.subTest(paths=paths):
+                self.assertFalse(ci["store_postgres"](paths, pull_request=True))
+                self.assertTrue(ci["store_postgres"](paths))
+        # STORE_INPUTS names ployz-store's path dependencies by hand; a new one must join it.
+        metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=SCRIPT.parent.parent / "core"))
+        path_deps = {p["name"]: {d["name"] for d in p["dependencies"] if d.get("path")} for p in metadata["packages"]}
+        self.assertEqual(path_deps["ployz-store"] | path_deps["ployz-core"], {"ployz-core"})
+
     def test_sdk_and_config_wasm_crates_follow_their_path_dependencies(self):
         self.assertEqual(
             ci["sdk_and_config_wasm_crates"](),
