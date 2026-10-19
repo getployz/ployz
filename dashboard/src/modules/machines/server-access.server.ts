@@ -29,13 +29,13 @@ const lockCredential = (credentialId: string) => Effect.gen(function* () {
   yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`server-access:${credentialId}`}))`);
 });
 
-/** Set `label` on one Server through Cloud's own `cloud` slot. */
+/** Set `label` on one Server through Cloud's own `cloud` slot, dial and Set within one timeout. */
 const setHolder = (connection: Connection, label: string) =>
   Effect.scoped(Effect.gen(function* () {
     const ployz = yield* Ployz;
     const client = yield* ployz.connect({ connections: [connection], timeoutMs: SERVER_TIMEOUT_MS });
     return yield* client.setManagementClient(label);
-  })).pipe(Effect.timeout(SERVER_TIMEOUT_MS * 2));
+  })).pipe(Effect.timeout(SERVER_TIMEOUT_MS));
 
 /** Only `ployz` credentials hold a Server slot; a remote agent reaches Servers through Cloud. */
 type ServerAccessCaller = Caller & { readonly credential: { readonly kind: "session" | "token" } };
@@ -69,6 +69,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     isNull(serverAccess.revokedAt),
   ))).map((row) => [row.machineId, row.encryptedCapability]));
   const label = serverAccessLabel(caller.credential.id);
+  // Every Server at once, so the reply comes within one timeout, inside the CLI's 15 s request.
   const results = yield* Effect.forEach(loaded.connections, (cloud) => Effect.gen(function* () {
     const machineId = cloud.machine_id;
     if (machineId === undefined) return yield* Effect.die("an Organization connection names its Machine");
@@ -108,7 +109,7 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
       return yield* new Unauthorized();
     }
     return { machine_id: machineId, management: management.value };
-  }), { concurrency: SERVER_CONCURRENCY });
+  }), { concurrency: "unbounded" });
   return { ok: true as const, value: {
     connections: results.flatMap(({ machine_id, management }) => management === null ? [] : [{ machine_id, management }]),
     unreachable: results.flatMap(({ machine_id, management }) => management === null ? [machine_id] : []),

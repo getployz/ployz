@@ -4,9 +4,9 @@
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 
-use super::super::{Error, config_path, leaf_matches, runtime, store::Next};
+use super::super::{Error, config_path, leaf_matches, rerun, runtime, store::Next};
 use crate::cli::{base, positional, value};
-use crate::cloud_account::{self, ForgetCheck};
+use crate::cloud_account::{self, Credential, ForgetCheck, ObservedServer, ServersForgotten};
 use crate::cloud_login::CredentialStore;
 use crate::ui::Hint;
 
@@ -60,8 +60,68 @@ fn forget_all(root: &ArgMatches) -> Result<(), Error> {
         };
         Ok::<_, Error>(cloud_account::forget_servers(&credential, typed).await?)
     })?;
+    finished(&forgotten)
+}
+
+/// `server forget <server>` when no Server answers, so no Cluster can take it out: Cloud
+/// forgets it as it forgets every Server when they were deleted, once it is the last
+/// Server.
+pub(super) fn forget_unanswered(
+    runtime: &tokio::runtime::Runtime,
+    matches: &ArgMatches,
+    credential: &Credential,
+    selector: &str,
+) -> Result<(), Error> {
+    finished(&runtime.block_on(unanswered(matches, credential, selector))?)
+}
+
+async fn unanswered(
+    matches: &ArgMatches,
+    credential: &Credential,
+    selector: &str,
+) -> Result<ServersForgotten, Error> {
+    let check = cloud_account::check_forget_servers(credential).await?;
+    let named =
+        |server: &ObservedServer| server.name == selector || server.id.to_string() == selector;
+    let server = match check.servers.as_slice() {
+        [server] if named(server) => server,
+        servers if servers.iter().any(named) => {
+            return Err(Error::conflict(format!(
+                "No Server answers, so the Cluster can't forget Server {selector} alone. When \
+                 every Server is gone, forget them all. No changes made."
+            ))
+            .hint(Hint::Next("ployz server forget".into())));
+        }
+        _ => return Err(Error::not_found(format!("Server {selector} not found"))),
+    };
+    if matches.get_one::<String>("confirm").map(String::as_str) != Some("dead") {
+        let retry = rerun(
+            matches,
+            &["server", "forget", selector, "--confirm", "dead"],
+        );
+        return Err(Error::detailed(
+            RpcErrorCode::ConfirmationRequired,
+            format!(
+                "Server {} did not answer and is the last Server: forgetting it lets go of the \
+                 Cluster, and the data of its Volumes ({}) can't be recovered. It needs dead \
+                 typed. No changes made.",
+                server.name,
+                volumes(&check),
+            ),
+            serde_json::json!({
+                "server": { "id": server.id, "name": server.name },
+                "volumes": check.volumes,
+                "answered": false,
+            }),
+        )
+        .hint(Hint::Retry(retry)));
+    }
+    Ok(cloud_account::forget_servers(credential, &check.organization).await?)
+}
+
+fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
     let next = "ployz server add".to_owned();
-    crate::ui::finish(&Next::new(&forgotten, Some(next)), || {
+    crate::ui::finish(&Next::new(forgotten, Some(next)), || {
         let check = &forgotten.check;
         crate::ui::stream(format_args!(
             "Forgot the Servers of Organization {}: {}. Cloud reached none of them.",
@@ -129,6 +189,95 @@ fn listed(names: impl Iterator<Item = String>) -> String {
 mod tests {
     use super::*;
     use crate::cloud_account::{ObservedServer, Reach};
+
+    fn cloud_with(servers: &[&str]) -> (Credential, std::sync::mpsc::Receiver<String>) {
+        let check = serde_json::json!({
+            "organization": "acme",
+            "servers": servers.iter().enumerate().map(|(at, name)| serde_json::json!({
+                "id": format!("{at}").repeat(32), "name": name, "reach": "didnt_answer",
+            })).collect::<Vec<_>>(),
+            "volumes": [],
+        });
+        let (forgets, forgot) = std::sync::mpsc::channel();
+        let cloud = crate::cloud_login::tests::fake_cloud(move |route, body| match route {
+            "GET /api/cli/forget-servers" => (200, check.clone()),
+            "POST /api/cli/forget-servers" => {
+                forgets.send(body.to_owned()).unwrap();
+                let mut forgotten = check.clone();
+                if let Some(fields) = forgotten.as_object_mut() {
+                    fields.insert("cancelled".into(), serde_json::json!([]));
+                }
+                (200, forgotten)
+            }
+            other => panic!("unexpected {other}"),
+        });
+        let credential = Credential::Token {
+            cloud,
+            token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
+        };
+        (credential, forgot)
+    }
+
+    fn forget_args(args: &[&str]) -> clap::ArgMatches {
+        crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "forget"].iter().chain(args))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_lone_server_that_does_not_answer_is_forgotten_by_name_through_cloud() {
+        let (credential, forgot) = cloud_with(&["web-1"]);
+        let unconfirmed = forget_args(&["web-1"]);
+        let error = unanswered(leaf_matches(&unconfirmed), &credential, "web-1")
+            .await
+            .unwrap_err()
+            .report();
+        assert_eq!(error.code, RpcErrorCode::ConfirmationRequired);
+        assert_eq!(
+            error.details.get("retry"),
+            Some(&serde_json::json!(
+                "ployz server forget web-1 --confirm dead"
+            ))
+        );
+        assert!(forgot.try_recv().is_err(), "forgot without dead typed");
+
+        let confirmed = forget_args(&["web-1", "--confirm", "dead"]);
+        let forgotten = unanswered(leaf_matches(&confirmed), &credential, "web-1")
+            .await
+            .unwrap();
+        assert_eq!(
+            forgotten
+                .check
+                .servers
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            ["web-1"]
+        );
+        let body: serde_json::Value = serde_json::from_str(&forgot.recv().unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "organization": "acme" }));
+    }
+
+    #[tokio::test]
+    async fn one_of_several_servers_that_do_not_answer_points_at_forgetting_them_all() {
+        let (credential, forgot) = cloud_with(&["web-1", "web-2"]);
+        let confirmed = forget_args(&["web-1", "--confirm", "dead"]);
+        let error = unanswered(leaf_matches(&confirmed), &credential, "web-1")
+            .await
+            .unwrap_err()
+            .report();
+        assert_eq!(error.code, RpcErrorCode::Conflict);
+        assert_eq!(
+            error.details.get("next"),
+            Some(&serde_json::json!("ployz server forget"))
+        );
+        let missing = unanswered(leaf_matches(&confirmed), &credential, "db-1")
+            .await
+            .unwrap_err()
+            .report();
+        assert_eq!(missing.code, RpcErrorCode::NotFound);
+        assert!(forgot.try_recv().is_err());
+    }
 
     #[test]
     fn a_named_server_is_forgotten_alone_and_only_it_takes_an_approval() {
