@@ -48,9 +48,9 @@ pub fn parse_env_file(text: &str) -> Result<Vec<EnvEntry>, ConfigError> {
                 "a variable name is letters, digits and _, not starting with a digit",
             ));
         }
-        let value = value.trim_start();
-        let value = match value.chars().next() {
+        let value = match value.trim_start().chars().next() {
             Some(quote @ ('"' | '\'')) => {
+                let value = value.trim_start();
                 let mut rest = value.strip_prefix(quote).unwrap_or(value).to_owned();
                 // A quoted value may run onto the next lines until its closing quote.
                 loop {
@@ -75,7 +75,7 @@ pub fn parse_env_file(text: &str) -> Result<Vec<EnvEntry>, ConfigError> {
                 .next()
                 .and_then(|value| value.split("\t#").next())
                 .unwrap_or_default()
-                .trim_end()
+                .trim()
                 .to_owned(),
         };
         // A container's environment can't carry NUL.
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn reads_what_both_surfaces_used_to_read_differently() {
-        let text = "A=1\n# a comment\nexport EXPORTED=yes\nQUOTED=\"has spaces and # hash\"\nSINGLE='single $NOT'\nEMPTY=\nlower=kept\nMULTI=\"line1\nline2\"\nESC=\"a\\tb\\nc\\\\d\\\"e\"\nBARE=value # note\nDUP=first\nDUP=second\n";
+        let text = "A=1\n# a comment\nexport EXPORTED=yes\nQUOTED=\"has spaces and # hash\"\nSINGLE='single $NOT'\nEMPTY=\nlower=kept\nMULTI=\"line1\nline2\"\nESC=\"a\\tb\\nc\\\\d\\\"e\"\nBARE=value # note\nNOTE= # note\nHASH=#kept\nDUP=first\nDUP=second\n";
         assert_eq!(
             read(text),
             [
@@ -158,6 +158,8 @@ mod tests {
                 ("MULTI", "line1\nline2"),
                 ("ESC", "a\tb\nc\\d\"e"),
                 ("BARE", "value"),
+                ("NOTE", ""),
+                ("HASH", "#kept"),
                 ("DUP", "first"),
                 ("DUP", "second"),
             ]
@@ -168,8 +170,8 @@ mod tests {
     #[test]
     fn reads_windows_and_tab_separated_files() {
         assert_eq!(
-            read("\u{feff}A=1\nexport\tB=2\nC=3\t# note\n"),
-            [("A", "1"), ("B", "2"), ("C", "3")]
+            read("\u{feff}A=1\nexport\tB=2\nC=3\t# note\nD=\t# note\n"),
+            [("A", "1"), ("B", "2"), ("C", "3"), ("D", "")]
                 .map(|(key, value)| (key.to_owned(), value.to_owned()))
         );
         assert_eq!(
