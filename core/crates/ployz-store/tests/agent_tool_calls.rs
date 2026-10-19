@@ -2268,26 +2268,40 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
     );
     assert!(!db.to_string().contains(&minted), "{db}");
 
-    for (key, set) in [
+    // A call that names no Environment still gets the one it ran in, so the member's
+    // terminal never falls back to another.
+    let named = json!({ "service": "db", "environment": "production" });
+    let inherited = json!({ "service": "db" });
+    for (key, set, mut input) in [
         (
-            "sent",
+            "sent-named",
             json!({ "env": { "API_KEY": { "secret": "sk-live-123" } } }),
+            named.clone(),
         ),
-        ("text", json!({ "env": { "POSTGRES_PASSWORD": "hunter2" } })),
+        (
+            "sent-inherited",
+            json!({ "env": { "API_KEY": { "secret": "sk-live-123" } } }),
+            inherited.clone(),
+        ),
+        (
+            "text-named",
+            json!({ "env": { "POSTGRES_PASSWORD": "hunter2" } }),
+            named,
+        ),
+        (
+            "text-inherited",
+            json!({ "env": { "POSTGRES_PASSWORD": "hunter2" } }),
+            inherited,
+        ),
     ] {
-        let refused = call(
-            &store,
-            "service_update",
-            json!({ "service": "db", "set": set, "environment": "production" }),
-            key,
-        )
-        .refused();
+        input["set"] = set.clone();
+        let refused = call(&store, "service_update", input, key).refused();
         let variable = set["env"].as_object().unwrap().keys().next().unwrap();
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{key}");
         assert_eq!(refused.field, Some(format!("set.env.{variable}")));
         assert!(
             refused.message.contains(&format!(
-                "printf %s \"$VALUE\" | ployz set db.env.{variable} --secret --env production"
+                "printf %s \"$VALUE\" | ployz set db.env.{variable} --secret --env production --project shop."
             )),
             "{refused:?}"
         );

@@ -14,8 +14,8 @@ use super::step::{DashboardPage, Fix};
 use crate::catalog::{NODE_NAME, VARIABLE_KEY};
 use crate::{
     BatchCommand, BranchName, Change, CreateGitService, CreateService, DomainsQuery, Edit,
-    EnvironmentName, ProjectName, RemoveService, RenameService, RepositoryName, ServiceQuery,
-    ServicesQuery, SettingPath, Written,
+    EnvironmentName, EnvironmentRef, ProjectName, RemoveService, RenameService, RepositoryName,
+    ServiceQuery, ServicesQuery, SettingPath, Written,
 };
 use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
@@ -307,16 +307,32 @@ impl Tool for ServiceUpdate {
 
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
+        if let Some(path) = self.set.as_ref().and_then(secret_value) {
+            return Err(self.plaintext_secret(cx, scope, &path));
+        }
         let changes = self.changes(cx.call())?;
+        let mut sealed = None;
         let edited = cx.write_expecting(
             &Edit {
-                environment: scope,
+                environment: scope.clone(),
                 expect: self.expect_revision.map(crate::Revision),
                 changes,
             },
             self.expect_revision,
-            |error, call, writes| self.refuse_edit(error, call, writes),
-        )?;
+            |error, call, writes| match self.sealed_key(&error) {
+                Some(key) => {
+                    sealed = Some(key);
+                    from_store(error, call, writes)
+                }
+                None => refuse_referenced_rename(error, call, writes),
+            },
+        );
+        let edited = match (edited, sealed) {
+            (Err(_), Some(key)) => {
+                return Err(self.plaintext_secret(cx, scope, &format!("env.{key}")));
+            }
+            (edited, _) => edited?,
+        };
         let name = self.service.as_str();
         let paths = |paths: &[SettingPath]| {
             paths
@@ -350,9 +366,6 @@ impl ServiceUpdate {
                 .map_err(|_| Stop::from(Refusal::invalid("That is not a Setting path", field)))
         };
         let mut changes = Vec::new();
-        if let Some(path) = self.set.as_ref().and_then(secret_value) {
-            return Err(plaintext_secret(call, service, &path).into());
-        }
         if let Some(set) = self.set.as_ref().filter(|set| !set.is_empty()) {
             if let Some((key, tool)) = set.keys().find_map(|key| Some((key, not_setting(key)?))) {
                 let next = json!({
@@ -420,22 +433,43 @@ impl ServiceUpdate {
         Ok(changes)
     }
 
-    /// A refused edit: text for a variable that holds a secret asks the member for its new
-    /// value, and a rename the variables referencing it block retries with
-    /// `update_references`.
-    fn refuse_edit(&self, error: RpcError, call: &Call, writes: Writes) -> Refusal {
-        let sealed = match error.code == RpcErrorCode::Conflict {
-            true => error.details.get("variable").and_then(Value::as_str),
-            false => None,
+    /// The variable the Store refused text for because it holds a secret.
+    fn sealed_key(&self, error: &RpcError) -> Option<String> {
+        let key = match error.code == RpcErrorCode::Conflict {
+            true => error.details.get("variable").and_then(Value::as_str)?,
+            false => return None,
         };
         let given = self.set.as_ref().and_then(|set| set.get("env"));
-        let renamed_onto = |key: &str| self.rename_env.values().any(|to| to.as_str() == Some(key));
-        match sealed
-            .filter(|key| given.and_then(|env| env.get(*key)).is_some() && !renamed_onto(key))
-        {
-            Some(key) => plaintext_secret(call, self.service.as_str(), &format!("env.{key}")),
-            None => refuse_referenced_rename(error, call, writes),
-        }
+        let renamed_onto = self.rename_env.values().any(|to| to.as_str() == Some(key));
+        (given.and_then(|env| env.get(key)).is_some() && !renamed_onto).then(|| key.to_owned())
+    }
+
+    /// A secret's value sent by an agent: the member sets it, and this names how, in the
+    /// Environment the call resolved to even when it named none.
+    fn plaintext_secret(&self, cx: &mut Cx<'_>, scope: EnvironmentRef, path: &str) -> Stop {
+        let view = match cx.one(&ServicesQuery { environment: scope }) {
+            Ok(view) => view,
+            Err(stop) => return stop,
+        };
+        let service = self.service.as_str();
+        let (project, environment) = (&view.environment.project, &view.environment.name);
+        let command = format!(
+            "printf %s \"$VALUE\" | ployz set {service}.{path} --secret --env {environment} --project {project}"
+        );
+        let random = match path.starts_with("env.") {
+            true => format!(" For a random one, send generate_secret: [\"{path}\"] instead."),
+            false => String::new(),
+        };
+        Refusal::invalid(
+            format!(
+                "{service}.{path} is a secret, and its value never passes through an agent. The member sets it in the dashboard under Variables, or runs: {command}.{random}"
+            ),
+            &format!("set.{path}"),
+        )
+        .with_fix(&Fix::OpenDashboard {
+            page: DashboardPage::Variables,
+        })
+        .into()
     }
 }
 
@@ -456,28 +490,6 @@ fn secret_value(set: &Map<String, Value>) -> Option<String> {
         .iter()
         .find(|(_, value)| sealing(value))
         .map(|(key, _)| format!("env.{key}"))
-}
-
-/// A secret's value sent by an agent: the member sets it, and this names how.
-fn plaintext_secret(call: &Call, service: &str, path: &str) -> Refusal {
-    let place = [("environment", "env"), ("project", "project")]
-        .into_iter()
-        .filter_map(|(key, flag)| Some(format!(" --{flag} {}", call.input.get(key)?.as_str()?)))
-        .collect::<String>();
-    let command = format!("printf %s \"$VALUE\" | ployz set {service}.{path} --secret{place}");
-    let random = match path.starts_with("env.") {
-        true => format!(" For a random one, send generate_secret: [\"{path}\"] instead."),
-        false => String::new(),
-    };
-    Refusal::invalid(
-        format!(
-            "{service}.{path} is a secret, and its value never passes through an agent. The member sets it in the dashboard under Variables, or runs: {command}.{random}"
-        ),
-        &format!("set.{path}"),
-    )
-    .with_fix(&Fix::OpenDashboard {
-        page: DashboardPage::Variables,
-    })
 }
 
 /// A rename the variables referencing it block, retried with `update_references`.
