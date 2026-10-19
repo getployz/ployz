@@ -22,8 +22,21 @@ import { domainPortSchema } from "./domain-port";
 /** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
 
-/** ASCII-only, so a non-ASCII letter such as the Kelvin sign never folds into a valid name. */
-const lowercase = (hostname: string) => hostname.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
+/**
+ * The name as the Store keeps it: lowercase, with Unicode labels in punycode, the
+ * same UTS-46 mapping core applies. The URL parser would split `/`, `?`, `#` or `@`
+ * off as other URL parts, so a name with one is refused, never cut short.
+ */
+const toAscii = (hostname: string): string | null => {
+  if (/[\s/\\?#@:%]/u.test(hostname)) return null;
+  try {
+    return new URL(`http://${hostname}`).hostname;
+  } catch {
+    return null;
+  }
+};
+
+const isHostname = (hostname: string) => HOSTNAME.test(toAscii(hostname) ?? "");
 
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
@@ -32,7 +45,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
       Schema.isNonEmpty({ message: "Enter a hostname." }),
-      Schema.makeFilter<string>((hostname) => HOSTNAME.test(lowercase(hostname))
+      Schema.makeFilter<string>((hostname) => isHostname(hostname)
         ? undefined : "Enter a domain you own, like api.example.com."),
     ),
     port: domainPortSchema,
@@ -46,8 +59,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       }),
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
-          // The Store keeps hostnames lowercase; the staged row should match it.
-          hostname: lowercase(hostname),
+          hostname: toAscii(hostname) ?? hostname,
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({

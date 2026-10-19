@@ -61,19 +61,11 @@ fn dns(row: &DomainRow) -> Vec<Value> {
     }
 }
 
-/// Whether `domain` is what users mean by `name`: its hostname, or a generated
-/// domain's prefix.
-fn is_named(domain: &Domain, name: &str) -> bool {
-    let name = name.trim().to_ascii_lowercase();
-    domain.shown() == name
-        || matches!(&domain.name, DomainName::Generated { prefix, .. } if *prefix == name)
-}
-
 /// The row named `name`, refusing with the names there are.
 fn find<'view>(view: &'view DomainsView, name: &str) -> Result<&'view DomainRow, Stop> {
     view.domains
         .iter()
-        .find(|row| is_named(&row.domain, name))
+        .find(|row| row.domain.is_named(name))
         .ok_or_else(|| {
             Refusal::not_found("No domain by that name in this Environment")
                 .with_valid(view.domains.iter().map(|row| row.domain.shown()))

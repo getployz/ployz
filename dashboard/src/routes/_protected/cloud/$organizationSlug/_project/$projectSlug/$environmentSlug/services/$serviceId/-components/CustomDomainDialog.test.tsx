@@ -61,24 +61,49 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  it("refuses a hostname that only lowercases to ASCII through Unicode", async () => {
+  it("saves a Unicode hostname as its punycode", async () => {
+    const onSubmit = vi.fn();
     render(
       <CustomDomainDialog
         defaultTargetPort={3000}
         onClose={vi.fn()}
-        onSubmit={vi.fn()}
+        onSubmit={onSubmit}
       />
     );
+    fireEvent.change(screen.getByLabelText("Domain"), {
+      target: { value: "Пример.рф" },
+    });
     const save = screen.getByRole("button", { name: "Save route" });
-    fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "acme.com" },
-    });
     await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
-    fireEvent.change(screen.getByLabelText("Domain"), {
-      target: { value: "\u212Acme.com" },
-    });
-    await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ hostname: "xn--e1afmkfd.xn--p1ai" })
+      )
+    );
   });
+
+  it.each(["has space.com", "under_score.com", "*.example.com", "xn--zz.com", "a.com/x", "user@a.com"])(
+    "refuses %s",
+    async (value) => {
+      render(
+        <CustomDomainDialog
+          defaultTargetPort={3000}
+          onClose={vi.fn()}
+          onSubmit={vi.fn()}
+        />
+      );
+      const save = screen.getByRole("button", { name: "Save route" });
+      fireEvent.change(screen.getByLabelText("Domain"), {
+        target: { value: "acme.com" },
+      });
+      await waitFor(() => expect(save.hasAttribute("disabled")).toBe(false));
+      fireEvent.change(screen.getByLabelText("Domain"), {
+        target: { value },
+      });
+      await waitFor(() => expect(save.hasAttribute("disabled")).toBe(true));
+    }
+  );
 
   it("enables saving a corrected port without requiring blur", async () => {
     const onSubmit = vi.fn();

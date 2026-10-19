@@ -180,13 +180,15 @@ store_string!(
 
 store_string!(
     /// A public hostname, like `app.example.com`: at least two labels, stored
-    /// lowercase and trimmed whatever case the member typed.
+    /// trimmed, lowercase and in punycode whatever form the member typed.
     Hostname, "a hostname like app.example.com", is_hostname, normalize = normalize_hostname
 );
 
-/// DNS ignores case, so `Acme.COM ` names the same host as `acme.com`.
-fn normalize_hostname(value: String) -> String {
-    value.trim().to_ascii_lowercase()
+/// DNS ignores case and carries Unicode names as punycode, so `Acme.COM ` names
+/// `acme.com` and `пример.рф` names `xn--e1afmkfd.xn--p1ai`. A name IDNA refuses
+/// becomes empty, which no hostname is.
+pub(crate) fn normalize_hostname(value: String) -> String {
+    idna::domain_to_ascii(value.trim()).unwrap_or_default()
 }
 
 /// A full lowercase Git commit.
