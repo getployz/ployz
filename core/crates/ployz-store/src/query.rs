@@ -175,7 +175,7 @@ queries! {
     /// What a Deploy would ship, from authored state alone.
     Plan(PlanQuery) -> PlanView => crate::deployment::query::plan(tx, who, trusted, q);
     /// One page of an Environment's Deployments.
-    Deployments(DeploymentsQuery) -> DeploymentsView
+    Deployments(DeploymentsQuery) -> DeploymentsView as *
         => crate::deployment::query::page(tx, who, q);
     Deployment(DeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::view(tx, who, &q.id);
