@@ -118,6 +118,7 @@ app's client ID and secret to ask GitHub which installations the person connecti
    | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | The GitHub App's client ID and secret, not the OAuth App's |
    | `GITHUB_APP_WEBHOOK_SECRET` | The GitHub App's webhook secret |
    | `GITHUB_APP_PRIVATE_KEY` | The whole private key PEM, in quotes |
+   | `PLOYZ_HOSTED_DNS_URL` | `https://dns.ployz.app/`, as the template has it |
 
    Leave every `POLAR_*` and `POSTHOG_*` variable unset: that turns off billing and product
    analytics. If a required value is missing, `web` and `worker` stop with a `ConfigError`.

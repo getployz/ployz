@@ -24,6 +24,8 @@ export function testConfigEnvironment() {
     GITHUB_CLIENT_ID: "github-client-id",
     GITHUB_CLIENT_SECRET: "github-client-secret",
     APP_ENCRYPTION_SECRET: "app-encryption-secret-at-least-32-characters",
+    // Refuses connections, so no test reaches the real Hosted DNS by accident.
+    PLOYZ_HOSTED_DNS_URL: "http://127.0.0.1:9/",
     ...Object.fromEntries(SERVICE_VARIABLES.map(serviceVariable)),
   };
 }
