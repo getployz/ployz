@@ -655,7 +655,7 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
     // All or none: the set before the refused rename does not land either.
     let refused = rename(
         &store,
-        &[("web.env.LOG_LEVEL", json!("debug"))],
+        &[("web.env.OTHER", json!("set"))],
         "web.env.API_URL",
         "LOG_LEVEL",
     )
@@ -664,6 +664,11 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
     assert_eq!(refused.details["variable"], "LOG_LEVEL");
     assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
     assert_eq!(value(&store, "web.env.LOG_LEVEL"), json!("info"));
+    assert!(
+        get(&store, Some("web")).values.unwrap()["env"]
+            .get("OTHER")
+            .is_none()
+    );
 
     let missing = rename(&store, &[], "web.env.API_UR", "OTHER").unwrap_err();
     assert_eq!(missing.code, RpcErrorCode::NotFound);
@@ -675,6 +680,66 @@ fn a_rename_onto_a_name_in_use_changes_neither() {
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{path} → {to}");
     }
     assert_eq!(value(&store, "web.env.API_URL"), json!("https://api"));
+}
+
+#[test]
+fn a_rename_and_another_change_to_where_it_moves_from_or_to_are_refused() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.A", json!("moved"))]).unwrap();
+    let rename = |path: &str, to: &str| Change::Rename {
+        path: SettingPath::parse(path).unwrap(),
+        to: to.to_owned(),
+        update_references: false,
+    };
+    let unset = |path: &str| Change::Unset {
+        path: SettingPath::parse(path).unwrap(),
+    };
+    let set = |path: &str, value: Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    let before = get(&store, Some("web")).values;
+    for (changes, path) in [
+        (
+            vec![rename("web.env.A", "B"), unset("web.env.B")],
+            "web.env.B",
+        ),
+        (
+            vec![rename("web.env.A", "B"), set("web.env.B", json!("other"))],
+            "web.env.B",
+        ),
+        (
+            vec![set("web.env.B", json!("other")), rename("web.env.A", "B")],
+            "web.env.B",
+        ),
+        (
+            vec![rename("web.env.A", "B"), rename("web.env.B", "C")],
+            "web.env.B",
+        ),
+        (
+            vec![rename("web.env.A", "B"), unset("web.env.A")],
+            "web.env.A",
+        ),
+    ] {
+        let refused = store
+            .write(
+                &who(),
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: changes.clone(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{changes:?}");
+        assert_eq!(
+            refused.message,
+            format!("{path} is changed twice in one edit; change it once"),
+            "{changes:?}"
+        );
+        assert_eq!(get(&store, Some("web")).values, before, "{changes:?}");
+    }
 }
 
 /// Services `web`, `api` and `worker`, where `api` and `worker` reference web's

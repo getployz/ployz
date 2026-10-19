@@ -862,6 +862,25 @@ fn a_path_given_twice_is_refused_and_changes_nothing() {
 }
 
 #[test]
+fn an_env_file_that_repeats_a_key_imports_its_last_value() {
+    for store in &targets() {
+        shop_with_web(store);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "LOG_LEVEL=info\nOTHER=ok\nlog_level=debug\n").unwrap();
+        let path = file.path().to_str().unwrap();
+        let imported = ok(store, &["set", "web", "--from-env-file", path]);
+        assert_eq!(
+            imported["staged"],
+            json!(["web.env.LOG_LEVEL", "web.env.OTHER"])
+        );
+        assert_eq!(
+            ok(store, &["get", "web"])["values"]["env"],
+            json!({ "LOG_LEVEL": "debug", "OTHER": "ok" })
+        );
+    }
+}
+
+#[test]
 fn an_env_value_prints_on_one_escaped_line_for_humans() {
     for store in &targets() {
         shop_with_web(store);
