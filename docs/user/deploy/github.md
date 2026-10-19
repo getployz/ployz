@@ -46,6 +46,16 @@ the dashboard's **Deploy** needs a staged change:
 ployz deploy
 ```
 
+**Auto-deploy** and **Wait for CI** keep their values on such a service, so they work as soon as
+the app is installed. Until then, the dashboard shows a line under **Auto-deploy**, and `ployz get`
+and `ployz set` print the same note:
+
+```text
+$ ployz set web.waitForCi=true
+Applied web.waitForCi in shop/production.
+Pushes reach Ployz only once the GitHub App is installed on owner/repo.
+```
+
 ## Choose the Git branch
 
 1. Open the service and go to **Settings → Source**.

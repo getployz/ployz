@@ -295,9 +295,11 @@ pub(crate) fn view(
         })
         .collect();
     let builds = build::views(tx, &stored)?;
+    let rolls_back = undone(tx, &stored.summary)?;
     Ok(DeploymentView {
         builds,
         runtime_names,
+        rolls_back,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,

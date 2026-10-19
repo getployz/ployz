@@ -1003,7 +1003,8 @@
                     "whoami.privateDns",
                     "whoami.replicas",
                     "whoami.restartPolicy",
-                    "whoami.startCommand"
+                    "whoami.startCommand",
+                    "whoami.updateOrder"
                   ],
                   "written": "service"
                 }
@@ -1100,7 +1101,8 @@
                     "whoami.privateDns",
                     "whoami.replicas",
                     "whoami.restartPolicy",
-                    "whoami.startCommand"
+                    "whoami.startCommand",
+                    "whoami.updateOrder"
                   ],
                   "written": "service"
                 }

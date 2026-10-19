@@ -239,8 +239,8 @@ m deploy "deployment start 1 --detach" $P deployment start 1 --detach
 CAP_TIMEOUT=15 m deploy "deployment start 1 (follows; no Server)" $P deployment start 1
 m deploy "deployment cancel 1" $P deployment cancel 1
 m deploy "deployment cancel 1 again --json" $P deployment cancel 1 --json
-CAP_TIMEOUT=15 m deploy "deployment retry 1 --detach" $P deployment retry 1 --detach
-c deploy "deployment retry, unknown" $P deployment retry 99
+CAP_TIMEOUT=15 m deploy "deployment redeploy 1 --detach" $P deployment redeploy 1 --detach
+c deploy "deployment redeploy, unknown" $P deployment redeploy 99
 note deploy "## deploy"
 c deploy "deploy --plan" $P deploy --plan
 c deploy "deploy --plan --json" $P deploy --plan --json

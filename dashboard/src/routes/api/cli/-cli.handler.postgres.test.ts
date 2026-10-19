@@ -69,14 +69,15 @@ const github = fakeGithubApi({
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
 
-/** Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline. */
+/** Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline or hang. */
 function fakeServers() {
-  const servers = new Map<string, { online: boolean; slots: Map<string, string> }>();
+  const servers = new Map<string, { online: boolean | "hangs"; slots: Map<string, string> }>();
   let sets = 0;
   const layer = makePloyzLayer({
     connect: async (options) => {
       const [connection] = options.connections;
       const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
+      if (server?.online === "hangs") return new Promise<never>(() => undefined);
       if (server === undefined || !server.online) throw new Error("Endpoint unavailable");
       return asTestDouble<Client>()({
         setManagementClient: async (label: string) => {
@@ -738,6 +739,33 @@ it.live(
       }).pipe(Effect.provide(layer));
     }),
   60_000,
+);
+
+it.live(
+  "Server access answers within the CLI's request budget while Servers hang, listing them unreachable",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer(fake.layer);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const live = ids.machineId("00000000000000000000000000001250");
+        yield* enroll(alice.organization.id, live, true);
+        fake.servers.set(live, { online: true, slots: new Map() });
+        const hung = ["1251", "1252", "1253", "1254", "1255"].map((suffix) => ids.machineId(`0000000000000000000000000000${suffix}`));
+        for (const machine of hung) {
+          yield* enroll(alice.organization.id, machine, false);
+          fake.servers.set(machine, { online: "hangs", slots: new Map() });
+        }
+
+        const started = Date.now();
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        assert.isBelow(Date.now() - started, 15_000);
+        assert.deepStrictEqual(access.connections?.map((row) => row.machine_id), [live]);
+        assert.deepStrictEqual([...(access.unreachable ?? [])].sort(), hung);
+      }).pipe(Effect.provide(layer));
+    }),
+  90_000,
 );
 
 it.live(

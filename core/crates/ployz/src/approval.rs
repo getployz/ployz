@@ -71,7 +71,7 @@ impl Verb {
         match self {
             Self::Publish => "save",
             Self::Deploy => "deploy",
-            Self::Retry => "retry",
+            Self::Retry => "redeploy",
             Self::Drain => "drain",
             Self::Set => "change",
             Self::Clean => "cleanup",

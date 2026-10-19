@@ -1,8 +1,8 @@
 //! The rules an Environment's authored configuration keeps as a whole, which no
-//! single Setting can check alone: a Volume without Shared Writes has one writer, a
-//! variable or Config file references only Services and variables that exist,
-//! variables never reference each other in a cycle, and a Setup Command runs in a
-//! Service there is. A Config takes no part in cycles: nothing references a Config.
+//! single Setting can check alone: a Volume without Shared Writes has one writer
+//! and no Service that updates start-first mounts it, a variable or Config file
+//! references only Services and variables that exist, variables never reference
+//! each other in a cycle, and a Setup Command runs in a Service there is. A Config takes no part in cycles: nothing references a Config.
 //!
 //! Every write of Working State, and of an Environment's Setup Commands, passes
 //! [`check_write`]. It refuses only a problem the write adds: an Environment that
@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BUILT_IN_VARIABLES, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue, ValuePart,
-    ValuePartOwner,
+    BUILT_IN_VARIABLES, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue,
+    ServiceUpdateOrder, ValuePart, ValuePartOwner,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde_json::json;
@@ -67,6 +67,7 @@ pub(crate) fn check_write(
     };
     Err(match first {
         Problem::Writers { volume, replicas } => refusing.writers(volume, *replicas),
+        Problem::StartFirst { service, volume } => refusing.start_first(service, volume),
         Problem::Broken {
             referrer, wants, ..
         } => {
@@ -98,6 +99,9 @@ pub(crate) fn check_write(
 enum Problem {
     /// A Volume without Shared Writes, by lineage, and how many replicas write it.
     Writers { volume: String, replicas: u32 },
+    /// A Service that updates start-first mounts a Volume without Shared Writes, both
+    /// by lineage: its old and new replicas would write it at once.
+    StartFirst { service: String, volume: String },
     /// Variable `key` of Service `referrer`, or file `key` of Config `referrer` (a
     /// lineage either way), references what isn't there.
     Broken {
@@ -160,6 +164,24 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
             found.insert(Problem::Writers {
                 volume: volume.resource_lineage_id.clone(),
                 replicas,
+            });
+        }
+    }
+    for service in working
+        .services
+        .iter()
+        .filter(|service| service.config.update_order == Some(ServiceUpdateOrder::StartFirst))
+    {
+        for volume in working.volumes.iter().filter(|volume| {
+            !volume.shared_writes
+                && service
+                    .volume_attachments
+                    .iter()
+                    .any(|mount| mount.volume_resource_id == volume.resource_id)
+        }) {
+            found.insert(Problem::StartFirst {
+                service: service.lineage_id.clone(),
+                volume: volume.resource_lineage_id.clone(),
             });
         }
     }
@@ -409,6 +431,31 @@ impl<'a> Refusing<'a> {
         error::conflict(
             message,
             json!({ "volume": name, "writers": replicas, "next": next }),
+        )
+    }
+
+    /// Service `service` updates start-first and mounts Volume `volume` (lineages),
+    /// which has no Shared Writes.
+    fn start_first(&self, service: &str, volume: &str) -> RpcError {
+        let service = self.name(service);
+        let volume = self
+            .after
+            .working
+            .volumes
+            .iter()
+            .find(|candidate| candidate.resource_lineage_id == volume)
+            .map(|volume| volume.name.clone())
+            .expect("a Volume a Service mounts is in Working State");
+        let allow = format!("ployz volume set {volume} --shared-writes");
+        error::conflict(
+            format!(
+                "{service} mounts {volume}, and start-first runs two copies on it; set {service}.updateOrder=stop-first, or allow shared writes: {allow}"
+            ),
+            json!({
+                "service": service,
+                "volume": volume,
+                "next": format!("ployz set {service}.updateOrder=stop-first {}", self.scope()),
+            }),
         )
     }
 
