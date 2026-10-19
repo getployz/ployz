@@ -733,3 +733,182 @@ async fn a_failed_new_copy_retires_the_ones_already_in_and_restores_the_held_cop
     );
     client.assert_done();
 }
+
+#[tokio::test]
+async fn stop_first_from_held_copy() {
+    let rival = DeploymentLogId::parse("rival").unwrap();
+    for (before, starts) in [
+        (CopyRotation::Held(rival.clone()), true),
+        (CopyRotation::Held(rival.clone()), false),
+        (CopyRotation::Out, true),
+        (CopyRotation::Out, false),
+    ] {
+        let machine = machine('1');
+        let (old, new) = (container('a'), container('b'));
+        let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+        let mut steps = vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+        ];
+        if starts {
+            steps.extend([
+                created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+                observed(Call::Inspect(machine, old), exited(0)),
+                ok(Call::Remove(machine, old)),
+            ]);
+        } else {
+            steps.extend([
+                failed(
+                    Call::Run(machine, ContainerKind::ServiceContainer),
+                    "start failed",
+                ),
+                ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+            ]);
+        }
+        let client = Scripted::new(steps).with_copy(&machine, &old, before.clone());
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        let mut moves = Vec::new();
+        if matches!(before, CopyRotation::Held(_)) {
+            moves.push(Move::To(old, CopyRotation::Out));
+        }
+        if starts {
+            assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+            moves.extend([Move::To(new, CopyRotation::In), Move::Gone(old)]);
+        } else {
+            assert!(
+                matches!(
+                    &outcome,
+                    DeployOutcome::Failed {
+                        failed: FailedOperation::Replacement {
+                            compensation: ReplacementCompensation::OldStopped {
+                                restore_old_container: RestoreAttempt::NotServing,
+                                ..
+                            },
+                            ..
+                        },
+                        ..
+                    }
+                ),
+                "{before:?}: an old copy that was not serving is not restored, got {outcome:?}"
+            );
+            assert_eq!(client.rotation(&old), Some(CopyRotation::Out));
+        }
+        assert_eq!(
+            client.moves(),
+            moves,
+            "{before:?}: the old copy goes Out then Gone and is never Held by this run"
+        );
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
+async fn a_refused_or_failed_restore_leaves_the_service_empty() {
+    let failed_health = HealthVerdict::Failed {
+        observation: unhealthy(),
+        last_check: None,
+    };
+    for refused in [true, false] {
+        let machine = machine('1');
+        let old = container('a');
+        let plan = vec![swap(&machine, &old, UpdateOrder::StopFirst)];
+        let mut steps = vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            failed(
+                Call::Run(machine, ContainerKind::ServiceContainer),
+                "start failed",
+            ),
+            ok(Call::DiscardSlot(machine, ContainerKind::ServiceContainer)),
+        ];
+        let mut moved = BTreeMap::new();
+        if refused {
+            moved.insert((old, Ask::In), CopyRotation::Out);
+        } else {
+            steps.push(Step(
+                Call::Restart(machine, old),
+                Reply::Settled(old, failed_health.clone()),
+            ));
+        }
+        let client = Scripted {
+            moved: Mutex::new(moved),
+            ..Scripted::new(steps)
+        }
+        .with_copy(&machine, &old, CopyRotation::In);
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(
+            matches!(
+                &outcome,
+                DeployOutcome::Failed {
+                    failed: FailedOperation::Replacement {
+                        compensation: ReplacementCompensation::OldStopped {
+                            restore_old_container: RestoreAttempt::Failed { .. },
+                            ..
+                        },
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "refused {refused}: {outcome:?}"
+        );
+        assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+        assert_eq!(
+            client.rotation(&old),
+            Some(if refused {
+                CopyRotation::Out
+            } else {
+                CopyRotation::Held(run_id())
+            }),
+            "refused {refused}: the old copy is not brought back In"
+        );
+        assert!(
+            client.brought_in().is_empty(),
+            "refused {refused}: no copy of the Service is In"
+        );
+        client.assert_done();
+    }
+}
+
+#[tokio::test]
+async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (one, two) = (container('a'), container('b'));
+    let retire =
+        |machine_id: MachineId, container_id: ContainerId| DeployOperation::RemoveContainer {
+            machine_id,
+            container_id,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+        };
+    let plan = vec![retire(first, one), retire(second, two)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(first, one), running()),
+        ok(Call::Remove(first, one)),
+        observed(Call::Inspect(second, two), running()),
+        ok(Call::Remove(second, two)),
+    ])
+    .with_copy(&first, &one, CopyRotation::In)
+    .with_copy(&second, &two, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(one, CopyRotation::Out),
+            Move::Gone(one),
+            Move::To(two, CopyRotation::Out),
+            Move::Gone(two),
+        ],
+        "the last In copy leaves too: a removal may empty the Service"
+    );
+    client.assert_done();
+}

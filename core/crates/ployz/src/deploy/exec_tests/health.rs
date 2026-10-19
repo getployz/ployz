@@ -464,3 +464,75 @@ async fn skipping_the_health_monitor_answers_once_started() {
     );
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn dependency_prefers_this_runs_copies() {
+    let dependency = QualifiedService::parse("app/api").unwrap();
+    let other = DeploymentLogId::parse("other").unwrap();
+    let copy = |hex: char, deploy: &str, runtime: ContainerRuntimeObservation| {
+        let mut observed = serving(&machine('1'), &container(hex), Some(deploy));
+        observed
+            .try_update(|parts| {
+                parts.runtime = runtime;
+                parts.resolved_spec.container.healthcheck = Some(healthcheck());
+            })
+            .unwrap();
+        observed
+    };
+    let cases = [
+        (
+            "this run's Pending copy is chosen over another run's In copy",
+            vec![
+                (copy('a', "run", healthy()), CopyRotation::Pending),
+                (copy('b', "other", exited(1)), CopyRotation::In),
+            ],
+        ),
+        (
+            "the In copies are chosen when this run started none",
+            vec![
+                (copy('a', "other", healthy()), CopyRotation::In),
+                (copy('b', "other", exited(1)), CopyRotation::Pending),
+                (
+                    copy('c', "other", exited(1)),
+                    CopyRotation::Held(other.clone()),
+                ),
+                (copy('d', "run", exited(1)), CopyRotation::Out),
+            ],
+        ),
+    ];
+    for (case, copies) in cases {
+        let mut web = spec(Some(0), None, None);
+        web.name = ServiceName::parse("web").unwrap();
+        let plan = vec![
+            DeployOperation::WaitHealthy {
+                machine_id: machine('1'),
+                dependent: QualifiedService::parse("app/web").unwrap(),
+                dependency: dependency.clone(),
+            },
+            run(&machine('1'), web, true),
+        ];
+        let mut client = Scripted {
+            observations: Some(
+                copies
+                    .iter()
+                    .map(|(observed, _)| observed.clone())
+                    .collect(),
+            ),
+            ..Scripted::new(vec![created(
+                Call::Run(machine('1'), ContainerKind::ServiceContainer),
+                &container('e'),
+            )])
+        };
+        for (observed, rotation) in copies {
+            client = client.with_copy(&machine('1'), &observed.container_id, rotation);
+        }
+
+        let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+        assert!(
+            matches!(outcome, DeployOutcome::Success { .. }),
+            "{case}: {outcome:?}"
+        );
+        client.assert_done();
+    }
+}
