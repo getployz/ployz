@@ -608,7 +608,19 @@ impl Server {
                 if error.code.as_str() == published::UNKNOWN_COMMAND {
                     self.forget(tool, context).await;
                 }
-                CallToolResult::structured_error(json!(error))
+                match error.details.get("approval_id").and_then(Value::as_str) {
+                    Some(id) if error.code.as_str() == approval::APPROVAL_REQUIRED => {
+                        let url = waiting_on_you(&credential).await;
+                        let text = format!(
+                            "{message} Nothing ran; the approval stays pending. Ask a human to \
+                             open {url} and approve {id} under Waiting on you. Once they \
+                             approve, call this tool again with `approval` set to `{id}`.",
+                            message = error.message,
+                        );
+                        approval_required(text, id, &error.message, &url)
+                    }
+                    _ => CallToolResult::structured_error(json!(error)),
+                }
             }
             Err(error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_))) => {
                 refused(Error::from(error).to_string())
@@ -1181,10 +1193,9 @@ async fn waiting_on_you(credential: &Credential) -> String {
     }
 }
 
-/// The refusal a host that can't show a form gets, in the shape Cloud's `/mcp` gives a
-/// remote agent: the approval's id, Cloud's message and where a person approves it.
+/// The refusal a host that can't show a form gets.
 fn pending(verb: Verb, asked: &Asked, message: &str, url: &str) -> CallToolResult {
-    let mut result = refused(format!(
+    let text = format!(
         "A human must approve {what} in Ployz Cloud. Nothing was {past}; the approval stays \
          pending. Show them what it destroys, then ask them to open {url} and approve {id} \
          under Waiting on you. Once they approve, call this tool again with `approval` set \
@@ -1193,10 +1204,17 @@ fn pending(verb: Verb, asked: &Asked, message: &str, url: &str) -> CallToolResul
         past = verb.past(),
         id = asked.id,
         review = asked.review(verb).join("\n"),
-    ));
+    );
+    approval_required(text, &asked.id, message, url)
+}
+
+/// A call refused until a person approves it, in the shape Cloud's `/mcp` gives a remote
+/// agent: the approval's id, Cloud's message and where a person approves it.
+fn approval_required(text: String, id: &str, message: &str, url: &str) -> CallToolResult {
+    let mut result = refused(text);
     result.structured_content = Some(json!({
         "ok": false,
-        "approval_required": { "approval_id": asked.id, "message": message, "url": url },
+        "approval_required": { "approval_id": id, "message": message, "url": url },
     }));
     result
 }

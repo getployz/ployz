@@ -2010,6 +2010,14 @@ mod published {
                         ("200 OK", state.manifest.to_string())
                     } else if seen.path.starts_with("/api/cli/run/") {
                         (state.run.0, state.run.1.to_string())
+                    } else if seen.path == "/api/cli/organizations" {
+                        (
+                            "200 OK",
+                            json!({ "organizations": [
+                                { "id": "org", "slug": "acme", "name": "acme", "current": true },
+                            ] })
+                            .to_string(),
+                        )
                     } else {
                         (
                             "500 Internal Server Error",
@@ -2442,6 +2450,67 @@ mod published {
         assert!(!cached_names(home.path()).contains(&name(&entry).to_owned()));
         let gone = client.call(4, name(&entry), arguments(&entry)).await;
         assert_eq!(gone["error"]["code"], -32602, "{gone}");
+    }
+
+    /// A gated published command, called as an agent without an approval, and Cloud's
+    /// refusal of it.
+    async fn gated_refused_with(refusal: Value) -> (Fake, Value) {
+        let publisher = publisher();
+        publisher.lock().unwrap().run = ("409 Conflict", json!({ "error": refusal }));
+        let fake = fake_publisher(publisher);
+        let home = tempfile::tempdir().unwrap();
+        let mut client =
+            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
+        let entry = agent_facing()
+            .into_iter()
+            .find(|entry| name(entry) == "org_member_role")
+            .unwrap();
+        assert_eq!(entry["gate"], "ask", "{entry}");
+        let refused = at_once(client.call(2, name(&entry), arguments(&entry))).await;
+        (fake, refused)
+    }
+
+    #[tokio::test]
+    async fn a_gated_published_command_names_the_approval_and_where_to_approve_it() {
+        let message = "A human must approve this role change of ada before it runs.";
+        let (fake, refused) = gated_refused_with(json!({
+            "code": "approval_required",
+            "message": message,
+            "details": { "approval_id": "apr_7", "approval": "digest", "effects": [],
+                "operation": { "verb": "role_change", "name": "ada" }, "organization": "acme" },
+        }))
+        .await;
+        let url = waiting_on_you(&fake, &refused);
+        let result = &refused["result"];
+        assert_eq!(result["isError"], true, "{refused}");
+        assert_eq!(
+            result["structuredContent"],
+            json!({ "ok": false, "approval_required": {
+                "approval_id": "apr_7", "message": message, "url": url,
+            } }),
+            "{refused}"
+        );
+        assert_eq!(
+            result["content"][0]["text"],
+            format!(
+                "{message} Nothing ran; the approval stays pending. Ask a human to open {url} \
+                 and approve apr_7 under Waiting on you. Once they approve, call this tool \
+                 again with `approval` set to `apr_7`."
+            ),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_published_refusal_reaches_the_agent_as_cloud_sent_it() {
+        let refusal = json!({
+            "code": "not_found",
+            "message": "No member named ada.",
+            "details": { "approval_id": "apr_7" },
+        });
+        let (_fake, refused) = gated_refused_with(refusal.clone()).await;
+        assert_eq!(refused["result"]["isError"], true, "{refused}");
+        assert_eq!(refused["result"]["structuredContent"], refusal, "{refused}");
     }
 
     #[tokio::test]
