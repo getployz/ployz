@@ -18,7 +18,7 @@ Several services can share the same config.
 
 **Save** stages your file changes. Your running services keep their current files until you deploy.
 **Save** writes every edited file together. Each file's options menu shows its size and permissions;
-each file holds up to 256 KB. Unsaved edits stay visible if a save fails.
+each file holds up to 256 KB, and a service mounts up to 768 KB across all its configs. Unsaved edits stay visible if a save fails.
 
 File names can include folders, such as `conf.d/site.conf`, with up to four path segments.
 Use relative paths without `..`.
@@ -91,8 +91,8 @@ ployz config put app-settings app.conf --from ./app.conf --mode 0440 --uid 1000 
 
 ## Good to know
 
-- **Small text files.** Each file holds up to 256 KB of UTF-8 text. Keep larger files in your
-  image or a [volume](volumes.md).
+- **Small text files.** Each file holds up to 256 KB of UTF-8 text, and one service mounts up to
+  768 KB across all its configs. Keep larger files in your image or a [volume](volumes.md).
 - **Shared changes.** Editing one config affects every service that mounts it. Create another
   config when a service needs different files.
 - **Remove or unmount.** **Remove file** removes a file after deployment. **Unmount**
