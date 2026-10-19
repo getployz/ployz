@@ -1,13 +1,16 @@
 //! A narrowed Deployment ships the Services the named ones reference at their
 //! Saved snapshot, so it records them as it records the named ones.
 
-use ployz_core::{DeployOutcome, DeployPreview, ExecutionError, ServiceName};
+use ployz_core::{
+    ConfigFileName, ConfigName, DeployOutcome, DeployPreview, ExecutionError, ServiceName,
+};
 use serde_json::{Value, json};
 
 use crate::{
-    Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
-    DeploymentStatus, DiffQuery, Edit, EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId,
-    ProjectId, ProjectName, RunEvidence, RunnerId, ServiceLineageId, SettingPath,
+    Actor, Admit, ConfigId, ConfigMountAt, ConfigStore, CreateConfig, CreateProject, CreateService,
+    Deploy, DeploymentId, DeploymentStatus, DiffQuery, Edit, EnvironmentId, EnvironmentRef,
+    NodeStatus, OrganizationId, ProjectId, ProjectName, PutConfigFile, RunEvidence, RunnerId,
+    ServiceLineageId, SettingPath,
 };
 
 fn uuid(n: u8) -> String {
@@ -58,7 +61,7 @@ fn create(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
         .unwrap();
 }
 
-fn set(store: &ConfigStore, who: &Actor, changes: &[(&str, &str)]) {
+fn set(store: &ConfigStore, who: &Actor, changes: &[(&str, Value)]) {
     store
         .write(
             who,
@@ -69,7 +72,7 @@ fn set(store: &ConfigStore, who: &Actor, changes: &[(&str, &str)]) {
                     .iter()
                     .map(|(path, value)| crate::Change::Set {
                         path: SettingPath::parse(path).unwrap(),
-                        value: json!(value),
+                        value: value.clone(),
                     })
                     .collect(),
             },
@@ -175,7 +178,10 @@ fn a_narrowed_deploy_records_a_new_service_it_references() {
     set(
         &store,
         &who,
-        &[("client.env.DB", "${{ postgres.PLOYZ_PRIVATE_DOMAIN }}")],
+        &[(
+            "client.env.DB",
+            json!("${{ postgres.PLOYZ_PRIVATE_DOMAIN }}"),
+        )],
     );
     let narrowed = deploy(&store, &who, 2, &["client"]);
     assert_eq!(
@@ -206,8 +212,8 @@ fn a_narrowed_deploy_records_the_saved_change_of_a_service_it_references() {
         &store,
         &who,
         &[
-            ("web.env.MODE", "fast"),
-            ("client.env.WEB", "${{ web.PLOYZ_PRIVATE_DOMAIN }}"),
+            ("web.env.MODE", json!("fast")),
+            ("client.env.WEB", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}")),
         ],
     );
     let narrowed = deploy(&store, &who, 2, &["client"]);
@@ -238,11 +244,65 @@ fn a_narrowed_deploy_leaves_out_a_referenced_service_without_a_saved_change() {
     set(
         &store,
         &who,
-        &[("client.env.WEB", "${{ web.PLOYZ_PRIVATE_DOMAIN }}")],
+        &[("client.env.WEB", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
     );
     let narrowed = deploy(&store, &who, 2, &["client"]);
     assert_eq!(
         services(&store, &who, &narrowed),
         [("client".to_owned(), NodeStatus::Pending)]
+    );
+}
+
+#[test]
+fn a_narrowed_deploy_warns_of_a_fragile_file_a_service_it_references_mounts() {
+    let (store, who) = store();
+    create(&store, &who, 3, "client");
+    create(&store, &who, 4, "web");
+    let first = deploy(&store, &who, 1, &[]);
+    assert_eq!(
+        run(&store, &first, &["client", "web"]),
+        DeploymentStatus::Applied
+    );
+    set(
+        &store,
+        &who,
+        &[
+            ("web.env.HOSTS", json!("a\nb")),
+            ("client.env.WEB", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}")),
+        ],
+    );
+    store
+        .write(
+            &who,
+            &CreateConfig {
+                id: ConfigId::parse(uuid(5)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("app").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: name("web"),
+                    dir: "/etc/app".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("app").unwrap(),
+                file: ConfigFileName::parse("app.yml").unwrap(),
+                content: "hosts: ${{ web.HOSTS }}\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    let narrowed = deploy(&store, &who, 2, &["client"]);
+    let claimed = store.claim(&narrowed, &runner()).unwrap();
+    assert_eq!(
+        json!(claimed.deployment.warnings),
+        json!([{ "config": "app", "file": "app.yml", "variable": "web.HOSTS" }])
     );
 }
