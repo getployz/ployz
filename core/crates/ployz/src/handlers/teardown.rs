@@ -563,7 +563,8 @@ impl Listed {
             | DestructiveKind::RevokesInvite
             | DestructiveKind::StopsService
             | DestructiveKind::RestartsService
-            | DestructiveKind::UnprotectsEnvironment => true,
+            | DestructiveKind::UnprotectsEnvironment
+            | DestructiveKind::RemovesOrganization => true,
         }
     }
 }
