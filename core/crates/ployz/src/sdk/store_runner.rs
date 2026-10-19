@@ -15,7 +15,8 @@ use ployz_core::{
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
     BuildReport, BuildStatus, Builder, Claimed, CommitSha, ConfigStore, DeploymentId,
-    DeploymentStatus, DeploymentSummary, Failure, RowState, RowTracker, RunEvidence, RunnerId,
+    DeploymentStatus, DeploymentSummary, EnvironmentId, Failure, RowState, RowTracker, RunEvidence,
+    RunnerId,
 };
 use serde::Deserialize as _;
 use serde_json::Value;
@@ -212,57 +213,48 @@ pub async fn observe_copies(
     observed
 }
 
+/// Every claim pair is kept, under its name: a name sealed after the claim
+/// still names a value this Deploy shipped, and the names are read again at each tail.
 struct Scrub {
-    names: BTreeSet<String>,
+    environment: EnvironmentId,
+    sealed_at_claim: BTreeSet<String>,
     claim: BTreeSet<(String, String)>,
 }
 
 impl Scrub {
-    fn new(target: &[ployz_core::RequestedServiceSpec], names: &BTreeSet<String>) -> Self {
+    fn new(claimed: &Claimed) -> Self {
         Self {
-            claim: target
+            environment: claimed.deployment.environment_id.clone(),
+            sealed_at_claim: claimed.sealed_names.clone(),
+            claim: claimed
+                .intent
+                .target
                 .iter()
                 .flat_map(|spec| spec.container.environment.iter())
-                .filter(|(key, _)| names.contains(*key))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
-            names: names.clone(),
         }
     }
 
-    fn sealed(&self, env: Option<BTreeMap<String, String>>) -> SealedValues {
-        let mut sealed = self.claim.iter().cloned().collect::<SealedValues>();
-        sealed.extend(
-            env.into_iter()
-                .flatten()
-                .filter(|(key, _)| self.names.contains(key)),
-        );
-        sealed
-    }
-
-    async fn created_tail(
+    fn values(
         &self,
-        client: &Client,
-        machine: MachineId,
-        container: ContainerId,
-    ) -> LogText {
-        super::failed_tail(client, machine, container, &self.sealed(None)).await
-    }
-
-    async fn older_tail(
-        &self,
-        client: &Client,
-        machine: MachineId,
-        container: ContainerId,
-    ) -> LogText {
-        let Some(env) = super::container_env(client, machine, container).await else {
-            return LogText::Withheld {
-                why: Withheld::NoSecretContext,
-            };
-        };
-        super::failed_tail(client, machine, container, &self.sealed(Some(env))).await
+        names: &BTreeSet<String>,
+        env: Option<BTreeMap<String, String>>,
+    ) -> SealedValues {
+        self.claim
+            .iter()
+            .filter(|(key, _)| names.contains(key))
+            .cloned()
+            .chain(
+                env.into_iter()
+                    .flatten()
+                    .filter(|(key, _)| names.contains(key)),
+            )
+            .collect()
     }
 }
+
+const SEALED_REREADS: usize = 2;
 
 struct Run {
     store: Arc<ConfigStore>,
@@ -279,7 +271,7 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let scrub = Scrub::new(&claimed.intent.target, &claimed.sealed_names);
+        let scrub = Scrub::new(&claimed);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -591,11 +583,15 @@ impl Run {
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
                 {
-                    *log = if tracker.created(container) {
-                        scrub.created_tail(&client, row.machine, container).await
-                    } else {
-                        scrub.older_tail(&client, row.machine, container).await
-                    };
+                    *log = self
+                        .failed_log(
+                            &client,
+                            scrub,
+                            row.machine,
+                            container,
+                            tracker.created(container),
+                        )
+                        .await;
                 }
                 pending.insert((row.service.clone(), row.machine), row);
             }
@@ -716,6 +712,69 @@ impl Run {
 
     async fn not_executed(&self, failure: Failure) -> Result<DeploymentSummary, RpcError> {
         self.record(RunEvidence::NotExecuted(failure)).await
+    }
+
+    async fn failed_log(
+        &self,
+        client: &Client,
+        scrub: &Scrub,
+        machine: MachineId,
+        container: ContainerId,
+        created: bool,
+    ) -> LogText {
+        let env = if created {
+            None
+        } else {
+            let Some(env) = super::container_env(client, machine, container).await else {
+                return LogText::Withheld {
+                    why: Withheld::NoSecretContext,
+                };
+            };
+            Some(env)
+        };
+        let Ok(mut names) = self.sealed_names(&scrub.environment).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            };
+        };
+        names.extend(scrub.sealed_at_claim.iter().cloned());
+        let Some(frames) = super::tail_frames(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::Unanswered,
+            };
+        };
+        match self.settled_sealed_names(&scrub.environment, names).await {
+            Some(names) => super::tail_excerpt(frames, &scrub.values(&names, env)),
+            None => LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            },
+        }
+    }
+
+    /// `names` grown by every name Sealed since they were read, once a read adds none.
+    /// None when the set still grows after `SEALED_REREADS` reads, or the Store does not
+    /// answer: the tail was read under names that may be stale, so it is withheld.
+    async fn settled_sealed_names(
+        &self,
+        environment: &EnvironmentId,
+        mut names: BTreeSet<String>,
+    ) -> Option<BTreeSet<String>> {
+        for _ in 0..=SEALED_REREADS {
+            let fresh = self.sealed_names(environment).await.ok()?;
+            if fresh.is_subset(&names) {
+                return Some(names);
+            }
+            names.extend(fresh);
+        }
+        None
+    }
+
+    async fn sealed_names(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<BTreeSet<String>, RpcError> {
+        let environment = environment.clone();
+        super::store_call(&self.store, move |store| store.sealed_names(&environment)).await
     }
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {

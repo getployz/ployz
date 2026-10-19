@@ -360,6 +360,21 @@ pub(crate) async fn failed_tail(
     container: ContainerId,
     sealed: &SealedValues,
 ) -> LogText {
+    match tail_frames(client, machine, container).await {
+        Some(frames) => tail_excerpt(frames, sealed),
+        None => LogText::Withheld {
+            why: Withheld::Unanswered,
+        },
+    }
+}
+
+/// The raw last lines of failed Container `container` on `machine`, for
+/// [`tail_excerpt`] once what to scrub them of is known. None when unread in time.
+pub(crate) async fn tail_frames(
+    client: &Client,
+    machine: MachineId,
+    container: ContainerId,
+) -> Option<Vec<String>> {
     let target = MachineTarget::from(&machine);
     let read = async {
         let selector = LogHistoryRequest {
@@ -369,16 +384,15 @@ pub(crate) async fn failed_tail(
         let newest = newest_lines(client, &target, selector, TAIL_FETCH).await?;
         Ok::<_, RpcError>(frames(newest.into_iter().map(|(_, text)| text)))
     };
-    match tokio::time::timeout(TAIL_READ, read).await {
-        Ok(Ok(frames)) => LogText::Shown(LogExcerpt::scrub(
-            frames,
-            sealed,
-            LineCap::new(TAIL_KEEP).unwrap_or_default(),
-        )),
-        Ok(Err(_)) | Err(_) => LogText::Withheld {
-            why: Withheld::Unanswered,
-        },
-    }
+    tokio::time::timeout(TAIL_READ, read).await.ok()?.ok()
+}
+
+pub(crate) fn tail_excerpt(frames: Vec<String>, sealed: &SealedValues) -> LogText {
+    LogText::Shown(LogExcerpt::scrub(
+        frames,
+        sealed,
+        LineCap::new(TAIL_KEEP).unwrap_or_default(),
+    ))
 }
 
 /// How long reading one Machine's lines for an agent may take, env included.

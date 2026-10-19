@@ -6,8 +6,8 @@ use tokio_util::sync::CancellationToken;
 
 fn run() -> (Run, ployz_store::Actor) {
     use ployz_store::{
-        Actor, Admit, CreateProject, Deploy, EnvironmentId, EnvironmentRef, OrganizationId,
-        ProjectId, ProjectName, SealingKey,
+        Actor, Admit, CreateProject, Deploy, EnvironmentRef, OrganizationId, ProjectId,
+        ProjectName, SealingKey,
     };
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
@@ -18,8 +18,7 @@ fn run() -> (Run, ployz_store::Actor) {
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
                 name: ProjectName::parse("test").unwrap(),
-                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
-                    .unwrap(),
+                default_environment: environment(),
             },
         )
         .unwrap();
@@ -271,11 +270,52 @@ fn scrub_target() -> Scrub {
             serde_json::json!({ "API_TOKEN": "tok-worker-9", "MIRROR": "hunter2-long" }),
         ),
     ];
-    let names = ["DB_PASSWORD", "API_TOKEN"]
-        .map(str::to_owned)
-        .into_iter()
-        .collect::<BTreeSet<_>>();
-    Scrub::new(&target, &names)
+    Scrub {
+        environment: environment(),
+        sealed_at_claim: sealed(["DB_PASSWORD", "API_TOKEN"]),
+        claim: target
+            .iter()
+            .flat_map(|spec| spec.container.environment.iter())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    }
+}
+
+fn environment() -> ployz_store::EnvironmentId {
+    ployz_store::EnvironmentId::parse("00000000-0000-4000-8000-000000000002").unwrap()
+}
+
+fn sealed<const N: usize>(names: [&str; N]) -> BTreeSet<String> {
+    names.map(str::to_owned).into_iter().collect()
+}
+
+fn seal(run: &Run, actor: &ployz_store::Actor, name: &str) {
+    use ployz_store::{Change, CreateService, Edit, EnvironmentRef, ServiceLineageId, SettingPath};
+    run.store
+        .write(
+            actor,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    run.store
+        .write(
+            actor,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(&format!("web.env.{name}")).unwrap(),
+                    value: serde_json::json!({ "secret": "sealed-later" }),
+                }],
+            },
+        )
+        .unwrap();
 }
 
 // Catches a failed log that shows a Sealed value, from its own Service or another the
@@ -284,7 +324,8 @@ fn scrub_target() -> Scrub {
 #[test]
 fn a_failed_log_is_scrubbed_of_sealed_values_only() {
     use ployz_store::tools::{LineCap, LogExcerpt};
-    let sealed = scrub_target().sealed(None);
+    let scrub = scrub_target();
+    let sealed = scrub.values(&scrub.sealed_at_claim, None);
     let line = "npm warn config production; login hunter2-long at debug-verbose with tok-worker-9 password=open-sesame\n";
     let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
@@ -302,7 +343,8 @@ fn an_older_containers_log_is_scrubbed_of_its_own_sealed_values_too() {
         ("DB_PASSWORD".to_owned(), "old-rotated-out".to_owned()),
         ("LOG_LEVEL".to_owned(), "debug-verbose".to_owned()),
     ]);
-    let sealed = scrub_target().sealed(Some(env));
+    let scrub = scrub_target();
+    let sealed = scrub.values(&scrub.sealed_at_claim, Some(env));
     let line = "was old-rotated-out now hunter2-long at debug-verbose\n";
     let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
@@ -311,8 +353,11 @@ fn an_older_containers_log_is_scrubbed_of_its_own_sealed_values_too() {
     );
 }
 
-#[tokio::test]
-async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_reports() {
+async fn mock_machine() -> (
+    Session,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    MachineId,
+) {
     use crate::global_fixtures::container_id;
     use crate::sdk::test_support as support;
     let one = support::machine('a', "one");
@@ -325,25 +370,40 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
     )
     .await
     .unwrap();
+    (session, server, one.machine.id)
+}
+
+fn lines(log: &LogText) -> Vec<String> {
+    match log {
+        LogText::Shown(excerpt) => excerpt.lines().to_vec(),
+        withheld => panic!("a read tail is shown: {withheld:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_reports() {
+    use crate::global_fixtures::container_id;
+    let (run, _) = run();
+    let (session, server, machine) = mock_machine().await;
     let client = session.client().unwrap();
     let scrub = Scrub {
-        names: BTreeSet::from(["PLAIN".to_owned()]),
+        environment: environment(),
+        sealed_at_claim: sealed(["PLAIN"]),
         claim: BTreeSet::from([("PLAIN".to_owned(), "rotated-new-value".to_owned())]),
     };
-    let machine = one.machine.id;
 
-    let older = scrub.older_tail(&client, machine, container_id('c')).await;
-    let created = scrub
-        .created_tail(&client, machine, container_id('c'))
+    let older = run
+        .failed_log(&client, &scrub, machine, container_id('c'), false)
         .await;
-    let unreadable = scrub.older_tail(&client, machine, container_id('d')).await;
+    let created = run
+        .failed_log(&client, &scrub, machine, container_id('c'), true)
+        .await;
+    let unreadable = run
+        .failed_log(&client, &scrub, machine, container_id('d'), false)
+        .await;
     session.close().await;
     server.abort();
 
-    let lines = |log: &LogText| match log {
-        LogText::Shown(excerpt) => excerpt.lines().to_vec(),
-        withheld => panic!("a read tail is shown: {withheld:?}"),
-    };
     assert!(
         lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
         "{older:?}"
@@ -361,4 +421,42 @@ async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_re
         ),
         "{unreadable:?}"
     );
+}
+
+// Catches a failed tail scrubbed under the names Sealed at the claim alone: a name sealed
+// after the claim and before the tail is read must be scrubbed too, under the claim's value
+// for a Container this Deploy created and under its Machine's value for an older one.
+#[tokio::test]
+async fn a_name_sealed_after_the_claim_is_scrubbed_from_a_failed_tail() {
+    use crate::global_fixtures::container_id;
+    let (run, actor) = run();
+    let (session, server, machine) = mock_machine().await;
+    let client = session.client().unwrap();
+    let scrub = Scrub {
+        environment: environment(),
+        sealed_at_claim: BTreeSet::new(),
+        claim: BTreeSet::from([("PLAIN".to_owned(), "from-docker".to_owned())]),
+    };
+    seal(&run, &actor, "PLAIN");
+
+    let older = run
+        .failed_log(&client, &scrub, machine, container_id('c'), false)
+        .await;
+    let created = run
+        .failed_log(&client, &scrub, machine, container_id('c'), true)
+        .await;
+    session.close().await;
+    server.abort();
+
+    for (tail, log) in [("older", older), ("created", created)] {
+        let lines = lines(&log);
+        assert!(
+            lines.contains(&"plain [secret PLAIN]".to_owned()),
+            "{tail}: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|line| line.contains("from-docker")),
+            "{tail}: {lines:?}"
+        );
+    }
 }
