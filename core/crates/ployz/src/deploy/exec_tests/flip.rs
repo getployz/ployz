@@ -1658,3 +1658,250 @@ async fn global_with_no_matching_machine_keeps_last_copy_serving() {
     );
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_stop_first_stops_the_new_copy_before_the_old_copy_returns() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let cancellation = CancellationToken::new();
+    let client = Scripted {
+        read_latency: true,
+        cancel_on_move: Some((Move::To(new, CopyRotation::In), cancellation.clone())),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Stop(machine, new)),
+            ok(Call::Restart(machine, old)),
+            ok(Call::Remove(machine, new)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (outcome, _) = execute_reported(&plan, &[machine], &client, &cancellation).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(old, CopyRotation::Held(run_id())),
+            Move::To(new, CopyRotation::In),
+            Move::To(new, CopyRotation::Held(run_id())),
+            Move::To(old, CopyRotation::In),
+            Move::To(new, CopyRotation::Out),
+            Move::Gone(new),
+        ],
+        "the new copy stops before the old copy runs again, so one copy writes the Volume"
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unconfirmed_stop_first_publish_keeps_the_old_copy_stopped() {
+    let (machine, lagging) = (machine('1'), machine('2'));
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted {
+        acks: BTreeMap::from([(lagging, Ack::Never)]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+    // The lagging proxy never listed the old copy either, so only the new
+    // copy's listing waits on it.
+    client.record(old, |copy| copy.in_before = false);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert_eq!(
+        serde_json::to_value(outcome.services()).unwrap(),
+        serde_json::json!([{"service": "api", "result": "unconfirmed"}])
+    );
+    assert_eq!(client.rotation(&new), Some(CopyRotation::In));
+    assert_eq!(
+        client.rotation(&old),
+        Some(CopyRotation::Held(run_id())),
+        "the new copy may serve, so the old copy must not run beside it"
+    );
+    assert_eq!(
+        warnings,
+        [left_running(
+            "machine-1",
+            "the Deploy failed, and it could not go back In: its new copy may be serving"
+        )]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_failure_after_held_brings_the_old_copy_back_in() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        failed(Call::Stop(machine, old), "the docker daemon timed out"),
+    ])
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+    assert_eq!(
+        client.moves(),
+        [
+            Move::To(old, CopyRotation::Held(run_id())),
+            Move::To(old, CopyRotation::In),
+        ]
+    );
+    assert_eq!(
+        warnings,
+        [left_running("machine-1", "the docker daemon timed out")]
+    );
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_held_ask_that_landed_goes_on_with_the_stop() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted {
+        unanswered_held: BTreeSet::from([old]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, old), exited(0)),
+            ok(Call::Remove(machine, old)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    assert_eq!(client.rotation(&new), Some(CopyRotation::In));
+    client.assert_done();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_route_read_error_after_held_brings_the_old_copy_back_in() {
+    let machine = machine('1');
+    let old = container('a');
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted {
+        failed_route_reads: Mutex::new(1),
+        ..Scripted::new(vec![observed(Call::Inspect(machine, old), running())])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (outcome, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+    assert_eq!(
+        warnings,
+        [left_running("machine-1", "the route query failed")]
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_failed_restore_after_publication_is_reported() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)];
+    let client = Scripted {
+        unhealthy_in: BTreeMap::from([(
+            new,
+            HealthVerdict::Failed {
+                observation: unhealthy(),
+                last_check: None,
+            },
+        )]),
+        ..Scripted::new(vec![
+            observed(Call::Inspect(machine, old), running()),
+            ok(Call::Stop(machine, old)),
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            ok(Call::Discard(machine, new)),
+            failed(
+                Call::Restart(machine, old),
+                "the old copy could not be restored",
+            ),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In);
+
+    let (_, warnings) =
+        execute_reported(&plan, &[machine], &client, &CancellationToken::new()).await;
+
+    assert_eq!(client.rotation(&old), Some(CopyRotation::Held(run_id())));
+    assert_eq!(client.rotation(&new), None);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("could not go back In")
+            && warnings[0].contains("the old copy could not be restored"),
+        "{warnings:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_failed_group_restores_a_copy_held_to_free_host_ports() {
+    let machine = machine('1');
+    let (old, sibling, new) = (container('a'), container('e'), container('b'));
+    let plan = vec![
+        global_replacement(&machine, &old, UpdateOrder::StartFirst),
+        DeployOperation::StopContainer {
+            machine_id: machine,
+            container_id: sibling,
+            purpose: ployz_core::StopContainerPurpose::FreeHostPorts,
+        },
+    ];
+    let client = Scripted {
+        unhealthy_in: BTreeMap::from([(
+            new,
+            HealthVerdict::Failed {
+                observation: unhealthy(),
+                last_check: None,
+            },
+        )]),
+        ..Scripted::new(vec![
+            created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+            observed(Call::Inspect(machine, sibling), running()),
+            ok(Call::Stop(machine, sibling)),
+            ok(Call::Discard(machine, new)),
+            ok(Call::Restart(machine, sibling)),
+        ])
+    }
+    .with_copy(&machine, &old, CopyRotation::In)
+    .with_copy(&machine, &sibling, CopyRotation::In);
+
+    let outcome = execute_groups(&plan, crate::deploy::planning::test_groups(&plan), &client).await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Failed { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.rotation(&sibling), Some(CopyRotation::In));
+    client.assert_done();
+}

@@ -209,14 +209,26 @@ pub(crate) async fn hold<C: MachineOperations>(
 ) -> Result<Step, RpcError> {
     let want = ContainerWant::Held {
         container: copy.locator(),
-        run,
+        run: run.clone(),
         expect: Some(copy.rotation.clone()),
     };
     let answer = client
         .ensure_unsettled(&copy.machine_id, want, Some(TARGET_RPC_TIMEOUT))
-        .await?;
-    if let EnsuredContainer::Refused { refusal, .. } = answer {
-        return Ok(Step::Refused(refusal));
+        .await;
+    match answer {
+        Ok(EnsuredContainer::Refused { refusal, .. }) => return Ok(Step::Refused(refusal)),
+        Ok(EnsuredContainer::Ensured { .. }) => {}
+        // As with In, the owner may have written Held after the deadline.
+        Err(error) if error.target_unanswered() => {
+            let details = client
+                .inspect_container(&copy.machine_id, &copy.container_id)
+                .await
+                .map_err(|_| error.clone())?;
+            if *details.container.rotation() != CopyRotation::Held(run) {
+                return Err(error);
+            }
+        }
+        Err(error) => return Err(error),
     }
     wait_unlisted(
         client,
