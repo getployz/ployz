@@ -170,10 +170,13 @@ export function BottomBar({
   const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
 
   function discardAll() {
-    if (created.length > 0 && !confirmingDiscard) {
-      setConfirmingDiscard(true);
-      return;
-    }
+    if (created.length > 0) setConfirmingDiscard(true);
+    else onDiscardAll();
+  }
+
+  // The dialog stays up through its exit animation: a second click there neither reopens it nor discards again.
+  function confirmDiscard() {
+    if (!confirmingDiscard) return;
     setConfirmingDiscard(false);
     onDiscardAll();
   }
@@ -262,7 +265,7 @@ export function BottomBar({
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
       <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
         description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Other changes return to their reviewed baseline.`}
-        actionLabel="Discard all" variant="destructive" onConfirm={discardAll} />
+        actionLabel="Discard all" variant="destructive" onConfirm={confirmDiscard} />
     </>
   );
 }

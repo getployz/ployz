@@ -451,3 +451,12 @@ it("enrolls the server its detail sheet shows", async () => {
   fireEvent.click(await within(sheet).findByRole("button", { name: "Enroll" }));
   await vi.waitFor(() => expect(preview.mock.calls.at(-1)?.[0]?.data.ids).toEqual([one.id]));
 });
+
+it("says nothing joins on its own until the first server is enrolled by hand", () => {
+  const hint = "No cluster yet. Enroll one server to start it.";
+  const client = new QueryClient();
+  const { rerender } = render(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one"), host("two")]} now={NOW} hasFirst={false} /></QueryClientProvider>);
+  expect(screen.getByText(hint)).toBeTruthy();
+  rerender(<QueryClientProvider client={client}><WaitingList organizationSlug="ada" servers={[host("one"), host("two")]} now={NOW} hasFirst /></QueryClientProvider>);
+  expect(screen.queryByText(hint)).toBeNull();
+});

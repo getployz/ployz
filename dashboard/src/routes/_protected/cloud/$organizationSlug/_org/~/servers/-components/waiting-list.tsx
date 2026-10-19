@@ -178,6 +178,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
           </div>
         </div>
       )}
+      {hasFirst ? null : <p className="text-xs text-muted-foreground">No cluster yet. Enroll one server to start it.</p>}
       {filterable ? <div className="flex flex-wrap items-center gap-2.5">
         <div className="flex flex-wrap items-center gap-1">
           <div role="group" aria-label="Readiness" className="flex w-full items-center gap-1 overflow-x-auto sm:w-auto">

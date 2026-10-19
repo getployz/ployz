@@ -40,6 +40,7 @@ const ACCOUNT_FILE: &str = "account.json";
 const CHALLENGE_WAIT: Duration = Duration::from_secs(30);
 const CHALLENGE_POLL: Duration = Duration::from_millis(200);
 const RETRY_INTERVAL: Duration = Duration::from_secs(60);
+const RESUBSCRIBE_INTERVAL: Duration = Duration::from_secs(1);
 /// Must cover `CHALLENGE_WAIT` so rank 1 cannot write a competing token while rank 0 is still probing.
 pub(crate) const RANK_STEP: Duration = CHALLENGE_WAIT;
 
@@ -358,37 +359,62 @@ pub(crate) async fn run(
     directory_default: Option<String>,
     machine_id: MachineId,
     shutdown: CancellationToken,
-) -> io::Result<()> {
+) {
     let account_dir = data_dir.join("acme");
-    let mut changes = store
-        .subscribe_container_changes()
-        .await
-        .map_err(io::Error::other)?;
     let mut first_seen = BTreeMap::new();
     loop {
-        let wait = match issue_wanted(
-            &store,
-            &directory_default,
-            &account_dir,
-            &machine_id,
-            &mut first_seen,
-        )
-        .await
-        {
-            Ok(wait) => wait,
+        let subscribed = tokio::select! {
+            subscribed = store.subscribe_container_changes() => subscribed,
+            () = shutdown.cancelled() => return,
+        };
+        let mut changes = match subscribed {
+            Ok(changes) => changes,
             Err(error) => {
-                eprintln!(
-                    "failed to obtain certificates: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                );
-                RETRY_INTERVAL
+                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "certificate subscription failed, retrying");
+                if wait_to_resubscribe(&shutdown).await {
+                    continue;
+                }
+                return;
             }
         };
-        tokio::select! {
-            changed = changes.changed() => changed.map_err(io::Error::other)?,
-            () = tokio::time::sleep(wait) => {}
-            () = shutdown.cancelled() => return Ok(()),
+        loop {
+            let wait = match issue_wanted(
+                &store,
+                &directory_default,
+                &account_dir,
+                &machine_id,
+                &mut first_seen,
+            )
+            .await
+            {
+                Ok(wait) => wait,
+                Err(error) => {
+                    eprintln!(
+                        "failed to obtain certificates: {error}",
+                        error = ployz_core::error_chain::inline(&error),
+                    );
+                    RETRY_INTERVAL
+                }
+            };
+            tokio::select! {
+                changed = changes.changed() => if let Err(error) = changed {
+                    tracing::warn!(error = %ployz_core::error_chain::inline(&error), "certificate subscription ended, reopening");
+                    break;
+                },
+                () = tokio::time::sleep(wait) => {}
+                () = shutdown.cancelled() => return,
+            }
         }
+        if !wait_to_resubscribe(&shutdown).await {
+            return;
+        }
+    }
+}
+
+async fn wait_to_resubscribe(shutdown: &CancellationToken) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(RESUBSCRIBE_INTERVAL) => true,
+        () = shutdown.cancelled() => false,
     }
 }
 
