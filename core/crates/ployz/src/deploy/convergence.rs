@@ -272,6 +272,7 @@ pub(crate) async fn converge<C: ConvergenceClient>(
     }
     let ids: Vec<ContainerId> = stranded.iter().map(|c| c.container_id).collect();
     let mut moves = Vec::new();
+    let mut first = Some(snapshot);
     for id in ids {
         if cancellation.is_cancelled() {
             return Converged::Stopped {
@@ -279,10 +280,14 @@ pub(crate) async fn converge<C: ConvergenceClient>(
                 stop: DrainStop::Cancelled,
             };
         }
-        let fresh = match client.observe().await {
-            Ok(snapshot) => snapshot,
-            Err(error) => return entry_lost(moves, &error),
+        let fresh = match first.take() {
+            Some(snapshot) => snapshot,
+            None => match client.observe().await {
+                Ok(snapshot) => snapshot,
+                Err(error) => return entry_lost(moves, &error),
+            },
         };
+        // A snapshot missing a Server's listing can't tell a gone Container from an unlisted one.
         if let Some(reason) = unobserved(&fresh) {
             return Converged::Failed {
                 moves,
@@ -553,6 +558,13 @@ pub(in crate::deploy) async fn relocate<C: MachineOperations>(
     };
     if let Some(unconfirmed) = unconfirmed {
         return Ok(OldCopyEnd::In { unconfirmed });
+    }
+    // The listed wait returns Done when every proxy already lists the copy, even under a
+    // cancel that arrived meanwhile. Between In and Out, Ctrl-C leaves both copies In.
+    if cancellation.is_cancelled() {
+        return Ok(OldCopyEnd::In {
+            unconfirmed: Unconfirmed::Cancelled,
+        });
     }
     let retired = cleanup::retire(client, old, false, AnonymousVolumes::Remove, cancellation).await;
     let unconfirmed = match retired {
