@@ -65,6 +65,30 @@ agent-browser --session $S screenshot "$PWD/.verify/evidence/<name>.png"
 - Grace and Linus each belong to two organizations, their personal one and `ada`. A visit to their personal one makes it the session's active organization, and `/cloud` then lands there. Rerun `as.sh`, or pick "Ada Lovelace's Projects" in the switcher, before you trust what the page shows.
 - grace@example.com and linus@example.com are already members of `ada`. To test inviting someone new, use another address.
 
+## Fault injection
+
+To see how a screen handles a slow, failing or dropped write, wrap `fetch` in the page. Server functions post to `/_serverFn/`. Paste this with `agent-browser eval` or `preview_evaluate`:
+
+```js
+window.__fault = { mode: "delay", ms: 1500 }; // "delay", "error", "drop", or null for none
+window.__log ??= [];
+window.__fetch ??= window.fetch;
+window.fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : input.url;
+  const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const fault = window.__fault;
+  if (fault && method === "POST" && url.includes("/_serverFn/")) {
+    window.__log.push({ url, mode: fault.mode, at: Date.now() });
+    if (fault.mode === "delay") await new Promise((done) => setTimeout(done, fault.ms));
+    if (fault.mode === "error") return new Response("injected", { status: 500 });
+    if (fault.mode === "drop") throw new TypeError("Failed to fetch");
+  }
+  return window.__fetch(input, init);
+};
+```
+
+`window.__log` counts the posts the page sent, so you can check whether a Retry posts again. A full page load drops the wrapper: reload, a typed URL, and back or forward. Paste it again after each, and check that `window.fetch !== window.__fetch` before you trust a result.
+
 ## Evidence
 
 Save evidence to `dashboard/.verify/evidence/`, which is gitignored and survives `down.sh`. A verification counts as proof only when it:

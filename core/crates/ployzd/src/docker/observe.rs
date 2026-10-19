@@ -1019,6 +1019,7 @@ mod tests {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();

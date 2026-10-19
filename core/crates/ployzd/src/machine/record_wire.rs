@@ -4,7 +4,7 @@ use super::{
     LocalMachineBody, LocalMachineRecord, ManagementClientSlot, StoreError, WireGuardPrivateKey,
 };
 use crate::management::ManagementSecret;
-use ployz_core::{MachineId, ManagementClientLabel, SelectedEndpoint};
+use ployz_core::{MachineId, ManagementClientLabel, PinnedAddresses, SelectedEndpoint};
 use reqwest::Url;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -23,6 +23,8 @@ pub(super) struct LocalMachineRecordWire {
     #[serde(default)]
     selected_endpoints: BTreeMap<MachineId, SelectedEndpoint>,
     #[serde(default)]
+    pinned_addresses: PinnedAddresses,
+    #[serde(default)]
     push_target: Option<Url>,
 }
 
@@ -35,6 +37,7 @@ impl TryFrom<LocalMachineRecordWire> for LocalMachineRecord {
         record.management_clients = wire.management_clients;
         record.wireguard_mtu = wire.wireguard_mtu;
         record.selected_endpoints = wire.selected_endpoints;
+        record.pinned_addresses = wire.pinned_addresses;
         record.push_target = wire.push_target;
         Ok(record)
     }

@@ -27,6 +27,10 @@ import { makeInngestEffectRunner } from "#/server/run.server";
 import { machineId } from "#/test/ids";
 import { enrollStoreServer, seedAnonymousStoreOrganization, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
+/** Claims as `userId` through a browser session that isn't stored; nothing here reads which session acts where. */
+const claimAs = (userId: string, secret: string) =>
+  claimOrganization({ userId, credential: { kind: "session", id: crypto.randomUUID() } }, secret);
+
 const ORGANIZATION = "00000000-0000-4000-8000-0000000a4001";
 const OTHER = "00000000-0000-4000-8000-0000000a4002";
 const THIRD = "00000000-0000-4000-8000-0000000a4003";
@@ -243,7 +247,7 @@ it.live("leaves a claimed Organization alone however long ago the agent's token 
   yield* Effect.gen(function* () {
     const { store } = yield* seeded(new Date(Date.now() + HOUR), { project: true });
     const person = yield* ada;
-    yield* claimOrganization({ userId: person }, yield* claimable);
+    yield* claimAs(person, yield* claimable);
     const { drizzle } = yield* Database;
     yield* drizzle.update(organizationToken).set({ expiresAt: new Date(Date.now() - 48 * HOUR) });
     const run = yield* tearDown(services);
@@ -319,7 +323,7 @@ it.live("a claim that lands while teardown reads the Store keeps the Organizatio
     const original = store.read.bind(store);
     const read = vi.spyOn(store, "read").mockImplementationOnce(async (...args) => {
       await run(drizzle.update(organizationToken).set({ expiresAt: new Date(Date.now() + HOUR) }));
-      await run(claimOrganization({ userId: person }, secret));
+      await run(claimAs(person, secret));
       return original(...args);
     });
     const step = yield* tearDown(services).pipe(Effect.ensuring(Effect.sync(() => read.mockRestore())));
@@ -338,7 +342,7 @@ it.live("a claim that committed while teardown waited on the Organization keeps 
     yield* expireSoon;
     const database = yield* Database;
     const claim = holdNextTransaction(database, "commit");
-    const claimed = Effect.runPromiseWith(services)(claimOrganization({ userId: person }, secret));
+    const claimed = Effect.runPromiseWith(services)(claimAs(person, secret));
     yield* Effect.promise(() => claim.held);
     claim.restore();
     yield* sleep(1_600);
@@ -363,7 +367,7 @@ it.live("a claim checked after the token ran out is refused even when its transa
     yield* expireSoon;
     const database = yield* Database;
     const claim = holdNextTransaction(database, "start");
-    const claimed = Effect.runPromiseWith(services)(Effect.result(claimOrganization({ userId: person }, secret)));
+    const claimed = Effect.runPromiseWith(services)(Effect.result(claimAs(person, secret)));
     yield* Effect.promise(() => claim.held);
     claim.restore();
     yield* sleep(1_600);
@@ -390,7 +394,7 @@ it.live("a claim decides liveness by the database clock, not the process's", () 
     const secret = yield* claimable;
     const person = yield* ada;
     const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - 2 * HOUR);
-    const claimed = yield* Effect.result(claimOrganization({ userId: person }, secret)).pipe(Effect.ensuring(Effect.sync(() => clock.mockRestore())));
+    const claimed = yield* Effect.result(claimAs(person, secret)).pipe(Effect.ensuring(Effect.sync(() => clock.mockRestore())));
     expect(Result.isFailure(claimed)).toBe(true);
     if (Result.isFailure(claimed)) expect(claimed.failure).toMatchObject({ _tag: "Conflict", message: "This sandbox expired." });
     expect(yield* owners(ORGANIZATION)).not.toContain(person);

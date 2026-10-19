@@ -1325,6 +1325,79 @@ fn a_server_that_does_not_answer_is_forgotten_without_a_reset() {
 }
 
 #[test]
+fn a_name_checked_while_no_server_answers_says_it_went_unchecked() {
+    let store = shop();
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Err(serde_json::from_value::<RpcError>(json!({
+            "code": "unavailable",
+            "message": "Your servers aren't answering. Try again once they are.",
+            "details": { "fix": { "fix": "connect_servers" } },
+        }))
+        .unwrap()),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is asked of an unchecked name: {act:?}"),
+    };
+
+    let named = drive(
+        &store,
+        in_org(),
+        "server_upgrade",
+        json!({ "server": "nope-9" }),
+        "upgrade-1",
+        &mut cloud,
+    )
+    .refused();
+    let every = drive(
+        &store,
+        in_org(),
+        "server_show",
+        json!({}),
+        "show-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(named.code.as_str(), "unavailable");
+    assert_eq!(
+        named.message,
+        "Can't check that name. Your servers aren't answering. Try again once they are."
+    );
+    assert_eq!(
+        every.message,
+        "Your servers aren't answering. Try again once they are."
+    );
+}
+
+#[test]
+fn a_name_checked_in_an_organization_with_no_servers_says_there_are_none() {
+    let store = shop();
+    let empty = "This Organization has no servers yet. Add one from a terminal; staging still works without one.";
+    let mut cloud = |cloud: Cloud| match cloud {
+        Cloud::Ask(CloudQuery::Servers { .. }) => Err(serde_json::from_value::<RpcError>(json!({
+            "code": "unavailable",
+            "message": empty,
+            "details": { "fix": { "fix": "connect_servers" } },
+        }))
+        .unwrap()),
+        Cloud::Ask(query) => panic!("unexpected read: {query:?}"),
+        Cloud::Act(act) => panic!("nothing is asked with no servers: {act:?}"),
+    };
+
+    let named = drive(
+        &store,
+        in_org(),
+        "server_upgrade",
+        json!({ "server": "web-1" }),
+        "upgrade-1",
+        &mut cloud,
+    )
+    .refused();
+
+    assert_eq!(named.code.as_str(), "unavailable");
+    assert_eq!(named.message, empty);
+}
+
+#[test]
 fn server_set_refuses_a_server_that_does_not_answer() {
     let store = shop();
     let mut offline = servers(&[("db-1", 'a'), ("db-2", 'b')]);

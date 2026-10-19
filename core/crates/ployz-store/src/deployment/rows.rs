@@ -60,6 +60,7 @@ impl RowState {
 #[serde(rename_all = "snake_case")]
 pub enum FailedAt {
     Build,
+    Pull,
     Create,
     Start,
     Health,
@@ -89,7 +90,7 @@ impl FailedAt {
                 MachineAction::StartContainer => Some(Self::Start),
                 MachineAction::StopContainer => Some(Self::Stop),
                 MachineAction::RemoveContainer => Some(Self::Remove),
-                MachineAction::PullImage => Some(Self::Create),
+                MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
                 | MachineAction::ListContainers
                 | MachineAction::ReadServingPointer
@@ -287,6 +288,13 @@ impl Failure {
                 };
                 (refusal.to_string(), Vec::new())
             }
+            ExecutionError::Machine {
+                action: MachineAction::PullImage,
+                error,
+            } if let Some(image) = error.missing_image() => (
+                format!("Image {image} not found, or its registry needs credentials"),
+                ployz_core::error_chain::causes(error),
+            ),
             ExecutionError::Machine { action, error } => {
                 let mut cause = vec![error.message.clone()];
                 cause.extend(ployz_core::error_chain::causes(error));

@@ -116,7 +116,7 @@ const removeSandbox = Effect.fn("AnonymousTeardown.removeSandbox")(function* (
   const kept = yield* keptStep(organizationId);
   if (kept) return kept;
   const caller = { userId: found.ownerId, organization: { id: organizationId, slug: found.slug }, role: "owner" as const };
-  const removed = yield* removeOrganization(caller, found.slug, deletingSandbox(organizationId)).pipe(
+  const removed = yield* removeOrganization(caller, organizationId, deletingSandbox(organizationId)).pipe(
     Effect.catchTag("SandboxKept", (kept) => Effect.succeed(step(organizationId, kept.state, "nothing"))),
   );
   if ("did" in removed) return removed;

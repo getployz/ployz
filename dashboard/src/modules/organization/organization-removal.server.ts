@@ -16,7 +16,7 @@ import { organization, organizationChange } from "./tables";
 import { Database } from "#/server/database.server";
 
 /**
- * `ployz org rm`: remove the Caller's Organization once it has no Project, whose Environments all left the Servers
+ * `ployz org rm`: remove the Caller's Organization, named by its ID, once it has no Project, whose Environments all left the Servers
  * through the one teardown path. The Store forgets its configuration; then pairing removal clears every device key and
  * Cloud's own key on each Server. A Server that doesn't confirm keeps the Organization, its pairing disabled, until a
  * rerun confirms it; only then do Cloud's rows go. `deleting` wraps the row delete inside that transaction, for a caller
@@ -24,15 +24,15 @@ import { Database } from "#/server/database.server";
  */
 export const removeOrganization = Effect.fn("Organization.remove")(function* <E = never>(
   caller: Pick<Caller, "userId" | "organization" | "role"> & Partial<Pick<Caller, "credential">>,
-  slug: string,
+  organizationId: string,
   deleting: Deleting<E> = (drop) => drop,
 ) {
-  const { id, slug: current } = caller.organization;
-  if (slug !== current) {
+  const { id, slug } = caller.organization;
+  if (organizationId !== id) {
     return refused({
       code: "invalid_argument",
-      message: `This credential acts in Organization ${current}, not ${slug}. No changes made.`,
-      details: { next: `ployz org use ${slug}` },
+      message: `This credential acts in Organization ${slug}, not the one named. No changes made.`,
+      details: { next: "ployz org ls" },
     });
   }
   const lacking = lacks({ ...caller, support: null }, "org:delete");
@@ -68,7 +68,7 @@ export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember
     Effect.catchTag("Forbidden", (error) => Effect.succeed(refused({ code: "forbidden", message: error.message, details: null }))),
   );
   if ("ok" in access) return access;
-  return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, organizationSlug);
+  return yield* removeOrganization({ userId: actor.userId, organization: access.organization, role: "owner" }, access.organization.id);
 });
 
 /**

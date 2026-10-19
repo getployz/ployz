@@ -44,6 +44,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .map(MachineName::parse)
         .transpose()?;
     let token_request = helpers::token_request(matches)?;
+    let pinned = helpers::pinned(&token_request);
     let cluster_network = *matches
         .get_one::<ipnet::Ipv4Net>("network")
         .expect("Cluster network has a default");
@@ -89,6 +90,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                     advertised_endpoints: token.advertised_endpoints,
                 },
                 wireguard_mtu,
+                pinned,
             },
         )
         .await?;
