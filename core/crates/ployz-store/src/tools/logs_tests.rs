@@ -390,3 +390,31 @@ fn each_line_of_a_multiline_value_is_scrubbed() {
     let out = stdout_of(&[b"a line1-sec", b"ret b\nc line2-", b"secret d\n"], &forms);
     assert_eq!(String::from_utf8(out).unwrap(), want);
 }
+
+#[test]
+fn a_line_end_releases_beside_a_multiline_value() {
+    let forms = SealedForms::compile(&secrets(&[("CERT", "line1-secret\nline2-secret")]));
+    let mut scrub = FrameScrub::new();
+    assert_eq!(
+        scrub.push(Channel::Stdout, b"info line\n", &forms),
+        b"info line\n"
+    );
+    assert!(scrub.finish(&forms).is_empty());
+}
+
+#[test]
+fn a_multiline_value_split_across_frames_is_one_marker() {
+    let forms = SealedForms::compile(&secrets(&[("CERT", "line1-secret\nline2-secret")]));
+    // The second head ends at the value's own line break, which must not release its first line.
+    for (head, shown, tail) in [
+        (&b"a line1-sec"[..], &b""[..], &b"ret\nline2-secret b\n"[..]),
+        (b"a line1-secret\n", b"a ", b"line2-secret b\n"),
+    ] {
+        let mut scrub = FrameScrub::new();
+        let mut out = scrub.push(Channel::Stdout, head, &forms);
+        assert_eq!(out, shown);
+        out.extend(scrub.push(Channel::Stdout, tail, &forms));
+        assert_eq!(String::from_utf8(out).unwrap(), "a [secret CERT] b\n");
+        assert!(scrub.finish(&forms).is_empty());
+    }
+}

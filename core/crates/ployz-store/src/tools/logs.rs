@@ -253,7 +253,7 @@ impl SealedForms {
         self.longest
     }
 
-    /// Whether any form contains a newline, so a line end cannot close a match.
+    /// Whether any form contains a newline, so a line end may fall inside a match.
     #[must_use]
     pub const fn multiline(&self) -> bool {
         self.multiline
@@ -303,19 +303,24 @@ impl SealedForms {
             .min()
     }
 
-    /// Hide a trailing proper prefix of a form behind its marker, at the end of a stream.
-    fn hide_prefix(&self, text: &mut Vec<u8>) {
-        let hidden = self
-            .names
+    /// The longest proper prefix of a long form that `text` ends with, and the form's name.
+    fn prefix_tail(&self, text: &[u8]) -> Option<(usize, &str)> {
+        let last = text.last()?;
+        self.names
             .iter()
             .filter_map(|(form, name)| {
-                let cut = (1..form.len())
-                    .rev()
-                    .find(|&n| form.get(..n).is_some_and(|prefix| text.ends_with(prefix)))?;
-                Some((cut, name))
+                let cut = (1..form.len()).rev().find(|&n| {
+                    form.get(n - 1) == Some(last)
+                        && form.get(..n).is_some_and(|prefix| text.ends_with(prefix))
+                })?;
+                Some((cut, name.as_str()))
             })
-            .max_by_key(|(cut, _)| *cut);
-        if let Some((cut, name)) = hidden {
+            .max_by_key(|(cut, _)| *cut)
+    }
+
+    /// Hide a trailing proper prefix of a form behind its marker, at the end of a stream.
+    fn hide_prefix(&self, text: &mut Vec<u8>) {
+        if let Some((cut, name)) = self.prefix_tail(text) {
             text.truncate(text.len() - cut);
             text.extend(marker(name));
             return;
@@ -392,7 +397,8 @@ pub enum Channel {
 }
 
 /// Scrubs one reader's frames as they arrive, holding back the tail that could be the
-/// start of a form until the next frame or the end of the stream shows what it was.
+/// start of a form until the next frame or the end of the stream shows what it was. A line
+/// end releases the line unless it falls inside a form that spans lines.
 ///
 /// Each channel has its own carry, since a value never continues from stdout to stderr.
 /// The carry holds raw bytes, so a frame may split a UTF-8 sequence or a base64 form and
@@ -425,10 +431,11 @@ impl FrameScrub {
 
     /// Append `bytes` to `channel` and return what can be shown now.
     ///
-    /// The last `longest - 1` bytes stay held unless the text ends a line and no form spans
-    /// lines; a label whose value has not arrived keeps its text held too. Held bytes never
-    /// pass `CARRY_CAP` beyond that: the oldest are scrubbed and released. A released chunk
-    /// never ends inside a form or a UTF-8 sequence the input had whole.
+    /// The last `longest - 1` bytes stay held unless the text ends a line. At a line end only
+    /// a trailing proper prefix of a form that spans lines stays held; a label whose value has
+    /// not arrived keeps its text held too. Held bytes never pass `CARRY_CAP` beyond that: the
+    /// oldest are scrubbed and released. A released chunk never ends inside a form or a UTF-8
+    /// sequence the input had whole.
     pub fn push(&mut self, channel: Channel, bytes: &[u8], forms: &SealedForms) -> Vec<u8> {
         let carry = self.carry(channel);
         carry.extend_from_slice(bytes);
@@ -471,8 +478,10 @@ impl FrameScrub {
 fn release_point(text: &[u8], forms: &SealedForms) -> usize {
     let len = text.len();
     let hold = forms.longest().saturating_sub(1);
-    let mut at = if text.ends_with(b"\n") && !forms.multiline() {
-        len
+    let mut at = if text.ends_with(b"\n") {
+        // Only a form that spans lines can go on past a line end.
+        let open = forms.multiline().then(|| forms.prefix_tail(text)).flatten();
+        len - open.map_or(0, |(cut, _)| cut)
     } else {
         len.saturating_sub(hold)
     };
