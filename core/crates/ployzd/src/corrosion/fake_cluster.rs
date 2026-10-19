@@ -35,6 +35,14 @@ struct ClusterKv {
     subscriptions: bool,
     snapshots_fail: bool,
     tokens: Vec<String>,
+    held: Option<HeldQuery>,
+}
+
+#[derive(Clone)]
+struct HeldQuery {
+    query: String,
+    nth: usize,
+    gate: Arc<tokio::sync::Barrier>,
 }
 
 impl ClusterKv {
@@ -57,6 +65,7 @@ impl ClusterKv {
             subscriptions,
             snapshots_fail: false,
             tokens: Vec::new(),
+            held: None,
         }
     }
 }
@@ -169,6 +178,34 @@ impl FakeCluster {
         let _ = kv.pointer_changes.send(());
     }
 
+    /// Hold the answer to the `nth` run of `query`, read before the hold, until the
+    /// returned gate is waited on twice: once to see it held, once to release it.
+    pub(crate) fn hold_query(&self, query: &str, nth: usize) -> Arc<tokio::sync::Barrier> {
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        self.kv.lock().unwrap().held = Some(HeldQuery {
+            query: query.to_owned(),
+            nth,
+            gate: Arc::clone(&gate),
+        });
+        gate
+    }
+
+    pub(crate) fn write_undecodable_route(&self, machine: &str, service: &str) {
+        let mut kv = self.kv.lock().unwrap();
+        kv.ingress_routes.insert(
+            (machine.to_owned(), service.to_owned()),
+            ("d1".to_owned(), "not json".to_owned()),
+        );
+        let _ = kv.ingress_changes.send(());
+    }
+
+    /// Write a Machine row whose document has not fully replicated.
+    pub(crate) fn write_incomplete_machine(&self, machine: &str) {
+        let mut kv = self.kv.lock().unwrap();
+        kv.machines.insert(machine.to_owned(), "{}".to_owned());
+        let _ = kv.machine_changes.send(());
+    }
+
     pub(crate) fn subscription_tokens(&self) -> Vec<String> {
         self.kv.lock().unwrap().tokens.clone()
     }
@@ -199,7 +236,27 @@ async fn queries(
     State(kv): State<Arc<Mutex<ClusterKv>>>,
     body: Bytes,
 ) -> Result<Vec<u8>, StatusCode> {
-    query(&kv, serde_json::from_slice(&body).unwrap()).map(Into::into)
+    let statement: Statement = serde_json::from_slice(&body).unwrap();
+    let gate = {
+        let mut kv = kv.lock().unwrap();
+        let due = kv.held.as_mut().is_some_and(|held| {
+            if held.query == statement.query {
+                held.nth -= 1;
+            }
+            held.nth == 0
+        });
+        if due {
+            kv.held.take().map(|held| held.gate)
+        } else {
+            None
+        }
+    };
+    let answer = query(&kv, statement);
+    if let Some(gate) = gate {
+        gate.wait().await;
+        gate.wait().await;
+    }
+    answer.map(Into::into)
 }
 
 async fn transactions(State(kv): State<Arc<Mutex<ClusterKv>>>, body: Bytes) -> Vec<u8> {
@@ -295,6 +352,26 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                     .map(|(owner, container)| vec![json!(owner), json!(container)]),
             )
         }
+        "SELECT id, container FROM containers WHERE machine_id = ? ORDER BY id" => {
+            let machine_id = text_param(&statement.params, 0);
+            events(
+                &["id", "container"],
+                kv.containers
+                    .iter()
+                    .filter(|(_, (owner, _))| owner == machine_id)
+                    .map(|(id, (_, container))| vec![json!(id), json!(container)]),
+            )
+        }
+        "SELECT name, volume FROM volumes WHERE machine_id = ? ORDER BY name" => {
+            let machine_id = text_param(&statement.params, 0);
+            events(
+                &["name", "volume"],
+                kv.volumes
+                    .iter()
+                    .filter(|((owner, _), _)| owner == machine_id)
+                    .map(|((_, name), volume)| vec![json!(name), json!(volume)]),
+            )
+        }
         "SELECT container FROM containers WHERE id = ?" => {
             let id = text_param(&statement.params, 0);
             events(
@@ -320,6 +397,13 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                 kv.volumes.get(&key).map(|volume| vec![json!(volume)]),
             )
         }
+        "SELECT value FROM cluster WHERE key = ?" => {
+            let key = text_param(&statement.params, 0);
+            events(
+                &["value"],
+                kv.serving_pointers.get(key).map(|value| vec![json!(value)]),
+            )
+        }
         "SELECT value FROM cluster WHERE key = 'network'" => {
             events(&["value"], vec![vec![json!(kv.network)]])
         }
@@ -342,6 +426,24 @@ fn query(kv: &Mutex<ClusterKv>, statement: Statement) -> Result<Bytes, StatusCod
                     ]
                 }),
         ),
+        "SELECT machine_id, service_id, deploy, containers FROM ingress_routes WHERE service_id = ?" =>
+        {
+            let service_id = text_param(&statement.params, 0);
+            events(
+                &["machine_id", "service_id", "deploy", "containers"],
+                kv.ingress_routes
+                    .iter()
+                    .filter(|((_, routed), _)| routed == service_id)
+                    .map(|((machine_id, service_id), (deploy, containers))| {
+                        vec![
+                            json!(machine_id),
+                            json!(service_id),
+                            json!(deploy),
+                            json!(containers),
+                        ]
+                    }),
+            )
+        }
         "SELECT site_id, db_version FROM crsql_db_versions" => {
             events(&["site_id", "db_version"], Vec::new())
         }
@@ -403,6 +505,23 @@ fn execute(kv: &Mutex<ClusterKv>, statements: Vec<Statement>) -> Bytes {
                     text_param(&statement.params, 1).to_owned(),
                 ));
                 let _ = kv.ingress_changes.send(());
+            }
+            "DELETE FROM containers WHERE id = ? AND machine_id = ?" => {
+                let id = text_param(&statement.params, 0);
+                if kv
+                    .containers
+                    .get(id)
+                    .is_some_and(|(owner, _)| owner == text_param(&statement.params, 1))
+                {
+                    kv.containers.remove(id);
+                    let _ = kv.container_changes.send(());
+                }
+            }
+            "DELETE FROM volumes WHERE machine_id = ? AND name = ?" => {
+                kv.volumes.remove(&(
+                    text_param(&statement.params, 0).to_owned(),
+                    text_param(&statement.params, 1).to_owned(),
+                ));
             }
             query => panic!("unexpected statement {query}"),
         }
