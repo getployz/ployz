@@ -96,7 +96,7 @@ $ ployz env new Not\ Valid
 
 stderr:
 ```
-error: Expected an Environment name: up to 63 lowercase letters, digits and -
+error: Expected an Environment name: up to 63 lowercase letters, digits and -, starting and ending with a letter or digit
 ```
 
 ### env new: unknown --project
@@ -1134,15 +1134,19 @@ stdout:
       "removal": {
         "admitted_at": 1792234930,
         "admitted_by": null,
+        "ci": null,
         "ended_at": 1792234930,
         "environment_id": "21634a42-3a4e-45f5-a898-1bc9c040f311",
+        "held": false,
         "id": "d264361a-5f83-43ec-abf1-11b41d751b77",
         "in_flight": false,
+        "kind": "deployment",
         "message": null,
         "number": 2,
         "outcome": {
           "type": "never_ran"
         },
+        "push": null,
         "remove": true,
         "runner": null,
         "saved": 0,
