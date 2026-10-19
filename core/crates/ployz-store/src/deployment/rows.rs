@@ -98,7 +98,7 @@ impl FailedAt {
                 MachineAction::PullImage => Some(Self::Pull),
                 MachineAction::InspectContainer
                 | MachineAction::ListContainers
-                | MachineAction::ReadServingPointer
+                | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => from_phase(),
             },
             ExecutionError::Health { .. } | ExecutionError::DependencyHealth { .. } => {
@@ -496,7 +496,7 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
                 | MachineAction::RemoveVolume
                 | MachineAction::PullImage
                 | MachineAction::ListContainers
-                | MachineAction::ReadServingPointer
+                | MachineAction::ReadRoutes
                 | MachineAction::PublishServingPointer => None,
             },
             ExecutionError::DependencyHealth { .. } | ExecutionError::Cancelled => None,
@@ -867,20 +867,20 @@ mod tests {
             error: RpcError {
                 code: RpcErrorCode::Unsupported,
                 message: "unimplemented".into(),
-                details: serde_json::json!({"capability": "ployz.serving.read.v1", "target": machine_id}),
+                details: serde_json::json!({"capability": "ployz.serving.routes.v1", "target": machine_id}),
                 cause: vec!["unimplemented".into()],
             },
         };
         let named = Failure::of(&error, &operations);
         assert_eq!(
             named.reason,
-            "Server prod-1 needs a newer Ployz. It cannot serve ployz.serving.read.v1."
+            "Server prod-1 needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
         );
         assert!(named.cause.is_empty());
         assert_eq!(
             Failure::of(&error, &[]).reason,
             format!(
-                "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.read.v1."
+                "Server {machine_id} needs a newer Ployz. It cannot serve ployz.serving.routes.v1."
             )
         );
     }

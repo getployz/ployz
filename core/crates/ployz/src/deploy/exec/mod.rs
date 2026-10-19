@@ -18,9 +18,9 @@ use ployz_core::{
     HealthVerdict, Hold, HookFailure, ImagePulled, InspectContainerRequest, ListContainersRequest,
     MachineAction, MachineId, MachineTarget, MembershipObservation, Namespace, NewContainer,
     OperationPhase, PortPublication, PublishServingPointerRequest, PullPolicy, QualifiedService,
-    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RpcError, RpcErrorCode, RunTarget, ServiceId,
-    ServiceName, ServiceOutcome, ServingPointer, ServingPointerPublication, ServingPointerRead,
-    SlotKey, StopOptions, TransportProtocol, op,
+    RemoveVolumeRequest, ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode,
+    RunRotation, RunTarget, ServiceId, ServiceName, ServiceOutcome, ServingPointer,
+    ServingPointerPublication, SlotKey, StopOptions, TransportProtocol, op,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -171,10 +171,7 @@ pub(super) trait MachineOperations {
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
     ) -> Result<ImagePulled, RpcError>;
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError>;
+    async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     async fn publish_pointer(
         &self,
         request: PublishServingPointerRequest,
@@ -197,10 +194,7 @@ impl MachineOperations for Client {
         .await
     }
 
-    async fn read_pointer(
-        &self,
-        service: &QualifiedService,
-    ) -> Result<ServingPointerRead, RpcError> {
+    async fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError> {
         self.clone().serving_pointer_read(service).await
     }
 
@@ -275,6 +269,7 @@ impl MachineOperations for Client {
         let timeout = match &mut want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
+                ..
             } => {
                 if let Some(key) = self
                     .retained_global_key(machine_id, &new.slot, &new.resolved_spec)
@@ -288,7 +283,9 @@ impl MachineOperations for Client {
                 }
                 None
             }
-            ContainerWant::Running { .. } => Some(TARGET_RPC_TIMEOUT),
+            ContainerWant::Running { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => Some(TARGET_RPC_TIMEOUT),
             ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
             ContainerWant::Gone { .. } => None,
         };
@@ -460,7 +457,7 @@ restart_policy! {
     wait fn remove_volume(&self, id: &DockerVolumeId) -> Result<(), RpcError>;
     wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
     wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec) -> Result<ImagePulled, RpcError>;
-    wait fn read_pointer(&self, service: &QualifiedService) -> Result<ServingPointerRead, RpcError>;
+    wait fn read_pointer(&self, service: &QualifiedService) -> Result<RoutesRead, RpcError>;
     once("a compare-and-set: a resend after a lost reply reads its own write as Superseded")
     fn publish_pointer(&self, request: PublishServingPointerRequest) -> Result<ServingPointerPublication, RpcError>;
 }
@@ -861,7 +858,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                                 }
                             }
                             Err(error) => {
-                                let error = machine_error(MachineAction::ReadServingPointer, error);
+                                let error = machine_error(MachineAction::ReadRoutes, error);
                                 for (task, _) in blocked.iter().filter(|(task, blocker)| {
                                     blocker == service && failed.insert(*task)
                                 }) {
@@ -995,7 +992,7 @@ async fn await_routed_pin<C: MachineOperations>(
     let read = client
         .read_pointer(service)
         .await
-        .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+        .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?;
     let pointer = match read.pointer {
         Some(pointer) if read.all_routed => return Ok(Pin::Admitted(pointer)),
         current => match live_pin(client, run, service, current).await? {
@@ -1008,7 +1005,7 @@ async fn await_routed_pin<C: MachineOperations>(
         let read = client
             .read_pointer(service)
             .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+            .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?;
         if read.pointer.as_ref() != Some(&pointer) {
             return Ok(Pin::Superseded);
         }
@@ -1350,7 +1347,7 @@ impl<'a> Rows<'a> {
         let read = client
             .read_pointer(&service)
             .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?;
+            .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?;
         match Protection::of(read.pointer, copy) {
             Protection::Unnamed | Protection::Retiring(_) => Ok(()),
             Protection::Pointed(row) => Err(pointed(copy, &row)),
@@ -1427,7 +1424,7 @@ impl<'a> Rows<'a> {
         let mut current = client
             .read_pointer(&service)
             .await
-            .map_err(|error| machine_error(MachineAction::ReadServingPointer, error))?
+            .map_err(|error| machine_error(MachineAction::ReadRoutes, error))?
             .pointer;
         for _ in 0..=AMEND_RETRIES {
             let Some(row) =
@@ -2040,6 +2037,7 @@ async fn run_new<C: MachineOperations>(
             image_prepared: true,
             answer,
         }),
+        rotation: RunRotation::Pending,
     };
     let ensured = client.ensure_container(machine_id, want);
     let ensured = match answer {
@@ -2253,6 +2251,7 @@ async fn restore_old_container<C: MachineOperations>(
             &operation.machine_id,
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(operation.old_container_id)),
+                rotation: RunRotation::Pending,
             },
         )
         .await

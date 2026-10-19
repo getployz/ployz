@@ -10,8 +10,8 @@ use ployz_core::{
     CapabilityAdvertisement, CertificateMaterialChange, CertificateMaterialPublished,
     ContainerList, ContainerObservation, ContractDescription, EndpointSelected, EnvironmentValues,
     LiveLogTarget, LocalMachinePhase, LogMetadata, LogOrigin, MachineLogService, MachineRpc,
-    NotPointerPublisher, OpaquePayload, PROTOCOL_MAJOR, Rpc, RpcError, RpcErrorCode,
-    RpcRequestBody, RpcResponse, SelectEndpointRequest, ServingPointerRead, op,
+    NotPointerPublisher, OpaquePayload, PROTOCOL_MAJOR, RoutesRead, Rpc, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, SelectEndpointRequest, op,
 };
 use serde_json::Value;
 use tonic::{Request, Response, Status};
@@ -22,6 +22,7 @@ use crate::{
     logs::{RpcStream, open_journal_logs, serve_logs},
     machine::{LocalMachine, LocalMachineError, LocalMachineRecord, RecordOwner, StoreError},
     network::{ChoiceRefused, EndpointChoice, MACHINE_API_PORT},
+    route_acks::{Ackers, routed},
     runtime_watch::{RuntimeWatch, RuntimeWatchStream},
 };
 
@@ -761,12 +762,17 @@ impl MachineRpc for MachineService {
         }
     }
 
-    async fn read_serving_pointer(
+    async fn read_routes(
         &self,
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
-        let request = expect::<op::ReadServingPointer>(request)?;
-        let replicated = match self.pointer_replicated().await {
+        let request = expect::<op::ReadRoutes>(request)?;
+        let replicated = if request.routes_only {
+            self.ready_replicated()
+        } else {
+            self.pointer_replicated().await
+        };
+        let replicated = match replicated {
             Ok(replicated) => replicated,
             Err(error) => return respond(error),
         };
@@ -774,35 +780,57 @@ impl MachineRpc for MachineService {
             Ok(pointer) => pointer,
             Err(error) => return respond(cluster_store_error(error)),
         };
-        let acks: BTreeMap<_, _> = match replicated.ingress_routes().await {
-            Ok(routes) => routes
-                .into_iter()
-                .filter_map(|((machine_id, service), row)| match row {
-                    IngressRouteRow::Acked(ack)
-                        if service == request.service && routes_pointer(&ack, pointer.as_ref()) =>
-                    {
-                        Some((machine_id, ack.deploy))
-                    }
-                    IngressRouteRow::Acked(_)
-                    | IngressRouteRow::UnknownDeploy(_)
-                    | IngressRouteRow::UnknownContainers => None,
-                })
-                .collect(),
+        let rows = match replicated.service_ingress_routes(&request.service).await {
+            Ok(rows) => rows,
             Err(error) => return respond(cluster_store_error(error)),
         };
-        let all_routed = match self.local.ingress_machines().await {
-            Ok(Some(machines)) => {
-                pointer.is_some() && machines.iter().all(|machine| acks.contains_key(machine))
-            }
-            Ok(None) => false,
+        let acks: BTreeMap<_, _> = rows
+            .iter()
+            .filter_map(|((machine_id, _), row)| match row {
+                IngressRouteRow::Acked(ack) if routes_pointer(ack, pointer.as_ref()) => {
+                    Some((*machine_id, ack.deploy.clone()))
+                }
+                IngressRouteRow::Acked(_)
+                | IngressRouteRow::UnknownDeploy(_)
+                | IngressRouteRow::UnknownContainers => None,
+            })
+            .collect();
+        let membership = match self.local.route_membership().await {
+            Ok(membership) => membership,
             Err(error) => return local_error(error),
         };
-        respond(ServingPointerRead {
+        let all_routed = match &membership.ackers {
+            Ackers::Known(machines) if !machines.is_empty() => {
+                pointer.is_some() && machines.keys().all(|machine| acks.contains_key(machine))
+            }
+            Ackers::Known(_) | Ackers::Incomplete { .. } | Ackers::Unread => false,
+        };
+        let mut routed = routed(rows, &request.service);
+        let routes = listed(&membership.ackers)
+            .map(|machine| (machine, routed.remove(&machine)))
+            .collect();
+        respond(RoutesRead {
+            routes,
+            complete: matches!(membership.ackers, Ackers::Known(_)),
+            down: membership.down,
             pointer,
             acks,
             all_routed,
         })
     }
+}
+
+fn listed(ackers: &Ackers) -> impl Iterator<Item = ployz_core::MachineId> + '_ {
+    let (named, unnamed) = match ackers {
+        Ackers::Known(named) => (Some(named), None),
+        Ackers::Incomplete { named, unnamed } => (Some(named), Some(unnamed)),
+        Ackers::Unread => (None, None),
+    };
+    named
+        .into_iter()
+        .flat_map(BTreeMap::keys)
+        .chain(unnamed.into_iter().flatten())
+        .copied()
 }
 
 /// The Machine routes the pointer's deploy and every Container it names; an ack
@@ -1001,6 +1029,9 @@ fn internal_response(error: impl std::error::Error + 'static) -> Status {
     ployz_core::rpc::caused_status(tonic::Code::Internal, &error)
 }
 
+#[cfg(test)]
+#[path = "rotation_fleet_tests.rs"]
+mod rotation_fleet_tests;
 #[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
