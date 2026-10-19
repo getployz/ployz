@@ -391,11 +391,12 @@ pub enum FailedOperation<E> {
 pub enum ReplacementCompensation<E> {
     /// The old container was left as it was; `stop_new_container` is the stop attempt on the new one.
     OldUntouched { stop_new_container: StopAttempt<E> },
-    /// Stop-first replacement stopped the old container; `restart_old_container` restores it.
-    /// `stop_new_container` is `None` when the new container never started.
+    /// Stop-first replacement withdrew and stopped the old container;
+    /// `restore_old_container` brings it back In. `stop_new_container` is
+    /// `None` when the new container never started.
     OldStopped {
         stop_new_container: Option<StopAttempt<E>>,
-        restart_old_container: RestartAttempt<E>,
+        restore_old_container: RestoreAttempt<E>,
     },
 }
 
@@ -429,27 +430,31 @@ impl<E> From<Result<(), E>> for StopAttempt<E> {
 /// The attempt to restore the old container after a failed stop-first replacement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum RestartAttempt<E> {
-    /// The old container restarted and serves again.
-    Restarted,
-    /// The restart, or the wait for the old container to serve, returned `error`.
+pub enum RestoreAttempt<E> {
+    /// The old container is In again and every live proxy routes it.
+    Restored,
+    /// Another Deploy holds the old container; it stays Held.
+    LeftHeld,
+    /// The old container was not serving before this Deploy; nothing to restore.
+    NotServing,
+    /// The restore, or the wait for the proxies to route the old container, returned `error`.
     Failed { error: E },
 }
 
-impl<E> From<Result<(), E>> for RestartAttempt<E> {
+impl<E> From<Result<(), E>> for RestoreAttempt<E> {
     fn from(result: Result<(), E>) -> Self {
         match result {
-            Ok(()) => Self::Restarted,
+            Ok(()) => Self::Restored,
             Err(error) => Self::Failed { error },
         }
     }
 }
 
-impl<E> RestartAttempt<E> {
+impl<E> RestoreAttempt<E> {
     /// Whether the old container serves again.
     #[must_use]
-    pub const fn restarted(&self) -> bool {
-        matches!(self, Self::Restarted)
+    pub const fn restored(&self) -> bool {
+        matches!(self, Self::Restored)
     }
 }
 
@@ -757,6 +762,15 @@ pub enum DeployWarning {
         exposed: Vec<u16>,
         routed: Vec<u16>,
     },
+    /// Cleanup could not withdraw this copy: it keeps running on `machine`
+    /// until a later Deploy or a user command removes it.
+    LeftRunning {
+        service: QualifiedService,
+        container_id: ContainerId,
+        /// The Machine's name when the plan knows it, else its id.
+        machine: String,
+        reason: String,
+    },
 }
 
 impl DeployWarning {
@@ -776,7 +790,8 @@ impl DeployWarning {
             | Self::IngressHostname { .. }
             | Self::ObserverRelativeHostnameConflict
             | Self::SkippedDependencyHealth { .. }
-            | Self::ImagePortMismatch { .. } => None,
+            | Self::ImagePortMismatch { .. }
+            | Self::LeftRunning { .. } => None,
         }
     }
 }
@@ -820,6 +835,15 @@ impl Display for DeployWarning {
                 "{service}'s image {image} exposes {}; its domains send to {}. Set the domain port or PORT.",
                 join_ports(exposed),
                 join_ports(routed),
+            ),
+            Self::LeftRunning {
+                service,
+                container_id,
+                machine,
+                reason,
+            } => write!(
+                f,
+                "{service} copy {container_id} left running on {machine}: {reason}"
             ),
         }
     }

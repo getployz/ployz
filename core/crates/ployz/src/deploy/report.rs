@@ -10,7 +10,7 @@ use crate::{
 use ployz_core::{
     ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
     Namespace, OperationPhase, OperationRow, OperationStatus, QualifiedService,
-    ReplacementCompensation, RestartAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
+    ReplacementCompensation, RestoreAttempt, RpcError, RpcErrorCode, ServiceName, StopAttempt,
 };
 use ployz_store::tools::SealedValues;
 use ployz_store::{RowPhase, RowState, RowTracker, ServerProgress, starts_container};
@@ -425,18 +425,28 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
             }
             ReplacementCompensation::OldStopped {
                 stop_new_container,
-                restart_old_container,
+                restore_old_container,
             } => {
                 diagnostic
                     .compensation
                     .extend(stop_new_container.iter().map(stop));
-                diagnostic.compensation.push(match restart_old_container {
-                    RestartAttempt::Restarted => Detail {
-                        message: "Restarted the old Container.".into(),
+                diagnostic.compensation.push(match restore_old_container {
+                    RestoreAttempt::Restored => Detail {
+                        message: "Restored the old Container; it serves again.".into(),
                         causes: Vec::new(),
                     },
-                    RestartAttempt::Failed { error } => Detail {
-                        message: "Could not restart the old Container.".into(),
+                    RestoreAttempt::LeftHeld => Detail {
+                        message: "The old Container is left Held by another Deploy.".into(),
+                        causes: Vec::new(),
+                    },
+                    RestoreAttempt::NotServing => Detail {
+                        message:
+                            "The old Container was not serving before this Deploy; nothing to restore."
+                                .into(),
+                        causes: Vec::new(),
+                    },
+                    RestoreAttempt::Failed { error } => Detail {
+                        message: "Could not restore the old Container.".into(),
                         causes: failure_causes(error),
                     },
                 });

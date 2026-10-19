@@ -37,7 +37,8 @@ pub(super) fn warnings(
             | DeployWarning::IngressHostname { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
-            | DeployWarning::ImagePortMismatch { .. } => continue,
+            | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::LeftRunning { .. } => continue,
         };
         let Some(machine) = snapshot
             .machines
