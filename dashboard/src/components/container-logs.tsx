@@ -20,6 +20,7 @@ const levelTone = { error: "text-destructive", warn: "text-warning", info: null,
 const gapReasons = {
   not_captured: "Logs from this stretch weren’t captured.",
   corrupt: "Some of this stretch’s log data was unreadable, so it was skipped.",
+  hidden: "Hidden: couldn’t check these lines for Sealed values.",
 } as const;
 
 export function ContainerLogs({ selection }: { selection: ContainerLogSelection }) {
