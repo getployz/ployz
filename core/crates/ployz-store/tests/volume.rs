@@ -497,7 +497,7 @@ fn a_deployed_volume_removal_discards_alone() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(SettingPath::parse("volumes.data").unwrap()),
                 version: None,
             },
@@ -644,10 +644,10 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     };
     let failed = VolumeRemovalOutcome::Failed {
         error: RpcError {
-            code: RpcErrorCode::Unavailable,
-            message: "in use".into(),
+            code: RpcErrorCode::Conflict,
+            message: "provider stderr token=review-sentinel".into(),
             details: Value::Null,
-            cause: Vec::new(),
+            cause: vec!["token=review-sentinel".into()],
         },
     };
     let claimed = run(&store, 2, vec![removal(failed)]);
@@ -665,6 +665,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Failed);
+    // The reason is fixed words: what the provider printed stays out of it.
+    let outcome = serde_json::to_value(&failed.deployment.outcome).unwrap();
+    assert_eq!(
+        outcome["reason"],
+        json!("data: deleting its data failed: it is still in use on a Server")
+    );
+    let shown = serde_json::to_string(&failed).unwrap();
+    assert!(!shown.contains("review-sentinel"), "{shown}");
 
     admit(&store, &who, 3, &["data"], Some(observed(&['a']))).unwrap();
     // A Volume being removed waits while it runs.
@@ -1120,7 +1128,7 @@ fn a_deployed_volume_rename_discards_by_its_row() {
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
-                target: ployz_store::DiscardTarget::Head,
+                target: Some(ployz_store::DiscardTarget::Head),
                 path: Some(path(&row.path)),
                 version: None,
             },
@@ -1434,7 +1442,7 @@ fn discarding_one_setting_cannot_bring_back_a_second_writer() {
     set_shared_writes(&store, &who, false).unwrap();
     let discard = |path: Option<&str>| Discard {
         environment: EnvironmentRef::default(),
-        target: ployz_store::DiscardTarget::Head,
+        target: Some(ployz_store::DiscardTarget::Head),
         path: path.map(|path| SettingPath::parse(path).unwrap()),
         version: None,
     };

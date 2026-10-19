@@ -5,7 +5,7 @@ import { createMcpProtectedRequestHandler } from "@better-auth/mcp";
 import { verifyOAuthQueryParams } from "@better-auth/oauth-provider";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { betterAuth, type BetterAuthPlugin } from "better-auth";
-import { addOAuthServerContext, createAuthMiddleware, getOAuthState } from "better-auth/api";
+import { addOAuthServerContext, APIError, createAuthMiddleware, getOAuthState, getSessionFromCtx } from "better-auth/api";
 import { createDpopReplayStore } from "better-auth/oauth2";
 import {
   bearer,
@@ -51,7 +51,8 @@ import {
   handleSessionCreated,
   handleUserCreated,
 } from "#/modules/organization/organization-state.server";
-import { Actor } from "#/modules/identity/actor";
+import { Actor, type SessionActor } from "#/modules/identity/actor";
+import { bindDeviceOrganization } from "#/modules/identity/device-organization.server";
 import { bindClaimSignInOrganization, claimSecretHashOf } from "#/modules/identity/claim-sign-in.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { recordSignUp } from "#/modules/analytics/posthog.server";
@@ -112,7 +113,7 @@ export interface AuthService {
   readonly resolveActor: (
     headers: Headers,
   ) => Effect.Effect<
-    Actor,
+    SessionActor,
     Unauthorized | AuthenticationUnavailable | Schema.SchemaError
   >;
   /** Whether sign-in trusts `origin`: the app's own, `BETTER_AUTH_TRUSTED_ORIGINS`, and localhost outside production. */
@@ -215,13 +216,55 @@ const claimSignInContext = {
   },
 } satisfies BetterAuthPlugin;
 
+const DEVICE_TOKEN_PATH = "/device/token";
+const decodeDeviceToken = Schema.decodeUnknownOption(Schema.Struct({ device_code: Schema.String }));
+const decodeDeviceApproval = Schema.decodeUnknownOption(
+  Schema.Struct({ userCode: Schema.String, organizationId: Schema.String }),
+);
+
+/** False when the approver is not a member of the Organization. */
+type BindDeviceOrganization = (userId: string, userCode: string, organizationId: string) => Promise<boolean>;
+
+/**
+ * The `/device` page sends the Organization it named with its approval, so the `ployz login` session redeeming the
+ * code starts in that one. Bound before better-auth marks the code approved, so no redemption can miss it.
+ */
+const deviceOrganizationBinding = (bind: BindDeviceOrganization) => ({
+  id: "device-organization-binding",
+  hooks: {
+    before: [{
+      matcher: (context) => context.path === "/device/approve",
+      handler: createAuthMiddleware(async (context) => {
+        const approver = await getSessionFromCtx(context);
+        if (approver === null) return;
+        // Every approve names its Organization and rewrites the binding, so one left by a failed approve never leaks.
+        const approval = decodeDeviceApproval(context.body);
+        if (Option.isNone(approval)) {
+          throw new APIError("BAD_REQUEST", {
+            error: "invalid_request",
+            error_description: "Reload this page and approve again",
+          });
+        }
+        const { userCode, organizationId } = approval.value;
+        if (!(await bind(approver.user.id, userCode, organizationId))) {
+          throw new APIError("FORBIDDEN", {
+            error: "access_denied",
+            error_description: "You are not a member of this Organization",
+          });
+        }
+      }),
+    }],
+  },
+}) satisfies BetterAuthPlugin;
+
 // better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
 // so another signed-in user can neither approve nor deny it.
-const cliSignInPlugins = [
+const cliSignInPlugins = (bind: BindDeviceOrganization) => [
   deviceAuthorization({
     verificationUri: "/device",
     validateClient: (clientId) => clientId === CLI_CLIENT_ID,
   }),
+  deviceOrganizationBinding(bind),
   bearerSetsNoCookie,
   bearer(),
 ];
@@ -348,7 +391,13 @@ const makeAuth = Effect.gen(function* () {
       session: {
         create: {
           after: (createdSession, context) =>
-            runHook(handleSessionCreated(createdSession, context)),
+            runHook(handleSessionCreated(
+              createdSession,
+              context,
+              context?.path === DEVICE_TOKEN_PATH
+                ? Option.getOrNull(Option.map(decodeDeviceToken(context.body), (body) => body.device_code))
+                : null,
+            )),
         },
         update: {
           async before(sessionRecord) {
@@ -374,7 +423,8 @@ const makeAuth = Effect.gen(function* () {
       .flatMap((endpoint) => endpoint.path === undefined || endpoint.path === ORGANIZATION_USE_PATH ? [] : [endpoint.path]),
     plugins: [
       organizations,
-      ...cliSignInPlugins,
+      ...cliSignInPlugins((userId, userCode, organizationId) =>
+        runHook(bindDeviceOrganization(userId, userCode, organizationId))),
       claimSignInContext,
       ...(polarPlugin === null ? [] : [polarPlugin]),
       ...(hosted ? hostedMcpPlugins(config.app.url) : []),
@@ -443,9 +493,10 @@ const makeAuth = Effect.gen(function* () {
     resolveActor: Effect.fn("Auth.resolveActor")(function* (headers: Headers) {
       const authSession = yield* getSession(headers);
       if (authSession === null || authSession.user.isAnonymous === true) return yield* new Unauthorized();
-      return yield* Schema.decodeUnknownEffect(Actor)({
+      const actor = yield* Schema.decodeUnknownEffect(Actor)({
         userId: authSession.user.id,
       }, { onExcessProperty: "error" });
+      return { ...actor, credential: { kind: "session", id: authSession.session.id } } satisfies SessionActor;
     }),
     isTrustedOrigin: (origin) => Effect.tryPromise({
       try: async () => (await instance.$context).isTrustedOrigin(origin),

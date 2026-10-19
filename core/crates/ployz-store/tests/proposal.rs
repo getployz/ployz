@@ -334,7 +334,7 @@ impl Db {
                 &self.who,
                 &ployz_store::Discard {
                     environment: at(environment),
-                    target: ployz_store::DiscardTarget::Head,
+                    target: Some(ployz_store::DiscardTarget::Head),
                     path: path.map(|path| SettingPath::parse(path).unwrap()),
                     version: None,
                 },

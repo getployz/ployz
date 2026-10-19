@@ -380,6 +380,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
         }
         let identity = slot.identity().clone();
         let mut new = NewContainer {
+            r#gen: ployz_core::Gen::FIRST,
             slot: SlotKey {
                 namespace: identity.namespace.clone(),
                 kind: ContainerKind::ServiceContainer,

@@ -11,7 +11,8 @@ use std::{
 
 use ployz_core::{
     EnrollAs, EnrollRequest, LocalMachinePhase, Machine, MachineId, MachineNow, MachineUpdate,
-    MachineUpdateError, ManagementClientLabel, Registered, SelectedEndpoint, apply_machine_update,
+    MachineUpdateError, ManagementClientLabel, PinnedAddresses, PublicIpUpdate, Registered,
+    SelectedEndpoint, apply_machine_update,
 };
 use reqwest::Url;
 use thiserror::Error;
@@ -21,7 +22,7 @@ use super::{
     ParticipationOrigin, local_runtime,
 };
 use crate::management::ManagementSecret;
-use crate::network::{WireGuardPrivateKey, allocate_machine_subnet};
+use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
 
 const STATE_FILE_NAME: &str = "machine.json";
 const TEMPORARY_FILE_NAME: &str = ".machine.json.tmp";
@@ -51,6 +52,7 @@ pub(crate) struct PreparedReset {
 pub(crate) struct Installation {
     body: LocalMachineBody,
     wireguard_mtu: Option<u32>,
+    pinned: PinnedAddresses,
 }
 
 impl Installation {
@@ -67,6 +69,14 @@ pub enum EnrollPlan {
     Replay(Machine),
     /// Enrolled as someone else, or resetting.
     Conflict(MachineNow),
+}
+
+/// What daemon-start discovery did to this Machine's own row.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Rediscovered {
+    Unchanged,
+    Updated(Box<Machine>),
+    PublicIpLookupFailed,
 }
 
 /// Replay when the stored Machine and MTU equal what the request would produce.
@@ -209,6 +219,7 @@ impl LocalMachineStore {
                     management_clients: BTreeMap::new(),
                     wireguard_mtu: None,
                     selected_endpoints: BTreeMap::new(),
+                    pinned_addresses: PinnedAddresses::default(),
                     push_target: None,
                 };
                 save(&data_dir, &record)?;
@@ -303,6 +314,7 @@ impl LocalMachineStore {
         let EnrollRequest {
             role,
             wireguard_mtu,
+            pinned,
         } = request;
         let body = match role {
             EnrollAs::Founder {
@@ -334,6 +346,7 @@ impl LocalMachineStore {
             Installation {
                 body,
                 wireguard_mtu,
+                pinned,
             },
         ))
     }
@@ -402,6 +415,7 @@ impl LocalMachineStore {
         let mut installed = self.record.clone();
         installed.body = installation.body;
         installed.wireguard_mtu = installation.wireguard_mtu;
+        installed.pinned_addresses = installation.pinned;
         save(&self.data_dir, &installed)?;
         self.record = installed;
         Ok(())
@@ -412,12 +426,57 @@ impl LocalMachineStore {
         update: MachineUpdate,
         visible: &[Machine],
     ) -> Result<Machine, StoreError> {
+        let pinned = self.record.pinned_addresses.with_update(&update);
+        self.apply(update, visible, pinned)
+    }
+
+    /// Replace the unpinned public IP and Advertised Endpoints with `discovered`.
+    ///
+    /// # Errors
+    /// Rejects a Machine that is not participating, an empty endpoint list, or a failed save.
+    pub fn rediscover(
+        &mut self,
+        discovered: DiscoveredNetwork,
+    ) -> Result<Rediscovered, StoreError> {
+        let LocalMachineBody::Participating { machine, .. } = &self.record.body else {
+            return Err(StoreError::NotParticipating);
+        };
+        let pinned = self.record.pinned_addresses;
+        if !pinned.public_ip && discovered.public_ip.is_none() && machine.public_ip.is_some() {
+            return Ok(Rediscovered::PublicIpLookupFailed);
+        }
+        let update = MachineUpdate {
+            public_ip: match discovered.public_ip {
+                Some(address) if !pinned.public_ip && machine.public_ip != Some(address) => {
+                    PublicIpUpdate::Set(address)
+                }
+                _ => PublicIpUpdate::Keep,
+            },
+            advertised_endpoints: (!pinned.advertised_endpoints
+                && discovered.endpoints != machine.advertised_endpoints)
+                .then_some(discovered.endpoints),
+            ..MachineUpdate::default()
+        };
+        if update.is_empty() {
+            return Ok(Rediscovered::Unchanged);
+        }
+        self.apply(update, &[], pinned)
+            .map(|machine| Rediscovered::Updated(Box::new(machine)))
+    }
+
+    fn apply(
+        &mut self,
+        update: MachineUpdate,
+        visible: &[Machine],
+        pinned: PinnedAddresses,
+    ) -> Result<Machine, StoreError> {
         let mut record = self.record.clone();
         let LocalMachineBody::Participating { machine, .. } = &mut record.body else {
             return Err(StoreError::NotParticipating);
         };
         let updated = apply_machine_update(machine, visible, update)?;
         *machine = updated.clone();
+        record.pinned_addresses = pinned;
         save(&self.data_dir, &record)?;
         self.record = record;
         Ok(updated)
@@ -767,5 +826,177 @@ mod plan_enroll_tests {
                 "{case}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod rediscover_tests {
+    use std::net::IpAddr;
+
+    use ployz_core::{
+        AdvertisedEndpoint, EnrollAs, EnrollRequest, MachineName, MachineUpdate, PinnedAddresses,
+        PublicIpUpdate,
+    };
+
+    use super::{LocalMachineStore, Rediscovered, STATE_FILE_NAME};
+    use crate::network::DiscoveredNetwork;
+
+    const OLD_IP: &str = "198.51.100.7";
+    const NEW_IP: &str = "203.0.113.9";
+
+    fn ip(address: &str) -> IpAddr {
+        address.parse().unwrap()
+    }
+
+    fn endpoints(addresses: &[&str]) -> Vec<AdvertisedEndpoint> {
+        addresses
+            .iter()
+            .map(|address| AdvertisedEndpoint(std::net::SocketAddr::new(ip(address), 51820)))
+            .collect()
+    }
+
+    fn founded(pinned: PinnedAddresses) -> (tempfile::TempDir, LocalMachineStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = LocalMachineStore::open(dir.path().join("data")).unwrap();
+        store
+            .enroll(EnrollRequest {
+                role: EnrollAs::Founder {
+                    initial_policy: Default::default(),
+                    name: MachineName::parse("edge").unwrap(),
+                    cluster_network: "10.210.0.0/16".parse().unwrap(),
+                    public_ip: Some(ip(OLD_IP)),
+                    advertised_endpoints: endpoints(&["10.0.0.4", OLD_IP]),
+                },
+                wireguard_mtu: None,
+                pinned,
+            })
+            .unwrap();
+        (dir, store)
+    }
+
+    fn moved_host() -> DiscoveredNetwork {
+        DiscoveredNetwork {
+            public_ip: Some(ip(NEW_IP)),
+            endpoints: endpoints(&["10.0.0.5", NEW_IP]),
+        }
+    }
+
+    fn reopened(dir: &tempfile::TempDir, store: LocalMachineStore) -> LocalMachineStore {
+        drop(store);
+        LocalMachineStore::open(dir.path().join("data")).unwrap()
+    }
+
+    #[test]
+    fn stale_discovered_addresses_are_replaced_and_persisted() {
+        let (dir, mut store) = founded(PinnedAddresses::default());
+
+        let outcome = store.rediscover(moved_host()).unwrap();
+
+        let store = reopened(&dir, store);
+        let machine = store.record().machine().unwrap().clone();
+        assert_eq!(outcome, Rediscovered::Updated(Box::new(machine.clone())));
+        assert_eq!(machine.public_ip, Some(ip(NEW_IP)));
+        assert_eq!(machine.advertised_endpoints, moved_host().endpoints);
+        assert_eq!(
+            store.record().pinned_addresses(),
+            PinnedAddresses::default()
+        );
+    }
+
+    #[test]
+    fn unchanged_discovery_writes_nothing() {
+        let (_dir, mut store) = founded(PinnedAddresses::default());
+        let same = DiscoveredNetwork {
+            public_ip: Some(ip(OLD_IP)),
+            endpoints: endpoints(&["10.0.0.4", OLD_IP]),
+        };
+
+        assert_eq!(store.rediscover(same).unwrap(), Rediscovered::Unchanged);
+    }
+
+    #[test]
+    fn addresses_chosen_at_enrollment_survive_rediscovery() {
+        let (_dir, mut store) = founded(PinnedAddresses {
+            public_ip: true,
+            advertised_endpoints: true,
+        });
+
+        assert_eq!(
+            store.rediscover(moved_host()).unwrap(),
+            Rediscovered::Unchanged
+        );
+        let machine = store.record().machine().unwrap();
+        assert_eq!(machine.public_ip, Some(ip(OLD_IP)));
+        assert_eq!(
+            machine.advertised_endpoints,
+            endpoints(&["10.0.0.4", OLD_IP])
+        );
+    }
+
+    #[test]
+    fn server_set_pins_only_the_address_it_sets() {
+        let (dir, mut store) = founded(PinnedAddresses::default());
+        store
+            .update(
+                MachineUpdate {
+                    public_ip: PublicIpUpdate::Remove,
+                    ..MachineUpdate::default()
+                },
+                &[],
+            )
+            .unwrap();
+        let mut store = reopened(&dir, store);
+
+        store.rediscover(moved_host()).unwrap();
+
+        let machine = store.record().machine().unwrap();
+        assert_eq!(machine.public_ip, None);
+        assert_eq!(machine.advertised_endpoints, moved_host().endpoints);
+    }
+
+    #[test]
+    fn a_failed_public_ip_lookup_keeps_the_stored_row() {
+        let (_dir, mut store) = founded(PinnedAddresses::default());
+        let before = store.record().machine().unwrap().clone();
+
+        let outcome = store
+            .rediscover(DiscoveredNetwork {
+                public_ip: None,
+                endpoints: endpoints(&["10.0.0.5"]),
+            })
+            .unwrap();
+
+        assert_eq!(outcome, Rediscovered::PublicIpLookupFailed);
+        assert_eq!(store.record().machine(), Some(&before));
+    }
+
+    #[test]
+    fn a_record_written_before_pins_existed_reads_as_unpinned() {
+        let (dir, store) = founded(PinnedAddresses {
+            public_ip: true,
+            advertised_endpoints: true,
+        });
+        drop(store);
+        let path = dir.path().join("data").join(STATE_FILE_NAME);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(
+            json.as_object_mut()
+                .unwrap()
+                .remove("pinned_addresses")
+                .is_some()
+        );
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let mut store = LocalMachineStore::open(dir.path().join("data")).unwrap();
+
+        assert_eq!(
+            store.record().pinned_addresses(),
+            PinnedAddresses::default()
+        );
+        assert!(matches!(
+            store.rediscover(moved_host()).unwrap(),
+            Rediscovered::Updated(_)
+        ));
     }
 }

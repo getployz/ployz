@@ -184,6 +184,9 @@ ployz server set web-1 --accepts-ingress=true
 ployz server set web-1 --public-ip 203.0.113.10
 ```
 
+A public IP you set this way stays until you set it again: Ployz no longer looks it up when the
+server restarts.
+
 A server that takes web traffic but whose ingress is missing or stopped needs a deploy, not
 these settings. See [Ingress isn't running](#ingress-isnt-running).
 

@@ -40,6 +40,7 @@ pub(super) fn open_store(prefix: &str) -> (std::path::PathBuf, RecordOwner, Mach
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let founder = store.record().machine().unwrap().clone();

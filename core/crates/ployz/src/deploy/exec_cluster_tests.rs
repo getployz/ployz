@@ -579,6 +579,7 @@ async fn run_container(
         machine_id,
         ContainerWant::Running {
             container: RunTarget::New(NewContainer {
+                r#gen: ployz_core::Gen::FIRST,
                 slot,
                 resolved_spec,
                 deployment_id: None,

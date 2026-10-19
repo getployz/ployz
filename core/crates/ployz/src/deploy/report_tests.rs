@@ -569,6 +569,8 @@ fn moving_off_an_old_hook() -> DeployPreview {
         .unwrap();
     let observed = |hex: char, kind| {
         ContainerObservation::try_from(ContainerObservationParts {
+            rotation: None,
+            r#gen: None,
             container_id: old(hex),
             display_name: format!("web-{hex}"),
             created_at_unix_nanos: 0,

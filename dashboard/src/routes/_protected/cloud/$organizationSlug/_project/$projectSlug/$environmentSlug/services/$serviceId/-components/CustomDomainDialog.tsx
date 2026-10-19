@@ -22,8 +22,16 @@ import { domainPortSchema } from "./domain-port";
 /** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
 const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
 
-/** ASCII-only, so a non-ASCII letter such as the Kelvin sign never folds into a valid name. */
-const lowercase = (hostname: string) => hostname.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
+const NOT_A_HOSTNAME = /[\p{Cc}\s/\\?#@:%]/u;
+
+const isAscii = (hostname: string) => /^\p{ASCII}*$/u.test(hostname);
+
+const isAsciiHostname = (hostname: string) => isAscii(hostname) && HOSTNAME.test(hostname.toLowerCase());
+
+const isUnicodeNameForTheStore = (hostname: string) => !isAscii(hostname) && hostname.includes(".");
+
+const isHostname = (hostname: string) =>
+  !NOT_A_HOSTNAME.test(hostname) && (isAsciiHostname(hostname) || isUnicodeNameForTheStore(hostname));
 
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
@@ -32,7 +40,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
       Schema.isNonEmpty({ message: "Enter a hostname." }),
-      Schema.makeFilter<string>((hostname) => HOSTNAME.test(lowercase(hostname))
+      Schema.makeFilter<string>((hostname) => isHostname(hostname)
         ? undefined : "Enter a domain you own, like api.example.com."),
     ),
     port: domainPortSchema,
@@ -47,7 +55,7 @@ const customDomainFormSchema = Schema.toStandardSchemaV1(
       {
         decode: SchemaGetter.transform(({ hostname, port }) => ({
           // The Store keeps hostnames lowercase; the staged row should match it.
-          hostname: lowercase(hostname),
+          hostname: isAscii(hostname) ? hostname.toLowerCase() : hostname,
           targetPort: port,
         })),
         encode: SchemaGetter.transform(({ hostname, targetPort }) => ({
@@ -69,6 +77,7 @@ const customDomainFormOptions = appFormOptions.strictSchema({
 export function CustomDomainDialog({
   route,
   initial,
+  refusal,
   hostnameFixed = false,
   defaultTargetPort,
   onClose,
@@ -77,6 +86,8 @@ export function CustomDomainDialog({
   route?: CustomDomain;
   /** A new domain's typed values, as before the Store refused them. */
   initial?: CustomDomain;
+  /** Why the Store refused `initial`, shown until the hostname changes. */
+  refusal?: string;
   /** Editing changes only the port: a Store domain is addressed by its hostname. */
   hostnameFixed?: boolean;
   defaultTargetPort: number | null;
@@ -117,6 +128,7 @@ export function CustomDomainDialog({
                     className="font-mono"
                     disabled={hostnameFixed && route !== undefined}
                     placeholder="api.example.com"
+                    error={field.value === initial?.hostname ? refusal : undefined}
                   />
                 )}
               </form.Field>

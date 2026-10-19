@@ -531,6 +531,7 @@ async fn initialized_machine_yes_refuses_reset_without_explicit_reset() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -585,6 +586,7 @@ async fn rerun_on_the_founded_machine_does_not_claim_to_found_it() {
                     advertised_endpoints: founder.advertised_endpoints.clone(),
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -641,6 +643,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
                     advertised_endpoints: founder.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -708,6 +711,7 @@ async fn reset_enroll_posts_the_rotated_public_key() {
                     advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -776,6 +780,7 @@ async fn reset_enroll_does_not_occupy_the_name_with_the_pre_reset_key() {
                     advertised_endpoints: local.assigned_machine.advertised_endpoints,
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             },
             None,
         )
@@ -1193,6 +1198,8 @@ fn container_on(
     hex: char,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
+        rotation: None,
+        r#gen: None,
         container_id: ployz_core::ContainerId::parse(hex.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-{hex}", spec.name),
         created_at_unix_nanos: 1,

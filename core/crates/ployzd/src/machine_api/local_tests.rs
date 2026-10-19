@@ -709,6 +709,7 @@ async fn fake_docker_service(
                 )],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let store = RecordOwner::spawn(store).unwrap();
@@ -2185,7 +2186,7 @@ mod ensure_container {
     }
 
     fn run_new(key: &str, spec: Value) -> Value {
-        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec}}}})
+        json!({"want":{"state":"running", "container":{"new":{"slot":slot(key), "resolved_spec":spec, "gen":1}}}})
     }
 
     async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
@@ -2438,7 +2439,7 @@ mod ensure_container {
         let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-hook").await;
         let hook = json!({"want":{"state":"running", "container":{"new":{
             "slot":{"namespace":"app", "kind":"pre_deploy_hook", "creation_key":"h1"},
-            "resolved_spec":spec("example.test/api:1")}}}});
+            "resolved_spec":spec("example.test/api:1"), "gen":1}}}});
         let id = present(&ensure(&service, hook.clone()).await).container_id;
         // The hook ran and exited, and the reply was lost.
         set_state(&fake, &id, json!({"Status":"exited", "ExitCode":3}));
@@ -2756,6 +2757,7 @@ mod serving_pointer {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         local
