@@ -17,6 +17,7 @@ import {
   listCachedGithubRepositoriesForOrganization,
   listGithubInstallationsForOrganization,
   listLinkedOrganizationIds,
+  lockGithubRepositoryCache,
   suspendGithubInstallation,
   upsertCachedGithubRepositories,
   upsertGithubInstallation,
@@ -31,6 +32,7 @@ import { GithubApi, resolveGithubRepository } from "./github-observation.api";
 import { githubIdSchema, githubRepositoryFullNameSchema } from "./github-ingestion.contracts";
 import { normalizePublicGithubRepository } from "./public-repository";
 import { AppConfig, type GithubOrigins } from "#/server/config.server";
+import { Database } from "#/server/database.server";
 import { Validation, NotFound } from "#/server/public-error";
 
 export function getGithubAppInstallUrl(github: { readonly appSlug: string; readonly origins: GithubOrigins }) {
@@ -87,7 +89,10 @@ export const processGithubInstallationEvent = Effect.fn(
   const stopBuildsFor = yield* listLinkedOrganizationIds(payload.installation.id);
   if (payload.action === "suspend") {
     yield* suspendGithubInstallation(payload.installation.id);
-    yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
+    yield* (yield* Database).transaction(Effect.gen(function* () {
+      yield* lockGithubRepositoryCache(payload.installation.id);
+      yield* deleteCachedGithubRepositoriesForInstallation(payload.installation.id);
+    }));
   } else yield* deleteGithubInstallation(payload.installation.id);
   return {
     installationId: payload.installation.id,
@@ -105,19 +110,22 @@ export const processGithubInstallationRepositoriesEvent = Effect.fn(
   const removedRepositoryIds = payload.repositories_removed.map(
     (repository) => repository.id,
   );
-  if (addedRepositories.length > 0) {
-    yield* upsertCachedGithubRepositories({
-      installationId: payload.installation.id,
-      repositories: addedRepositories,
-      syncedAt: new Date(),
-    });
-  }
-  if (removedRepositoryIds.length > 0) {
-    yield* deleteCachedGithubRepositoriesById(
-      payload.installation.id,
-      removedRepositoryIds,
-    );
-  }
+  yield* (yield* Database).transaction(Effect.gen(function* () {
+    yield* lockGithubRepositoryCache(payload.installation.id);
+    if (addedRepositories.length > 0) {
+      yield* upsertCachedGithubRepositories({
+        installationId: payload.installation.id,
+        repositories: addedRepositories,
+        syncedAt: new Date(),
+      });
+    }
+    if (removedRepositoryIds.length > 0) {
+      yield* deleteCachedGithubRepositoriesById(
+        payload.installation.id,
+        removedRepositoryIds,
+      );
+    }
+  }));
   return {
     installationId: payload.installation.id,
     shouldSyncRepositories: false,

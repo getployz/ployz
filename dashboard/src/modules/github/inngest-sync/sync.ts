@@ -1,12 +1,13 @@
+import { sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { listInstallationReposPage } from "#/modules/github/github.api";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import {
-  insertMissingCachedGithubRepositories,
+  lockGithubRepositoryCache,
   pruneCachedGithubRepositories,
   upsertCachedGithubRepositories,
 } from "#/modules/github/github.repository";
-import type { Database } from "#/server/database.server";
+import { Database } from "#/server/database.server";
 import type { AppConfig } from "#/server/config.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
@@ -32,26 +33,31 @@ export type GithubSyncEffectRunner = <A, E extends Error>(
   effect: Effect.Effect<A, E, Database | AppConfig | GithubApi>,
 ) => Promise<A>;
 
-const syncRepositoryPage = Effect.fn("Github.syncRepositoryPage")(
-  function* (installationId: number, pageNumber: number, syncedAt: Date) {
-    const page = yield* listInstallationReposPage(installationId, pageNumber);
-    yield* upsertCachedGithubRepositories({
-      installationId,
-      repositories: page.repositories,
-      syncedAt,
-    });
-    return page;
-  },
-);
-
-/** Caches the repositories GitHub lists that the cache lacks, for a caller outside the sync's per-installation concurrency key. Only the sync updates and prunes. */
-export const cacheGithubRepositories = Effect.fn("Github.cacheRepositories")(
-  function* (installationId: number) {
-    for (let pageNumber = 1; ; pageNumber++) {
-      const page = yield* listInstallationReposPage(installationId, pageNumber);
-      yield* insertMissingCachedGithubRepositories({ installationId, repositories: page.repositories });
-      if (!page.hasNextPage) break;
-    }
+/**
+ * Lists every repository GitHub grants the installation, caches them and drops the rest, in one transaction holding the
+ * installation's cache lock. With `lockWaitMillis`, gives up with a LockTimeoutError when another writer holds it that long.
+ */
+export const syncGithubRepositories = Effect.fn("Github.syncRepositories")(
+  function* (installationId: number, lockWaitMillis?: number) {
+    const database = yield* Database;
+    return yield* database.transaction(Effect.gen(function* () {
+      if (lockWaitMillis !== undefined) {
+        yield* database.drizzle.execute(sql`select set_config('lock_timeout', ${`${lockWaitMillis}ms`}, true)`);
+      }
+      yield* lockGithubRepositoryCache(installationId);
+      const syncedAt = new Date();
+      const listedRepositoryIds: number[] = [];
+      let processedPageCount = 0;
+      for (let pageNumber = 1; ; pageNumber++) {
+        const page = yield* listInstallationReposPage(installationId, pageNumber);
+        yield* upsertCachedGithubRepositories({ installationId, repositories: page.repositories, syncedAt });
+        listedRepositoryIds.push(...page.repositories.map((repository) => repository.id));
+        processedPageCount += 1;
+        if (!page.hasNextPage) break;
+      }
+      const deletedRepositoryCount = yield* pruneCachedGithubRepositories(installationId, listedRepositoryIds);
+      return { processedPageCount, processedRepoCount: listedRepositoryIds.length, deletedRepositoryCount };
+    }));
   },
 );
 
@@ -70,35 +76,10 @@ export async function executeSyncGithubRepositories(
       onExcessProperty: "preserve",
     }).installationId,
   );
-  const syncedAtIso = await step.run("start-sync", () =>
-    new Date().toISOString(),
+  const result = await step.run("sync-repositories", () =>
+    runEffect(syncGithubRepositories(installationId)),
   );
-  const syncedAt = new Date(syncedAtIso);
-  let currentPage = 1;
-  let processedPageCount = 0;
-  let processedRepoCount = 0;
-  while (true) {
-    const pageNumber = currentPage;
-    const repositoryPage = await step.run(`sync-page-${pageNumber}`, () =>
-      runEffect(syncRepositoryPage(installationId, pageNumber, syncedAt)),
-    );
-
-    processedPageCount += 1;
-    processedRepoCount += repositoryPage.repositories.length;
-    if (!repositoryPage.hasNextPage) break;
-    currentPage += 1;
-  }
-
-  const deletedRepositoryCount = await step.run(
-    "prune-stale-repositories",
-    () => runEffect(pruneCachedGithubRepositories(installationId, syncedAt)),
-  );
-  return {
-    installationId,
-    processedPageCount,
-    processedRepoCount,
-    deletedRepositoryCount,
-  };
+  return { installationId, ...result };
 }
 
 export const createSyncGithubRepositories = (inngest: PloyzInngest) =>

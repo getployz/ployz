@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import {
   githubInstallation as schemaGithubInstallation,
@@ -143,6 +143,19 @@ export const deleteGithubInstallation = Effect.fn(
     .where(eq(schemaGithubInstallation.installationId, installationId));
 });
 
+/** The advisory lock class of {@link lockGithubRepositoryCache}; the two-key form keeps it apart from every one-key lock. */
+const GITHUB_REPOSITORY_CACHE_LOCK = 1_349_602;
+
+/**
+ * Serializes the writers of one installation's cached repositories until their transaction ends: a sync, which lists
+ * GitHub inside it, and the installation webhooks. Each writer's writes then reflect what GitHub said when it held the
+ * lock, so the last writer's view stands and no clock orders them.
+ */
+export const lockGithubRepositoryCache = Effect.fn("Github.lockRepositoryCache")(function* (installationId: number) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(${GITHUB_REPOSITORY_CACHE_LOCK}, ${installationId})`);
+});
+
 export const deleteCachedGithubRepositoriesForInstallation = Effect.fn(
   "Github.deleteCachedRepositoriesForInstallation",
 )(function* (installationId: number) {
@@ -167,27 +180,6 @@ export const deleteCachedGithubRepositoriesById = Effect.fn(
     );
 });
 
-const cachedRepositoryRows = (data: {
-  readonly installationId: number;
-  readonly repositories: readonly GithubRepository[];
-  readonly syncedAt: Date;
-}) => data.repositories.map((repository) => ({
-  installationId: data.installationId,
-  repositoryId: repository.id,
-  name: repository.name,
-  fullName: repository.full_name,
-  defaultBranch: repository.default_branch,
-  private: repository.private,
-  htmlUrl: repository.html_url,
-  repoUpdatedAt: new Date(repository.repo_updated_at),
-  syncedAt: data.syncedAt,
-}));
-
-const repositoryCacheKey = [
-  schemaGithubRepositoryCache.installationId,
-  schemaGithubRepositoryCache.repositoryId,
-];
-
 export const upsertCachedGithubRepositories = Effect.fn(
   "Github.upsertCachedRepositories",
 )(function* (data: {
@@ -199,9 +191,24 @@ export const upsertCachedGithubRepositories = Effect.fn(
   const database = yield* Database;
   yield* database.drizzle
     .insert(schemaGithubRepositoryCache)
-    .values(cachedRepositoryRows(data))
+    .values(
+      data.repositories.map((repository) => ({
+        installationId: data.installationId,
+        repositoryId: repository.id,
+        name: repository.name,
+        fullName: repository.full_name,
+        defaultBranch: repository.default_branch,
+        private: repository.private,
+        htmlUrl: repository.html_url,
+        repoUpdatedAt: new Date(repository.repo_updated_at),
+        syncedAt: data.syncedAt,
+      })),
+    )
     .onConflictDoUpdate({
-      target: repositoryCacheKey,
+      target: [
+        schemaGithubRepositoryCache.installationId,
+        schemaGithubRepositoryCache.repositoryId,
+      ],
       set: {
         name: sql`excluded.name`,
         fullName: sql`excluded.full_name`,
@@ -211,36 +218,20 @@ export const upsertCachedGithubRepositories = Effect.fn(
         repoUpdatedAt: sql`excluded.repo_updated_at`,
         syncedAt: sql`excluded.synced_at`,
       },
-      // A row written after this listing began holds newer GitHub state; leave it, and its stamp keeps this sync's prune off it.
-      setWhere: sql`${schemaGithubRepositoryCache.syncedAt} <= excluded.synced_at`,
     });
 });
 
-/** Caches repositories the cache lacks, stamped when written, after GitHub listed them. A sync started before then can't prune them; one started after lists them. */
-export const insertMissingCachedGithubRepositories = Effect.fn(
-  "Github.insertMissingCachedRepositories",
-)(function* (data: {
-  readonly installationId: number;
-  readonly repositories: readonly GithubRepository[];
-}) {
-  if (data.repositories.length === 0) return;
-  const database = yield* Database;
-  yield* database.drizzle
-    .insert(schemaGithubRepositoryCache)
-    .values(cachedRepositoryRows({ ...data, syncedAt: new Date() }))
-    .onConflictDoNothing({ target: repositoryCacheKey });
-});
-
+/** Deletes the installation's cached repositories that a full listing left out. */
 export const pruneCachedGithubRepositories = Effect.fn(
   "Github.pruneCachedRepositories",
-)(function* (installationId: number, syncedAt: Date) {
+)(function* (installationId: number, listedRepositoryIds: readonly number[]) {
   const database = yield* Database;
   const deleted = yield* database.drizzle
     .delete(schemaGithubRepositoryCache)
     .where(
       and(
         eq(schemaGithubRepositoryCache.installationId, installationId),
-        lt(schemaGithubRepositoryCache.syncedAt, syncedAt),
+        notInArray(schemaGithubRepositoryCache.repositoryId, [...listedRepositoryIds]),
       ),
     )
     .returning({ repositoryId: schemaGithubRepositoryCache.repositoryId });

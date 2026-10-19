@@ -26,7 +26,7 @@ import { githubOfferQueryOptions, organizationGithubQueryOptions } from "#/modul
 import { githubKeys } from "#/modules/github/github.queries";
 
 const NOTICES = {
-  linked: { title: "GitHub connected", description: "Repositories keep syncing in the background.", tone: "default" },
+  linked: { title: "GitHub connected", description: "Repositories appear in a moment.", tone: "default" },
   none: { title: "Nothing new to connect", description: "Every installation you can reach is already here.", tone: "default" },
   "not-yours": { title: "Not connected", description: "GitHub doesn't list that installation for you.", tone: "destructive" },
   "not-admin": { title: "Not an owner", description: "Only an owner of a GitHub account can connect it.", tone: "destructive" },
