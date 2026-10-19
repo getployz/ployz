@@ -29,6 +29,7 @@ use ts_rs::TS;
 use crate::error;
 use crate::git::GitSetting;
 use crate::policy::{Policy, PolicySetting};
+use crate::scope::EnvironmentSummary;
 use crate::trusted::Trusted;
 
 /// Whether a change waits for a Deploy or takes effect at once.
@@ -762,6 +763,31 @@ impl ServiceSetting {
                 error::invalid("Unknown Service Setting", details.into())
             })
     }
+}
+
+/// Whether `value` is text that names no HTTP path and spells no object.
+pub(crate) fn is_healthcheck_text(value: &Value) -> bool {
+    matches!(ServiceSetting::Healthcheck.coerce(value.clone()), Value::String(text) if !text.starts_with('/'))
+}
+
+/// Healthcheck text that is not a path: a command or a timeout takes an object.
+pub(crate) fn healthcheck_text(service: &ServiceName, summary: &EnvironmentSummary) -> RpcError {
+    let setting = ServiceSetting::Healthcheck;
+    error::invalid(
+        format!(
+            "{}: text sets an HTTP path like /health; a command takes an object like {{\"command\":\"pg_isready\",\"timeoutSeconds\":60}}, and an HTTP check's timeout one like {{\"path\":\"/health\",\"timeoutSeconds\":60}}",
+            setting.name()
+        ),
+        json!({
+            "setting": setting.name(),
+            "expected": setting.expected(),
+            "example": setting.examples().get(0),
+            "next": format!(
+                "ployz set {service} --patch '{{\"healthcheck\":{{\"command\":\"pg_isready\"}}}}' --env {} --project {}",
+                summary.name, summary.project
+            ),
+        }),
+    )
 }
 
 /// A core change row's value at `field` as reads show it: never a secret, a

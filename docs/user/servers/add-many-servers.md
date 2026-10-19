@@ -15,7 +15,9 @@ To join hosts automatically, turn on **Enroll on arrival** in **Add servers** an
 Anyone with this token can join servers up to that limit until it expires or you revoke it.
 
 Arrival enrollment only joins an existing cluster. In a new organization, enroll the first
-server yourself. Ready hosts then join on their next check-in. Blocked hosts and hosts still
+server yourself. Until then the install ends with
+`No cluster yet. Enroll one server in Ployz Cloud to start it.` and `ployz status` on the host
+shows `No cluster yet`. Ready hosts then join on their next check-in. Blocked hosts and hosts still
 installing Docker or building ZFS keep waiting. Ployz keeps the hostnames and enables
 Services, Web traffic, and Builds. It uses ZFS with a spare disk when available, or the main
 disk otherwise. Hosts where ZFS cannot run, or its preparation failed, was skipped, or was

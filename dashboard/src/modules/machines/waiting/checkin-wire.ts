@@ -90,6 +90,6 @@ export type ProbeRequest = typeof ProbeRequest.Type;
 export type ProbeHandout = ProbeRequest & { readonly handout: string };
 
 export type CheckinResponse =
-  | { readonly kind: "wait"; readonly retryAfter: number; readonly probe?: ProbeHandout }
+  | { readonly kind: "wait"; readonly retryAfter: number; readonly probe?: ProbeHandout; readonly noCluster?: true }
   | { readonly kind: "stop"; readonly reason: CheckinStopReason; readonly message: string }
   | { readonly kind: "enroll"; readonly attemptId: string; readonly token: string; readonly role: EnrollmentRole } & EnrollInstruction;

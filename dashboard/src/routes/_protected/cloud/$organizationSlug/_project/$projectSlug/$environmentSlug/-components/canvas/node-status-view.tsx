@@ -50,7 +50,7 @@ function StatusMark({ tone }: { tone: Tone }) {
 }
 
 /** "OOM" alone, "OOM +1" beside other issues, else the count. */
-export const issuesText = ({ count, trouble }: NodeIssues) => trouble === null ? String(count) : count > 1 ? `${trouble} +${count - 1}` : trouble;
+export const issuesText = ({ count, lead }: NodeIssues) => lead === null ? String(count) : count > 1 ? `${lead} +${count - 1}` : lead;
 
 /** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠. */
 export function StatusLine({ status, issues, onIssues, className }: {
@@ -70,7 +70,7 @@ export function StatusLine({ status, issues, onIssues, className }: {
           </span>}
       {issues ? (
         <Badge variant={issues.tone === "bad" ? "destructive" : "warning"} className={cn("ml-auto", onIssues && "cursor-pointer hover:underline")}
-          aria-label={issues.trouble ? `${issues.trouble}, ${plural(issues.count, "issue")}` : plural(issues.count, "issue")}
+          aria-label={issues.lead ? `${issues.lead}, ${plural(issues.count, "issue")}` : plural(issues.count, "issue")}
           role={onIssues ? "link" : undefined} onClick={onIssues}>
           <TriangleAlertIcon data-icon="inline-start" />{issuesText(issues)}
         </Badge>

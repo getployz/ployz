@@ -331,6 +331,8 @@ enum CliNext {
     /// The tool, and the input key the first argument fills.
     Tool(&'static str, Option<&'static str>),
     VolumeSharedWrites,
+    /// No tool call does what the line does.
+    Drop,
 }
 
 /// `Fix` without data, so the table stays `const`.
@@ -378,6 +380,8 @@ const CLI_NEXT: &[(&str, CliNext)] = &[
     ("domain add", CliNext::Tool("domain_add", Some("service"))),
     ("volume inspect", CliNext::Tool("environment_show", None)),
     ("volume set", CliNext::VolumeSharedWrites),
+    // volume_add takes no shared writes.
+    ("volume add", CliNext::Drop),
 ];
 
 /// The table row for a CLI line's positional words, and how many words its
@@ -434,6 +438,7 @@ fn cli_next(line: &str) -> Next {
             }
             Next::Call(Call::new(tool, input.into()))
         }
+        CliNext::Drop => Next::Drop,
         CliNext::VolumeSharedWrites => {
             if let Some(volume) = argument {
                 input.insert("volume".into(), volume.into());
