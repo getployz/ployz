@@ -136,6 +136,14 @@ deploy a card can read **Not running** or **Crashed** for a few seconds: if the 
   ployz service restart api
   ```
 
+## My service shows Server offline
+
+Every replica of the service is on a server that's **Offline**, so the service is down. See
+[A server shows Offline](servers.md#a-server-shows-offline) and
+[When a server goes down](../services/scaling.md#when-a-server-goes-down). A service with replicas
+on other servers keeps serving from them, and reads **Degraded** while fewer serve than it asks
+for.
+
 ## My deployment stays Queued
 
 - Another deployment of the environment is running. Yours runs after it; cancel that one from
