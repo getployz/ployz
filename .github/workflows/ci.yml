@@ -35,10 +35,12 @@ env:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    # Same-repo runs go to the self-hosted pool when CI_SELF_HOSTED is on; fork PRs never do.
+    runs-on: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ployz-omarchy' || 'ubuntu-24.04' }}
     timeout-minutes: 5
     outputs:
       jobs: ${{ steps.select.outputs.jobs }}
+      runner: ${{ vars.CI_SELF_HOSTED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'ployz-omarchy' || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +55,7 @@ jobs:
 
   contracts:
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -89,7 +91,7 @@ jobs:
         working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -114,7 +116,7 @@ jobs:
         working-directory: core
     needs: changes
     if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-tests')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 25
     permissions:
       contents: read
@@ -186,7 +188,7 @@ jobs:
     needs: changes
     # Main always runs it, so every main commit has a ployz-uptime:<sha> for Railway to pin.
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || contains(fromJSON(needs.changes.outputs.jobs), 'uptime')
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -242,6 +244,8 @@ jobs:
       actions: write
       # Main commits and release tags publish the Cloud image.
       packages: write
+    with:
+      runner: ${{ needs.changes.outputs.runner }}
     secrets: inherit
 
   release-contracts:
@@ -256,11 +260,12 @@ jobs:
   # The binaries the verify harness runs, built once per change on main so local runs download them.
   # Not a check: no PR waits on it, so it stays out of ready.
   verify-binaries:
+    needs: changes
     if: github.event_name != 'pull_request'
     defaults:
       run:
         working-directory: core
-    runs-on: ubuntu-24.04
+    runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -302,7 +307,7 @@ jobs:
     name: CI ready
     if: always()
     needs: [changes, contracts, rust-lint, rust-tests, uptime, macos-cli, cloud, release-contracts]
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.runner }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
