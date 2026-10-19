@@ -113,6 +113,43 @@ it("sends nothing for a Deploy whose own press staged a draft that saved before 
   expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
 });
 
+it("sends nothing for a Deploy held down while a draft saves, then deploys the next press", async () => {
+  const test = setup();
+  let land: (value: typeof edited) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise<typeof edited>((resolve) => { land = resolve; })).mockResolvedValueOnce(admitted);
+  press("Stage replicas");
+
+  // The press begins while the draft still saves, which lands and shows before the button comes up.
+  fireEvent.pointerDown(screen.getByText("Deploy now"));
+  land(edited);
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+  act(() => { fireEvent.click(screen.getByText("Deploy now")); });
+  await act(() => Promise.resolve());
+  expect(test.admits()).toMatchObject([{ command: "edit" }]);
+  expect(admittedIds).toEqual([]);
+
+  press("Deploy now");
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
+it("judges each press with no pointer or key before it once, so the one after a staging press deploys", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce(edited).mockResolvedValueOnce(admitted);
+  press("Stage replicas");
+  await waitFor(() => expect(test.queryClient.isMutating()).toBe(0));
+  test.shows("3:1:0");
+
+  // Assistive tech activates the button without a pointer or key.
+  act(() => { screen.getByText("Deploy now").click(); });
+  await act(() => Promise.resolve());
+  expect(admittedIds).toEqual([]);
+  act(() => { screen.getByText("Deploy now").click(); });
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.admits()[1]).toMatchObject({ command: "admit", version: "3:1:0" });
+});
+
 it("sends nothing for a Deploy pressed while a Volume's storage still saves", async () => {
   const test = setup();
   let land: (value: never) => void = () => {};

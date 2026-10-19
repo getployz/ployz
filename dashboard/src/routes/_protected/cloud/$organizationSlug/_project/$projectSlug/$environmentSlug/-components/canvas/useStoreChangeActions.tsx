@@ -45,23 +45,28 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const admitting = useStoreBusy(organizationSlug, environment).has("deploying");
   // The mark shows only after a render, so two clicks in one tick need this lock to admit one Deployment.
   const inFlight = useRef(false);
-  // The newest write when the user's last gesture began. A pointer press starts before the field it leaves blurs, so
-  // a write made since is that press's own staging, even one that saved before the click; a key press leaves no field.
-  const gesture = useRef(Number.POSITIVE_INFINITY);
+  // When the press began: the newest write then, and whether one moving the review was saving. A pointer press starts
+  // before the field it leaves blurs, so a press ships only if no such write was in flight at any point since it began.
+  const gesture = useRef({ mark: Number.POSITIVE_INFINITY, saving: false });
   useEffect(() => {
-    const mark = () => { gesture.current = writeMark(queryClient); };
+    const mark = () => {
+      gesture.current = { mark: writeMark(queryClient), saving: reviewMoving(queryClient, organizationSlug, environment, Number.POSITIVE_INFINITY) };
+    };
     document.addEventListener("pointerdown", mark, true);
     document.addEventListener("keydown", mark, true);
     return () => {
       document.removeEventListener("pointerdown", mark, true);
       document.removeEventListener("keydown", mark, true);
     };
-  }, [queryClient]);
+  }, [queryClient, organizationSlug, environment]);
 
   /** Deploys or saves; resolves with how it went, holding what it would delete when the Store asks first. */
   async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
     // Read now, not from the last render: the press that got here may have just staged the field it left.
-    if (reviewMoving(queryClient, organizationSlug, environment, gesture.current)) return { status: "staging" };
+    const { mark, saving } = gesture.current;
+    // Each press is judged once: a later one with no pointer or key before it (assistive tech) starts from here.
+    gesture.current = { mark: writeMark(queryClient), saving: false };
+    if (saving || reviewMoving(queryClient, organizationSlug, environment, mark)) return { status: "staging" };
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
     try {
