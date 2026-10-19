@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
@@ -12,6 +13,7 @@ import { renameOrganizationServerFn } from "#/modules/organization/organization-
 import { organizationKeys, useOrganizationName } from "#/modules/organization/organization-state.queries";
 
 const isName = Schema.is(OrganizationName);
+const organizationRoute = getRouteApi("/_protected/cloud/$organizationSlug");
 
 /** The Organization's name. Its slug, and so its URLs, stay. */
 export function OrganizationNameSection({ organizationSlug }: { organizationSlug: string }) {
@@ -27,16 +29,23 @@ export function OrganizationNameSection({ organizationSlug }: { organizationSlug
 function OrganizationNameRow({ organizationSlug, name }: { organizationSlug: string; name: string }) {
   const [draft, setDraft] = useState(name);
   const queryClient = useQueryClient();
-  const yourRole = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
-  const locked = yourRole === undefined || !can(yourRole, "org:settings");
+  // A support visit may not rename a customer's Organization; the settings loader has the members, so a member's role is known.
+  const { access } = organizationRoute.useLoaderData();
+  const yourRole = useSuspenseQuery(organizationMembersQueryOptions(organizationSlug)).data.members.find((row) => row.you)?.role;
+  const locked = access === "support" || yourRole === undefined || !can(yourRole, "org:settings");
   const rename = useMutation({
     mutationFn: useServerFn(renameOrganizationServerFn),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: organizationKeys.all }),
   });
+  const edit = (value: string) => {
+    setDraft(value);
+    rename.reset();
+  };
   const next = draft.trim();
   const error = next === name || isName(next) ? null : next === "" ? "Enter a name." : "64 characters at most.";
+  const isDirty = next !== name;
   const submit = () => {
-    if (next !== name && error === null) rename.mutate({ data: { organizationSlug, name: next } });
+    if (isDirty && error === null) rename.mutate({ data: { organizationSlug, name: next } });
   };
   const status: ConfirmStatus | undefined = rename.isPending
     ? { phase: "saving" }
@@ -47,8 +56,8 @@ function OrganizationNameRow({ organizationSlug, name }: { organizationSlug: str
       hint="The URL stays the same."
       commit="confirm"
       control={(
-        <ConfirmableInput id="organization-name" aria-label="Display name" value={draft} onValueChange={setDraft} error={error}
-          disabled={locked} status={status} isDirty={draft !== name} onCancel={() => setDraft(name)} onConfirm={submit} />
+        <ConfirmableInput id="organization-name" aria-label="Display name" value={draft} onValueChange={edit} error={error}
+          disabled={locked} status={status} isDirty={isDirty} onCancel={() => edit(name)} onConfirm={submit} />
       )}
     />
   );
