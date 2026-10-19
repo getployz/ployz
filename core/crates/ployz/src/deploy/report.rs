@@ -409,12 +409,11 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
         ..Diagnostic::default()
     };
     if let FailedOperation::Replacement { compensation, .. } = failed {
-        let causes = |error: &ExecutionError| failure_causes(error);
         let stop = |attempt: &StopAttempt<ExecutionError>| Detail {
             message: attempt.line().into(),
             causes: match attempt {
                 StopAttempt::Stopped => Vec::new(),
-                StopAttempt::Failed { error } => causes(error),
+                StopAttempt::Failed { error } => failure_causes(error),
             },
         };
         match compensation {
@@ -431,7 +430,7 @@ pub(super) fn failure(outcome: &DeployOutcome<ExecutionError>, tails: Vec<LogTai
                 diagnostic.compensation.push(Detail {
                     message: restore_old_container.line().into(),
                     causes: match restore_old_container {
-                        RestoreAttempt::Failed { error } => causes(error),
+                        RestoreAttempt::Failed { error } => failure_causes(error),
                         RestoreAttempt::Restored
                         | RestoreAttempt::LeftHeld
                         | RestoreAttempt::NotServing => Vec::new(),
