@@ -255,7 +255,7 @@ fn comes_back(matches: &ArgMatches, discarded: &Discarded, reversed: &[ployz_sto
             None => {
                 let command = next(matches, &["discard", "--target", "saved"]);
                 crate::ui::stream(format_args!(
-                    "{name} {what}. Another {kind} is named {name} too, so return everything to saved #{saved}: {command}",
+                    "{name} {what}. Another {kind} is named {name} too, so return everything to saved #{saved}, which also drops your unsaved changes: {command}",
                     kind = match change.node.node_type {
                         EnvironmentNodeType::Service => "Service",
                         EnvironmentNodeType::Volume => "Volume",
