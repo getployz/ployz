@@ -106,7 +106,7 @@ pub(super) fn rm_command(command: Command) -> Command {
 
 pub(super) fn branch_command(command: Command) -> Command {
     command
-        .about("Make a Branch: copies of the nodes picked, the rest used live")
+        .about("Make a Branch: copies of the nodes picked; what they use stays the Parent's")
         .arg(positional("name", true).help("Branch name, unique in the Project"))
         .arg(project_arg())
         .arg(

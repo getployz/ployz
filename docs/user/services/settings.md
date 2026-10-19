@@ -91,6 +91,8 @@ switches to an image loses its root directory and build settings, so they are ba
 defaults if it later builds a repository again. Like every change, the switch waits for your
 next deploy, and Discard undoes it.
 
+A service has one source at a time, so one `set` takes `image` or `repository`, not both.
+
 Each setting belongs to one kind of source. An image service refuses the repository settings:
 `branch`, `rootDir`, the build settings and the deploy-on-push settings. A repository service
 refuses the registry credential. Ployz checks every setting you set against the source the

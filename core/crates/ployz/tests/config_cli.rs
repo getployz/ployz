@@ -870,6 +870,11 @@ fn a_healthcheck_is_set_by_path_or_patch_and_refuses_control_characters() {
             setting(store, "web.healthcheck"),
             json!({ "command": "pg_isready", "timeoutSeconds": 60 })
         );
+        let refused = failed(store, &["set", "web.healthcheck=pg_isready"], 2);
+        assert_eq!(
+            refused["message"],
+            "healthcheck: text sets an HTTP path like /health; a command or a timeout takes {\"command\", \"timeoutSeconds\"}"
+        );
         ok(store, &["unset", "web.healthcheck"]);
         assert_eq!(setting(store, "web.healthcheck"), Value::Null);
         let before_invalid = ok(store, &["diff"]);

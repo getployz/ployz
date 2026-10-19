@@ -576,6 +576,11 @@ impl ServiceSetting {
             ServiceHealthcheck::None => HEALTHCHECK_TIMEOUT_DEFAULT,
         };
         let healthcheck = match value {
+            Value::String(text) if !text.starts_with('/') => {
+                return Err(self.invalid(
+                    "text sets an HTTP path like /health; a command or a timeout takes {\"command\", \"timeoutSeconds\"}",
+                ));
+            }
             Value::String(path) => ServiceHealthcheck::Http {
                 path,
                 timeout_seconds: timeout,

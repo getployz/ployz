@@ -157,6 +157,16 @@ pub(crate) fn edit(
             set.push((path.settings_of()?.clone(), *setting));
         }
     }
+    for (service, setting) in &set {
+        if *setting == ServiceSetting::Image
+            && set.contains(&(service.clone(), ServiceSetting::Git(GitSetting::Repository)))
+        {
+            return Err(error::invalid(
+                format!("Set {service}.image or {service}.repository, not both"),
+                json!({ "service": service }),
+            ));
+        }
+    }
     // The source changes go first, unsets before sets, so the order of keys never matters.
     steps.sort_by_key(|(path, step)| match (path.target(), step) {
         (Some(Target::Setting(setting)), step) if is_source(*setting) => {
