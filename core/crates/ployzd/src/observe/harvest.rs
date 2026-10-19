@@ -32,7 +32,8 @@ use super::{
     frame::{self, DamageScan},
     layout::{
         ContainerKind, ContainerMeta, EXITED_FILE, FIRST_SET_FILE, GAPS_FILE, Gap, GapReason,
-        LINKING_FILE, LogFileName, META_FILE, SCANNED_FILE, StoreRoot, create_private_dir,
+        LINKING_FILE, LogFileName, META_FILE, OOM_KILLED_FILE, SCANNED_FILE, StoreRoot,
+        create_private_dir,
     },
     metrics::{
         sampler,
@@ -519,19 +520,20 @@ impl Harvester {
         }
     }
 
-    /// Records an exit once: a forgotten container's `die` can come again
-    /// in a resumed stream, and its exit settled again from less evidence.
+    /// Records an exit or OOM kill once: a forgotten container's `die` or
+    /// `oom` can come again in a resumed stream, and its exit settled again
+    /// from less evidence.
     fn record(&mut self, marker: MetricMarker) {
         let id = marker.container_id;
+        let ts = marker.ts;
         let crashed = marker.is_crash();
-        let store_dir = self.store.container(&id);
-        let died = matches!(marker.kind, MarkerKind::Exit { .. }).then_some(marker.ts);
-        if let Some(died) = died {
-            match read_exited(&store_dir) {
-                Ok(Some(exited)) if died <= exited => return,
+        let recorded = recorded_file(&marker.kind).map(|file| self.store.container(&id).join(file));
+        if let Some(recorded) = &recorded {
+            match read_recorded(recorded) {
+                Ok(Some(newest)) if ts <= newest => return,
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!(container = %id, %error, "cannot read which exit was recorded last");
+                    tracing::warn!(container = %id, %error, "cannot read which marker was recorded last");
                 }
             }
         }
@@ -541,11 +543,12 @@ impl Harvester {
         }
         if crashed && let Err(error) = self.crashes.push(marker) {
             tracing::warn!(container = %id, %error, "cannot queue a crash for Cloud");
+            return;
         }
-        if let Some(died) = died
-            && let Err(error) = write_exited(&store_dir, died)
+        if let Some(recorded) = &recorded
+            && let Err(error) = write_recorded(recorded, ts)
         {
-            tracing::warn!(container = %id, %error, "cannot record which exit was recorded last");
+            tracing::warn!(container = %id, %error, "cannot record which marker was recorded last");
         }
     }
 
@@ -1296,23 +1299,32 @@ fn read_scanned(store_dir: &Path) -> io::Result<Option<u64>> {
     }
 }
 
-/// When the newest exit recorded for the container died. A container's runs
-/// die one after another, so no exit it has not recorded died before it.
-fn read_exited(store_dir: &Path) -> io::Result<Option<i64>> {
-    match fs::read_to_string(store_dir.join(EXITED_FILE)) {
-        Ok(exited) => Ok(exited.trim().parse().ok()),
+/// The file holding when the newest marker of `kind` recorded for a
+/// container happened. A restart is recorded only after an exit the events
+/// saw, which a forgotten container's resumed stream cannot repeat.
+fn recorded_file(kind: &MarkerKind) -> Option<&'static str> {
+    match kind {
+        MarkerKind::Exit { .. } => Some(EXITED_FILE),
+        MarkerKind::Oom => Some(OOM_KILLED_FILE),
+        MarkerKind::Restart => None,
+    }
+}
+
+/// A container's exits, like its OOM kills, happen one after another, so
+/// none it has not recorded happened before the newest one it has.
+fn read_recorded(path: &Path) -> io::Result<Option<i64>> {
+    match fs::read_to_string(path) {
+        Ok(recorded) => Ok(recorded.trim().parse().ok()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
 
-fn write_exited(store_dir: &Path, died: i64) -> io::Result<()> {
-    create_private_dir(store_dir)?;
-    crate::filesystem::atomic_write(
-        &store_dir.join(EXITED_FILE),
-        died.to_string().as_bytes(),
-        0o600,
-    )
+fn write_recorded(path: &Path, ts: i64) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        create_private_dir(dir)?;
+    }
+    crate::filesystem::atomic_write(path, ts.to_string().as_bytes(), 0o600)
 }
 
 fn gap_recorded(store_dir: &Path, gap: &Gap) -> io::Result<bool> {
@@ -3515,6 +3527,40 @@ mod tests {
             running.harvester.on_docker_event(die.clone());
             running.settle_exits(|| Inspected::Gone);
         }
+        assert_eq!(crashes(&host).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_oom_kill_delivered_again_after_a_rescan_forgets_its_container_is_recorded_once() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        host.container(&[]);
+        let oom = event("oom", T0 + 1, &[("ployz.service.id", SERVICE_ID)]);
+        running.harvester.on_docker_event(oom.clone());
+        host.remove_from_docker();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(oom);
+        assert_eq!(host.markers(), [(T0 + 1, MarkerKind::Oom)]);
+    }
+
+    #[tokio::test]
+    async fn a_crash_the_outbox_could_not_queue_is_queued_when_its_die_comes_again() {
+        let host = host().with_machine();
+        let die = event(
+            "die",
+            T0 + 1,
+            &[("ployz.service.id", SERVICE_ID), ("exitCode", "1")],
+        );
+        let outbox = host.store.crash_outbox();
+        let mut running = host.harvester();
+        fs::remove_dir_all(&outbox).unwrap();
+        fs::write(&outbox, b"").unwrap();
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Gone);
+        fs::remove_file(&outbox).unwrap();
+        let mut running = host.harvester();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| Inspected::Gone);
         assert_eq!(crashes(&host).len(), 1);
     }
 

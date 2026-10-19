@@ -36,8 +36,9 @@ use ployz_core::ContainerId;
 
 use super::layout::{
     CONTAINERS_DIR, EXITED_FILE, EXITED_TEMP_FILE, FIRST_SET_FILE, FIRST_SET_TEMP_FILE, GAPS_FILE,
-    LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE, METRICS_DIR, RAW_DIR, ROLLUP_DIR,
-    SCANNED_FILE, SCANNED_TEMP_FILE, SegmentName, StoreRoot, VERSION_DIR,
+    LINKING_FILE, LogFileName, META_FILE, META_TEMP_FILE, METRICS_DIR, OOM_KILLED_FILE,
+    OOM_KILLED_TEMP_FILE, RAW_DIR, ROLLUP_DIR, SCANNED_FILE, SCANNED_TEMP_FILE, SegmentName,
+    StoreRoot, VERSION_DIR,
 };
 
 const GIB: u64 = 1 << 30;
@@ -450,7 +451,7 @@ fn scan_container(
     })
 }
 
-const STORE_FILES: [&str; 10] = [
+const STORE_FILES: [&str; 12] = [
     META_FILE,
     META_TEMP_FILE,
     GAPS_FILE,
@@ -461,6 +462,8 @@ const STORE_FILES: [&str; 10] = [
     FIRST_SET_TEMP_FILE,
     EXITED_FILE,
     EXITED_TEMP_FILE,
+    OOM_KILLED_FILE,
+    OOM_KILLED_TEMP_FILE,
 ];
 
 fn is_store_file(name: &CString) -> bool {
