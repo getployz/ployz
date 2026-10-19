@@ -302,7 +302,6 @@ fn a_server_answer_describes_only_the_readable_namespaces_and_keeps_host_totals(
     );
 }
 
-/// Run one act against Container `1` on Machine `a`, served by `service`.
 async fn acted<T, F: std::future::Future<Output = Result<T, RpcError>>>(
     service: support::DeployService,
     act: impl FnOnce(crate::sdk::Session, ployz_core::MachineId) -> F,

@@ -1,7 +1,3 @@
-//! Rotation moves a Deploy or a user command drives on one copy and the
-//! route waits that prove them: `bring_in`, the hold, `retire`, and the
-//! listed and unlisted waits over `ReadRoutes`.
-
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -18,23 +14,16 @@ use tokio_util::sync::CancellationToken;
 use super::MachineOperations;
 use crate::connect::{TARGET_RPC_TIMEOUT, in_rpc_timeout, stop_rpc_timeout};
 
-/// How often a wait re-reads the routes.
 pub(crate) const ACK_POLL: Duration = Duration::from_secs(1);
-/// How long a wait gives every live proxy to list or drop a copy.
 pub(crate) const ACK_WAIT: Duration = Duration::from_secs(300);
 
-/// How long Docker gives a Container to stop when neither the user nor its spec
-/// names a grace.
 const DOCKER_STOP_GRACE_SECONDS: u16 = 10;
 
-/// A run id for a hold or a bring-in outside a Deploy.
 pub(crate) fn fresh_run() -> DeploymentLogId {
     DeploymentLogId::parse(uuid::Uuid::new_v4().simple().to_string())
         .expect("a simple uuid is a deployment log id")
 }
 
-/// One copy as last observed: where it runs and the rotation every ask
-/// carries as `expect`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Copy {
     pub(crate) machine_id: MachineId,
@@ -58,20 +47,15 @@ impl Copy {
     }
 }
 
-/// What an In ask settled to.
 #[derive(Debug)]
 pub(crate) enum BroughtIn {
     In,
-    /// The owner answered but the copy is not In: it failed health.
-    NotIn {
-        health: Option<HealthVerdict>,
-    },
+    NotIn { health: Option<HealthVerdict> },
     Refused(ContainerRefusal),
 }
 
-/// Ask the owner to bring `copy` In for `run`. Only an answer whose `now` is
-/// In succeeds. An unanswered ask re-reads the copy: the owner may have
-/// written In after the deadline passed.
+/// An unanswered ask re-reads the copy: the owner may have written In after
+/// the deadline passed.
 pub(crate) async fn bring_in<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -109,17 +93,13 @@ pub(crate) async fn bring_in<C: MachineOperations>(
     }
 }
 
-/// How a route wait ended.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum Wait {
     Done,
-    /// The Machines that had not confirmed when `ACK_WAIT` passed.
     TimedOut(Vec<MachineId>),
     Cancelled,
 }
 
-/// Wait until every live Machine's route for `service` lists all of `copies`.
-/// `acked` fires once per Machine as it confirms.
 pub(crate) async fn wait_listed<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -139,7 +119,6 @@ pub(crate) async fn wait_listed<C: MachineOperations>(
     .await
 }
 
-/// Wait until no live Machine's route for `service` lists `container_id`.
 pub(crate) async fn wait_unlisted<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -192,8 +171,6 @@ async fn wait_routes<C: MachineOperations>(
     }
 }
 
-/// The live Machines whose route does not yet satisfy the wait. A missing or
-/// unreadable route is not satisfied.
 fn still_waiting(
     read: &RoutesRead,
     satisfied: &impl Fn(&BTreeSet<ContainerId>) -> bool,
@@ -206,12 +183,10 @@ fn still_waiting(
         .collect()
 }
 
-/// How a hold or a retirement ended.
 #[derive(Debug)]
 pub(crate) enum Step {
     Done,
     Refused(ContainerRefusal),
-    /// The copy keeps running: these Machines never confirmed the route change.
     NotConfirmed(Vec<MachineId>),
     Cancelled,
 }
@@ -226,7 +201,6 @@ impl From<Wait> for Step {
     }
 }
 
-/// Hold `copy` for `run` and wait until no live proxy routes it.
 pub(crate) async fn hold<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -255,8 +229,6 @@ pub(crate) async fn hold<C: MachineOperations>(
     .map(Step::from)
 }
 
-/// Take `copy` Out and wait until no live proxy routes it. A copy never
-/// routed (Pending) or already Out needs no ask; the wait still runs.
 pub(crate) async fn take_out<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -287,9 +259,6 @@ pub(crate) async fn take_out<C: MachineOperations>(
     .map(Step::from)
 }
 
-/// Take `copy` Out, wait until no live proxy routes it, then remove it. A copy
-/// never routed (Pending) goes straight to Gone. The copy is removed only after
-/// the wait confirms: a copy proxies may still route is left running.
 pub(crate) async fn retire<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -306,7 +275,6 @@ pub(crate) async fn retire<C: MachineOperations>(
     }
 }
 
-/// Remove `copy`. A copy already gone counts as removed.
 pub(crate) async fn remove<C: MachineOperations>(
     client: &C,
     copy: &Copy,
@@ -331,21 +299,14 @@ pub(crate) async fn remove<C: MachineOperations>(
     }
 }
 
-/// Where a user start or restart left the copy.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UserStarted {
-    /// In and healthy.
     In,
-    /// Started outside rotation: a proxy copy, a hook, or a restarted Pending
-    /// copy. Its health is the caller's to wait for.
+    /// Started outside rotation; its health is the caller's to wait for.
     Running,
-    /// Started but not In: its health failed or could not be read.
     NotIn(Option<HealthVerdict>),
 }
 
-/// A user stop. A routed or routable copy is Held (under its own run when it is
-/// Held already) and stopped once no live proxy lists it.
-/// A copy proxies still list is left running and Held.
 pub(crate) async fn user_stop<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -366,8 +327,6 @@ pub(crate) async fn user_stop<C: MachineOperations>(
     stopped(client, &copy, &observed.resolved_spec, stop, queued).await
 }
 
-/// A user start: a Held, Pending or stopped In copy is
-/// brought In once healthy. An Out copy is refused.
 pub(crate) async fn user_start<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -386,10 +345,6 @@ pub(crate) async fn user_start<C: MachineOperations>(
     started(bring_in(client, &copy, &observed.resolved_spec, run).await?)
 }
 
-/// A user restart. An In copy is Held, stopped once no
-/// live proxy lists it, and brought back In under the same run; it comes back
-/// In even when the stop fails. A Held copy is only brought In. A Pending copy
-/// is stopped and started outside rotation. An Out copy is refused.
 pub(crate) async fn user_restart<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -434,9 +389,6 @@ pub(crate) async fn user_restart<C: MachineOperations>(
     started
 }
 
-/// A user removal: an In or Held copy goes Out, and is
-/// removed once no live proxy lists it. A Pending or Out copy, a hook and a
-/// proxy copy are removed directly. A copy already gone counts as removed.
 pub(crate) async fn user_remove<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -473,14 +425,12 @@ async fn observe<C: MachineOperations>(
         .map(|details| details.container)
 }
 
-/// Whether the copy takes part in rotation. Hooks stay Pending for life, and
-/// proxy copies are never routed.
+/// Hooks stay Pending for life, and proxy copies are never routed.
 fn routable(observed: &ContainerObservation) -> bool {
     observed.kind == ContainerKind::ServiceContainer
         && observed.identity() != QualifiedService::system_ingress()
 }
 
-/// Stop `copy` behind the default drain, bounded by its grace.
 async fn stopped<C: MachineOperations>(
     client: &C,
     copy: &Copy,

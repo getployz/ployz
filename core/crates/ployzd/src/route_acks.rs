@@ -123,8 +123,6 @@ async fn sample_states(
     Ok(membership_states_by_address(states))
 }
 
-/// The Down set a proxy routes by, from the last sample that loaded. Nothing
-/// is Down before the first one, and the local Machine never is.
 pub(crate) struct DownMachines {
     local_id: MachineId,
     down: Option<BTreeSet<MachineId>>,
@@ -150,8 +148,6 @@ impl DownMachines {
                 .is_some_and(|down| down.contains(machine))
     }
 
-    /// Take one sample, keeping the last loaded set when it failed. True when
-    /// the set changed.
     pub(crate) fn update(&mut self, loaded: Result<BTreeSet<MachineId>, CorrosionError>) -> bool {
         match loaded {
             Ok(down) if self.down.as_ref() == Some(&down) => false,
@@ -202,8 +198,7 @@ pub(crate) fn required_ackers(
     }
 }
 
-/// Only explicit Down evidence counts. A Machine with no evidence is unknown,
-/// not Down, and the local Machine never is.
+/// Only explicit Down evidence counts: a Machine with no evidence is unknown, not Down.
 fn reported_down(
     machine: &Machine,
     local: &MachineId,

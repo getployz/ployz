@@ -161,7 +161,6 @@ impl Fleet {
             .push(json!({ "id": { "addr": address }, "state": state }));
     }
 
-    /// Give `container` on `index` a Container Address and wait until the cluster has it.
     async fn addressed(&self, index: usize, container: ContainerId, address: &str) {
         let id = container.to_string();
         for named in self
@@ -192,8 +191,6 @@ impl Fleet {
         .unwrap_or_else(|_| panic!("{container} never published an address"));
     }
 
-    /// Run the real Ingress watcher of every Machine, each sampling Down from the
-    /// fleet's membership.
     async fn run_ingress(&self) -> MachineView {
         let machines = MachineView::start(self.store.clone(), self.shutdown.clone());
         tokio::time::timeout(SETTLE, async {
@@ -229,7 +226,6 @@ impl Fleet {
         AdminClient::new(self.dir.join("admin.sock"))
     }
 
-    /// Wait until every Machine's Ingress acks `service` with exactly `containers`.
     async fn acked_by_all(&self, service: &QualifiedService, containers: &[ContainerId]) {
         let want: BTreeSet<_> = containers.iter().copied().collect();
         tokio::time::timeout(SETTLE, async {
@@ -1118,9 +1114,7 @@ async fn last_in_ignores_a_sibling_on_a_down_machine() {
     assert_eq!(fleet.node(0).rotation(a).await, CopyRotation::In);
 }
 
-/// A Machine membership holds no evidence for is unknown, not Down. Both proxies
-/// route its new In copy beside the one they already route, and the Ingress acks
-/// that list it complete `ReadRoutes`, so an ack wait for that copy returns.
+/// A Machine membership holds no evidence for is unknown, not Down.
 #[tokio::test]
 async fn stale_evidence_keeps_in_copy_routed() {
     let fleet = Fleet::start().await;

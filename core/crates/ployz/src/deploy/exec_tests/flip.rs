@@ -1173,8 +1173,6 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
     client.assert_done();
 }
 
-/// Run `plan` with each Machine in `named` called `machine-<hex>`, and return
-/// the outcome with the warnings as the report prints them.
 async fn execute_reported<C: MachineOperations>(
     plan: &[DeployOperation],
     named: &[MachineId],

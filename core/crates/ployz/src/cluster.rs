@@ -1837,7 +1837,6 @@ async fn change_container_rpc(
     }
 }
 
-/// A started copy that did not come In failed its healthcheck.
 fn admitted(started: UserStarted) -> Result<(), RpcError> {
     match started {
         UserStarted::In | UserStarted::Running => Ok(()),

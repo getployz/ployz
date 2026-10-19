@@ -14,8 +14,6 @@ fn image(name: &str, image: &str) -> RequestedServiceSpec {
     .unwrap()
 }
 
-/// Deploy a new image of a web copy serving In on `one`, while the proxy on `two`
-/// never drops a route. Returns the outcome and every warning text.
 async fn replace_with_a_sticky_proxy(
     cancel_once_out: bool,
 ) -> (

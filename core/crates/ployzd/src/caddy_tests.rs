@@ -48,7 +48,6 @@ fn projection(
     derive(&machine, containers, certificates)
 }
 
-/// The projection a freshly started proxy derives, with no Machine Down.
 fn derive(
     machine: &Machine,
     containers: &[ServiceContainer],

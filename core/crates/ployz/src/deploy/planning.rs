@@ -152,7 +152,6 @@ impl DeployPlan {
         }
     }
 
-    /// Name each Machine `machine-<hex>` by the hex digit its test id repeats.
     #[cfg(test)]
     pub(super) fn with_machine_names(mut self, machines: &[MachineId]) -> Self {
         self.machine_names = machines
