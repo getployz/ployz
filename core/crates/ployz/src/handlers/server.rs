@@ -87,7 +87,7 @@ pub(super) async fn connect_avoiding(
     leaving: &Machine,
 ) -> Result<(Client, MachineId), Error> {
     let mut selected = selection(matches, context).await?;
-    let source = selected.source.clone();
+    let via = selected.source.clone();
     selected
         .connections
         .retain(|connection| connection.machine_id() != Some(&leaving.id));
@@ -102,7 +102,7 @@ pub(super) async fn connect_avoiding(
         }
     }
     Err(Error::conflict(format!(
-        "Server {} is the only Server reachable through {source}, so it cannot carry its own removal. \
+        "Server {} is the only Server reachable through {via}, so it cannot carry its own removal. \
          Connect through another Server, then retry. No changes made.",
         leaving.name
     )))
