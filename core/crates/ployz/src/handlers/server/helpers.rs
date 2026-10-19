@@ -4,7 +4,7 @@ use clap::ArgMatches;
 use ployz_core::{
     DOCKER_NETWORK_CONFLICT_RECOVERY, EnrollRequest, Enrolled, InspectRequest, LeaveRequest, Left,
     LocalMachinePhase, MACHINE_START_WAIT, Machine, MachineDetails, MachineName, MachineToken,
-    PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
+    PinnedAddresses, PublicIpDiscovery, RpcErrorCode, TokenRequest, op,
 };
 
 use super::parse_endpoints;
@@ -34,6 +34,17 @@ pub(super) fn token_request(matches: &ArgMatches) -> Result<InspectRequest, Erro
         token: Some(TokenRequest { public_ip }),
         ..Default::default()
     })
+}
+
+/// Addresses the operator chose on the command line, which the Server keeps.
+pub(super) fn pinned(request: &InspectRequest) -> PinnedAddresses {
+    PinnedAddresses::chosen(
+        request
+            .token
+            .as_ref()
+            .map_or(&PublicIpDiscovery::Auto, |token| &token.public_ip),
+        &request.advertised_endpoints,
+    )
 }
 
 /// Inspect a newcomer for the token a Cluster registers it with.

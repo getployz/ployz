@@ -314,6 +314,7 @@ where
                     registration: join.registration,
                 },
                 wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                pinned: Default::default(),
             },
         )
         .await?;
@@ -452,6 +453,7 @@ where
                         advertised_endpoints: machine_token.advertised_endpoints,
                     },
                     wireguard_mtu: matches.get_one::<u32>("wg-mtu").copied(),
+                    pinned: Default::default(),
                 },
             )
             .await?;

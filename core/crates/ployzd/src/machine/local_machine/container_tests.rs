@@ -25,6 +25,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let owner = RecordOwner::spawn(store).unwrap();
@@ -145,6 +146,7 @@ async fn cancelled_create_finishes_before_reset_cleanup() {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
@@ -283,6 +285,7 @@ async fn joining_admits_direct_create() {
                     },
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
         })
         .await
@@ -329,6 +332,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
                 advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let (replicated, server) = fake_cluster::store().await;
@@ -680,6 +684,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
                 )],
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .unwrap();
     let owner = RecordOwner::spawn(store).unwrap();
@@ -758,6 +763,7 @@ mod settled {
                     )],
                 },
                 wireguard_mtu: None,
+                pinned: Default::default(),
             })
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();

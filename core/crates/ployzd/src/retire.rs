@@ -1811,6 +1811,7 @@ mod tests {
                         )],
                     },
                     wireguard_mtu: None,
+                    pinned: Default::default(),
                 })
                 .unwrap();
             let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();

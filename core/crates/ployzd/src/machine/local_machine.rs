@@ -20,7 +20,7 @@ use thiserror::Error;
 
 use super::{
     EnrollPlan, LocalMachineRecord, RecordOwner, RecordOwnerStopped, StoreError, local_runtime,
-    store::Installation,
+    store::{Installation, Rediscovered},
 };
 
 use crate::{
@@ -451,6 +451,53 @@ impl LocalMachine {
             disk_total_bytes: capacity.disk_total_bytes,
             disk_available_bytes: capacity.disk_available_bytes,
         })
+    }
+
+    /// Refresh this participating Machine's unpinned public IP and Advertised
+    /// Endpoints from discovery, so peers learn an address that changed while it
+    /// was down. A failure keeps the stored row.
+    pub async fn rediscover_addresses(&self) {
+        match self.try_rediscover_addresses().await {
+            Ok(Rediscovered::Unchanged) => {}
+            Ok(Rediscovered::Updated(machine)) => tracing::info!(
+                public_ip = ?machine.public_ip,
+                advertised_endpoints = ?machine.advertised_endpoints,
+                "rediscovered this Machine's addresses"
+            ),
+            Ok(Rediscovered::PublicIpUnknown) => tracing::warn!(
+                "public IP lookup failed; keeping the stored public IP and Advertised Endpoints"
+            ),
+            Err(error) => tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not rediscover this Machine's addresses; keeping the stored ones"
+            ),
+        }
+    }
+
+    async fn try_rediscover_addresses(&self) -> Result<Rediscovered, Error> {
+        let record = self.record();
+        let pinned = record.pinned_addresses();
+        let (LocalMachinePhase::Participating, Some(machine)) = (record.phase(), record.machine())
+        else {
+            return Ok(Rediscovered::Unchanged);
+        };
+        if pinned.public_ip && pinned.advertised_endpoints {
+            return Ok(Rediscovered::Unchanged);
+        }
+        let public_ip = match (pinned.public_ip, machine.public_ip) {
+            (false, _) => PublicIpDiscovery::Auto,
+            (true, Some(address)) => PublicIpDiscovery::Override(address),
+            (true, None) => PublicIpDiscovery::Disabled,
+        };
+        let discovered = discover_network(public_ip).await?;
+        let local = self.clone();
+        self.finish_mutation(async move {
+            Ok(local
+                .owner
+                .mutate(move |store| store.rediscover(discovered))
+                .await??)
+        })
+        .await
     }
 
     /// Enroll this Machine as a founder or member and request restart. A resend

@@ -326,6 +326,8 @@ impl Daemon {
             running_builds,
             shutdown.clone(),
         );
+        let rediscovery = crate::machine::LocalMachine::new(local.clone());
+        tokio::spawn(async move { rediscovery.rediscover_addresses().await });
         let management_endpoint =
             management::bind(local_record.management_secret(), &config.management)
                 .await
@@ -1350,6 +1352,7 @@ mod tests {
                         )],
                     },
                     wireguard_mtu: None,
+                    pinned: Default::default(),
                 })
             })
             .await
