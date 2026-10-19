@@ -156,11 +156,19 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
           <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}.
         </p>
       ))}
-      {deployWarnings.map((warning) => (
-        <p key={deploymentWarningText(warning)} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
-          <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}. Set the domain port or PORT.
-        </p>
-      ))}
+      {deployWarnings.map((warning) => {
+        const found = warning.warning;
+        const node = found.type === "image_port_mismatch" ? services.find((service) => service.name === found.service) : undefined;
+        return (
+          <p key={deploymentWarningText(warning)} role="status" className="flex flex-wrap items-center gap-1.5 text-sm text-warning">
+            <TriangleAlertIcon className="size-4" />{deploymentWarningText(warning)}. Set the domain port or PORT.
+            {node ? (
+              <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} search={{}}
+                className="underline underline-offset-4">Service settings</Link>
+            ) : null}
+          </p>
+        );
+      })}
     </div>
   );
 }
