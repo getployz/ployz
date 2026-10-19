@@ -13,6 +13,7 @@ pub use crate::deployment::query::{
     DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
     NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
 };
+pub use crate::deployment::uploads::{HeldUpload, UploadsQuery, UploadsView};
 pub use crate::review::diff::DiffQuery;
 pub use crate::review::history::{HistoryPreview, HistoryPreviewQuery, HistoryQuery, HistoryView};
 pub use crate::service::query::{
@@ -179,6 +180,8 @@ queries! {
     /// One Deployment, by its number in an Environment.
     NumberedDeployment(NumberedDeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::query::numbered(tx, who, q);
+    /// Which uploads Cloud holds still build something.
+    Uploads(UploadsQuery) -> UploadsView => crate::deployment::uploads::uploads(tx, who, q);
     /// One Git build of a Deployment, with its log.
     BuildLog(crate::BuildLogQuery) -> crate::BuildLogView
         => crate::deployment::build_log(tx, who, q);

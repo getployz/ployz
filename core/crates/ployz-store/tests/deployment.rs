@@ -2564,6 +2564,97 @@ fn an_environments_namespace_is_the_one_its_deployments_use() {
 }
 
 #[test]
+fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
+    let (store, who) = shop();
+    for (n, name) in [(6, "front"), (7, "back")] {
+        store
+            .write(
+                &who,
+                &CreateService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(name).unwrap(),
+                    image: None,
+                    template: None,
+                },
+            )
+            .unwrap();
+    }
+    let upload = |c: char| UploadedSource {
+        digest: ployz_core::UploadDigest::parse(c.to_string().repeat(64)).unwrap(),
+        base: None,
+        uploader: None,
+    };
+    let deploy = |n: u8, services: &[&str], upload: Option<UploadedSource>| {
+        store.write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
+                version: None,
+                upload,
+                accept_volume_loss: Vec::new(),
+                message: None,
+            }),
+            &Trusted::default(),
+        )
+    };
+    let a = runner("cli-a");
+    let end = |n: u8| {
+        store.claim(&id(n), &a).unwrap();
+        store
+            .record(&id(n), &a, RunEvidence::NotExecuted("stopped".into()))
+            .unwrap();
+    };
+    let kept = |deployments: &[u8]| -> Vec<bool> {
+        store
+            .read(
+                &who,
+                &ployz_store::UploadsQuery {
+                    deployments: deployments.iter().map(|n| id(*n)).collect(),
+                },
+            )
+            .unwrap()
+            .uploads
+            .iter()
+            .map(|held| held.kept)
+            .collect()
+    };
+    deploy(1, &[], Some(upload('a'))).unwrap();
+    end(1);
+    // An upload for back alone leaves front's.
+    deploy(2, &["back"], Some(upload('b'))).unwrap();
+    end(2);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // Without a new upload, front builds from its own.
+    assert_eq!(
+        deploy(3, &["front"], None).unwrap().upload,
+        Some(upload('a'))
+    );
+    end(3);
+    // One Deployment can't build both from one upload.
+    assert_eq!(code(deploy(4, &[], None)), RpcErrorCode::InvalidArgument);
+    // A retry of an older Deployment ships its upload, and back's latest upload stays.
+    assert_eq!(retry(&store, &who, 5, 1).unwrap().upload, Some(upload('a')));
+    end(5);
+    assert_eq!(kept(&[1, 2]), [true, true]);
+    // A Deployment that may still run keeps its upload, however many come after it.
+    deploy(6, &["back"], Some(upload('c'))).unwrap();
+    store.claim(&id(6), &a).unwrap();
+    for n in 7..=30 {
+        deploy(n, &["front"], None).unwrap();
+    }
+    deploy(31, &["back"], Some(upload('d'))).unwrap();
+    // A newer upload replaced back's b; Deployment 99 was never admitted.
+    assert_eq!(kept(&[1, 2, 6, 31, 99]), [true, false, true, true]);
+}
+
+#[test]
 fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back() {
     let (store, who) = shop();
     store

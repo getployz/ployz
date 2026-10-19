@@ -21,28 +21,11 @@ pub(crate) fn admit(
     let intent = saved_at(tx, environment, saved)?;
     crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
     let environment_id = environment.as_str();
-    // Without a new upload, Services without a source keep building from the latest one.
-    // Once none is left, nothing does, and Cloud lets the upload go.
+    // Without a new upload, each target Service without a source builds from the upload
+    // it last built from.
     let upload = match upload {
         Some(upload) => Some(upload),
-        None if !intent
-            .services
-            .iter()
-            .any(|service| matches!(service.config.source, ServiceSource::Empty { .. })) =>
-        {
-            None
-        }
-        None => match tx
-            .query(
-                "SELECT upload FROM config_deployment \
-                 WHERE environment_id = ?1 AND upload IS NOT NULL ORDER BY number DESC LIMIT 1",
-                &[environment_id.into()],
-            )?
-            .first()
-        {
-            Some(row) => Some(row.json(0, "Deployment upload")?),
-            None => None,
-        },
+        None => super::uploads::inherited(tx, environment, &intent, frozen)?,
     };
     // A Service with nothing to run would fail the whole Deploy on the Servers.
     if let (None, Some(name)) = (&upload, frozen.sourceless.first()) {

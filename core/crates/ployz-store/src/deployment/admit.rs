@@ -64,8 +64,8 @@ pub struct Deploy {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
-    /// A new upload for Services without a source of their own; none keeps the
-    /// Environment's latest.
+    /// A new upload for the target Services without a source of their own; without
+    /// one, each builds from the upload it last built from.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub upload: Option<UploadedSource>,

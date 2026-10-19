@@ -1,12 +1,12 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore } from "@ployz/sdk";
 import { and, asc, eq, min } from "drizzle-orm";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Stream } from "effect";
 import { uploadChunk } from "#/modules/config-store/tables";
 import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { StoreRefused } from "./store.contract";
-import { refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /**
  * The most compressed source one Deployment may upload. Cloudflare in front of Cloud, or of a self-host behind a
@@ -91,80 +91,49 @@ export const extractUpload = Effect.fn("ConfigStore.extractUpload")(function* (o
   return yield* extractUploadedSource(data());
 });
 
-/** What Cloud reads of a Deployment to tell which upload it builds from. */
-interface Builds {
-  id: string;
-  environment_id: string;
-  number: number;
-  in_flight: boolean;
-  upload: { digest: string } | null;
-}
-
-/** Whether two Deployments of one Environment build from the same upload: the same content, by digest. */
-const sameUpload = (a: Builds, b: Builds) =>
-  a.upload !== null && b.upload !== null && a.environment_id === b.environment_id && a.upload.digest === b.upload.digest;
-
-/** Every upload Cloud holds for the Organization, with its Deployment while the Store still has it. */
+/**
+ * Every upload Cloud holds for the Organization, with what the Store says of it: its Environment and digest, and
+ * whether a Service or a Deployment that may still run builds from it. `held` is missing for a Deployment the Store
+ * doesn't have: one not admitted yet, or whose Environment is gone.
+ */
 const heldUploads = Effect.fn("ConfigStore.heldUploads")(function* (store: ConfigStore, organizationId: string) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select({ deploymentId: uploadChunk.deploymentId, arrived: min(uploadChunk.createdAt) })
     .from(uploadChunk).where(eq(uploadChunk.organizationId, organizationId)).groupBy(uploadChunk.deploymentId);
-  return yield* Effect.forEach(rows, ({ deploymentId, arrived }) =>
-    storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-      Effect.map((view) => Option.some(view)),
-      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(Option.none())),
-      Effect.map((view) => ({ deploymentId, arrived: arrived ?? new Date(0), view })),
-    ));
+  if (rows.length === 0) return [];
+  const { uploads } = yield* storeTry(() => store.read(organizationId, {
+    query: "uploads", deployments: rows.map((row) => row.deploymentId),
+  }));
+  const known = new Map(uploads.map((held) => [held.deployment, held]));
+  return rows.map(({ deploymentId, arrived }) => ({ deploymentId, arrived: arrived ?? new Date(0), held: known.get(deploymentId) }));
 });
 
 /**
- * The Deployment whose upload Deployment `deploymentId` builds from: the newest one Cloud holds with the same content
- * in its Environment, which may be an earlier Deployment, or itself. `undefined` without an upload.
+ * The Deployment whose upload Deployment `deploymentId` builds from: itself when it sent one, else one of its
+ * Environment's that sent the same content. `undefined` without an upload. Cleanup keeps that one while
+ * `deploymentId` may still run, since the Store keeps what a Deployment that may still run builds from.
  */
 export const uploadOwner = Effect.fn("ConfigStore.uploadOwner")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.upload === null) return undefined;
-  const owners = (yield* heldUploads(store, organizationId)).flatMap(({ view: held }) =>
-    Option.isSome(held) && sameUpload(held.value, view) ? [held.value] : []);
-  return owners.reduce<Builds | undefined>((newest, held) => newest === undefined || held.number > newest.number ? held : newest, undefined)?.id
-    ?? deploymentId;
+  const held = yield* heldUploads(store, organizationId);
+  if (held.some((upload) => upload.deploymentId === deploymentId)) return deploymentId;
+  return held.find(({ held }) => held?.environment_id === view.environment_id && held.digest === view.upload?.digest)
+    ?.deploymentId ?? deploymentId;
 });
 
 /**
- * Delete every upload of the Organization that can no longer build. An upload stays while its Deployment may still
- * run, or a Deployment of its Environment builds from it that may still run or is the newest; when two hold the same
- * content, the newer one stays. One not admitted yet stays a day. One Store read per upload, and one per Environment.
+ * Delete every upload of the Organization that nothing builds from any more. Each Service without a source keeps the
+ * upload it last built from and its latest new one, until a newer upload for it or its removal; a Deployment that may
+ * still run keeps its own. One not admitted yet stays a day.
  */
 export const releaseUploads = Effect.fn("ConfigStore.releaseUploads")(function* (store: ConfigStore, organizationId: string) {
   const { drizzle } = yield* Database;
-  const held = yield* heldUploads(store, organizationId);
-  const environments = new Map<string, readonly Builds[]>();
-  const recent = Effect.fn("ConfigStore.uploadEnvironment")(function* (view: Builds & { environment: { project: string; name: string } }) {
-    const known = environments.get(view.environment_id);
-    if (known !== undefined) return known;
-    const { project, name } = view.environment;
-    const deployments = yield* storeTry(() => store.read(organizationId, {
-      query: "deployments", environment: { project, environment: name }, limit: 20, cursor: null,
-    })).pipe(
-      Effect.map((page): readonly Builds[] => page.deployments),
-      Effect.catchIf(refusedWith("not_found"), () => Effect.succeed([])),
-    );
-    environments.set(view.environment_id, deployments);
-    return deployments;
-  });
-  for (const { deploymentId, arrived, view } of held) {
-    const kept = yield* Effect.gen(function* () {
-      if (Option.isNone(view)) return arrived.getTime() > Date.now() - 24 * 60 * 60 * 1000;
-      if (view.value.in_flight) return true;
-      const newer = held.some(({ view: other }) =>
-        Option.isSome(other) && sameUpload(other.value, view.value) && other.value.number > view.value.number);
-      if (view.value.upload === null || newer) return false;
-      const deployments = yield* recent(view.value);
-      return deployments.some((deployment, index) => (index === 0 || deployment.in_flight) && sameUpload(deployment, view.value));
-    });
-    if (kept) continue;
+  const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  for (const { deploymentId, arrived, held } of yield* heldUploads(store, organizationId)) {
+    if (held === undefined ? arrived.getTime() > dayAgo : held.kept) continue;
     yield* drizzle.delete(uploadChunk).where(and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId)));
   }
 });

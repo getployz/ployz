@@ -1429,7 +1429,7 @@ const upload = Effect.fn(function* (deploymentId: string, session: string, body:
 });
 
 it.live(
-  "an upload belongs to the one Deployment it was sent for, names its uploader, and stays until a newer one or its Services go",
+  "an upload belongs to the one Deployment it was sent for, names its uploader, and stays until a newer one for its Service or its Service goes",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "config-store-test" });
@@ -1489,16 +1489,18 @@ it.live(
           runStoreDeployment({ organizationId, environmentId, deploymentId, trigger: "user" }, "cloud-test");
         const servers = yield* drizzle.select().from(organizationMachine);
         // Admitted while its Server is there, run once it left, so nothing runs.
-        const admit = Effect.fn(function* (
-          id: string, environment: { project: null; environment: string | null }, upload: { digest: string; base: null; uploader: null } | null,
-        ) {
+        const withServers = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.gen(function* () {
           yield* drizzle.insert(organizationMachine).values(servers);
-          const admitted = yield* request("write", alice, {
-            command: "admit", admit: "deploy", id, environment, services: [], version: null, accept_volume_loss: [], upload,
-          });
+          const result = yield* effect;
           yield* drizzle.delete(organizationMachine);
-          return admitted;
+          return result;
         });
+        const admit = (
+          id: string, environment: { project: null; environment: string | null }, upload: { digest: string; base: null; uploader: null } | null,
+          services: string[] = [],
+        ) => withServers(request("write", alice, {
+          command: "admit", admit: "deploy", id, environment, services, version: null, accept_volume_loss: [], upload,
+        }));
         // Kept while it may still run, so a replaced worker finds it.
         yield* releaseUploads(store, organizationId);
         assert.strictEqual(yield* held(first), 1);
@@ -1548,6 +1550,36 @@ it.live(
         yield* drizzle.update(uploadChunk).set({ createdAt: sql`now() - interval '2 days'` }).where(eq(uploadChunk.deploymentId, third));
         yield* releaseUploads(store, organizationId);
         assert.strictEqual(yield* held(third), 0);
+
+        // Each Service keeps its own latest upload: one for api alone leaves web's.
+        for (const [id, name] of [["00000000-0000-4000-8000-000000000210", "api"], ["00000000-0000-4000-8000-000000000211", "web"]] as const) {
+          yield* request("write", alice, { command: "create_service", id, environment: here, name, image: null });
+        }
+        const deployment = (n: number) => `00000000-0000-4000-8000-000000000${n}`;
+        const [both, apiOnly, webOnly, together, retried] = [deployment(212), deployment(213), deployment(214), deployment(215), deployment(216)];
+        const digest = (c: string) => ({ digest: c.repeat(64), base: null, uploader: null });
+        assert.strictEqual((yield* upload(both, alice, archive)).status, 200);
+        assert.strictEqual((yield* admit(both, here, digest("1"))).status, 200);
+        yield* run(both);
+        assert.strictEqual((yield* upload(apiOnly, alice, archive)).status, 200);
+        assert.strictEqual((yield* admit(apiOnly, here, digest("2"), ["api"])).status, 200);
+        yield* run(apiOnly);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
+        // A settings-only Deploy of web builds from web's upload.
+        assert.strictEqual((yield* admit(webOnly, here, null, ["web"])).status, 200);
+        assert.strictEqual(yield* uploadOwner(store, organizationId, webOnly), both);
+        yield* run(webOnly);
+        // One Deployment can't build both from one upload.
+        const refused = yield* admit(together, here, null);
+        assert.strictEqual(refused.json.error?.code, "invalid_argument");
+        // A retry of an older Deployment ships its upload, and api's latest upload stays.
+        assert.strictEqual((yield* withServers(request("write", alice, {
+          command: "admit", admit: "retry", id: retried, deployment: both,
+        }))).status, 200);
+        yield* run(retried);
+        yield* releaseUploads(store, organizationId);
+        assert.deepStrictEqual([yield* held(both), yield* held(apiOnly)], [1, 1]);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,

@@ -12,6 +12,7 @@ pub(crate) mod query;
 #[cfg(test)]
 mod retire_tests;
 mod rows;
+pub(crate) mod uploads;
 pub(crate) use history::*;
 pub(crate) use lifecycle::*;
 pub(crate) use lowering::*;
