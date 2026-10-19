@@ -417,6 +417,16 @@ it.live("revoking the grant turns its token away, and connecting again issues on
     expect((yield* raw(shop, old)).status).toBe(401);
   }).pipe(Effect.scoped), 30_000);
 
+it.live("a Ployz token on /mcp is turned away with what to use instead", () =>
+  Effect.gen(function* () {
+    const shop = yield* hostedShop();
+    const refused = yield* raw(shop, `ployz_${"a".repeat(40)}`);
+    expect(refused.status).toBe(401);
+    expect(refused.headers.get("www-authenticate")).toMatch(/^Bearer /);
+    const body = yield* Effect.promise(() => refused.json());
+    expect(body).toMatchObject({ error: { message: "/mcp takes a Connect sign-in, not a Ployz token. For a token, run ployz mcp with PLOYZ_TOKEN." } });
+  }).pipe(Effect.scoped), 30_000);
+
 it.live("leaving Shop ends the grant, and neither rejoining nor connecting again revives its credentials", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
