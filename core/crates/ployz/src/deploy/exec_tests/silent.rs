@@ -2,7 +2,7 @@ use super::*;
 use ployz_core::{
     AnswerWhen, ContractDescription, ImageIngestDestination, ImageIngestOpened, ImageSummary,
     Machine, MachineImages, MachineList, MachineName, MachineObservation, OpaquePayload,
-    PROTOCOL_MAJOR, RpcRequestBody, RpcResponse, ServiceMode, WireGuardPublicKey,
+    PROTOCOL_MAJOR, RpcRequestBody, RpcResponse, RunRotation, ServiceMode, WireGuardPublicKey,
 };
 use tonic::{Request, Response, Status};
 
@@ -205,6 +205,7 @@ async fn a_machine_that_never_settles_a_container_is_named() {
         &machine('1'),
         ContainerWant::Running {
             container: RunTarget::Existing(ContainerLocator::Id(container('a'))),
+            rotation: RunRotation::Pending,
         },
     )
     .await
@@ -241,6 +242,7 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
                 image_prepared: true,
                 answer: AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     )
     .await
