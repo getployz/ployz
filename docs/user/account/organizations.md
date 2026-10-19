@@ -107,8 +107,8 @@ How you answer depends on where the command runs:
   the reason given. Ctrl-C stops waiting and leaves the approval pending.
 - With `--json`, it never asks or waits. It exits with `approval_required`, and `details.retry`
   is the same command with `--approval ID`. Run that once the approval is approved.
-- In an agent that uses `ployz mcp`, the agent's app asks you. An app that can't ask waits
-  until someone approves or denies it in Ployz Cloud. See
+- In an agent that uses `ployz mcp`, the agent's app asks you. In an app that can't ask, the
+  call fails with a link, as for a connected agent below. See
   [Give the agent Ployz tools](../cli/overview.md#give-the-agent-ployz-tools).
 - In the [Ployz agent](agent-sidebar.md) in the dashboard, you approve or deny right in its
   panel, and the agent waits for you.
