@@ -286,6 +286,44 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
     ));
     drop(request_sender);
 
+    let (request_sender, request_receiver) = tokio::sync::mpsc::channel(1);
+    request_sender
+        .send(exec_config(
+            &created.container_id,
+            ["sh", "-c", "sleep 301; echo done"],
+            false,
+        ))
+        .await
+        .unwrap();
+    let request = Request::new(ReceiverStream::new(request_receiver));
+    let mut output = client.exec(request).await.unwrap().into_inner();
+    let ExecResponseFrame::ExecId(exec_id) =
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap()
+    else {
+        panic!("exec must report its id first");
+    };
+    drop(output);
+    drop(request_sender);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while docker.client.inspect_exec(&exec_id).await.unwrap().running != Some(false) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("an exec whose client disconnected must stop its command");
+    let leftover = exec_frames(
+        &mut client,
+        &created.container_id,
+        ["sh", "-c", "! ps -o args | grep -qx 'sleep 301'"],
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(leftover.last(), Some(ExecResponseFrame::Exit(0))),
+        "the disconnected exec left its child running: {leftover:?}"
+    );
+
     let detached = exec_frames(
         &mut client,
         &created.container_id,
