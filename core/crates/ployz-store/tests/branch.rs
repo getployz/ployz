@@ -815,6 +815,206 @@ fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
 }
 
 #[test]
+fn a_branchs_own_setup_command_is_read_set_and_unset_at_setup_service() {
+    let (store, who) = shop();
+    let path = |path: &str| SettingPath::parse(path).unwrap();
+    let edit = |environment: &str, change: Change| {
+        store.write(
+            &who,
+            &Edit {
+                environment: at(environment),
+                expect: None,
+                changes: vec![change],
+            },
+        )
+    };
+    let get = |environment: &str, at_path: Option<&str>| {
+        store.read(
+            &who,
+            &ployz_store::EnvironmentQuery {
+                environment: at(environment),
+                path: at_path.map(path),
+                all: false,
+            },
+        )
+    };
+    let pending = || {
+        store
+            .read(
+                &who,
+                &DiffQuery {
+                    environment: at("fix-web"),
+                },
+            )
+            .unwrap()
+            .setup
+    };
+    let setup = |command: &str| SetupCommand {
+        service: ServiceName::parse("web").unwrap(),
+        command: command.into(),
+    };
+    assert_eq!(path("setup.WEB").to_string(), "setup.web");
+
+    let mut create = branch("fix-web", "production", &["web"]);
+    create.setup = vec![setup("exit 7")];
+    store.write(&who, &create).unwrap();
+    let web_id = id_of(&store, &who, "fix-web", "web");
+
+    // get and diff show it before it runs.
+    let read = get("fix-web", Some("setup.web")).unwrap();
+    assert_eq!(
+        texts(
+            &read
+                .settings
+                .iter()
+                .map(|row| &row.path)
+                .collect::<Vec<_>>()
+        ),
+        ["setup.web"]
+    );
+    assert_eq!(read.settings[0].value, json!("exit 7"));
+    assert_eq!(read.settings[0].apply, ployz_store::Apply::Immediate);
+    let whole = get("fix-web", None).unwrap();
+    assert!(
+        whole
+            .settings
+            .iter()
+            .any(|row| row.path == path("setup.web"))
+    );
+    assert!(
+        !whole
+            .settings
+            .iter()
+            .any(|row| row.path == path("setup.db"))
+    );
+    assert_eq!(pending(), [setup("exit 7")]);
+
+    // A failed Deploy runs it again, so fixing it takes effect at once, unstaged.
+    let input = deploy(&store, &who, "fix-web", 1, false);
+    assert_eq!(
+        snapshot(&input, &web_id)["setupCommands"],
+        json!(["exit 7"])
+    );
+    let edited = edit(
+        "fix-web",
+        Change::Set {
+            path: path("setup.web"),
+            value: json!(" pnpm db:seed "),
+        },
+    )
+    .unwrap();
+    assert_eq!(texts(&edited.immediate), ["setup.web"]);
+    assert!(edited.staged.is_empty());
+    assert_eq!(pending(), [setup("pnpm db:seed")]);
+    let input = deploy(&store, &who, "fix-web", 2, false);
+    assert_eq!(
+        snapshot(&input, &web_id)["setupCommands"],
+        json!(["pnpm db:seed"])
+    );
+
+    // Unset drops it; a second unset changes nothing.
+    let unset = || {
+        edit(
+            "fix-web",
+            Change::Unset {
+                path: path("setup.web"),
+            },
+        )
+        .unwrap()
+    };
+    assert_eq!(texts(&unset().immediate), ["setup.web"]);
+    assert!(unset().immediate.is_empty());
+    assert!(pending().is_empty());
+    assert_eq!(
+        get("fix-web", Some("setup.web")).unwrap().settings[0].value,
+        Value::Null
+    );
+    let input = deploy(&store, &who, "fix-web", 3, false);
+    assert_eq!(snapshot(&input, &web_id)["setupCommands"], json!([]));
+
+    // Once web deploys, a new one won't run, and get says so.
+    edit(
+        "fix-web",
+        Change::Set {
+            path: path("setup.web"),
+            value: json!("true"),
+        },
+    )
+    .unwrap();
+    deploy(&store, &who, "fix-web", 4, true);
+    assert!(pending().is_empty());
+    let note = get("fix-web", Some("setup.web")).unwrap().settings[0]
+        .note
+        .clone();
+    assert_eq!(
+        note.as_deref(),
+        Some("web has deployed in fix-web, so setup.web won't run")
+    );
+
+    // Only a Branch has one, of a Service it has; it isn't staged, so there is no discard.
+    let refused = |result: Result<_, ployz_core::RpcError>| {
+        let error = result.map(|_: ployz_store::Edited| ()).unwrap_err();
+        (error.code, error.message)
+    };
+    assert_eq!(
+        refused(edit(
+            "production",
+            Change::Set {
+                path: path("setup.web"),
+                value: json!("true"),
+            },
+        )),
+        (
+            RpcErrorCode::InvalidArgument,
+            "production is not a Branch".into()
+        )
+    );
+    assert_eq!(
+        code(get("production", Some("setup.web"))),
+        RpcErrorCode::InvalidArgument
+    );
+    assert!(
+        !get("production", None)
+            .unwrap()
+            .settings
+            .iter()
+            .any(|row| row.path.to_string().starts_with("setup."))
+    );
+    assert_eq!(
+        code(edit(
+            "fix-web",
+            Change::Set {
+                path: path("setup.nosuch"),
+                value: json!("true"),
+            },
+        )),
+        RpcErrorCode::NotFound
+    );
+    assert_eq!(
+        code(edit(
+            "fix-web",
+            Change::Set {
+                path: path("setup.web"),
+                value: json!(3),
+            },
+        )),
+        RpcErrorCode::InvalidArgument
+    );
+    assert_eq!(
+        code(store.write(
+            &who,
+            &ployz_store::Discard {
+                environment: at("fix-web"),
+                target: None,
+                path: Some(path("setup.web")),
+                version: None,
+            },
+        )),
+        RpcErrorCode::InvalidArgument
+    );
+}
+
+#[test]
 fn a_branch_owns_a_copy_of_the_config_a_copied_service_mounts() {
     let (store, who) = shop();
     let config = |name: &str| ployz_core::ConfigName::parse(name).unwrap();

@@ -401,6 +401,10 @@ impl Editing<'_> {
             (Some(Target::Domains), _) => {
                 return Err(super::domains_are_read_only(&path, service));
             }
+            (Some(Target::Setup), value) => (
+                crate::branch::set_own(&mut *self.tx, environment, service, value)?,
+                Apply::Immediate,
+            ),
             (Some(Target::Description(_)), _) => {
                 return Err(error::invalid(
                     "Variable descriptions are template metadata; use Discard to restore a description",

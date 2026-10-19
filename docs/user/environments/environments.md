@@ -36,6 +36,13 @@ Ployz never copies data, so staging's database starts empty. A setup command run
 `web` first starts, to fill it. To give every new branch of production the same commands, add
 them under **Branches of production** in production's **Settings → Environment**.
 
+From the CLI, add the command when you branch, with `ployz env branch staging --copy web --copy
+postgres --setup 'web=pnpm db:seed'`. In the branch, `ployz get setup.web` shows it, `ployz set
+setup.web='pnpm db:seed --small'` changes it, and `ployz unset setup.web` removes it. A change
+takes effect at once, with nothing to deploy first: the next deploy runs the new command if `web`
+hasn't deployed in staging yet, and until then `ployz diff` shows it. So when a setup command
+fails, fix it with `ployz set` and deploy again.
+
 ## Test staging at its own address
 
 Staging's canvas opens as it deploys. Each copy with a generated address gets its own, with

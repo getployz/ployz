@@ -127,7 +127,7 @@ pub(super) fn branch_command(command: Command) -> Command {
         .arg(
             repeated("setup")
                 .value_name("SERVICE=COMMAND")
-                .help("Run COMMAND in a copied Service before it first deploys"),
+                .help("Run COMMAND in a copied Service before it first deploys; get, set or unset it later at setup.SERVICE"),
         )
         .arg(switch("keep", None).help("Keep it after syncing into its Parent"))
         .arg(
