@@ -2468,6 +2468,7 @@ pub(super) fn prepare_discard(
         },
     )
 }
+
 /// The baseline a path's row discards to, as `diff` lists it: Saved when only a
 /// draft reversal lists the row, else Head.
 fn row_baseline(path: &SettingPath, environment: &Environment, reviewed: &Review) -> DiscardTarget {
@@ -2511,6 +2512,7 @@ fn row_baseline(path: &SettingPath, environment: &Environment, reviewed: &Review
         DiscardTarget::Head
     }
 }
+
 fn has_node(intent: &SavedEnvironmentIntent, node: &ReviewNodeIdentity) -> bool {
     match node.node_type {
         EnvironmentNodeType::Service => intent.services.iter().any(|owner| owner.id == node.id),
