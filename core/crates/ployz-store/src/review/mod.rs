@@ -75,6 +75,10 @@ pub struct DiffView {
     #[serde(default)]
     #[ts(as = "Option<Vec<DestructiveEffect>>", optional)]
     pub effects: BTreeSet<DestructiveEffect>,
+    /// Each reference in Working State to a Service or variable that isn't there.
+    #[serde(default)]
+    #[ts(as = "Option<Vec<crate::BrokenReference>>", optional)]
+    pub broken: Vec<crate::BrokenReference>,
 }
 
 impl DiffView {
@@ -214,6 +218,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         std::collections::BTreeMap::new()
     };
     view.effects = approval::destructive_effects(&deployed, &environment.working, &cluster_domains);
+    let saved_intent = saved.as_ref().map(|saved| &saved.intent);
+    let names = crate::config_item::names_in(
+        &[&environment.working, &head.intent, &head.applied]
+            .into_iter()
+            .chain(saved_intent)
+            .collect::<Vec<_>>(),
+    );
+    view.broken = crate::rules::broken_in(tx, environment, names)?;
     let baseline = saved.as_ref().map_or_else(
         || crate::scope::empty(environment.summary.name.as_str()),
         |saved| saved.intent.clone(),
@@ -307,6 +319,7 @@ fn compare(
         follow_hints: Vec::new(),
         included: Vec::new(),
         effects: BTreeSet::new(),
+        broken: Vec::new(),
         changes: changes
             .groups
             .into_iter()

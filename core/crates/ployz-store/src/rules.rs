@@ -1,6 +1,5 @@
 //! The rules an Environment's authored configuration keeps as a whole, which no
-//! single Setting can check alone: a Volume without Shared Writes has one writer, a
-//! variable or Config file references only Services and variables that exist,
+//! single Setting can check alone: a Volume without Shared Writes has one writer,
 //! variables never reference each other in a cycle, and a Setup Command runs in a
 //! Service there is. A Config takes no part in cycles: nothing references a Config.
 //!
@@ -8,19 +7,157 @@
 //! [`check_write`]. It refuses only a problem the write adds: an Environment that
 //! already breaks a rule — saved before the rule existed, or copied from a Parent
 //! that does — keeps editing and deploying, and a Deploy never re-checks.
+//!
+//! A reference to a Service or variable that isn't there breaks no rule, so nothing
+//! refuses it: [`broken`] reports each one, and a Deploy leaves out what reads it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BUILT_IN_VARIABLES, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableValue, ValuePart,
-    ValuePartOwner,
+    BUILT_IN_VARIABLES, SavedConfigIntent, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableValue, ValuePart, ValuePartOwner,
 };
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{ConfigFileName, ConfigName, RpcError, ServiceName};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use crate::SetupCommand;
 use crate::error;
-use crate::scope::EnvironmentSummary;
+use crate::scope::{Environment, EnvironmentSummary};
+use crate::storage::Tx;
+
+/// A variable or Config file reference to a Service or variable that isn't there.
+/// Nothing refuses one; a Deploy leaves out what reads it and warns.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct BrokenReference {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub at: ReferenceAt,
+    /// The variable it reads, such as `URL` in `${{ redis.URL }}`.
+    pub reads: String,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub missing: Missing,
+}
+
+/// Where a reference is written.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum ReferenceAt {
+    Variable {
+        service: ServiceName,
+        variable: String,
+    },
+    File {
+        config: ConfigName,
+        file: ConfigFileName,
+    },
+}
+
+/// What a broken reference reads that isn't there.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "missing", rename_all = "snake_case")]
+pub enum Missing {
+    /// The Service it reads was removed. `from` is its name, none once no record
+    /// names it.
+    Service { from: Option<ServiceName> },
+    /// The Service `from` has no variable it reads.
+    Variable { from: ServiceName },
+}
+
+impl std::fmt::Display for ReferenceAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Variable { service, variable } => write!(f, "{service}.env.{variable}"),
+            Self::File { config, file } => write!(f, "{config}/{file}"),
+        }
+    }
+}
+
+impl std::fmt::Display for BrokenReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { at, reads, missing } = self;
+        match missing {
+            Missing::Service { from: Some(from) } => {
+                write!(f, "{at} references {from}, which was removed")
+            }
+            Missing::Service { from: None } => write!(f, "{at} references a removed Service"),
+            Missing::Variable { from } => {
+                write!(f, "{at} references {from}.{reads}, which doesn't exist")
+            }
+        }
+    }
+}
+
+/// Each reference in `working` to a Service or variable that isn't there: Services'
+/// variables, then Config files, a removed Service once per variable or file. A
+/// Service `live` holds is there; `names` names a removed one by lineage.
+pub(crate) fn broken(
+    working: &SavedEnvironmentIntent,
+    live: &BTreeMap<String, String>,
+    names: &BTreeMap<String, String>,
+) -> Vec<BrokenReference> {
+    let named = |slug: &str| ServiceName::parse(slug).ok();
+    dangling(working, live)
+        .into_iter()
+        .filter_map(|Dangling { at, reads, wants }| {
+            Some(BrokenReference {
+                at: match at {
+                    Referrer::Variable(service, variable) => ReferenceAt::Variable {
+                        service: named(&service.slug)?,
+                        variable: variable.to_owned(),
+                    },
+                    Referrer::File(config, file) => ReferenceAt::File {
+                        config: config.name.clone(),
+                        file: file.clone(),
+                    },
+                },
+                reads: reads.to_owned(),
+                missing: match wants {
+                    Wants::Service(lineage) => Missing::Service {
+                        from: names.get(&lineage).and_then(|name| named(name)),
+                    },
+                    Wants::Variable { owner, .. } => Missing::Variable {
+                        from: named(&service(working, &owner)?.slug)?,
+                    },
+                },
+            })
+        })
+        .fold(Vec::new(), |mut found, reference| {
+            let repeat = matches!(reference.missing, Missing::Service { .. })
+                && found.iter().any(|seen: &BrokenReference| {
+                    seen.at == reference.at && seen.missing == reference.missing
+                });
+            if !repeat {
+                found.push(reference);
+            }
+            found
+        })
+}
+
+/// [`broken`] in `environment`, naming a removed Service `names` lacks from the
+/// newest save that holds it.
+pub(crate) fn broken_in(
+    tx: &mut dyn Tx,
+    environment: &Environment,
+    mut names: BTreeMap<String, String>,
+) -> Result<Vec<BrokenReference>, RpcError> {
+    let found = broken(&environment.working, &environment.live, &names);
+    let unnamed = Missing::Service { from: None };
+    if !found.iter().any(|reference| reference.missing == unnamed) {
+        return Ok(found);
+    }
+    for row in tx.query(
+        "SELECT intent FROM config_saved WHERE environment_id = ?1 ORDER BY revision DESC",
+        &[environment.summary.id.as_str().into()],
+    )? {
+        for service in row.intent(0, "Saved State")?.services {
+            names.entry(service.lineage_id).or_insert(service.slug);
+        }
+    }
+    Ok(broken(&environment.working, &environment.live, &names))
+}
 
 /// What the rules read of one Environment.
 #[derive(Clone, Copy)]
@@ -40,9 +177,9 @@ pub(crate) struct Facts<'a> {
 ///
 /// # Errors
 /// The first problem the write adds, naming what breaks the rule and how to fix
-/// it: `conflict` when the write removed what something else needs, or a second
-/// writer of a Volume; `invalid_argument` for a value that is wrong as written;
-/// `not_found` for a Setup Command naming no Service.
+/// it: `conflict` for a second writer of a Volume, or a Setup Command's Service the
+/// write removed; `invalid_argument` for a reference cycle; `not_found` for a Setup
+/// Command naming no Service.
 pub(crate) fn check_write(
     environment: &EnvironmentSummary,
     before: Facts<'_>,
@@ -67,27 +204,6 @@ pub(crate) fn check_write(
     };
     Err(match first {
         Problem::Writers { volume, replicas } => refusing.writers(volume, *replicas),
-        Problem::Broken {
-            referrer, wants, ..
-        } => {
-            let keys: Vec<&str> = added
-                .iter()
-                .filter_map(|other| {
-                    if let Problem::Broken {
-                        referrer: r,
-                        key,
-                        wants: w,
-                    } = other
-                        && (r, w) == (referrer, wants)
-                    {
-                        Some(key.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            refusing.broken(referrer, &keys, wants)
-        }
         Problem::Cycle(members) => refusing.cycle(members),
         Problem::NoSetupService(service) => refusing.setup(service),
     })
@@ -98,13 +214,6 @@ pub(crate) fn check_write(
 enum Problem {
     /// A Volume without Shared Writes, by lineage, and how many replicas write it.
     Writers { volume: String, replicas: u32 },
-    /// Variable `key` of Service `referrer`, or file `key` of Config `referrer` (a
-    /// lineage either way), references what isn't there.
-    Broken {
-        referrer: String,
-        key: String,
-        wants: Wants,
-    },
     /// Variables, as (Service lineage, key), that reference each other in a cycle:
     /// one strongly connected group, so an unrelated edit finds the same one.
     Cycle(BTreeSet<(String, String)>),
@@ -112,13 +221,26 @@ enum Problem {
     NoSetupService(ServiceName),
 }
 
+/// A reference in Working State to what isn't there.
+struct Dangling<'a> {
+    at: Referrer<'a>,
+    /// The variable it reads.
+    reads: &'a str,
+    wants: Wants,
+}
+
+/// What holds a reference: a Service's variable, or a Config's file.
+enum Referrer<'a> {
+    Variable(&'a SavedServiceIntent, &'a str),
+    File(&'a SavedConfigIntent, &'a ConfigFileName),
+}
+
 /// What a broken reference names that isn't there.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum Wants {
     /// A Service, by lineage, neither in the Environment nor used live.
     Service(String),
-    /// Variable `key` of the Service `owner` (a lineage), which it doesn't have.
-    Variable { owner: String, key: String },
+    /// A variable of the Service `owner` (a lineage), which it doesn't have.
+    Variable { owner: String },
 }
 
 impl Problem {
@@ -141,11 +263,7 @@ impl Problem {
 
 /// Every rule `facts` breaks.
 fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
-    let Facts {
-        working,
-        live,
-        setup,
-    } = facts;
+    let Facts { working, setup, .. } = facts;
     let mut found = BTreeSet::new();
     for volume in working
         .volumes
@@ -163,60 +281,6 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
             });
         }
     }
-    let configs = working.configs.iter().flat_map(|config| {
-        config.files.iter().flat_map(move |(file, content)| {
-            content.content.iter().filter_map(move |part| match part {
-                ValuePart::Ref { owner, key } => Some((
-                    (config.resource_lineage_id.as_str(), None),
-                    file.as_str(),
-                    owner,
-                    key.as_str(),
-                )),
-                ValuePart::Text { .. } => None,
-            })
-        })
-    });
-    let variables = working.services.iter().flat_map(|referrer| {
-        references(referrer).map(move |(key, owner, wanted)| {
-            (
-                (referrer.lineage_id.as_str(), Some(referrer)),
-                key,
-                owner,
-                wanted,
-            )
-        })
-    });
-    for ((referrer, own), key, owner, wanted) in variables.chain(configs) {
-        let mut broken = |wants| {
-            found.insert(Problem::Broken {
-                referrer: referrer.to_owned(),
-                key: key.to_owned(),
-                wants,
-            });
-        };
-        let owner = match (owner, own) {
-            (ValuePartOwner::Self_, Some(own)) => own,
-            (ValuePartOwner::Self_, None) => continue,
-            (ValuePartOwner::Service { lineage_id }, _) => match service(working, lineage_id) {
-                Some(owner) => owner,
-                None if live.contains_key(lineage_id) => continue,
-                None => {
-                    broken(Wants::Service(lineage_id.clone()));
-                    continue;
-                }
-            },
-        };
-        let has = owner
-            .variables
-            .iter()
-            .any(|variable| variable.key == wanted);
-        if !has && !BUILT_IN_VARIABLES.contains(&wanted) {
-            broken(Wants::Variable {
-                owner: owner.lineage_id.clone(),
-                key: wanted.to_owned(),
-            });
-        }
-    }
     found.extend(cycles(working).into_iter().map(Problem::Cycle));
     for command in setup {
         if !working
@@ -225,6 +289,58 @@ fn problems(facts: Facts<'_>) -> BTreeSet<Problem> {
             .any(|service| service.slug == command.service.as_str())
         {
             found.insert(Problem::NoSetupService(command.service.clone()));
+        }
+    }
+    found
+}
+
+/// Each reference of `working` to a Service neither in it nor in `live`, or to a
+/// variable its Service doesn't have.
+fn dangling<'a>(
+    working: &'a SavedEnvironmentIntent,
+    live: &BTreeMap<String, String>,
+) -> Vec<Dangling<'a>> {
+    let variables = working.services.iter().flat_map(|referrer| {
+        references(referrer).map(move |(key, owner, reads)| {
+            (
+                Referrer::Variable(referrer, key),
+                Some(referrer),
+                owner,
+                reads,
+            )
+        })
+    });
+    let files = working.configs.iter().flat_map(|config| {
+        config.files.iter().flat_map(move |(file, content)| {
+            content.content.iter().filter_map(move |part| match part {
+                ValuePart::Ref { owner, key } => {
+                    Some((Referrer::File(config, file), None, owner, key.as_str()))
+                }
+                ValuePart::Text { .. } => None,
+            })
+        })
+    });
+    let mut found = Vec::new();
+    for (at, own, owner, reads) in variables.chain(files) {
+        let owner = match (owner, own) {
+            (ValuePartOwner::Self_, Some(own)) => own,
+            (ValuePartOwner::Self_, None) => continue,
+            (ValuePartOwner::Service { lineage_id }, _) => match service(working, lineage_id) {
+                Some(owner) => owner,
+                None if live.contains_key(lineage_id) => continue,
+                None => {
+                    let wants = Wants::Service(lineage_id.clone());
+                    found.push(Dangling { at, reads, wants });
+                    continue;
+                }
+            },
+        };
+        let has = owner.variables.iter().any(|variable| variable.key == reads);
+        if !has && !BUILT_IN_VARIABLES.contains(&reads) {
+            let wants = Wants::Variable {
+                owner: owner.lineage_id.clone(),
+            };
+            found.push(Dangling { at, reads, wants });
         }
     }
     found
@@ -409,55 +525,6 @@ impl<'a> Refusing<'a> {
         error::conflict(
             message,
             json!({ "volume": name, "writers": replicas, "next": next }),
-        )
-    }
-
-    fn broken(&self, referrer: &str, keys: &[&str], wants: &Wants) -> RpcError {
-        let referrer = self.name(referrer);
-        let removed = |target: String| {
-            error::conflict(
-                format!(
-                    "{referrer} references {target} ({}); remove those references first",
-                    keys.join(", ")
-                ),
-                json!({ "service": referrer, "references": target, "variables": keys }),
-            )
-        };
-        let (owner, wanted) = match wants {
-            Wants::Service(lineage) => return removed(self.name(lineage)),
-            Wants::Variable { owner, key } => (owner, key),
-        };
-        let owner_name = self.name(owner);
-        let had = service(self.before.working, owner)
-            .is_some_and(|old| old.variables.iter().any(|variable| variable.key == *wanted));
-        if had {
-            return removed(format!("{owner_name}.{wanted}"));
-        }
-        let has: Vec<&str> = service(self.after.working, owner)
-            .map(|owner| {
-                crate::variables::sorted(owner)
-                    .into_iter()
-                    .map(|variable| variable.key.as_str())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let key = keys.first().expect("the refused problem names its own key");
-        error::invalid(
-            format!(
-                "{key}: {owner_name} has no variable {wanted}; it has {}, and the built-ins {}",
-                if has.is_empty() {
-                    "none of its own".to_owned()
-                } else {
-                    has.join(", ")
-                },
-                BUILT_IN_VARIABLES.join(", "),
-            ),
-            json!({
-                "variable": key,
-                "service": owner_name,
-                "keys": has,
-                "built_ins": BUILT_IN_VARIABLES,
-            }),
         )
     }
 
@@ -700,7 +767,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_sync_that_lands_a_broken_reference_is_refused() {
+    fn a_sync_that_lands_a_broken_reference_stages_it() {
         let (store, who) = shop();
         branch(&store, &who, &["db", "redis"]).unwrap();
         let feature = EnvironmentRef {
@@ -748,14 +815,20 @@ pub(crate) mod tests {
                 },
             )
         };
-        let refused = sync(&["redis.env.DB_PASS"]).unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
-        assert!(
-            refused
-                .message
-                .starts_with("DB_PASS: db has no variable PASS")
+        sync(&["redis.env.DB_PASS"]).unwrap();
+        assert_eq!(
+            reported(&store, &who),
+            ["redis.env.DB_PASS references db.PASS, which doesn't exist"]
         );
-        sync(&["redis.env.DB_PASS", "db.env.PASS"]).unwrap();
+    }
+
+    /// The broken references production's review lists.
+    fn reported(store: &ConfigStore, who: &Actor) -> Vec<String> {
+        let query = crate::DiffQuery {
+            environment: EnvironmentRef::default(),
+        };
+        let view = store.read(who, &query).unwrap();
+        view.broken.iter().map(ToString::to_string).collect()
     }
 
     #[test]
@@ -775,7 +848,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn removing_what_a_variable_references_is_refused() {
+    fn removing_or_unsetting_what_a_variable_references_stages_and_reports_it() {
         let (store, who) = shop();
         set(
             &store,
@@ -787,34 +860,36 @@ pub(crate) mod tests {
             ],
         )
         .unwrap();
-        let refused = remove(&store, &who, "db").unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::Conflict);
-        assert_eq!(
-            refused.message,
-            "redis references db (DB_HOST, DB_PASS); remove those references first"
-        );
         let unset = Change::Unset {
             path: SettingPath::parse("db.env.PASS").unwrap(),
         };
-        let refused = edit(&store, &who, vec![unset]).unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::Conflict);
+        edit(&store, &who, vec![unset]).unwrap();
+        set(&store, &who, &[("redis.env.X", json!("${{ db.NOPE }}"))]).unwrap();
         assert_eq!(
-            refused.message,
-            "redis references db.PASS (DB_PASS); remove those references first"
+            reported(&store, &who),
+            [
+                "redis.env.DB_PASS references db.PASS, which doesn't exist",
+                "redis.env.X references db.NOPE, which doesn't exist",
+            ]
         );
-        let refused = set(&store, &who, &[("redis.env.X", json!("${{ db.NOPE }}"))]).unwrap_err();
-        assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
-        assert!(
-            refused
-                .message
-                .starts_with("X: db has no variable NOPE; it has PASS"),
-            "{refused:?}"
+        let removed = store
+            .write(
+                &who,
+                &RemoveService {
+                    environment: EnvironmentRef::default(),
+                    service: ServiceName::parse("db").unwrap(),
+                },
+            )
+            .unwrap();
+        let broken: Vec<String> = removed.broken.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            broken,
+            [
+                "redis.env.DB_HOST references db, which was removed",
+                "redis.env.DB_PASS references db, which was removed",
+                "redis.env.X references db, which was removed",
+            ]
         );
-
-        // Saved with db gone, production keeps editing; a Branch copies the reference.
-        seed(&store, &who, |working| {
-            working.services.retain(|service| service.slug != "db");
-        });
         unrelated(&store, &who).unwrap();
         branch(&store, &who, &["redis"]).unwrap();
     }

@@ -22,7 +22,9 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
   /** What the next Deploy changes, by Setting (`env.KEY`): those rows are pink. */
   changes: ReadonlyMap<string, unknown> = new Map(),
   /** What its Environment marks Never sync (`EnvironmentView.never_synced`). */
-  neverSynced: ReadonlySet<RowId> = new Set()): VariableRecord[] {
+  neverSynced: ReadonlySet<RowId> = new Set(),
+  /** Why each variable with a broken reference is broken, by key (`brokenVariables`). */
+  broken: ReadonlyMap<string, string> = new Map()): VariableRecord[] {
   return [...rows].flatMap(([name, row]) => {
     const key = VARIABLE.exec(name)?.[1];
     if (key === undefined || row.value === null) return [];
@@ -33,6 +35,7 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
       value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, notSet: isValueless(value) },
       changed: changes.has(name) || changes.has(`${name}.exported`),
       neverSynced: row.row !== undefined && neverSynced.has(row.row),
+      broken: broken.get(key),
     }];
   }).sort((a, b) => a.key.localeCompare(b.key));
 }

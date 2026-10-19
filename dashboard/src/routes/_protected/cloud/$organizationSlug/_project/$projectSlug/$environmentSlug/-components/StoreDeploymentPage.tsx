@@ -135,11 +135,16 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
       ) : null}
       {storage ? <p role="status" className="text-sm">{storage}</p> : null}
 
-      {/* What it shipped despite: a secret left out, or a Config file reference left empty. */}
+      {/* What it shipped despite: a secret or broken reference left out, or a Config file reference left empty. */}
       {variableWarnings.length ? (
         <ul aria-label="Warnings" className="flex flex-wrap gap-1.5">
           {variableWarnings.map((warning) => (
-            <li key={deploymentWarningText(warning)}><Badge variant="warning"><LockIcon />{deploymentWarningText(warning)}</Badge></li>
+            <li key={deploymentWarningText(warning)}>
+              <Badge variant="warning">
+                {"left_out" in warning || "reference" in warning ? <TriangleAlertIcon /> : <LockIcon />}
+                {deploymentWarningText(warning)}
+              </Badge>
+            </li>
           ))}
         </ul>
       ) : null}

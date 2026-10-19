@@ -303,6 +303,9 @@ it("words what a Deployment shipped despite", () => {
   expect(deploymentWarningText({ service: "web", variable: "TOKEN" })).toBe("TOKEN not set in web");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", secret: "web.TOKEN" })).toBe("web.TOKEN not set in sentry/config.yml");
   expect(deploymentWarningText({ config: "sentry", file: "config.yml", variable: "web.DSN" })).toBe("web.DSN may break sentry/config.yml");
+  expect(deploymentWarningText({ service: "sentry", left_out: "REDIS_URL" })).toBe("Broken reference: REDIS_URL in sentry");
+  expect(deploymentWarningText({ config: "sentry", file: "config.yml", reference: "redis.URL" }))
+    .toBe("Broken reference: redis.URL in sentry/config.yml");
   expect(deploymentWarningText({ server: "web-1", ingress: { type: "port_taken", cause: "address already in use" } }))
     .toBe("Ingress isn't running on web-1: something else holds port 80 or 443");
   expect(deploymentWarningText({ server: "web-1", ingress: { type: "failed", cause: "image pull failed" } }))

@@ -697,7 +697,7 @@ fn two_mounts_may_not_land_files_on_one_path() {
 }
 
 #[test]
-fn a_service_or_variable_a_config_references_cannot_be_removed() {
+fn removing_what_a_config_references_stages_and_reports_it_broken() {
     let (store, who) = shop();
     create(&store, &who, 10, "sentry", &[]).unwrap();
     put(
@@ -709,33 +709,43 @@ fn a_service_or_variable_a_config_references_cannot_be_removed() {
     )
     .unwrap();
 
-    let remove = refused(store.write(
-        &who,
-        &RemoveService {
-            environment: EnvironmentRef::default(),
-            service: service("worker"),
-        },
-    ));
-    assert_eq!(remove.code, RpcErrorCode::Conflict);
-    assert!(
-        remove.message.contains("Config sentry"),
-        "{}",
-        remove.message
-    );
-    assert!(remove.message.contains("worker"), "{}", remove.message);
-
-    let unset = refused(edit(
+    edit(
         &store,
         &who,
         vec![Change::Unset {
             path: SettingPath::parse("worker.env.KEY").unwrap(),
         }],
-    ));
-    assert_eq!(unset.code, RpcErrorCode::Conflict);
-    assert!(unset.message.contains("worker.KEY"), "{}", unset.message);
+    )
+    .unwrap();
+    let diff = store
+        .read(
+            &who,
+            &ployz_store::DiffQuery {
+                environment: EnvironmentRef::default(),
+            },
+        )
+        .unwrap();
     assert_eq!(
-        values(&store, &who, "worker")["env"]["KEY"],
-        json!("worker-key")
+        json!(diff.broken),
+        json!([{
+            "config": "sentry", "file": "a.yml", "reads": "KEY",
+            "missing": "variable", "from": "worker",
+        }])
+    );
+
+    let removed = store
+        .write(
+            &who,
+            &RemoveService {
+                environment: EnvironmentRef::default(),
+                service: service("worker"),
+            },
+        )
+        .unwrap();
+    let broken: Vec<String> = removed.broken.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        broken,
+        ["sentry/a.yml references worker, which was removed"]
     );
 }
 

@@ -941,6 +941,77 @@ fn a_config_file_gets_its_secrets_only_at_claim_and_warns_of_what_may_break_it()
 }
 
 #[test]
+fn a_deploy_leaves_out_what_reads_a_broken_reference_and_warns() {
+    let store = backend::open();
+    shop(&store);
+    set(
+        &store,
+        &[
+            ("web.env.PASS", json!("pw")),
+            ("api.env.DB", json!("${{ web.PASS }}")),
+            ("api.env.URL", json!("db://${{ DB }}")),
+            ("api.env.MODE", json!("fast")),
+        ],
+    )
+    .unwrap();
+    store
+        .write(
+            &who(),
+            &CreateConfig {
+                id: ConfigId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ConfigMountAt {
+                    service: ServiceName::parse("api").unwrap(),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who(),
+            &PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ConfigName::parse("sentry").unwrap(),
+                file: ConfigFileName::parse("config.yml").unwrap(),
+                content: "pass: ${{ web.PASS }}\nmode: ${{ api.MODE }}\n".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+    unset(&store, "web.env.PASS");
+    let id = admit(&store, 1).unwrap();
+    let claimed = store
+        .claim(&id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
+    let api = environment_of(&claimed, "api");
+    assert_eq!(api["MODE"], json!("fast"), "{api}");
+    assert!(api.get("DB").is_none() && api.get("URL").is_none(), "{api}");
+    let spec = claimed
+        .intent
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "api")
+        .unwrap();
+    let config = spec.configs().first().unwrap();
+    assert_eq!(
+        String::from_utf8(config.content.clone()).unwrap(),
+        "pass: \nmode: fast\n"
+    );
+    assert_eq!(
+        json!(claimed.deployment.warnings),
+        json!([
+            { "service": "api", "left_out": "DB" },
+            { "service": "api", "left_out": "URL" },
+            { "config": "sentry", "file": "config.yml", "reference": "web.PASS" },
+        ])
+    );
+}
+
+#[test]
 fn a_config_file_reference_still_blocks_a_rename() {
     let store = backend::open();
     shop(&store);

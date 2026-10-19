@@ -979,6 +979,36 @@ fn a_deployed_service_staged_for_removal_still_inspects() {
 }
 
 #[test]
+fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "redis", "--image", "redis:7"]);
+    ok(&store, &["service", "add", "sentry", "--image", "sentry:1"]);
+    ok(
+        &store,
+        &["set", "sentry.env.REDIS=${{ redis.PLOYZ_PRIVATE_DOMAIN }}"],
+    );
+    ok(&store, &["deploy", "--skip-deploy"]);
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
+    };
+    let line = "sentry.env.REDIS references redis, which was removed; deploys skip it until you change it: ployz set 'sentry.env.REDIS=VALUE'";
+    let removed = human(&["service", "rm", "redis"]);
+    assert!(removed.contains(line), "{removed}");
+    let diff = human(&["diff"]);
+    assert!(diff.contains(line), "{diff}");
+    let status = ok(&store, &["status"]);
+    assert_eq!(
+        status["attention"][0]["reason"],
+        json!("broken_reference"),
+        "{status}"
+    );
+}
+
+#[test]
 fn an_agent_renames_a_project() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

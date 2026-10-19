@@ -555,26 +555,14 @@ fn a_config_file_reading_a_secret_the_merge_left_not_set_warns() {
 fn a_merge_reported_after_newer_facts_still_reads_merged_on_the_check() {
     let (store, who) = shop();
     keep(&store, &who);
-    // A rides naming api, which stays here: production can't take the merge.
-    store
-        .write(
-            &who,
-            &ployz_store::CreateService {
-                id: ServiceLineageId::parse(uuid(9)).unwrap(),
-                environment: at("pr-5"),
-                name: ServiceName::parse("api").unwrap(),
-                image: Some("api:1".into()),
-                template: None,
-            },
-        )
-        .unwrap();
+    // A reads B, which production made read A since: the merge would close a cycle.
+    set(&store, &who, "pr-5", &[("web.env.A", json!("${{ B }}"))]);
     set(
         &store,
         &who,
-        "pr-5",
-        &[("web.env.A", json!("${{ api.PLOYZ_PRIVATE_DOMAIN }}"))],
+        "production",
+        &[("web.env.B", json!("${{ A }}"))],
     );
-    exclude(&store, &who, "api", false);
     system(
         &store,
         &who,

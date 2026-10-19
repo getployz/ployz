@@ -564,13 +564,16 @@ pub(crate) struct Resolved {
     /// Each Service's variables left out because a secret without a value reaches
     /// them, by Service ID.
     pub(crate) not_set: BTreeMap<String, Vec<String>>,
+    /// Each Service's variables left out because they reference, directly or through
+    /// another variable, a Service or variable that isn't there, by Service ID.
+    pub(crate) broken: BTreeMap<String, Vec<String>>,
 }
 
 /// Every Service's environment and every Config's files, resolved from compiled
 /// Saved State against the frozen producers. With `unseal`, secrets and values
 /// that reference one resolve to plaintext. Without it, such a variable is left
-/// out and such a file is empty. A variable a secret without a value reaches is
-/// always left out; in a file that secret is empty.
+/// out and such a file is empty. A variable a secret without a value, or a broken
+/// reference, reaches is always left out; in a file either is empty.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a reference cycle, or `internal` when a sealed
@@ -613,6 +616,7 @@ pub(crate) fn resolve(
         configs: BTreeMap::new(),
         secret: BTreeMap::new(),
         not_set: BTreeMap::new(),
+        broken: BTreeMap::new(),
     };
     for node in &compiled.node_snapshots {
         let config = match &node.snapshot.0 {
@@ -635,6 +639,7 @@ pub(crate) fn resolve(
         let mut env = BTreeMap::new();
         let mut secret = BTreeSet::new();
         let mut not_set = Vec::new();
+        let mut broken = Vec::new();
         for (key, value) in &config.env {
             let value = match value {
                 ServiceEnvValue::Literal { value, parts: None } => Some(value.clone()),
@@ -645,6 +650,10 @@ pub(crate) fn resolve(
                     self_owner_id: node.node_id.clone(),
                     producers: producers.clone(),
                 }) {
+                    ResolveVariablesResult::Resolved { warnings, .. } if !warnings.is_empty() => {
+                        broken.push(key.clone());
+                        None
+                    }
                     ResolveVariablesResult::Resolved {
                         value,
                         secret: is_secret,
@@ -685,6 +694,9 @@ pub(crate) fn resolve(
         }
         if !not_set.is_empty() {
             resolved.not_set.insert(node.node_id.clone(), not_set);
+        }
+        if !broken.is_empty() {
+            resolved.broken.insert(node.node_id.clone(), broken);
         }
         resolved.env.insert(node.node_id.clone(), env);
         resolved.secret.insert(node.node_id.clone(), secret);

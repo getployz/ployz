@@ -109,6 +109,9 @@ pub struct ResolvedConfigFile {
     pub fragile: Vec<FragileReference>,
     /// References that are, or read, a secret without a value, each once.
     pub not_set: Vec<FragileReference>,
+    /// References that are, or read, a variable no producer has, each once. Each
+    /// reaches `content` empty.
+    pub broken: Vec<FragileReference>,
 }
 
 impl std::fmt::Debug for ResolvedConfigFile {
@@ -118,6 +121,7 @@ impl std::fmt::Debug for ResolvedConfigFile {
             .field("secret", &self.secret)
             .field("fragile", &self.fragile)
             .field("not_set", &self.not_set)
+            .field("broken", &self.broken)
             .finish()
     }
 }
@@ -142,14 +146,13 @@ pub fn resolve_config_file(
 ) -> Result<ResolvedConfigFile, Vec<String>> {
     let name = name.to_ascii_lowercase();
     let yaml = name.ends_with(".yml") || name.ends_with(".yaml");
-    let mut warnings = Vec::new();
-    let mut memo = BTreeMap::new();
     let mut stack = Vec::new();
     let mut file = ResolvedConfigFile {
         content: String::new(),
         secret: false,
         fragile: Vec::new(),
         not_set: Vec::new(),
+        broken: Vec::new(),
     };
     let mut quote = None;
     for part in parts {
@@ -168,6 +171,10 @@ pub fn resolve_config_file(
             }
             ValuePart::Ref { owner, key } => (owner, key),
         };
+        // Each reference resolves afresh, so every one that reads a missing
+        // variable reports it, not only the first.
+        let mut warnings = Vec::new();
+        let mut memo = BTreeMap::new();
         let (value, taint) = resolve_parts(
             std::slice::from_ref(part),
             "",
@@ -184,6 +191,9 @@ pub fn resolve_config_file(
         };
         if taint == Taint::NotSet && !file.not_set.contains(&reference) {
             file.not_set.push(reference.clone());
+        }
+        if !warnings.is_empty() && !file.broken.contains(&reference) {
+            file.broken.push(reference.clone());
         }
         if breaks && !file.fragile.contains(&reference) {
             file.fragile.push(reference);

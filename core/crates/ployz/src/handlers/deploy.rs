@@ -422,7 +422,10 @@ pub(super) fn execute(
     if !detached {
         finish_progress(&mut followed, disposition);
     }
-    for warning in progress::ingress_warnings(&followed.view) {
+    for warning in progress::value_warnings(&followed.view)
+        .into_iter()
+        .chain(progress::ingress_warnings(&followed.view))
+    {
         ui::warn(warning);
     }
     let view = followed.view;

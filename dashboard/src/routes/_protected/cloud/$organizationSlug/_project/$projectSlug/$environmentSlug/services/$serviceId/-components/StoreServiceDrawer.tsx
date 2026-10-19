@@ -266,7 +266,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
               </div>
             </div>
           </TabsContent>
-          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} changes={state.changes} />
+          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} changes={state.changes} broken={diff.broken ?? []} />
         </Tabs>
       </div>
     </div>

@@ -671,6 +671,28 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
     shell_words::join(next)
 }
 
+/// The command that points `reference` at something there: a new value for its
+/// variable, or a new copy of its Config file.
+pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenReference) -> String {
+    match &reference.at {
+        ployz_store::ReferenceAt::Variable { service, variable } => next(
+            matches,
+            &["set", &format!("{service}.env.{variable}=VALUE")],
+        ),
+        ployz_store::ReferenceAt::File { config, file } => next(
+            matches,
+            &[
+                "config",
+                "put",
+                config.as_str(),
+                file.as_str(),
+                "--from",
+                "PATH",
+            ],
+        ),
+    }
+}
+
 /// A Store error and the hint this command adds to it.
 pub(crate) struct Refusal {
     error: StoreCallError,

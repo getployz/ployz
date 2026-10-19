@@ -72,7 +72,7 @@ pub struct MergeRow {
     pub conflict: bool,
     /// The row of the new node it is in, which rides with it.
     pub requires: Option<RowId>,
-    /// The rows that still reference the node it removes: it stays until they change.
+    /// The rows that still mount the node it removes: it stays until they change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<NamedRow>>", optional)]
     pub refused_by: Vec<NamedRow>,
@@ -130,7 +130,7 @@ pub(crate) struct Landing {
 }
 
 impl Landing {
-    /// The rows that land: a removal something still references doesn't.
+    /// The rows that land: a removal something still mounts doesn't.
     pub(crate) fn riding(&self) -> BTreeSet<RowId> {
         self.rows
             .iter()
@@ -271,7 +271,7 @@ fn landing(tx: &mut dyn Tx, from: &Environment, into: Environment) -> Result<Lan
         .map(|row| row.at.row.clone())
         .collect();
     let values = edited_values(stored, &rows);
-    // Dropping a refused removal keeps its node, whose own references can refuse
+    // Dropping a refused removal keeps its node, whose own mounts can refuse
     // another removal, so repeat until none is refused.
     let mut refused = BTreeMap::new();
     loop {
@@ -798,7 +798,7 @@ fn land_one(
         })
         .map(|row| row.id.clone())
         .collect();
-    // A draft that still references a removed node keeps it in Working State.
+    // A draft that still mounts a removed node keeps it in Working State.
     loop {
         let refused = mirror
             .removal_dependents(&staged, &values)

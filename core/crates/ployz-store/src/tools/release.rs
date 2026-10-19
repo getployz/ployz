@@ -54,7 +54,7 @@ pub(crate) struct Review {
 
 impl Tool for Review {
     const NAME: &'static str = "review";
-    const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines, with the version deploy takes and what a human must approve.";
+    const DESCRIPTION: &'static str = "What the next deploy applies, in plain lines, with the version deploy takes, what a human must approve, and broken references deploys skip.";
     const EFFECT: Effect = Effect::Read;
 
     fn example() -> Value {
@@ -96,6 +96,7 @@ impl Tool for Review {
             "lines": diff.changes.iter().flat_map(lines).collect::<Vec<_>>(),
             "asks_approval": !destroys.is_empty(),
             "destroys": destroys,
+            "broken": diff.broken.iter().map(ToString::to_string).collect::<Vec<_>>(),
         }))
     }
 }

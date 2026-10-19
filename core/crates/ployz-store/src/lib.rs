@@ -96,6 +96,7 @@ pub use removal::{
 };
 pub use review::history::{HistoryAction, SavedRevision};
 pub use review::{DataEffect, DestructiveEffect, DestructiveKind, DiffView, NodeChange};
+pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
