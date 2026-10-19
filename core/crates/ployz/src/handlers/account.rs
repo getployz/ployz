@@ -367,8 +367,20 @@ pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = matches.get_one::<String>("name").expect("name is required");
     let slug = matches.get_one::<String>("slug").map(String::as_str);
-    let organization = in_cloud(root, async |store, credential| {
-        cloud_account::new_organization(store, credential, name, slug).await
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let organization = runtime()?.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        cloud_account::new_organization(&store, &credential, name, slug)
+            .await
+            .map_err(|error| match error {
+                // Connected, so the request may have landed and only the reply was lost.
+                LoginError::Unreachable {
+                    error: ref cause, ..
+                } if !cause.is_connect() => Error::from(error)
+                    .context("Cloud may have made the Organization; check before retrying.")
+                    .hint(Hint::Inspect("ployz org ls".to_owned())),
+                error => error.into(),
+            })
     })?;
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
         crate::ui::stream(format_args!(

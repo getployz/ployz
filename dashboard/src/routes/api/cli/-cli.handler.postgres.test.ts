@@ -38,7 +38,8 @@ import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { encodePublicError, statusForPublicError, Unauthorized } from "#/server/public-error";
+import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import * as ids from "#/test/ids";
 import { postgresTestDatabase } from "#/test/postgres";
@@ -899,6 +900,14 @@ it.live(
         assert.strictEqual((yield* cli("POST", "organizations", alice, { name: " " })).status, 422);
         assert.strictEqual((yield* cli("POST", "organizations", alice, { name: "Acme", slug: "!!!" })).status, 422);
         assert.strictEqual((yield* cli("POST", "organizations", alice, { name: "x".repeat(65) })).status, 422);
+        assert.deepStrictEqual(refusedWith(yield* cli("POST", "organizations", alice, { name: "日本" })), [
+          422, "This name has no letters or digits to make a slug from. Pass --slug.",
+        ]);
+        // A sign-in that ended mid-request has no session to move, so its Organization rolls back.
+        const [owner] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .innerJoin(organization, eq(organization.id, member.organizationId)).where(eq(organization.slug, personal));
+        const ended = yield* Effect.exit(createOrganizationForSession(owner?.userId ?? assert.fail("no owner"), crypto.randomUUID(), { name: "Gone", slug: "gone" }));
+        assert.isTrue(Exit.isFailure(ended) && Cause.squash(ended.cause) instanceof Unauthorized);
         assert.strictEqual(yield* count(), before);
 
         const made = madeOrganization(yield* cli("POST", "organizations", alice, { name: " Acme Corp " }));

@@ -7,7 +7,7 @@ import { Polar } from "#/modules/billing/polar-provider.server";
 import { listAccessibleOrganizations, requireAccess, SupportStaff } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound } from "#/server/public-error";
+import { Conflict, NotFound, Unauthorized } from "#/server/public-error";
 import { allocateUnique, getSlugWithSuffix } from "#/utils/slug";
 import {
   type CreateOrganization,
@@ -277,11 +277,14 @@ export const createOrganizationForSession = Effect.fn("Organization.createForSes
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const created = yield* insertOrganization(userId, input.name, input.slug);
-    const { drizzle } = yield* Database;
-    yield* drizzle
+    const { drizzle: tx } = yield* Database;
+    const moved = yield* tx
       .update(session)
       .set({ activeOrganizationId: created.id, activeOrganizationSlug: created.slug, updatedAt: new Date() })
-      .where(and(eq(session.id, sessionId), eq(session.userId, userId)));
+      .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
+      .returning({ id: session.id });
+    // The session ended mid-request: roll the Organization back with it.
+    if (moved.length === 0) return yield* new Unauthorized();
     return { id: created.id, slug: created.slug, name: input.name };
   }));
 });
