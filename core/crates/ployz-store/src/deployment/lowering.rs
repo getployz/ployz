@@ -211,7 +211,7 @@ pub(crate) fn freeze(
     )?;
     if !full {
         // The planner also ships, at its Saved snapshot, each Service the named ones reference.
-        let shipped = lowered.intent.applied_names();
+        let shipped = &lowered.shipped;
         // A changed Config or Volume ships with the Service that mounts it, and is
         // recorded only once that Service is a node.
         let changed = |service: &SavedServiceIntent| {
@@ -388,6 +388,9 @@ pub(super) struct Lowered {
     /// The lowering input the runner lowers again once it built.
     pub(super) input: Value,
     pub(super) intent: DeployIntent,
+    /// The Services a narrowed Deploy ships once its builds and uploads land: the
+    /// named ones and what they reference. Empty for a full Deploy.
+    pub(super) shipped: BTreeSet<ServiceName>,
     /// The environment keys of each lowered Service that hold a secret, by runtime name.
     pub(super) secret_env: BTreeMap<ServiceName, BTreeSet<String>>,
     /// Service variables a secret without a value left out, then Config file
@@ -596,12 +599,24 @@ pub(super) fn lower(
         configs: configs.clone(),
         removals: removals.clone(),
     };
-    let with = |built_later: bool| {
+    // `uploaded` also gives each named source-less Service the image its upload
+    // builds, as the SDK's preparation does.
+    let with = |built_later: bool, uploaded: bool| {
         snapshots
             .iter()
             .map(|(config, snapshot)| {
-                let build =
-                    built_later && matches!(config.settings.source, ServiceSource::Git { .. });
+                let build = built_later
+                    && match config.settings.source {
+                        ServiceSource::Git { .. } => true,
+                        ServiceSource::Empty { .. } => {
+                            uploaded
+                                && snapshot
+                                    .service_id
+                                    .as_deref()
+                                    .is_some_and(|id| targeted.contains(&id))
+                        }
+                        ServiceSource::Image { .. } => false,
+                    };
                 LowerDeploymentSnapshot {
                     config: json_value(&if build { built(config) } else { config.clone() }),
                     built_with: build.then_some(config.settings.build.build_method),
@@ -610,33 +625,48 @@ pub(super) fn lower(
             })
             .collect()
     };
-    let intent = lower_deployment(input(with(true))).map_err(|error| {
-        error::invalid(
-            format!("This Environment can't deploy: {}", error.message),
-            json!({ "path": error.path }),
-        )
-    })?;
+    let checked = |snapshots| {
+        lower_deployment(input(snapshots)).map_err(|error| {
+            error::invalid(
+                format!("This Environment can't deploy: {}", error.message),
+                json!({ "path": error.path }),
+            )
+        })
+    };
+    let intent = checked(with(true, false))?;
     // Only the Services this Deploy ships, the named ones and what they reference;
     // the rest ride along unchanged.
-    let shipped = intent.applied_names();
+    let shipped: BTreeSet<ServiceName> = if narrowed {
+        checked(with(true, true))?
+            .applied_names()
+            .into_iter()
+            .cloned()
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
     let warnings = warnings
         .into_iter()
-        .filter(|(services, _)| !narrowed || services.iter().any(|name| shipped.contains(name)))
+        .filter(|(services, _)| !narrowed || services.iter().any(|name| shipped.contains(*name)))
         .map(|(_, warning)| warning)
         .collect();
     Ok(Lowered {
-        input: json_value(&input(with(false))),
+        input: json_value(&input(with(false, false))),
+        shipped,
         intent,
         secret_env,
         warnings,
     })
 }
 
-/// `config` with a Git source replaced by the image its build will produce, as the
-/// SDK's preparation does once it built it.
+/// `config` with a Git or empty source replaced by the image its build or upload
+/// will produce, as the SDK's preparation does once it built it.
 pub(super) fn built(config: &ServiceConfig) -> ServiceConfig {
     let mut config = config.clone();
-    if matches!(config.settings.source, ServiceSource::Git { .. }) {
+    if matches!(
+        config.settings.source,
+        ServiceSource::Git { .. } | ServiceSource::Empty { .. }
+    ) {
         config.settings.source = ServiceSource::Image {
             version: 1,
             image: format!("ployz-build/{}:pending", config.settings.private_dns),
