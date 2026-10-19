@@ -1,6 +1,7 @@
 //! Running one published command: the parsed arguments go back to Cloud as the
 //! entry's input, and the reply prints as the entry's render says.
 
+use std::ffi::OsString;
 use std::path::Path;
 
 use clap::ArgMatches;
@@ -244,6 +245,22 @@ fn scope(
         input.insert("environment".to_owned(), environment.as_str().into());
     }
     Ok(())
+}
+
+/// Refuse a bad `PLOYZ_PROJECT` or `PLOYZ_ENV` before fetching the manifest that a
+/// command line the cache lacks needs, as [`scope`] would once the command is known.
+/// A typed `--project` or `--environment` still wins over its variable.
+pub(crate) fn check_scope_env(args: &[OsString]) -> Result<(), Failure> {
+    let typed = |flag: &str| {
+        args.iter()
+            .take_while(|arg| *arg != "--")
+            .filter_map(|arg| arg.to_str())
+            .any(|arg| {
+                arg.strip_prefix(flag)
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('='))
+            })
+    };
+    crate::handlers::link::check_env(typed("--project"), typed("--environment"))
 }
 
 fn print(

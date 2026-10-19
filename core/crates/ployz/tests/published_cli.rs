@@ -673,20 +673,33 @@ fn a_typed_environment_wins_over_an_empty_ployz_env() {
     assert_eq!(bodies[0]["input"]["environment"], "production");
 }
 
-#[test]
-fn an_empty_ployz_project_with_no_typed_project_is_refused_before_cloud_runs() {
+fn refused_before_cloud_is_asked(var: &str, message: &str) {
     let cloud = Fixture::new("one");
     let args = scoped_args(&entry_scoped());
 
     let output = cloud
         .command_in(cloud.home.path())
         .args(&args)
-        .env("PLOYZ_PROJECT", "")
+        .env(var, "")
         .output()
         .unwrap();
 
     assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
     let stderr = text(&output.stderr);
-    assert!(stderr.contains("Expected a Project name"), "{stderr}");
-    assert!(cloud.cloud.lock().unwrap().bodies.is_empty(), "no run");
+    assert!(stderr.contains(message), "{stderr}");
+    assert_eq!(
+        cloud.routes(),
+        Vec::<String>::new(),
+        "not even the manifest"
+    );
+}
+
+#[test]
+fn an_empty_ployz_project_with_no_typed_project_is_refused_before_cloud_is_asked() {
+    refused_before_cloud_is_asked("PLOYZ_PROJECT", "Expected a Project name");
+}
+
+#[test]
+fn an_empty_ployz_env_with_no_typed_environment_is_refused_before_cloud_is_asked() {
+    refused_before_cloud_is_asked("PLOYZ_ENV", "Expected an Environment name");
 }

@@ -148,6 +148,18 @@ pub(crate) fn scope_given(
     })
 }
 
+/// Refuse a `PLOYZ_PROJECT` or `PLOYZ_ENV` that names nothing, as [`scope_given`]
+/// would, before the command it scopes is known. A typed name skips its variable.
+pub(crate) fn check_env(typed_project: bool, typed_environment: bool) -> Result<(), Error> {
+    if !typed_project {
+        env_named(env::PROJECT, ProjectName::parse)?;
+    }
+    if !typed_environment {
+        env_named(env::ENVIRONMENT, EnvironmentName::parse)?;
+    }
+    Ok(())
+}
+
 /// [`scope_from_env`] for a caller whose credential acts in the Organization with ID
 /// `acting`, such as `ployz mcp`'s agent token, rather than in this device's sign-in.
 pub(crate) fn scope_from_env_in(config: &Path, acting: &str) -> Result<Scope, Error> {
