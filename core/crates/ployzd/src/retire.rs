@@ -550,7 +550,8 @@ mod tests {
 
     use ployz_core::{
         AdvertisedEndpoint, ContainerId, DeploymentLogId, Hold, Machine, MachineId, MachineName,
-        MachineRuntime, MembershipEvidence, QualifiedService, ServingPointer, WireGuardPublicKey,
+        MachineRuntime, MembershipEvidence, QualifiedService, RunRotation, ServingPointer,
+        WireGuardPublicKey,
     };
     use tokio::{task::JoinSet, time::Instant};
     use tokio_util::sync::CancellationToken;
@@ -1734,6 +1735,7 @@ mod tests {
                 local_machine
                     .ensure_container(ployz_core::ContainerWant::Running {
                         container: ployz_core::RunTarget::New(new),
+                        rotation: RunRotation::Pending,
                     })
                     .await
                     .unwrap();

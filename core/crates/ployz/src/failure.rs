@@ -938,6 +938,7 @@ impl From<LoginError> for Failure {
             // Cloud binds every call to the acting Organization, `org ls` included: a
             // sign-in left outside it can only start over.
             LoginError::Corrupt { .. }
+            | LoginError::TokenCloudUnreadable(_)
             | LoginError::OtherCloud { .. }
             | LoginError::NotMember(_) => Some("ployz logout"),
             LoginError::SignedOut
@@ -966,9 +967,10 @@ pub(crate) fn login_code(error: &LoginError) -> RpcErrorCode {
         LoginError::Unsupported(_) => RpcErrorCode::Unsupported,
         LoginError::TokenBound => RpcErrorCode::InvalidArgument,
         LoginError::Status { status, .. } => http_status_code(*status),
-        LoginError::Reply(_) | LoginError::Store { .. } | LoginError::Corrupt { .. } => {
-            RpcErrorCode::Internal
-        }
+        LoginError::Reply(_)
+        | LoginError::Store { .. }
+        | LoginError::Corrupt { .. }
+        | LoginError::TokenCloudUnreadable(_) => RpcErrorCode::Internal,
         LoginError::OtherCloud { .. } => RpcErrorCode::Conflict,
         LoginError::SignedOut
         | LoginError::Expired

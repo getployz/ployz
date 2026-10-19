@@ -104,9 +104,9 @@ pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use storage::Converted;
 pub use teardown::{
-    AppliedVolume, EnvironmentListing, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,
-    ProjectListing, ProjectsQuery, ProjectsView, ProtectedView, SeenProtection,
-    SetDefaultEnvironment, SetEnvironmentProtected,
+    AppliedVolume, EnvironmentListing, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView,
+    OrganizationRemoved, ProjectListing, ProjectsQuery, ProjectsView, ProtectedView,
+    RemovedBecause, SeenProtection, SetDefaultEnvironment, SetEnvironmentProtected,
 };
 pub use trusted::{Approval, Asks, Trusted, VolumeObservation};
 
