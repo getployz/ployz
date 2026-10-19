@@ -215,7 +215,13 @@ struct Scripted {
     /// Another writer moves this copy here just before the run's next ask of
     /// this kind on it.
     moved: Mutex<BTreeMap<(ContainerId, Ask), CopyRotation>>,
+    /// Every live proxy keeps listing a copy of this Service for this many
+    /// reads after it leaves In; `usize::MAX` never drops it.
+    withheld: BTreeMap<QualifiedService, usize>,
+    lingering: Mutex<BTreeMap<ContainerId, usize>>,
     moves: Mutex<Vec<Move>>,
+    /// Each live proxy's route once each move was applied.
+    listed: Mutex<Vec<BTreeMap<MachineId, Option<BTreeSet<ContainerId>>>>>,
 }
 
 impl Scripted {
@@ -240,7 +246,10 @@ impl Scripted {
             unhealthy_in: BTreeMap::new(),
             unanswered_in: BTreeSet::new(),
             moved: Mutex::new(BTreeMap::new()),
+            withheld: BTreeMap::new(),
+            lingering: Mutex::new(BTreeMap::new()),
             moves: Mutex::new(Vec::new()),
+            listed: Mutex::new(Vec::new()),
         }
     }
 
@@ -303,6 +312,16 @@ impl Scripted {
             .collect()
     }
 
+    /// Each live proxy's route once `applied` was applied.
+    fn routes_at(&self, applied: &Move) -> BTreeMap<MachineId, Option<BTreeSet<ContainerId>>> {
+        let at = self
+            .moves()
+            .iter()
+            .position(|other| other == applied)
+            .unwrap_or_else(|| panic!("{applied:?} was never applied"));
+        self.listed.lock().unwrap()[at].clone()
+    }
+
     fn answers(&self) -> Vec<AnswerWhen> {
         self.answers.lock().unwrap().clone()
     }
@@ -346,6 +365,15 @@ impl Scripted {
     }
 
     fn applied(&self, applied: Move) {
+        let (Move::To(id, _) | Move::Gone(id)) = &applied;
+        let service = self
+            .copies
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|copy| copy.service.clone());
+        let listed = service.map_or_else(BTreeMap::new, |service| self.routes(&service, false));
+        self.listed.lock().unwrap().push(listed);
         self.moves.lock().unwrap().push(applied.clone());
         if let Some((at, cancel)) = &self.cancel_on_move
             && *at == applied
@@ -376,14 +404,23 @@ impl Scripted {
         let proxies = self.proxies();
         let copies = self.copies.lock().unwrap();
         let of_service = || copies.iter().filter(|(_, copy)| copy.service == *service);
+        let mut lingering = self.lingering.lock().unwrap();
         let now: BTreeSet<ContainerId> = of_service()
-            .filter(|(_, copy)| {
-                copy.present
-                    && copy.rotation == CopyRotation::In
+            .filter(|(id, copy)| {
+                (copy.present && copy.rotation == CopyRotation::In
+                    || lingering.get(*id).is_some_and(|reads| *reads > 0))
                     && !self.down.contains(&copy.machine_id)
             })
             .map(|(id, _)| *id)
             .collect();
+        if advance {
+            for (id, reads) in lingering.iter_mut() {
+                if copies.get(id).is_some_and(|copy| copy.service == *service) {
+                    *reads = reads.saturating_sub(1);
+                }
+            }
+        }
+        drop(lingering);
         let before: BTreeSet<ContainerId> = of_service()
             .filter(|(_, copy)| copy.in_before)
             .map(|(id, _)| *id)
@@ -564,7 +601,15 @@ impl Scripted {
                 });
             }
         }
-        self.record(container_id, |copy| copy.rotation = to.clone());
+        let mut left_in = None;
+        self.record(container_id, |copy| {
+            left_in = (copy.rotation == CopyRotation::In && to != CopyRotation::In)
+                .then(|| copy.service.clone());
+            copy.rotation = to.clone();
+        });
+        if let Some(reads) = left_in.and_then(|service| self.withheld.get(&service)) {
+            self.lingering.lock().unwrap().insert(container_id, *reads);
+        }
         self.applied(Move::To(container_id, to));
         if routing && self.unanswered_in.contains(&container_id) {
             return Err(RpcError::unanswered_target(
