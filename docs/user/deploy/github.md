@@ -96,9 +96,10 @@ Turn on **Wait for CI** under **Settings → Source** to hold a push's deploy un
 checks pass, from GitHub Actions or any other app that reports checks. It applies at once.
 
 A held push shows in **Runs** and in `ployz deployment ls` as a deployment that reads **Waiting
-for CI**, with its commit. It deploys as that same deployment once every check passes. Cancel it
-there to drop the push. Nothing was frozen for it, so it can't be redeployed: push again
-instead.
+for CI**, named by its commit rather than a number. It deploys as that same deployment once
+every check passes, and takes the next deployment number then, so deployments stay numbered in
+the order they ran, whichever branch passed CI first. Cancel it there to drop the push. Nothing
+was frozen for it, so it can't be redeployed: push again instead.
 
 - If a check fails, the deployment reads **CI failed** and the commit doesn't deploy. Re-run the
   check on GitHub and the commit deploys once it passes, or push a fix.

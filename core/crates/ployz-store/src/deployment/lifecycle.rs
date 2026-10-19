@@ -11,8 +11,8 @@ pub(crate) enum Admission<'a> {
         id: &'a DeploymentId,
         push: Option<&'a GitPush>,
     },
-    /// This one, waiting for CI, in place: same number and push. It supersedes only
-    /// the queued one.
+    /// This one, waiting for CI, in place: same push, numbered next as it queues.
+    /// It supersedes only the queued one.
     Promote(&'a DeploymentId),
 }
 
@@ -42,7 +42,7 @@ pub(crate) fn admit(
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &admission.id();
     let (held, push) = match admission {
-        Admission::New { push, .. } => (None, push.cloned()),
+        Admission::New { push, .. } => (false, push.cloned()),
         Admission::Promote(id) => {
             let hold = load(tx, id)?.summary;
             if hold.status != DeploymentStatus::WaitingForCi {
@@ -51,7 +51,7 @@ pub(crate) fn admit(
                     json!({ "deployment": id }),
                 ));
             }
-            (Some(hold.number), hold.push)
+            (true, hold.push)
         }
     };
     let intent = saved_at(tx, environment, saved)?;
@@ -137,13 +137,15 @@ pub(crate) fn admit(
             by,
             message,
         ] = frozen_columns;
-        if held.is_some() {
+        let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
+        if held {
             return tx
                 .execute(
-                    "UPDATE config_deployment SET status = 'queued', saved_revision = ?2, \
-                     services = ?3, nodes = ?4, namespace = ?5, run = ?6, credentials = ?7, \
-                     upload = ?8, cluster_domain = ?9, admitted = ?10, admitted_by = ?11, \
-                     message = ?12 WHERE id = ?1 AND status = 'waiting_for_ci'",
+                    "UPDATE config_deployment SET status = 'queued', number = ?13, \
+                     saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
+                     credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
+                     admitted_by = ?11, message = ?12 \
+                     WHERE id = ?1 AND status = 'waiting_for_ci'",
                     &[
                         id.as_str().into(),
                         saved,
@@ -157,6 +159,7 @@ pub(crate) fn admit(
                         at,
                         by,
                         message,
+                        number.into(),
                     ],
                 )
                 .map(|_| ());
@@ -172,9 +175,7 @@ pub(crate) fn admit(
                 id.as_str().into(),
                 who.organization.as_str().into(),
                 environment_id.into(),
-                i64::try_from(number)
-                    .map_err(|_| error::corrupt("Deployment number"))?
-                    .into(),
+                number.into(),
                 saved,
                 targets,
                 nodes,
@@ -198,7 +199,7 @@ pub(crate) fn admit(
     let summary = DeploymentSummary {
         id: id.clone(),
         environment_id: environment.clone(),
-        number,
+        number: Some(number),
         status: DeploymentStatus::Queued,
         saved,
         services: targets,
@@ -322,15 +323,15 @@ fn inherit(
     Ok(())
 }
 
-/// Queue a Deployment of `environment`, written by `insert` with its number,
-/// superseding the queued one, if any. `held` is the number of the Deployment waiting
-/// for CI that queues in place; otherwise the next number queues, superseding every
-/// one waiting for CI too. The superseded one leaves flight, so the sealed values only
-/// it kept in History go once the new one holds its revision.
+/// Queue a Deployment of `environment`, written by `insert` with the next number,
+/// superseding the queued one, if any. `held` queues the Deployment waiting for CI in
+/// place; otherwise a new one queues, superseding every one waiting for CI too. The
+/// superseded one leaves flight, so the sealed values only it kept in History go once
+/// the new one holds its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    held: Option<u64>,
+    held: bool,
     insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
 ) -> Result<u64, RpcError> {
     let superseded = tx.execute(
@@ -338,17 +339,14 @@ pub(super) fn queue(
          WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into()],
     )?;
-    let number = match held {
-        Some(number) => number,
-        None => {
-            tx.execute(
-                "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
-                 WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
-                &[environment.as_str().into(), now().into()],
-            )?;
-            next_number(tx, environment)?
-        }
-    };
+    if !held {
+        tx.execute(
+            "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
+             WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
+            &[environment.as_str().into(), now().into()],
+        )?;
+    }
+    let number = next_number(tx, environment)?;
     insert(tx, number)?;
     if superseded > 0 {
         crate::review::scrub_sealed(tx, environment)?;
@@ -369,8 +367,8 @@ fn next_number(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcE
 }
 
 /// Hold `push` of `environment` until its commit's CI passes: a Deployment waiting
-/// for CI of `services` (none: every one) at Saved revision `saved`, numbered next.
-/// `ids` are the same Services by ID, which promotion selects by: a name may change
+/// for CI of `services` (none: every one) at Saved revision `saved`, unnumbered until
+/// it queues. `ids` are the same Services by ID, which promotion selects by: a name may change
 /// while it waits. It freezes, builds and supersedes nothing; passing CI admits it in
 /// place. A hold of the same head is kept as is, one of an older head of the branch
 /// is superseded. The caller holds the Environment's lock.
@@ -413,23 +411,19 @@ pub(crate) fn hold(
             now().into(),
         ],
     )?;
-    let number = next_number(tx, id)?;
     let namespace = namespace(tx, who, environment, false)?;
     let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
     tx.execute(
         "INSERT INTO config_deployment \
-         (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
+         (id, organization_id, environment_id, status, saved_revision, services, nodes, \
           namespace, run, credentials, admitted, push_repository_id, push_branch, push_head, \
           push_services) \
-         VALUES (?1, ?2, ?3, ?4, 'waiting_for_ci', ?5, ?6, '[]', ?7, ?8, '{}', ?9, ?10, ?11, ?12, \
-          ?13)",
+         VALUES (?1, ?2, ?3, 'waiting_for_ci', ?4, ?5, '[]', ?6, ?7, '{}', ?8, ?9, ?10, ?11, \
+          ?12)",
         &[
             deployment.as_str().into(),
             who.organization.as_str().into(),
             id.as_str().into(),
-            i64::try_from(number)
-                .map_err(|_| error::corrupt("Deployment number"))?
-                .into(),
             revision_param(saved)?.into(),
             json_text(&services).as_str().into(),
             namespace.as_str().into(),
@@ -577,7 +571,7 @@ pub(crate) fn retry(
              AND number > ?2 AND status IN ('running', 'cancelling') AND lease > ?3",
             &[
                 stored.summary.environment_id.as_str().into(),
-                i64::try_from(stored.summary.number)
+                i64::try_from(stored.summary.numbered()?)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
                 now().into(),
@@ -593,7 +587,7 @@ pub(crate) fn retry(
         ));
     }
     let mut rollback = Rollback {
-        number: stored.summary.number,
+        number: stored.summary.numbered()?,
         rolls_back: undone(tx, &stored.summary)?,
         removes: Vec::new(),
     };
@@ -627,7 +621,7 @@ pub(crate) fn retry(
     }
     let (services, nodes) = retried(tx, &stored, fresh)?;
     let admitted_at = now();
-    let number = queue(tx, &stored.summary.environment_id, None, |tx, number| {
+    let number = queue(tx, &stored.summary.environment_id, false, |tx, number| {
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state.
         tx.execute(
@@ -663,7 +657,7 @@ pub(crate) fn retry(
     })?;
     let summary = DeploymentSummary {
         id: id.clone(),
-        number,
+        number: Some(number),
         status: DeploymentStatus::Queued,
         services,
         runner: None,
@@ -694,12 +688,15 @@ pub(crate) struct Rollback {
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
 /// the Servers, oldest first: every one that started. Redeploying it undoes them.
+/// None for one still waiting for CI: unnumbered, nothing ran after it.
 pub(crate) fn undone(
     tx: &mut dyn Tx,
     deployment: &DeploymentSummary,
 ) -> Result<Vec<u64>, RpcError> {
-    let number =
-        i64::try_from(deployment.number).map_err(|_| error::corrupt("Deployment number"))?;
+    let Some(number) = deployment.number else {
+        return Ok(Vec::new());
+    };
+    let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
     tx.query(
         "SELECT number FROM config_deployment \
          WHERE environment_id = ?1 AND number > ?2 AND started IS NOT NULL ORDER BY number",
@@ -765,8 +762,8 @@ pub(crate) fn rollback_removed(
 ) -> Result<Vec<crate::removal::RemovedVolume>, RpcError> {
     let source = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let mut removed = crate::removal::removed(applied, &source, &stored.namespace)?;
-    let number =
-        i64::try_from(stored.summary.number).map_err(|_| error::corrupt("Deployment number"))?;
+    let number = i64::try_from(stored.summary.numbered()?)
+        .map_err(|_| error::corrupt("Deployment number"))?;
     for row in &tx.query(
         "SELECT nodes FROM config_deployment \
          WHERE environment_id = ?1 AND number > ?2 AND started IS NOT NULL",

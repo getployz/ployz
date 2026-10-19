@@ -16,8 +16,8 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied, outcomeReason,
-  rollbackConfirm, showCancelling, warnedService, type DeploymentAction,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
+  outcomeReason, rollbackConfirm, showCancelling, warnedService, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
@@ -96,7 +96,7 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
           <span className="flex min-w-0 items-center gap-2 [&_svg]:size-4">
             <DeploymentStatusIcon status={deploymentLight(deployment)} />
             <span className="truncate font-medium">
-              {deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}
+              {deployment.message ? `${deploymentLabel(deployment)} · ${deployment.message}` : `Deployment ${deploymentLabel(deployment)}`}
             </span>
           </span>
           <p className="truncate text-xs text-muted-foreground">

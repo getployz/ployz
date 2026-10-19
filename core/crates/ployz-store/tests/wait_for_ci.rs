@@ -2,8 +2,8 @@
     clippy::indexing_slicing,
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
-//! A push held by Wait for CI is a Deployment waiting for its commit's CI: numbered,
-//! listed, and queued in place once every check suite passes.
+//! A push held by Wait for CI is a Deployment waiting for its commit's CI: listed,
+//! unnumbered, and queued in place with the next number once every check suite passes.
 
 use std::collections::BTreeMap;
 
@@ -78,9 +78,10 @@ fn reasons(automated: &Automated) -> Vec<&str> {
 }
 
 #[test]
-fn held_push_is_a_numbered_deployment() {
+fn held_push_is_an_unnumbered_deployment() {
     let (store, who, hold) = waiting();
-    assert_eq!(hold.number, 1);
+    assert_eq!(hold.number, None);
+    assert_eq!(hold.label(), &H2[..7]);
     assert_eq!(hold.status, DeploymentStatus::WaitingForCi);
     assert_eq!(hold.ci, Some(CiVerdict::Pending));
     assert!(!hold.in_flight);
@@ -113,7 +114,7 @@ fn passing_suite_promotes_in_place() {
     let automated = passed(&store, H2, 10);
     let [admitted] = <[_; 1]>::try_from(automated.admitted.clone()).unwrap();
     assert_eq!(admitted.deployment.id, hold.id);
-    assert_eq!(admitted.deployment.number, hold.number);
+    assert_eq!(admitted.deployment.number, Some(1));
     let promoted = find(&store, &who, &hold);
     assert_eq!(promoted.status, DeploymentStatus::Queued);
     assert_eq!(promoted.ci, None);
@@ -169,7 +170,7 @@ fn newer_push_supersedes_hold() {
         DeploymentStatus::Superseded
     );
     let [newer] = <[_; 1]>::try_from(held(&store, &who)).unwrap();
-    assert_eq!(newer.number, 2);
+    assert_eq!(newer.number, None);
     assert_eq!(newer.push.unwrap().head, backend::sha(H3));
     assert_eq!(passed(&store, H2, 10), Automated::default());
 }
@@ -187,7 +188,7 @@ fn manual_deploy_supersedes_hold() {
         .read(&who, &DeploymentQuery { id })
         .unwrap()
         .deployment;
-    assert_eq!(manual.number, 2);
+    assert_eq!(manual.number, Some(1));
 }
 
 #[test]
@@ -237,7 +238,7 @@ fn hold_is_not_the_pending_attempt() {
         .filter(|deployment| deployment.in_flight)
         .map(|deployment| deployment.number)
         .collect();
-    assert_eq!(in_flight, [2]);
+    assert_eq!(in_flight, [Some(1)]);
 }
 
 #[test]
@@ -256,6 +257,100 @@ fn hold_holds_no_slot() {
 fn hold_is_never_unclaimed() {
     let (store, _, _) = waiting();
     assert!(store.unclaimed(i64::MAX).unwrap().is_empty());
+}
+
+/// Holds on two branches pass CI in the other order from how they were pushed. Each
+/// is numbered as it queues, so numbers follow what ran, and the Environment's live
+/// revision is the later-applied one's.
+#[test]
+fn holds_number_in_the_order_they_pass_ci() {
+    let (store, who) = shop();
+    set(&store, &who, "web.waitForCi", json!(true));
+    set(&store, &who, "api.waitForCi", json!(true));
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![ployz_store::Change::Set {
+                    path: ployz_store::SettingPath::parse("api.branch").unwrap(),
+                    value: json!("dev"),
+                }],
+            },
+            &Trusted {
+                repositories: vec![ployz_store::AuthorizedRepository {
+                    repository: backend::repo_name("acme/web"),
+                    repository_id: backend::repo_id(11),
+                    access: ployz_core::config::ServiceGitAccess::GithubInstallation {
+                        installation_id: 7,
+                    },
+                    default_branch: backend::git_branch("main"),
+                    branches: vec![backend::git_branch("dev")],
+                }],
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    system(&store, &push(None, Some(H2), None));
+    system(
+        &store,
+        &SystemEvent::BranchHead(ployz_store::BranchHead {
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("dev"),
+            base: None,
+            head: Some(backend::sha(H3)),
+            changed: None,
+        }),
+    );
+    let [api_hold, web_hold] = <[_; 2]>::try_from(held(&store, &who)).unwrap();
+    assert_eq!((web_hold.number, api_hold.number), (None, None));
+    assert_eq!(
+        (web_hold.label(), api_hold.label()),
+        (H2[..7].to_owned(), H3[..7].to_owned())
+    );
+
+    // api's CI passes first: it queues as #1, at the current Saved revision.
+    let [api] = <[_; 1]>::try_from(passed(&store, H3, 10).admitted).unwrap();
+    assert_eq!(api.deployment.id, api_hold.id);
+    assert_eq!(api.deployment.number, Some(1));
+    backend::run(&store, &api.deployment.id);
+    let api_saved = find(&store, &who, &api_hold).saved;
+
+    set(&store, &who, "web.env.X", json!("1"));
+    publish(&store, &who);
+    let [web] = <[_; 1]>::try_from(
+        system(&store, &suite(2, H2, "completed", Some("success"), 11)).admitted,
+    )
+    .unwrap();
+    assert_eq!(web.deployment.id, web_hold.id);
+    assert_eq!(web.deployment.number, Some(2));
+    backend::run(&store, &web.deployment.id);
+    let web_saved = find(&store, &who, &web_hold).saved;
+    assert!(web_saved > api_saved);
+
+    let numbers: Vec<_> = deployments(&store, &who)
+        .iter()
+        .map(|deployment| (deployment.id.clone(), deployment.number))
+        .collect();
+    assert_eq!(
+        numbers,
+        [
+            (web_hold.id.clone(), Some(2)),
+            (api_hold.id.clone(), Some(1))
+        ]
+    );
+    let history = store
+        .read(
+            &who,
+            &ployz_store::HistoryQuery {
+                environment: EnvironmentRef::default(),
+                limit: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(history.live, Some(web_saved));
 }
 
 #[test]

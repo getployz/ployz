@@ -626,13 +626,15 @@ fn a_push_held_for_ci_lives_on_its_deployment_after_upgrade() {
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     drop(ConfigStore::open(&url, backend::key()).unwrap());
-    let (tables, columns, indexes) = if url.starts_with("sqlite:") {
+    let (tables, columns, indexes, required) = if url.starts_with("sqlite:") {
         (
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'config_%'",
             "SELECT name FROM pragma_table_info('config_deployment') WHERE name LIKE 'push_%'",
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name IN \
              ('config_deployment_hold_branch', 'config_deployment_hold_head', \
              'config_check_suite_head') ORDER BY name",
+            "SELECT CAST(\"notnull\" AS TEXT) FROM pragma_table_info('config_deployment') \
+             WHERE name = 'number'",
         )
     } else {
         (
@@ -644,6 +646,9 @@ fn a_push_held_for_ci_lives_on_its_deployment_after_upgrade() {
             "SELECT indexname::text FROM pg_indexes WHERE schemaname = current_schema() \
              AND indexname IN ('config_deployment_hold_branch', 'config_deployment_hold_head', \
              'config_check_suite_head') ORDER BY indexname",
+            "SELECT (is_nullable = 'NO')::int::text FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'config_deployment' \
+             AND column_name = 'number'",
         )
     };
     let tables: Vec<String> = select(&url, tables).into_iter().flatten().collect();
@@ -651,7 +656,18 @@ fn a_push_held_for_ci_lives_on_its_deployment_after_upgrade() {
     assert!(!tables.iter().any(|table| table == "config_waiting_deploy"));
     let mut columns: Vec<String> = select(&url, columns).into_iter().flatten().collect();
     columns.sort();
-    assert_eq!(columns, ["push_branch", "push_head", "push_repository_id"]);
+    assert_eq!(
+        columns,
+        [
+            "push_branch",
+            "push_head",
+            "push_repository_id",
+            "push_services"
+        ]
+    );
+    // A Deployment waiting for CI has no number until it queues.
+    let required: Vec<String> = select(&url, required).into_iter().flatten().collect();
+    assert_eq!(required, ["0"]);
     let indexes: Vec<String> = select(&url, indexes).into_iter().flatten().collect();
     assert_eq!(
         indexes,

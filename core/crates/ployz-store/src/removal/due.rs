@@ -147,7 +147,7 @@ pub(super) fn go_on(
             Standing::InFlight(running) => (
                 None,
                 LeftStatus::WaitingTurn,
-                Some(format!("Deployment #{} goes first", running.number)),
+                Some(format!("Deployment {} goes first", running.label())),
             ),
             Standing::Unknown => (None, LeftStatus::Stalled, Some(unknown(&environment))),
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
@@ -464,8 +464,9 @@ fn refuse_running(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcE
     };
     Err(error::conflict(
         format!(
-            "Deployment #{} is running: wait for it or cancel it before removing {}",
-            running.number, environment.summary.name
+            "Deployment {} is running: wait for it or cancel it before removing {}",
+            running.label(),
+            environment.summary.name
         ),
         json!({ "deployment": running.id }),
     ))

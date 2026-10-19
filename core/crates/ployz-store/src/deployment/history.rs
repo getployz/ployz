@@ -214,7 +214,10 @@ pub(crate) fn failed(
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<bool, RpcError> {
-    let condition = format!("saved_revision = {}", revision_param(revision)?);
+    let condition = format!(
+        "saved_revision = {} AND number IS NOT NULL",
+        revision_param(revision)?
+    );
     Ok(latest_where(tx, environment, &condition)?
         .is_some_and(|deployment| deployment.status == DeploymentStatus::Failed))
 }
@@ -248,7 +251,7 @@ pub(crate) fn held_for_head(
     tx.query(
         "SELECT id, environment_id, push_branch FROM config_deployment \
          WHERE organization_id = ?1 AND push_repository_id = ?2 AND push_head = ?3 \
-         AND status = 'waiting_for_ci' ORDER BY environment_id, number",
+         AND status = 'waiting_for_ci' ORDER BY environment_id, admitted, id",
         &[
             who.organization.as_str().into(),
             repository_id.into(),
@@ -393,19 +396,24 @@ pub(crate) fn build_log(
     build::log(tx, &stored, &query.service)
 }
 
-/// One page of `environment`'s Deployments, newest first, before `cursor`.
+/// One page of `environment`'s Deployments, newest first, before `cursor`. The first
+/// page leads with those waiting for CI, unnumbered; a cursor is a number, so later
+/// pages hold only numbered ones.
 pub(crate) fn page(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     limit: usize,
     before: Option<u64>,
 ) -> Result<(Vec<DeploymentSummary>, Option<u64>), RpcError> {
+    let first = before.is_none();
     let before = i64::try_from(before.unwrap_or(u64::MAX >> 1)).unwrap_or(i64::MAX);
     let columns = COLUMNS.as_str();
+    let unnumbered = if first { "number IS NULL OR " } else { "" };
     let rows = tx.query(
         &format!(
-            "SELECT {columns} FROM config_deployment WHERE environment_id = ?1 AND number < ?2 \
-             ORDER BY number DESC LIMIT ?3"
+            "SELECT {columns} FROM config_deployment \
+             WHERE environment_id = ?1 AND ({unnumbered}number < ?2) \
+             ORDER BY number IS NOT NULL, number DESC, admitted DESC, id LIMIT ?3"
         ),
         &[
             environment.as_str().into(),
@@ -419,7 +427,10 @@ pub(crate) fn page(
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
-        page.last().map_or(0, |last| last.number)
+        page.iter()
+            .rev()
+            .find_map(|deployment| deployment.number)
+            .unwrap_or(u64::MAX >> 1)
     });
     Ok((page, next))
 }

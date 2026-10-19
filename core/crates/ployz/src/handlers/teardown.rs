@@ -305,7 +305,7 @@ pub(super) fn remove(
         Ok(None) => Ok(None),
         Err(error) if !ran.is_empty() => {
             for deployment in &ran {
-                crate::ui::stream(format_args!("Deployment #{} applied", deployment.number));
+                crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
             }
             let mut committed = json!({ "applied": ran });
             if let (false, Some(object)) = (effects.is_empty(), committed.as_object_mut()) {
@@ -633,8 +633,8 @@ impl Removed {
     pub(super) fn say(&self, target: &str) {
         for deployment in &self.ran {
             crate::ui::stream(format_args!(
-                "Took an Environment off the Servers (Deployment #{}).",
-                deployment.number
+                "Took an Environment off the Servers (Deployment {}).",
+                deployment.label()
             ));
         }
         match &self.removal {
@@ -868,7 +868,7 @@ pub(super) fn unfinished(
         ),
         || {
             for deployment in applied {
-                crate::ui::stream(format_args!("Deployment #{} applied", deployment.number));
+                crate::ui::stream(format_args!("Deployment {} applied", deployment.label()));
             }
             deploy::say_view(view);
         },

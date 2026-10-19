@@ -166,7 +166,7 @@ impl Tool for ServiceState {
         let numbers = page
             .deployments
             .iter()
-            .map(|deployment| (&deployment.id, deployment.number))
+            .filter_map(|deployment| Some((&deployment.id, deployment.number?)))
             .collect::<BTreeMap<_, _>>();
         let deploying = page
             .deployments

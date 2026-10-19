@@ -4,7 +4,7 @@ import { asTestDouble } from "#/lib/test-double";
 import {
   showCancelling,
   canFixOnBranch, changeGroups, deploymentWarningText, deploymentActions, deploymentByline, deploymentLight, deploymentStatusLabel, deploysLabel, missingDeployLogs, outcomeReason,
-  freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
+  deploymentLabel, freshRollback, nodeLight, reviewGroups, rollbackConfirm, shownValue, uploadLabel, warnedService,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -152,6 +152,12 @@ it("shows one action: redeploy once a Deployment ended, start while queued, canc
   // A removal that applied left nothing to redeploy; one that failed redeploys.
   expect(deploymentActions({ status: "applied", remove: true, held: false }, false)).toEqual({ primary: null, cancelInMenu: false });
   expect(deploymentActions({ status: "failed", remove: true, held: false }, false)).toEqual({ primary: "redeploy", cancelInMenu: false });
+});
+
+it("names a Deployment by number once it queued, and by its push's short sha while it waits for CI", () => {
+  expect(deploymentLabel({ number: 4, id: "dep_0123456789", push: { head: "abcdef0123456789" } })).toBe("#4");
+  expect(deploymentLabel({ number: null, id: "dep_0123456789", push: { head: "abcdef0123456789" } })).toBe("abcdef0");
+  expect(deploymentLabel({ number: null, id: "dep_0123456789" })).toBe("dep_0123");
 });
 
 it("asks before a redeploy that rolls back Deployments that ran after it, and only then", () => {

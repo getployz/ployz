@@ -577,9 +577,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             if let Some(reason) = reason {
                 attention.push(Attention {
                     reason: reason.to_owned(),
-                    message: format!("Deployment #{} did not complete", ended.number),
+                    message: format!("Deployment {} did not complete", ended.label()),
                     deployment: Some(ended.id.clone()),
-                    next: Some(super::deploy::show_hint(matches, ended.number)),
+                    next: Some(super::deploy::hint_for(matches, ended)),
                 });
             }
         }
@@ -614,7 +614,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         .or_else(|| {
             deploying
                 .first()
-                .map(|deployment| super::deploy::show_hint(matches, deployment.number))
+                .map(|deployment| super::deploy::hint_for(matches, deployment))
         })
         .or_else(|| {
             (identity.is_none() && this_server.is_none()).then(|| "ployz login".to_owned())
@@ -717,8 +717,8 @@ fn status_record(status: &Status) -> Fields {
         record.push(
             "deploying",
             format_args!(
-                "#{} {}",
-                deployment.number,
+                "{} {}",
+                deployment.label(),
                 super::store::word(&deployment.status)
             ),
         );

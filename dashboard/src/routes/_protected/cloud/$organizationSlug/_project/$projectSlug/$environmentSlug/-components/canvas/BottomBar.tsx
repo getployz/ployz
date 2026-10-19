@@ -14,7 +14,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary, Included } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { deploymentLight, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
+import { deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { deploymentDestination } from "../deployments/run-search";
@@ -290,7 +290,7 @@ function AttemptState({ deployment, storage, onDismiss }: { deployment: Deployme
   const detail = storage ?? (deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys);
   return (
     <Row icon={<DeploymentStatusIcon status={deploymentLight(deployment)} />}
-      title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={detail}>
+      title={`${deploymentStatusLabel(deployment)} · Deployment ${deploymentLabel(deployment)}`} detail={detail}>
       <Link {...deploymentDestination(params, deployment.id)} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>

@@ -6,6 +6,8 @@ ALTER TABLE config_deployment ADD COLUMN push_head TEXT;
 -- The Services a held push selected, by ID as a JSON array: a name may change while
 -- it waits. NULL or empty selects every one.
 ALTER TABLE config_deployment ADD COLUMN push_services TEXT;
+-- A Deployment waiting for CI has no number: it takes the next one as it queues.
+ALTER TABLE config_deployment ALTER COLUMN number DROP NOT NULL;
 -- A newer head of the branch replaces the one waiting: one per Environment and branch.
 CREATE UNIQUE INDEX config_deployment_hold_branch
     ON config_deployment (environment_id, push_repository_id, push_branch)

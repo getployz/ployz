@@ -47,8 +47,8 @@ fn newest(environment: &EnvironmentRef) -> DeploymentsQuery {
 
 fn latest(page: DeploymentsView) -> Result<u64, Stop> {
     page.deployments
-        .first()
-        .map(|latest| latest.number)
+        .iter()
+        .find_map(|latest| latest.number)
         .ok_or_else(|| {
             Refusal::not_found("This Environment has no Deployment yet")
                 .with_next(Call::new("deploy", json!({})))
@@ -275,7 +275,13 @@ impl Tool for DeploymentShow {
             object.insert("progress".into(), progress(&view));
             object.insert(
                 "next".into(),
-                json!([follow(cx.call(), view.deployment.number)]),
+                json!(
+                    view.deployment
+                        .number
+                        .map(|number| follow(cx.call(), number))
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                ),
             );
         } else if let Some(calls) = diagnose(&view, cx.call()) {
             object.insert("next".into(), json!(calls));
@@ -410,13 +416,13 @@ impl Tool for DeploymentRetry {
             accept_volume_loss: self.accept_volume_loss,
         });
         let summary = cx.write(&retry)?;
-        let retries = Some(source.deployment.number);
+        let retries = source.deployment.number;
         // On a replay the source's newer runs include this redeploy and any after it.
         let rolls_back: Vec<u64> = source
             .rolls_back
             .iter()
             .copied()
-            .filter(|number| *number < summary.number)
+            .filter(|number| summary.number.is_some_and(|retried| *number < retried))
             .collect();
         Ok(retried(
             cx,
@@ -442,7 +448,7 @@ fn retried(
         "rolls_back": rolls_back,
         "status": retried.status,
         "saved_revision": retried.saved.0,
-        "next": follow(cx.call(), retried.number),
+        "next": retried.number.map(|number| follow(cx.call(), number)),
     })
 }
 
@@ -483,7 +489,7 @@ impl Tool for DeploymentStart {
             "at": at(&queued.environment),
             "deployment": started.number,
             "status": started.status,
-            "next": follow(cx.call(), started.number),
+            "next": started.number.map(|number| follow(cx.call(), number)),
         }))
     }
 }

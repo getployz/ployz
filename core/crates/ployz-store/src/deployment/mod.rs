@@ -62,8 +62,9 @@ use crate::variables;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentStatus {
-    /// A push held until its commit's CI passes: numbered, but nothing frozen, built
-    /// or claimed. It holds no slot and is no pending attempt; passing CI queues it.
+    /// A push held until its commit's CI passes: unnumbered, nothing frozen, built
+    /// or claimed. It holds no slot and is no pending attempt; passing CI queues it,
+    /// numbered next.
     WaitingForCi,
     /// Admitted, waiting for a runner.
     Queued,
@@ -128,8 +129,9 @@ pub enum CiVerdict {
 pub struct DeploymentSummary {
     pub id: DeploymentId,
     pub environment_id: EnvironmentId,
-    /// Counts from 1 within its Environment.
-    pub number: u64,
+    /// Counts from 1 within its Environment, in the order Deployments queued. None
+    /// while it waits for CI, and ever after when it never queued.
+    pub number: Option<u64>,
     pub status: DeploymentStatus,
     /// The Saved revision it ships.
     pub saved: Revision,
@@ -178,6 +180,28 @@ pub struct DeploymentSummary {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<IngressRepair>>")]
     pub ingress: Vec<IngressRepair>,
+}
+
+impl DeploymentSummary {
+    /// How a list names it: `#N` once numbered, else the short commit of the push
+    /// it holds.
+    pub fn label(&self) -> String {
+        match (self.number, &self.push) {
+            (Some(number), _) => format!("#{number}"),
+            (None, Some(push)) => push.head.as_str().get(..7).unwrap_or_default().to_owned(),
+            (None, None) => self.id.as_str().get(..8).unwrap_or_default().to_owned(),
+        }
+    }
+
+    /// Its number, which every Deployment that queued has.
+    pub(crate) fn numbered(&self) -> Result<u64, RpcError> {
+        self.number.ok_or_else(|| {
+            error::conflict(
+                "This Deployment never queued: it waited for CI",
+                json!({ "deployment": self.id }),
+            )
+        })
+    }
 }
 
 /// What a Deployment ships despite. It still ships.
@@ -919,7 +943,11 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
             environment_id: row.parse(1, "identity")?,
-            number: row.number(2, "Deployment")?,
+            number: row
+                .optional_int(2)?
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| error::corrupt("Deployment number"))?,
             status,
             saved: row.number(4, "revision")?,
             services: row.json(5, "Deployment")?,

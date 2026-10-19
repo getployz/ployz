@@ -349,7 +349,7 @@ pub(super) fn execute(
     source: Option<&Path>,
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<Shipped, Error> {
-    let hint = show_hint(matches, admitted.number);
+    let hint = hint_for(matches, admitted);
     let signal = crate::cancellation::interrupted()?;
     let mut runner = match store.local() {
         // Admission can end it at once, with nothing to run.
@@ -707,8 +707,8 @@ fn follow(
         {
             unclaimed = None;
             ui::note(format_args!(
-                "No Server has started Deployment #{} yet; it stays queued until one does.",
-                current.view.deployment.number
+                "No Server has started Deployment {} yet; it stays queued until one does.",
+                current.view.deployment.label()
             ));
             ui::hint(&Hint::Inspect("ployz server ls".into()));
         }
@@ -732,13 +732,18 @@ fn replacement(store: &Store, view: &DeploymentView) -> Result<Option<Deployment
             project: Some(view.environment.project.clone()),
             environment: Some(view.environment.name.clone()),
         },
-        limit: Some(1),
+        limit: None,
         cursor: None,
     })?;
-    Ok(page.deployments.into_iter().next().filter(|newer| {
-        newer.number > view.deployment.number
-            && ships_all(&view.deployment.services, &newer.services)
-    }))
+    // A page leads with the Deployments still waiting for CI: unnumbered, not newer.
+    Ok(page
+        .deployments
+        .into_iter()
+        .find(|newer| newer.number.is_some())
+        .filter(|newer| {
+            newer.number > view.deployment.number
+                && ships_all(&view.deployment.services, &newer.services)
+        }))
 }
 
 /// Whether a Deployment targeting `newer` ships every Service one targeting `ours` would; empty targets every Service.
@@ -938,7 +943,7 @@ pub(super) fn ls(root: &ArgMatches) -> Result<(), Error> {
     );
     for deployment in &page.deployments {
         table.row([
-            Cell::from(format!("#{}", deployment.number)),
+            Cell::from(deployment.label()),
             Cell::status(status_word(deployment), status_tone(deployment)),
             Cell::from(deployment.saved.to_string()),
         ]);
@@ -1005,8 +1010,10 @@ fn refused<'a>(
             error,
             |refusal| refusal.code == RpcErrorCode::Conflict,
             || {
-                numbered(store, id)
-                    .map_or_else(|| id_hint(id), |(number, _)| show_hint(matches, number))
+                store
+                    .read(&ployz_store::DeploymentQuery { id: id.clone() })
+                    .ok()
+                    .map_or_else(|| id_hint(id), |view| hint_for(matches, &view.deployment))
             },
         ))
     }
@@ -1017,12 +1024,12 @@ pub(super) fn show_hint(matches: &ArgMatches, number: u64) -> String {
     next(matches, &["deployment", "show", &number.to_string()])
 }
 
-/// Deployment `id`'s number and Environment, when the Store can still say them.
-fn numbered(store: &Store, id: &DeploymentId) -> Option<(u64, String)> {
-    store
-        .read(&ployz_store::DeploymentQuery { id: id.clone() })
-        .ok()
-        .map(|view| (view.deployment.number, view.environment.name.to_string()))
+/// `ployz deployment show` for `deployment`: by number once it queued, by ID while it waits for CI.
+pub(super) fn hint_for(matches: &ArgMatches, deployment: &DeploymentSummary) -> String {
+    deployment.number.map_or_else(
+        || id_hint(&deployment.id),
+        |number| show_hint(matches, number),
+    )
 }
 
 fn id_hint(id: &DeploymentId) -> String {
@@ -1076,15 +1083,16 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
     let Some(undoes) = rolls_back(&view.rolls_back) else {
         return Ok(Vec::new());
     };
-    let number = view.deployment.number;
-    ui::note(format!("Redeploying #{number} undoes {undoes}."));
+    // Only a Deployment that ran can be rolled back to, and every one that ran is numbered.
+    let number = view.deployment.label();
+    ui::note(format!("Redeploying {number} undoes {undoes}."));
     ui::confirm(
-        &format!("Roll back to #{number}?"),
+        &format!("Roll back to {number}?"),
         || {
             Error::detailed(
                 RpcErrorCode::ConfirmationRequired,
-                format!("Rolling back to #{number} needs confirmation. Nothing deployed."),
-                serde_json::json!({ "deployment": number, "rolls_back": view.rolls_back }),
+                format!("Rolling back to {number} needs confirmation. Nothing deployed."),
+                serde_json::json!({ "deployment": view.deployment.number, "rolls_back": view.rolls_back }),
             )
             .hint(Hint::Retry(super::typed_with(&["--yes"])))
         },
@@ -1137,7 +1145,7 @@ pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
         )
         .map_err(refused(matches, &store, &id))?;
     let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
-    finish_view(&view, Some(show_hint(matches, view.deployment.number)))
+    finish_view(&view, Some(hint_for(matches, &view.deployment)))
 }
 
 pub(super) fn show(root: &ArgMatches) -> Result<(), Error> {
@@ -1155,8 +1163,8 @@ pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result
 /// A Deployment as human text.
 pub(super) fn say_view(view: &DeploymentView) {
     crate::ui::stream(format_args!(
-        "Deployment #{} of {}/{}: {}",
-        view.deployment.number,
+        "Deployment {} of {}/{}: {}",
+        view.deployment.label(),
         view.environment.project,
         view.environment.name,
         super::store::word(&view.deployment.status)
