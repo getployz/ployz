@@ -271,17 +271,11 @@ fn scrub_target() -> Scrub {
             serde_json::json!({ "API_TOKEN": "tok-worker-9", "MIRROR": "hunter2-long" }),
         ),
     ];
-    let secret_env = BTreeMap::from([
-        (
-            ServiceName::parse("web").unwrap(),
-            ["DB_PASSWORD".to_owned()].into(),
-        ),
-        (
-            ServiceName::parse("worker").unwrap(),
-            ["API_TOKEN".to_owned()].into(),
-        ),
-    ]);
-    Scrub::new(&target, &secret_env)
+    let names = ["DB_PASSWORD", "API_TOKEN"]
+        .map(str::to_owned)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    Scrub::new(&target, &names)
 }
 
 // Catches a failed log that shows a Sealed value, from its own Service or another the
@@ -290,12 +284,9 @@ fn scrub_target() -> Scrub {
 #[test]
 fn a_failed_log_is_scrubbed_of_sealed_values_only() {
     use ployz_store::tools::{LineCap, LogExcerpt};
-    let scrub = scrub_target();
-    let sealed = scrub
-        .sealed(&ServiceName::parse("worker").unwrap())
-        .expect("a lowered Service has its Sealed values");
+    let sealed = scrub_target().sealed(None);
     let line = "npm warn config production; login hunter2-long at debug-verbose with tok-worker-9 password=open-sesame\n";
-    let excerpt = LogExcerpt::scrub([line.to_owned()], sealed, LineCap::default());
+    let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
     assert_eq!(
         excerpt.lines(),
         [
@@ -304,12 +295,70 @@ fn a_failed_log_is_scrubbed_of_sealed_values_only() {
     );
 }
 
-// Catches a removed Service's log shown with no idea of the Sealed values it ran under.
 #[test]
-fn a_service_the_claim_did_not_lower_has_no_sealed_values() {
+fn an_older_containers_log_is_scrubbed_of_its_own_sealed_values_too() {
+    use ployz_store::tools::{LineCap, LogExcerpt};
+    let env = BTreeMap::from([
+        ("DB_PASSWORD".to_owned(), "old-rotated-out".to_owned()),
+        ("LOG_LEVEL".to_owned(), "debug-verbose".to_owned()),
+    ]);
+    let sealed = scrub_target().sealed(Some(env));
+    let line = "was old-rotated-out now hunter2-long at debug-verbose\n";
+    let excerpt = LogExcerpt::scrub([line.to_owned()], &sealed, LineCap::default());
+    assert_eq!(
+        excerpt.lines(),
+        ["was [secret DB_PASSWORD] now [secret DB_PASSWORD] at debug-verbose"]
+    );
+}
+
+#[tokio::test]
+async fn an_older_containers_failed_tail_is_scrubbed_of_the_value_its_machine_reports() {
+    use crate::global_fixtures::container_id;
+    use crate::sdk::test_support as support;
+    let one = support::machine('a', "one");
+    let mut service = support::DeployService::new(one.clone());
+    service.uninspectable.insert(container_id('d'));
+    let (address, server) = support::listening(service).await;
+    let session = connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let client = session.client().unwrap();
+    let scrub = Scrub {
+        names: BTreeSet::from(["PLAIN".to_owned()]),
+        claim: BTreeSet::from([("PLAIN".to_owned(), "rotated-new-value".to_owned())]),
+    };
+    let machine = one.machine.id;
+
+    let older = scrub.older_tail(&client, machine, container_id('c')).await;
+    let created = scrub
+        .created_tail(&client, machine, container_id('c'))
+        .await;
+    let unreadable = scrub.older_tail(&client, machine, container_id('d')).await;
+    session.close().await;
+    server.abort();
+
+    let lines = |log: &LogText| match log {
+        LogText::Shown(excerpt) => excerpt.lines().to_vec(),
+        withheld => panic!("a read tail is shown: {withheld:?}"),
+    };
     assert!(
-        scrub_target()
-            .sealed(&ServiceName::parse("api").unwrap())
-            .is_none()
+        lines(&older).contains(&"plain [secret PLAIN]".to_owned()),
+        "{older:?}"
+    );
+    assert!(
+        lines(&created).contains(&"plain from-docker".to_owned()),
+        "{created:?}"
+    );
+    assert!(
+        matches!(
+            unreadable,
+            LogText::Withheld {
+                why: Withheld::NoSecretContext
+            }
+        ),
+        "{unreadable:?}"
     );
 }

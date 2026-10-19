@@ -2250,27 +2250,20 @@ fn renaming_a_referenced_variable_asks_to_update_its_references() {
     );
 }
 
-// Catches service_logs leaving a Sealed variable or a template that may reference one
-// off what Cloud scrubs, naming a plain one, or dropping why a Server did not answer.
 #[test]
-fn service_logs_names_sealed_variables_and_says_why_a_server_did_not_answer() {
+fn service_logs_asks_cloud_for_the_service_and_says_why_a_server_did_not_answer() {
     let (store, _) = deploying();
     call(
         &store,
         "service_update",
-        json!({ "service": "web", "set": { "env": {
-            "PLAIN": "hello-plain",
-            "SHARED": { "value": "exported-plain", "exported": true },
-            "KEY": { "secret": "s3cr3t-value" },
-            "URL": "http://${{ web.PLAIN }}",
-        } } }),
+        json!({ "service": "web", "set": { "env": { "KEY": { "secret": "s3cr3t-value" } } } }),
         "env-1",
     )
     .ok();
     let mut asked = Vec::new();
     let mut cloud = |cloud: Cloud| match cloud {
         Cloud::Ask(CloudQuery::Logs(query)) => {
-            asked.push(query.sealed);
+            asked.push(serde_json::to_value(query).unwrap());
             Ok(json!({
                 "servers": [],
                 "seen": servers(&[])["seen"],
@@ -2291,13 +2284,12 @@ fn service_logs_names_sealed_variables_and_says_why_a_server_did_not_answer() {
     )
     .ok();
 
-    let [Some(sealed)] = asked.as_slice() else {
-        panic!("one logs ask naming the Sealed variables: {asked:?}");
+    let [query] = asked.as_slice() else {
+        panic!("one logs ask: {asked:?}");
     };
-    assert_eq!(
-        sealed.iter().map(String::as_str).collect::<Vec<_>>(),
-        ["KEY", "URL"]
-    );
+    assert_eq!(query["service"], "web");
+    assert_eq!(query["deployment"], "00000000-0000-4000-8000-000000000101");
+    assert!(query.get("sealed").is_none(), "{query}");
     assert_eq!(
         logs["notes"],
         json!(["web-2 did not answer: log store is rebuilding"])

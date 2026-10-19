@@ -1,7 +1,7 @@
 //! Tools on a Service's containers: their state, their logs, and restarting,
 //! starting or stopping them.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use ployz_core::ServiceName;
@@ -26,7 +26,7 @@ use crate::catalog::NODE_NAME;
 use crate::error::did_you_mean;
 use crate::{
     DeploymentsQuery, EnvironmentName, NamespaceQuery, NamespaceView, NumberedDeploymentQuery,
-    ProjectName, ServiceQuery, ServicesQuery, SourceKind,
+    ProjectName, ServicesQuery, SourceKind,
 };
 
 const REQUEST_KEY: &str = "^[A-Za-z0-9_-]{8,64}$";
@@ -262,15 +262,9 @@ impl Tool for ServiceLogs {
     fn plan(self, cx: &mut Cx<'_>) -> Result<Value, Stop> {
         cx.cloud_only()?;
         let scope = cx.scope(self.project.as_ref(), self.environment.as_ref());
-        let mut asks = vec![
-            store(&NamespaceQuery {
-                environment: scope.clone(),
-            })?,
-            store(&ServiceQuery {
-                environment: scope.clone(),
-                service: self.service.clone(),
-            })?,
-        ];
+        let mut asks = vec![store(&NamespaceQuery {
+            environment: scope.clone(),
+        })?];
         let numbered = self.deployment.map(|number| NumberedDeploymentQuery {
             environment: scope,
             number,
@@ -283,10 +277,6 @@ impl Tool for ServiceLogs {
         }
         let mut answers = cx.read(asks)?.into_iter();
         let namespace = cx.view::<NamespaceQuery>(answers.next())?;
-        let sealed = cx
-            .view::<ServiceQuery>(answers.next())
-            .ok()
-            .map(|view| sealed_env(&view.values));
         let deployment = match numbered {
             Some(_) => Some(cx.view::<NumberedDeploymentQuery>(answers.next())?),
             None => None,
@@ -307,7 +297,6 @@ impl Tool for ServiceLogs {
                 |name| Ok(name.clone()),
             )?;
         let query = LogsQuery {
-            environment: namespace.environment.id.clone(),
             namespace: namespace.namespace.clone(),
             service: carried,
             deployment: deployment.map(|view| view.deployment.id),
@@ -316,7 +305,6 @@ impl Tool for ServiceLogs {
             since: self
                 .since_minutes
                 .map(|minutes| Duration::from_secs(u64::from(minutes) * 60)),
-            sealed,
         };
         let mut answers = cx
             .read(vec![Ask::Cloud(CloudQuery::Logs(query))])?
@@ -329,22 +317,6 @@ impl Tool for ServiceLogs {
             "notes": logs.notes,
         }))
     }
-}
-
-/// The variables a Service's Settings `values` show as Sealed, `{"secret": …}`, or as a
-/// template, whose `${{ … }}` may reference a Sealed value.
-#[must_use]
-pub fn sealed_env(values: &serde_json::Map<String, Value>) -> BTreeSet<String> {
-    let Some(Value::Object(env)) = values.get("env") else {
-        return BTreeSet::new();
-    };
-    env.iter()
-        .filter(|(_, shown)| {
-            let value = shown.get("value").unwrap_or(shown);
-            value.get("secret").is_some() || value.as_str().is_some_and(|text| text.contains("${{"))
-        })
-        .map(|(name, _)| name.clone())
-        .collect()
 }
 
 /// Restart, start or stop `service`'s containers, on one server or all.

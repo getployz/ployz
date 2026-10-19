@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use ployz_core::metrics::{
     HostPoint, MarkerKind, MetricHistoryReply, MetricMarker, MetricPoints, ServicePoint,
@@ -8,11 +12,11 @@ use ployz_core::{
     MachineFailure, MachineSuccess, Namespace, QualifiedService, RpcError, RpcErrorCode, ServiceId,
     ServiceName,
 };
+use ployz_store::DeploymentId;
 use ployz_store::tools::cloud::{ContainerState, LogsAnswer, MetricRow};
 use ployz_store::tools::{
     LineCap, LogText, LogsQuery, SealedValues, ServerName, ServerRef, Timestamp, Withheld,
 };
-use ployz_store::{DeploymentId, EnvironmentId};
 use tokio::time::Instant;
 
 use super::{
@@ -360,18 +364,20 @@ async fn a_start_that_never_passes_its_healthcheck_is_unhealthy_at_its_deadline(
     );
 }
 
-fn logs_query(server: Option<ServerRef>, sealed: Option<&[&str]>) -> LogsQuery {
-    LogsQuery {
-        environment: EnvironmentId::parse("cccccccc-cccc-4ccc-8ccc-cccccccccccc").unwrap(),
+fn logs_query(server: Option<ServerRef>, sealed: Option<&[&str]>) -> LogsAsk {
+    let query = LogsQuery {
         namespace: Namespace::parse("app").unwrap(),
         service: ServiceName::parse("web").unwrap(),
         deployment: None,
         server,
         lines: LineCap::new(3).unwrap(),
         since: Some(Duration::from_secs(600)),
-        sealed: sealed.map(|names| names.iter().map(|name| (*name).to_owned()).collect()),
-    }
+    };
+    let sealed = sealed.map(|names| names.iter().map(|name| (*name).to_owned()).collect());
+    (query, sealed)
 }
+
+type LogsAsk = (LogsQuery, Option<BTreeSet<String>>);
 
 fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
     answer
@@ -386,7 +392,7 @@ fn shown(answer: &LogsAnswer) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> Vec<LogsAnswer> {
+async fn ask_logs(service: support::DeployService, queries: Vec<LogsAsk>) -> Vec<LogsAnswer> {
     let (address, server) = support::listening(service).await;
     let session = crate::sdk::connect_connections(
         vec![crate::context::Connection::tcp(address)],
@@ -395,8 +401,8 @@ async fn ask_logs(service: support::DeployService, queries: Vec<LogsQuery>) -> V
     .await
     .unwrap();
     let mut answers = Vec::new();
-    for query in queries {
-        answers.push(logs(&session, query).await.unwrap());
+    for (query, sealed) in queries {
+        answers.push(logs(&session, query, sealed.as_ref()).await.unwrap());
     }
     session.close().await;
     server.abort();
@@ -489,6 +495,36 @@ async fn a_logs_ask_scrubs_only_sealed_values_unless_the_store_could_not_say() {
     assert_eq!(
         shown(&unknown),
         tail("plain [secret PLAIN]", "token=[secret TOKEN]")
+    );
+}
+
+#[tokio::test]
+async fn a_logs_ask_scrubs_every_name_the_store_holds_sealed_whatever_the_ask_says() {
+    let one = support::machine('a', "one");
+    let service = support::DeployService::new(one.clone());
+    let decoded: Result<LogsQuery, _> = serde_json::from_value(serde_json::json!({
+        "namespace": "app",
+        "service": "web",
+        "lines": 3,
+        "sealed": [],
+    }));
+    assert!(decoded.is_err(), "an ask cannot carry its own scrub set");
+
+    let [answer] = ask_logs(service, vec![logs_query(None, Some(&["PLAIN", "TOKEN"]))])
+        .await
+        .try_into()
+        .unwrap();
+
+    assert_eq!(
+        shown(&answer),
+        [(
+            "one".to_owned(),
+            vec![
+                "line 10".to_owned(),
+                "plain [secret PLAIN]".to_owned(),
+                "token=[secret TOKEN]".to_owned(),
+            ]
+        )]
     );
 }
 

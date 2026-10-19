@@ -1,7 +1,6 @@
 //! The step machine's vocabulary: what a tool asks for, what it writes, and the
 //! keys that make a retried write land once.
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -124,7 +123,6 @@ pub enum CloudQuery {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct LogsQuery {
-    pub environment: EnvironmentId,
     pub namespace: Namespace,
     pub service: ServiceName,
     pub deployment: Option<DeploymentId>,
@@ -132,10 +130,6 @@ pub struct LogsQuery {
     pub lines: LineCap,
     #[ts(type = "{ secs: number, nanos: number } | null")]
     pub since: Option<Duration>,
-    /// The Service's variables whose value is Sealed or may reference one, by name: each
-    /// Container's value for them is scrubbed. None when the Store could not show the
-    /// Service, so every env value is scrubbed.
-    pub sealed: Option<BTreeSet<String>>,
 }
 
 /// Log lines a Server's own process wrote: the Ployz daemon, Docker or Corrosion.

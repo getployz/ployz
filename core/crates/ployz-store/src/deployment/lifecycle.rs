@@ -549,7 +549,6 @@ pub(crate) fn claim(
     let Lowered {
         input,
         mut intent,
-        secret_env,
         warnings,
         ..
     } = lower(
@@ -589,10 +588,11 @@ pub(crate) fn claim(
         .collect();
     let organization = build::organization(tx, id)?;
     let build_order = crate::builders::order(tx, organization.as_str())?;
+    let sealed_names = crate::review::sealed::names(tx, stored.summary.environment_id.as_str())?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
-        secret_env,
+        sealed_names,
         input,
         receipts,
         sources,

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::{
-    DeployOperation, DeployOutcome, ExecutionError, FailedOperation, RpcError, RpcErrorCode,
-    ServiceName,
+    ContainerId, DeployOperation, DeployOutcome, ExecutionError, FailedOperation, MachineId,
+    RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::tools::{LogText, SealedValues, Withheld};
 use ployz_store::{
@@ -24,7 +24,7 @@ use tokio_util::sync::CancellationToken;
 use super::build::BuildOutcome;
 use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
-use crate::connect::SystemConnector;
+use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
@@ -212,38 +212,55 @@ pub async fn observe_copies(
     observed
 }
 
-/// Every Sealed value the claim lowered, whichever Service holds it: what a failed
-/// Container's log is scrubbed of.
 struct Scrub {
-    lowered: BTreeSet<ServiceName>,
-    sealed: SealedValues,
+    names: BTreeSet<String>,
+    claim: BTreeSet<(String, String)>,
 }
 
 impl Scrub {
-    fn new(
-        target: &[ployz_core::RequestedServiceSpec],
-        secret_env: &BTreeMap<ServiceName, BTreeSet<String>>,
-    ) -> Self {
+    fn new(target: &[ployz_core::RequestedServiceSpec], names: &BTreeSet<String>) -> Self {
         Self {
-            lowered: target.iter().map(|spec| spec.name.clone()).collect(),
-            sealed: target
+            claim: target
                 .iter()
-                .flat_map(|spec| {
-                    let keys = secret_env.get(&spec.name);
-                    spec.container
-                        .environment
-                        .iter()
-                        .filter(move |(key, _)| keys.is_some_and(|keys| keys.contains(*key)))
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                })
+                .flat_map(|spec| spec.container.environment.iter())
+                .filter(|(key, _)| names.contains(*key))
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
+            names: names.clone(),
         }
     }
 
-    /// What `service`'s log is scrubbed of. None for a Service the claim did not lower,
-    /// one this Deploy removes: it ran under Sealed values the claim no longer holds.
-    fn sealed(&self, service: &ServiceName) -> Option<&SealedValues> {
-        self.lowered.contains(service).then_some(&self.sealed)
+    fn sealed(&self, env: Option<BTreeMap<String, String>>) -> SealedValues {
+        let mut sealed = self.claim.iter().cloned().collect::<SealedValues>();
+        sealed.extend(
+            env.into_iter()
+                .flatten()
+                .filter(|(key, _)| self.names.contains(key)),
+        );
+        sealed
+    }
+
+    async fn created_tail(
+        &self,
+        client: &Client,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> LogText {
+        super::failed_tail(client, machine, container, &self.sealed(None)).await
+    }
+
+    async fn older_tail(
+        &self,
+        client: &Client,
+        machine: MachineId,
+        container: ContainerId,
+    ) -> LogText {
+        let Some(env) = super::container_env(client, machine, container).await else {
+            return LogText::Withheld {
+                why: Withheld::NoSecretContext,
+            };
+        };
+        super::failed_tail(client, machine, container, &self.sealed(Some(env))).await
     }
 }
 
@@ -262,7 +279,7 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let scrub = Scrub::new(&claimed.intent.target, &claimed.secret_env);
+        let scrub = Scrub::new(&claimed.intent.target, &claimed.sealed_names);
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.preview(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -574,13 +591,10 @@ impl Run {
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
                 {
-                    *log = match scrub.sealed(&row.service) {
-                        Some(sealed) => {
-                            super::failed_tail(&client, row.machine, container, sealed).await
-                        }
-                        None => LogText::Withheld {
-                            why: Withheld::NoSecretContext,
-                        },
+                    *log = if tracker.created(container) {
+                        scrub.created_tail(&client, row.machine, container).await
+                    } else {
+                        scrub.older_tail(&client, row.machine, container).await
                     };
                 }
                 pending.insert((row.service.clone(), row.machine), row);

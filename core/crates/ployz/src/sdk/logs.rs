@@ -421,7 +421,7 @@ pub(crate) async fn service_tail(
         let envs = join_all(
             containers
                 .iter()
-                .map(|container| container_env(client, &target, *container)),
+                .map(|container| container_env(client, machine, *container)),
         )
         .await;
         let mut values = SealedValues::none();
@@ -524,9 +524,9 @@ fn unavailable(message: String) -> RpcError {
     }
 }
 
-async fn container_env(
+pub(crate) async fn container_env(
     client: &Client,
-    target: &MachineTarget,
+    machine: MachineId,
     container: ContainerId,
 ) -> Option<BTreeMap<String, String>> {
     client
@@ -534,7 +534,7 @@ async fn container_env(
             InspectContainerRequest {
                 container_id: container,
             },
-            target,
+            &MachineTarget::from(&machine),
             Some(TAIL_READ),
         )
         .await

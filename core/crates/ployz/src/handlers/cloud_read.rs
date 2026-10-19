@@ -6,14 +6,9 @@ use std::time::Duration;
 
 use chrono::Utc;
 use ployz_core::{MachineName, QualifiedService, ServiceName};
-use ployz_store::{
-    EnvironmentRef, ServiceQuery,
-    tools::{
-        CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject,
-        Timestamp,
-        cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
-        sealed_env,
-    },
+use ployz_store::tools::{
+    CloudQuery, LineCap, LogText, LogsQuery, MetricsQuery, MetricsSince, MetricsSubject, Timestamp,
+    cloud::{ContainersAnswer, LogsAnswer, MetricsAnswer, ServersAnswer},
 };
 use reqwest::Method;
 use serde::{Serialize, de::DeserializeOwned};
@@ -60,11 +55,7 @@ fn line_cap(tail: i32) -> LineCap {
     LineCap::new(lines).unwrap_or_default()
 }
 
-pub(super) fn logs(
-    root: &clap::ArgMatches,
-    credential: &Credential,
-    asked: LogsAsked<'_>,
-) -> Result<(), Error> {
+pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), Error> {
     if asked.unservable {
         return Err(Error::usage(
             "This token reads logs through Cloud, which serves the newest lines only; drop --follow, --until, --machine and container selectors",
@@ -85,11 +76,6 @@ pub(super) fn logs(
             })
             .collect::<Result<Vec<_>, Error>>()?
     };
-    let environment = EnvironmentRef {
-        project: Some(scoped.environment.project.clone()),
-        environment: Some(scoped.environment.name.clone()),
-    };
-    let store = super::store::store(root)?;
     let now = Utc::now().timestamp_nanos_opt().unwrap_or(i64::MAX);
     let since = asked
         .since_nanos
@@ -97,24 +83,15 @@ pub(super) fn logs(
         .map(Duration::from_nanos);
     let mut read = Vec::new();
     for (name, runtime) in services {
-        let sealed = store
-            .try_read(&ServiceQuery {
-                environment: environment.clone(),
-                service: name.clone(),
-            })
-            .ok()
-            .map(|view| sealed_env(&view.values));
         let answer: LogsAnswer = ask(
             credential,
             CloudQuery::Logs(LogsQuery {
-                environment: scoped.environment.id.clone(),
                 namespace: scoped.namespace.clone(),
                 service: runtime,
                 deployment: asked.deployment.clone(),
                 server: None,
                 lines: line_cap(asked.tail),
                 since,
-                sealed,
             }),
         )?;
         read.push((name, answer));

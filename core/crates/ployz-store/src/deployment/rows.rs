@@ -1,6 +1,6 @@
 //! Per-Server Deployment outcomes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::SavedServiceIntent;
 use ployz_core::{
@@ -383,6 +383,7 @@ pub const fn starts_container(operation: &DeployOperation) -> bool {
 pub struct RowTracker {
     last: BTreeMap<Key, RowState>,
     containers: BTreeMap<u32, ContainerId>,
+    created: BTreeSet<ContainerId>,
     failed: BTreeMap<Key, u32>,
 }
 
@@ -401,6 +402,7 @@ impl RowTracker {
             } else {
                 self.containers.remove(&row.index);
             }
+            self.created.extend(created(row));
             if matches!(row.status, OperationStatus::Failed { .. }) {
                 self.failed.entry(key.clone()).or_insert(row.index);
             }
@@ -451,6 +453,33 @@ impl RowTracker {
             .get(&(row.service.clone(), row.machine))
             .and_then(|index| self.containers.get(index))
             .copied()
+    }
+
+    /// Whether this Deploy created `container`, so it runs under the Deploy's own values.
+    /// False for one an earlier Deploy left, such as the Container a replacement stops.
+    #[must_use]
+    pub fn created(&self, container: ContainerId) -> bool {
+        self.created.contains(&container)
+    }
+}
+
+fn created(row: &OperationRow) -> Option<ContainerId> {
+    match &row.status {
+        OperationStatus::Running {
+            phase:
+                OperationPhase::WaitingForHealth { container_id, .. }
+                | OperationPhase::WaitingForHook { container_id, .. }
+                | OperationPhase::WaitingForSwitch { container_id },
+        }
+        | OperationStatus::Failed {
+            error:
+                ExecutionError::Health { container_id, .. } | ExecutionError::Hook { container_id, .. },
+        } => Some(*container_id),
+        OperationStatus::Running { .. }
+        | OperationStatus::Failed { .. }
+        | OperationStatus::Completed
+        | OperationStatus::Pending
+        | OperationStatus::Unexecuted => None,
     }
 }
 
