@@ -359,7 +359,8 @@ pub(crate) const ENV_SHUTDOWN: Verb = Verb::cloud(
     Always,
     env::shutdown_command,
     env::pr::shutdown,
-);
+)
+.docs("account/organizations.md");
 pub(crate) const ENV_SYNC: Verb =
     Verb::cloud("env sync", Depends, env::sync_command, env::branch::sync)
         .stdin(&[("--value", Stdin::Only)])
