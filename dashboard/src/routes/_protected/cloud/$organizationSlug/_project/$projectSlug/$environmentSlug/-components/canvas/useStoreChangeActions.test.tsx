@@ -121,7 +121,7 @@ it("titles the ask Data loss when Cloud refuses a Deploy whose staged restore dr
 
 it("discards a Setting by its Store path, through the Environment's queue", async () => {
   const test = setup();
-  test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded", environment: { revision: 4 } } } as never);
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded", environment: { id: "env", revision: 4 } } } as never);
 
   act(() => { fireEvent.click(screen.getByText("Discard replicas")); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
@@ -210,7 +210,7 @@ it("reports an earlier Save as not saved when a later one asks again", async () 
 
 // Pressing Deploy leaves a field, which stages its draft in the same gesture. The Store's answer carries the review
 // after the edit: `at` is the revision the edit made, `seen` the one the review then shows (newer when someone else wrote).
-const edited = (at: number, seen = at) => ({ ok: true, value: { written: "edited", environment: { revision: at } },
+const edited = (at: number, seen = at) => ({ ok: true, value: { written: "edited", environment: { id: "env", revision: at } },
   answers: [{ query: diffQuery(ref), result: { ok: true, value: { version: `${seen}:1:0` } } }] }) as never;
 
 it("deploys the review that includes a draft staged on the way to Deploy", async () => {

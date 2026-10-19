@@ -95,23 +95,28 @@ it("shows an edit at once, saves edits in order against the newest revision, and
 
 it("carries a review forward through this tab's own edits, and stops at a revision made elsewhere", async () => {
   const test = setup(view(2, 1));
-  test.write.mockResolvedValueOnce(edited(3));
+  const published = { ok: true, value: { written: "published" } };
+  test.write.mockResolvedValueOnce(edited(3)).mockResolvedValueOnce(edited(4));
   await test.edit({ environment: ref, changes: replicas(3) }).isPersisted.promise;
-  // The CLI made revision 4; a read brings it before the next edit, which expects it.
-  test.store.current = view(4, 3);
-  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
-  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { view: "environment", ...view(4, 3) } });
-  test.write.mockResolvedValueOnce(edited(5));
-  await test.edit({ environment: ref, changes: replicas(5) }).isPersisted.promise;
-
+  await test.edit({ environment: ref, changes: replicas(4) }).isPersisted.promise;
   // SAFETY: these tests read nothing of a Save but that it was sent.
-  test.write.mockResolvedValue({ ok: true, value: { written: "published" } } as never);
-  // The review this tab saw before its first edit: its own edit moves it to 3, and 4 is nobody's here.
+  test.write.mockResolvedValueOnce(published as never);
+  // The review this tab saw before its edits moves through both of them.
   await test.writer.commit({ command: "publish", environment: ref, version: "2:1:0", accept_volume_loss: [] }).isPersisted.promise;
-  // A review read at 4 moves through the edit made on it.
-  await test.writer.commit({ command: "publish", environment: ref, version: "4:1:0#loss-x", accept_volume_loss: [] }).isPersisted.promise;
+
+  // The CLI made revision 5; a read brings it before the next edit, which expects it.
+  test.store.current = view(5, 4);
+  const key = storeViewOptions("acme", test.scope, environmentSettingsQuery(ref)).queryKey;
+  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { view: "environment", ...view(5, 4) } });
+  test.write.mockResolvedValueOnce(edited(6)).mockResolvedValue(published as never);
+  await test.edit({ environment: ref, changes: replicas(6) }).isPersisted.promise;
+  // 5 is nobody's here, so this tab's run of edits starts over at it: the old review goes as read, for the Store to
+  // refuse as stale (as it would at 4), and a review read at 5 moves through the edit made on it.
+  await test.writer.commit({ command: "publish", environment: ref, version: "2:1:0", accept_volume_loss: [] }).isPersisted.promise;
+  await test.writer.commit({ command: "publish", environment: ref, version: "5:1:0#loss-x", accept_volume_loss: [] }).isPersisted.promise;
   expect(test.write.mock.calls.map(([{ data }]) => data.command)).toMatchObject([
-    { command: "edit", expect: 2 }, { command: "edit", expect: 4 }, { command: "publish", version: "3:1:0" }, { command: "publish", version: "5:1:0#loss-x" },
+    { command: "edit", expect: 2 }, { command: "edit", expect: 3 }, { command: "publish", version: "4:1:0" },
+    { command: "edit", expect: 5 }, { command: "publish", version: "2:1:0" }, { command: "publish", version: "6:1:0#loss-x" },
   ]);
 });
 

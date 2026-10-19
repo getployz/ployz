@@ -228,14 +228,13 @@ const carriesRevision = Schema.is(Schema.Struct({
   }),
 }));
 
-/** The newest Working State revision any cached view of the Environment shows. */
-export function cachedRevision(queryClient: QueryClient, organizationSlug: string, key: string) {
-  let latest: number | null = null;
+/** The Environment under `key` as its newest cached view shows it: its id, and its Working State revision. */
+export function cachedEnvironment(queryClient: QueryClient, organizationSlug: string, key: string) {
+  let latest: { id: string; revision: number } | null = null;
   for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
     if (!isOfEnvironment(query, key)) continue;
     const result = query.state.data;
-    const revision = carriesRevision(result) ? result.value.environment.revision : undefined;
-    if (revision !== undefined && (latest === null || revision > latest)) latest = revision;
+    if (carriesRevision(result) && (latest === null || result.value.environment.revision > latest.revision)) latest = result.value.environment;
   }
   return latest;
 }
