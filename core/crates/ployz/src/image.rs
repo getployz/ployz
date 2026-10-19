@@ -238,7 +238,7 @@ pub(crate) async fn pull_cluster_image(
         )
         .await
         .map(|_| ())
-        .or_else(|error| pulls_on_create(answered_by(dest, error)))
+        .or_else(|error| pulls_on_create(answered_by(dest, error).pulling(image)))
 }
 
 /// A daemon older than [`PULL_IMAGE_CAPABILITY`] pulls when it creates the Container,
