@@ -109,7 +109,8 @@ pub(super) struct Harvester {
     /// The newest Docker event seen. A reconnect resumes from it, so events
     /// sent while the stream was down still leave their markers.
     last_event_nanos: Option<i64>,
-    /// Where the open stream resumed: it replays events from that time.
+    /// Where the open stream resumed: it can send any event from that time
+    /// on twice, once buffered and once live.
     replay_from: Option<i64>,
     /// The newest time of each container's events, by action.
     delivered: HashMap<(ContainerId, String), i64>,
@@ -335,9 +336,9 @@ impl Harvester {
         self.damage.retain(|id, _| present.contains(id));
         self.owned_by_event.retain(|id, _| present.contains(id));
         self.runs.retain(|id, _| present.contains(id));
-        let replayed = [self.replay_from, self.last_event_nanos];
+        let replayed_from = self.replay_from.or(self.last_event_nanos);
         self.delivered
-            .retain(|(id, _), at| present.contains(id) || replayed.contains(&Some(*at)));
+            .retain(|(id, _), at| present.contains(id) || Some(*at) >= replayed_from);
         self.stop_signals.retain(|id, _| present.contains(id));
         for id in present {
             self.discovered(id);
@@ -3582,6 +3583,29 @@ mod tests {
         drop(running.harvester.docker_events());
         let mut start = event("start", T0 + 2, &[service]);
         start.actor.as_mut().unwrap().id = Some("cd".repeat(32));
+        running.harvester.on_docker_event(start);
+        fs::create_dir_all(host.root.0.join("containers")).unwrap();
+        running.harvester.rescan();
+        running.harvester.on_docker_event(die);
+        running.settle_exits(|| Inspected::Gone);
+        assert_eq!(crashes(&host).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_removed_containers_buffered_exit_sent_again_live_queues_no_second_crash() {
+        let host = host().with_machine();
+        let mut running = host.harvester();
+        let service = ("ployz.service.id", SERVICE_ID);
+        let mut start = event("start", T0 + 1, &[service]);
+        start.actor.as_mut().unwrap().id = Some("cd".repeat(32));
+        running.harvester.on_docker_event(start.clone());
+        // The stream resumes from T0+1. Docker sends the events it buffered
+        // since then, and can send each one again live.
+        drop(running.harvester.docker_events());
+        let die = event("die", T0 + 2, &[service, ("exitCode", "1")]);
+        running.harvester.on_docker_event(die.clone());
+        running.settle_exits(|| Inspected::Gone);
+        start.time_nano = Some(T0 + 3);
         running.harvester.on_docker_event(start);
         fs::create_dir_all(host.root.0.join("containers")).unwrap();
         running.harvester.rescan();
