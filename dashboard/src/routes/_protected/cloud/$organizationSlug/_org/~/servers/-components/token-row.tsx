@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { ConfirmDialog } from "#/components/confirm-dialog";
 import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -6,6 +8,10 @@ import { TableCell, TableRow } from "#/components/ui/table";
 import type { FleetTokenView } from "#/modules/machines/waiting/fleet-token";
 
 export function TokenRow({ organizationSlug, token, onRevoke }: { organizationSlug: string; token: FleetTokenView; onRevoke: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const stops = token.waiting > 0
+    ? `${token.waiting} waiting ${token.waiting === 1 ? "server" : "servers"} won't join.`
+    : "New servers can't join with it.";
   return (
     <TableRow>
       <TableCell>
@@ -37,7 +43,19 @@ export function TokenRow({ organizationSlug, token, onRevoke }: { organizationSl
         {token.lastUsedAt === null ? "Never" : <RelativeTime date={new Date(token.lastUsedAt)} />}
       </TableCell>
       <TableCell className="text-right">
-        <Button size="sm" variant="ghost" className="text-destructive" onClick={onRevoke}>Revoke</Button>
+        <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setConfirming(true)}>Revoke</Button>
+        <ConfirmDialog
+          open={confirming}
+          onOpenChange={setConfirming}
+          title={`Revoke ${token.name}?`}
+          description={`${stops} Joined ones stay.`}
+          actionLabel="Revoke"
+          variant="destructive"
+          onConfirm={() => {
+            setConfirming(false);
+            onRevoke();
+          }}
+        />
       </TableCell>
     </TableRow>
   );

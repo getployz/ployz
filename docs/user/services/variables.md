@@ -133,5 +133,7 @@ their values, under your own variables.
   [branch](../environments/environments.md) starts with its parent's variables, sealed values
   included, and changing them leaves the parent alone. A reference to a service the branch
   shares with its parent reads the parent's values.
+- **One CLI or agent change holds up to 4 MiB.** A larger `ployz set` or agent edit fails with
+  `invalid_argument` and the limit. Split it into smaller changes.
 
 Next: [add a database](databases.md).
