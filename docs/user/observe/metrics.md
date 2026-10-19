@@ -111,7 +111,9 @@ service, until its summaries age out.
   such as "web-2 didn't answer."
 - **A server on an older Ployz has no metrics to show.** The **Monitoring** tab names it, as in
   "web-2 needs an upgrade to show its metrics." When every server running the service needs one,
-  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. See
+  the charts give way to **Upgrade web-2 to see its metrics** with a link to the server. When
+  your releases are Stable and only Beta has a newer release, the server's page says **Metrics
+  need a Beta release** and opens **Upgrade settings**. See
   [Upgrade Ployz on a server](../servers/manage-servers.md#upgrade-ployz-on-a-server).
 - **Metrics share a CPU budget with logs.** Ployz caps its helper for both at 10% of one CPU core.
   See [Logs](logs.md).

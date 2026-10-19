@@ -138,6 +138,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
     setOpenId(null);
   };
 
+  const opened = openId === null ? undefined : servers.find((server) => server.id === openId);
   const sheets = <>
     {enroll ? <EnrollSheet organizationSlug={organizationSlug} servers={enroll} hasFirst={hasFirst} onClose={() => { setEnroll(null); setPicked(new Set()); }} /> : null}
     <WaitingDetailSheet
@@ -146,6 +147,7 @@ export function WaitingList({ organizationSlug, servers, now, token, hasFirst = 
       server={openId === null ? null : detail.data ?? null}
       now={now}
       onOpenChange={(next) => { if (!next) setOpenId(null); }}
+      onEnroll={opened !== undefined && selectable(opened) ? () => { setOpenId(null); setEnroll([opened]); } : null}
       onReject={(id) => rejectIds([id])}
     />
   </>;
