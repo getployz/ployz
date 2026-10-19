@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { Effect, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import { ApprovalDecision } from "#/modules/approvals/approvals";
 import { decideAndApply } from "#/modules/approvals/apply.server";
@@ -47,6 +47,8 @@ import { ForgetServer, ForgetServers, NewVolumeRun, RemoveServer, SyncVolume, Up
 import { OPERATIONS } from "#/modules/operations/operations";
 import { cleanNamespace, drainServer, forgetServer, removeServer, runVolume, unheld, upgradeServer } from "#/modules/operations/operations.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
+import { CreateOrganization } from "#/modules/organization/organization-state";
+import { createOrganizationForSession } from "#/modules/organization/organization-state.server";
 import { NotFound, Validation } from "#/server/public-error";
 import type { VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.server";
@@ -72,6 +74,10 @@ const presetOf = (input: typeof NewToken.Type): Effect.Effect<TokenPreset, Valid
     ? Effect.succeed({ preset })
     : Effect.fail(new Validation({ message: "Only a Deploy token takes an Environment.", userFacing: true }));
 };
+
+/** The slug defaults to the name; both then decode as the dashboard's New organization form does. */
+const NewOrganization = Schema.Struct({ name: Schema.String, slug: Schema.optional(Schema.String) });
+const BAD_ORGANIZATION = "An Organization needs a name of 1 to 64 characters, and a slug of 1 to 64 letters, digits or hyphens.";
 
 const NewFleetToken = Schema.Struct({
   name: Schema.optional(FleetTokenName),
@@ -161,7 +167,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, making and removing them, Organization Tokens, signed-in devices, Fleet Tokens, Waiting Servers and their Server Enrollments,
  * GitHub connections), and removing, draining, upgrading or cleaning up after a Server Cloud manages through durable runs, or forgetting deleted ones (Forget Servers), and reading or deciding an approval a destructive write waits on. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
@@ -172,6 +178,21 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   switch (route) {
     case "GET organizations":
       return { organizations: yield* callerOrganizations(caller) };
+    case "POST organizations": {
+      if (caller.credential.kind !== "session") {
+        return refusal({
+          code: "invalid_argument",
+          message: "Only a signed-in person can make an Organization; this credential acts only in its own. No changes made.",
+          details: { next: "ployz login" },
+        });
+      }
+      const input = yield* decodeBody(NewOrganization, request, BAD_ORGANIZATION).pipe(
+        Effect.flatMap((body) => Schema.decodeUnknownEffect(CreateOrganization)({ name: body.name, slug: body.slug ?? body.name })),
+        Effect.option,
+      );
+      if (Option.isNone(input)) return refusal({ code: "invalid_argument", message: BAD_ORGANIZATION, details: null });
+      return { organization: yield* createOrganizationForSession(caller.userId, caller.credential.id, input.value) };
+    }
     case "DELETE organizations/:id": {
       const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""));
       return removal.ok ? removal.value : refusal(removal.refusal);

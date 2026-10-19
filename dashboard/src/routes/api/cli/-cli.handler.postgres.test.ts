@@ -145,6 +145,7 @@ const cliLayer = Effect.fn(function* (
 /** The fields these tests read from `/api/cli` replies. */
 const Named = Schema.Struct({ id: Schema.String, kind: Schema.String });
 const Approval = Schema.Struct({ id: Schema.String, status: Schema.String, digest: Schema.String });
+const MadeOrganization = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String });
 const Reply = Schema.Struct({
   run: Schema.optionalKey(Schema.Struct({ id: Schema.String, state: Schema.String })),
   organizations: Schema.optionalKey(Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String, current: Schema.Boolean }))),
@@ -180,7 +181,7 @@ const Reply = Schema.Struct({
   size: Schema.optionalKey(Schema.Number),
   truncated: Schema.optionalKey(Schema.Boolean),
   content: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  organization: Schema.optionalKey(Schema.String),
+  organization: Schema.optionalKey(Schema.Union([Schema.String, MadeOrganization])),
   namespace: Schema.optionalKey(Schema.String),
   volumes: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   approval: Schema.optionalKey(Approval),
@@ -243,6 +244,13 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Cl
   const error = encodePublicError(Cause.squash(exit.cause));
   return { status: statusForPublicError(error), json: empty, text: JSON.stringify(error) };
 });
+
+/** The Organization `POST organizations` made. */
+const madeOrganization = (reply: { status: number; json: Reply }) => {
+  assert.strictEqual(reply.status, 200);
+  const made = reply.json.organization;
+  return Schema.is(MadeOrganization)(made) ? made : assert.fail("no Organization made");
+};
 
 /** A refusal's status and message, whether the route answered it or failed with it. */
 const refusedWith = (reply: { status: number; text: string }) => {
@@ -865,6 +873,51 @@ it.live(
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org new makes an Organization the user owns under the first free slug, and moves only the calling session into it",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer();
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const alice = yield* signUp("alice");
+        const laptop = yield* signIn("alice");
+        const personal = alice.organization.slug;
+        const current = (reply: Reply) => reply.organizations?.find((row) => row.current)?.slug;
+        const count = () => database.drizzle.select().from(organization).pipe(Effect.map((rows) => rows.length));
+        const before = yield* count();
+
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
+        const byToken = yield* cli("POST", "organizations", { bearer: token.secret }, { name: "Acme" });
+        assert.strictEqual(byToken.status, 422);
+        assert.strictEqual(byToken.json.error?.code, "invalid_argument");
+        assert.strictEqual((yield* cli("POST", "organizations", alice, { name: " " })).status, 422);
+        assert.strictEqual((yield* cli("POST", "organizations", alice, { name: "Acme", slug: "!!!" })).status, 422);
+        assert.strictEqual((yield* cli("POST", "organizations", alice, { name: "x".repeat(65) })).status, 422);
+        assert.strictEqual(yield* count(), before);
+
+        const made = madeOrganization(yield* cli("POST", "organizations", alice, { name: " Acme Corp " }));
+        assert.deepInclude(made, { slug: "acme-corp", name: "Acme Corp" });
+        assert.strictEqual(current((yield* cli("GET", "organizations", alice)).json), "acme-corp");
+        // The user's other sign-in keeps acting where it was.
+        assert.strictEqual(current((yield* cli("GET", "organizations", laptop)).json), personal);
+
+        const suffixed = madeOrganization(yield* cli("POST", "organizations", laptop, { name: "Acme again", slug: "Acme Corp" }));
+        assert.match(suffixed.slug, /^acme-corp-[0-9a-f]{8}$/);
+        assert.strictEqual(current((yield* cli("GET", "organizations", laptop)).json), suffixed.slug);
+        assert.strictEqual(current((yield* cli("GET", "organizations", alice)).json), "acme-corp");
+
+        const roles = yield* database.drizzle.select({ slug: organization.slug, role: member.role }).from(member)
+          .innerJoin(organization, eq(organization.id, member.organizationId))
+          .orderBy(organization.slug);
+        assert.deepStrictEqual(roles.map((row) => [row.slug.replace(/-[0-9a-f]{8}$/, "-*"), row.role]), [
+          ["acme-corp", "owner"], ["acme-corp-*", "owner"], [personal, "owner"],
+        ]);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

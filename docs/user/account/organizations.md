@@ -20,6 +20,18 @@ To make another organization, open the account menu and click **Switch organizat
 organization**. Name it, change its URL if you like, and click **Create**. You land in the new
 organization, and you own it. Switch between your organizations under **Switch organization**.
 
+From the CLI, run `ployz org new` with a name:
+
+```sh
+ployz org new "Acme Corp"
+ployz org new "Acme Corp" --slug acme
+```
+
+The slug comes from `--slug`, or from the name when you leave it out. If another organization
+already has that slug, Ployz adds a short suffix, and the command prints the slug it picked. The
+CLI then acts in the new organization. Your browser and your other signed-in CLIs stay where they
+were. An organization token can't make an organization, so sign in with `ployz login` first.
+
 In the sidebar, click **Organization** for its settings:
 
 - **General**: your organization's **Domain**, which your services' free addresses live under.

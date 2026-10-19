@@ -267,3 +267,21 @@ export const openOrCreateOrganization = Effect.fn("Organization.openOrCreate")(f
   yield* updateActorSessionsOrganization(actor, organizationId, slug);
   return slug;
 });
+
+/** A new Organization the user owns. Only session `sessionId` moves into it; the user's other sessions stay put. */
+export const createOrganizationForSession = Effect.fn("Organization.createForSession")(function* (
+  userId: string,
+  sessionId: string,
+  input: CreateOrganization,
+) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const created = yield* insertOrganization(userId, input.name, input.slug);
+    const { drizzle } = yield* Database;
+    yield* drizzle
+      .update(session)
+      .set({ activeOrganizationId: created.id, activeOrganizationSlug: created.slug, updatedAt: new Date() })
+      .where(and(eq(session.id, sessionId), eq(session.userId, userId)));
+    return { id: created.id, slug: created.slug, name: input.name };
+  }));
+});

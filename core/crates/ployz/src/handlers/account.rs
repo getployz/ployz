@@ -54,7 +54,24 @@ pub(super) fn token_remove_command(command: Command) -> Command {
 }
 
 pub(super) fn org_group(command: Command) -> Command {
-    command.about("List or switch Organizations")
+    command.about("List, make or switch Organizations")
+}
+
+pub(super) fn org_new_command(command: Command) -> Command {
+    command
+        .about("Make an Organization you own; this device moves to it")
+        .long_about(
+            "Make an Organization you own. Its slug comes from --slug, else the name; \
+             when another Organization has it, Cloud adds a suffix and prints the slug it picked. \
+             This device then acts in the new Organization. Your other sign-ins stay where they are.",
+        )
+        .arg(positional("name", true).help("Its name, up to 64 characters"))
+        .arg(
+            value("slug", None)
+                .value_name("SLUG")
+                .help("Its slug, from which its dashboard URL is made; defaults to the name"),
+        )
+        .after_help("Examples:\n  ployz org new \"Acme Corp\"\n  ployz org new \"Acme Corp\" --slug acme")
 }
 
 pub(super) fn org_list_command(command: Command) -> Command {
@@ -341,6 +358,21 @@ pub(super) fn org_use(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
         crate::ui::stream(format_args!(
             "This device now acts in Organization {}.",
+            organization.slug
+        ))
+    })
+}
+
+pub(super) fn org_new(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = matches.get_one::<String>("name").expect("name is required");
+    let slug = matches.get_one::<String>("slug").map(String::as_str);
+    let organization = in_cloud(root, async |store, credential| {
+        cloud_account::new_organization(store, credential, name, slug).await
+    })?;
+    crate::ui::finish(&serde_json::json!({ "organization": organization }), || {
+        crate::ui::stream(format_args!(
+            "Made Organization {}. This device now acts in it.",
             organization.slug
         ))
     })
