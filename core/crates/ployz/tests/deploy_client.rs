@@ -558,6 +558,7 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
             | DeployWarning::LeftRunning { .. }
+            | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. } => false,
