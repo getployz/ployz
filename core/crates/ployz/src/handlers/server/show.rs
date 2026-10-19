@@ -5,8 +5,9 @@ use ployz_core::{
 };
 use serde_json::{Value, json};
 
-use super::{signed_in, waiting, with_client};
+use super::{connect_or_none, signed_in, waiting};
 use crate::{
+    cluster::StorageGaps,
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
     context::ContextError,
     handlers::{Error, leaf_matches, runtime},
@@ -17,57 +18,63 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     if leaf_matches(root).get_flag("waiting") {
         return waiting::list(leaf_matches(root));
     }
-    with_client(root, |client| {
-        Box::pin(async move {
-            let mut machines = client.machines().await?;
-            let storage = client.observe_machine_storage(&mut machines).await;
-            if let Some(warning) = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION")) {
-                ui::warn(warning);
+    let leaf = leaf_matches(root);
+    let context = leaf.get_one::<String>("context").map(String::as_str);
+    runtime()?.block_on(async {
+        let (machines, storage) = match connect_or_none(leaf, context).await? {
+            Some(mut client) => {
+                let mut machines = client.machines().await?;
+                let storage = client.observe_machine_storage(&mut machines).await;
+                (machines, storage)
             }
-            let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
-            let mut gaps = Gaps::default().named(
-                machines
-                    .iter()
-                    .map(|observed| (observed.machine.id, &observed.machine.name)),
-            );
-            gaps.extend(&storage.failures, &storage.omissions);
-            let mut table = Table::new(
-                [
-                    "SERVER",
-                    "MEMBERSHIP",
-                    "STORAGE",
-                    "PUBLIC IP",
-                    "SUBNET",
-                    "DAEMON",
-                    "OS",
-                ],
-                "No Servers yet.",
-            );
-            for observed in &machines {
-                let machine = &observed.machine;
-                table.row([
-                    Cell::from(machine.name.to_string()),
-                    Cell::status(
-                        observed.membership.as_str(),
-                        membership_tone(&observed.membership),
-                    ),
-                    Cell::from(format_storage(observed.storage)),
-                    Cell::from(
-                        machine
-                            .public_ip
-                            .map(|ip| ip.to_string())
-                            .unwrap_or_default(),
-                    ),
-                    Cell::from(machine.subnet.to_string()),
-                    Cell::from(machine.runtime.daemon_version.to_string()),
-                    Cell::from(format!(
-                        "{} {}",
-                        machine.runtime.os_pretty_name, machine.runtime.architecture
-                    )),
-                ]);
-            }
-            crate::ui::finish_fanout("servers", &listed, &gaps, || ui::rows(&table))
-        })
+            None => (Vec::new(), StorageGaps::default()),
+        };
+        if let Some(warning) = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION")) {
+            ui::warn(warning);
+        }
+        let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
+        let mut gaps = Gaps::default().named(
+            machines
+                .iter()
+                .map(|observed| (observed.machine.id, &observed.machine.name)),
+        );
+        gaps.extend(&storage.failures, &storage.omissions);
+        let mut table = Table::new(
+            [
+                "SERVER",
+                "MEMBERSHIP",
+                "STORAGE",
+                "PUBLIC IP",
+                "SUBNET",
+                "DAEMON",
+                "OS",
+            ],
+            "No Servers yet.",
+        );
+        for observed in &machines {
+            let machine = &observed.machine;
+            table.row([
+                Cell::from(machine.name.to_string()),
+                Cell::status(
+                    observed.membership.as_str(),
+                    membership_tone(&observed.membership),
+                ),
+                Cell::from(format_storage(observed.storage)),
+                Cell::from(
+                    machine
+                        .public_ip
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
+                ),
+                Cell::from(machine.subnet.to_string()),
+                Cell::from(machine.runtime.daemon_version.to_string()),
+                Cell::from(format!(
+                    "{} {}",
+                    machine.runtime.os_pretty_name, machine.runtime.architecture
+                )),
+            ]);
+        }
+        crate::ui::finish_fanout("servers", &listed, &gaps, || ui::rows(&table))
     })
 }
 
