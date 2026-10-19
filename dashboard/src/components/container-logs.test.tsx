@@ -8,7 +8,7 @@ import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { getContainerLogStream } from "#/modules/runtime/container-log.stream";
 import { getRuntimeCollections, type RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
-import { ContainerLogs } from "./container-logs";
+import { ContainerLogs, sourceTag } from "./container-logs";
 
 const bodyOf = (init: RequestInit | undefined) => JSON.parse(String(init?.body)) as { cursor?: string; before?: string };
 const cursorOf = (init: RequestInit | undefined) => bodyOf(init).cursor;
@@ -223,6 +223,17 @@ it("offers a service or server filter only once there is more than one to pick",
     await stream.collection.cleanup();
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
   }
+});
+
+it("tags a line with its container only when a service has more than one, as a Deploy that replaces it leaves", () => {
+  const old = { ...line, containerId: "0ld5a1e9c2b4", message: "signal 3 (SIGQUIT) received, shutting down" };
+  const next = { ...line, id: "m/n/200/0", timestamp: "200", containerId: "9e3f7d10ab42", message: "start worker process 29" };
+  expect(sourceTag([next], {})(next)).toBe("");
+  expect([old, next].map(sourceTag([old, next], { serviceId: "api" }))).toEqual(["0ld5a1e", "9e3f7d1"]);
+  const elsewhere = { ...next, machineId: "m2", machineName: "Server 2" };
+  expect([old, elsewhere].map(sourceTag([old, elsewhere], {}))).toEqual(["Server", "Server 2"]);
+  const worker = { ...next, serviceName: "worker" };
+  expect([old, worker].map(sourceTag([old, worker], {}))).toEqual(["api", "worker"]);
 });
 
 it("shows an old Deployment's stored lines with their gaps and missing servers, pages on scroll up, and filters by level", async () => {
