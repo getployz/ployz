@@ -319,7 +319,7 @@ fn record(details: &MachineDetails) -> Fields {
             (
                 "memory",
                 format!(
-                    "{} free of {}",
+                    "{} available of {}",
                     size(memory.available()),
                     size(memory.total())
                 ),
@@ -512,7 +512,7 @@ mod tests {
              endpoints = 192.168.122.53:51820, 5.39.66.176:51820\n\
              storage = Managed volumes available\n\
              cpu = 2 CPUs, load 0.02\n\
-             memory = 2.9 GB free of 4.1 GB\n\
+             memory = 2.9 GB available of 4.1 GB\n\
              docker disk = 47.3 GB free of 73.6 GB\n\
              containers = 2\n\
              peer = machine-3 1.2 ms\n\
