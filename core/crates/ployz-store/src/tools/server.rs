@@ -121,9 +121,13 @@ impl Tool for ServerShow {
                 }))
             })
             .collect::<Result<Vec<_>, Stop>>()?;
-        Ok(json!({ "servers": shown, "seen": answer.seen }))
+        let next = answer.servers.is_empty().then_some(NO_SERVERS_NEXT);
+        Ok(json!({ "servers": shown, "seen": answer.seen, "next": next }))
     }
 }
+
+/// What an Organization with no Servers does next; its agent can't add one.
+const NO_SERVERS_NEXT: &str = "Add a server from a terminal; staging still works without one.";
 
 /// An act on one Server that answers, by name.
 fn on_server(

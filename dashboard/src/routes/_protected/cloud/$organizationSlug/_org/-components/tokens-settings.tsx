@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { KeyRoundIcon } from "lucide-react";
 import { toast } from "sonner";
+import { ConfirmDialog } from "#/components/confirm-dialog";
 import { CopyButton } from "#/components/copy-button";
 import { SettingsEmpty, SettingsList, SettingsListItem } from "#/components/settings/settings-list";
 import { SettingsAddButton, SettingsFoot, SettingsSection } from "#/components/settings/settings-section";
@@ -35,18 +36,7 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
       {tokens.length > 0 ? (
         <SettingsList label="Tokens">
           {tokens.map((token) => (
-            <SettingsListItem
-              key={token.id}
-              media={<KeyRoundIcon />}
-              label={token.name}
-              hint={`${token.scope} · ${token.expired ? "Expired" : "Expires"} ${formatDate(token.expires_at)}`}
-              commit="change"
-              actions={(
-                <Button variant="ghost" size="sm" disabled={revoke.isPending && revoke.variables === token.id} onClick={() => revoke.mutate(token.id)}>
-                  Revoke
-                </Button>
-              )}
-            />
+            <TokenItem key={token.id} token={token} revoking={revoke.isPending && revoke.variables === token.id} onRevoke={() => revoke.mutate(token.id)} />
           ))}
         </SettingsList>
       ) : (
@@ -57,6 +47,37 @@ export function TokensSettings({ organizationSlug }: { organizationSlug: string 
       </SettingsFoot>
       {making ? <NewTokenDialog organizationSlug={organizationSlug} onMade={refresh} onOpenChange={setMaking} /> : null}
     </SettingsSection>
+  );
+}
+
+export function TokenItem({ token, revoking, onRevoke }: { token: { name: string; scope: string; expires_at: string; expired: boolean }; revoking: boolean; onRevoke: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <SettingsListItem
+      media={<KeyRoundIcon />}
+      label={token.name}
+      hint={`${token.scope} · ${token.expired ? "Expired" : "Expires"} ${formatDate(token.expires_at)}`}
+      commit="confirm"
+      actions={(
+        <>
+          <Button variant="ghost" size="sm" disabled={revoking} onClick={() => setConfirming(true)}>
+            Revoke
+          </Button>
+          <ConfirmDialog
+            open={confirming}
+            onOpenChange={setConfirming}
+            title={`Revoke ${token.name}?`}
+            description="Anything using it stops working."
+            actionLabel="Revoke"
+            variant="destructive"
+            onConfirm={() => {
+              setConfirming(false);
+              onRevoke();
+            }}
+          />
+        </>
+      )}
+    />
   );
 }
 

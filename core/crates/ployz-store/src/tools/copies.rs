@@ -465,7 +465,7 @@ impl Tool for VolumeRestore {
     const NAME: &'static str = "volume_restore";
     const DESCRIPTION: &'static str = "Make server from's copy a Volume's writer when no server has one. from must hold the only copy; a mirror's copy lacks writes after its last sync. The Service stays down until the next deploy.";
     const GATE: Gate = Gate::Cloud;
-    const EFFECT: Effect = Effect::Change;
+    const EFFECT: Effect = Effect::Remove;
     const LOCAL_NEXT: Option<&'static str> = Some("environment_show");
 
     fn example() -> Value {

@@ -4,7 +4,6 @@ import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { createConfigCommand } from "#/modules/config-store/store-configs";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { slugifySegment } from "#/utils/slug";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, type EnvironmentRouteParams } from "../environment-route-paths";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
@@ -30,7 +29,7 @@ export function useConfigCreator(params: EnvironmentRouteParams, environmentId: 
   async function createConfig(name: string) {
     const id = crypto.randomUUID();
     place({ environmentId, resourceType: "config", resourceId: id, ...creatorPosition });
-    await writer.commit(createConfigCommand(id, store, slugifySegment(name) || "config")).isPersisted.promise;
+    await writer.commit(createConfigCommand(id, store, name)).isPersisted.promise;
     await navigate({ to: ENVIRONMENT_RESOURCE_ROUTE_TO, params: { ...params, resourceId: id }, search: (prev) => prev });
   }
 

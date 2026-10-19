@@ -64,7 +64,7 @@ pub(super) fn org_list_command(command: Command) -> Command {
 pub(super) fn org_use_command(command: Command) -> Command {
     command
         .about("Act in another of your Organizations from this device")
-        .arg(positional("organization", true).help("Organization slug"))
+        .arg(positional("organization", true).help("Organization, from ployz org ls"))
 }
 
 pub(super) fn org_build_order_command(command: Command) -> Command {
@@ -101,7 +101,7 @@ pub(super) fn org_remove_command(command: Command) -> Command {
                      Organization, disabled, until the same command confirms it. Type its \
                      slug with --confirm.",
         )
-        .arg(positional("organization", true).help("Organization slug"))
+        .arg(positional("organization", true).help("Organization, from ployz org ls"))
         .arg(
             value("confirm", None)
                 .value_name("ORGANIZATION")

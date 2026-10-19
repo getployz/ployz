@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, Subject, VolumeRun } from "@ployz/sdk";
+import type { Act, AcceptedLoss, CloudQuery, CopiesAnswer, EnvironmentRef, MachineId, Operation, OperationsAnswer, ServersAnswer, Subject, VolumeRun } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { type StoreRefusal, StoreRefused, type StoreResult } from "#/modules/config-store/store.contract";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -53,6 +53,12 @@ const session = (organizationId: string) =>
   Effect.flatMap(OrganizationRuntime, (runtime) => runtime.open(organizationId)).pipe(
     Effect.map((opened) => opened.status === "connected" ? opened.connected : null),
   );
+
+/** Cloud's own answer for an Organization with no Servers: it needs none of them to know. */
+const noServers = (): ServersAnswer => {
+  const now = Math.floor(Date.now() / 1000);
+  return { servers: [], seen: { seen_by: null, observed_at: now, read_at: now, age_seconds: 0, from: "cloud_cache", unanswered: [] } };
+};
 
 /** Why Cloud reached no Server: the Organization has none yet, or its Servers aren't answering. */
 const notConnected = Effect.fn("CallCloud.notConnected")(function* (organizationId: string) {
@@ -157,8 +163,13 @@ const ask = Effect.fn("CallCloud.ask")(function* (caller: Caller, query: CloudQu
       const { query: _, ...file } = query;
       return yield* Effect.flatMap(GithubRepositories, (github) => github.file(caller, file)).pipe(Effect.map(answer));
     }
-    case "servers":
+    case "servers": {
+      // An Organization with no Servers yet lists none, as any empty list does; the agent's tool says how to add one.
+      const lacking = unpermitted(caller, "servers:read");
+      if (lacking !== null) return lacking;
+      if ((yield* countOrganizationMachines(organizationId)) === 0) return answer<ServersAnswer>(noServers());
       return yield* runtimeRead(caller, query, "servers:read", null);
+    }
     case "containers":
       return yield* runtimeRead(caller, query, "servers:read", query.namespace);
     case "metrics":

@@ -23,7 +23,7 @@ import {
   configBytesText, configEdits, configFileSizeError, configReferenceValues, draftAccess, EXECUTABLE_MODE, executableToggle, fileAccessLabel,
   hiddenFile, READ_ONLY_MODE, saveConfigCommand, utf8Bytes, type FileDraft,
 } from "#/modules/config-store/store-configs";
-import { changedProps, dnsLabelError } from "#/modules/config-store/store-services";
+import { changedProps } from "#/modules/config-store/store-services";
 import { storeReferenceTargets } from "#/modules/config-store/store-variables";
 import { configQuery, configsQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -65,8 +65,8 @@ export function StoreConfigDrawer({ params, config }: { params: ConfigRouteParam
   const removing = config.change === "delete";
   const renamed = diff.changes.find((change) => change.type === "config" && change.id === config.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
-  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
-    ?? (configs.some((other) => other.id !== config.id && other.name === name) ? `A config here is already named ${name}.` : undefined)));
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) =>
+    configs.some((other) => other.id !== config.id && other.name === name) ? `A config here is already named ${name}.` : undefined));
   const targets = storeReferenceTargets(settings, services, "");
   const values = configReferenceValues(settings, services);
   const serviceNames = services.map((service) => service.name);

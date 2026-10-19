@@ -1111,6 +1111,41 @@ fn with_volume() -> ConfigStore {
     store
 }
 
+// Catches an empty Organization's reads refused, which the sidebar draws as red failures.
+#[test]
+fn an_empty_organization_reads_as_empty_lists_but_still_refuses_a_write() {
+    let store = backend::open();
+    let shown = call(&store, "environment_show", json!({}), "empty-1").ok();
+    assert_eq!(shown["projects"], json!([]));
+    assert_eq!(shown["services"], json!([]));
+    assert_eq!(shown["next"]["tool"], "project_create");
+
+    let listed = drive(
+        &store,
+        in_org(),
+        "server_show",
+        json!({}),
+        "empty-2",
+        &mut |cloud| match cloud {
+            Cloud::Ask(CloudQuery::Servers { .. }) => Ok(servers(&[])),
+            Cloud::Ask(query) => panic!("asked {query:?}"),
+            Cloud::Act(act) => panic!("acted {act:?}"),
+        },
+    )
+    .ok();
+    assert_eq!(listed["servers"], json!([]));
+    assert!(listed["next"].is_string(), "{listed}");
+
+    let refused = call(
+        &store,
+        "service_add",
+        example("service_add").unwrap(),
+        "empty-3",
+    )
+    .refused();
+    assert_eq!(refused.code, RpcErrorCode::NotFound);
+}
+
 #[test]
 fn a_local_store_refuses_every_cloud_tool_before_it_asks_or_writes() {
     let store = with_volume();

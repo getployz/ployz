@@ -14,9 +14,10 @@ runs on that server.
 
 1. Open your environment and click **Create**, then **Volume**. Right-clicking the canvas
    works too.
-2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. It's
-   [fixed once you deploy](#choose-the-storage-limit), so leave room to grow. Click
-   **Create volume**.
+2. Enter a **Name**, like `uploads`, and a **Storage limit (GB)**. Names use lowercase letters,
+   digits and hyphens. Anything else is converted, and the field shows the name it saves as. The
+   storage limit is [fixed once you deploy](#choose-the-storage-limit), so leave room to grow.
+   Click **Create volume**.
 3. Click the new volume, then **Mount on a service**. Pick the service, enter a **Directory** inside
    its containers, like `/app/uploads`, and click **Mount**.
 4. Click **Deploy**.

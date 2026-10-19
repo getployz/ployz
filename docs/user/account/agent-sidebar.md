@@ -98,9 +98,9 @@ destroyed. Everything else the change does is folded under a count, like **2 oth
 click it to see them.
 
 1. Read the list of what gets destroyed.
-2. Click **Approve** (or press ⌘↵) to let the deploy go ahead.
-3. Or click **Deny** (or press Esc) to stop it. To tell the agent why, click
-   **Deny with a reason…**, type the reason, and press ⌘↵.
+2. Click **Approve** to let the deploy go ahead.
+3. Or click **Deny** to stop it. To tell the agent why, click
+   **Deny with a reason…**, type the reason, and click **Deny**.
 
 <!-- screenshot: an approval card for Deploy production that deletes the postgres-data volume -->
 

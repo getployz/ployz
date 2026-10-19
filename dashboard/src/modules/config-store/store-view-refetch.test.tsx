@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { HistoryView } from "@ployz/sdk";
+import type { DeploymentView, HistoryView } from "@ployz/sdk";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { applyOrganizationChanges } from "#/collections/org-changes.stream";
 import * as scopes from "#/collections/use-collection-scope";
+import { asTestDouble } from "#/lib/test-double";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
-import { storeViewOptions, useStoreView } from "./store-view.queries";
+import { deploymentQuery, storeViewOptions, useStoreView } from "./store-view.queries";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -73,4 +74,39 @@ it("keeps History's last answer when the Store is busy", async () => {
   await waitFor(() => expect(tab.reads).toHaveLength(2));
   await act(async () => tab.reads[1]?.answer(history(2)));
   await waitFor(() => expect(tab.newest()).toBe(2));
+});
+
+type DeploymentShown = StoreResult<{ view: "deployment" } & DeploymentView>;
+
+function deployment(status: DeploymentView["status"]): DeploymentShown {
+  return { ok: true, value: { view: "deployment", ...asTestDouble<DeploymentView>()({
+    id: "dep-18", number: 18, saved: 15, status, in_flight: status === "queued" || status === "running",
+    environment: { id: "env", project: "shop", name: "production", revision: 15 },
+  }) } };
+}
+
+it("moves an open Deployment on from Queued when the change stream never says it ran", async () => {
+  vi.useFakeTimers();
+  try {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const scope = { queryClient, sessionId: "session", userId: "user" };
+    vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+    const answers = [deployment("applied")];
+    const read = vi.spyOn(functions, "readStoreViewServerFn").mockImplementation(async () => answers.shift() ?? deployment("applied"));
+    const query = deploymentQuery("dep-18");
+    queryClient.setQueryData(storeViewOptions("acme", scope, query).queryKey, deployment("queued"));
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    const shown = renderHook(() => useStoreView("acme", query), { wrapper });
+    const status = () => shown.result.current.ok ? shown.result.current.value.status : undefined;
+    expect(status()).toBe("queued");
+
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(status()).toBe("applied");
+
+    const reads = read.mock.calls.length;
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(read.mock.calls.length).toBe(reads);
+  } finally {
+    vi.useRealTimers();
+  }
 });
