@@ -912,7 +912,7 @@ fn a_machine_away_during_cleanup_is_named_once_under_the_copies_left_on_it() {
     let shown = crate::ui::progress::live_lines(&direct.frame(), 0, 400, 40, false);
 
     assert_eq!(
-        shown[shown.len() - 3..],
+        shown.get(shown.len() - 3..).expect("at least three lines shown"),
         [
             "! shop/web left running on machine-3 (proxy on machine-3 did not confirm). The next deploy cleans it up.",
             "! Once machine-3 is back, a copy left running can answer beside the new copies, and a left worker still takes jobs, until the next deploy.",
