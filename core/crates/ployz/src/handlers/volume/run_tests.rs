@@ -338,7 +338,7 @@ fn noted(state: &str, message: Option<&str>) -> VolumeRun {
 #[test]
 fn a_wait_says_each_step_a_running_move_reaches_once() {
     let requested = noted("requested", None);
-    let copying = noted("running", Some("Copying to web-2; pg keeps running"));
+    let copying = noted("running", Some("Copying to web-2"));
     let stopped = noted("running", Some("pg stopped for the final copy"));
     let done = noted("done", Some("pg was stopped 26s"));
 
@@ -346,7 +346,7 @@ fn a_wait_says_each_step_a_running_move_reaches_once() {
         news(&requested, &copying),
         [
             format!("Run {RUN} is running."),
-            "Copying to web-2; pg keeps running.".to_owned()
+            "Copying to web-2.".to_owned()
         ]
     );
     assert!(news(&copying, &copying).is_empty());

@@ -128,7 +128,7 @@ move. Ployz waits for Docker, up to ten minutes for each stop or start.
 does the bottom bar while a deploy moves the volume:
 
 ```
-Copying to web-2; web keeps running.
+Copying to web-2.
 web stopped for the final copy.
 Starting web on web-2.
 The Move of Volume data onto web-2 is done: run 3f2a9c1e-7b4d-4e2a-9f1c-2b8d6e0a5c47.
