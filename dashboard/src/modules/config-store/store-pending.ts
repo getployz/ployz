@@ -124,8 +124,19 @@ export function pendingMarks(queryClient: QueryClient, organizationSlug: string)
   });
 }
 
-const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark &&
-  (mark.environment.project ?? "") === (environment.project ?? "") && (mark.environment.environment ?? "") === (environment.environment ?? "");
+const sameRef = (a: EnvironmentRef, b: EnvironmentRef) => (a.project ?? "") === (b.project ?? "") && (a.environment ?? "") === (b.environment ?? "");
+const sameEnvironment = (mark: Mark, environment: EnvironmentRef) => "environment" in mark && sameRef(mark.environment, environment);
+
+/**
+ * Whether an edit of the Environment's Settings is still saving, read outside React: the review the user sees doesn't
+ * include it yet, so a Deploy or Save pressed now would ship a version they haven't read.
+ */
+export function editPending(queryClient: QueryClient, organizationSlug: string, environment: EnvironmentRef): boolean {
+  return queryClient.getMutationCache().findAll(pendingWrites(organizationSlug)).some((mutation) => {
+    const command = commandOf(mutation);
+    return command?.command === "edit" && sameRef(command.environment, environment);
+  });
+}
 
 /** Whether `project` names the one a Project rename moves; none means the Organization's only Project, which may be it. */
 const sameProject = (from: string, project: string | null | undefined) => project == null || project === from;

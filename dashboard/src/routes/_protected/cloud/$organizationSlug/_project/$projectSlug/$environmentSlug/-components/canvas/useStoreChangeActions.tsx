@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import type { DiscardTarget, EnvironmentRef, RowId } from "@ployz/sdk";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DeletionDialog } from "#/components/deletion-dialog";
-import { useStoreBusy } from "#/modules/config-store/store-pending";
+import { editPending, useStoreBusy } from "#/modules/config-store/store-pending";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useVolumeLossCheck, type VolumeLossCheck } from "#/modules/config-store/use-volume-loss-check";
@@ -12,8 +13,8 @@ const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept
 type Message = string | null;
 /** What a Deploy or Save would delete, waiting on the user. */
 type Loss = { action: Action; check: VolumeLossCheck; message: Message };
-/** How a Deploy or Save went: done, failed (the writer toasted why), or asking first. */
-type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; loss: Loss };
+/** How a Deploy or Save went: done, failed (the writer toasted why), asking first, or not sent while a field still stages. */
+type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; loss: Loss } | { status: "staging" };
 
 /**
  * The bottom bar's actions over the Config Store: Deploy, Save only (the Store's publish), Discard and Never sync,
@@ -24,11 +25,16 @@ type Outcome = { status: "done" } | { status: "failed" } | { status: "asks"; los
  * copy changes delete a copy or drop a restore's writes asks the same way before it goes, from `placementLoss` when this
  * tab has it, else from Cloud's refusal, which checks the copies again at admission. Any other refusal (Servers that
  * can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
+ *
+ * Pressing Deploy or Save in a field with a draft stages the draft first (focus leaves the field) and sends nothing:
+ * the review the user read doesn't include the draft, and the one that does hasn't shown yet. The bar then shows it,
+ * pink and counted, and the next press ships exactly that.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
   version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
   const writer = useStoreWriter(organizationSlug);
+  const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
@@ -41,10 +47,10 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
 
   /** Deploys or saves; resolves with how it went, holding what it would delete when the Store asks first. */
   async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null): Promise<Outcome> {
+    // Read now, not from the last render: the press that got here may have just staged the field it left.
+    if (editPending(queryClient, organizationSlug, environment)) return { status: "staging" };
     const id = crypto.randomUUID();
     const words = message?.trim() || null;
-    // Pressing Deploy leaves a field, which stages its draft first; the bar already counts it. The writer queues this
-    // behind that draft and advances the review through it; a refused draft leaves the shown review for the Store to judge.
     try {
       await writer.commit(action === "deploy"
         ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }

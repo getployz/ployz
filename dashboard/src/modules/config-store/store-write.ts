@@ -8,7 +8,7 @@ import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import { commandEnvironment, commandEnvironments, isProtectedAsk, StoreRefused } from "./store.contract";
-import { cachedEnvironment, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
+import { cachedRevision, environmentKey, invalidateViews, putAnswers, shownQueries } from "./store-view.queries";
 import { pendingMarks, renameBlocks, storeWriteKey } from "./store-pending";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
@@ -27,11 +27,11 @@ const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set([
   "set_environment_protected",
 ]);
 
-/** The Environment a write moved, at the revision it produced; a Batch's is its last command's. */
-function writtenEnvironment(written: ConfigWritten): { id: string; revision: number } | null {
+/** The Environment revision a write produced; a Batch's is its last command's. */
+function writtenRevision(written: ConfigWritten): number | null {
   const last = written.written === "batch" ? written.results.at(-1) : written;
   return last?.written === "service" || last?.written === "volume" || last?.written === "config" || last?.written === "edited" || last?.written === "discarded" || last?.written === "history_staged"
-    ? last.environment : null;
+    ? last.environment.revision : null;
 }
 
 const isStaleRevision = Schema.is(Schema.Struct({ revision: Schema.Number }));
@@ -60,52 +60,13 @@ export function showRefusalInline(write: Persistable) {
  * that must follow them (publish, discard, deploy), commit in the order they were made. An edit expects the newest
  * revision this tab has seen: the Store refuses it with `conflict` when Working State moved somewhere this tab
  * hasn't caught up with (the CLI, another tab), and the edit is undone rather than applied over changes nobody saw.
- *
- * A command acting on a review (`version`) names the one the user saw. Pressing Deploy leaves a field, whose draft
- * stages ahead of it in the queue, so a Deploy's (and a Save's) version is advanced through this tab's own writes
- * (`moved`): a revision made elsewhere stops it, and the Store refuses the Deploy as stale, as it would any review
- * nobody saw. A Discard, a History restore or a Shut down goes at the version it names: each acts on what its review
- * listed, and an edit ahead of it would be acted on unseen.
  */
 const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   const { queryClient } = scope;
   // The revision each Environment's own last save produced, which views may not show yet.
   const committed = new Map<string, number>();
   // Edits not yet settled, in any Environment: a command naming several Environments waits for all of them.
-  const unsettled = new Set<Promise<boolean>>();
-  // The run of revisions this tab's own writes made in each Environment (by its id, which outlives its name): from the
-  // one the first expected to the one the last made. A write expecting any other revision starts the run over.
-  const moved = new Map<string, { from: number; to: number }>();
-
-  function record(id: string, from: number | null, to: number | null) {
-    if (from === null || to === null || from === to) return;
-    const own = moved.get(id);
-    moved.set(id, own && own.to === from ? { from: own.from, to } : { from, to });
-  }
-
-  /** The Working State revision a review `version` names (its first part). */
-  function reviewedRevision(version: string): number | null {
-    const head = version.split(":")[0] ?? "";
-    return /^\d+$/.test(head) ? Number(head) : null;
-  }
-
-  /** `version` advanced through this tab's own writes since the review it names; a revision made elsewhere stops it. */
-  function advanced(key: string, version: string): string {
-    const from = reviewedRevision(version);
-    const environment = cachedEnvironment(queryClient, organizationSlug, key);
-    const own = environment && moved.get(environment.id);
-    if (from === null || !own || from < own.from || from >= own.to) return version;
-    return [String(own.to), ...version.split(":").slice(1)].join(":");
-  }
-
-  /** The review `command` acts on, when it names one (a Deploy or Discard without one acts on whatever is there). */
-  function versionOf(command: ConfigCommand): string | null {
-    return "version" in command ? command.version ?? null : null;
-  }
-
-  function withVersion(command: ConfigCommand, version: string): ConfigCommand {
-    return "version" in command ? { ...command, version } : command;
-  }
+  const unsettled = new Set<Promise<unknown>>();
 
   /** The Environments whose views a command moves (null, every view). */
   function keysOf(command: ConfigCommand): ReadonlySet<string> | null {
@@ -124,13 +85,13 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   }
 
   function expected(key: string) {
-    const seen = cachedEnvironment(queryClient, organizationSlug, key)?.revision ?? null;
+    const seen = cachedRevision(queryClient, organizationSlug, key);
     const own = committed.get(key) ?? null;
     return seen === null || (own !== null && own > seen) ? own : seen;
   }
 
   function trackEdit(promise: Promise<unknown>) {
-    const settled = promise.then(() => true, () => false).finally(() => unsettled.delete(settled));
+    const settled = promise.then(() => undefined, () => undefined).finally(() => unsettled.delete(settled));
     unsettled.add(settled);
   }
 
@@ -174,11 +135,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       const key = environmentKey(environment);
       const command: ConfigCommand = { command: "edit", environment, expect: null, changes };
       const promise = queued(key, command, async () => {
-        const expect = expected(key);
-        const written = await send({ command: "edit", environment, expect, changes });
-        if (written.written !== "edited") return written;
-        committed.set(key, written.environment.revision);
-        record(written.environment.id, expect, written.environment.revision);
+        const written = await send({ command: "edit", environment, expect: expected(key), changes });
+        if (written.written === "edited") committed.set(key, written.environment.revision);
         return written;
       }, true);
       trackEdit(promise);
@@ -190,10 +148,6 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * another Environment too (a Sync, a new Branch, a copied node: often the implied Parent) runs after every pending
      * edit. It persists once the write's answers replace its views. A refusal toasts here, unless its code is one the
      * caller `handles`, rereads the views, and rejects with `StoreRefused`.
-     *
-     * One acting on a review (`version`) in its Environment is queued at once, behind the edits made before it and
-     * ahead of any made after. A Deploy or a Save goes with that review advanced through this tab's own edits ahead
-     * of it; any other goes at the version it names, and the Store refuses it once an edit has moved past that.
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const environment = commandEnvironment(command);
@@ -202,20 +156,14 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       // Batch holding an edit is tracked too, so a command spanning Environments waits for it.
       const expects = "expect" in command;
       const edits = expects || (command.command === "batch" && command.commands.some((inner) => inner.command === "edit"));
-      // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
-      const spans = SPANS.has(command.command) || commandEnvironments(command).length > 1;
-      const reviewed = environment && !spans ? versionOf(command) : null;
-      const follows = command.command === "publish" || (command.command === "admit" && command.admit === "deploy");
       const save = async () => {
-        const expect = expects ? expected(key) : null;
-        const version = reviewed !== null && follows ? advanced(key, reviewed) : reviewed;
-        const written = await send(expects ? { ...command, expect } : version !== null ? withVersion(command, version) : command);
-        const made = writtenEnvironment(written);
-        if (made === null) return written;
-        committed.set(key, made.revision);
-        record(made.id, expect ?? (version === null ? null : reviewedRevision(version)), made.revision);
+        const written = await send(expects ? { ...command, expect: expected(key) } : command);
+        const revision = writtenRevision(written);
+        if (revision !== null) committed.set(key, revision);
         return written;
       };
+      // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
+      const spans = SPANS.has(command.command) || commandEnvironments(command).length > 1;
       const preceding = spans ? [...unsettled] : [];
       const work = async () => { await Promise.all(preceding); return save(); };
       const promise = queued(key, command, work, expects, handles);
