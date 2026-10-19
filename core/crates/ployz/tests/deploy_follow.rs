@@ -665,6 +665,28 @@ fn losing_cloud_while_following_says_the_deployment_keeps_running() {
 }
 
 #[test]
+fn losing_cloud_while_looking_for_a_replacement_keeps_the_superseded_status() {
+    let (output, _) = run(vec![
+        admitted(),
+        observed(7, DeploymentStatus::Superseded),
+        hung_up(replacement()),
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = failure(&output);
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "Deployment #7 was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+        )),
+        "{error}"
+    );
+    assert_eq!(
+        inspected(&error),
+        "ployz deployment ls --project shop --env production"
+    );
+}
+
+#[test]
 fn losing_cloud_after_a_replacement_names_the_deployment_being_followed() {
     let (output, _) = run(vec![
         admitted(),
