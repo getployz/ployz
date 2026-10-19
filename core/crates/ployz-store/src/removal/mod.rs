@@ -229,15 +229,22 @@ impl Reviewed {
         )
     }
 
-    /// Whether `given` already accepts everything this member's removal deletes.
+    /// Whether `given` already accepts everything this member's removal deletes,
+    /// and every copy the caller now gives up.
     fn within(&self, given: &Accepted) -> bool {
-        self.lost().all(|loss| match given {
+        match given {
             Accepted::Everything { .. } => true,
-            Accepted::EveryCopy(names) => names.contains(&loss.volume.name),
-            Accepted::Confirmed(deletes) => {
-                loss.deletes.iter().all(|delete| deletes.contains(delete))
+            Accepted::EveryCopy(names) => {
+                self.every_copy.is_subset(names)
+                    && self.lost().all(|loss| names.contains(&loss.volume.name))
             }
-        })
+            Accepted::Confirmed(deletes) => {
+                self.every_copy.is_empty()
+                    && self
+                        .lost()
+                        .all(|loss| loss.deletes.iter().all(|delete| deletes.contains(delete)))
+            }
+        }
     }
 
     fn accepted(&self) -> Accepted {
@@ -329,7 +336,8 @@ pub(crate) fn remove(
     refuse_unanswered(who, remove, &reviews, &target)?;
     // A removal under way holds its remover's consent, and nothing deploys
     // meanwhile: running it again needs no new version unless it now deletes
-    // more. Each run still waits on a human's approval when Cloud asks for one.
+    // more or gives up more copies. Each run still waits on a human's approval
+    // when Cloud asks for one.
     let held = mark::of(tx, &target)?.is_some_and(|live| {
         live.state == State::Removing
             && reviews.iter().all(|reviewed| {

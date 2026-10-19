@@ -1268,7 +1268,10 @@ fn giving_up_every_copy_on_a_rerun_takes_off_past_a_silent_server() {
     let asked = refusal(store.write_trusted(&who, &every_copy, &silent));
     assert_eq!(asked.code, RpcErrorCode::ConfirmationRequired);
     let rerun = confirmed(&store, &who, every_copy, &silent).unwrap();
+    let taking = taking_off(&rerun, "production");
     assert_eq!(left(rerun), [("production".into(), LeftStatus::Removing)]);
+    run(&store, &taking, &["web", "db"], deleted(&[held()]));
+    assert_eq!(names(&sweep(&store, &who).removed), ["production"]);
 }
 
 #[test]
