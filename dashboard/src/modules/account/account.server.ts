@@ -6,6 +6,9 @@ import { CLI_USER_AGENT_PREFIX } from "#/modules/identity/organization-token.ser
 import { account, session } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
 
+/** better-auth stores an IPv6 address as its /64 written out in full. A mapped IPv4 keeps its dotted form. */
+const shortIp = (ip: string) => ip.includes(":") && !ip.includes(".") ? URL.parse(`http://[${ip}]`)?.hostname.slice(1, -1) ?? ip : ip;
+
 /** The user's live sessions, most recently active first; tokens never leave the server. */
 export const listAccountSessions = Effect.fn("Account.listSessions")(function* (actor: Actor) {
   const { drizzle } = yield* Database;
@@ -17,7 +20,7 @@ export const listAccountSessions = Effect.fn("Account.listSessions")(function* (
   return rows.map((row) => ({
     id: row.id,
     userAgent: row.userAgent ?? null,
-    ipAddress: row.ipAddress ?? null,
+    ipAddress: row.ipAddress === null ? null : shortIp(row.ipAddress),
     cli: row.userAgent?.startsWith(CLI_USER_AGENT_PREFIX) ?? false,
     createdAt: row.createdAt.toISOString(),
     lastActiveAt: row.updatedAt.toISOString(),
