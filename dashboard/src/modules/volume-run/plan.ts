@@ -228,7 +228,10 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   }
   const elsewhere = others.find((member) => member !== root);
   if (root !== null) {
-    if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
+    if (elsewhere !== undefined) {
+      const refusal = copyElsewhere(name, elsewhere);
+      return { ok: false, refusal: roleOf(root) === "cutting" ? { ...refusal, next: cutStep(name, root, others) } : refusal };
+    }
     return move(root, roleOf(root) === "cutting" ? "cut" : "rounds");
   }
 
@@ -238,6 +241,12 @@ function planMove(name: string, args: VolumeRunArgs["move"], answered: readonly 
   const at = newestGuid(source.view.copy);
   if (at === null) return refuse("no_writer", `${name} has no writer; deploy ${name} before moving it`);
   return move(source, newestGuid(target.view.copy) === at ? "start" : "final");
+}
+
+/** mirror rm refuses beside a stopped cut, so its step goes first; a step that needs server rm too is no one command. */
+function cutStep(name: string, cut: AnsweredMember, slots: readonly AnsweredMember[]): string | undefined {
+  const { remove, step } = releaseOrMoveOntoSlot(name, cut, slots);
+  return remove.length === 0 ? step : undefined;
 }
 
 /** A Server cannot tell a mirror from the copy a move left, so this names it a copy. */
