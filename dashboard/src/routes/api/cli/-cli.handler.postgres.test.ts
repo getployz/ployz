@@ -470,10 +470,18 @@ it.live(
         const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0] ?? assert.fail("no device");
         const asToken = { bearer: token.secret };
 
-        assert.strictEqual((yield* cli("POST", "tokens", asToken, { name: "child", expires_in_days: 365 })).status, 422);
+        // Refused for what it is, whatever it sent: a body it got wrong is never blamed instead.
+        const bodies: JsonObject[] = [{ name: "child", expires_in_days: 365 }, { name: "child", expiresInDays: 1, kind: "agent" }];
+        for (const body of bodies) {
+          const made = yield* cli("POST", "tokens", asToken, body);
+          assert.strictEqual(made.status, 403);
+          assert.deepStrictEqual(JSON.parse(made.text), {
+            error: { code: "forbidden", message: "Only a signed-in person can make tokens. No changes made.", details: { next: "ployz login" } },
+          });
+        }
         assert.lengthOf(yield* database.drizzle.select().from(organizationToken), 1);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 422);
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${token.id}`, asToken)).status, 403);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device.id}`, asToken)).status, 403);
         assert.strictEqual((yield* cli("GET", "tokens", asToken)).status, 200);
         assert.strictEqual((yield* cli("GET", "tokens", alice)).status, 200);
 
@@ -727,7 +735,7 @@ it.live(
         // Rerunning `token rm`, signed back in, retries once the Server is back.
         laterServer.online = true;
         const back = yield* signIn("alice");
-        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 422);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 403);
         const retried = (yield* cli("DELETE", `tokens/${device}`, back)).json;
         assert.deepStrictEqual(retried.removed, { id: device, kind: "device" });
         assert.deepStrictEqual(retried.servers, { confirmed: [later], unconfirmed: [] });

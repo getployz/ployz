@@ -2455,6 +2455,26 @@ fn run_token_cloud(cloud: &str, args: &[&str]) -> (Option<i32>, String, String) 
     )
 }
 
+#[test]
+fn a_token_refused_a_token_command_hears_cloud_s_sentence_and_next_step() {
+    let refused = r#"{"error":{"code":"forbidden","message":"Only a signed-in person can make tokens. No changes made.","details":{"next":"ployz login"}}}"#;
+    let (cloud, _) = token_cloud(403, refused);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["token", "new", "x"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: Only a signed-in person can make tokens. No changes made.\nnext: ployz login\n"
+    );
+    let older = r#"{"_tag":"PublicError","code":"VALIDATION_FAILED","message":"Only a signed-in person can make or revoke tokens; run `ployz login`."}"#;
+    let (cloud, _) = token_cloud(422, older);
+    let (code, _, stderr) = run_token_cloud(&cloud, &["token", "rm", "t1"]);
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(
+        stderr,
+        "error: Only a signed-in person can make or revoke tokens; run `ployz login`.\n"
+    );
+}
+
 fn sent_body(request: &str) -> serde_json::Value {
     serde_json::from_str(&request[request.find('{').unwrap()..]).unwrap()
 }

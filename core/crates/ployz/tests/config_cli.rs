@@ -2737,7 +2737,7 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
     assert_eq!(refused.get("code"), Some(&json!("unauthenticated")));
     assert_eq!(
         refused.pointer("/details/next"),
-        Some(&json!("ployz token new"))
+        Some(&json!("unset PLOYZ_TOKEN && ployz login"))
     );
 
     let (code, json) = ployz(None, &["get"]);
