@@ -211,7 +211,7 @@ it("reads the newest page first for the exits the live tail lacks, then follows 
 type Stored = { container: string; at: number };
 type HistoryRead = { cursor: string | null; until_nanos: string | null; limit: number };
 type StoreTransport = { watch(): AsyncGenerator<object>; history(input: HistoryRead): Promise<{ next(): Promise<object | null>; cancel(): void }> };
-const sdkHistory = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("@ployz/sdk")), "runtime-logs.js")).history as (transport: StoreTransport, options: LogHistoryOptions) => Promise<LogHistoryPage>;
+const sdkHistory = createRequire(import.meta.url)(join(dirname(createRequire(import.meta.url).resolve("@ployz/sdk")), "runtime-logs.js")).history as (transport: StoreTransport, options: Omit<LogHistoryOptions, "sealed"> & { sealed: object }) => Promise<LogHistoryPage>;
 
 /**
  * One Server's Log Store holding `stored`, read through the SDK's history and the route's projection. `stored` may
@@ -237,7 +237,7 @@ function storeFetch(stored: readonly Stored[], reads: string[]) {
   return async (_url: string, init: RequestInit) => {
     const { cursor, before } = JSON.parse(String(init.body)) as { cursor?: string; before?: string };
     reads.push(cursor ? "cursor" : before === undefined ? "newest" : `before=${before}`);
-    const page = await sdkHistory(transport, { filter: { namespace: "env" }, limit: 500, cursor, before });
+    const page = await sdkHistory(transport, { sealed: {}, filter: { namespace: "env" }, limit: 500, cursor, before });
     return Response.json({ rows: page.records.map(projectContainerLog), failures: page.failures, cursor: page.cursor });
   };
 }

@@ -27,6 +27,9 @@ again, or `brew upgrade ployz`.
 
 This computer starts in the organization the page names. Switching organization in the dashboard
 later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
+If Cloud can't be reached, `ployz logout` still forgets the sign-in here and warns that Cloud may
+still honour it until you remove it with `ployz token rm`. An unreadable sign-in is forgotten too,
+and `ployz login` replaces it. While it is unreadable, `PLOYZ_TOKEN` also needs `PLOYZ_CLOUD_URL`.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -259,8 +262,11 @@ offline, run it again once that server is back. Owners and admins see and can re
 organization token in the organization, not only their own. Members see only theirs.
 
 Only your login can make or revoke tokens. A token can't do either, so a leaked one can't make
-another that outlives it, or revoke the rest. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
-one made with `ployz token new`, `agent` for the one `ployz mcp login` made. An agent token can't
+another that outlives it, or revoke the rest. While `PLOYZ_TOKEN` is set, Ployz acts with the token
+even after `ployz login`: run `unset PLOYZ_TOKEN && ployz login` before you make or revoke one. `ployz token ls` shows each token's SCOPE, such as `Deploy staging`, and its KIND: `cli` for
+one made with `ployz token new`, `agent` for the one `ployz mcp login` made. It also lists each
+computer where you ran `ployz login` as KIND `device`, named for the day it signed in, such as
+`ployz login 2026-10-18`. `ployz token rm ID` signs that computer out. An agent token can't
 answer approvals, and a token's kind never changes. A token you make outlives the login you made it
 with: `ployz logout` doesn't revoke it.
 

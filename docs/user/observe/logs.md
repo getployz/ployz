@@ -48,6 +48,8 @@ exits with code 1, or with code 3 when lines for another name you gave already p
 server doesn't answer, Ployz says so instead, since the missing lines may be on that server.
 `--follow` needs a service the environment has now, deployed or not yet deployed, so it refuses any
 other name before reading.
+`ployz logs --follow --machine X` with no service named follows every service that runs on X and
+skips the rest.
 
 Unqualified names without scope, service IDs, container selectors, commands with
 no service arguments, and `--follow` still use live container discovery.
@@ -72,6 +74,11 @@ no service arguments, and `--follow` still use live container discovery.
 - **Levels come from the line.** A JSON `level`, `lvl` or `severity` field, a logfmt `level=`, or
   a leading `ERROR`, `WARN`, `INFO` or `DEBUG` (or a tag such as `[error]`) sets it. A line
   without one counts as **Info**, stderr included.
+- **The dashboard never shows a Sealed value.** It replaces each one with `[secret NAME]`, and a
+  variable you seal while you watch is scrubbed from the next lines on. Lines it couldn't check,
+  say because your servers couldn't read the service's variables, show as
+  **Hidden: couldn’t check these lines for Sealed values.** When a server fails, the banner says
+  **Container logs are unavailable.** instead of quoting the server's error.
 - **Detected gaps appear in the log**, saying the lines weren't captured or couldn't be read.
   Missing output can have no gap record, such as when a container ran entirely while log
   collection was down.

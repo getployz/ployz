@@ -1,5 +1,6 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { listMembersServerFn, readInviteServerFn } from "#/modules/organization/members.functions";
+import { can, type Permission } from "#/modules/organization/permissions";
 
 export const membersKey = (organizationSlug: string) => ["organization-members", organizationSlug] as const;
 
@@ -10,6 +11,12 @@ export function organizationMembersQueryOptions(organizationSlug: string) {
     queryFn: () => listMembersServerFn({ data: { organizationSlug } }),
     staleTime: 30_000,
   });
+}
+
+/** Whether your role holds `permission`. Not while the members load or fail, nor on a support visit, which has no row: Cloud decides those. */
+export function useYouMay(organizationSlug: string, permission: Permission): boolean {
+  const role = useQuery(organizationMembersQueryOptions(organizationSlug)).data?.members.find((row) => row.you)?.role;
+  return role !== undefined && can(role, permission);
 }
 
 export type Invite = NonNullable<Awaited<ReturnType<typeof readInviteServerFn>>>;

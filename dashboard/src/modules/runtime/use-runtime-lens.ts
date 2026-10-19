@@ -1,6 +1,7 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useHydrated } from "@tanstack/react-router";
+import { offlineServers } from "#/modules/machines/server-status";
 import {
   getRuntimeCollections,
   isIncompleteObservation,
@@ -17,9 +18,12 @@ export function useRuntimeLens(organizationSlug: string) {
   const status = statusRows[0]?.status ?? "connecting";
   const error = statusRows[0]?.error ?? null;
   const isLoading = hydrated && (liveMachines.isLoading || liveStatus.isLoading);
+  const projected = machines.map(projectRuntimeMachineRecord);
 
   return {
-    machines: machines.map(projectRuntimeMachineRecord),
+    machines: projected,
+    /** The Servers that read Offline; their containers are as they last reported them. */
+    offline: offlineServers(projected),
     /** Cloud knows the Organization has no Server to run anything: none connected, or none observed. */
     noServers: status === "no_connection" || (status === "observed" && machines.length === 0),
     status,
