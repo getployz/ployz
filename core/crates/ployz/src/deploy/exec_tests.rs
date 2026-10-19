@@ -323,7 +323,12 @@ impl Scripted {
             .iter()
             .position(|other| other == applied)
             .unwrap_or_else(|| panic!("{applied:?} was never applied"));
-        self.listed.lock().unwrap()[at].clone()
+        self.listed
+            .lock()
+            .unwrap()
+            .get(at)
+            .cloned()
+            .unwrap_or_else(|| panic!("no routes listed at {applied:?}"))
     }
 
     fn answers(&self) -> Vec<AnswerWhen> {
