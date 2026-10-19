@@ -943,6 +943,108 @@ fn an_agent_adds_lists_renames_and_removes_services() {
 }
 
 #[test]
+fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services() {
+    fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
+        if let Written::Deployment(admitted) = written {
+            succeed(store, &admitted.id);
+        }
+        if let Written::Removal(Removal::Removing { left, .. }) = written {
+            for deployment in left.iter().filter_map(|left| left.deployment.as_ref()) {
+                succeed(store, &deployment.id);
+            }
+        }
+    }
+    let targets = [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud_with_dispatch(succeeding),
+            token: "ployz_alice",
+        },
+    ];
+    for store in &targets {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["env", "new", "staging"]);
+        for environment in ["production", "staging"] {
+            ok(
+                store,
+                &[
+                    "service",
+                    "add",
+                    "web",
+                    "--image",
+                    "nginx:1",
+                    "--env",
+                    environment,
+                ],
+            );
+            applied(store, environment);
+        }
+
+        // Without a terminal the refusal names the command to run: the name, no version.
+        let asked = error(store, &["project", "rm", "shop"]);
+        assert_eq!(asked["code"], "confirmation_required", "{asked}");
+        assert_eq!(
+            asked["details"]["retry"],
+            json!("ployz project rm shop --confirm shop")
+        );
+        // A stale `--expect-version` still binds, so a script that passes one is refused.
+        let stale = error(
+            store,
+            &[
+                "project",
+                "rm",
+                "shop",
+                "--confirm",
+                "shop",
+                "--expect-version",
+                "00000000-0000-4000-8000-000000000000:0000000000000000",
+            ],
+        );
+        assert_eq!(stale["code"], "confirmation_required", "{stale}");
+
+        match store {
+            // No Server is enrolled in process, so the removal Deployment the name
+            // admitted can't take it off: it got past the confirmation in one call.
+            Target::Local(_) => {
+                let (code, admitted) = ployz(
+                    Some(store),
+                    &["env", "rm", "staging", "--confirm", "shop/staging"],
+                );
+                assert_eq!(code, Some(3), "{admitted}");
+                assert_eq!(admitted["remove"], true, "{admitted}");
+                // A removal that didn't apply still names what the name confirmed.
+                assert_eq!(admitted["effects"][0]["name"], "web", "{admitted}");
+            }
+            // This fake Cloud never sweeps, so `--detach` returns once the removal is
+            // under way rather than waiting for the sweep.
+            Target::Cloud { .. } => {
+                let removing = ok(
+                    store,
+                    &[
+                        "env",
+                        "rm",
+                        "staging",
+                        "--confirm",
+                        "shop/staging",
+                        "--detach",
+                    ],
+                );
+                assert_eq!(removing["deployments"][0]["remove"], true, "{removing}");
+                // `--json` names what the name confirmed, as the stderr note does.
+                assert_eq!(removing["effects"][0]["kind"], "removes_service");
+                assert_eq!(removing["effects"][0]["name"], "web", "{removing}");
+                let removing = ok(
+                    store,
+                    &["project", "rm", "shop", "--confirm", "shop", "--detach"],
+                );
+                assert_eq!(removing["deployments"][0]["remove"], true, "{removing}");
+                assert_eq!(removing["effects"][0]["name"], "web", "{removing}");
+            }
+        }
+    }
+}
+
+#[test]
 fn a_deployed_service_staged_for_removal_still_inspects() {
     fn succeeding(store: &std::sync::Arc<ConfigStore>, written: &Written) {
         if let Written::Deployment(admitted) = written {
@@ -1253,23 +1355,10 @@ fn an_environment_cloud_forgets_and_sweeps_first_still_says_it_was_left_on_old_s
     );
     ok(&cloud, &["deploy", "--env", "staging"]);
 
-    let asked = error(
-        &cloud,
-        &["env", "rm", "staging", "--confirm", "shop/staging"],
-    );
-    assert_eq!(asked["code"], "confirmation_required", "{asked}");
-    let version = asked["details"]["version"].as_str().unwrap();
+    // The typed name confirms removing what ran: no version to pass.
     let removed = ok(
         &cloud,
-        &[
-            "env",
-            "rm",
-            "staging",
-            "--confirm",
-            "shop/staging",
-            "--expect-version",
-            version,
-        ],
+        &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
     assert_eq!(removed["removal"], "removed", "{removed}");
     assert_eq!(
@@ -1318,28 +1407,8 @@ fn a_project_removal_on_cloud_takes_off_what_it_can_and_leaves_the_rest_to_cloud
     ok(&cloud, &["set", "web.cpuLimit=0.2", "--env", "production"]);
     ok(&cloud, &["deploy", "--env", "production", "--detach"]);
 
-    // What ran is destructive to remove: the typed name, then the version it reviewed.
-    let asked = error(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
-    assert_eq!(asked["code"], "confirmation_required", "{asked}");
-    let version = asked["details"]["version"].as_str().unwrap();
-    assert_eq!(
-        asked["details"]["retry"],
-        json!(format!(
-            "ployz project rm shop --confirm shop --expect-version {version}"
-        ))
-    );
-    let removed = ok(
-        &cloud,
-        &[
-            "project",
-            "rm",
-            "shop",
-            "--confirm",
-            "shop",
-            "--expect-version",
-            version,
-        ],
-    );
+    // What ran is destructive to remove, and the typed name alone confirms it.
+    let removed = ok(&cloud, &["project", "rm", "shop", "--confirm", "shop"]);
     assert_eq!(removed["removal"], "removing", "{removed}");
     assert_eq!(
         removed["deployments"].as_array().unwrap().len(),
@@ -2034,6 +2103,60 @@ fn mistakes_fail_with_their_codes() {
 }
 
 #[test]
+fn discarding_a_save_never_deployed_says_how_to_bring_it_back() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        ok(store, &["deploy", "--skip-deploy"]);
+        let discard = || {
+            let home = tempfile::tempdir().unwrap();
+            let output = store
+                .command(home.path())
+                .arg("discard")
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(0), "{}", said(&output));
+            said(&output)
+        };
+        let back = "web is in saved #1 but was never deployed, so discarding removes it. Bring it back: ployz discard web";
+
+        let first = discard();
+        assert!(first.contains("Discarded every staged change"), "{first}");
+        assert!(first.contains(back), "{first}");
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff["draft_changes"][0]["name"], json!("web"), "{diff}");
+        let status = ok(store, &["status"]);
+        assert_ne!(
+            status.pointer("/staged/changes"),
+            Some(&json!(0)),
+            "status counts the row diff lists: {status}"
+        );
+
+        let second = discard();
+        assert!(!second.contains("nothing to discard"), "{second}");
+        assert!(second.contains(back), "{second}");
+        let json = ok(store, &["discard"]);
+        assert_eq!(
+            json["comes_back"],
+            json!([{ "name": "web", "command": "ployz discard web", "drops_unsaved": false }]),
+            "{json}"
+        );
+        assert_eq!(
+            json["reversed"][0]["way_back"],
+            json!({ "path": "web", "drops_unsaved": false }),
+            "{json}"
+        );
+
+        let restored = ok(store, &["discard", "web"]);
+        assert_eq!(restored["changed"], json!(true), "{restored}");
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff["changes"][0]["lifecycle"], json!("create"), "{diff}");
+        assert_eq!(diff["draft_count"], json!(0), "{diff}");
+    }
+}
+
+#[test]
 fn an_agent_reviews_saves_and_discards() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
@@ -2054,12 +2177,7 @@ fn an_agent_reviews_saves_and_discards() {
             diff.pointer("/changes/0/settings/0/path"),
             Some(&json!("web.replicas"))
         );
-        assert_eq!(
-            diff.get("next"),
-            Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {version}"
-            )))
-        );
+        assert_eq!(diff.get("next"), Some(&json!("ployz deploy")));
 
         // A review taken before another edit is stale.
         ok(store, &["set", "web.startCommand=nginx"]);
@@ -2089,10 +2207,9 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(saved.get("next"), Some(&json!("ployz deploy")));
         let diff = ok(store, &["diff"]);
         assert_eq!(diff.get("holds_staged"), Some(&json!(true)));
-        let version = diff["version"].as_str().unwrap();
         assert_eq!(
             diff.get("next"),
-            Some(&json!(format!("ployz deploy --expect-version {version}"))),
+            Some(&json!("ployz deploy")),
             "saved is not yet deployed"
         );
 
@@ -2110,9 +2227,7 @@ fn an_agent_reviews_saves_and_discards() {
         let version = inverse["version"].as_str().unwrap();
         assert_eq!(
             inverse.get("next"),
-            Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {version}"
-            )))
+            Some(&json!("ployz deploy --skip-deploy"))
         );
         assert_eq!(
             ok(store, &["history"])["revisions"]
@@ -3922,6 +4037,48 @@ fn history_scope_flags_work_before_or_after_the_action() {
             assert_eq!(preview["environment"]["name"], json!("staging"), "{args:?}");
         }
     }
+}
+
+#[test]
+fn history_says_nothing_staged_when_the_next_deploy_already_matches() {
+    let store = Target::Local(tempfile::tempdir().unwrap());
+    let human = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = store.command(home.path()).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["service", "add", "web", "--image", "web:1"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    ok(&store, &["set", "web.image=web:2"]);
+    ok(&store, &["deploy", "--skip-deploy"]);
+    assert_eq!(
+        human(&["history", "restore", "1"]),
+        "Staged a rollback to #1. Deploy to apply.\n"
+    );
+    assert_eq!(
+        human(&["history", "restore", "1"]),
+        "Already matches #1. Nothing staged.\n"
+    );
+    assert_eq!(
+        ok(&store, &["history", "restore", "1"])["changed"],
+        json!(false)
+    );
+    assert_eq!(
+        human(&["history", "undo", "2"]),
+        "Nothing to undo in #2. Nothing staged.\n"
+    );
+
+    ok(&store, &["deploy", "--skip-deploy"]);
+    assert_eq!(
+        human(&["history", "undo", "3"]),
+        "Staged an undo of #3. Deploy to apply.\n"
+    );
+    assert_eq!(
+        human(&["history", "undo", "3"]),
+        "Nothing to undo in #3. Nothing staged.\n"
+    );
 }
 
 #[test]

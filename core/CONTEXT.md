@@ -266,7 +266,7 @@ A Volume's opt-in to more than one writer: several replicas of one Service, or s
 _Avoid_: Multi-attach, ReadWriteMany, shared volume
 
 **Config**:
-A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME` or `configs.@UUID`, so no Service may be named `configs`. A name selects Working State for authoring; Discard refuses a name shared by distinct Working and Head identities. Review paths retain exact identity across rename and same-name replacement. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references is refused, as for a variable's references.
+A named Environment Resource holding text files for Services to mount read-only. Its name is a DNS label, unique in its Environment, and the Config is addressed `configs.NAME` or `configs.@UUID`, so no Service may be named `configs`. A name selects Working State for authoring; Discard refuses a name shared by distinct Working and Head identities. Review paths retain exact identity across rename and same-name replacement. Each file has a relative path of one to four segments, such as `config.d/override.xml` or `.htpasswd`, at most 256 KB of UTF-8 text, a mode up to `0777` (default `0444`), and a uid and gid (default 0). A Service mounts at most 768 KB of Config text across its Configs: put and mount count the text, and a Deploy counts it with variables resolved. A Config belongs to no Service, so its text references variables only as `${{ SERVICE.KEY }}`; a bare `${{ KEY }}` is refused. References are stored by Service lineage, so renaming the Service re-renders the file. Deleting a Service or variable a Config references is refused, as for a variable's references.
 _Avoid_: Config file (one file of a Config), ConfigMap, Config Store
 
 **Config Mount**:
@@ -576,6 +576,10 @@ _Avoid_: Selected Endpoint, current endpoint
 **Selected Endpoint**:
 The endpoint one observing Machine currently selects for reaching a target Machine. Different observers may select different endpoints for the same target.
 _Avoid_: Advertised Endpoint, globally current endpoint
+
+**Pinned Address**:
+A Machine's public IP or Advertised Endpoints when its operator chose them at enrollment or with `server set`. Daemon start rediscovers only unpinned addresses. The pin lives on the Machine and is never replicated.
+_Avoid_: static IP, address override
 
 **Cloud Pairing**:
 Cloud's Organization-scoped association with one Cluster generation, held on each Machine as the `cloud` Management Client. It scopes enrollment and connection candidates; the daemon never sees it, and it is neither Cluster membership nor evidence of reachability.

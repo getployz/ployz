@@ -106,7 +106,7 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
         [(
             "/api/cli/servers/enroll".to_owned(),
             "session-token".to_owned(),
-            json!({ "organizationSlug": "acme" })
+            json!({ "organizationId": "o1" })
         )]
     );
     assert_eq!(
@@ -222,7 +222,7 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
     );
     assert_eq!(
         cloud.cli_calls().last().map(|call| call.2.clone()),
-        Some(json!({ "organizationSlug": "acme", "id": ENROLLMENT }))
+        Some(json!({ "organizationId": "o1", "id": ENROLLMENT }))
     );
 }
 
@@ -257,7 +257,7 @@ async fn cloud_reset_gives_up_the_founding_of_the_signed_in_organization() {
         [(
             "/api/cli/cloud/reset".to_owned(),
             "session-token".to_owned(),
-            json!({ "organizationSlug": "acme", "confirmedFounderStoppedOrErased": true })
+            json!({ "organizationId": "o1", "confirmedFounderStoppedOrErased": true })
         )]
     );
 }
@@ -302,7 +302,7 @@ async fn cloud_reset_with_ployz_token_acts_in_the_tokens_organization() {
         Some(&(
             "/api/cli/cloud/reset".to_owned(),
             "ployz_beta".to_owned(),
-            json!({ "organizationSlug": "beta", "confirmedFounderStoppedOrErased": true })
+            json!({ "organizationId": "o2", "confirmedFounderStoppedOrErased": true })
         ))
     );
 }

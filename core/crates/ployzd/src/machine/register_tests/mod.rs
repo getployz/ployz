@@ -67,6 +67,7 @@ async fn register_rpc_exact_replay_returns_the_original_joinable_assignment() {
                 registration: replay,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();
@@ -99,6 +100,7 @@ async fn register_does_not_reconstruct_membership_while_joining() {
                 registration: registered,
             },
             wireguard_mtu: None,
+            pinned: Default::default(),
         })
         .await
         .unwrap();
@@ -213,6 +215,7 @@ async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let enroll = |registration| ployz_core::EnrollRequest {
         role: ployz_core::EnrollAs::Member { registration },
         wireguard_mtu: None,
+        pinned: Default::default(),
     };
     target
         .enroll(enroll(entry.register(identity.clone()).await.unwrap()))

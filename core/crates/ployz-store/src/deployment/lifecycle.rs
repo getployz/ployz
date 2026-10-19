@@ -551,6 +551,7 @@ pub(crate) fn claim(
         mut intent,
         secret_env,
         warnings,
+        ..
     } = lower(
         &stored.summary.environment_id,
         &saved,
@@ -811,6 +812,11 @@ pub(crate) fn record(
             }
             let success = matches!(*outcome, DeployOutcome::Success { .. });
             let (reason, cause) = failure(&outcome, &stored.nodes, &preview.operations)
+                .or_else(|| {
+                    success
+                        .then(|| undeleted(&stored.nodes, &removed, &preview.operations))
+                        .flatten()
+                })
                 .map_or((None, Vec::new()), |failure| {
                     (Some(failure.reason), failure.cause)
                 });
@@ -1018,6 +1024,57 @@ fn failure(
     Some(Failure {
         reason: reason.chars().take(500).collect(),
         cause,
+    })
+}
+
+/// Why a Deploy that succeeded left a removed Volume's data behind, in fixed words:
+/// a provider's error can quote its stderr, so only the operator log carries it.
+fn undeleted(
+    nodes: &[TargetNode],
+    removed: &[VolumeRemoval],
+    operations: &[ployz_core::OperationRow],
+) -> Option<Failure> {
+    nodes.iter().find_map(|node| {
+        let TargetNode::Volume {
+            name,
+            deletes: Some(deletes),
+            ..
+        } = node
+        else {
+            return None;
+        };
+        deletes.iter().find_map(|id| {
+            let server = operations
+                .iter()
+                .find(|row| row.machine_id == id.machine_id)
+                .and_then(|row| row.machine_name.as_ref())
+                .map_or_else(|| "a Server".to_owned(), |name| format!("Server {name}"));
+            let outcome = removed
+                .iter()
+                .find(|removal| removal.id == *id)
+                .map(|removal| &removal.outcome);
+            let why = match outcome {
+                Some(VolumeRemovalOutcome::Removed) => return None,
+                Some(VolumeRemovalOutcome::Failed { error }) => {
+                    tracing::warn!(volume = %name, docker_volume = %id, %error, "couldn't delete a removed Volume's data");
+                    match error.code {
+                        ployz_core::RpcErrorCode::Unavailable => format!("{server} did not answer"),
+                        ployz_core::RpcErrorCode::Conflict => format!("it is still in use on {server}"),
+                        ployz_core::RpcErrorCode::InvalidArgument
+                        | ployz_core::RpcErrorCode::NotFound
+                        | ployz_core::RpcErrorCode::Ambiguous
+                        | ployz_core::RpcErrorCode::Unsupported
+                        | ployz_core::RpcErrorCode::Internal
+                        | ployz_core::RpcErrorCode::Unauthenticated
+                        | ployz_core::RpcErrorCode::ConfirmationRequired
+                        | ployz_core::RpcErrorCode::Unknown(_) => format!("{server} refused"),
+                    }
+                }
+                Some(VolumeRemovalOutcome::Omitted) => format!("{server} did not answer"),
+                None => "the Cluster could not be reached".to_owned(),
+            };
+            Some(Failure::from(format!("{name}: deleting its data failed: {why}")))
+        })
     })
 }
 

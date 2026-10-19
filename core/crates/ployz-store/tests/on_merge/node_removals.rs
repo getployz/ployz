@@ -898,9 +898,10 @@ fn undo_before_the_push_keeps_the_service_running() {
     undo_merge(&store, &who);
     let pushed = system(&store, &who, &push(Some(HEAD), MERGE, Some(&["README.md"])));
     // web still deploys for the merge; db is saved again, so nothing tears it down.
+    // The undo brings db's PASSWORD back Not set, so web's push ships db and its Volume.
     assert_eq!(
         teardown(&store, &who, &pushed),
-        [vec!["web".to_owned()], NOTHING, NOTHING]
+        [vec!["web".to_owned()], NOTHING, vec!["data".to_owned()]]
     );
 }
 

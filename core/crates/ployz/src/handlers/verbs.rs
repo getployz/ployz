@@ -441,6 +441,9 @@ pub(crate) const ORG_LS: Verb = Verb::cloud(
     account::org_list_command,
     account::org_list,
 );
+pub(crate) const ORG_NEW: Verb =
+    Verb::cloud("org new", Never, account::org_new_command, account::org_new)
+        .docs("account/organizations.md");
 pub(crate) const ORG_RM: Verb = Verb::cloud(
     "org rm",
     Always,
@@ -833,6 +836,7 @@ pub(crate) const VERBS: &[Verb] = &[
     ORG_BUILD_ORDER,
     ORG_LEAVE,
     ORG_LS,
+    ORG_NEW,
     ORG_RM,
     ORG_USE,
     PROJECT_LS,

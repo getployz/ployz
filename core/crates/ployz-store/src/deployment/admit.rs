@@ -11,7 +11,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::automation::Shipped;
-use crate::deployment::{self, DeploymentSummary, UploadedSource};
+use crate::deployment::{self, DeploymentSummary, TargetNode, UploadedSource};
 use crate::domain;
 use crate::id::{DeploymentId, Hostname, VolumeName};
 use crate::registry;
@@ -305,16 +305,11 @@ fn deploy(
     let shipped = match admit.services.is_empty() {
         true => Shipped::All(&saved_intent),
         false => Shipped::Services(
-            saved_intent
-                .services
+            frozen
+                .nodes
                 .iter()
-                .filter(|service| {
-                    admit
-                        .services
-                        .iter()
-                        .any(|name| name.as_str() == service.slug)
-                })
-                .map(|service| service.id.as_str())
+                .filter(|node| matches!(node, TargetNode::Service { .. }))
+                .map(TargetNode::id)
                 .collect(),
         ),
     };

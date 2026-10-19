@@ -21,7 +21,7 @@ use crate::{
     cloud_account::{self, Credential, StoreCallError},
     cloud_login::{CredentialStore, LoginError},
     cluster::RoleWaitError,
-    connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
+    connect::{Client, ConnectError, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
 };
@@ -78,15 +78,28 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
 /// to Cloud or holding `PLOYZ_TOKEN`, it dials through this credential's own Server Access;
 /// signed out, through the current context or the local daemon.
 pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
+    connect_or_none(matches, context)
+        .await?
+        .ok_or_else(no_servers)
+}
+
+/// [`connect`], or `None` when Cloud says this Organization has no Servers yet.
+pub(super) async fn connect_or_none(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<Option<Client>, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
         match cloud_account::from_env(&store).await {
-            Ok(credential) => return through_cloud(matches, &credential).await,
+            Ok(credential) => {
+                return dial(matches, cloud_account::server_access(&credential).await?).await;
+            }
             Err(LoginError::SignedOut) => {
                 // Signed out with no context or local daemon: the fix is signing in, not a
                 // config file. The hidden test Store is never signed in, so it keeps the cause.
                 return super::connect_context(matches, context)
                     .await
+                    .map(Some)
                     .map_err(|error| {
                         let no_config = std::error::Error::source(&error)
                             .and_then(|source| source.downcast_ref::<ContextError>())
@@ -101,7 +114,7 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
             Err(error) => return Err(error.into()),
         }
     }
-    super::connect_context(matches, context).await
+    super::connect_context(matches, context).await.map(Some)
 }
 
 /// The credential Cloud runs a Server operation under: signed in, with neither `--connect`
@@ -169,7 +182,10 @@ pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result
         let store = CredentialStore::beside(&super::config_path(matches)?);
         if let Ok(credential) = cloud_account::from_env(&store).await {
             return match cloud_account::server_access(&credential).await {
-                Ok(access) => dial(matches, access).await.map(Reach::Dial),
+                Ok(access) => dial(matches, access)
+                    .await?
+                    .map(Reach::Dial)
+                    .ok_or_else(no_servers),
                 Err(StoreCallError::Refused(error)) if error.code.as_str() == "forbidden" => {
                     Ok(Reach::Ask(credential))
                 }
@@ -180,34 +196,55 @@ pub(super) async fn reach(matches: &ArgMatches, context: Option<&str>) -> Result
     connect(matches, context).await.map(Reach::Dial)
 }
 
-async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<Client, Error> {
-    dial(matches, cloud_account::server_access(credential).await?).await
-}
-
-async fn dial(matches: &ArgMatches, access: cloud_account::ServerAccess) -> Result<Client, Error> {
+/// Cloud's dial into this Organization's Servers, or `None` when it has none.
+async fn dial(
+    matches: &ArgMatches,
+    access: cloud_account::ServerAccess,
+) -> Result<Option<Client>, Error> {
     if access.connections.is_empty() {
-        return Err(no_reachable_server(access.unreachable));
+        if access.unreachable.is_empty() {
+            return Ok(None);
+        }
+        return Err(no_reachable_server(access.unreachable, None));
     }
+    // Cloud hands back the connections it holds without probing their Servers.
+    let mut unreachable = access
+        .connections
+        .iter()
+        .filter_map(|connection| connection.machine_id().copied())
+        .collect::<Vec<_>>();
+    unreachable.extend(access.unreachable);
     let selected = SelectedConnections {
         source: ConnectionSource::Cloud,
         connections: access.connections,
     };
     let connector = SystemConnector::default().with_ssh_timeout(crate::cli::ssh_timeout(matches));
-    Ok(crate::connect::connect_selected_with(selected, Arc::new(connector)).await?)
+    match crate::connect::connect_selected_with(selected, Arc::new(connector)).await {
+        Ok(client) => Ok(Some(client)),
+        Err(error @ ConnectError::AllFailed { reached: false, .. }) if !unreachable.is_empty() => {
+            Err(no_reachable_server(unreachable, Some(error)))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
-fn no_reachable_server(unreachable: Vec<ployz_core::MachineId>) -> Error {
-    if unreachable.is_empty() {
-        return Error::not_found("this Organization has no Servers")
-            .hint(Hint::Next("ployz server add".into()));
-    }
-    Error::detailed(
+fn no_servers() -> Error {
+    Error::not_found("this Organization has no Servers").hint(Hint::Next("ployz server add".into()))
+}
+
+/// None of `unreachable` answered; `cause` says how the last attempt failed.
+fn no_reachable_server(
+    unreachable: Vec<ployz_core::MachineId>,
+    cause: Option<ConnectError>,
+) -> Error {
+    Error::detailed_caused(
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
             super::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
+        cause,
     )
 }
 
@@ -617,6 +654,29 @@ mod tests {
     }
 
     #[test]
+    fn enrolling_pins_only_the_addresses_the_operator_names() {
+        let pinned = |flags: &[&str]| {
+            let matches = crate::cli::command()
+                .try_get_matches_from(
+                    ["ployz", "server", "add", "--standalone", "root@host"]
+                        .iter()
+                        .chain(flags),
+                )
+                .unwrap();
+            helpers::pinned(&helpers::token_request(leaf_matches(&matches)).unwrap())
+        };
+        let pins = |public_ip, advertised_endpoints| ployz_core::PinnedAddresses {
+            public_ip,
+            advertised_endpoints,
+        };
+        assert_eq!(pinned(&[]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=auto"]), pins(false, false));
+        assert_eq!(pinned(&["--public-ip=none"]), pins(true, false));
+        assert_eq!(pinned(&["--public-ip=192.0.2.9"]), pins(true, false));
+        assert_eq!(pinned(&["--wg-endpoint=192.0.2.1"]), pins(false, true));
+    }
+
+    #[test]
     fn set_cli_rejects_an_empty_patch_and_maps_none_to_public_ip_removal() {
         let command = crate::cli::command();
         let empty = command
@@ -722,37 +782,52 @@ mod tests {
         );
     }
 
-    fn cloud(reply: serde_json::Value) -> Credential {
-        let cloud = crate::cloud_login::tests::fake_cloud(move |route, _| match route {
-            "POST /api/cli/server-access" => (200, reply.clone()),
-            other => panic!("unexpected {other}"),
-        });
-        Credential::Token {
-            cloud,
-            token: crate::cloud_login::Secret::new("ployz_secret".to_owned()),
-        }
-    }
-
     #[tokio::test]
-    async fn cloud_access_without_servers_points_at_server_add() {
+    async fn cloud_access_dials_nothing_without_servers_and_names_unreachable_ones() {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "server", "ls"])
             .unwrap();
-        let credential = cloud(json!({ "connections": [], "unreachable": [] }));
-        let Err(error) = through_cloud(leaf_matches(&matches), &credential).await else {
-            panic!("dialed without a Server");
+        let access = |unreachable| cloud_account::ServerAccess {
+            connections: Vec::new(),
+            unreachable,
         };
-        let error = error.report();
-        assert_eq!(error.code, RpcErrorCode::NotFound);
-        assert_eq!(error.details.get("next"), Some(&json!("ployz server add")));
+        let dialed = dial(leaf_matches(&matches), access(Vec::new())).await;
+        assert!(dialed.unwrap().is_none());
 
-        let offline = "b".repeat(32);
-        let credential = cloud(json!({ "connections": [], "unreachable": [offline] }));
-        let Err(error) = through_cloud(leaf_matches(&matches), &credential).await else {
+        let offline = ployz_core::MachineId::parse("b".repeat(32)).unwrap();
+        let Err(error) = dial(leaf_matches(&matches), access(vec![offline])).await else {
             panic!("dialed without a Server");
         };
         let error = error.report();
         assert_eq!(error.code, RpcErrorCode::Unavailable);
-        assert_eq!(error.details.get("unreachable"), Some(&json!([offline])));
+        assert_eq!(
+            error.details.get("unreachable"),
+            Some(&json!(["b".repeat(32)]))
+        );
+    }
+
+    #[tokio::test]
+    async fn held_connections_that_reach_no_server_name_the_unreachable_servers() {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "ls"])
+            .unwrap();
+        let (held, gone) = ("a".repeat(32), "b".repeat(32));
+        let access = cloud_account::ServerAccess {
+            connections: serde_json::from_value(json!([
+                { "machine_id": held, "unix": "/nonexistent/ployz-test/daemon.sock" }
+            ]))
+            .unwrap(),
+            unreachable: vec![ployz_core::MachineId::parse(gone.clone()).unwrap()],
+        };
+        let Err(error) = dial(leaf_matches(&matches), access).await else {
+            panic!("dialed a Server that is not there");
+        };
+        assert!(
+            !error.causes().is_empty(),
+            "the connect error stays the cause"
+        );
+        let error = error.report();
+        assert_eq!(error.code, RpcErrorCode::Unavailable);
+        assert_eq!(error.details.get("unreachable"), Some(&json!([held, gone])));
     }
 }

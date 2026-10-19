@@ -1,13 +1,14 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
-import { Cause, ConfigProvider, Effect, Layer, Schema } from "effect";
+import { Cause, ConfigProvider, Effect, Fiber, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Auth, AuthLive, CLI_CLIENT_ID, Unauthorized } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { member, session as sessionTable, user as userTable, verification } from "#/modules/identity/tables";
+import { organization as organizationTable } from "#/modules/organization/tables";
 import { hashClaimSecret } from "#/modules/identity/claim-required.server";
-import { eq, like } from "drizzle-orm";
+import { eq, like, sql } from "drizzle-orm";
 import { vi } from "vitest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
@@ -69,10 +70,11 @@ it.live(
           new Headers({ cookie }),
         );
         assert.strictEqual(actor.userId.length, 36);
-        assert.deepStrictEqual(Object.keys(actor), ["userId"]);
+        assert.deepStrictEqual(Object.keys(actor), ["userId", "credential"]);
 
         const restored = yield* auth.getSession(new Headers({ cookie }));
         assert.strictEqual(restored?.session.userId, actor.userId);
+        assert.deepStrictEqual(actor.credential, { kind: "session", id: restored?.session.id });
 
         assert.strictEqual(restored?.user.openStartedDeployments, true);
         assert.strictEqual(restored?.user.isAnonymous, false);
@@ -190,6 +192,12 @@ it.live(
       yield* Effect.gen(function* () {
         const owner = yield* signUp("owner");
         const intruder = yield* signUp("intruder");
+        const organizationOf = Effect.fn(function* (cookie: string) {
+          const signedIn = yield* (yield* Auth).getSession(new Headers({ cookie }));
+          return signedIn?.session.activeOrganizationId ?? assert.fail("no active Organization");
+        });
+        const ownerOrganizationId = yield* organizationOf(owner);
+        const intruderOrganizationId = yield* organizationOf(intruder);
 
         const refused = yield* call("/device/code", { body: { client_id: "someone-else" } });
         assert.strictEqual(refused.status, 400);
@@ -200,7 +208,7 @@ it.live(
         assert.strictEqual((yield* device.poll()).json?.error, "authorization_pending");
 
         // An unclaimed code can't be approved, even by the user about to claim it.
-        const unclaimed = yield* call("/device/approve", { cookie: owner, body: { userCode } });
+        const unclaimed = yield* call("/device/approve", { cookie: owner, body: { userCode, organizationId: ownerOrganizationId } });
         assert.strictEqual(unclaimed.status, 400);
 
         const claimed = yield* call(`/device?user_code=${userCode}`, { cookie: owner });
@@ -211,11 +219,11 @@ it.live(
         const looked = yield* call(`/device?user_code=${userCode}`, { cookie: intruder });
         assert.isUndefined(looked.json?.client_id);
         for (const decision of ["/device/approve", "/device/deny"]) {
-          const rejected = yield* call(decision, { cookie: intruder, body: { userCode } });
+          const rejected = yield* call(decision, { cookie: intruder, body: { userCode, organizationId: intruderOrganizationId } });
           assert.strictEqual(rejected.status, 403, decision);
         }
 
-        const approved = yield* call("/device/approve", { cookie: owner, body: { userCode } });
+        const approved = yield* call("/device/approve", { cookie: owner, body: { userCode, organizationId: ownerOrganizationId } });
         assert.strictEqual(approved.status, 200);
         assert.strictEqual((yield* device.poll()).json?.error, "slow_down");
         // RFC 8628's default five-second polling interval.
@@ -253,6 +261,124 @@ it.live(
         const signedOut = yield* call("/sign-out", { bearer: token, body: {} });
         assert.strictEqual(signedOut.status, 200);
         assert.isNull((yield* call("/get-session", { bearer: token })).json);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "starts a CLI device in the Organization the approving page named, even after another tab switched the session",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const cookie = yield* signUp("switcher");
+        const browser = (yield* auth.getSession(new Headers({ cookie }))) ?? assert.fail("no browser session");
+        const switchedTo = browser.session.activeOrganizationId ?? assert.fail("no first Organization");
+        const addOrganization = (slug: string) => drizzle.insert(organizationTable).values({ name: slug, slug })
+          .returning({ id: organizationTable.id })
+          .pipe(Effect.map(([row]) => row?.id ?? assert.fail(`no Organization ${slug}`)));
+        const namedId = yield* addOrganization("named");
+        const foreignId = yield* addOrganization("foreign");
+        yield* drizzle.insert(member).values({ userId: browser.user.id, organizationId: namedId, role: "member" });
+        // A redemption racing approval must find the binding, so it exists before any code reads as approved.
+        yield* drizzle.execute(sql`
+          create function assert_device_bound() returns trigger language plpgsql as $$
+          begin
+            if new.status = 'approved' and not exists (
+              select 1 from verification where identifier = 'device-organization:' || new.device_code
+            ) then raise exception 'device code approved before its Organization was bound'; end if;
+            return new;
+          end $$;
+          create trigger assert_device_bound before update on device_code
+            for each row execute function assert_device_bound();`, "objects");
+
+        const { userCode, poll } = yield* startDevice();
+        yield* call(`/device?user_code=${userCode}`, { cookie });
+        // The page named `named`, but the session now acts elsewhere, as after a switch in another tab.
+        assert.notStrictEqual(namedId, switchedTo);
+        assert.strictEqual(browser.session.activeOrganizationId, switchedTo);
+
+        const foreign = yield* call("/device/approve", { cookie, body: { userCode, organizationId: foreignId } });
+        assert.strictEqual(foreign.status, 403);
+        assert.strictEqual((yield* call(`/device?user_code=${userCode}`, { cookie })).json?.status, "pending");
+
+        assert.strictEqual(
+          (yield* call("/device/approve", { cookie, body: { userCode, organizationId: namedId } })).status,
+          200,
+        );
+        const token = (yield* poll()).json?.access_token ?? assert.fail("no access token");
+
+        const device = yield* call("/get-session", { bearer: token });
+        assert.strictEqual(device.json?.session?.activeOrganizationId, namedId);
+        assert.deepStrictEqual(
+          yield* drizzle.select().from(verification).where(like(verification.identifier, "device-organization:%")),
+          [],
+        );
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "keeps an approved device in its Organization when a duplicate approve naming another one lands mid-approval",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const auth = yield* Auth;
+        const { drizzle } = yield* Database;
+        const cookie = yield* signUp("double");
+        const browser = (yield* auth.getSession(new Headers({ cookie }))) ?? assert.fail("no browser session");
+        const firstId = browser.session.activeOrganizationId ?? assert.fail("no first Organization");
+        const [other] = yield* drizzle.insert(organizationTable).values({ name: "other", slug: "other" })
+          .returning({ id: organizationTable.id });
+        const otherId = other?.id ?? assert.fail("no other Organization");
+        yield* drizzle.insert(member).values({ userId: browser.user.id, organizationId: otherId, role: "member" });
+        // Holds the first approval's write open, so the duplicate arrives while the code still reads as pending.
+        yield* drizzle.execute(sql`
+          create function slow_approval() returns trigger language plpgsql as $$
+          begin
+            if old.status = 'pending' and new.status = 'approved' then perform pg_sleep(1.5); end if;
+            return new;
+          end $$;
+          create trigger slow_approval before update on device_code
+            for each row execute function slow_approval();`, "objects");
+
+        const { userCode, poll } = yield* startDevice();
+        yield* call(`/device?user_code=${userCode}`, { cookie });
+        const first = yield* Effect.forkChild(call("/device/approve", { cookie, body: { userCode, organizationId: firstId } }));
+        const sleeping = sql`select 1 from pg_stat_activity where datname = current_database() and wait_event = 'PgSleep'`;
+        while ((yield* drizzle.execute(sleeping, "objects")).length === 0) yield* Effect.sleep("20 millis");
+        const duplicate = yield* call("/device/approve", { cookie, body: { userCode, organizationId: otherId } });
+        assert.strictEqual((yield* Fiber.join(first)).status, 200);
+        const token = (yield* poll()).json?.access_token ?? assert.fail("no access token");
+        assert.strictEqual((yield* call("/get-session", { bearer: token })).json?.session?.activeOrganizationId, firstId);
+        assert.notStrictEqual(duplicate.status, 200);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "refuses an approve that names no Organization and leaves the code pending",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* authLayer;
+      yield* Effect.gen(function* () {
+        const { drizzle } = yield* Database;
+        const cookie = yield* signUp("stale");
+        const { userCode } = yield* startDevice();
+        yield* call(`/device?user_code=${userCode}`, { cookie });
+
+        assert.strictEqual((yield* call("/device/approve", { cookie, body: { userCode } })).status, 400);
+        assert.strictEqual((yield* call(`/device?user_code=${userCode}`, { cookie })).json?.status, "pending");
+        assert.deepStrictEqual(
+          yield* drizzle.select().from(verification).where(like(verification.identifier, "device-organization:%")),
+          [],
+        );
       }).pipe(Effect.provide(layer));
     }),
   60_000,

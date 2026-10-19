@@ -448,9 +448,8 @@ fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
         if !edited.staged.is_empty() {
             crate::ui::stream(format_args!(
-                "Staged {} in {where_} (revision {}).",
-                super::joined(&edited.staged),
-                edited.environment.revision
+                "Staged {} in {where_}.",
+                super::joined(&edited.staged)
             ));
         }
         if !edited.immediate.is_empty() {

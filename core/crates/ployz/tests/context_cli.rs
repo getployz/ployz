@@ -600,6 +600,53 @@ fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
 }
 
 #[test]
+fn with_no_contexts_ls_and_use_point_signed_in_users_at_their_cloud_servers() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.yaml");
+    // A config named on the command line carries into the next command.
+    let next = format!("ployz --ployz-config {} server ls", path.display());
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ctx", "ls", "--ployz-config", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let stderr = String::from_utf8_lossy(&listed.stderr);
+    assert!(stderr.contains("No contexts yet."), "{stderr}");
+    assert!(stderr.contains(&format!("next: {next}")), "{stderr}");
+
+    let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "ls",
+            "--json",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(listed, serde_json::json!({ "contexts": [], "next": next }));
+
+    let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "use",
+            "dev",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(selected.status.code(), Some(1), "{selected:?}");
+    let stderr = String::from_utf8_lossy(&selected.stderr);
+    assert!(stderr.contains("no contexts found"), "{stderr}");
+    assert!(stderr.contains(&format!("next: {next}")), "{stderr}");
+    assert!(!path.exists(), "a failed ctx use writes no config");
+}
+
+#[test]
 fn ctx_rm_rejects_a_direct_connection() {
     let root = std::env::temp_dir().join(format!("ployz-ctx-rm-connect-{}", std::process::id()));
     let path = root.join("config.yaml");

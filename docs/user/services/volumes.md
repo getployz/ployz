@@ -110,6 +110,9 @@ Volume data has no writer; web-2 holds its only copy. Make it the writer: ployz 
 ```
 
 Run the `ployz volume restore` line it prints to make that copy the writer again, then deploy.
+While one of your servers is offline, the deploy can't tell whether that server holds the writer,
+so it names that server instead and suggests no restore. See
+[When a server goes down](scaling.md#when-a-server-goes-down).
 If several servers hold copies, keep the newest and remove the others with the `ployz volume mirror rm` lines it names. A volume
 that is [mid-move](move-a-volume.md#when-a-move-stops) refuses too, and names the
 `ployz volume release` line that stops the move. A move that stopped before its first snapshot
@@ -139,6 +142,10 @@ Deleting a deployed volume deletes its data from your servers for good.
 2. Click **Delete data**, or **Deploy**.
 3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like
    `my-app/production`, and click **Deploy**.
+
+If that deploy fails, deploying again deletes the data without asking again, because your
+confirmation stays with the change. See
+[Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 
 A volume that was never deployed holds no data, so it goes on your next deploy without asking.
 

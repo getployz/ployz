@@ -10,6 +10,7 @@ use super::{
     DOCKER_NETWORK_NAME, NetworkError, WIREGUARD_INTERFACE_NAME, WIREGUARD_PORT, checked_command,
 };
 
+#[derive(Clone)]
 pub struct DiscoveredNetwork {
     pub public_ip: Option<IpAddr>,
     pub endpoints: Vec<AdvertisedEndpoint>,

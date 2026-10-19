@@ -25,7 +25,8 @@ again, or `brew upgrade ployz`.
 3. On **Sign in the Ployz CLI**, check that the code matches your terminal, then click
    **Approve**.
 
-`ployz logout` signs this computer out.
+This computer starts in the organization the page names. Switching organization in the dashboard
+later doesn't move it, and `ployz org use ORG` does. `ployz logout` signs this computer out.
 
 Commands act on your only project and its default environment. With more than one, add
 `--project my-app --env production`, or run `ployz link --project my-app --env production` once in
@@ -104,12 +105,11 @@ agent, which is told nothing changed. Declining or closing the dialog denies it 
 reason. Answer within 30 minutes of the agent's call; a later answer isn't recorded and the
 approval stays pending in Ployz Cloud.
 
-In an app that can't show this dialog, the call waits for you to approve or deny it in the
-Ployz Cloud sidebar, and the agent hears nothing until you answer. Approve and the call goes
-ahead; deny and the agent hears your reason. If nobody answers within 30 minutes, the agent
-hears what the call would remove and that the approval is still pending. Once you approve it,
-the agent calls the tool again with that approval. The agent can never answer the approval
-itself.
+In an app that can't show this dialog, the call fails right away with `approval_required`,
+what it would remove, the approval's ID and a link to your organization. Open the link,
+approve or deny it under **Waiting on you** in the Ployz agent, then tell the agent to try
+again. It calls the tool again with that approval: an approved call goes ahead, and a denied
+one fails, with your reason if you gave one. The agent can never answer the approval itself.
 
 `ployz mcp` stops a call that runs for more than 30 minutes. A deployment or Volume run it
 started keeps going in Cloud, and the error names the tool that shows where it stands. A call
@@ -217,7 +217,7 @@ ployz up
 The first time, Ployz creates a project named after the directory, adds a service with an https
 address, builds your app, deploys it and prints the address.
 
-An upload can be at most 256 MiB compressed. To deploy on every push instead, see
+An upload can be at most 95 MiB compressed. To deploy on every push instead, see
 [Deploy from GitHub](../deploy/github.md).
 
 `ployz github ls` lists the GitHub accounts your organization is connected to, and the link to
