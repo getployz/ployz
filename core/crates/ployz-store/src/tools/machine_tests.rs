@@ -207,3 +207,29 @@ fn a_bad_argument_outlines_what_fits_instead_of_echoing_the_schema() {
         assert!(names.contains_key(want), "{field}: {expected}");
     }
 }
+
+#[test]
+fn a_number_outside_its_declared_range_is_refused() {
+    for (input, field) in [
+        (json!({ "wait_seconds": 301 }), "wait_seconds"),
+        (json!({ "wait_seconds": 100_000 }), "wait_seconds"),
+        (json!({ "deployment": 0 }), "deployment"),
+    ] {
+        let (step, _) = start("deployment_show", input.clone(), &PLACE, "call-1");
+        let Step::Done {
+            result: ToolResult::Refused(refusal),
+        } = step
+        else {
+            panic!("{input} is out of range");
+        };
+        assert_eq!(refusal.code, RpcErrorCode::InvalidArgument, "{input}");
+        assert_eq!(refusal.field.as_deref(), Some(field), "{input}");
+    }
+    let (step, _) = start(
+        "deployment_show",
+        json!({ "wait_seconds": 300 }),
+        &PLACE,
+        "call-1",
+    );
+    assert!(!matches!(step, Step::Done { .. }), "300 is in range");
+}
