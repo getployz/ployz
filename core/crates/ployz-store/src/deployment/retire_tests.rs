@@ -158,6 +158,10 @@ fn retire_api(store: &ConfigStore, who: &Actor, services: &[&str]) -> Deployment
                 (&environment, &saved),
                 (&services, &retire),
                 (None, &BTreeMap::new()),
+                super::Admission::New {
+                    id: &crate::id::DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
+                    push: None,
+                },
                 &Trusted::default(),
             )
         })

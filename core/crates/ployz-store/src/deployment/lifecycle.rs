@@ -2,14 +2,36 @@
 
 use super::*;
 
+/// Which Deployment an admission queues.
+#[derive(Clone, Copy)]
+pub(crate) enum Admission<'a> {
+    /// A new one, `id`, numbered next, admitted by `push` if a push did. It
+    /// supersedes the queued one and every one waiting for CI.
+    New {
+        id: &'a DeploymentId,
+        push: Option<&'a GitPush>,
+    },
+    /// This one, waiting for CI, in place: same push, numbered next as it queues.
+    /// It supersedes only the queued one.
+    Promote(&'a DeploymentId),
+}
+
+impl Admission<'_> {
+    fn id(self) -> DeploymentId {
+        match self {
+            Self::New { id, .. } | Self::Promote(id) => id.clone(),
+        }
+    }
+}
+
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
 /// superseded: the newest admission replaces the pending one and takes over the
 /// Services it would have torn down.
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
-    (id, services, upload, message): (
-        &DeploymentId,
+    (admission, services, upload, message): (
+        Admission<'_>,
         &[ServiceName],
         Option<UploadedSource>,
         Option<String>,
@@ -18,6 +40,20 @@ pub(crate) fn admit(
     saved: Revision,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
+    let id = &admission.id();
+    let (held, push) = match admission {
+        Admission::New { push, .. } => (false, push.cloned()),
+        Admission::Promote(id) => {
+            let hold = load(tx, id)?.summary;
+            if hold.status != DeploymentStatus::WaitingForCi {
+                return Err(error::conflict(
+                    "This Deployment no longer waits for CI",
+                    json!({ "deployment": id }),
+                ));
+            }
+            (true, hold.push)
+        }
+    };
     let intent = saved_at(tx, environment, saved)?;
     crate::volume::fix_storage(tx, environment, &intent, &frozen.nodes)?;
     let environment_id = environment.as_str();
@@ -27,7 +63,8 @@ pub(crate) fn admit(
         None => match tx
             .query(
                 "SELECT upload FROM config_deployment \
-                 WHERE environment_id = ?1 AND upload IS NOT NULL ORDER BY number DESC LIMIT 1",
+                 WHERE environment_id = ?1 AND number IS NOT NULL AND upload IS NOT NULL \
+                 ORDER BY number DESC LIMIT 1",
                 &[environment_id.into()],
             )?
             .first()
@@ -67,31 +104,102 @@ pub(crate) fn admit(
         }
     }
     let admitted_at = now();
-    let number = queue(tx, environment, |tx, number| {
+    let (targets_text, nodes_text, run_text, credentials_text) = (
+        json_text(&targets),
+        json_text(&nodes),
+        json_text(&Run::default()),
+        json_text(&frozen.credentials),
+    );
+    let upload_text = upload.as_ref().map(json_text);
+    let number = queue(tx, environment, held, |tx, number| {
+        let frozen_columns: [crate::storage::Param<'_>; 11] = [
+            revision_param(saved)?.into(),
+            targets_text.as_str().into(),
+            nodes_text.as_str().into(),
+            frozen.namespace.as_str().into(),
+            run_text.as_str().into(),
+            credentials_text.as_str().into(),
+            upload_text.as_deref().into(),
+            frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
+            admitted_at.into(),
+            who.principal.as_ref().map(Principal::as_str).into(),
+            message.as_deref().into(),
+        ];
+        let [
+            saved,
+            targets,
+            nodes,
+            namespace,
+            run,
+            credentials,
+            upload,
+            cluster,
+            at,
+            by,
+            message,
+        ] = frozen_columns;
+        let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
+        // Number and list position are both one past the last, taken at the same
+        // moment under the lock: among numbered Deployments the list runs in number
+        // order. A promoted hold moves to the top of the list for it.
+        let listed = next_listed(tx, environment)?;
+        if held {
+            return tx
+                .execute(
+                    "UPDATE config_deployment SET status = 'queued', number = ?13, \
+                     listed = ?14, \
+                     saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
+                     credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
+                     admitted_by = ?11, message = ?12 \
+                     WHERE id = ?1 AND status = 'waiting_for_ci'",
+                    &[
+                        id.as_str().into(),
+                        saved,
+                        targets,
+                        nodes,
+                        namespace,
+                        run,
+                        credentials,
+                        upload,
+                        cluster,
+                        at,
+                        by,
+                        message,
+                        number.into(),
+                        listed.into(),
+                    ],
+                )
+                .map(|_| ());
+        }
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message) \
-             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+              message, push_repository_id, push_branch, push_head, listed) \
+             VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+              ?16, ?17, ?18, ?19)",
             &[
                 id.as_str().into(),
                 who.organization.as_str().into(),
                 environment_id.into(),
-                i64::try_from(number)
-                    .map_err(|_| error::corrupt("Deployment number"))?
+                number.into(),
+                saved,
+                targets,
+                nodes,
+                namespace,
+                run,
+                credentials,
+                upload,
+                cluster,
+                at,
+                by,
+                message,
+                push.as_ref()
+                    .and_then(|push| i64::try_from(push.repository_id.get()).ok())
                     .into(),
-                revision_param(saved)?.into(),
-                json_text(&targets).as_str().into(),
-                json_text(&nodes).as_str().into(),
-                frozen.namespace.as_str().into(),
-                json_text(&Run::default()).as_str().into(),
-                json_text(&frozen.credentials).as_str().into(),
-                upload.as_ref().map(json_text).as_deref().into(),
-                frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
-                admitted_at.into(),
-                who.principal.as_ref().map(Principal::as_str).into(),
-                message.as_deref().into(),
+                push.as_ref().map(|push| push.branch.as_str()).into(),
+                push.as_ref().map(|push| push.head.as_str()).into(),
+                listed.into(),
             ],
         )
         .map(|_| ())
@@ -99,7 +207,7 @@ pub(crate) fn admit(
     let summary = DeploymentSummary {
         id: id.clone(),
         environment_id: environment.clone(),
-        number,
+        number: Some(number),
         status: DeploymentStatus::Queued,
         saved,
         services: targets,
@@ -111,6 +219,9 @@ pub(crate) fn admit(
         started_at: None,
         ended_at: None,
         message,
+        push,
+        ci: None,
+        held: false,
         in_flight: DeploymentStatus::Queued.in_flight(),
         outcome: None,
         warnings: Vec::new(),
@@ -220,12 +331,15 @@ fn inherit(
     Ok(())
 }
 
-/// Queue the next Deployment of `environment`, written by `insert` with its number,
-/// superseding the queued one, if any. The superseded one leaves flight, so the
-/// sealed values only it kept in History go once the new one holds its revision.
+/// Queue a Deployment of `environment`, written by `insert` with the next number,
+/// superseding the queued one, if any. `held` queues the Deployment waiting for CI in
+/// place; otherwise a new one queues, superseding every one waiting for CI too. The
+/// superseded one leaves flight, so the sealed values only it kept in History go once
+/// the new one holds its revision.
 pub(super) fn queue(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
+    held: bool,
     insert: impl FnOnce(&mut dyn Tx, u64) -> Result<(), RpcError>,
 ) -> Result<u64, RpcError> {
     let superseded = tx.execute(
@@ -233,6 +347,37 @@ pub(super) fn queue(
          WHERE environment_id = ?1 AND status = 'queued'",
         &[environment.as_str().into()],
     )?;
+    if !held {
+        tx.execute(
+            "UPDATE config_deployment SET status = 'superseded', ended = ?2 \
+             WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
+            &[environment.as_str().into(), now().into()],
+        )?;
+    }
+    let number = next_number(tx, environment)?;
+    insert(tx, number)?;
+    if superseded > 0 {
+        crate::review::scrub_sealed(tx, environment)?;
+    }
+    Ok(number)
+}
+
+/// The list position the next Deployment of `environment` takes: one past the
+/// last. Read under the Environment's lock, as every insert of one is, so two never
+/// take the same. A hold takes one at insert and another as it promotes, so a
+/// position only ever moves up: a page cursor past it can skip a hold promoted
+/// since (it heads the list on the next read) but never reads a row twice.
+pub(super) fn next_listed(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<i64, RpcError> {
+    tx.query(
+        "SELECT COALESCE(MAX(listed), 0) + 1 FROM config_deployment WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment list position"))?
+    .int(0)
+}
+
+fn next_number(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcError> {
     let number = tx
         .query(
             "SELECT COALESCE(MAX(number), 0) FROM config_deployment WHERE environment_id = ?1",
@@ -241,12 +386,155 @@ pub(super) fn queue(
         .first()
         .ok_or_else(|| error::corrupt("Deployment number"))?
         .int(0)?;
-    let number = u64::try_from(number + 1).map_err(|_| error::corrupt("Deployment number"))?;
-    insert(tx, number)?;
-    if superseded > 0 {
-        crate::review::scrub_sealed(tx, environment)?;
+    u64::try_from(number + 1).map_err(|_| error::corrupt("Deployment number"))
+}
+
+/// Hold `push` of `environment` until its commit's CI passes: a Deployment waiting
+/// for CI of `services` (none: every one) at Saved revision `saved`, unnumbered until
+/// it queues. `ids` are the same Services by ID, which promotion selects by: a name may change
+/// while it waits. It freezes, builds and supersedes nothing; passing CI admits it in
+/// place. A hold of the same head is kept as is, one of an older head of the branch
+/// is superseded. The caller holds the Environment's lock.
+pub(crate) fn hold(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentSummary,
+    push: &GitPush,
+    services: &[ServiceName],
+    ids: &[String],
+    saved: Revision,
+) -> Result<(), RpcError> {
+    let id = &environment.id;
+    let key: [crate::storage::Param<'_>; 3] = [
+        id.as_str().into(),
+        push.repository_id.into(),
+        push.branch.as_str().into(),
+    ];
+    let held = tx.query(
+        "SELECT push_head FROM config_deployment WHERE environment_id = ?1 \
+         AND push_repository_id = ?2 AND push_branch = ?3 AND status = 'waiting_for_ci'",
+        &key,
+    )?;
+    if held
+        .first()
+        .map(|row| row.text(0))
+        .transpose()?
+        .is_some_and(|head| head == push.head.as_str())
+    {
+        return Ok(());
     }
-    Ok(number)
+    let [environment_param, repository_param, branch_param] = key;
+    tx.execute(
+        "UPDATE config_deployment SET status = 'superseded', ended = ?4 WHERE environment_id = ?1 \
+         AND push_repository_id = ?2 AND push_branch = ?3 AND status = 'waiting_for_ci'",
+        &[
+            environment_param,
+            repository_param,
+            branch_param,
+            now().into(),
+        ],
+    )?;
+    let namespace = namespace(tx, who, environment, false)?;
+    let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let listed = next_listed(tx, id)?;
+    tx.execute(
+        "INSERT INTO config_deployment \
+         (id, organization_id, environment_id, status, saved_revision, services, nodes, \
+          namespace, run, credentials, admitted, push_repository_id, push_branch, push_head, \
+          push_services, listed) \
+         VALUES (?1, ?2, ?3, 'waiting_for_ci', ?4, ?5, '[]', ?6, ?7, '{}', ?8, ?9, ?10, ?11, \
+          ?12, ?13)",
+        &[
+            deployment.as_str().into(),
+            who.organization.as_str().into(),
+            id.as_str().into(),
+            revision_param(saved)?.into(),
+            json_text(&services).as_str().into(),
+            namespace.as_str().into(),
+            json_text(&Run::default()).as_str().into(),
+            now().into(),
+            push.repository_id.into(),
+            push.branch.as_str().into(),
+            push.head.as_str().into(),
+            json_text(&ids).as_str().into(),
+            listed.into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Supersede every Deployment of `who`'s Organization waiting for CI of a push to
+/// `branch` of `repository_id` other than `head`: a newer head of the branch never
+/// lets an older one ship.
+pub(crate) fn supersede_held(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (repository_id, branch): (RepositoryId, &BranchName),
+    head: Option<&CommitSha>,
+) -> Result<(), RpcError> {
+    let head = head.map(CommitSha::as_str).unwrap_or_default();
+    let params: [crate::storage::Param<'_>; 4] = [
+        who.organization.as_str().into(),
+        repository_id.into(),
+        branch.as_str().into(),
+        head.into(),
+    ];
+    let condition = "organization_id = ?1 AND push_repository_id = ?2 AND push_branch = ?3 \
+                     AND push_head <> ?4 AND status = 'waiting_for_ci'";
+    let environments = tx
+        .query(
+            &format!("SELECT environment_id FROM config_deployment WHERE {condition}"),
+            &params,
+        )?
+        .iter()
+        .map(|row| row.parse::<EnvironmentId>(0, "Environment ID"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if environments.is_empty() {
+        return Ok(());
+    }
+    scope::lock_all(tx, environments)?;
+    let [organization, repository, branch, head] = params;
+    tx.execute(
+        &format!(
+            "UPDATE config_deployment SET status = 'superseded', ended = ?5 WHERE {condition}"
+        ),
+        &[organization, repository, branch, head, now().into()],
+    )?;
+    Ok(())
+}
+
+/// Cancel every Deployment of `environment` waiting for CI: it is going away. The
+/// caller holds its lock.
+pub(crate) fn cancel_held_in(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_deployment SET status = 'cancelled', ended = ?2 \
+         WHERE environment_id = ?1 AND status = 'waiting_for_ci'",
+        &[environment.as_str().into(), now().into()],
+    )?;
+    Ok(())
+}
+
+/// Cancel Deployment `id` waiting for CI without running it: its CI passed but it
+/// can't deploy, for `reason`, which users read. One no longer waiting is left be.
+pub(crate) fn cancel_held(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    reason: String,
+) -> Result<(), RpcError> {
+    let mut stored = locked(tx, id)?;
+    if stored.summary.status != DeploymentStatus::WaitingForCi {
+        return Ok(());
+    }
+    let outcome = Outcome::NotExecuted {
+        reason,
+        cause: Vec::new(),
+        needs_upload: Vec::new(),
+    };
+    stored.summary.status = DeploymentStatus::Cancelled;
+    stored.summary.ended_at = Some(now());
+    stored.summary.outcome = Some(outcome.clone());
+    stored.run.outcome = Some(outcome);
+    save(tx, &mut stored)
 }
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
@@ -271,13 +559,23 @@ pub(crate) fn retry(
         | DeploymentStatus::Failed
         | DeploymentStatus::Unknown
         | DeploymentStatus::Cancelled => {}
-        DeploymentStatus::Queued | DeploymentStatus::Running | DeploymentStatus::Cancelling => {
+        DeploymentStatus::WaitingForCi
+        | DeploymentStatus::Queued
+        | DeploymentStatus::Running
+        | DeploymentStatus::Cancelling => {
             return Err(error::conflict(
                 "This Deployment hasn't ended: cancel it or wait before redeploying it",
                 json!({ "deployment": source }),
             ));
         }
         DeploymentStatus::Superseded => return Err(superseded(source)),
+    }
+    // Cancelled while waiting for CI: it never froze what it ships.
+    if stored.summary.held {
+        return Err(error::conflict(
+            "This push was cancelled before its CI passed, so nothing was frozen to redeploy: push again",
+            json!({ "deployment": source }),
+        ));
     }
     if stored.summary.remove {
         if stored.summary.status == DeploymentStatus::Applied {
@@ -298,7 +596,7 @@ pub(crate) fn retry(
              AND number > ?2 AND status IN ('running', 'cancelling') AND lease > ?3",
             &[
                 stored.summary.environment_id.as_str().into(),
-                i64::try_from(stored.summary.number)
+                i64::try_from(stored.summary.numbered()?)
                     .map_err(|_| error::corrupt("Deployment number"))?
                     .into(),
                 now().into(),
@@ -314,7 +612,7 @@ pub(crate) fn retry(
         ));
     }
     let mut rollback = Rollback {
-        number: stored.summary.number,
+        number: stored.summary.numbered()?,
         rolls_back: undone(tx, &stored.summary)?,
         removes: Vec::new(),
     };
@@ -348,16 +646,17 @@ pub(crate) fn retry(
     }
     let (services, nodes) = retried(tx, &stored, fresh)?;
     let admitted_at = now();
-    let number = queue(tx, &stored.summary.environment_id, |tx, number| {
+    let number = queue(tx, &stored.summary.environment_id, false, |tx, number| {
+        let listed = next_listed(tx, &stored.summary.environment_id)?;
         // Every other frozen column comes from the source, so a retry never re-reads
         // authored state.
         tx.execute(
             "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
               nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message) \
+              message, listed) \
              SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, ?7, \
-              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
+              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9 \
              FROM config_deployment WHERE id = ?4",
             &[
                 id.as_str().into(),
@@ -370,6 +669,7 @@ pub(crate) fn retry(
                 who.principal.as_ref().map(Principal::as_str).into(),
                 json_text(&services).as_str().into(),
                 json_text(&nodes).as_str().into(),
+                listed.into(),
             ],
         )?;
         // A retry builds the commits its source pinned.
@@ -384,7 +684,7 @@ pub(crate) fn retry(
     })?;
     let summary = DeploymentSummary {
         id: id.clone(),
-        number,
+        number: Some(number),
         status: DeploymentStatus::Queued,
         services,
         runner: None,
@@ -396,6 +696,9 @@ pub(crate) fn retry(
         outcome: None,
         warnings: Vec::new(),
         ingress: Vec::new(),
+        push: None,
+        ci: None,
+        held: false,
         ..stored.summary
     };
     Ok((summary, rollback))
@@ -412,12 +715,15 @@ pub(crate) struct Rollback {
 
 /// The Deployments of `deployment`'s Environment after it that may have changed
 /// the Servers, oldest first: every one that started. Redeploying it undoes them.
+/// None for one still waiting for CI: unnumbered, nothing ran after it.
 pub(crate) fn undone(
     tx: &mut dyn Tx,
     deployment: &DeploymentSummary,
 ) -> Result<Vec<u64>, RpcError> {
-    let number =
-        i64::try_from(deployment.number).map_err(|_| error::corrupt("Deployment number"))?;
+    let Some(number) = deployment.number else {
+        return Ok(Vec::new());
+    };
+    let number = i64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?;
     tx.query(
         "SELECT number FROM config_deployment \
          WHERE environment_id = ?1 AND number > ?2 AND started IS NOT NULL ORDER BY number",
@@ -483,8 +789,8 @@ pub(crate) fn rollback_removed(
 ) -> Result<Vec<crate::removal::RemovedVolume>, RpcError> {
     let source = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
     let mut removed = crate::removal::removed(applied, &source, &stored.namespace)?;
-    let number =
-        i64::try_from(stored.summary.number).map_err(|_| error::corrupt("Deployment number"))?;
+    let number = i64::try_from(stored.summary.numbered()?)
+        .map_err(|_| error::corrupt("Deployment number"))?;
     for row in &tx.query(
         "SELECT nodes FROM config_deployment \
          WHERE environment_id = ?1 AND number > ?2 AND started IS NOT NULL",
@@ -703,6 +1009,7 @@ pub(crate) fn start(
             "This Deployment is already running",
             json!({ "deployment": id }),
         )),
+        DeploymentStatus::WaitingForCi => Err(waiting(id)),
         DeploymentStatus::Superseded => Err(superseded(id)),
         DeploymentStatus::Applied
         | DeploymentStatus::Failed
@@ -744,6 +1051,7 @@ pub(crate) fn claim(
         DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Ok(Err(owned_elsewhere(id)));
         }
+        DeploymentStatus::WaitingForCi => return Ok(Err(waiting(id))),
         DeploymentStatus::Superseded => return Ok(Err(superseded(id))),
         DeploymentStatus::Applied
         | DeploymentStatus::Failed
@@ -895,9 +1203,9 @@ pub(crate) fn input(
     .map(|lowered| lowered.input)
 }
 
-/// Cancel a Deployment of `who`'s Organization. A queued one never runs; a running
-/// one reads `cancelling` until its runner stops it and records what ran. Cancelling
-/// again changes nothing.
+/// Cancel a Deployment of `who`'s Organization. A queued one, or one waiting for CI,
+/// never runs; a running one reads `cancelling` until its runner stops it and records
+/// what ran. Cancelling again changes nothing.
 pub(crate) fn cancel(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -906,7 +1214,7 @@ pub(crate) fn cancel(
     owned(tx, who, id)?;
     let mut stored = locked(tx, id)?;
     stored.summary.status = match stored.summary.status {
-        DeploymentStatus::Queued => {
+        DeploymentStatus::WaitingForCi | DeploymentStatus::Queued => {
             stored.summary.ended_at = Some(now());
             DeploymentStatus::Cancelled
         }
@@ -922,16 +1230,17 @@ pub(crate) fn cancel(
 }
 
 /// Cancel every Deployment of `who`'s Organization that may still run, claimed or
-/// not, without waiting on a runner: its Servers are gone, so none will record what
-/// ran. The caller holds each Environment's lock. Returns them, oldest first.
+/// not or waiting for CI, without waiting on a runner: its Servers are gone, so none
+/// will record what ran. The caller holds each Environment's lock. Returns them,
+/// oldest first.
 pub(crate) fn cancel_in_flight(
     tx: &mut dyn Tx,
     who: &Actor,
 ) -> Result<Vec<DeploymentId>, RpcError> {
     let rows = tx.query(
         &format!(
-            "SELECT id FROM config_deployment WHERE organization_id = ?1 AND {} \
-             ORDER BY admitted, id",
+            "SELECT id FROM config_deployment WHERE organization_id = ?1 \
+             AND ({} OR status = 'waiting_for_ci') ORDER BY admitted, id",
             in_flight_sql()
         ),
         &[who.organization.as_str().into()],

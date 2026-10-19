@@ -142,7 +142,8 @@ its new containers printed. A failed deployment opens on the card that failed.
 | **Cancelled** | Someone cancelled it |
 | **Unknown** | Ployz can't tell what applied. Redeploy it. |
 
-To inspect per-server progress from the CLI, run:
+From the CLI, `ployz deployment ls` lists the environment's deployments, newest first, with
+each one's status and saved revision. To inspect per-server progress, run:
 
 ```sh
 ployz --json deployment show 37

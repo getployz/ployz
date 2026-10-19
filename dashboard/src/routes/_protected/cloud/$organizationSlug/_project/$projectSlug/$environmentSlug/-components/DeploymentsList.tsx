@@ -6,7 +6,7 @@ import { ListRowSkeletons, ShowMore } from "#/components/show-more";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { admission, deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel } from "#/modules/config-store/store-deployments";
+import { admission, deploymentLabel, deploymentLight, deploymentStatusLabel, deploysLabel, uploadLabel } from "#/modules/config-store/store-deployments";
 import { RelativeTime } from "#/components/relative-time";
 import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { DashboardPage } from "#/components/dashboard-page";
@@ -64,13 +64,15 @@ export function StoreDeploymentRows({ service, origin }: { service: ServiceListi
   return <Rows hasMore={hasNextPage} loading={isFetchingNextPage} onShowMore={() => void fetchNextPage()}>
     {deployments.map((deployment) => {
       const { by, at } = admission(deployment);
-      const detail = deployment.upload ? uploadLabel(deployment.upload) : [deploysLabel(deployment), by && `by ${by}`].filter(Boolean).join(" · ");
+      const detail = deployment.upload
+        ? uploadLabel(deployment.upload)
+        : [deploysLabel(deployment), by && `by ${by}`, deployment.push?.head.slice(0, 7)].filter(Boolean).join(" · ");
       return (
         <Item key={deployment.id} size="sm" render={<Link {...deploymentDestination(params, deployment.id, { job: service?.id, origin })} />}>
           <ItemContent className="min-w-0">
-            <ItemTitle className="w-full"><span className="truncate">{deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}</span></ItemTitle>
+            <ItemTitle className="w-full"><span className="truncate">{deployment.message ? `${deploymentLabel(deployment)} · ${deployment.message}` : `Deployment ${deploymentLabel(deployment)}`}</span></ItemTitle>
             <ItemDescription className="flex items-center gap-1.5 whitespace-nowrap [&_svg]:size-3.5">
-              <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabel(deployment)}
+              <DeploymentStatusIcon status={deploymentLight(deployment)} />{deploymentStatusLabel(deployment)}
               {detail ? <>{" · "}<span className="truncate">{detail}</span></> : null}
             </ItemDescription>
           </ItemContent>

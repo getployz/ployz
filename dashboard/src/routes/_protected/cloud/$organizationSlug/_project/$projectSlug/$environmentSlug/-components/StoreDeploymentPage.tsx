@@ -16,8 +16,8 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Button } from "#/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, freshRollback, nodeApplied, outcomeReason,
-  rollbackConfirm, showCancelling, warnedService, type DeploymentAction,
+  admission, canFixOnBranch, deploymentActions, deploymentWarningText, deploymentByline, deploymentLabel, deploymentLight, deploymentStatusLabel, freshRollback, nodeApplied,
+  outcomeReason, rollbackConfirm, showCancelling, warnedService, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreCancelling } from "#/modules/config-store/store-pending";
@@ -94,9 +94,9 @@ function RunHeader({ deployment, graph, selected, search, onCancel }: {
         </Link>
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-2 [&_svg]:size-4">
-            <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />
+            <DeploymentStatusIcon status={deploymentLight(deployment)} />
             <span className="truncate font-medium">
-              {deployment.message ? `#${deployment.number} · ${deployment.message}` : `Deployment #${deployment.number}`}
+              {deployment.message ? `${deploymentLabel(deployment)} · ${deployment.message}` : `Deployment ${deploymentLabel(deployment)}`}
             </span>
           </span>
           <p className="truncate text-xs text-muted-foreground">
@@ -213,6 +213,7 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
   const [loss, setLoss] = useState<VolumeLossCheck | null>(null);
   const lossOf = useVolumeLossCheck(params.organizationSlug);
   const { primary, cancelInMenu } = deploymentActions(deployment, noServers);
+  const waiting = deployment.status === "waiting_for_ci";
   const rollsBack = fresh ?? deployment.rolls_back;
   const rollback = rollbackConfirm({ number: deployment.number, rolls_back: [...rollsBack] });
   const copiesWait = useCopiesWait(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).environmentId);
@@ -311,20 +312,21 @@ function StoreDeploymentActions({ deployment, storage, noServers, search, onCanc
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel deployment?</AlertDialogTitle>
+            <AlertDialogTitle>{waiting ? "Cancel this push?" : "Cancel deployment?"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {storage ? "The step under way finishes first. The rest waits for your next deploy."
+              {waiting ? "It won't deploy."
+                : storage ? "The step under way finishes first. The rest waits for your next deploy."
                 : deployment.status === "queued"
                 ? "It leaves the queue and never runs."
                 : "It stops at its next step. What it already changed stays until the next Deploy."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep deploying</AlertDialogCancel>
+            <AlertDialogCancel>{waiting ? "Keep waiting" : "Keep deploying"}</AlertDialogCancel>
             <Button variant="destructive" onClick={() => {
               setCancelOpen(false);
               onCancel();
-            }}>Cancel deployment</Button>
+            }}>{waiting ? "Cancel push" : "Cancel deployment"}</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

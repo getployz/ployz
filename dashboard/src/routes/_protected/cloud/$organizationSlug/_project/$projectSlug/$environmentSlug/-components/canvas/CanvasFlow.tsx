@@ -242,7 +242,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const placements = useStagedPlacements(params.organizationSlug, ref, diff.environment.id, store.volumes);
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate(deploymentDestination(params, deploymentId)), placements.loss);
-  const latest = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
+  const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0];
   const { noServers } = use(RuntimeLensContext);
   const storage = useStorageSteps(params.organizationSlug);
   const storeGroups = reviewGroups(diff, store.services.map(({ service }) => service));
@@ -269,8 +269,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardNode={discardNode}
         onDiscardRow={(group, path) => group.owner === "placement" ? placements.undo(group.nodeId, path)
           : actions.discard(path, group.rows.find((row) => row.path === path)?.discardTarget)}
-        active={latest.filter((deployment) => deployment.in_flight)}
-        ended={latest.filter((deployment) => !deployment.in_flight)}
+        active={deployments?.in_flight ?? []}
+        latest={deployments?.latest}
         storage={storage}
         notes={storeHintNotes(diff, storeGroups, actions.neverSync)}
         proposals={{

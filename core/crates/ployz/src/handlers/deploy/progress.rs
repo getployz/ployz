@@ -104,8 +104,10 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
     Frame {
         run: Run::Stored(view.deployment.id.clone()),
         title: format!(
-            "Deploying #{} of {}/{}",
-            view.deployment.number, view.environment.project, view.environment.name
+            "Deploying {} of {}/{}",
+            view.deployment.label(),
+            view.environment.project,
+            view.environment.name
         ),
         rows,
         notices: view
@@ -290,10 +292,15 @@ pub(super) fn removal_retry(
         DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled
     );
     (view.deployment.remove && ended).then(|| {
+        // A removal queues at once, so it is numbered; the ID covers the rest.
+        let target = view.deployment.number.map_or_else(
+            || view.deployment.id.to_string(),
+            |number| number.to_string(),
+        );
         Hint::Retry(command(&[
             "deployment",
             "retry",
-            &view.deployment.number.to_string(),
+            &target,
             "--project",
             view.environment.project.as_str(),
             "--env",
@@ -313,7 +320,7 @@ fn failure(view: &DeploymentView, command: impl Fn(&[&str]) -> String) -> Failur
             | ployz_store::Outcome::NotExecuted { reason, cause, .. },
         ) => (reason.clone(), cause.clone()),
         _ => (
-            format!("Deployment #{} did not complete.", view.deployment.number),
+            format!("Deployment {} did not complete.", view.deployment.label()),
             Vec::new(),
         ),
     };

@@ -21,8 +21,9 @@ use ployz_core::{
     PROTOCOL_MAJOR, PULL_IMAGE_FROM_MACHINE_CAPABILITY, PartialResult, PortPublication,
     PruneImagesRequest, PublicIpDiscovery, PublicIpUpdate, PublishCertificateMaterialRequest,
     PullImageFromMachineRequest, RequestMachineUpgradeRequest, ResolvedServiceSpec, ResponseKind,
-    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, ServiceId, ServiceName,
-    TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames, op,
+    RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RpcResponseBody, RunRotation, ServiceId,
+    ServiceName, TokenRequest, UpdateMachineRequest, VolumeSource, encode_grpc_frame, grpc_frames,
+    op,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -1635,22 +1636,24 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 image_prepared: false,
                 answer: AnswerWhen::Started,
             }),
+            rotation: RunRotation::Pending,
         },
     };
     assert_eq!(
         serde_json::to_value(&running).unwrap(),
         json!({ "want": { "state": "running", "container": { "new": {
             "slot": slot_json, "resolved_spec": spec, "gen": 1
-        } } } })
+        } }, "rotation": "pending" } })
     );
     let settled: EnsureContainerRequest = serde_json::from_value(json!({
         "want": { "state": "running", "container": { "new": {
             "slot": slot_json, "resolved_spec": spec, "gen": 1, "answer": "settled"
-        } } }
+        } }, "rotation": "pending" }
     }))
     .unwrap();
     let ContainerWant::Running {
         container: RunTarget::New(settled),
+        ..
     } = settled.want
     else {
         panic!("a new running want decodes as one");

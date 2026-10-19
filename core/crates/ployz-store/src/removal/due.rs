@@ -147,7 +147,7 @@ pub(super) fn go_on(
             Standing::InFlight(running) => (
                 None,
                 LeftStatus::WaitingTurn,
-                Some(format!("Deployment #{} goes first", running.number)),
+                Some(format!("Deployment {} goes first", running.label())),
             ),
             Standing::Unknown => (None, LeftStatus::Stalled, Some(unknown(&environment))),
             Standing::Blocked(error) => (None, LeftStatus::WaitingTurn, Some(error.message)),
@@ -307,6 +307,8 @@ pub(crate) fn close(
     }) {
         deployment::cancel(tx, who, &running.id)?;
     }
+    // A push held for CI here would otherwise wait forever.
+    deployment::cancel_held_in(tx, id)?;
     settle(tx, who, &mut mark, automated)
 }
 
@@ -401,7 +403,15 @@ fn admit_member(
     let admitted = deployment::admit(
         tx,
         who,
-        (deployment_id, &[], None, None),
+        (
+            deployment::Admission::New {
+                id: deployment_id,
+                push: None,
+            },
+            &[],
+            None,
+            None,
+        ),
         id,
         deployment::NOTHING,
         &frozen,
@@ -454,8 +464,9 @@ fn refuse_running(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcE
     };
     Err(error::conflict(
         format!(
-            "Deployment #{} is running: wait for it or cancel it before removing {}",
-            running.number, environment.summary.name
+            "Deployment {} is running: wait for it or cancel it before removing {}",
+            running.label(),
+            environment.summary.name
         ),
         json!({ "deployment": running.id }),
     ))
@@ -668,7 +679,15 @@ pub(crate) fn shut_down(
     let admitted = deployment::admit(
         tx,
         who,
-        (&admit.id, &[], None, None),
+        (
+            deployment::Admission::New {
+                id: &admit.id,
+                push: None,
+            },
+            &[],
+            None,
+            None,
+        ),
         id,
         deployment::NOTHING,
         &frozen,

@@ -312,7 +312,15 @@ fn deploy(
     let summary = deployment::admit(
         tx,
         who,
-        (&admit.id, &admit.services, upload, admit.message.clone()),
+        (
+            deployment::Admission::New {
+                id: &admit.id,
+                push: None,
+            },
+            &admit.services,
+            upload,
+            admit.message.clone(),
+        ),
         id,
         saved,
         &frozen,

@@ -10,6 +10,7 @@ import { SettingsDanger, SettingsRow, SettingsSection } from "#/components/setti
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { deploymentLabel } from "#/modules/config-store/store-deployments";
 import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { removeTarget, removing, type RemovalConsent, type TeardownTarget } from "#/modules/config-store/store-workspace";
@@ -114,7 +115,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
             const removal = environment.removal;
             if (!removal) return [];
             const deployment = <Link {...deploymentDestination(params(environment.name), removal.id)}
-              className="underline underline-offset-4">Deployment #{removal.number}</Link>;
+              className="underline underline-offset-4">Deployment {deploymentLabel(removal)}</Link>;
             // Applied, while the Store is deleting it: the next sweep finishes it.
             if (removing(environment) || (left !== null && removal.status === "applied")) return [
               <SettingsRow

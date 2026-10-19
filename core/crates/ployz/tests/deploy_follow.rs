@@ -83,11 +83,13 @@ fn replacement() -> Reply {
         path: "/api/config/read",
         kind: "deployments",
         status: 200,
-        body: serde_json::to_value(View::Deployments(DeploymentsView {
+        body: serde_json::to_value(View::Deployments(Box::new(DeploymentsView {
             environment: newer.environment,
-            deployments: vec![newer.deployment],
+            deployments: vec![newer.deployment.clone()],
             next_cursor: None,
-        }))
+            latest: Some(newer.deployment.clone()),
+            in_flight: vec![newer.deployment],
+        })))
         .unwrap(),
         interrupt: None,
         delay: Duration::ZERO,
