@@ -50,6 +50,8 @@ export type DeletionDialogProps<Evidence> = {
   /** Where it all is, and what the user types to confirm: "shop/staging". */
   place: string;
   confirmLabel: string;
+  /** The button while the deletion runs, such as "Removing". Defaults to `confirmLabel`. */
+  pendingLabel?: string;
   /** What Cloud knows goes, shown while the servers are asked; the servers' additions to it are new. None for a list only
    *  the servers know, such as a server's volumes. */
   items?: readonly DeletionItem[];
@@ -68,7 +70,7 @@ type Check<Evidence> = { status: "checking" } | { status: "ready"; evidence: Evi
 
 const FAILED = "Something went wrong. Try again.";
 
-function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, items: known, sentence, callbacks }:
+function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, pendingLabel = confirmLabel, items: known, sentence, callbacks }:
   Omit<DeletionDialogProps<Evidence>, "open">) {
   const inputId = useId();
   const [typed, setTyped] = useState("");
@@ -123,7 +125,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
   return (
     <AlertDialog open onOpenChange={onOpenChange}>
       <AlertDialogContent
-        render={<form onSubmit={(event) => { event.preventDefault(); void confirm(); }} />}
+        render={<form aria-busy={pending} onSubmit={(event) => { event.preventDefault(); void confirm(); }} />}
         className="sm:max-w-md"
       >
         <AlertDialogHeader>
@@ -164,7 +166,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
           <AlertDialogCancel type="button" disabled={pending}>Cancel</AlertDialogCancel>
           <AlertDialogAction type="submit" variant="destructive" disabled={check.status !== "ready" || typed !== place || pending}>
             {pending ? <Spinner data-icon="inline-start" /> : null}
-            {confirmLabel}
+            {pending ? pendingLabel : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
