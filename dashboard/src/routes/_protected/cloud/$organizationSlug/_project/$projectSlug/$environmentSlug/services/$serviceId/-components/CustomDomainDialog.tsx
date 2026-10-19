@@ -24,15 +24,16 @@ const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-
 
 /**
  * The name as the Store keeps it: lowercase, with Unicode labels in punycode, the
- * same UTS-46 mapping core applies. The URL parser would split `/`, `?`, `#` or `@`
- * off as other URL parts, so a name with one is refused, never cut short.
+ * same UTS-46 mapping core applies, and ASCII-lowercase when that mapping refuses
+ * it. The URL parser would split `/`, `?`, `#` or `@` off as other URL parts and
+ * drop control characters, so a name with one is refused, never cut short.
  */
 const toAscii = (hostname: string): string | null => {
-  if (/[\s/\\?#@:%]/u.test(hostname)) return null;
+  if (/[\p{Cc}\s/\\?#@:%]/u.test(hostname)) return null;
   try {
     return new URL(`http://${hostname}`).hostname;
   } catch {
-    return null;
+    return hostname.replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
   }
 };
 

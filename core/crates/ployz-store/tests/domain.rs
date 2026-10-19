@@ -366,6 +366,10 @@ fn a_domain_is_removed_by_hostname_or_prefix() {
         .write_trusted(&who, &add(Some("пример.рф"), None), &cloud())
         .unwrap();
     remove("Пример.рф", &cloud()).unwrap();
+    store
+        .write_trusted(&who, &add_prefix("xn--zz"), &cloud())
+        .unwrap();
+    remove("xn--zz", &cloud()).unwrap();
     remove("App.Example.com", &cloud()).unwrap();
     // Without the Cluster Domain, a generated domain goes by its prefix.
     let removed = remove("web", &Trusted::default()).unwrap();
@@ -380,13 +384,14 @@ fn a_hostname_is_kept_lowercase_and_in_punycode() {
     assert_eq!(kept(" Apple.COM "), "apple.com");
     assert_eq!(kept("xn--pple-43d.com"), "xn--pple-43d.com");
     assert_eq!(kept("аpple.com"), "xn--pple-43d.com");
+    assert_eq!(kept("XN--ZZ.example.com"), "xn--zz.example.com");
     let long = format!("{}.com", "a".repeat(64));
     for refused in [
         "has space.com",
         "under_score.com",
         "*.example.com",
         "localhost",
-        "xn--zz.com",
+        "при мер.рф",
         long.as_str(),
     ] {
         let error = Hostname::parse(refused).unwrap_err();

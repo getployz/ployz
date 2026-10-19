@@ -83,7 +83,7 @@ describe("CustomDomainDialog", () => {
     );
   });
 
-  it.each(["has space.com", "under_score.com", "*.example.com", "xn--zz.com", "a.com/x", "user@a.com"])(
+  it.each(["has space.com", "under_score.com", "*.example.com", "a.com/x", "user@a.com", "api.example.com\u0000"])(
     "refuses %s",
     async (value) => {
       render(

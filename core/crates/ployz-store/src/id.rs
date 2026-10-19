@@ -186,9 +186,12 @@ store_string!(
 
 /// DNS ignores case and carries Unicode names as punycode, so `Acme.COM ` names
 /// `acme.com` and `пример.рф` names `xn--e1afmkfd.xn--p1ai`. A name IDNA refuses
-/// becomes empty, which no hostname is.
+/// keeps the ASCII-lowercase form it had before IDNA: saved routes and prefixes
+/// like `xn--zz` stay addressable, and `is_hostname` still refuses anything
+/// that is not a DNS name.
 pub(crate) fn normalize_hostname(value: String) -> String {
-    idna::domain_to_ascii(value.trim()).unwrap_or_default()
+    let value = value.trim();
+    idna::domain_to_ascii(value).unwrap_or_else(|_| value.to_ascii_lowercase())
 }
 
 /// A full lowercase Git commit.
