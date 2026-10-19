@@ -656,7 +656,17 @@ fn follow(
             if signal.is_cancelled() {
                 return followed.ok_or_else(Error::cancelled);
             }
-            if let Some(newer) = newer.map_err(|error| lost(error, number))? {
+            let newer = newer.map_err(|error| {
+                if error.report().code != RpcErrorCode::Unavailable {
+                    return error;
+                }
+                error
+                    .context(format!(
+                        "Deployment #{number} was superseded, and Ployz Cloud stopped answering before its replacement could be read."
+                    ))
+                    .hint(Hint::Inspect(next(matches, &["deployment", "ls"])))
+            })?;
+            if let Some(newer) = newer {
                 id = newer.id;
                 number = newer.number;
                 last = None;
